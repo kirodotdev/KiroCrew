@@ -24216,5 +24216,12 @@
         "label_is_open_in_its_own_window_focus_it": "L'application {{label}} est ouverte dans sa propre fenêtre — l'activer"
       }
     }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "Les discussions de ce serveur peuvent travailler dans un dossier de ton propre ordinateur. Rien n’est partagé tant que tu ne l’as pas approuvé sur cet ordinateur.",
+      "hint": "Ton ordinateur se connecte à ce serveur et ne partage que le dossier que tu approuves. Le désactiver arrête le partage et ne supprime jamais de fichiers. Remote Crew fait l’inverse : il te permet d’utiliser ce serveur depuis un autre appareil.",
+      "label": "Ordinateurs connectés"
+    }
   }
 }

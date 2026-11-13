@@ -242,13 +242,21 @@ def _forget_cloud_placement_when_ended(session_key: str, runtime: Any) -> None:
 
 def _choices_file_may_exist(session_key: str | None = None) -> bool:
     """Whether session choices may be on disk, or ``session_key`` keeps the marker of
-    a binding whose file is gone; a check that fails counts as yes. Never while the
-    developer flag is off: then every session runs here."""
+    a binding whose file is gone; a check that fails counts as yes. With the
+    developer flag off, only a recorded connected computer needs preparation."""
     from kiro_crew.coder.session_launch import SessionEnvironmentChoices
-    from kiro_crew.session_environment import choices_path, session_environments_enabled
+    from kiro_crew.session_environment import (
+        choices_path,
+        session_environments_enabled,
+        session_runs_remotely,
+    )
 
     if not session_environments_enabled():
-        return False
+        # Only a real session key can carry a recorded computer; anything else
+        # keeps main's answer (no preparation) without touching the marker store.
+        if not isinstance(session_key, str) or not session_key:
+            return False
+        return session_runs_remotely(session_key)
     try:
         choices_path().stat()
     except (FileNotFoundError, NotADirectoryError):
@@ -681,17 +689,17 @@ async def _start_kiro_runtime_impl(
             app=getattr(self, "owning_app", "") or "",
             before_compute=runtime.check_remote_workspace_supported,
         )
-        if session_environments_enabled()
-        and (
-            bool(
+        if (
+            session_environments_enabled()
+            and bool(
                 section.coder_url
                 or section.profiles
                 or getattr(section, "sprites_profiles", None)
                 or getattr(section, "boxd_profiles", None)
                 or getattr(section, "kiro_cloud_profiles", None)
             )
-            or await asyncio.to_thread(_choices_file_may_exist, session_key)
         )
+        or await asyncio.to_thread(_choices_file_may_exist, session_key)
         else None
     )
     if isinstance(remote, PreparedCloudSession) and self.memory_mode != "persistent":
@@ -703,6 +711,24 @@ async def _start_kiro_runtime_impl(
         raise SessionEnvironmentUnavailable(PRIVATE_CHAT_CLOUD_REFUSAL)
 
     async def attach_remote_workspace(target: AcpRuntime) -> None:
+        from kiro_crew.connected_computers.launch import ConnectedComputerLaunch
+
+        if (
+            remote is not None
+            and not isinstance(remote, PreparedCloudSession)
+            and isinstance(remote.launch, ConnectedComputerLaunch)
+        ):
+            try:
+                await attach_workspace(target)
+            except BaseException:
+                # Attachment precedes the runtime's close callback and end-watcher.
+                # Release partial workspace/MCP relays even when start is cancelled.
+                await remote.launch.close_relay()
+                raise
+        else:
+            await attach_workspace(target)
+
+    async def attach_workspace(target: AcpRuntime) -> None:
         if isinstance(remote, PreparedCloudSession):
             # Kiro Cloud Sessions: KAS places the session in a cloud sandbox at
             # session/new. No workspace server and no git proxy.
@@ -715,17 +741,29 @@ async def _start_kiro_runtime_impl(
         report_start_stage(session_key, "connecting")
         server = await remote.launch.workspace_server(remote.workdir)
         relay = remote.launch.relay
-        target.set_remote_workspace(
-            {
-                "server": server,
-                "workdir": remote.workdir,
-                "write_token": relay.write_token,
-                # Awaited by the runtime's kill, so a reset returns only once the
-                # guest workers (and any command they ran) have stopped; the
-                # end-watcher below still covers a runtime that dies on its own.
-                "close": functools.partial(remote.launch.close_relay, relay),
-            }
-        )
+        workspace: dict[str, Any] = {
+            "server": server,
+            "workdir": remote.workdir,
+            "write_token": relay.write_token,
+            # Awaited by the runtime's kill, so a reset returns only once the
+            # guest workers (and any command they ran) have stopped; the
+            # end-watcher below still covers a runtime that dies on its own.
+            "close": functools.partial(remote.launch.close_relay, relay),
+        }
+        from kiro_crew.connected_computers.launch import ConnectedComputerLaunch
+
+        if isinstance(remote.launch, ConnectedComputerLaunch):
+            # The user's own computer: its exposed local MCP servers, its own
+            # wording, and a close that ends the relays THIS runtime attached,
+            # never ones a later respawn attaches to the same launch.
+            from kiro_crew.connected_computers.provider import notice_for
+
+            workspace["extra_servers"] = await remote.launch.local_mcp_servers()
+            workspace["notice"] = notice_for(remote.profile_name, remote.workdir)
+            workspace["close"] = functools.partial(
+                remote.launch.close_relays, remote.launch.own_relays()
+            )
+        target.set_remote_workspace(workspace)
         # GitHub git from the workspace goes through this gateway, which holds
         # the credential (remote_session/git_gateway.py). In the background:
         # it never delays the start, and a failure only costs git access.

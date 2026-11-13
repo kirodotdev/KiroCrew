@@ -23661,5 +23661,12 @@
         "label_is_open_in_its_own_window_focus_it": "{{label}} ist in einem eigenen Fenster geöffnet — dieses fokussieren"
       }
     }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "Chats auf diesem Server können in einem Ordner auf deinem eigenen Computer arbeiten. Nichts wird geteilt, bis du es auf diesem Computer genehmigst.",
+      "hint": "Dein Computer verbindet sich mit diesem Server und teilt nur den Ordner, den du genehmigst. Ausschalten beendet die Freigabe und löscht nie Dateien. Remote Crew ist das Gegenstück: Damit nutzt du diesen Server von einem anderen Gerät aus.",
+      "label": "Verbundene Computer"
+    }
   }
 }

@@ -11,8 +11,8 @@ Scope, deliberately narrow:
 * A request that names no chat, or a chat the gateway does not hold, runs as
   before: the routes also serve callers that are not a chat (library previews,
   artifacts, image thumbnails).
-* With the developer flag off every chat runs here, so nothing is refused and
-  the placement store is never read.
+* With the developer flag off, only a recorded connected-computer chat stays
+  remote. Other providers keep their local behavior; an unbound chat reads no store.
 * Only the dashboard owner is checked against placement. Any other caller goes
   on to the route's own owner check and gets the refusal it gets today, so the
   guard never tells a non-owner where a chat runs.
@@ -63,10 +63,6 @@ async def remote_chat_refusal(request: web.Request) -> web.Response | None:
     """A route guard: the refusal when ``?slot=`` names a chat that runs remotely."""
     slot_name = request.query.get("slot", "").strip()
     if not slot_name:
-        return None
-    from kiro_crew.session_environment import session_environments_enabled
-
-    if not session_environments_enabled():
         return None
     from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 

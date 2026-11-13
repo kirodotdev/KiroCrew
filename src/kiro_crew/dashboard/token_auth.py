@@ -81,10 +81,10 @@ from kiro_crew.dashboard.token_auth_callers import (
 from kiro_crew.dashboard.token_auth_paths import (
     _APPS_UI_BYPASS_RE,
     _BYPASS_EXACT,
-    _BYPASS_EXACT_METHODS,
     _BYPASS_PREFIXES,
     _credential_mismatch_detail,
     _deny,
+    _exact_method_bypass,
     _is_spa_shell_request,
     _log_auth,
 )
@@ -903,8 +903,7 @@ def token_auth_middleware(
             return await handler(request)  # type: ignore[operator]
         # Method-scoped exact bypasses. A non-listed method on the same path
         # falls through to the ordinary token gate rather than bypassing it.
-        _bypass_methods = _BYPASS_EXACT_METHODS.get(path)
-        if _bypass_methods is not None and request.method in _bypass_methods:
+        if _exact_method_bypass(path, request.method):
             return await handler(request)  # type: ignore[operator]
         # Icon files: anchored regex with bounded digit count to prevent
         # ReDoS and ensure only legitimate PWA icon paths bypass auth.
@@ -1481,9 +1480,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _403_HTML,
         _APP_WINDOW_EXCLUDED_PATHS,
         _APPS_SPA_EXCLUDED_RE,
+        _BYPASS_EXACT_METHODS,
         _SELF_AUTH_WEBHOOK_METHODS,
         AGENT_HOOK_PATH,
         AGENT_HOOK_STATUS_PATH,
+        CONNECTOR_CONNECT_PATH,
         CREW_OAUTH_CALLBACK_PATH,
         CSRF_EXEMPT_EXACT_METHODS,
         RELAY_VIEWER_TOKEN_PATH,
@@ -1496,6 +1497,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.token_auth_tokens import (  # noqa: F401
         _REVOKED_NONCES_FILE,
+        CONNECTOR_AUDIENCE,
+        CONNECTOR_CREDENTIAL_REASON,
         LINK_WINDOW_SECS,
         MAX_CONCURRENT_NONCES,
         RevokedNonceStore,

@@ -24216,5 +24216,12 @@
         "label_is_open_in_its_own_window_focus_it": "O app {{label}} está aberto em sua própria janela — focar nela"
       }
     }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "Os chats deste servidor podem trabalhar em uma pasta do seu próprio computador. Nada é compartilhado até você aprovar nesse computador.",
+      "hint": "Seu computador se conecta a este servidor e compartilha só a pasta que você aprovar. Desativar interrompe o compartilhamento e nunca apaga arquivos. O Remote Crew é o contrário: permite que você use este servidor de outro dispositivo.",
+      "label": "Computadores conectados"
+    }
   }
 }

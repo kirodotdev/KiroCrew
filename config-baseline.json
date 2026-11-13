@@ -10141,6 +10141,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.connected_computers",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: connected_computers",
+      "help": "Turn on the 'connected_computers' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.crew_mode",
       "kind": "core",
       "type": "boolean",

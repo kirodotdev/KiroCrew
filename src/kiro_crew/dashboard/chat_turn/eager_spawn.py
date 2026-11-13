@@ -562,16 +562,11 @@ async def _runs_on_a_session_environment(session_key: str) -> bool:
     Read from the persisted choice, never from what one request just did, so no
     caller can prewarm a bound chat. An unreadable choices store answers yes: a
     skipped prewarm costs one cold start, a wrong one starts billed compute.
-    Always no while the developer flag is off (the choice is never read).
+    A connected-computer binding remains remote while the developer flag is off;
+    other providers keep their local behavior then.
     """
-    from kiro_crew.session_environment import (
-        SessionEnvironmentUnavailable,
-        _choices,
-        session_environments_enabled,
-    )
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable, _choices
 
-    if not session_environments_enabled():
-        return False
     try:
         return await asyncio.to_thread(_choices().get, session_key) is not None
     except (OSError, ValueError, SessionEnvironmentUnavailable):

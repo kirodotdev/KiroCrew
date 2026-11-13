@@ -46,7 +46,10 @@ PROVIDER_ID = "coder"
 #: The providers a choice row may record. The profile id still decides the
 #: provider at launch (``session_environments.routing.profile_provider``); the row
 #: says where it ran.
-CHOICE_PROVIDERS = frozenset(PROVIDER_IDS)
+#: ``connected_computers.provider.PROVIDER_ID``: an enrolled computer, not a
+#: configured profile, so it is in no ``config.session_environments`` list.
+CONNECTED_COMPUTER_PROVIDER_ID = "connected_computer"
+CHOICE_PROVIDERS = frozenset(PROVIDER_IDS) | {CONNECTED_COMPUTER_PROVIDER_ID}
 #: Kiro Cloud Sessions' id in ``config.session_environments.PROVIDERS``.
 KIRO_CLOUD_PROVIDER_ID = "kiro_cloud"
 WORKSPACE_PREFIX = "crewenv"
@@ -64,10 +67,10 @@ ENDED_ROW_TTL_SECS = 6 * 3600
 class SessionEnvironmentChoices:
     """Durable session -> profile choices. Atomic, owner-only, lock-serialized.
 
-    Every bound session also gets an empty marker file under ``bound/``, written
-    before its row. When the choices file cannot be read, only a session with a
-    marker is refused; every other session runs locally, so one corrupt file does
-    not stop the whole gateway.
+    Every bound session gets an empty marker under ``bound/`` before its row.
+    Connected computers also get an atomic, provider-typed marker: their missing
+    or unreadable rows refuse even with developer mode off. Legacy markers keep
+    their developer-off local behavior. A failed store never stops unbound chats.
     """
 
     def __init__(self, path: Path) -> None:
@@ -88,11 +91,24 @@ class SessionEnvironmentChoices:
         (an unreadable marker counts as yes). Checked without the choices file."""
         return self._may_be_bound(session_key)
 
+    def _computer_marker(self, session_key: str) -> Path:
+        return self._marker(session_key).with_suffix(f".{CONNECTED_COMPUTER_PROVIDER_ID}")
+
+    def _may_be_computer_bound(self, session_key: str) -> bool:
+        """The marker's filename carries the provider, without a choices-file read."""
+        try:
+            self._computer_marker(session_key).stat()
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+        return True
+
     def _may_be_bound(self, session_key: str) -> bool:
         try:
             self._marker(session_key).stat()
         except FileNotFoundError:
-            return False
+            return self._may_be_computer_bound(session_key)
         except OSError:
             return True
         return True
@@ -128,23 +144,38 @@ class SessionEnvironmentChoices:
 
     def resolve(self, session_key: str) -> Optional[tuple[str, str]]:
         """``(profile id, owner key)`` or None for local; the owner is the
-        session itself or, for a subagent, the root it inherited from. Always
-        None while the developer flag is off."""
+        session itself or, for a subagent, the root it inherited from. Connected
+        computers retain their placement even while the developer flag is off."""
         resolved = self.resolve_choice(session_key)
         return resolved[:2] if resolved is not None else None
 
     def resolve_choice(self, session_key: str) -> Optional[tuple[str, str, str]]:
         """``(profile id, owner session key, recorded provider)``, or None for a
-        local session. Always None while the developer flag is off."""
-        if not session_environments_enabled():
+        local session. A connected computer stays recorded regardless of flags:
+        availability is checked by the caller before starting work, not placement."""
+        enabled = session_environments_enabled()
+        computer_bound = self._may_be_computer_bound(session_key)
+        if not enabled and not computer_bound and not self._may_be_bound(session_key):
+            # No marker means no binding was written, so no choices read is needed.
             return None
         try:
             sessions = self._read()
         except SessionEnvironmentUnavailable:
-            if self._may_be_bound(session_key):
+            if computer_bound or (enabled and self._may_be_bound(session_key)):
                 raise
             return None
         entry = sessions.get(session_key)
+        if computer_bound and (
+            not isinstance(entry, dict) or entry.get("provider") != CONNECTED_COMPUTER_PROVIDER_ID
+        ):
+            # A typed witness outlives a lost row; it never authorizes local work.
+            raise SessionEnvironmentUnavailable("this session's environment choice is missing")
+        if not enabled and (
+            not isinstance(entry, dict) or entry.get("provider") != CONNECTED_COMPUTER_PROVIDER_ID
+        ):
+            # The developer gate still makes every other provider local. Only the
+            # explicit computer tag changes that behavior, never a guessed provider.
+            return None
         if entry is None and self._may_be_bound(session_key):
             # Bound, but its row (or the whole file) is gone: refuse, never go local.
             raise SessionEnvironmentUnavailable("this session's environment choice is missing")
@@ -172,6 +203,12 @@ class SessionEnvironmentChoices:
         if not child_key or len(child_key) > _MAX_SESSION_KEY or child_key == parent_key:
             raise ValueError("session key is invalid")
         if not session_environments_enabled():
+            # A connected parent or a continuing child stays on its computer even
+            # when the gateway's developer feature is off. Refuse before any write.
+            if self.resolve_choice(parent_key) or self.resolve_choice(child_key):
+                from kiro_crew.connected_computers.flag import require_remote
+
+                require_remote()
             return None
         # A local parent and a never-bound child have nothing to read or write, so
         # an unreadable file refuses only the subagents of a bound session.
@@ -182,6 +219,9 @@ class SessionEnvironmentChoices:
             with file_lock(lock_fd.fileno(), exclusive=True, required=True):
                 sessions = self._read()
                 before = set(sessions)
+                if self._may_be_computer_bound(child_key):
+                    # A continuing child's lost row must not be replaced by its parent's.
+                    self.resolve_choice(child_key)
                 parent = self.resolve_choice(parent_key)
                 prior = sessions.get(child_key)
                 if parent is None and "parent" in (prior or {}):
@@ -198,6 +238,10 @@ class SessionEnvironmentChoices:
                         )
                     return None
                 profile, owner, provider = parent
+                if provider == CONNECTED_COMPUTER_PROVIDER_ID:
+                    from kiro_crew.connected_computers.flag import require_remote
+
+                    require_remote()
                 row = {"provider": provider, "configuration": profile, "parent": owner}
                 if (
                     isinstance(prior, dict)
@@ -210,6 +254,8 @@ class SessionEnvironmentChoices:
                     row["cloud_session"] = prior["cloud_session"]
                 sessions[child_key] = row
                 self._write(_pruned(sessions), before)
+                if provider != CONNECTED_COMPUTER_PROVIDER_ID:
+                    self._computer_marker(child_key).unlink(missing_ok=True)
                 return profile
 
     def forget_inherited(self, child_key: str) -> bool:
@@ -237,7 +283,10 @@ class SessionEnvironmentChoices:
         the marker of each one the write drops goes after it (a row and its marker
         leave together, so a marker without a row means the row was lost)."""
         # Markers first, so a crash between the two errs toward refusing.
-        for key in sessions:
+        for key, entry in sessions.items():
+            if isinstance(entry, dict) and entry.get("provider") == CONNECTED_COMPUTER_PROVIDER_ID:
+                mkdirs_owner_only(self.bound_dir)
+                atomic_write(self._computer_marker(key), "", fsync=True, restrict_to_owner=True)
             self._mark_bound(key)
         payload = {"version": _CHOICES_VERSION, "sessions": sessions}
         atomic_write(
@@ -248,6 +297,7 @@ class SessionEnvironmentChoices:
         )
         for key in set(before) - set(sessions):
             self._marker(key).unlink(missing_ok=True)
+            self._computer_marker(key).unlink(missing_ok=True)
 
     def set(self, session_key: str, profile_id: Optional[str], provider: str = PROVIDER_ID) -> None:
         """Bind a session to a profile, or clear it (None) so it runs locally.
@@ -273,6 +323,8 @@ class SessionEnvironmentChoices:
                 if profile_id is None:
                     # After the row is gone: a crash in between errs toward refusing.
                     self._marker(session_key).unlink(missing_ok=True)
+                if profile_id is None or provider != CONNECTED_COMPUTER_PROVIDER_ID:
+                    self._computer_marker(session_key).unlink(missing_ok=True)
 
     def record_cloud_session(
         self, session_key: str, cloud_session_id: str, *, profile_id: str
@@ -721,6 +773,11 @@ async def prepare_for_session(
     if before_compute is not None:
         # Refuse an unsupported runtime before any workspace starts.
         before_compute()
+    if recorded_provider == CONNECTED_COMPUTER_PROVIDER_ID:
+        # The user's own computer: enrolled, never provisioned, never moved.
+        from kiro_crew.connected_computers.provider import prepare_connected_session
+
+        return await prepare_connected_session(session_key, profile_id)
     config = live.snapshot()
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)

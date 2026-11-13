@@ -24216,5 +24216,12 @@
         "label_is_open_in_its_own_window_focus_it": "La app {{label}} está abierta en su propia ventana — enfócala"
       }
     }
+  },
+  "connectedComputers": {
+    "preview": {
+      "description": "Los chats de este servidor pueden trabajar en una carpeta de tu propia computadora. No se comparte nada hasta que lo apruebes en esa computadora.",
+      "hint": "Tu computadora se conecta a este servidor y comparte solo la carpeta que apruebes. Al desactivarlo se deja de compartir y nunca se borran archivos. Remote Crew es lo contrario: te permite usar este servidor desde otro dispositivo.",
+      "label": "Computadoras conectadas"
+    }
   }
 }

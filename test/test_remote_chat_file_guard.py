@@ -21,6 +21,7 @@ from kiro_crew.dashboard import chat_utils, handlers
 from kiro_crew.dashboard import remote_chat_guard as guard
 from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.routes import taskrunner
+from kiro_crew.session_environment import session_runs_remotely as _real_session_runs_remotely
 
 pytestmark = pytest.mark.asyncio
 
@@ -99,15 +100,21 @@ async def test_a_local_unknown_or_unnamed_chat_reaches_the_route(
 
 
 @pytest.mark.parametrize("path", sorted(GUARDED))
-async def test_with_the_developer_flag_off_a_remote_chat_reaches_the_route(
-    table, path: str, monkeypatch: pytest.MonkeyPatch
+async def test_with_the_developer_flag_off_a_coder_chat_reaches_the_route(
+    table, path: str, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def never_read(key: str) -> bool:
-        raise AssertionError("placement read with the flag off")
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder.session_launch import SessionEnvironmentChoices
 
-    monkeypatch.setattr("kiro_crew.session_environment.session_environments_enabled", lambda: False)
-    monkeypatch.setattr("kiro_crew.session_environment.session_runs_remotely", never_read)
-    response = await _call(table, path, f"&slot={REMOTE}")
+    monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path)
+    choices = SessionEnvironmentChoices(se.choices_path())
+    choices.set(REMOTE, "dev")
+    monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
+    monkeypatch.setattr(se, "session_environments_enabled", lambda: False)
+    # Restore the real placement reader; its result, not the flag alone, decides.
+    with monkeypatch.context() as placement:
+        placement.setattr(se, "session_runs_remotely", _real_session_runs_remotely)
+        response = await _call(table, path, f"&slot={REMOTE}")
     assert json.loads(response.body) == {"served": GUARDED[path][0]}
 
 
@@ -140,3 +147,32 @@ async def test_the_repository_list_and_other_routes_are_not_wrapped(table) -> No
         ("GET", "/api/file-search"): "api_file_search",
     }.items():
         assert table.routes[(method, path)] is getattr(handlers, name), path
+
+
+@pytest.mark.parametrize("path", sorted(GUARDED))
+@pytest.mark.parametrize("developer", [True, False])
+async def test_a_computer_binding_refuses_every_local_file_route_when_preview_off(
+    table, path, tmp_path, monkeypatch, developer
+):
+    from kiro_crew import session_environment as se
+    from kiro_crew.coder.session_launch import (
+        CONNECTED_COMPUTER_PROVIDER_ID,
+        SessionEnvironmentChoices,
+    )
+    from kiro_crew.config import live
+
+    monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path)
+    monkeypatch.setenv("KIROCREW_DEV_MODE", "1" if developer else "0")
+    monkeypatch.setattr(se, "session_environments_enabled", lambda: developer)
+    monkeypatch.setattr(se, "session_runs_remotely", _real_session_runs_remotely)
+    monkeypatch.setattr(
+        live,
+        "snapshot",
+        lambda: SimpleNamespace(dashboard=SimpleNamespace(feature_previews={})),
+    )
+    choices = SessionEnvironmentChoices(se.choices_path())
+    choices.set(REMOTE, "laptop", CONNECTED_COMPUTER_PROVIDER_ID)
+    response = await _call(table, path, f"&slot={REMOTE}")
+    assert response.status == 409
+    assert json.loads(response.body)["code"] == guard.CHAT_RUNS_REMOTELY
+    assert table.reached == []

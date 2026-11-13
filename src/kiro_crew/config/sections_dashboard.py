@@ -55,6 +55,9 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "bridge_approvals",
     "chat_runtime_sharing",
+    # Has server behavior: kiro_crew.connected_computers.flag gates enrollment,
+    # the connector socket, the chat choice and every start on it.
+    "connected_computers",
     "crew_mode",
     "crew_oauth",
     "dashboard_stale_fields",
