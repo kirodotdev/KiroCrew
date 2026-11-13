@@ -314,6 +314,17 @@ def _fix_stale_managed_command(name: str, spec: dict) -> None:
         spec["args"] = args
 
 
+#: Cache-only policy markers a managed spec may carry. They are dropped from both
+#: sides of the first-party env comparison: a spec written before the host's
+#: central policy (or its cache-age bound) changed still names the same code, and
+#: ``probe_server`` never runs the spec's copies -- ``sanitize_spec_env`` strips
+#: Kiro Crew's reserved names and the probe re-derives the markers itself.
+def _without_policy_markers(env: dict[str, str]) -> dict[str, str]:
+    from kiro_crew.agent_materialization.managed_mcp import POLICY_MARKER_KEYS
+
+    return {k: v for k, v in env.items() if k not in POLICY_MARKER_KEYS}
+
+
 def _is_first_party_managed_argv(
     name: str, command: str | None, args: list[str], env: dict[str, str] | None
 ) -> bool:
@@ -370,5 +381,5 @@ def _is_first_party_managed_argv(
     return (
         command == expected_command
         and list(args) == list(expected_args)
-        and dict(env or {}) == expected_env
+        and _without_policy_markers(env or {}) == _without_policy_markers(expected_env)
     )

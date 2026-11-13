@@ -974,9 +974,30 @@ def _project_mcp_servers(
                 "/".join(discarded),
             )
         dropped_env: list[str] = []
+        if managed and isinstance(projected.get("env"), dict):
+            # The spec's own copies of the cache-only markers are replaced from
+            # gateway state below, so they are not a withheld credential to report.
+            from kiro_crew.agent_materialization.managed_mcp import POLICY_MARKER_KEYS
+
+            spec_env = {k: v for k, v in projected["env"].items() if k not in POLICY_MARKER_KEYS}
+            if spec_env:
+                projected["env"] = spec_env
+            else:
+                projected.pop("env")
         withheld = _withhold_credential_fields(
             projected, managed=managed, relayed=relayed, dropped_env=dropped_env
         )
+        if managed and projected.get("command"):
+            # KAS starts managed stdio children with a minimal environment, and the
+            # filter above keeps only the literal KIROCREW_HOME pin from the
+            # user-editable spec. Re-derive the cache-only policy markers from
+            # gateway state instead: without them a centrally governed child
+            # cannot adopt the gateway's verified cache.
+            from kiro_crew.agent_materialization.managed_mcp import policy_cache_only_env
+
+            policy_env = policy_cache_only_env()
+            if policy_env:
+                projected.setdefault("env", {}).update(policy_env)
         stdio = bool(projected.get("command"))
         if managed:
             # Native MCP children do not inherit the gateway's environment.

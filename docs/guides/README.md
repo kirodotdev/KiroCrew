@@ -13,6 +13,7 @@ system is built, see [../architecture/](../architecture/README.md).
 | [endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md) | A behavioral endpoint-security product (EDR) killing the `git`/`cr` processes the agent spawns ("A process was blocked because malicious behavior was detected") while the same commands run fine in your own terminal: why it is a false positive, the exception scoped to the detection id and the parent image's path (the KAS engine's `node.exe` on Windows, the Python interpreter on macOS and Linux), and the interim workaround. |
 | [docker.md](docker.md) | Running Kiro Crew as a container. |
 | [docker-troubleshooting.md](docker-troubleshooting.md) | Diagnosing common Docker deployment issues. |
+| [kas-managed-mcp-policy-cache.md](kas-managed-mcp-policy-cache.md) | Diagnosing KAS managed MCP `Connection closed` failures caused by a sandbox-hidden governance policy cache, with the read-only fix and verification steps. |
 | [remote-and-mobile.md](remote-and-mobile.md) | Running 24/7 on a remote host, keeping it alive as a service, and reaching it from a phone over a tunnel. |
 | [cloud-instance-ssm-vs-ssh.md](cloud-instance-ssm-vs-ssh.md) | How a cloud-launched instance is reached through the Instances hub: the native AWS SSM transport vs the legacy SSH-over-`ProxyCommand` path. |
 | [remote-crew-on-ec2.md](remote-crew-on-ec2.md) | Reaching a Remote Crew gateway on EC2 over SSH or AWS SSM, plus the common EC2 setup gotchas (sandbox backend, linger, port/tunnel matching). |
