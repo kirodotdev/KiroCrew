@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import type { Osc52CopyHandle } from '../lib/terminalOsc52'
 
 /**
  * sessionId → shell-ready WebSocket. Each terminal tab owns one entry.
@@ -239,6 +240,8 @@ interface Conn {
   cwd?: string | null
   remoteSlot?: string
   chatSlot?: string
+  /** The terminal's OSC 52 copy handling, suspended while a socket replays saved output. */
+  osc52?: Pick<Osc52CopyHandle, 'suspend' | 'resume'>
   ws: WebSocket | null
   disposed: boolean
   retries: number
@@ -525,6 +528,8 @@ function connect(sessionId: string, c: Conn) {
   ws.onopen = () => {
     c.retries = 0
     setConnStatus(sessionId, c, 'connected')
+    // Copies stay off until xterm finishes parsing the output before `replayed`.
+    c.osc52?.suspend()
     // Server replays this session's scrollback on (re)connect; reset first so
     // the cached term's retained screen doesn't stack under the replay.
     c.term.reset()
@@ -560,6 +565,15 @@ function connect(sessionId: string, c: Conn) {
             fenceShells.set(sessionId, m.fence_shells as Record<string, string>)
           }
           registerTerminalWs(sessionId, ws)
+        }
+        if (m && m.type === 'replayed') {
+          // The server marks the replay boundary independently of shell readiness.
+          // xterm runs this callback once preceding output is parsed, so copies
+          // resume only past the replay, and only for the socket still in use.
+          const osc52 = c.osc52
+          if (osc52 && c.ws === ws) {
+            c.term.write('', () => { if (c.ws === ws) osc52.resume() })
+          }
         }
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
@@ -650,9 +664,11 @@ export function ensureTerminalConnection(
   remoteSlot?: string,
   /** The chat a LOCAL shell was opened for, so the gateway checks its placement. */
   chatSlot?: string,
+  /** The terminal's OSC 52 copy handling, kept off while a reconnect replays saved output. */
+  osc52?: Pick<Osc52CopyHandle, 'suspend' | 'resume'>,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
+  const c: Conn = { term, fit, cwd, remoteSlot, chatSlot, osc52, ws: null, disposed: false, retries: 0, status: 'reconnecting', invalidCwd: false, manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).

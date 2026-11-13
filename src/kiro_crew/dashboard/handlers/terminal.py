@@ -85,6 +85,7 @@ from kiro_crew.dashboard.handlers.terminal_shell import (
     _resolve_shell,
 )
 from kiro_crew.dashboard.handlers.terminal_transport import (
+    _TAKEOVER_READY_TIMEOUT_S,
     _close_terminal_ws_bounded,
     _record_and_forward_terminal_output,
     _release_terminal_ws_identity,
@@ -1013,6 +1014,22 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             )
             return ws
 
+    if not existing:
+        # A fresh session has no saved output. Mark the live boundary before
+        # starting its PTY reader, independently of the shell's readiness hook.
+        try:
+            async with sess.send_lock:
+                if sess.ws is ws and not ws.closed:
+                    await asyncio.wait_for(
+                        ws.send_str(json.dumps({"type": "replayed"})),
+                        timeout=_TAKEOVER_READY_TIMEOUT_S,
+                    )
+        except (ConnectionResetError, RuntimeError, OSError, asyncio.TimeoutError):
+            # Keep draining the PTY for a reconnect, but send no live bytes to
+            # a socket that does not have its replay boundary.
+            _release_terminal_ws_identity(sess, ws)
+            await _close_terminal_ws_bounded(ws)
+
     # --- Read loop: PTY → WebSocket ---
     notification_bus: NotificationBus | None = getattr(
         request.app.get("state"), "notification_bus", None
@@ -1583,7 +1600,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _STALE_OWNER_ERROR_CODE,
         _STALE_OWNER_ERROR_MESSAGE,
         _TAKEOVER_CATCH_UP_ROUNDS,
-        _TAKEOVER_READY_TIMEOUT_S,
         _TAKEOVER_REPLAY_SEND_TIMEOUT_S,
         _TERMINAL_WS_CLEANUP_TIMEOUT_S,
         _consume_ready_marker,
