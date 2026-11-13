@@ -139,19 +139,11 @@ async def test_task_decomposition_reads_past_the_ack():
 
 @pytest.mark.asyncio
 async def test_channel_agent_reply_drops_the_ack():
-    agent = SimpleNamespace(
-        id="a1",
-        role="dev",
-        agent_name="dev",
-        session_key="channel:c1:a1",
-        approval_policy=SimpleNamespace(value="writes"),
-        _approval_future=None,
-    )
-    ch = SimpleNamespace(
-        id="c1", trusted=False, members={}, _broadcast=MagicMock(), post=AsyncMock()
-    )
+    ch = channel_mod.Channel(id="c1", topic="t")
+    agent = ch.add_agent("dev", agent_name="dev")
+    assert agent is not None
     await channel_mod._stream_task(agent, ch, _Scripted(), "hi")
-    assert ch.post.await_args.args[1] == _CLEAN
+    assert [m.content for m in ch.messages if m.from_id == agent.id] == [_CLEAN]
 
 
 @pytest.mark.asyncio
