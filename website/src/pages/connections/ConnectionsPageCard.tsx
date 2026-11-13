@@ -13,6 +13,7 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
+import { useCopyAck } from '../../components/FilePathMenu'
 import { copyToClipboard } from '../../utils/clipboard'
 import { tipDocHref } from '../../utils/docsLink'
 import { useTranslation } from 'react-i18next'
@@ -46,7 +47,7 @@ import { isGoogleSlug } from './connectionsLinks'
 // the chat banner's relay affordance).
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
 import { isElectron } from '../../lib/electron'
-import { useImeGuard } from '../../hooks/useImeGuard'
+import { useDocumentImeLatch, useImeGuard } from '../../hooks/useImeGuard'
 import {
   errorIndicatesProviderRejection,
   type ConnectionAction,
@@ -211,6 +212,9 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
   // A bubble with a link or a copy control is something to operate, not just
   // read, so it is a non-modal dialog the icon's Tab moves into.
   const interactive = !!(link || redirect)
+  // IMEs cycle candidates with Tab, so a Tab the bubble re-aims is claimed
+  // first: one the IME owns keeps its composition (see useDocumentImeLatch).
+  const tipImeLatch = useDocumentImeLatch(open && interactive)
 
   // WCAG 1.4.13 hoverable: the pointer must be able to travel from the icon
   // into the bubble, so hover-off waits a short grace instead of dismissing
@@ -309,6 +313,7 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
           if (e.key !== 'Tab' || e.shiftKey || !open) return
           const first = focusables()[0]
           if (!first) return
+          if (!tipImeLatch.claimSyntheticKey(e)) return
           e.preventDefault()
           setPinned(true)
           first.focus()
@@ -322,7 +327,7 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
         <AlertTriangle className="h-4 w-4" aria-hidden="true" />
       </button>
       {open && <OverlayPortal>{
-        /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the mouse listeners implement WCAG 1.4.13 "hoverable" (pointer may cross into the tooltip without it dismissing); the keyboard path is the icon's Tab into the bubble and Tab / Shift+Tab / Escape back out */
+        /* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the role is set per render (dialog or tooltip), which the rule cannot read; the mouse listeners implement WCAG 1.4.13 "hoverable" (pointer may cross into the tooltip without it dismissing); the keyboard path is the icon's Tab into the bubble and Tab / Shift+Tab / Escape back out */
         <div
           ref={tipRef}
           id={tipId}
@@ -339,6 +344,7 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
             const at = items.indexOf(document.activeElement as HTMLElement)
             // Out past either end goes back to the icon, closing the bubble.
             if ((e.shiftKey && at === 0) || (!e.shiftKey && at === items.length - 1)) {
+              if (!tipImeLatch.claimSyntheticKey(e)) return
               e.preventDefault()
               backToIcon()
             }
@@ -373,39 +379,41 @@ function PrerequisiteTip({ label, heading, text, redirect, link }: {
  *  address typed on a waiting card. */
 function RedirectValue({ value }: { value: string }) {
   const { t } = useTranslation()
-  const [outcome, setOutcome] = useState<'idle' | 'copied' | 'failed'>('idle')
-  const reset = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(() => () => { if (reset.current) clearTimeout(reset.current) }, [])
-  const copy = async () => {
-    if (reset.current) clearTimeout(reset.current)
-    if (!(await copyToClipboard(value))) {
-      setOutcome('failed')
-      return
-    }
-    setOutcome('copied')
-    reset.current = setTimeout(() => setOutcome('idle'), 1500)
-  }
-  const copied = outcome === 'copied'
+  // A refusal stays on screen until a later copy succeeds or the user dismisses
+  // it, not only for the acknowledgment's moment. It is set from each attempt's
+  // own result, so a repeated failure shows again after a dismiss.
+  const [failed, setFailed] = useState(false)
+  const copyRef = useRef<HTMLButtonElement>(null)
+  // The shared acknowledgment: `copied` / `failed`, reset after a moment.
+  const { copyStatus, copyPath } = useCopyAck(value, async () => {
+    const ok = await copyToClipboard(value)
+    setFailed(!ok)
+    return ok
+  })
+  const copied = copyStatus === 'copied'
   return (
     <>
       <span className="mt-0.5 flex items-start gap-1.5">
         <code className="min-w-0 flex-1 select-all break-all font-mono text-[11px] text-text-strong">{value}</code>
         <button
+          ref={copyRef}
           type="button"
-          onClick={() => void copy()}
+          onClick={() => void copyPath()}
           aria-label={t('pages.connectionsPage.copy_redirect_address', { address: value })}
-          className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-muted hover:bg-bg-hover hover:text-text"
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-text hover:bg-bg-hover hover:text-text-strong"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
           <span aria-live="polite">{copied ? t('pages.connectionsPage.redirect_address_copied') : ''}</span>
         </button>
       </span>
-      {outcome === 'failed' && (
+      {failed && (
         <ErrorNotice
           variant="inline"
           message={t('pages.connectionsPage.redirect_address_copy_failed')}
           askAgent={false}
-          onDismiss={() => setOutcome('idle')}
+          // Focus goes back to this address's copy button, not the page body,
+          // so the bubble keeps its keyboard path (Tab, Escape) after dismissal.
+          onDismiss={() => { copyRef.current?.focus(); setFailed(false) }}
           className="mt-0.5"
         />
       )}
