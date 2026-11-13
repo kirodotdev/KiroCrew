@@ -19,7 +19,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ExternalLink } from 'lucide-react'
-import type { RelayCrewEntry } from '../api/client'
+import type { RelayCrewEntry, RelayViewerAccount } from '../api/client'
 import {
   isRelayCrewOnline, openRelayCrew, relayCrewStatusText, relayRefusalText, relayRetryable, useRelayViewerCrews,
   type RelayListRefusal,
@@ -27,6 +27,7 @@ import {
 import InstanceTabBar from './InstanceTabBar'
 import { DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator } from './ui/dropdown-menu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
+import { accountProviderLabel } from './kasProviderLabel'
 
 /** One Team Crew. A failed Open keeps the menu open and shows why under the row.
  *  The agent hand-off is a sibling menu item, so the keyboard reaches it. */
@@ -130,8 +131,10 @@ function RelayListRefusalNotice({ refusal, onRetry, retrying }: {
   )
 }
 
-export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
+export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, close }: {
   crews: RelayCrewEntry[]
+  /** The account the list was read for, shown as one muted line while the list is loaded. */
+  account?: RelayViewerAccount | null
   refusal: RelayListRefusal | null
   retry: () => void
   retrying: boolean
@@ -139,6 +142,8 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
   close: () => void
 }) {
   const { t } = useTranslation()
+  // Left out on a refusal and for an account with no label. No e-mail: the gateway sends none.
+  const provider = !refusal && account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   const [refusals, setRefusals] = useState<Record<string, string>>({})
   const onOpen = useCallback((endpointId: string) => {
     setRefusals(prev => {
@@ -156,6 +161,11 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
       <DropdownMenuLabel>
         {t('components.relayCrews.group_team_crews')}
       </DropdownMenuLabel>
+      {provider && (
+        <div className="px-3 pb-1 truncate text-[12px] text-muted" data-testid="team-crews-account">
+          {t('app.signed_in_with', { provider })}
+        </div>
+      )}
       {refusal
         ? <RelayListRefusalNotice refusal={refusal} onRetry={retry} retrying={retrying} />
         : crews.length === 0
@@ -168,15 +178,19 @@ export function TeamCrewsGroup({ crews, refusal, retry, retrying, close }: {
 }
 
 /** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on
- *  and the group has a Crew or a notice (sign-in, setup or load failure) to show. */
+ *  and the group has a Crew, a notice (sign-in, setup or load failure) or the signed-in account to show. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
-  const { hidden, crews, refusal, retry, retrying } = useRelayViewerCrews()
+  const { hidden, crews, account, refusal, retry, retrying } = useRelayViewerCrews()
+  // The same label the group's line shows; the hook sends an account only with a loaded list.
+  const accountLabel = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   return (
     <InstanceTabBar
       variant={variant}
-      // An empty list passes nothing, so the bar stays as it is without the relay.
-      extraGroups={hidden || (refusal === null && crews.length === 0) ? undefined : close => (
-        <TeamCrewsGroup crews={crews} refusal={refusal} retry={retry} retrying={retrying} close={close} />
+      // Nothing while hidden or loading, or for an empty list with no notice and no account
+      // label, so the bar stays as it is without the relay. A loaded empty list with an
+      // account label still mounts the group, so it says who is signed in.
+      extraGroups={hidden || (refusal === null && crews.length === 0 && !accountLabel) ? undefined : close => (
+        <TeamCrewsGroup crews={crews} account={account} refusal={refusal} retry={retry} retrying={retrying} close={close} />
       )}
     />
   )

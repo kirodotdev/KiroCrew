@@ -41,3 +41,42 @@ export function providerLabelFromWire(stored: string | null | undefined): string
   if (key === 'enterprise' || key === 'idc' || key === 'externalidp') return providerLabel('idc')
   return stored ?? ''
 }
+
+function humanizeProviderId(value: string): string {
+  return value
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .trim()
+}
+
+/**
+ * Display name for a signed-in account, from whoami's `accountType` and, for an
+ * Identity Center sign-in, its portal: "IAM Identity Center · <portal host>".
+ * `''` when the account names no kind. Shared by the account modal's badge and
+ * the Team Crews group's "Signed in with" line.
+ */
+export function accountProviderLabel(accountType?: string, startUrl?: string): string {
+  const rawType = accountType?.trim()
+  if (rawType?.startsWith('Social')) {
+    const socialProvider = humanizeProviderId(rawType.slice('Social'.length))
+    return socialProvider || i18nT('app.social_login')
+  }
+
+  const accountKind = rawType === 'IamIdentityCenter'
+    ? i18nT('app.iam_identity_center')
+    : rawType === 'BuilderId'
+      ? i18nT('app.builder_id')
+      : rawType?.toLowerCase().replace(/[^a-z0-9]/g, '') === 'externalidp'
+        // The organization's own sign-in: the sign-in flow's plain-language
+        // name for it ("Company SSO"), never the protocol's.
+        ? providerLabelFromWire('externalidp')
+        : rawType
+          ? humanizeProviderId(rawType)
+          : undefined
+
+  let issuerHost: string | undefined
+  if (startUrl) {
+    try { issuerHost = new URL(startUrl).host } catch { issuerHost = undefined }
+  }
+  return [accountKind, issuerHost].filter(Boolean).join(' · ')
+}
