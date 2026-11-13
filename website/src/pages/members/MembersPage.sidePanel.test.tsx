@@ -463,6 +463,57 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByTestId('member-dashboard', undefined, PANE_READY)).toBeInTheDocument()
   })
 
+  it('each crewmate keeps its own docked panel choice: closing it on one leaves the next open, and switching back restores it', async () => {
+    await renderPage([
+      row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'research', slug: 'research', bound: true, slot_key: 'member-research' }),
+    ])
+    const switchTo = async (name: string) => {
+      fireEvent.click(screen.getByTestId('crewmate-switcher'))
+      const rows = await screen.findAllByTestId('crewmate-switcher-row')
+      fireEvent.click(rows.find((r) => r.textContent?.includes(name))!)
+      await waitFor(() => expect(screen.getByTestId('member-identity-pill')).toHaveTextContent(name))
+    }
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-dashboard', undefined, PANE_READY)).toBeInTheDocument()
+    // Close it on oncall.
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await screen.findByTestId('member-panel-toggle')
+    expect(localStorage.getItem('mc-members-panel-open:oncall')).toBe('0')
+    // research has never been touched: it opens on the default, not oncall's choice.
+    await switchTo('research')
+    expect(await screen.findByTestId('member-dashboard', undefined, PANE_READY)).toBeInTheDocument()
+    expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
+    // Back on oncall: its own closed choice, while research's panel stays open.
+    await switchTo('oncall')
+    await waitFor(() => expect(screen.getByTestId('member-panel-toggle')).toBeInTheDocument())
+    expect(localStorage.getItem('mc-members-panel-open:research')).toBeNull()
+    expect(localStorage.getItem(PANEL_OPEN_KEY)).not.toBe('0')
+  })
+
+  it("a crewmate named after an Object.prototype key keeps its own saved closed choice", async () => {
+    localStorage.setItem(`${PANEL_OPEN_KEY}:constructor`, '0')
+    await renderPage([row({ name: 'constructor', slug: 'constructor', bound: true, slot_key: 'member-constructor' })])
+    fireEvent.click(await rosterRow('constructor'))
+    expect(await screen.findByTestId('member-panel-toggle')).toBeInTheDocument()
+    expect(screen.queryByTestId('member-side-panel')).toBeNull()
+  })
+
+  it("another window's toggle of the open crewmate's panel reaches this window", async () => {
+    await renderPage([row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-dashboard', undefined, PANE_READY)).toBeInTheDocument()
+    // Close it here first, so this window holds a cached choice the event must replace.
+    act(() => { window.dispatchEvent(new Event('toggle-activity-panel')) })
+    await screen.findByTestId('member-panel-toggle')
+    act(() => {
+      localStorage.setItem(`${PANEL_OPEN_KEY}:oncall`, '1')
+      window.dispatchEvent(new StorageEvent('storage', { key: `${PANEL_OPEN_KEY}:oncall`, newValue: '1' }))
+    })
+    expect(await screen.findByTestId('member-dashboard', undefined, PANE_READY)).toBeInTheDocument()
+    expect(screen.queryByTestId('member-panel-toggle')).toBeNull()
+  })
+
   it('the switcher\'s "Show the full roster" pins the roster beside the thread on desktop, where team headers and New team are reachable', async () => {
     // The switcher lists crewmates only. Team headers, New team, the star, the
     // filters and the sort live on the roster column, which a DM folds away on
