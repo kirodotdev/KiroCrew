@@ -526,6 +526,7 @@ ULTRA_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
     "claimed_pr": ("claimed pr is never read as the bar", "action=accept"),
     "read_message_detail": ("session_read_message for detail the record does not carry",),
     "close_item": ("work_ledger_record action=close with the item's state",),
+    "goal_plan": ("a finding rewrites the plan at once", "rewrite the goal text's plan and"),
     # The rule IS "read goal-conductor"; its Ultra counterpart is the chain itself.
     "skill_first": ("name: goal-conductor",),
 }
