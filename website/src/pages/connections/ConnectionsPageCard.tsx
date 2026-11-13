@@ -719,6 +719,12 @@ function ConnectionCard({
   // Google entry opens for the same states.
   const forcedOpen = state === 'waiting-for-approval' || state === 'needs-attention' || state === 'not-verified'
   const open = expand === undefined || expand.expanded || forcedOpen
+  // The name toggles only when toggling changes what the card shows. A forced
+  // open card cannot close, and a card with no OAuth app part already shows
+  // its whole action row closed while it is not connected or needs setup, so
+  // a chevron there would point at nothing.
+  const showsMoreOpen = oauthPanel !== undefined || (state !== 'not-connected' && state !== 'needs-configuration')
+  const toggle = expand !== undefined && !forcedOpen && showsMoreOpen ? expand : undefined
   const reduceMotion = useReducedMotion()
   return (
     <motion.article
@@ -745,12 +751,12 @@ function ConnectionCard({
           )}
         </span>
         <h3 className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold text-text-strong">
-          {expand ? (
+          {toggle ? (
             <button
               type="button"
-              onClick={expand.onToggle}
+              onClick={toggle.onToggle}
               aria-expanded={open}
-              aria-controls={expand.panelId}
+              aria-controls={toggle.panelId}
               className="inline-flex max-w-full items-center gap-1 border-none bg-transparent p-0 text-left font-semibold text-text-strong hover:text-accent"
             >
               <span className="min-w-0 truncate">{provider.name}</span>
