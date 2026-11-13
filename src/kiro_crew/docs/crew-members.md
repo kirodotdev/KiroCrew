@@ -36,8 +36,19 @@ The **Bots** row sits in the left rail, under Sessions, and opens
 | Avatar | A ghost face with chosen traits, or an uploaded picture | a face derived from its name |
 | Session color | Tints the sessions it starts | no color of its own |
 
-A per-session pick always wins over the Bot's model and reasoning effort,
-and the Bot's values win over the global defaults.
+A per-session pick wins over the Bot's model and reasoning effort, and the
+Bot's values win over the global defaults. In the Bot's own chat your latest
+choice wins: saving the Bot's model clears the model that chat picked for
+itself (with `/model`, for example), and saving its reasoning effort clears
+the chat's own effort, so the chat's next reply uses the Bot's values. This
+happens on every save from the Bot's editor, which always sends both fields,
+so renaming the Bot or saving it unchanged resets them too. A change made
+outside the dashboard, with `kirocrew agent update --model` or by editing
+`config.json`, does not reset the chat's own model or effort yet
+([#36614](https://github.com/kirodotdev/KiroCrew/issues/36614)); save the Bot
+in its editor to bring the chat back onto it. A `/model` typed in the chat
+after the save wins again until the next save.
+Other chats and the sessions the Bot starts keep their own picks.
 
 ## The roster
 
