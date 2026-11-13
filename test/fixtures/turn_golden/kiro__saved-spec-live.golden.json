@@ -111,6 +111,7 @@
               "created_at": null
             },
             "participants": [],
+            "participants_dropped": 0,
             "pin_rank": null,
             "pin_rev": 0,
             "manual_rank": null,
@@ -366,6 +367,7 @@
               "created_at": null
             },
             "participants": [],
+            "participants_dropped": 0,
             "pin_rank": null,
             "pin_rev": 0,
             "manual_rank": null,

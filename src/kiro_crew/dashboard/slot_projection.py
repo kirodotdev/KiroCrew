@@ -14,6 +14,7 @@ from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 from kiro_crew.shared_crew.attribution import public_attribution_of_slot
+from kiro_crew.shared_crew.participants import dropped as participants_dropped
 from kiro_crew.shared_crew.participants import ordered as ordered_participants
 
 
@@ -663,4 +664,6 @@ class SlotProjection:
             # Shared Crew participants (``shared_crew.participants``): the people
             # who have written here, creator first, then most recent. Display only.
             "participants": ordered_participants(slot),
+            # How many the list's cap dropped; the row's "+N" counts them too.
+            "participants_dropped": participants_dropped(slot),
         }

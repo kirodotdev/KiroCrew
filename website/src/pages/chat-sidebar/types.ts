@@ -129,6 +129,8 @@ export interface Slot {
   attribution?: SessionAttribution | null
   /** Shared Crew: who has written here, creator first (`shared_crew.participants`). Display only. */
   participants?: PublicPrincipal[]
+  /** How many people the gateway's capped `participants` list dropped. */
+  participants_dropped?: number
   last_ts?: string
   // Settled activity instant: the last prompt or turn completion, NOT every
   // streamed row. What the list is ordered, segmented and labelled by — see

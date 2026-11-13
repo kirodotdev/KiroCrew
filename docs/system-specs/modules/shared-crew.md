@@ -1394,6 +1394,28 @@ reads the socket's `_shared_crew_actor`), the same audience the pending read has
 Nothing else the owner set receives reaches a collaborator socket. `GET /api/shared-crew/presence` and `GET /api/shared-crew/decisions` (in
 `routes_collab`) answer the same state for a reconnecting tab.
 
+Participants. A slot keeps who has written in it (`shared_crew.participants`):
+one public principal and last-activity time per person, noted by
+`slot_transcript.append` on a live user row whose server-stamped author is a
+person. Unknown authors and Crew automation are not participants, and replayed
+rows (`broadcast=False`) are not counted. The list is capped at
+`MAX_PARTICIPANTS`, never dropping the creator; the people the cap drops are
+kept by id (up to `MAX_DROPPED_IDS`, then counted), so one who writes again is
+not counted twice. It is persisted under the metadata-line key `participants`
+(`{entries, dropped_ids, dropped_more}`), read back on restore as a display
+claim like a message row's `author` (agent-editable, so only well-formed person
+principals with a finite time survive, and their labels go through
+`redact_external_text`), and granted nothing: nothing but the rows' display may
+read it, never presence or a permission. The slot projection and the owner's
+`GET /api/members` row carry `participants` (creator first, then most recent) and
+`participants_dropped`; the roster reads the live slot only, never a transcript.
+A relay teammate's narrowed Bots roster carries neither, since it masks the
+owner's DM thread. The session row draws up to three initials chips after the
+creator byline under the byline's rule, then "+N" counting the rest and the
+dropped; the Bots roster draws the same chips after the Bot's name on a team
+Crew (`ParticipantChips`). A session written before this field draws none until
+someone writes in it again.
+
 Message attribution. The session's creator is its default owner, shown on the
 session row in the list (`SessionCreatorByline`). In the transcript a user message
 the viewer wrote carries no extra label and keeps the filled bubble; a message

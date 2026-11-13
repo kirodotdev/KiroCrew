@@ -180,7 +180,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, role: 'str', content: 'str', cls: 'str' = '', ts: 'str' = '', *, "
         "broadcast: 'bool' = True, broadcast_user: 'bool' = False, meta: 'dict | None' = "
-        "None, mint_mid: 'bool' = True) -> 'dict[str, Any]'",
+        "None, mint_mid: 'bool' = True, note_participant: 'bool' = True) -> "
+        "'dict[str, Any]'",
     ),
     "append_pending_context": (
         "function",
@@ -579,6 +580,8 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_pending_synthesis": ("value", "False"),
     "_pending_thread_parent": ("value", "None"),
     "_pending_variants": ("value", "[]"),
+    "_participants": ("value", "[]"),
+    "_participants_dropped": ("type", "builtins.dict"),
     "_poisoned_reset_used": ("value", "False"),
     "_posttoken_retry_used": ("value", "False"),
     "_prefetch_ttl_task": ("value", "None"),

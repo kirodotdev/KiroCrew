@@ -1,9 +1,9 @@
 /**
- * Screenshot harness for contributor initials on Shared Crew rows (#35145).
+ * Screenshot harness for contributor initials on Shared Crew rows.
  *
  * Drives the REAL built SPA (website/dist) on a team Crew (preview on, a
  * teammate observed) and captures, in dark and light:
- *   01-sessions-<theme>.png  session rows: two writers, and five folding to "+2"
+ *   01-sessions-<theme>.png  session rows: the creator in the byline, the others as chips, "+1" past three
  *   02-bots-<theme>.png      the Bots roster: a Bot whose DM thread two people wrote in
  *   03-personal-<theme>.png  the same session rows on a personal Crew: no chips
  * and exits non-zero unless the chips read and are named as expected.
@@ -102,9 +102,10 @@ async function main() {
     for (const theme of ['dark', 'light']) {
       let page = await open(theme, true, '/chat')
       await page.locator('[data-testid="session-participants"]').first().waitFor({ timeout: 15_000 })
+      // The byline names each session's creator, so the chips are the others.
       assert(`${theme} session chips`, await chipNames(page, 'session-participants'), [
-        ['PR=Priya Rao', 'SA=Sam Avila'],
-        ['TF=Tim Finnigan', 'PR=Priya Rao', 'SA=Sam Avila', '+2=Others who wrote here: 2'],
+        ['SA=Sam Avila'],
+        ['PR=Priya Rao', 'SA=Sam Avila', 'LE=lee@example.com', '+1=Others who wrote here: 1'],
       ])
       await crop(page, '.session-row', join(OUT, `01-sessions-${theme}.png`))
       await page.close()

@@ -346,6 +346,8 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Shared Crew: the people who have written here, creator first, then most
    *  recent (`shared_crew.participants`), public shape. Display only. */
   participants?: PublicPrincipal[]
+  /** How many people the gateway's capped `participants` list dropped. */
+  participants_dropped?: number
   /** True on a Crew Mode root: a root session running a conductor template
    *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
   crew_mode_root?: boolean

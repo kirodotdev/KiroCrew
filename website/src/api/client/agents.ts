@@ -7,7 +7,7 @@
 
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 import type { ProjectionsBlock } from '../../state/memberProjectionTypes'
-import type { PublicPrincipal } from '../../types/index.sharedCrew'
+import type { PublicPrincipal } from '../../types'
 import { activeLocale } from '../../i18n/format'
 import { agentPath, needsProxySafePath } from '../agentPath'
 import { toApiError } from '../apiError'
@@ -69,6 +69,8 @@ export interface MemberRosterRow {
    *  read from the live slot (`shared_crew.participants`). Absent on a relay
    *  teammate's roster, which masks the owner's thread. */
   participants?: PublicPrincipal[]
+  /** How many people the gateway's capped `participants` list dropped. */
+  participants_dropped?: number
   /** Epoch seconds of the DM transcript's last write; 0 = never talked. */
   last_active_ts?: number
   last_message?: string

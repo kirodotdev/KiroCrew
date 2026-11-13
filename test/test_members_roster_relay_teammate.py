@@ -76,8 +76,9 @@ OWNER_PRIVATE = (
     "dynamic_capabilities",
     "dashboard_card_send",
     "triggers",
-    # Who has written in the owner's DM thread (#35145).
+    # Who has written in the owner's DM thread.
     "participants",
+    "participants_dropped",
 )
 
 

@@ -313,6 +313,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     #: have written here, for the session and Bot rows' initials. Persisted by the
     #: metadata codec's ``participants`` row.
     self._participants = []
+    self._participants_dropped = {"ids": [], "more": 0}
     #: The ``created_by`` the session's saved metadata line names, read on every
     #: hydration (restore, recent, resume). DISPLAY ONLY: the Crew Mode stamp reads
     #: it to keep a reopened worker under its root (``crew_mode.stamp_rows``), and a

@@ -34,6 +34,7 @@ from kiro_crew.dashboard.handlers.members_access import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
+from kiro_crew.shared_crew.participants import dropped as participants_dropped
 from kiro_crew.shared_crew.participants import ordered as ordered_participants
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.members")
@@ -516,6 +517,7 @@ async def api_members(request: web.Request) -> web.Response:
         # The teammate roster (``_teammate_roster``) does not carry it: the DM
         # thread is the owner's, which that roster masks.
         row["participants"] = ordered_participants(slot) if slot is not None else []
+        row["participants_dropped"] = participants_dropped(slot) if slot is not None else 0
         # Read BEFORE the roster observation and the transcript read below: a
         # slot with unflushed rows has speech on the member log the disk does
         # not hold yet, so its speech-only read must not become a correction.

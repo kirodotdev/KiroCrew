@@ -116,6 +116,7 @@ _TO_DICT_KEYS = (
     "lineage_minted",
     "attribution",
     "participants",
+    "participants_dropped",
 )
 
 

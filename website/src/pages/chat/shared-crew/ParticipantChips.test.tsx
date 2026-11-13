@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
-import type { PublicPrincipal } from '../../../api/sharedCrew'
+import type { PublicPrincipal, SessionAttribution } from '../../../api/sharedCrew'
 import { ParticipantChips, TeamParticipantChips, MAX_PARTICIPANT_CHIPS, participantTitle } from './ParticipantChips'
 import { SessionCreatorByline, SharedCrewBylineContext } from '../../chat-sidebar/SessionCreatorByline'
 
@@ -41,6 +41,17 @@ describe('ParticipantChips', () => {
     expect(more.getAttribute('title')).toContain(participantTitle(JO))
   })
 
+  it('counts the people the gateway dropped past its cap into +N', () => {
+    render(<ParticipantChips participants={[PRIYA, SAM, LEE, KIM]} dropped={5} testId="t" />)
+    expect(screen.getByTestId('t-more')).toHaveTextContent('+6')
+    expect(screen.getByTestId('t').getAttribute('aria-label')).toMatch(/9/)
+  })
+
+  it('draws its letters at the 10px minimum', () => {
+    render(<ParticipantChips participants={[PRIYA, SAM, LEE, KIM]} testId="t" />)
+    for (const chip of within(screen.getByTestId('t')).getAllByRole('img')) expect(chip.className).toContain('text-[10px]')
+  })
+
   it('draws no +N chip at the cap, and nothing for nobody', () => {
     const { container } = render(<ParticipantChips participants={[]} testId="empty" />)
     expect(container).toBeEmptyDOMElement()
@@ -59,6 +70,19 @@ describe('session row: the creator byline rule', () => {
     expect(within(screen.getByTestId('session-participants')).getAllByRole('img')).toHaveLength(2)
   })
 
+  it('leaves the named creator out of the chips, which then read as the others', () => {
+    const attribution = { creator: PRIYA, trigger: null } as unknown as SessionAttribution
+    render(
+      <SharedCrewBylineContext.Provider value={{ hidden: false, viewerId: '' }}>
+        <SessionCreatorByline attribution={attribution} participants={[PRIYA, SAM]} />
+      </SharedCrewBylineContext.Provider>,
+    )
+    const group = screen.getByTestId('session-participants')
+    expect(within(group).getAllByRole('img').map(c => c.textContent)).toEqual(['SA'])
+    expect(group.getAttribute('title')).toBe(group.getAttribute('aria-label'))
+    expect(group.getAttribute('title')).toMatch(/1/)
+  })
+
   it('draws nothing on a personal Crew', () => {
     const { container } = render(
       <SharedCrewBylineContext.Provider value={{ hidden: true, viewerId: '' }}>
@@ -73,6 +97,8 @@ describe('Bot row: TeamParticipantChips', () => {
   it('shows the chips only on a team Crew', () => {
     const { rerender } = render(<TeamParticipantChips participants={[PRIYA]} testId="bot" />)
     expect(screen.getByTestId('bot')).toBeInTheDocument()
+    // The group says what the chips are on hover, not only to a screen reader.
+    expect(screen.getByTestId('bot').getAttribute('title')).toMatch(/1/)
     team.on = false
     rerender(<TeamParticipantChips participants={[SAM]} testId="bot" />)
     expect(screen.queryByTestId('bot')).toBeNull()
