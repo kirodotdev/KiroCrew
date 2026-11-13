@@ -92,5 +92,7 @@ describe('parseKiroUsagePayload warming vs settled', () => {
     // API-key auth is not terminal: the /usage scrape reads its balance, so an unavailable answer is 'none'.
     expect(parseKiroUsagePayload({ usage: { available: false, reason: 'api_key_auth' } })).toBe('none')
     expect(parseKiroUsagePayload({ usage: { available: false, reason: 'signin_required' } })).toBe('signin-required')
+    // A credential the API refused is a failed read, kept apart from "none was read".
+    expect(parseKiroUsagePayload({ usage: { available: false, reason: 'signin_required', credential_rejected: true } })).toBe('signin-rejected')
   })
 })

@@ -177,7 +177,7 @@ export function kiroUsageSegment({ kiroUsageState, usageSegmentHidden, setKiroUs
       // spinner are both dropped: without it the failed and warming
       // states are one coin glyph apart in opacity alone.
       node = (<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_unavailable')} aria-label={i18nT('app.kiro_credit_usage_unavailable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
-    } else if (kiroUsageState === 'signin-required') {
+    } else if (kiroUsageState === 'signin-required' || kiroUsageState === 'signin-rejected') {
       // No live Kiro credential could be read (or it was rejected), so
       // the free API never got an answer about this account. Terminal,
       // and the label must name the remedy: signing in.

@@ -1577,6 +1577,8 @@ export interface KiroUsagePayload {
    * tied to it); absent when the gateway simply holds no reading.
    */
   reason?: string
+  /** With `reason: signin_required`: the API refused a credential it was shown. */
+  credential_rejected?: boolean
   credits_used?: number
   credits_covered?: number
   credits_overage?: number
