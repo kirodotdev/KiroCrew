@@ -55,6 +55,7 @@ const { resolveLinuxInstall, readExternallyManaged, runStartupApply } = require(
 const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
 const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
+const { watchSessionLock } = require("./session-lock");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
@@ -732,6 +733,14 @@ app.whenReady().then(async () => {
     });
   } catch (error) {
     glog("power: could not watch for resume: " + (error && error.message));
+  }
+
+  // A dictation left running when the person locks the screen keeps the
+  // microphone open in an empty room; the dashboard stops it on this message.
+  try {
+    watchSessionLock(electron.powerMonitor, () => electron.BaseWindow.getAllWindows(), glog);
+  } catch (error) {
+    glog("power: could not watch for screen lock: " + (error && error.message));
   }
 
   // Chromium has opened `--log-file` by now, so this is the moment the live log's
