@@ -375,6 +375,33 @@ class ProjectionRegistry:
         """
         self._fold_one(store, event, emit=True)
 
+    def drive_tail(self, store: str, events: Iterable[Any]) -> None:
+        """:meth:`drive` each of *events* in order, copying each state once, not per entry.
+
+        With no change callback there is nobody to announce a change to, so a run of
+        entries reaches the same cells through :meth:`_fold_tail_resumed`: each
+        definition meets ``apply`` until an entry moves its state, then edits the copy
+        ``apply`` returned in place, and the result is installed at the end under the
+        same seed check. Stepping each entry through ``apply`` copied and rendered the
+        whole state per entry: O(tail x state). A callback, a definition without
+        ``apply_owned``, or a cell not yet folded keeps one :meth:`drive` per entry.
+        """
+        with self._lock:
+            defns = list(self._defns.values())
+            quiet = self._on_change is None
+            seeded = all((defn.key, store) in self._cells for defn in defns)
+        owned = [getattr(defn, "apply_owned", None) for defn in defns]
+        if defns and quiet and seeded and all(fn is not None for fn in owned):
+            self._fold_tail_resumed(store, defns, owned, events)
+            return
+        for event in events:
+            self.drive(store, event)
+
+    def definitions(self) -> list[ProjectionDefinition]:
+        """The registered definitions, in registration order."""
+        with self._lock:
+            return list(self._defns.values())
+
     def _fold_one(self, store: str, event: Any, *, emit: bool) -> None:
         """Fold one event through every unit, announcing the changes only when *emit*.
 

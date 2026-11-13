@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Final, NamedTuple
 
@@ -799,12 +799,10 @@ def _continue_into_new_units(
     before = _digest_to_carry(units, marks)
     before_held = _digest_to_carry(memo.units, marks[:count])
     tail = _SlotStream((held_newest,), base=base, since=memo.reached, resume=_resume_from(memo))
-    for event in tail:
-        memo.registry.drive(memo.store, event)
+    _drive_tail(memo, tail)
     _seal_stopped_unit(name, memo, marks[:count], tail, before_held)
     fresh = _SlotStream(units[count:], base=base + tail.reached)
-    for event in fresh:
-        memo.registry.drive(memo.store, event)
+    _drive_tail(memo, fresh)
     folded = (
         memo.marks[: count - 1]
         + (replace(marks[count - 1], last_seq=tail.reached),)
@@ -1089,8 +1087,7 @@ def _fold_slot_warm_locked(
                 since=memo.reached,
                 resume=_resume_from(memo),
             )
-            for event in tail:
-                memo.registry.drive(memo.store, event)
+            _drive_tail(memo, tail)
             grown = _SlotMemo(
                 registry=memo.registry,
                 store=memo.store,
@@ -1438,6 +1435,12 @@ def _walk(folds: "dict[str, _SlotFold]", prime: Callable[[], Any]) -> None:
     finally:
         for fold in folds.values():
             fold.latest = None
+
+
+def _drive_tail(memo: "_SlotMemo", events: Iterable[Any]) -> None:
+    """Fold *events* onto *memo*'s cell with one copy per fold, then drop ``latest``."""
+    folds = {defn.key: defn for defn in memo.registry.definitions() if isinstance(defn, _SlotFold)}
+    _walk(folds, lambda: memo.registry.drive_tail(memo.store, events))
 
 
 def _finish_slot_resume(

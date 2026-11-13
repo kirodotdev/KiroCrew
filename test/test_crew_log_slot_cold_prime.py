@@ -652,3 +652,65 @@ def test_a_drive_landing_during_a_cold_checkpointed_tail_is_not_overwritten():
 
     registry.prime_checkpointed("s", _Points({"a": ({"n": 0}, 0)}), {}, tail)
     assert registry.cells("s")["a"][1] == 20
+
+
+def _driven_cells(
+    names: tuple[str, ...], events: list[_Ordinal], start: int, *, tail: bool, owned: bool = True
+) -> dict[str, tuple[str, int]]:
+    registry = ProjectionRegistry(seq_of=_ordinal_seq)
+    for name in names:
+        definition = _SlotFold(crew_log._FOLDS[name], SLOT)
+        registry.register(definition if owned else _ApplyOnly(definition))
+    registry.prime(SLOT, events[:start])
+    if tail:
+        registry.drive_tail(SLOT, iter(events[start:]))
+    else:
+        for event in events[start:]:
+            registry.drive(SLOT, event)
+    cells = registry.cells(SLOT)
+    return {name: (_normalized(cells[name][0]), cells[name][1]) for name in names}
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_drive_tail_reaches_the_drive_per_entry_value(seed):
+    """Every fold, driven over a generated tail: drive_tail == one drive per entry."""
+    names = tuple(crew_log._FOLDS)
+    events = _ordinals(_generated(seed, 80))
+    start = random.Random(seed).randint(0, 40)
+    try:
+        expected = _driven_cells(names, events, start, tail=False)
+    except Exception as exc:  # noqa: BLE001 -- both paths must refuse alike
+        with pytest.raises(type(exc)):
+            _driven_cells(names, events, start, tail=True)
+        return
+    assert _driven_cells(names, events, start, tail=True) == expected
+    assert _driven_cells(names, events, start, tail=True, owned=False) == expected
+
+
+def test_drive_tail_never_edits_a_state_handed_out_before_it():
+    """A state a reader took from ``cells`` before the tail does not move."""
+    calls: list[str] = []
+    registry = ProjectionRegistry()
+    registry.register(_Tracked("a", calls))
+    registry.prime("s", [{"seq": 1}])
+    held = registry.cells("s")["a"][0]
+    before = copy.deepcopy(held)
+    calls.clear()
+    registry.drive_tail("s", [{"seq": 2}, {"seq": 3}])
+    assert calls == ["a:apply", "a:owned"]
+    assert held == before
+    assert registry.cells("s")["a"] == ({"n": 3}, 3)
+
+
+def test_drive_tail_with_a_change_callback_drives_each_entry():
+    """A registry with a change callback still announces every change, entry by entry."""
+    calls: list[str] = []
+    registry = ProjectionRegistry()
+    registry.register(_Tracked("a", calls))
+    registry.prime("s", [{"seq": 1}])
+    seen: list[int] = []
+    registry.set_on_change(lambda _store, _key, _view, seq: seen.append(seq))
+    calls.clear()
+    registry.drive_tail("s", [{"seq": 2}, {"seq": 3}])
+    assert seen == [2, 3]
+    assert "a:owned" not in calls

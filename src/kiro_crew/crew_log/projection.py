@@ -438,6 +438,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _continue_into_new_units,
         _cut_verdict,
         _digest_to_carry,
+        _drive_tail,
         _extended,
         _finish_slot_resume,
         _fold_slot_cold,
