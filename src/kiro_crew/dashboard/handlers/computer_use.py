@@ -561,6 +561,8 @@ def _write_state(patch: dict[str, Any]) -> None:
     populated-but-unparseable ceiling file — resetting an operator's allow-list to
     defaults because we could not parse it would be a silent security downgrade.
     """
+    # Before the read: a stale endorsed copy must not be published over an Apply.
+    loosening_provenance.refuse_save_if_pending(loosening_provenance.LEAF_COMPUTER_USE)
     state = _read_state_strict()
     state.update(patch)
     enable_state.save_state(state)

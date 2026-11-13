@@ -398,6 +398,9 @@ async def test_no_agent_or_mcp_tool_names_these_routes() -> None:
         "dashboard/server_runtime/heartbeat.py",
         "config/loosening_provenance.py",
         "slack/gateway_runtime/service_boot.py",  # a comment naming the module
+        # The owner's terminal (``kirocrew config pending``), refused inside a sandbox.
+        "cli_config.py",
+        "cli_config_pending.py",
     }
     referencing = set()
     for file in src.rglob("*.py"):

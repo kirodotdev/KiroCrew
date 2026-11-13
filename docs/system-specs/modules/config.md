@@ -139,8 +139,9 @@ the gateway has not saved since this check shipped) is not pending and is served
 check; the gateway's first save of it endorses it (the known limit for such a file is in
 [security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
 a changed-key diff with credential-bearing values withheld): it keeps loading as the endorsed
-copy until the owner applies or discards it in Settings > Security
-(`dashboard/handlers/config_pending.py`; apply re-endorses the on-disk document through
+copy until the owner applies or discards it in Settings > Security, or with `kirocrew config
+pending` where the gateway runs without the dashboard
+(`dashboard/handlers/config_pending.py`'s `resolve_pending`, which both call; apply re-endorses the on-disk document through
 `update_config_locked` / the denied-command saver / `enable_state.save_state`, discard writes
 the endorsed document back through the same writer; only these two pass
 `resolving_pending=True`). Any OTHER save of a pending file is refused before anything is
@@ -151,8 +152,8 @@ pending edit, which would then be lost. Saves of the other files are unaffected.
 save handlers answer that code (a handler with no catch of its own is answered `409` with it by
 the chain's `spa_fallback` layer, and one whose broad `except` would catch it hands it there
 after that arm's own rollback or audit) and the frontend shows its translation with a link to the
-pending card; the CLI prints the sentence and exits 1 (`cli.main`'s `_exit_on_pending_save`, for
-every subcommand); the migration write-back each load retries is refused too and logged once per
+pending card; the CLI prints the sentence, which names `kirocrew config pending` for a gateway
+without the dashboard, and exits 1 (`cli.main`'s `_exit_on_pending_save`, for every subcommand); the migration write-back each load retries is refused too and logged once per
 pending version (`log_writeback_refused_once`); an app uninstall whose grant would need
 that save is refused by its precondition (`trust_grant_removal_blocked`) before any destructive
 step, as are a trust revoke and turning blanket app trust off (`_preflight_agent_config_mutable`). Restore (`record` / `endorse_installed`) is not an ordinary
@@ -162,7 +163,13 @@ write lands through (`_refuse_unpublishable`, `_refuse_aws_project_profiles`), w
 "left as it found it" exemption compares against the prior document as the loader reads it
 (`_prior_document`: the endorsed copy where the seal applies), so a refused value the pending
 edit added answers `409 write_refused` with the floor's own message instead of publishing.
-Those routes are owner-gated and CSRF-guarded and never reachable by an agent or MCP tool; a
+Those routes are owner-gated and CSRF-guarded and never reachable by an agent or MCP tool;
+`kirocrew config pending` (`cli_config_pending.py`) lists the same diff, binds Apply and Discard to
+the signature it printed, refuses both inside a Kiro Crew sandbox (`sandbox_launch_mark`; the
+read-only bind on the endorsed copies refuses the write there anyway) and audits each to SEL; as
+it runs no live follow-up, an Apply of `denied_commands.json` or a computer-use on/off flip prints
+that a running gateway picks it up at restart, while a `config.json` Apply reaches the config
+watcher like a `kirocrew config set`, so only a restart-marked key waits for the restart. A
 heartbeat sync raises one bell note per pending version, on the unmutable `system.approval`
 channel, and acknowledges it once resolved; the scan and the note writes together are bounded
 so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these four files goes
@@ -173,7 +180,7 @@ and restore and import (`endorse_installed`). Two writers do not endorse: `kiroc
 seed-floor rewrite of a pod's `config.json` (another data home), and `kirocrew config edit`, which
 runs `$EDITOR` on `config.json` itself. Where the seal applies and the file already has a copy,
 their result is an outside change like any other: pending until the owner applies it in
-Settings > Security. A reader outside the load decides that a protected file is absent only through
+Settings > Security or with `kirocrew config pending`. A reader outside the load decides that a protected file is absent only through
 `read_endorsed_config_text` / `read_config_for_update` (no `is_file()` / `exists()` check
 first), so a deleted file whose endorsed copy is in force reads as that copy everywhere. The
 pending diff and Apply compare values type-strictly (`strict_json_equal`: `true` is not `1`),
