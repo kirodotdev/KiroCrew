@@ -255,6 +255,9 @@ export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
+  // Moves on every turn end: the Memory view re-reads its store list on it, and
+  // the rest of the view when that list changed.
+  const liveRefreshTrigger = useAppSelector(s => s.dashboard.liveRefreshTrigger)
   const [params, setParams] = useSearchParams()
 
   const rawView = params.get('view')
@@ -269,7 +272,7 @@ export default function OverviewPage() {
   if (view === 'memory') {
     const selectedStore = params.get('store') || ''
     return <DrillIn title={i18nT('pages.overviewPage.memory')} hideTitle={!!selectedStore && selectedStore !== 'default'} onBack={() => setView(null)}>
-      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} onStoreNavigate={store => setParams(previous => {
+      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} liveRefreshTrigger={liveRefreshTrigger} selectedStore={selectedStore} focus={params.get('focus')} onStoreNavigate={store => setParams(previous => {
         const next = new URLSearchParams(previous)
         if (store) next.set('store', store)
         else next.delete('store')

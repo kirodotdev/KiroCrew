@@ -62,6 +62,7 @@ const initialState: DashboardState = {
   approvalMode: 'normal',
   channelTrusted: false,
   refreshTrigger: 0,
+  liveRefreshTrigger: 0,
   cronRefreshTrigger: 0,
   ...(() => { const since = restoreUnreadSince(); return { unreadSlots: restoreUnreadBadges(since), unreadSince: since } })(),
   unreadDrainHeld: true,
@@ -1314,7 +1315,8 @@ const dashboardSlice = createSlice({
     },
     setPendingManualOrder(state, action: PayloadAction<string[] | null>) { state.pendingManualOrder = action.payload },
     setManualOrderError(state, action: PayloadAction<string>) { state.manualOrderError = action.payload },
-    triggerRefresh(state) { state.refreshTrigger += 1 },
+    triggerRefresh(state) { state.refreshTrigger += 1; state.liveRefreshTrigger += 1 },
+    triggerLiveRefresh(state) { state.liveRefreshTrigger += 1 },
     triggerCronRefresh(state) { state.cronRefreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
      *  MANUAL reminder: records the relay-immune sentinel; only a local read
@@ -1715,7 +1717,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, triggerCronRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, triggerLiveRefresh, triggerCronRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 export { slotSurfaceKey, slotIsRemoteBound } from './slotIdentity'

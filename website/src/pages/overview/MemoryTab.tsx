@@ -4,6 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '../../api/client'
+import { requestRefresh } from '../../lib/pollRule'
 import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -13,6 +14,7 @@ import VectorMemoryCard, { SEMANTIC_CARD_ID } from './VectorMemoryCard'
 import EmbeddingModelCard from './EmbeddingModelCard'
 import MemoryStoreCard, {
   MEMORY_QUERY_PREFIXES,
+  MEMORY_STORES_KEY,
   MemoryScopeNotice,
   useMemoryStores,
 } from './MemoryStoreCard'
@@ -135,18 +137,75 @@ export const MEMORY_FOCUS_FAILURES = 'failures'
 /** The Lessons card, the landing spot for that focus when vector memory is off. */
 export const LESSONS_CARD_ID = 'memory-lessons-card'
 
-export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNavigate, focus }: { refreshTrigger: number; selectedStore?: string; onStoreNavigate?: (store: string) => void; focus?: string | null }) {
+/** `requestRefresh`'s id for the turn-end store-list read, and its gap: the
+ *  gateway sends at most one turn-end frame per 1.5 s. */
+const MEMORY_STORES_POLL_ID = 'memory-stores'
+const MEMORY_STORES_REFRESH_MS = 1_500
+
+export default function MemoryTab({ refreshTrigger, liveRefreshTrigger = 0, selectedStore, onStoreNavigate, focus }: {
+  /** Re-reads the whole view; at most once per window of turn ends. */
+  refreshTrigger: number
+  /** Moves on every turn end: re-reads the store list, and the whole view when it changed. */
+  liveRefreshTrigger?: number
+  selectedStore?: string; onStoreNavigate?: (store: string) => void; focus?: string | null
+}) {
   const stores = useMemoryStores()
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const queryClient = useQueryClient()
+  // Every turn end re-reads the store list alone, one request. Its counts move when
+  // a turn wrote memory, and only then does the rest of the view re-read at once;
+  // otherwise the rest waits for `refreshTrigger`, as the config caches do. Both
+  // only rise, so their sum is a new value whenever either moves.
+  const [storeChanges, setStoreChanges] = useState(0)
+  // A store-list read the turn-end path asked for, that has not shown a change yet:
+  // the `refreshTrigger` it was asked under, or null.
+  const liveRead = useRef<number | null>(null)
+  const refreshTriggerRef = useRef(refreshTrigger)
+  useEffect(() => { refreshTriggerRef.current = refreshTrigger }, [refreshTrigger])
+  const seenTriggers = useRef({ refreshTrigger, liveRefreshTrigger })
   useEffect(() => {
-    if (refreshTrigger) for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
-  }, [refreshTrigger, queryClient])
+    const seen = seenTriggers.current
+    seenTriggers.current = { refreshTrigger, liveRefreshTrigger }
+    // A moved `refreshTrigger` re-reads everything in this commit already.
+    if (liveRefreshTrigger === seen.liveRefreshTrigger || refreshTrigger !== seen.refreshTrigger) return
+    liveRead.current = refreshTrigger
+    // One read at a time and never cancelled, none while the tab is hidden and
+    // one when it is shown again; frames during a read share one more read.
+    requestRefresh(queryClient, MEMORY_STORES_POLL_ID, MEMORY_STORES_KEY, MEMORY_STORES_REFRESH_MS)
+  }, [refreshTrigger, liveRefreshTrigger, queryClient])
+  // Structural sharing keeps the same object for an unchanged list, so a new
+  // one means memory was written. Only a read the turn-end path asked for counts:
+  // a full re-read, or a card's own re-read after a restore, re-reads what it needs.
+  // Keyed on each answer landing (`dataUpdatedAt`), not on the fetch ending: the
+  // read a frame owes can start before React sees the answer before it.
+  const seenStores = useRef({ data: stores.data, refreshTrigger })
+  useEffect(() => {
+    const seen = seenStores.current
+    const now = refreshTriggerRef.current
+    seenStores.current = { data: stores.data, refreshTrigger: now }
+    if (seen.refreshTrigger !== now) {
+      // A full re-read's answer covers a turn-end read asked before it, not one
+      // asked after it: that one is still owed and still counts.
+      if (liveRead.current !== now) liveRead.current = null
+      return
+    }
+    if (liveRead.current === null || seen.data === undefined || stores.data === undefined || seen.data === stores.data) return
+    liveRead.current = null
+    setStoreChanges(n => n + 1)
+  }, [stores.dataUpdatedAt, stores.data])
+  const trigger = refreshTrigger + storeChanges
   const [store, setStore] = useState(() => {
     const selected = new URLSearchParams(window.location.search).get('store') || ''
     return selected === 'default' ? '' : selected
   })
+  const storeRef = useRef(store)
+  useEffect(() => { storeRef.current = store }, [store])
+  // The global view re-reads these on the same trigger itself, and a second
+  // invalidation in the same commit cancels its read and sends another.
+  useEffect(() => {
+    if (trigger && storeRef.current) for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
+  }, [trigger, queryClient])
   useEffect(() => {
     if (selectedStore !== undefined) setStore(selectedStore === 'default' ? '' : selectedStore)
   }, [selectedStore])
@@ -205,7 +264,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
           }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
         </div>
       </>}
-    </Card> : <GlobalMemoryTab refreshTrigger={refreshTrigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
+    </Card> : <GlobalMemoryTab refreshTrigger={trigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
     {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
       <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
       <div className="flex flex-wrap gap-2">

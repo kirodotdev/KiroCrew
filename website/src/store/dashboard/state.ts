@@ -141,6 +141,10 @@ export interface DashboardState extends CloseWatchState {
   approvalMode: string
   channelTrusted: boolean
   refreshTrigger: number
+  /** Bumped on every `refresh` frame, including the turn-end frames that
+   *  `refreshTrigger` waits out (see `invalidateRefreshQueries`): what a page the
+   *  user is looking at re-reads on (the Memory view's store list). */
+  liveRefreshTrigger: number
   /** Bumped when the cron caches are re-read (see `invalidateRefreshQueries`):
    *  what the Schedule page reloads its job list on. */
   cronRefreshTrigger: number

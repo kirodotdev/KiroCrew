@@ -229,7 +229,8 @@ const isTurnEndOnly = (kinds?: readonly string[]) => !!kinds?.length && kinds.ev
  * re-read, now or when that window ends, for a reader that holds the job list
  * outside React Query (the Schedule page). `onOthersStale` is called whenever the
  * other caches are re-read, for the readers keyed on the store's refresh counter
- * (the agent catalog).
+ * (the agent catalog); a page on screen follows every frame through
+ * `liveRefreshTrigger` instead (the Memory view).
  */
 export function invalidateRefreshQueries(
   qc: QueryClient, kinds?: readonly string[], onCronsStale?: () => void, onOthersStale?: () => void,
