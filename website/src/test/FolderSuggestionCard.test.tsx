@@ -23,6 +23,7 @@ const FOLDERS: ChatFolder[] = [
 
 function renderCard(over: Partial<React.ComponentProps<typeof FolderSuggestionCard>> = {}) {
   const onAccept = vi.fn()
+  const onUndo = vi.fn()
   const onDecline = vi.fn()
   render(
     <FolderSuggestionCard
@@ -30,11 +31,12 @@ function renderCard(over: Partial<React.ComponentProps<typeof FolderSuggestionCa
       suggestedFolderName="feature"
       folders={FOLDERS}
       onAccept={onAccept}
+      onUndo={onUndo}
       onDecline={onDecline}
       {...over}
     />,
   )
-  return { onAccept, onDecline }
+  return { onAccept, onUndo, onDecline }
 }
 
 const select = () => screen.getByTestId('folder-suggestion-select') as HTMLSelectElement
@@ -114,11 +116,23 @@ describe('FolderSuggestionCard', () => {
     expect(onAccept).not.toHaveBeenCalled()
   })
 
+  it('an applied card names where the session went: Undo files it back to the top, Keep only dismisses', async () => {
+    const { onAccept, onUndo, onDecline } = renderCard({ applied: true })
+    // No question and no dropdown: the backend already filed it.
+    expect(screen.queryByTestId('folder-suggestion-select')).toBeNull()
+    expect(screen.getByTestId('folder-suggestion-applied').title).toBe('projects › feature')
+    await userEvent.click(screen.getByTestId('folder-suggestion-undo'))
+    expect(onUndo).toHaveBeenCalledTimes(1)
+    expect(onAccept).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByTestId('folder-suggestion-keep'))
+    expect(onDecline).toHaveBeenCalledTimes(1)
+  })
+
   it('always renders the lucide glyph, never a folder emoji', () => {
     // The card takes no icon prop: an emoji is font-dependent (tofu box wherever
     // the platform has no emoji font) and would not inherit --accent.
     const { container } = render(
-      <FolderSuggestionCard suggestedFolderId="f-feature" suggestedFolderName="feature" folders={FOLDERS} onAccept={vi.fn()} onDecline={vi.fn()} />,
+      <FolderSuggestionCard suggestedFolderId="f-feature" suggestedFolderName="feature" folders={FOLDERS} onAccept={vi.fn()} onUndo={vi.fn()} onDecline={vi.fn()} />,
     )
     const svg = container.querySelector('svg')
     expect(svg).toBeTruthy()

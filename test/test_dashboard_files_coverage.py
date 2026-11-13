@@ -1619,6 +1619,7 @@ class TestDashboardConfigPut:
             "merge_queued_messages",
             "tail_fork_enabled",
             "folder_suggestions_enabled",
+            "folder_suggestions_auto_apply",
             "project_tags_enabled",
             "topic_tags_enabled",
             "link_previews",
@@ -1639,6 +1640,7 @@ class TestDashboardConfigPut:
     async def test_coded_boolean_errors_carry_a_machine_code(self, config_client_app):
         coded = {
             "folder_suggestions_enabled": "invalid_folder_suggestions_enabled",
+            "folder_suggestions_auto_apply": "invalid_folder_suggestions_auto_apply",
             "project_tags_enabled": "invalid_project_tags_enabled",
             "topic_tags_enabled": "invalid_topic_tags_enabled",
             "link_previews": "invalid_link_previews",
@@ -1727,6 +1729,7 @@ class TestDashboardConfigPut:
             "tail_fork_enabled": True,
             "link_previews": True,
             "folder_suggestions_enabled": True,
+            "folder_suggestions_auto_apply": True,
             "project_tags_enabled": False,
             "topic_tags_enabled": True,
             "side_panel_always_open": True,

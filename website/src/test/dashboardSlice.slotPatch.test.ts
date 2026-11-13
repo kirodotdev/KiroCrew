@@ -203,6 +203,18 @@ describe('chatSlice on sseSlotPatch', () => {
     expect(after.folderSuggestions?.a).toBeUndefined()
   })
 
+  it('keeps an applied card while the slot sits in its folder, and retires it once moved elsewhere', () => {
+    const initial = chatReducer(undefined, { type: '@@INIT' })
+    const applied = { ...initial, folderSuggestions: { a: { folderId: 'f', ts: 1, applied: true } } } as typeof initial
+    // The patch reporting the auto-apply's own filing, or a stale unfiled row,
+    // must not take the card away.
+    let s = chatReducer(applied, sseSlotPatch({ slots: [{ key: 'a', folder_id: 'f' }] }))
+    s = chatReducer(s, sseSlotPatch({ slots: [{ key: 'a', folder_id: '' }] }))
+    expect(s.folderSuggestions?.a).toMatchObject({ applied: true })
+    s = chatReducer(s, sseSlotPatch({ slots: [{ key: 'a', folder_id: 'g' }] }))
+    expect(s.folderSuggestions?.a).toBeUndefined()
+  })
+
   it('evicts a removed slot residue but never the active slot', () => {
     const initial = chatReducer(undefined, { type: '@@INIT' })
     const seeded = {
