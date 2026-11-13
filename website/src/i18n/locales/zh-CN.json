@@ -6675,6 +6675,7 @@
       "queue_message": "排队消息",
       "queue_run_after_the_current_work_finishes_enter": "排队 — 当前工作完成后运行 (Enter)",
       "recording_click_mic_to_stop": "正在录音…点击麦克风停止",
+      "muted_click_mic_to_stop": "已静音…点击麦克风停止",
       "reference_a_file": "引用文件",
       "reject": "拒绝",
       "reject_all": "全部拒绝",
@@ -9591,7 +9592,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc 取消，点击麦克风完成",
       "esc_to_cancel_click_mic_to_send": "Esc 取消，Shift+点击保留草稿，点击麦克风发送",
       "esc_to_cancel_enter_to_send": "Esc 取消，Enter 发送",
-      "listening": "正在聆听"
+      "listening": "正在聆听",
+      "muted": "已静音"
     },
     "voiceDisabledModal": {
       "enable_it_under": "在",
@@ -9620,7 +9622,8 @@
       "retry_transcription": "重试",
       "save_recording": "保存录音",
       "discard_recording": "放弃这段录音",
-      "recording_actions": "这段录音的更多操作"
+      "recording_actions": "这段录音的更多操作",
+      "muted": "已静音"
     },
     "webAppArtifactCard": {
       "acct": "账户",
@@ -11128,6 +11131,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（已暂停）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（已暂停）"
+    },
+    "voiceMuteButton": {
+      "mute": "将麦克风静音",
+      "unmute": "取消静音",
+      "shortcut_hint": "Alt+Shift+Q 切换静音",
+      "shortcut_hint_mac": "⌃⇧M 切换静音",
+      "mute_short": "静音",
+      "unmute_short": "取消静音"
     }
   },
   "hooks": {
@@ -11202,7 +11213,8 @@
       "toggle_terminal": "切换终端",
       "toggle_side_terminal": "切换侧边面板终端",
       "previous_terminal": "上一个终端",
-      "next_terminal": "下一个终端"
+      "next_terminal": "下一个终端",
+      "toggle_dictation_mute": "切换听写静音"
     },
     "useNativeNotification": {
       "new_notifications_other": "{{count}} 条新通知"

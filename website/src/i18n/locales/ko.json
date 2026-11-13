@@ -6675,6 +6675,7 @@
       "queue_message": "메시지를 대기열에 추가",
       "queue_run_after_the_current_work_finishes_enter": "대기열 — 현재 작업이 끝난 후 실행 (Enter)",
       "recording_click_mic_to_stop": "녹음 중… 중지하려면 마이크를 클릭하세요",
+      "muted_click_mic_to_stop": "음소거됨… 중지하려면 마이크를 클릭하세요",
       "reference_a_file": "파일 참조",
       "reject": "거부",
       "reject_all": "모두 거부",
@@ -9591,7 +9592,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc로 취소, 마이크를 클릭하면 완료",
       "esc_to_cancel_click_mic_to_send": "Esc로 취소, Shift+클릭으로 초안 유지, 마이크를 클릭하면 전송",
       "esc_to_cancel_enter_to_send": "Esc로 취소, Enter로 전송",
-      "listening": "듣는 중"
+      "listening": "듣는 중",
+      "muted": "음소거됨"
     },
     "voiceDisabledModal": {
       "enable_it_under": "다음에서 사용 설정하세요:",
@@ -9620,7 +9622,8 @@
       "retry_transcription": "다시 시도",
       "save_recording": "녹음 저장",
       "discard_recording": "녹음 버리기",
-      "recording_actions": "이 녹음에 대한 추가 작업"
+      "recording_actions": "이 녹음에 대한 추가 작업",
+      "muted": "음소거됨"
     },
     "webAppArtifactCard": {
       "acct": "계정",
@@ -11128,6 +11131,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (일시 중지됨) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (일시 중지됨)"
+    },
+    "voiceMuteButton": {
+      "mute": "마이크 음소거",
+      "unmute": "음소거 해제",
+      "shortcut_hint": "Alt+Shift+Q로 음소거 전환",
+      "shortcut_hint_mac": "⌃⇧M로 음소거 전환",
+      "mute_short": "음소거",
+      "unmute_short": "음소거 해제"
     }
   },
   "hooks": {
@@ -11202,7 +11213,8 @@
       "toggle_terminal": "터미널 표시 전환",
       "toggle_side_terminal": "사이드 패널 터미널 표시 전환",
       "previous_terminal": "이전 터미널",
-      "next_terminal": "다음 터미널"
+      "next_terminal": "다음 터미널",
+      "toggle_dictation_mute": "받아쓰기 음소거 전환"
     },
     "useNativeNotification": {
       "new_notifications_other": "새 알림 {{count}}개"

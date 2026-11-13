@@ -6858,6 +6858,7 @@
       "queue_message": "Nachricht in die Warteschlange stellen",
       "queue_run_after_the_current_work_finishes_enter": "In die Warteschlange — nach Abschluss der aktuellen Arbeit ausführen (Enter)",
       "recording_click_mic_to_stop": "Aufnahme… zum Beenden auf das Mikrofon klicken",
+      "muted_click_mic_to_stop": "Stumm… zum Beenden auf das Mikrofon klicken",
       "reference_a_file": "Auf eine Datei verweisen",
       "reject": "Ablehnen",
       "reject_all": "Alle ablehnen",
@@ -9823,7 +9824,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc zum Abbrechen, Mikrofon klicken zum Beenden",
       "esc_to_cancel_click_mic_to_send": "Esc zum Abbrechen, Shift-Klick behält Entwurf, Mikrofon klicken zum Senden",
       "esc_to_cancel_enter_to_send": "Esc zum Abbrechen, Enter zum Senden",
-      "listening": "Hört zu"
+      "listening": "Hört zu",
+      "muted": "Stumm"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Aktivieren Sie es unter",
@@ -9852,7 +9854,8 @@
       "retry_transcription": "Erneut versuchen",
       "save_recording": "Aufnahme speichern",
       "discard_recording": "Aufnahme verwerfen",
-      "recording_actions": "Weitere Aktionen für diese Aufnahme"
+      "recording_actions": "Weitere Aktionen für diese Aufnahme",
+      "muted": "Stumm"
     },
     "webAppArtifactCard": {
       "acct": "Konto",
@@ -11383,6 +11386,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (pausiert) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (pausiert)"
+    },
+    "voiceMuteButton": {
+      "mute": "Mikrofon stummschalten",
+      "unmute": "Stummschaltung aufheben",
+      "shortcut_hint": "Alt+Shift+Q schaltet stumm oder laut",
+      "shortcut_hint_mac": "⌃⇧M schaltet stumm oder laut",
+      "mute_short": "Stummschalten",
+      "unmute_short": "Stumm aus"
     }
   },
   "hooks": {
@@ -11457,7 +11468,8 @@
       "toggle_terminal": "Terminal umschalten",
       "toggle_side_terminal": "Seitenpanel-Terminal umschalten",
       "previous_terminal": "Vorheriges Terminal",
-      "next_terminal": "Nächstes Terminal"
+      "next_terminal": "Nächstes Terminal",
+      "toggle_dictation_mute": "Diktat stummschalten oder fortsetzen"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} neue Benachrichtigung",

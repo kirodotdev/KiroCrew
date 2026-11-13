@@ -94,6 +94,12 @@ interface Opts {
 export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, onLevel, onDevice, onEndpoint, onDownload, sampleRef }: Opts) {
   const [recording, setRecording] = useState(false)
   const [draining, setDraining] = useState(false)
+  // Mic mute. The microphone stays open and the socket keeps receiving frames,
+  // but every frame read while muted is replaced with zeros before it leaves
+  // the page. Stopping the frames instead would end the session: the
+  // recogniser closes a stream that has had no audio for 15 seconds.
+  const [muted, setMutedState] = useState(false)
+  const mutedRef = useRef(false)
   const flushCaptureRef = useRef<(() => void) | null>(null)
   const captureStoppedRef = useRef(false)
   const wsRef = useRef<WebSocket | null>(null)
@@ -168,6 +174,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
 
   const cleanup = useCallback((notifyCaptureStop = true) => {
     endCaptureOnce(notifyCaptureStop)
+    mutedRef.current = false
+    setMutedState(false)
     try { levelStopRef.current?.() } catch { /* ignore */ }
     levelStopRef.current = null
     // Clear the download line on every teardown, including a cancel and the
@@ -372,7 +380,9 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
           // Backend semantic endpointer judged the utterance complete.
           // The composer already holds the streamed transcript (via onPartial),
           // so the caller can submit directly.
-          if (msg.complete) onEndpointRef.current?.()
+          // Ignored while muted: silence is all the recogniser hears then, and
+          // it would judge the utterance finished and send it.
+          if (msg.complete && !mutedRef.current) onEndpointRef.current?.()
         } else if (msg.type === 'status') {
           // Preparation progress, ahead of `ready`. Two stages say work is under
           // way -- the weight fetch, which has bytes, and the load that follows
@@ -525,8 +535,11 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     node.port.onmessage = e => {
       if (e.data?.type === 'flushed') { finishCapture(); return }
       if (captureFlushed || session.cancelled || sessionRef.current !== session) return
-      const chunk = e.data as ArrayBuffer
-      if (!(chunk instanceof ArrayBuffer)) return
+      const raw = e.data as ArrayBuffer
+      if (!(raw instanceof ArrayBuffer)) return
+      // A frame read while muted may still hold up to one batch of audio from
+      // before the press, so the whole frame goes as zeros.
+      const chunk = mutedRef.current ? new ArrayBuffer(raw.byteLength) : raw
       if (ready) {
         if (ws.readyState === WebSocket.OPEN) {
           try { ws.send(chunk) } catch { /* ignore CLOSING state */ }
@@ -635,6 +648,8 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     }
 
     const prevStream = streamRef.current
+    // The new device starts in the state the user chose for the old one.
+    next.getAudioTracks().forEach(t => { t.enabled = !mutedRef.current })
     try { sourceRef.current?.disconnect() } catch { /* already detached */ }
     try { levelStopRef.current?.() } catch { /* ignore */ }
     levelStopRef.current = null
@@ -676,5 +691,27 @@ export function useStreamingStt ({ onPartial, onFinal, onCaptureStop, onError, o
     cleanup(false)
   }, [cleanup])
 
-  return { recording, draining, start, stop, switchDevice, cancel }
+  /**
+   * Mute or unmute the live capture. Returns whether the capture is now in the
+   * requested state.
+   *
+   * Disabling the track makes the browser deliver silence, which also flattens
+   * the level meter. The frames are zeroed in the worklet handler as well, so a
+   * browser that ignores `enabled` still sends nothing. If no audio track is
+   * left to disable, the dictation stops instead: a mute that cannot be
+   * confirmed must not leave the microphone sending.
+   */
+  const setMuted = useCallback((next: boolean): boolean => {
+    const stream = streamRef.current
+    if (!stream || captureStoppedRef.current) return false
+    const tracks = stream.getAudioTracks()
+    if (next && tracks.length === 0) { stop(); return false }
+    mutedRef.current = next
+    tracks.forEach(t => { t.enabled = !next })
+    setMutedState(next)
+    if (next) onLevelRef.current?.(0)
+    return true
+  }, [stop])
+
+  return { recording, draining, muted, setMuted, start, stop, switchDevice, cancel }
 }

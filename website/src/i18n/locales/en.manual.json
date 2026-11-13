@@ -2285,6 +2285,7 @@
       "switching_project": "Switching project…",
       "queue_run_after_the_current_work_finishes_enter": "Queue — run after the current work finishes (Enter)",
       "recording_click_mic_to_stop": "Recording… click mic to stop",
+      "muted_click_mic_to_stop": "Muted… click mic to stop",
       "reject_all": "Reject all",
       "reject_sub_agent": "Reject sub-agent: {{name}}",
       "resized_to_fit_model_limits_2": "Resized to fit model limits: {{fromW}}×{{fromH}} to {{toW}}×{{toH}}",
@@ -5086,7 +5087,8 @@
       "toggle_terminal": "Toggle terminal",
       "toggle_side_terminal": "Toggle side-panel terminal",
       "previous_terminal": "Previous terminal",
-      "next_terminal": "Next terminal"
+      "next_terminal": "Next terminal",
+      "toggle_dictation_mute": "Mute or unmute dictation"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} new notification",

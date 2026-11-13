@@ -363,3 +363,20 @@ describe('ChatInput — send is gated while a batch transcript is pending', () =
     expect(screen.queryByTestId('voice-status-notice')).toBeNull()
   })
 })
+
+describe('ChatInput — muted dictation', () => {
+  it('says Muted in the composer too, so the strip and the placeholder agree', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceMuted: true, onVoiceToggleMute: vi.fn(), voiceDictationPanel: false, voiceSampleRef: sampleRef }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByPlaceholderText('Muted… click mic to stop')).toBeInTheDocument()
+    expect(screen.queryByPlaceholderText('Recording… click mic to stop')).toBeNull()
+  })
+
+  it('keeps the recording placeholder while unmuted', () => {
+    renderWithProviders(
+      <ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, voiceMuted: false, onVoiceToggleMute: vi.fn(), voiceDictationPanel: false, voiceSampleRef: sampleRef }}><ChatInput {...base} /></ComposerVoiceSliceOverride>,
+    )
+    expect(screen.getByPlaceholderText('Recording… click mic to stop')).toBeInTheDocument()
+  })
+})

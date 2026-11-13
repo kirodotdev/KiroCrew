@@ -7041,6 +7041,7 @@
       "queue_message": "Metti il messaggio in coda",
       "queue_run_after_the_current_work_finishes_enter": "Metti in coda — esegui al termine del lavoro corrente (Enter)",
       "recording_click_mic_to_stop": "Registrazione… clicca sul microfono per fermare",
+      "muted_click_mic_to_stop": "Microfono disattivato… clicca sul microfono per fermare",
       "reference_a_file": "Fai riferimento a un file",
       "reject": "Rifiuta",
       "reject_all": "Rifiuta tutto",
@@ -10055,7 +10056,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc per annullare, clicca sul microfono per terminare",
       "esc_to_cancel_click_mic_to_send": "Esc per annullare, Maiusc+clic tiene una bozza, clicca sul microfono per inviare",
       "esc_to_cancel_enter_to_send": "Esc per annullare, Invio per inviare",
-      "listening": "In ascolto"
+      "listening": "In ascolto",
+      "muted": "Microfono disattivato"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Attivalo in",
@@ -10084,7 +10086,8 @@
       "retry_transcription": "Riprova",
       "save_recording": "Salva la registrazione",
       "discard_recording": "Scarta la registrazione",
-      "recording_actions": "Altre azioni per questa registrazione"
+      "recording_actions": "Altre azioni per questa registrazione",
+      "muted": "Microfono disattivato"
     },
     "webAppArtifactCard": {
       "acct": "account",
@@ -11638,6 +11641,14 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (in pausa) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (in pausa)"
+    },
+    "voiceMuteButton": {
+      "mute": "Disattiva microfono",
+      "unmute": "Riattiva microfono",
+      "shortcut_hint": "Alt+Shift+Q disattiva o riattiva",
+      "shortcut_hint_mac": "⌃⇧M disattiva o riattiva",
+      "mute_short": "Disattiva",
+      "unmute_short": "Riattiva"
     }
   },
   "hooks": {
@@ -11712,7 +11723,8 @@
       "toggle_terminal": "Attiva/disattiva il terminale",
       "toggle_side_terminal": "Attiva/disattiva il terminale del pannello laterale",
       "previous_terminal": "Terminale precedente",
-      "next_terminal": "Terminale successivo"
+      "next_terminal": "Terminale successivo",
+      "toggle_dictation_mute": "Disattiva o riattiva il microfono della dettatura"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} nuove notifiche",

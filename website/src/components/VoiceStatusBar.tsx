@@ -5,6 +5,7 @@ import ErrorNotice from './ErrorNotice'
 
 import MicSourceMenu from './MicSourceMenu'
 import RecordingElapsed from './RecordingElapsed'
+import VoiceMuteButton from './VoiceMuteButton'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu'
 
 import { i18nT } from '../i18n/t'
@@ -16,6 +17,10 @@ interface Props {
   recording: boolean
   /** Live input level in [0, 1] for the meter. */
   level: number
+  /** The recording is muted: the mic is open, nothing is sent, the timer runs. */
+  muted?: boolean
+  /** Mute or unmute the recording. The control is shown only when this is set. */
+  onToggleMute?: () => void
   /** Active capture device label (e.g. "MacBook Pro Microphone"). */
   deviceLabel?: string
   /** deviceId of the track actually capturing — see MicSourceMenu.activeDeviceId. */
@@ -104,7 +109,7 @@ function renderNoticeText(notice: NonNullable<Props['notice']>) {
   )
 }
 
-export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId, error, onDismissError, keptRecording, onSelectDevice, deviceSwitchIsLive, download, draining, onCancelDrain, notice }: Props) {
+export default function VoiceStatusBar({ recording, level, muted = false, onToggleMute, deviceLabel, deviceId, error, onDismissError, keptRecording, onSelectDevice, deviceSwitchIsLive, download, draining, onCancelDrain, notice }: Props) {
   /* Addresses the one visible sentence that says what a discard costs, so the
      discard button can point at it. Above the early returns because it is a
      hook, and generated rather than fixed because two panes can each mount a
@@ -330,20 +335,26 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
   return (
     <div
       aria-live="polite"
-      className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-danger-text bg-danger-subtle border-b border-danger-subtle"
+      // Neutral while muted: the red strip means "this is being recorded", and
+      // a muted strip that stays red reads as still recording at a glance.
+      // It wraps: every child but the device picker keeps its width, so in a
+      // narrow composer a single row pushes the picker past the clipped edge.
+      className={`flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 text-[12px] border-b ${muted ? 'text-muted bg-chrome/50 border-border' : 'text-danger-text bg-danger-subtle border-danger-subtle'}`}
     >
-      {/* pulsing live dot */}
+      {/* pulsing live dot; still while muted, since nothing is being sent */}
       <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
-        <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />
-        <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
+        {!muted && <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />}
+        <span className={`relative inline-flex h-2 w-2 rounded-full ${muted ? 'bg-muted' : 'bg-danger'}`} />
       </span>
-      <span className="font-medium shrink-0">{i18nT('components.voiceStatusBar.recording')}</span>
+      <span className="font-medium shrink-0">{i18nT(muted ? 'components.voiceStatusBar.muted' : 'components.voiceStatusBar.recording')}</span>
       {/* Mounted with this row, which exists only while capturing, so it starts
-          at 0:00 with each recording. */}
+          at 0:00 with each recording. It keeps counting while muted: the
+          recording is still open. */}
       <RecordingElapsed />
+      {onToggleMute && <VoiceMuteButton muted={muted} onToggle={onToggleMute} className={muted ? 'text-text hover:bg-bg-hover' : 'text-danger opacity-80 hover:opacity-100'} />}
       {/* live input-level meter */}
       <span
-        className="w-20 shrink-0 h-1.5 rounded-full bg-danger-subtle overflow-hidden"
+        className={`w-20 shrink-0 h-1.5 rounded-full overflow-hidden ${muted ? 'bg-border' : 'bg-danger-subtle'}`}
         aria-hidden="true"
       >
         <span
@@ -357,7 +368,7 @@ export default function VoiceStatusBar({ recording, level, deviceLabel, deviceId
         onSelect={onSelectDevice}
         recording
         liveSwitch={deviceSwitchIsLive}
-        triggerClass="text-danger opacity-80 hover:opacity-100"
+        triggerClass={muted ? 'text-muted hover:text-text' : 'text-danger opacity-80 hover:opacity-100'}
       />
       {/* Placed AFTER the device picker and allowed to truncate: a first-run
           download is the most important thing on this strip, but it must not
