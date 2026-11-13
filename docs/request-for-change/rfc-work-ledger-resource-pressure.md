@@ -170,8 +170,9 @@ Unit:
    refuses; admits on tight, on `unknown`, and with `agent.admission_gate:
    false`; the refusal leaves the files byte-identical, as the cap refusal
    tests check.
-7. Person-wait hold: a board whose open items all wait on a person stays held
-   under a pressure wake. Pinned so a later change is deliberate.
+7. Person-wait hold: a board whose open items all wait on a person is released
+   once by a level change (tight to clear), then holds again. Amended by §12;
+   this item first pinned "stays held".
 
 End to end (pod-e2e, one run): fake the probe to critical; one conductor turn
 arrives; `work_ledger_read` shows `host_pressure.level=critical`; a `create` is
@@ -199,9 +200,8 @@ refused; fake ample; one resume turn arrives.
   nothing about them. The conductor rule applies to local items only.
 - **Nested conductors** each get their own wake. A child and its parent both
   pausing is correct, and costs one turn each.
-- **Held boards stay held.** The person-wait hold runs before the probe, so a
-  board whose open items all wait on a person does not wake on pressure.
-  Nothing is running there to pause.
+- **Held boards wake once per level.** Amended by §12. This bullet first said
+  "held boards stay held"; that left queued work stuck.
 - **The reaction is still a prompt at tight.** Only critical has a code
   backstop (the create refusal). A worker already in a heavy step is not
   stopped.
@@ -243,3 +243,46 @@ Exit criteria:
 ## 11. Open questions
 
 None open.
+
+## 12. Amendment (2026-11-13): a level change releases a person-wait hold once
+
+This section reverses the pin in §5 item 7 and the "held boards stay held"
+limit in §7. It builds on this document (on main) and on its code PR
+[#36481](https://github.com/kirodotdev/KiroCrew/pull/36481) (open), whose
+First Principles review asked for the reversal to be decided here first
+([comment](https://github.com/kirodotdev/KiroCrew/pull/36481#issuecomment-6847130133)).
+
+**Why.** Queued work is not on the ledger. A conductor that paused dispatch at
+`tight` keeps the rest of its round in its own plan. If every open item then
+waits on a person (`reason` `approval` or `needs_human`), the person-wait hold
+([rfc-work-ledger-person-wait-hold.md](rfc-work-ledger-person-wait-hold.md)
+§3.2) holds the patrol. It runs before the probe, so the `clear` wake of §3.3
+never reaches the conductor, and the queued work never resumes. So §7's
+"nothing is running there to pause" was true, but something was waiting there
+to resume.
+
+**Decision.** A pressure level change is a new fact the patrol must see.
+`person_wait_fingerprint` also carries the `host_pressure` record's episode and
+level. A change of either releases a held board for one turn. That turn
+records the new fingerprint, so the next tick holds again if every open item
+still waits on a person. So a held board gets one turn per episode and level,
+typically two per episode (enter and clear).
+
+**What stays the same.** Every other part of the hold. The fingerprint still
+leaves out the conductor's own writes. The 30 s refresh and the 30-min
+critical re-alert keep the same episode and level, so they release nothing. An
+absent record adds nothing to the fingerprint. A `clear` record that expires to
+absent moves the fingerprint once more, which costs a held board one more turn.
+Held boards stay held for every other reason.
+
+**Cost.** At most one extra conductor turn per held board per level change,
+plus one when `clear` expires. No new tool, field, status, config key or event
+kind.
+
+**Safety.** No new authority. The record is still written by the gateway
+only. A worker cannot forge a level change, so it cannot use this to break a
+hold.
+
+**Test.** The code PR replaces §5 item 7's "stays held" test with one test: a
+held board under `tight` gets one turn when the level goes to `clear`, then
+holds again.
