@@ -902,6 +902,14 @@ async def _consolidate(
         except _ConsolidationReplyUnusable as exc:
             result = None
             failure = str(exc)
+            # The provider answered (unusable text, or an empty reply it billed or
+            # could not show as unbilled), so the host can run turns again.
+            self._release_environment_backoff()
+        else:
+            # ``None`` here is also what a turn that raised inside the stream
+            # returns, which proves nothing about the host; only an answer does.
+            if result is not None:
+                self._release_environment_backoff()
         billed = True
         if not result:
             # The turn reached the provider and produced nothing usable, so it

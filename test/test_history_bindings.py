@@ -124,6 +124,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "chain_mid_rotation": ("function", "1eda252b53bd", "history"),
     "chained_keys": ("function", "349ed17a0181", "history"),
     "clear_closed": ("function", "fe163b1b1d09", "history"),
+    "clear_consolidation_environment_backoff": ("function", "1eda252b53bd", "history_marker"),
     "consolidated_offset": ("function", "028659ce42ac", "history_marker"),
     "consolidation_counts": ("function", "286ecf2c0fe3", "history_marker"),
     "consolidation_retry_state": ("function", "945c2956ab9c", "history_marker"),
