@@ -109,7 +109,7 @@ import {
   banner,
   mount,
   card,
-  openAllCards,
+  openGoogleEntry,
   deferred,
 } from './ConnectionsPage.coverageTestUtils'
 
@@ -123,7 +123,7 @@ const byId = (id: string, attrs = ''): HTMLElement => {
 }
 
 const cards = (): HTMLElement[] => {
-  openAllCards()
+  openGoogleEntry()
   // A search hides cards rather than unmounting them: count the shown ones.
   return Array.from(document.querySelectorAll<HTMLElement>('article[data-state]')).filter(el => !el.closest('[hidden]'))
 }
@@ -705,16 +705,41 @@ describe('a link in and the OAuth app part', () => {
     expect(within(entry).getByRole('heading', { name: 'Google' })).toBeInTheDocument()
   })
 
-  it('keeps Connect on a closed not-connected card, and opens the card on a click of its name', async () => {
+  it('keeps Connect on a closed not-connected card, with no toggle when opening adds nothing', async () => {
+    // Notion signs in with no OAuth app part, so its closed card already shows
+    // everything an open one would: its name is plain text, not a chevron.
     mount()
     const notion = await waitFor(() => byId('connection-notion', '[data-state="not-connected"]'))
-    const toggle = within(notion).getByRole('button', { name: 'Notion' })
-    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    expect(within(notion).queryByRole('button', { name: 'Notion' })).toBeNull()
+    expect(within(notion).getByRole('heading', { name: 'Notion' })).toBeInTheDocument()
     expect(within(notion).getByRole('button', { name: 'Connect' })).toBeInTheDocument()
+  })
+
+  it('opens a card with an OAuth app part on a click of its name, and closes it again', async () => {
+    mount()
+    const github = await waitFor(() => byId('connection-github', '[data-state="not-connected"]'))
+    const toggle = within(github).getByRole('button', { name: 'GitHub' })
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
     fireEvent.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  it('closes the open card when another card opens', async () => {
+    mcpServers.mockResolvedValue([server({ connectedSince: '2026-03-04T10:00:00Z' })])
+    mount()
+    const notion = await waitFor(() => byId('connection-notion', '[data-state="connected"]'))
+    const github = byId('connection-github')
+    const entry = byId('connection-google')
+    fireEvent.click(within(notion).getByRole('button', { name: 'Notion' }))
+    expect(within(notion).getByRole('button', { name: 'Notion' })).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(within(github).getByRole('button', { name: 'GitHub' }))
+    expect(within(github).getByRole('button', { name: 'GitHub' })).toHaveAttribute('aria-expanded', 'true')
+    expect(within(notion).getByRole('button', { name: 'Notion' })).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(within(entry).getByRole('button', { name: 'Google' }))
+    expect(within(entry).getByRole('button', { name: 'Google' })).toHaveAttribute('aria-expanded', 'true')
+    expect(within(github).getByRole('button', { name: 'GitHub' })).toHaveAttribute('aria-expanded', 'false')
   })
 
   it('hides a connected card\'s Test and Disconnect until the card is opened', async () => {
@@ -825,12 +850,12 @@ describe('a link in and the OAuth app part', () => {
     expect(within(notion).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
   })
 
-  it('opens a broken connection by itself, and says so to a screen reader', async () => {
+  it('opens a broken connection by itself, with no toggle that could not close it', async () => {
     mcpServers.mockResolvedValue([server({ status: 'error', error: 'invalid_grant' })])
     mount()
     const notion = await waitFor(() => byId('connection-notion', '[data-state="needs-attention"]'))
     expect(within(notion).getByRole('button', { name: /Reconnect/ })).toBeVisible()
-    expect(within(notion).getByRole('button', { name: 'Notion' })).toHaveAttribute('aria-expanded', 'true')
+    expect(within(notion).queryByRole('button', { name: 'Notion' })).toBeNull()
   })
 
   it('keeps a hidden card\'s OAuth app part mounted through a search', async () => {
