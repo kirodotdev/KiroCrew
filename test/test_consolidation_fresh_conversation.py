@@ -45,11 +45,18 @@ _USAGE_TARGET = "kiro_crew.dashboard.handlers.usage.persist_token_record_async"
 
 def _real_manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[object, Path]:
     from kiro_crew import agent as agent_mod
+    from kiro_crew.acp import session_handle
     from kiro_crew.agent_materialization.service_agents import _install_lite_agent_fallback
     from kiro_crew.config import KiroCrewConfig
     from kiro_crew.config.loader import build_provider_factory
     from kiro_crew.session import SessionManager
 
+    # The fake backend reports no MCP server, so each start would wait out the full
+    # no-report drain; the conversation handling under test runs after it either way.
+    # Through the facade: the ceiling is bound in more than one owner.
+    monkeypatch.setattr(
+        session_handle, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05  # flake-ok: unreported by design
+    )
     store = tmp_path / "native-store"
     store.mkdir()
     monkeypatch.setenv("KIROCREW_KIRO_BIN", str(fake_acp_backend_launcher(tmp_path)))
