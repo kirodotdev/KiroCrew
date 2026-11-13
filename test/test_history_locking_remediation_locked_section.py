@@ -409,18 +409,33 @@ class TestOnLoopFdCleanupDeferred:
 
         seen: list[int] = []
         real_close = os.close
+        real_open = platform_compat.open_create_or_existing
+        ours: set[int] = set()
+
+        # os.close is process-wide, so another thread in this worker can close
+        # its own fd while the spy is in place. Record only the closes of fds
+        # this log opened under tmp_path (the sidecar lock fd among them).
+        def _spy_open(path: str, *args: object, **kwargs: object) -> int:
+            fd = real_open(path, *args, **kwargs)
+            if str(path).startswith(str(tmp_path)):
+                ours.add(fd)
+            return fd
 
         def _spy_close(fd: int) -> None:
-            seen.append(threading.get_ident())
+            if fd in ours:
+                ours.discard(fd)
+                seen.append(threading.get_ident())
             real_close(fd)
 
         log = ConversationLog(base_dir=tmp_path)
         with_patch = os.close
         try:
+            platform_compat.open_create_or_existing = _spy_open  # type: ignore[assignment]
             os.close = _spy_close  # type: ignore[assignment]
             log.append("k", "user", "seed")
         finally:
             os.close = with_patch  # type: ignore[assignment]
+            platform_compat.open_create_or_existing = real_open  # type: ignore[assignment]
         # Off the loop: the sidecar-fd close ran inline on this (caller) thread.
         assert seen, "expected the lock fd to be closed"
         assert all(t == threading.get_ident() for t in seen)
