@@ -166,6 +166,7 @@ if TYPE_CHECKING:
         POLICY_INCLUDE_KEY,
         ManagedToolPolicyUnreadable,
         _ambiguous_spec_reason,
+        _dangling_link_may_be_agents,
         _policy_answer,
         _policy_of_spec,
         _prefill_managed_tool_policies,
