@@ -1233,9 +1233,9 @@ function createGatewaySupervisor({
         isAborted: stale,
       }));
     } catch (error) {
-      // POSIX lsof may be unavailable. Let bind arbitrate, but record that the
-      // pre-spawn ownership proof could not be completed.
-      glog(`liveness: port probe failed (${error && error.message}); attempting respawn and letting bind confirm`);
+      // A probe that cannot run is answered as probeFailed, not thrown, so
+      // this is an unexpected force-stop error; record it and respawn.
+      glog(`liveness: force-stop failed unexpectedly (${error && error.message}); attempting respawn`);
     }
     // The force-stop can wait up to two minutes for the port. An update install
     // dispatched meanwhile owns the gateway from then on: it must not race a
@@ -1689,7 +1689,7 @@ function createGatewaySupervisor({
               isAborted: () => epoch !== installEpoch,
             }));
           } catch (probeError) {
-            glog(`force-stop: port probe failed (${probeError && probeError.message}); letting retry's bind confirm`);
+            glog(`force-stop: failed unexpectedly (${probeError && probeError.message}); retrying the start`);
           }
           if (window.isDestroyed() || epoch !== installEpoch) return;
           if (!freed) {
