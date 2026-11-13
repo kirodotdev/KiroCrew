@@ -419,6 +419,13 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # scrubbed that capability would break the feature it is guarding. Gated
         # behind KIROCREW_DEBUG and reachable only from the CLI.
         "cli_perf.py::_sample_out_of_process",
+        # `kirocrew config edit`: the operator's own editor on a copy of config.json.
+        # List argv (no shell): `$EDITOR` (default `vi`) from the operator's shell
+        # environment, plus the path of a file this command just created in a fresh
+        # `mkdtemp` folder. Reached only from that CLI verb. NOT sandbox-routed: the
+        # editor is the operator's terminal tool, and the copy it saves sits in the
+        # sealed config-provenance folder, which no sandboxed process can write.
+        "cli_config.py::_run_editor",
         # `kirocrew app install <git-url>`: the operator's own `git clone` of the
         # URL they typed, and a `git rev-parse HEAD --abbrev-ref HEAD` in the folder
         # it made. Reached only from that CLI verb, never from a tool dispatch

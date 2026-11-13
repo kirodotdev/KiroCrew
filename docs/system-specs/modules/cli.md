@@ -1133,7 +1133,7 @@ after fixing the local SSM tunnel issue.
 - **get** — prints full effective config (with defaults resolved) or a single dot-path value
 - **set key value** — sets a value with auto type detection (bool/int/float/JSON/string). Rejects unknown leaf keys.
 - **set --file path** — replaces entire config from a JSON file. File read routed through `hooks.safe_read_file()` (blocks sensitive paths).
-- **edit** — opens config in `$EDITOR` (supports args like `code --wait` via `shlex.split`). Creates default config if missing.
+- **edit** — opens a copy of `config.json` in `$EDITOR` (one program name, no arguments; it must wait until the file is closed) and saves the result as Kiro Crew's own write, so it takes effect at once. Refuses while `config.json` has a pending outside edit, and keeps the edited copy (printing its path) when the result is refused or the editor exits non-zero. Creates default config if missing.
 
 All write paths emit SEL audit events (`config_get`, `config_set`, `config_set_file`, `config_edit`).
 

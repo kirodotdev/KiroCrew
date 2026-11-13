@@ -169,11 +169,16 @@ so a stalled disk never holds the heartbeat. Every Kiro Crew writer of these fou
 through the leaf's endorsing writer, so its own saves take effect at once and are never
 pending: the CLI (`config set`, `--local`, `--file`, `config defaults`, setup, workspace and
 telemetry commands), the dashboard savers (including the Weixin sign-in and settings save),
-and restore and import (`endorse_installed`). Two writers do not endorse: `kirocrew pod`'s
-seed-floor rewrite of a pod's `config.json` (another data home), and `kirocrew config edit`, which
-runs `$EDITOR` on `config.json` itself. Where the seal applies and the file already has a copy,
-their result is an outside change like any other: pending until the owner applies it in
-Settings > Security. A reader outside the load decides that a protected file is absent only through
+and restore and import (`endorse_installed`). `kirocrew config edit` endorses too: it stages a
+copy of `config.json` in a private directory inside the sealed `config-provenance` directory, runs
+`$EDITOR` on that copy, and publishes the result through `update_config_locked`; it refuses
+before the editor starts while the file is pending, and refuses (keeping the edited copy) when
+the file changed while the editor was open. Like git, it ignores Ctrl-C while it waits for the
+editor (started first, so the editor keeps Ctrl-C), so cancelling an editor's shell command does
+not discard a saved edit. One writer does not endorse: `kirocrew pod`'s seed-floor rewrite of a
+pod's `config.json` (another data home). Where the seal applies and the file already has a copy,
+its result is an outside change like any other: pending until the owner applies it in Settings >
+Security. A reader outside the load decides that a protected file is absent only through
 `read_endorsed_config_text` / `read_config_for_update` (no `is_file()` / `exists()` check
 first), so a deleted file whose endorsed copy is in force reads as that copy everywhere. The
 pending diff and Apply compare values type-strictly (`strict_json_equal`: `true` is not `1`),

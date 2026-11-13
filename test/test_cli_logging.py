@@ -1480,7 +1480,7 @@ class TestQueueOffLoop:
 
     def test_short_lived_command_keeps_sync_handler(self):
         """Short-lived verbs get NO queue: several replace the process via
-        os.exec* (``logs -f``, ``config edit``), which skips atexit — a queued
+        os.exec* (``logs -f``), which skips atexit — a queued
         tail there would be lost, while a sync handler has already written it.
         They also run no event loop, so there is nothing for the queue to
         protect."""

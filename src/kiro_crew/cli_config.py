@@ -8,12 +8,16 @@ import errno
 import json
 import os
 import re
+import shutil
+import signal
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew import beacon
-from kiro_crew.config import KiroCrewConfig
+from kiro_crew.config import KiroCrewConfig, loosening_provenance
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
@@ -25,6 +29,7 @@ from kiro_crew.config.loader import (
     update_config_locked,
     workspace_dir_from_entry,
 )
+from kiro_crew.config.paths import config_dir
 from kiro_crew.config.resolution import (
     _SECTION_KEYS_EMITTED_ELSEWHERE,
     drop_extra_section_keys,
@@ -51,6 +56,7 @@ from kiro_crew.config.superseded_defaults import (
 from kiro_crew.config.write_provenance import record_path
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.sel import sel
+from kiro_crew.user_json import strip_utf8_bom
 
 if TYPE_CHECKING:
     from kiro_crew.config.schema import ConfigEntry
@@ -69,7 +75,7 @@ def _names_sealed_config(exc: OSError) -> bool:
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
     ``filename``. Either way the sealed file is one of the two. A failure that names
-    neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
+    neither -- ``config edit``'s launch of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
     # Before it publishes, the config writer stores the endorsed copy and the publication
@@ -624,13 +630,103 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
             source="cli",
             resources=str(p),
         )
-        editor = os.environ.get("EDITOR", "vi")
-        os.execvp(editor, [editor, str(p)])
+        _edit_config_endorsed(os.environ.get("EDITOR", "vi"))
     elif action == "defaults":
         _defaults_cmd(args)
     else:
         print("Usage: kirocrew config {get,set,edit,defaults}", file=sys.stderr)
         sys.exit(1)
+
+
+def _run_editor(editor: str, path: Path) -> int:
+    """Run *editor* on *path*, wait for it, and return its exit status.
+
+    Ctrl-C is the editor's to handle, but the terminal also sends it to this process
+    while the editor runs a shell command, so SIGINT is ignored here until it exits.
+    """
+    with subprocess.Popen([editor, str(path)]) as proc:
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            return proc.wait()
+        finally:
+            signal.signal(signal.SIGINT, previous)
+
+
+def _edit_config_endorsed(editor: str) -> None:
+    """Edit a copy of ``config.json`` in *editor* and publish it as Kiro Crew's own write.
+
+    The copy is staged inside the sealed ``config-provenance`` directory, which no
+    sandboxed process can write, so what is published is what the editor saved.
+    Publishing goes through ``update_config_locked``, which endorses the bytes it
+    writes, so the edit takes effect at once instead of waiting as an outside change.
+    """
+    loosening_provenance.refuse_save_if_pending(loosening_provenance.LEAF_CONFIG)
+    try:
+        original_text = read_config_text(config_path())
+    except UnicodeDecodeError as e:
+        print(
+            f"❌ {config_path()} is not UTF-8 text, so it cannot be edited here: {e}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    original = original_text.encode("utf-8")
+    parent = config_dir() / loosening_provenance.RECORD_DIR_LEAF
+    parent.mkdir(mode=0o700, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix="edit-", dir=parent))
+    staged = staging / "config.json"
+    keep = False
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        fd = os.open(staged, flags, 0o600)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(original)
+        status = _run_editor(editor, staged)
+        edited = staged.read_bytes()
+        keep = edited != original
+        kept = f"; the edited copy is kept at {staged}" if keep else ""
+        if status != 0:
+            print(
+                f"❌ The editor exited with status {status}; nothing was written{kept}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not keep:
+            print("No changes to config.json")
+            return
+        try:
+            data = json.loads(strip_utf8_bom(edited.decode("utf-8")))
+        except (json.JSONDecodeError, UnicodeDecodeError) as e:
+            print(f"❌ Invalid JSON: {e}{kept}", file=sys.stderr)
+            sys.exit(1)
+        if not isinstance(data, dict):
+            print(
+                f"❌ Not a config object: the edit holds a JSON "
+                f"{type(data).__name__}, expected an object{kept}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        def _mutate(_cur: dict) -> dict:
+            try:
+                current: str | None = read_config_text(config_path())
+            except (FileNotFoundError, UnicodeDecodeError):
+                current = None
+            if current != original_text:
+                raise ConfigWriteRefused(
+                    "config.json changed while the editor was open, so this edit was not saved"
+                )
+            return data
+
+        try:
+            update_config_locked(config_path(), mutate=_mutate, on_corrupt="reset")
+        except ConfigWriteRefused as e:
+            print(f"❌ {e}{kept}", file=sys.stderr)
+            sys.exit(1)
+        keep = False
+        print(f"✅ Saved {config_path()}")
+    finally:
+        if not keep:
+            shutil.rmtree(staging, ignore_errors=True)
 
 
 def _defaults_cmd(args: argparse.Namespace) -> None:
