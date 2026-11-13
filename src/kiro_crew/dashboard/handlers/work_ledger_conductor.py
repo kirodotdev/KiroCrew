@@ -631,7 +631,18 @@ async def _refuse_dispatch_without_ledger(key: str) -> web.Response | None:
     The one remedy is ``action=goal``: unlike ``_own_ledger``'s text, it does not
     suggest ``action=create``, which ``work_dispatch`` would send marked again.
     """
-    record = await asyncio.to_thread(work_ledger.read_conductor, key)
+    # Strict, as in ``_own_ledger``: an I/O fault on conductor.json is a
+    # transient 503, never a false "no ledger, open one with action=goal".
+    try:
+        record = await asyncio.to_thread(work_ledger.read_conductor, key, strict=True)
+    except OSError:
+        _audit(key, "work_dispatch", "denied", error="ledger_unreadable")
+        return _refuse_503(
+            "ledger_unreadable",
+            "This session's work ledger could not be read right now (a transient "
+            "I/O error). Retry; it was not interpreted as having no ledger. "
+            "Nothing was created.",
+        )
     if record is not None:
         return None
     _audit(key, "work_dispatch", "denied", error=work_ledger.CODE_NO_LEDGER)

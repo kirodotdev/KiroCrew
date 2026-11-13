@@ -76,6 +76,7 @@ ROUTE_CODES: frozenset[str] = frozenset(
         "invalid_json",
         "invalid_body",
         "ledger_write_failed",
+        "ledger_unreadable",
         "crew_log_off",
         "crew_log_unit_unknown",
         "crew_log_unreadable",
