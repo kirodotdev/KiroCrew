@@ -190,6 +190,7 @@ from kiro_crew.config.section_builders import (  # noqa: F401
     _build_power_config,
     _build_publish_config,
     _build_session_summary_config,
+    _build_shared_access,
     _build_skills_config,
     _build_slack_config,
     _build_stt_config,

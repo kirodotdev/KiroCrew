@@ -60,6 +60,8 @@ if TYPE_CHECKING:
         is_allowed_user,
         is_owner,
         is_sensitive_path,
+        is_shared_listed,
+        is_shared_user,
         is_yolo_mode,
         logger,
         note_user_stop,
@@ -68,6 +70,7 @@ if TYPE_CHECKING:
         run_config_write,
         safety_override,
         sel,
+        shared_user_refused_for_session,
         slack_title_text,
         spawn_command_reply,
         task_command_reply,
@@ -298,7 +301,15 @@ async def _bang_stop(
 
         await decline_stop(session_key, user_id, _say_declined)
         return ""
-    note_user_stop(sessions, sessions.get_session_for_thread(reply_ts) or session_key)
+    _stop_target = sessions.get_session_for_thread(reply_ts) or session_key
+    if is_shared_listed(user_id):
+        # Rechecked here: an await since the router's check may have relinked the
+        # thread (slack.shared_access); a code channel's session is never stopped.
+        if await shared_user_refused_for_session(user_id, _stop_target, reply_ts, channel):
+            return ""
+        if (sessions.get_session_for_thread(reply_ts) or session_key) != _stop_target:
+            return ""
+    note_user_stop(sessions, _stop_target)
     has_session = sessions.has_session(session_key)
     if not has_session:
         sel().log_tool_invocation(
@@ -1437,8 +1448,23 @@ async def _route_bang_command(
     native path or ``handle_message_transport`` on the transport path (no ``!`` prefix,
     or a command the dispatcher did not claim).
     """
+    # A shared user's !compact / !stop / !title acts on this thread's session: never
+    # a code channel's (slack.shared_access). Judged on the key the command acts on
+    # and the thread's owner, and dropped if the owner changes while judging.
+    _word = cmd_text.split()[:1]
+    if is_shared_listed(user_id) and [w.lower() for w in _word] in (
+        ["!compact"],
+        ["!stop"],
+        ["!title"],
+    ):
+        _owner = sessions.get_session_for_thread(reply_ts) if sessions is not None else None
+        for _key in {session_key, str(_owner or "")}:
+            if await shared_user_refused_for_session(user_id, _key, reply_ts, channel):
+                return True
+        if sessions is not None and sessions.get_session_for_thread(reply_ts) != _owner:
+            return True
     if cmd_text.strip().lower() == "!compact":
-        if is_owner(user_id) or is_allowed_user(user_id):
+        if is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id):
             sel().log_api_access(
                 caller=user_id,
                 operation="slack.compact_command",
@@ -1494,10 +1520,13 @@ async def _route_bang_command(
 
     # ── Owner commands: all "!" prefixed messages are reserved for owner ──
     if _is_bang_command(cmd_text):
-        # !dashboard and !stop are available to any allowed user
-        _cmd_word = cmd_text.split()[0]
+        # !stop and !title are available to any allowed user; !dashboard mints a
+        # full-dashboard link, so it stays the owner's.
+        _cmd_word = cmd_text.split()[0].lower()
         if _cmd_word in ("!dashboard", "!stop", "!title"):
-            if is_owner(user_id) or is_allowed_user(user_id):
+            if (is_owner(user_id) or is_allowed_user(user_id) or is_shared_user(user_id)) and not (
+                _cmd_word == "!dashboard" and is_shared_listed(user_id)
+            ):
                 reply = await _handle_slash_command(
                     cmd_text,
                     slack,

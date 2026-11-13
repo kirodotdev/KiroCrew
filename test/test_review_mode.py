@@ -108,6 +108,13 @@ def _mock_aiohttp():
         yield mock_session
 
 
+@pytest.fixture(autouse=True)
+def _requester_admitted():
+    """A requester is someone the bot still admits (the owner or a shared user)."""
+    with patch("kiro_crew.slack.interactions.is_allowed_user", side_effect=bool):
+        yield
+
+
 REQUESTER = "UREQ"
 
 

@@ -362,6 +362,19 @@ class TestSlacksStopIsTheCallersToo:
         assert not dispatches.calls and not dispatches.queued_after
         assert dispatches.files_after == {"alice.png": False, "bob.png": False}
 
+    @pytest.mark.parametrize("pending", [False, True])
+    def test_a_shared_users_escalated_stop_keeps_the_owners_entries(
+        self, slack_home: pathlib.Path, pending: bool
+    ) -> None:
+        """Bob is a shared user (slack.shared_access): his escalated stop drops only his
+        own entries, never Alice's (the owner's)."""
+        from unittest.mock import patch
+
+        with patch("kiro_crew.slack.events.is_shared_listed", lambda u: u == "U_BOB"):
+            _, _, dispatches, _ = _stop_by_bob(slack_home, outcome="hard", pending=pending)
+        assert [call[1] for call in dispatches.calls] == ["101.0"]
+        assert dispatches.files_after == {"alice.png": True, "bob.png": False}
+
     def test_both_enqueue_sites_and_the_stash_record_the_sender(
         self, slack_home: pathlib.Path
     ) -> None:

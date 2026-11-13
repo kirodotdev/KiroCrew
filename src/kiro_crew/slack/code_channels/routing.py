@@ -348,8 +348,24 @@ async def _inbound_gate(
     from_trusted_bot: bool,
     address_text: str | None = None,
 ) -> InboundResult:
+    from kiro_crew.slack.handler import is_shared_listed
+
     cfg = live_config(orch)
     channel = str(event.get("channel") or "")
+    # Code channels are the owner's (slack.shared_access), with the feature on or off.
+    if (
+        not from_trusted_bot
+        and is_shared_listed(sender_id)
+        and await asyncio.to_thread(shared_user_refused_in, channel)
+    ):
+        _audit(
+            sender_id,
+            "slack.code_channel.message",
+            "denied",
+            f"channel={channel}",
+            "code channel is owner-only",
+        )
+        return DROP
     if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
         return PASS
     binding = store().get_binding(channel)
@@ -993,11 +1009,16 @@ def options_answer_permitted(channel: str, sender: str = "") -> bool:
     refuses too, since it cannot show the channel is unbound.
     """
     try:
+        from kiro_crew.slack.handler import is_shared_listed
+
         cfg = live_config(None)
-        if not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
+        if is_shared_listed(sender) and shared_user_refused_in(channel):
+            # Code channels are the owner's (slack.shared_access), with the feature
+            # on or off: an answer here would be a turn in the owner's session.
+            origin, error = "", "code channel is owner-only"
+        elif not code_channels_on(cfg) or not recognition.could_be_code_channel(channel):
             return True
-        binding = store().get_binding(channel)
-        if binding is None and store().is_quarantined(channel):
+        elif (binding := store().get_binding(channel)) is None and store().is_quarantined(channel):
             # Its binding row does not read back whole: the channel is fenced, so
             # nothing in it -- a kickoff-thread control included -- reaches a session.
             origin, error = "", "code channel binding row unreadable"
@@ -1922,6 +1943,7 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         return None
     from kiro_crew.slack.handler import is_allowed_user
 
+    # Code channels are the owner's: a shared user (slack.shared_access) stops none.
     if not is_allowed_user(user):
         _audit(
             user, "slack.code_channel.stop", "denied", f"channel={channel}", "unauthorized sender"
@@ -1942,3 +1964,12 @@ async def stop_from_channel(orch: Any, event: dict[str, Any], user: str) -> str 
         orch, binding, user, channel, source="slack.code_channel.stop", say_idle=False
     )
     return CHANNEL_STOP_STOPPED
+
+
+from kiro_crew.slack.code_channels.shared_refusal import (  # noqa: E402,F401 - see the module
+    _effective_session_of,
+    shared_user_refused_for_slot,
+    shared_user_refused_here,
+    shared_user_refused_in,
+    shared_user_refused_unbound,
+)

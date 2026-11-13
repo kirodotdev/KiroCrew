@@ -429,7 +429,9 @@ async def test_slack_kill_now_posts_to_thread_not_session_key(
     orch = orch_fixture
     # stop_turn must invoke on_hard for the post_message branch to run
 
-    async def _fake_stop_turn(key, *, force=False, on_soft=None, on_hard=None):
+    async def _fake_stop_turn(
+        key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None
+    ):
         if on_hard:
             await on_hard()
         return "hard"

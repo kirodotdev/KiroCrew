@@ -28,15 +28,19 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Coroutine
 from kiro_crew.config.loader import ACTIVATION_REVIEW, KiroCrewConfig
 from kiro_crew.messaging.link import legacy_key
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token, tag_entry
+from kiro_crew.sel import sel
 from kiro_crew.session import unlink_queued_temp_paths
 from kiro_crew.session_lifecycle import hand_queue_to_successor
 from kiro_crew.slack.handler import (
     APPROVAL_AUTO,
     APPROVAL_INTERACTIVE,
     handle_message,
+    is_allowed_user,
+    is_shared_user,
     is_yolo_mode,
     slack_cfg,
 )
+from kiro_crew.slack.shared_access import prime_shared_user
 from kiro_crew.slack.transport_dispatch import handle_message_transport
 from kiro_crew.start_priority import person_priority
 
@@ -70,14 +74,19 @@ def _entry_owner(sender_id: str, channel: str) -> str:
     return owner_token(_CHANNEL, (sender_id, channel))
 
 
-def _queue_tags(sender_id: str, channel: str) -> dict[str, Any]:
+def _queue_tags(sender_id: str, channel: str, *, shared: bool = False) -> dict[str, Any]:
     """The channel and owner tags every Slack queue entry carries.
 
     Attached to the session queue's kwargs and to a pre-session ``_pending_queue``
     entry's kwargs alike, so a ``!stop`` scoped by owner can tell the caller's entries
-    from the rest on both.
+    from the rest on both. *shared* is the admission decision ``_route_message``
+    made for the sender (``slack.shared_access``); an entry it marks is re-checked by
+    :func:`_dispatch_queued`, which drops it if their access ended before it ran.
     """
-    return tag_entry({}, _CHANNEL, _entry_owner(sender_id, channel))
+    tags: dict[str, Any] = dict(tag_entry({}, _CHANNEL, _entry_owner(sender_id, channel)))
+    if shared:
+        tags["shared_sender"] = True
+    return tags
 
 
 class _StopHold:
@@ -577,6 +586,25 @@ async def _dispatch_queued(
             await client.remove_reaction(channel, msg_ts, "hourglass_flowing_sand")
         except Exception:
             pass
+    # A removal or switch-off applies to the next event, queued ones included.
+    _q_sender = str(kwargs.get("sender_id", "") or "")
+    if kwargs.get("shared_sender"):
+        # A confirmation that aged out while the message waited is asked again,
+        # so only a real removal drops it.
+        await prime_shared_user(_q_sender, orch)
+    if kwargs.get("shared_sender") and not (
+        is_allowed_user(_q_sender) or is_shared_user(_q_sender)
+    ):
+        sel().log_api_access(
+            caller=_q_sender,
+            operation="slack.message",
+            outcome="denied",
+            source="slack",
+            resources=f"channel={channel} queued",
+            error="shared access ended while queued",
+        )
+        unlink_queued_temp_paths(kwargs)
+        return
     # Route the queued follow-up through the SAME gate as the initial message so
     # behavior is consistent mid-conversation: a thread that took the transport
     # path must keep taking it for its queued follow-ups (not silently fall back

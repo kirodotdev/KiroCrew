@@ -116,6 +116,8 @@ def orch(monkeypatch: pytest.MonkeyPatch, http: _Http, drafts: Any, gate: AsyncM
     o = _make_orch()
     monkeypatch.setattr(ix, "_orch", o)
     monkeypatch.setattr(ix, "is_owner", lambda uid: uid == OWNER)
+    # A requester is someone the bot still admits (the owner or a shared user).
+    monkeypatch.setattr(ix, "is_allowed_user", lambda uid: bool(uid))
     return o
 
 

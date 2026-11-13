@@ -44,7 +44,12 @@ from kiro_crew.slack.allowlist import prompt_track_channel, send_dashboard_link
 from kiro_crew.slack.blocks import channels_modal, dashboard_link_block, voice_config_modal
 from kiro_crew.slack.code_channels.commands import handle_slash as code_channel_slash
 from kiro_crew.slack.events_queue import _spawn_tracked
-from kiro_crew.slack.handler import describe_grant_lifetime, is_allowed_user, is_owner, slack_cfg
+from kiro_crew.slack.handler import (
+    describe_grant_lifetime,
+    is_allowed_user,
+    is_owner,
+    slack_cfg,
+)
 from kiro_crew.slack.sessions_view import (
     _build_sessions_blocks,
     _collect_recent_sessions_off_loop,
@@ -793,7 +798,8 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
                 )
         return
 
-    # Deny-by-default — only allowed users can invoke slash commands
+    # Deny-by-default — only the owner can invoke slash commands (a shared user,
+    # slack.shared_access, drives work by message, never through the slash command)
     if not is_allowed_user(caller_id):
         sel().log_api_access(
             caller=caller_id,

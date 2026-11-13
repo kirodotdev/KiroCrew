@@ -104,6 +104,37 @@ class TestInboundReplayResolvesItsSpoolWhenScheduled:
             "teams": teams
         }, "Slack replay must not widen the ordinary shared send registry"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_replay_notifies_a_listed_shared_user_while_sharing_is_on(
+        self, monkeypatch, tmp_path, enabled
+    ):
+        # A shared user (slack.shared_access) whose message the restart refused is
+        # owed its notice while the owner still lists them; never once switched off.
+        from kiro_crew.config.sections_slack import SlackSharedAccessConfig
+        from kiro_crew.messaging import inbound_spool
+
+        seen: list[dict[str, object]] = []
+
+        async def _record(*, transports, path=None, now=None):
+            seen.append(dict(transports))
+            return inbound_spool.ReplayReport()
+
+        monkeypatch.setattr(inbound_spool, "replay_spooled", _record)
+        orch = _make_orchestrator(slack_enabled=True, owner_id="U_OWNER")
+        orch._cfg.slack.shared_access = SlackSharedAccessConfig(
+            enabled=enabled, user_ids=["U_FRIEND"]
+        )
+        orch.slack = MagicMock()
+        orch.dashboard_state = SimpleNamespace(channel_transports={})
+
+        await orch._replay_spooled_inbound(spool=tmp_path / "refused.jsonl")
+
+        slack = seen[0]["slack"]
+        assert slack.may_send_to("C1", "1700.0", principal="U_OWNER") is True
+        assert slack.may_send_to("C1", "1700.0", principal="U_FRIEND") is enabled
+        assert slack.may_send_to("C1", "1700.0", principal="U_OTHER") is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: _connect_slack resilience (Slack connect must never crash the gateway)

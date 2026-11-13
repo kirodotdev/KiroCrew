@@ -47,12 +47,25 @@ if TYPE_CHECKING:
 
 
 class _PendingApproval:
-    __slots__ = ("provider", "request_id", "session_key", "future")
+    """A native tool-approval prompt awaiting its click.
 
-    def __init__(self, provider: LLMProvider, request_id: str | int, session_key: str = "") -> None:
+    ``requester`` is the Slack user whose turn asked; a shared user may answer only
+    a prompt whose requester they are (empty: only the owner may answer it).
+    """
+
+    __slots__ = ("provider", "request_id", "session_key", "future", "requester")
+
+    def __init__(
+        self,
+        provider: LLMProvider,
+        request_id: str | int,
+        session_key: str = "",
+        requester: str = "",
+    ) -> None:
         self.provider = provider
         self.request_id = request_id
         self.session_key = session_key
+        self.requester = requester
         self.future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
 
 
@@ -630,7 +643,7 @@ async def _grant_late_trust(
     audited.
     """
     if not is_allowed_user(user_id):
-        logger.warning("Rejecting late trust click from non-allowed user %s", user_id)
+        logger.warning("Rejecting late trust click from non-owner %s", user_id)
         sel().log_api_access(
             caller=user_id,
             operation="slack.interactive.trust_late",

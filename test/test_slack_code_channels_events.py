@@ -170,6 +170,156 @@ async def test_multi_step_mention_moves_into_a_new_channel(env: Env) -> None:
     assert env.routed and env.routed[0][0] == "C0NEW"
 
 
+async def _route_shared(env: Env, event: dict[str, Any], *, is_mention: bool) -> MagicMock:
+    """:func:`_route` for a shared user (``slack.shared_access``): admitted, not the owner."""
+    with (
+        patch("kiro_crew.slack.events.is_shared_listed", return_value=True),
+        patch("kiro_crew.slack.handler.is_shared_listed", return_value=True),
+    ):
+        return await _route(env, event, is_mention=is_mention)
+
+
+async def test_a_shared_user_is_refused_in_a_bound_code_channel(env: Env) -> None:
+    _bind(env)
+    handle = await _route_shared(env, _plain("C0CODE"), is_mention=False)
+    handle.assert_not_called()
+    assert env.routed == []
+    # Quietly: a member's messages are mostly not for the bot.
+    assert env.slack.ephemerals == [] and env.slack.posts == []
+
+
+async def test_a_shared_user_cannot_answer_a_card_in_a_code_channel(env: Env) -> None:
+    from kiro_crew.slack.code_channels.routing import options_answer_permitted
+
+    _bind(env)
+    assert options_answer_permitted("C0CODE", OWNER) is True
+    with patch("kiro_crew.slack.handler.is_shared_listed", return_value=True):
+        assert options_answer_permitted("C0CODE", OWNER) is False
+
+
+async def test_a_shared_user_cannot_answer_a_card_in_a_bound_channel_with_the_feature_off(
+    env: Env,
+) -> None:
+    from kiro_crew.slack.code_channels.routing import options_answer_permitted
+
+    _bind(env)
+    env.on = False
+    assert options_answer_permitted("C0CODE", OWNER) is True
+    with patch("kiro_crew.slack.handler.is_shared_listed", return_value=True):
+        assert options_answer_permitted("C0CODE", OWNER) is False
+        assert options_answer_permitted("C0PLAIN", OWNER) is True
+
+
+async def test_the_code_channel_gate_itself_drops_a_shared_user(env: Env) -> None:
+    from kiro_crew.slack.code_channels.routing import DROP, inbound_gate
+
+    _bind(env)
+    with patch("kiro_crew.slack.handler.is_shared_listed", return_value=True):
+        result = await inbound_gate(
+            _orch(env),
+            _plain("C0CODE"),
+            text="now add a regression test",
+            sender_id=OWNER,
+            authorized=False,
+            from_trusted_bot=False,
+        )
+    assert result is DROP and env.routed == []
+
+
+async def test_a_shared_users_mention_in_a_bound_channel_is_refused_with_the_feature_off(
+    env: Env,
+) -> None:
+    # The owner turned Slack Code off and the binding (and its session) stayed.
+    _bind(env)
+    env.on = False
+    event = {**_plain("C0CODE", f"<@{SELF_USER}> now add a regression test")}
+    handle = await _route_shared(env, event, is_mention=True)
+    handle.assert_not_called()
+    assert env.routed == []
+
+
+async def test_a_shared_users_linked_thread_reply_is_refused_with_no_slot_and_the_feature_off(
+    env: Env,
+) -> None:
+    from kiro_crew.slack.handler_runtime.inbound import LinkedRoute, route_linked_thread
+
+    _bind(env)
+    env.on = False
+    with patch("kiro_crew.slack.handler.is_shared_listed", return_value=True):
+        outcome = await route_linked_thread(
+            "now add a regression test",
+            "slack:300.000001",
+            OWNER,
+            "C0CODE",
+            env.slack,
+            "300.000001",
+        )
+    assert outcome is LinkedRoute.REFUSED
+
+
+async def test_a_revoked_channel_stays_the_owners_with_the_feature_off(env: Env) -> None:
+    # Slack stopped listing the bot there; the anchor thread still leads to the session.
+    from kiro_crew.slack.code_channels.routing import options_answer_permitted
+    from kiro_crew.slack.handler_runtime.inbound import LinkedRoute, route_linked_thread
+
+    _bind(env)
+    env.store.drop_binding("C0CODE")
+    assert env.store.was_revoked("C0CODE")
+    env.on = False
+    with patch("kiro_crew.slack.handler.is_shared_listed", return_value=True):
+        assert options_answer_permitted("C0CODE", OWNER) is False
+        outcome = await route_linked_thread(
+            "now add a regression test",
+            "slack:300.000001",
+            OWNER,
+            "C0CODE",
+            env.slack,
+            "300.000001",
+        )
+    assert outcome is LinkedRoute.REFUSED
+
+
+async def test_a_shared_users_thread_stop_in_a_code_channel_is_refused(env: Env) -> None:
+    from kiro_crew.slack.agent_sessions.session_events import _shared_user_in_code_channel
+
+    _bind(env)
+    env.on = False
+    with patch("kiro_crew.slack.handler.is_shared_listed", return_value=True):
+        assert await _shared_user_in_code_channel(OWNER, "C0CODE") is True
+        assert await _shared_user_in_code_channel(OWNER, "D0DM00001") is False
+    assert await _shared_user_in_code_channel(OWNER, "C0CODE") is False
+
+
+async def test_a_shared_users_inline_stop_is_refused_in_a_revoked_channel_but_not_a_dm(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.interactions_sessions import _outside_code_channel
+
+    _bind(env)
+    env.store.drop_binding("C0CODE")
+    assert await _outside_code_channel("C0CODE") is False
+    monkeypatch.setattr(type(env.store), "unreadable", property(lambda self: True))
+    assert await _outside_code_channel("D0DM00001") is True
+
+
+def test_an_unreadable_store_refuses_a_shared_user_in_any_channel_that_could_be_one(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kiro_crew.slack.code_channels.routing import shared_user_refused_in
+
+    monkeypatch.setattr(type(env.store), "unreadable", property(lambda self: True))
+    assert shared_user_refused_in("C0PLAIN") is True
+    assert shared_user_refused_in("D0DM00001") is False
+
+
+async def test_a_shared_users_mention_never_opens_a_code_channel(env: Env) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0NEW"}
+    handle = await _route_shared(env, mention(), is_mention=True)
+    # Answered in place on the normal path, as without code channels.
+    handle.assert_called_once()
+    assert env.store.get_binding("C0NEW") is None and env.routed == []
+
+
 async def test_one_line_question_is_answered_in_place(env: Env) -> None:
     env.decision = RouteDecision("stay")
     handle = await _route(

@@ -59,6 +59,8 @@ if TYPE_CHECKING:
         hook_gate_kwargs,
         is_allowed_user,
         is_session_trusted,
+        is_shared_listed,
+        is_shared_user,
         is_yolo_mode,
         logger,
         name_grant,
@@ -390,6 +392,7 @@ async def _answer_permission_request(
         event,
         session_key,
         is_dm=channel.startswith("D"),
+        requester=getattr(turn, "user_id", ""),
     )
     task.resume()
     sel().log_tool_invocation(
@@ -516,8 +519,13 @@ async def _request_approval(
     event: LLMEvent,
     session_key: str = "",
     is_dm: bool = True,
+    requester: str = "",
 ) -> str:
-    """Post approval buttons, wait for click, return 'approved' or 'rejected'."""
+    """Post approval buttons, wait for click, return 'approved' or 'rejected'.
+
+    *requester* is the Slack user whose turn asked, the one person besides the owner
+    whose click may answer the prompt.
+    """
     blocks = _build_approval_blocks(event, is_dm=is_dm)
     # If posting the approval prompt fails, the ACP permission request would
     # otherwise be left unanswered — the subprocess blocks forever and every
@@ -532,7 +540,7 @@ async def _request_approval(
         raise
 
     key = f"{channel}:{approval_ts}"
-    pending = _PendingApproval(provider, event.request_id, session_key)
+    pending = _PendingApproval(provider, event.request_id, session_key, requester=requester)
     _pending_approvals[key] = pending
     approval_timeout = (
         _APPROVAL_TIMEOUT if _APPROVAL_TIMEOUT is not None else tool_approval_timeout_secs()
@@ -631,12 +639,13 @@ async def handle_interaction(
     - trust_tool: auto-approve all tools for this session (thread)
     - reject_tool: reject this tool call
 
-    Security: rejects non-owner clicks. Trust requires DM channel
+    Security: only the owner, or a shared user on the prompt their own turn posted,
+    may answer; only the owner grants Trust. Trust requires DM channel
     (verified via conversations.info by the gateway caller).
     """
 
     # Deny-by-default: reject unless positively confirmed as allowed
-    if not user_id or not is_allowed_user(user_id):
+    if not user_id or not (is_allowed_user(user_id) or is_shared_user(user_id)):
         logger.warning(
             "Rejecting interactive action from unauthorized user %s (action=%s)", user_id, action_id
         )
@@ -651,6 +660,31 @@ async def handle_interaction(
         return None
 
     key = f"{channel}:{msg_ts}"
+
+    # A shared user (slack.shared_access) answers only the prompt their own turn
+    # posted, and never grants Trust. Checked before the claim, so a refused click
+    # leaves the prompt pending for the person it belongs to.
+    if is_shared_listed(user_id):
+        _own = _pending_approvals.get(key)
+        _refusal = (
+            "trust is owner-only"
+            if action_id == _ACTION_TRUST
+            else (
+                "not the requester"
+                if _own is None or _own.requester != user_id or key in _linked_approvals
+                else ""
+            )
+        )
+        if _refusal:
+            sel().log_api_access(
+                caller=user_id,
+                operation="slack.interactive.approval",
+                outcome="denied",
+                source="slack",
+                resources=action_id,
+                error=_refusal,
+            )
+            return None
 
     # Linked-dashboard-slot approval: _on_permission_prompt (chat_turn/permission_prompt.py)
     # owns the ACP answer (it is parked on the slot's approval future). Resolve ONLY that
@@ -707,7 +741,7 @@ async def handle_interaction(
             # Set trust state BEFORE approving (so subsequent tools auto-approve)
             if action_id == _ACTION_TRUST:
                 if not is_allowed_user(user_id):
-                    logger.error("Rejecting trust escalation from non-allowed user %s", user_id)
+                    logger.error("Rejecting trust escalation from non-owner %s", user_id)
                     sel().log_api_access(
                         caller=user_id,
                         operation="slack.interactive.trust_denied",

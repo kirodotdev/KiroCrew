@@ -55,7 +55,7 @@ DNS rebinding, unauthenticated remote access, and the rest) is in
 | Operator ceiling ↔ agent | keystone files under the data home | every agent read/write path | `security.is_sensitive_path` / `is_sensitive_write_path` |
 | Agent output ↔ any human or external service | nothing | all agent-derived text | `redact_credentials` / `redact_exfiltration_urls` / `StreamRedactor` |
 | Browser ↔ dashboard | authenticated session | any other origin or host | token auth, CSRF Origin check, Host allowlist |
-| Slack workspace ↔ gateway | owner + allowlisted users | every other Slack sender | owner lock, `is_allowed_user`, Enterprise Grid check |
+| Slack workspace ↔ gateway | owner, plus `slack.shared_access` users when the owner turns it on (off by default; they act as the owner) | every other Slack sender | owner lock, `is_allowed_user` / `is_shared_user`, Enterprise Grid check |
 
 The single most important structural property: **the PreToolUse gate is
 Kiro Crew's own gate, not the agent's.** Denied commands and the governance

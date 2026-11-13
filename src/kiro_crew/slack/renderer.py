@@ -249,9 +249,10 @@ class SlackApprovalDecider:
     #: Retired with the window, so a nonce never outlives the prompt it authorizes.
     _NONCES: dict[str, str] = {}
 
-    def __init__(self, session_key: str = "") -> None:
+    def __init__(self, session_key: str = "", requester: str = "") -> None:
         self._futures: dict[str, asyncio.Future[bool]] = {}
         self.session_key = session_key
+        self.requester = requester  # the asking turn's Slack user (slack.shared_access)
         #: Why the LAST call denied -- see ``messaging.driver.ApprovalDecider``.
         self.last_deny_cause = ""
 
