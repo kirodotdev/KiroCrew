@@ -7148,10 +7148,19 @@ is pinned.** Everything else in the record's directory is retired with the old
 tree, and the swap runs at a start before any route registers, so a built-in that
 kept a file beside `app.json` copies it into `data/` itself, from a startup hook
 that runs whether or not the app is enabled, in a release before its pin row is
-added; core grows no per-app carry list. Nothing at the swap enforces that order:
-a user who never starts that release loses the file, so the app's pin row lands
-with a refusal or carry at the swap for it. Research Lab's campaigns database is
-the worked case (knowledge.md § 7); its test fails while the app is pinned.
+added; core grows no per-app carry list. The swap refuses rather than carries:
+once the staged tree is verified, APPLY skips a record whose directory holds
+anything at its root that nothing rebuilds, logging the names it found
+(`builtin_adoption_apply._nothing_beside_the_manifest`). Rebuilt are the
+gateway's own entries (`installed.json`, the `app.json` copy, `.app_secret`,
+`data/`, the `approved-grants.json` the protected store imported once and never
+reads again, and `app-crons.json`, which the next registration rewrites from the
+manifest) and every name the pinned tree ships at its root, which the swap
+replaces as an update does: pptx-maker renders `agents/` and `prompts/` from its
+package beside `app.json`, and its repository ships both. The record keeps
+running the built-in, whose startup hook moves the file, and the next start
+adopts. A user who never started the release carrying that hook loses nothing.
+Research Lab's campaigns database is the worked case (knowledge.md § 7).
 
 **Pins.** `apps/adoption-pins.json` (packaged; each row is the output of
 `scripts/adoption_pin.py compute`, re-checked with `adoption_pin.py verify`, and the
@@ -7333,13 +7342,14 @@ unambiguous state: one retired tree, data in one place); finalize when a
 record goes in the sweep after the listener serves, see "What a killed update
 leaves"); a record whose data is in two
 places (`data/` beside a moved-aside `.<name>-data-tmp`) is skipped, since the
-update refuses that state (see "What a killed update leaves"); else the
-staged artifact is
-read from the location the pin derives (the ledger names only its kind, and a link
+update refuses that state (see "What a killed update leaves"); else the staged
+artifact is read from the location the pin derives (the ledger names only its kind, and a link
 or junction anywhere below the data home makes it `not_staged`), copied into a
 private temp dir with every file opened without following a link
 (`tree_has_link`), and `treeSha256` re-verified **on that copy** (a tree changed
-after STAGE is never executed), then:
+after STAGE is never executed); a record with anything beside `app.json` the swap
+would retire and that copy does not ship is skipped there (see "What the swap
+keeps is `data/`" above), while the ledger keeps its state; then:
 
 | Check | Reason code | Retried |
 |---|---|---|
@@ -7448,8 +7458,8 @@ the other two keys and only the marker is dropped, so the next APPLY meets
 `trust_conflict`; with the binding gone only the added name is removed, never the
 local marker restored. Success sets the marker `adopted`. A grant a crash left behind
 (a `granting` marker for the pin commit) is rolled back the same way when APPLY
-refuses before the swap: a `blocked` ledger, `host_sdk_too_old`, or a staged tree
-that no longer verifies. A `granting` marker for a name the wheel no longer pins is
+refuses before the swap: a `blocked` ledger, `host_sdk_too_old`, a staged tree
+that no longer verifies, or a record held by state beside `app.json`. A `granting` marker for a name the wheel no longer pins is
 not visited; the release that drops a pin row owns that cleanup.
 
 **Durable state.** `agent.apps_builtin_adoption` in `config.json` (sealed
