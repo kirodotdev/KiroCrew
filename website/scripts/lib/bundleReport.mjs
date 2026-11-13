@@ -345,6 +345,34 @@ export function findChunkCycles(summary) {
 }
 
 /**
+ * Bytes of JS the dashboard downloads before it can render: the entry chunk
+ * whose logical name is `entryName` plus every chunk it reaches through STATIC
+ * `imports`. That is the set `dist/index.html` modulepreloads. Dynamic imports
+ * are not followed, so a lazy page never counts.
+ *
+ * Sizes are the report's raw chunk sizes (minified, not compressed). Returns
+ * `null` when the report has no such entry chunk, so the caller can fail rather
+ * than certify a total of zero.
+ */
+export function firstLoadBytes(summary, entryName = 'main') {
+  const chunks = summary && Array.isArray(summary.chunks) ? summary.chunks : []
+  const byFile = new Map(chunks.filter((c) => c && typeof c.fileName === 'string').map((c) => [c.fileName, c]))
+  const entry = chunks.find((c) => c && c.isEntry && logicalChunkName(c.fileName) === entryName)
+  if (!entry) return null
+  const seen = new Set()
+  const stack = [entry.fileName]
+  while (stack.length > 0) {
+    const file = stack.pop()
+    if (seen.has(file) || !byFile.has(file)) continue
+    seen.add(file)
+    for (const target of byFile.get(file).imports || []) stack.push(target)
+  }
+  let bytes = 0
+  for (const file of seen) bytes += byFile.get(file).size || 0
+  return { bytes, chunkCount: seen.size }
+}
+
+/**
  * Compare two summaries. Used to answer "did my change make it bigger", which is
  * the question a report is usually opened to settle.
  */
