@@ -224,7 +224,11 @@ describe('FargateCrewView', () => {
   it('says when the task stopped in unit words inside the Japanese sentence, never the narrow 25m (#36611)', async () => {
     onTestFinished(() => i18next.changeLanguage('en'))
     await i18next.changeLanguage('ja')
-    const stoppedAt = Math.floor(Date.now() / 1000) - 25 * 60
+    // The age is computed from a pinned instant, never the real clock.
+    const nowSec = 1_758_470_400
+    vi.setSystemTime(nowSec * 1000)
+    onTestFinished(() => vi.useRealTimers())
+    const stoppedAt = nowSec - 25 * 60
     cloudLaunchTask.mockResolvedValue(
       report(sighting({ last_status: 'STOPPED', desired_status: 'STOPPED', stopped_at: stoppedAt })),
     )
