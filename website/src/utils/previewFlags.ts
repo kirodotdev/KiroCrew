@@ -210,8 +210,9 @@ export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
 export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 
 /**
- * Crew-owned GitHub sign-in: the gateway signs in to GitHub itself and serves it
- * to KAS chats (`connections/crew_oauth.py`). Server-only: the gateway reads
+ * Crew-owned MCP sign-in: the gateway signs in to MCP servers (GitHub, Asana,
+ * Google, DCR cards, owner-added servers) itself and serves them to chats on a
+ * bridged harness, never kiro-cli (`connections/crew_oauth.py`). Server-only: the gateway reads
  * `dashboard.feature_previews.crew_oauth` per call, so nothing in the dashboard
  * reads this key. Default OFF.
  */

@@ -300,7 +300,7 @@ it from there. Which address applies depends on what runs the sign-in:
 
 | What runs the sign-in | When | Redirect address | Domain entry the admin needs |
 |---|---|---|---|
-| Kiro Crew itself, local | The **GitHub sign-in by Kiro Crew** feature preview (`dashboard.feature_previews.crew_oauth`, which also covers the Atlassian card) is on, chats run on a backend Kiro Crew bridges such as Kiro Agent, and `dashboard.url` is not a public HTTPS address | `http://127.0.0.1:48100/callback` | `http://127.0.0.1:*/**` covers it |
+| Kiro Crew itself, local | The **MCP sign-in by Kiro Crew** feature preview (`dashboard.feature_previews.crew_oauth`, which also covers the Atlassian card) is on, chats run on a backend Kiro Crew bridges such as Kiro Agent, and `dashboard.url` is not a public HTTPS address | `http://127.0.0.1:48100/callback` | `http://127.0.0.1:*/**` covers it |
 | Kiro Crew itself, on a gateway with a public HTTPS `dashboard.url` | As above, with `dashboard.url` set to `https://<dashboard host>` | `https://<dashboard host>/api/connections/oauth/callback` | `https://<dashboard host>/**`, its own entry |
 | Kiro CLI or the KAS engine | Every other case | A loopback address whose port that runtime picks at each sign-in | `http://127.0.0.1:*/**` and `http://localhost:*/**` |
 
