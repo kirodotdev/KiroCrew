@@ -875,6 +875,9 @@ async def _refresh_from_vault() -> None:
             kiro_usage_api.fetch_usage_limits_with_credential,
             cred.access_token,
             cred.profile_arn,
+            token_type=(
+                kiro_usage_api.TOKEN_TYPE_EXTERNAL_IDP if cred.auth_method == "external_idp" else ""
+            ),
         ),
     )
     after, identity = await vault_identity_snapshot()

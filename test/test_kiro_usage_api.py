@@ -1,4 +1,4 @@
-"""Tests for kiro_crew.dashboard.handlers.kiro_usage_api — the direct RTS
+"""Tests for kiro_crew.dashboard.handlers.kiro_usage_api — the direct
 GetUsageLimits client that surfaces real Kiro credit usage/overage.
 """
 from __future__ import annotations
@@ -589,31 +589,47 @@ class TestWindowsCliStore:
         assert out["credits_used"] == 3.0
 
 
-class TestRtsEndpoint:
-    """Regional RTS host is a hardcoded table keyed by the whoami ARN."""
+class TestUsageEndpoint:
+    """Regional control-plane host is a hardcoded table keyed by the whoami ARN."""
 
-    def test_us_east_1_arn_keeps_codewhisperer_host(self):
+    def test_us_east_1_arn_uses_us_control_plane(self):
         arn = "arn:aws:codewhisperer:us-east-1:123:profile/A"
         assert api._region_from_arn(arn) == "us-east-1"
-        assert api._rts_endpoint(arn) == "https://codewhisperer.us-east-1.amazonaws.com"
+        assert api._usage_endpoint(arn) == "https://management.us-east-1.kiro.dev/"
 
-    def test_eu_central_1_arn_uses_q_host(self):
-        # eu-central-1 is a different hostname, not codewhisperer.eu-central-1.
+    def test_eu_central_1_arn_uses_frankfurt_control_plane(self):
         arn = "arn:aws:codewhisperer:eu-central-1:123:profile/A"
         assert api._region_from_arn(arn) == "eu-central-1"
-        assert api._rts_endpoint(arn) == "https://q.eu-central-1.amazonaws.com"
+        assert api._usage_endpoint(arn) == "https://management.eu-central-1.kiro.dev/"
+
+    def test_eu_west_1_arn_is_served_from_frankfurt(self):
+        # eu-west-1 has no control-plane host of its own, as in kiro-cli.
+        arn = "arn:aws:codewhisperer:eu-west-1:123:profile/A"
+        assert api._usage_endpoint(arn) == "https://management.eu-central-1.kiro.dev/"
+
+    def test_table_equals_the_sign_in_control_plane_table(self):
+        # A copy, not an import (importing kiro_crew.auth at dashboard boot is
+        # refused), so equality is what keeps the two from drifting apart.
+        from kiro_crew.auth.login import control_plane
+
+        assert api._USAGE_ENDPOINTS == control_plane._CPS_ENDPOINTS
+
+    def test_builder_id_profile_equals_the_sign_in_constant(self):
+        from kiro_crew.auth import provider
+
+        assert api._BUILDER_ID_PROFILE_ARN == provider.BUILDER_ID_PROFILE_ARN
 
     def test_unknown_or_missing_arn_falls_back_to_us_east_1(self):
-        assert api._rts_endpoint(None) == api._RTS_ENDPOINT
-        assert api._rts_endpoint("") == api._RTS_ENDPOINT
-        assert api._rts_endpoint("not-an-arn") == api._RTS_ENDPOINT
-        assert api._rts_endpoint("arn:aws:codewhisperer:ap-south-1:1:profile/X") == (
-            api._RTS_ENDPOINT
+        assert api._usage_endpoint(None) == api._USAGE_ENDPOINT
+        assert api._usage_endpoint("") == api._USAGE_ENDPOINT
+        assert api._usage_endpoint("not-an-arn") == api._USAGE_ENDPOINT
+        assert api._usage_endpoint("arn:aws:codewhisperer:ap-south-1:1:profile/X") == (
+            api._USAGE_ENDPOINT
         )
 
     def test_default_constant_is_the_us_east_1_literal(self):
-        assert api._RTS_ENDPOINT == api._RTS_ENDPOINTS["us-east-1"]
-        assert api._RTS_ENDPOINT == "https://codewhisperer.us-east-1.amazonaws.com"
+        assert api._USAGE_ENDPOINT == api._USAGE_ENDPOINTS["us-east-1"]
+        assert api._USAGE_ENDPOINT == "https://management.us-east-1.kiro.dev/"
 
 
 class TestPostSecurityControls:
@@ -640,7 +656,7 @@ class TestPostSecurityControls:
         with patch("urllib.request.OpenerDirector.open", fake_open):
             api._post("tok-xyz", api._TARGET_GET_USAGE, {"origin": "AI_EDITOR"})
         req = captured["req"]
-        assert req.get_full_url() == api._RTS_ENDPOINT             # hardcoded endpoint
+        assert req.get_full_url() == api._USAGE_ENDPOINT             # hardcoded endpoint
         assert req.get_method() == "POST"
         assert req.data == json.dumps({"origin": "AI_EDITOR"}).encode()
         # urllib stores header keys capitalized (first letter only).
@@ -668,7 +684,7 @@ class TestPostSecurityControls:
             captured["req"] = req
             return _FakeResp()
 
-        eu = api._RTS_ENDPOINTS["eu-central-1"]
+        eu = api._USAGE_ENDPOINTS["eu-central-1"]
         with patch("urllib.request.OpenerDirector.open", fake_open):
             api._post("tok", api._TARGET_LIST_PROFILES, {}, endpoint=eu)
         assert captured["req"].get_full_url() == eu
@@ -687,7 +703,7 @@ class TestPostSecurityControls:
     def test_http_error_is_returned_as_response_not_raised(self):
         # A 403 must come back as a _Resp (status_code=403), not raise — so the
         # caller can branch on status and fail over to the next token.
-        err = urllib.error.HTTPError(api._RTS_ENDPOINT, 403, "Forbidden", {}, None)
+        err = urllib.error.HTTPError(api._USAGE_ENDPOINT, 403, "Forbidden", {}, None)
         with patch("urllib.request.OpenerDirector.open", side_effect=err):
             r = api._post("tok", api._TARGET_GET_USAGE, {})
         assert r.status_code == 403
@@ -754,7 +770,7 @@ class TestFetchUsageLimits:
     def test_eu_arn_posts_both_calls_to_q_eu_central_1(self):
         # ListAvailableProfiles is region-scoped: hitting us-east-1 for an
         # eu-central-1 IdC profile returns no ARN and the pill hides. Both
-        # RTS calls must use the EU host from the whoami ARN.
+        # Usage calls must use the EU host from the whoami ARN.
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
         arn = "arn:aws:codewhisperer:eu-central-1:123:profile/A"
@@ -770,9 +786,9 @@ class TestFetchUsageLimits:
              patch.object(api, "_post", side_effect=fake_post):
             out = api.fetch_usage_limits(expected_arn=arn).usage
         assert out is not None
-        eu = api._RTS_ENDPOINTS["eu-central-1"]
+        eu = api._USAGE_ENDPOINTS["eu-central-1"]
         assert seen == [eu, eu]
-        assert eu == "https://q.eu-central-1.amazonaws.com"
+        assert eu == "https://management.eu-central-1.kiro.dev/"
 
     def test_no_account_when_profile_has_no_name(self):
         # An org profile with an ARN but no profileName must not set ``account``
@@ -900,6 +916,62 @@ class TestAuthStateClassification:
             out = api.fetch_usage_limits(expected_arn=self.ARN)
         assert out.usage is None
         assert out.auth_state == api.AUTH_REJECTED
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "example.controlplane#AccessDeniedException",
+            "example.controlplane#UnauthorizedException",
+            "UnauthorizedException",
+        ],
+    )
+    def test_control_plane_400_refusing_the_token_reports_rejected(self, kind):
+        # The control plane answers a dead token with 400 AccessDeniedException
+        # "Invalid token" where the CodeWhisperer runtime host answers 401.
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_list_profile_arn", return_value=self.ARN), \
+             patch.object(api, "_post",
+                          return_value=_resp(400, {"__type": kind, "message": "Invalid token"})):
+            out = api.fetch_usage_limits(expected_arn=self.ARN)
+        assert out.usage is None
+        assert out.auth_state == api.AUTH_REJECTED
+
+    def test_arnless_400_refusing_the_token_is_not_retried_without_the_email(self):
+        # The ARN-less read asks for the e-mail and retries a plain 400 without
+        # it; a 400 that refused the token must not be sent a second time.
+        posted: list[dict] = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_GET_USAGE:
+                posted.append(payload)
+            return _resp(400, {
+                "__type": "example.controlplane#AccessDeniedException",
+                "message": "Invalid token",
+            })
+
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok", own=True)]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out.auth_state == api.AUTH_REJECTED
+        assert len(posted) == 1
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"__type": "example.controlplane#ValidationException",
+             "message": "Invalid profileArn."},
+            {},
+            ValueError("not json"),
+        ],
+    )
+    def test_other_400_is_not_reported_as_rejected(self, body):
+        # A malformed request or an unreadable body says nothing about the sign-in.
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_list_profile_arn", return_value=self.ARN), \
+             patch.object(api, "_post", return_value=_resp(400, body)):
+            out = api.fetch_usage_limits(expected_arn=self.ARN)
+        assert out.usage is None
+        assert out.auth_state == api.AUTH_OTHER
 
     def test_forbidden_is_not_reported_as_rejected(self):
         # 403 is authenticated-but-not-permitted -- an entitlement problem. Reading
@@ -1270,6 +1342,29 @@ class TestExpectedArnAnchor:
         assert out is not None
         assert seen_email_flag == [True], "the ARN-less GetUsageLimits must ask for the email"
         assert out["email"] == "solo@b.com"
+
+    def test_arnless_read_sends_the_builder_id_profile(self):
+        # The control plane answers a read with no profileArn with 400 "Invalid
+        # profileArn.", so a credential that lists no profile sends kiro-cli's
+        # fixed Builder ID profile. The reading still reports no profile, so the
+        # identity check downstream stays on its ARN-less proof.
+        usage = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 50.0}]}
+        sent: list[dict] = []
+
+        def fake_post(token, target, payload, **_kwargs):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            sent.append(payload)
+            return _resp(200, usage)
+
+        with patch.object(api, "_candidate_tokens",
+                          return_value=[_cand("builder", own=True)]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=None).usage
+        assert out is not None
+        assert [p.get("profileArn") for p in sent] == [api._BUILDER_ID_PROFILE_ARN]
+        assert out["_profile_arn"] is None
 
     def test_arn_path_does_not_ask_for_the_email(self):
         # Regression guard: the ARN path's proof is the ARN match, so it must NOT
@@ -1873,3 +1968,108 @@ class TestExpectedArnSelection:
         # fetch_usage_limits' own truthiness convention for expected_arn.
         with patch.object(api, "_post", side_effect=self._post_two_profiles):
             assert api._list_profile_arn("tok", expected_arn="") == self.ARN_B
+
+
+class TestExternalIdpTokenType:
+    """An External IdP token carries ``TokenType: EXTERNAL_IDP`` on both control-plane calls."""
+
+    ARN = "arn:aws:codewhisperer:us-east-1:1:profile/p"
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+        yield
+        api._PROFILE_ARN_CACHE.clear()
+        api._PROFILE_NAME_CACHE.clear()
+
+    @staticmethod
+    def _capture_open(captured: list):
+        class _FakeResp:
+            status = 200
+
+            def read(self, n=None):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_open(self, req, timeout=None):
+            captured.append(req)
+            return _FakeResp()
+
+        return fake_open
+
+    def test_post_sends_the_token_type_header(self):
+        captured: list = []
+        with patch("urllib.request.OpenerDirector.open", self._capture_open(captured)):
+            api._post("tok", api._TARGET_GET_USAGE, {}, token_type=api.TOKEN_TYPE_EXTERNAL_IDP)
+        # urllib stores header keys capitalized (first letter only).
+        assert captured[0].get_header("Tokentype") == "EXTERNAL_IDP"
+
+    def test_post_without_a_token_type_sends_no_header(self):
+        captured: list = []
+        with patch("urllib.request.OpenerDirector.open", self._capture_open(captured)):
+            api._post("tok", api._TARGET_GET_USAGE, {})
+        assert captured[0].get_header("Tokentype") is None
+
+    @staticmethod
+    def _store(tmp_path, key: str):
+        db = tmp_path / "data.sqlite3"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            (key, json.dumps({"access_token": "live", "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+        return db
+
+    @pytest.mark.parametrize(
+        "key, token_type",
+        [("kirocli:external-idp:token", "EXTERNAL_IDP"), ("kirocli:odic:token", "")],
+    )
+    def test_store_key_decides_the_token_type(self, tmp_path, key, token_type):
+        db = self._store(tmp_path, key)
+        with patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_token_from_json", return_value=None), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()):
+            found = api._token_from_sqlite(db, datetime.now(timezone.utc))
+            cands = api._candidate_tokens()
+        assert found is not None and found.token_type == token_type
+        assert [(c.token, c.token_type) for c in cands] == [("live", token_type)]
+
+    def _fetch(self, token_type: str) -> list:
+        sent: list = []
+
+        def fake_post(token, target, payload, *, endpoint=None, token_type=""):
+            sent.append((target, token_type))
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": self.ARN}]})
+            return _resp(200, {"usageBreakdownList": [
+                {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]})
+
+        soon = datetime.now(timezone.utc) + timedelta(hours=1)
+        hit = api._StoreToken("idp-tok", soon, None, token_type)
+        with patch.object(api, "_token_from_json", return_value=None), \
+             patch.object(api, "_token_from_sqlite",
+                          side_effect=lambda db, _n: hit if db == api._CLI_SQLITE_DBS[0] else None), \
+             patch.object(api, "_post", side_effect=fake_post):
+            assert api.fetch_usage_limits(expected_arn=self.ARN).usage is not None
+        return sent
+
+    def test_external_idp_candidate_sends_it_on_both_calls(self):
+        sent = self._fetch(api.TOKEN_TYPE_EXTERNAL_IDP)
+        assert {t for t, _ in sent} == {api._TARGET_LIST_PROFILES, api._TARGET_GET_USAGE}
+        assert all(tt == "EXTERNAL_IDP" for _, tt in sent)
+
+    def test_other_candidate_sends_none(self):
+        sent = self._fetch("")
+        assert {t for t, _ in sent} == {api._TARGET_LIST_PROFILES, api._TARGET_GET_USAGE}
+        assert all(tt == "" for _, tt in sent)
