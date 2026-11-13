@@ -391,8 +391,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     }
   }
   const lessonComparators = useMemo(() => ({
-    rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
-    category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
+    rule: (a: Lesson, b: Lesson) => compareText(a.rule, b.rule),
+    category: (a: Lesson, b: Lesson) => compareText(a.category, b.category),
     repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
     source: (a: Lesson, b: Lesson) => compareText(a.source ?? '', b.source ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),

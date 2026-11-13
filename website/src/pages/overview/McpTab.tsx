@@ -21,7 +21,7 @@ import McpCustomServerModal from '../../components/McpCustomServerModal'
 import type { McpServer, McpApplyChange, McpScopePresence, McpGlobalScope, McpTempRefusal } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import { useScrollEdges } from '../../hooks/useScrollEdges'
-import { fmtDateTime, fmtNumber, fmtTime } from '../../i18n/format'
+import { compareText, fmtDateTime, fmtNumber, fmtTime } from '../../i18n/format'
 
 /** Same calendar day as now — the boundary where a bare time stops being honest. */
 function isToday(epochSecs: number): boolean {
@@ -802,8 +802,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     [servers, mcpFilter]
   )
   const mcpComparators = useMemo(() => ({
-    name: (a: McpServer, b: McpServer) => a.name.localeCompare(b.name),
-    status: (a: McpServer, b: McpServer) => (a.status || '').localeCompare(b.status || ''),
+    name: (a: McpServer, b: McpServer) => compareText(a.name, b.name),
+    status: (a: McpServer, b: McpServer) => compareText(a.status || '', b.status || ''),
     tools: (a: McpServer, b: McpServer) => (a.tools?.length || 0) - (b.tools?.length || 0),
   }), [])
   const { sorted: sortedServers, sort: mcpSort, toggle: toggleMcpSort } = useSortableTable(filtered, 'mcp-overview', mcpComparators, { key: 'name', dir: 'asc' })

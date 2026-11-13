@@ -25,7 +25,7 @@ import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unread
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
-import { fmtTime } from '../../i18n/format'
+import { compareText, fmtTime } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -305,7 +305,7 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
   }
 
   const sources = Array.from(new Set(channels.map(c => c.source)))
-    .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : a.localeCompare(b)))
+    .sort((a, b) => (a === 'system' ? -1 : b === 'system' ? 1 : compareText(a, b)))
 
   return (
     <SettingsSection title={i18nT('pages.settings.notificationsPanel.sources')} hint={i18nT('pages.settings.notificationsPanel.mute_notification_sources_or_override_their_prio')}>

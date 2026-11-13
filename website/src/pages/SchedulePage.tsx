@@ -610,7 +610,7 @@ export default function SchedulePage() {
   }), [sanitizedJobs, cronFilter, activeCrewmate, roster])
   const filterActive = !!cronFilter || !!activeCrewmate
   const scheduleComparators = useMemo(() => ({
-    name: (a: CronJob, b: CronJob) => a.name.localeCompare(b.name),
+    name: (a: CronJob, b: CronJob) => compareText(a.name, b.name),
     // Clock time first, so `9:00 AM` precedes `1:00 PM` -- the label sorts wrongly
     // as text. Rows with no clock (raw fallback, intervals) go last, then by label.
     schedule: (a: CronJob, b: CronJob) => {
