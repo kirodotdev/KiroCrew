@@ -18,6 +18,7 @@ import { parseRecoveryMessage } from './RecoveryCard'
 import { isDiffToolMessage } from './toolDiff'
 import { isAskAnsweredToolMessage } from '../../utils/askQuestionAnswers'
 import { findOptionMarkers, stripOptionMarkers } from '../../app-sdk/protocol/optionMarker'
+import { extractSteeringAcks } from '../../app-sdk/protocol/steering'
 import { hasKeepVisibleMarker } from '../../app-sdk/protocol/keepVisibleMarker'
 import { i18nT } from '../../i18n/t'
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from './BrowserLiveCard'
@@ -260,9 +261,12 @@ const hadMcpApp = (it: TurnItem) => it.kind === 'single' && it.msg.meta?.mcp_app
  *  value when the slot has no app renders (avoids useless re-renders). */
 const EMPTY_ID_SET: ReadonlySet<string> = new Set()
 
-/** Strip OPTIONS/markdown formatting and return plain text content length */
+/** Strip steering notes, OPTIONS/markdown formatting, and format chars; return visible text length. */
 function substantiveLength(text: string): number {
-  return stripOptionMarkers(text).replace(/[#*_`>\-|]/g, '').trim().length
+  return stripOptionMarkers(extractSteeringAcks(text).cleaned)
+    .replace(/\p{Cf}/gu, '')
+    .replace(/[#*_`>\-|]/g, '')
+    .trim().length
 }
 
 /**

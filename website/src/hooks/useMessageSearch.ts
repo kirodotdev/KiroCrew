@@ -5,6 +5,7 @@ import { hasCommandModifier } from '../utils/commandModifier'
 import { isMac } from '../utils/platform'
 import { focusComposer } from '../pages/chat/composerFocus'
 import { isHiddenSupersededSteer } from '../pages/chat/groupDisplayItems'
+import { isHiddenReplyAt } from '../app-sdk/turnPolicyBlock'
 
 export interface SearchMatch {
   /** Index into the messages[] Redux array. */
@@ -51,6 +52,7 @@ export function useMessageSearch(messages: ChatMessage[], activeSlot: string | n
         // A superseded steer is not drawn; its successor row carries the same
         // text and is the hit the reader can land on.
         if (isHiddenSupersededSteer(messages, i)) continue
+        if (m.role === 'assistant' && isHiddenReplyAt(m, messages, i)) continue
         // Skip assistant reasoning segments collapsed inside turns
         if (m.role === 'assistant') {
           const next = messages[i + 1]

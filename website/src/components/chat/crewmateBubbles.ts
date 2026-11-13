@@ -103,7 +103,10 @@ export function isCrewmateSpeech(m: ChatMessage): boolean {
   if (m.role !== 'assistant') return false
   // A sub-agent completion envelope also reaches the transcript under the
   // assistant role (the Slack gateway's delivery-timeout and orphan variants).
-  return !isHiddenInvisibleAssistantRow(m) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
+  // This chat draws neither file chips nor the Steered chip, so a row whose
+  // only content is one of those (a quiet turn that only wrote files, a reply
+  // that is only a steering note) says nothing here.
+  return !isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false }) && !isSystemNoticeRow(m) && !isWorkflowCompletionMessage(m) && !isSubagentCompletionMessage(m)
 }
 
 /** Whether a row is drawn in a crewmate's chat at all. */

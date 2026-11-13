@@ -1,7 +1,8 @@
 import { useState, useCallback, useMemo, useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { store, type AppDispatch } from '../../../store'
-import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isHiddenReplyAt } from '../../../app-sdk/turnPolicyBlock'
 import { appendSlotMessage, selectSendConfirmed, resolveOptimisticSteer } from '../../../store/chatSlice'
 import { sendTurn } from '../../../chat-core/transport/sendTurn'
 import { applySteerReceipt } from '../../../chat-core/transport/steerReceipt'
@@ -310,7 +311,7 @@ export function useRegenerate({
       // System-notice rows (compaction / session reload) are passed over too:
       // they draw a system card, not a reply, so hosting Regenerate/variant
       // switching on them would target the wrong row.
-      if (messages[i].role === 'assistant' && !isHiddenInvisibleAssistantRow(messages[i]) && !isSystemNoticeRow(messages[i])) return i
+      if (messages[i].role === 'assistant' && !isHiddenReplyAt(messages[i], messages, i) && !isSystemNoticeRow(messages[i])) return i
     }
     return -1
   }, [messages])

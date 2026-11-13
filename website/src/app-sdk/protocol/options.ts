@@ -190,8 +190,10 @@ export function deriveFollowUpOptions(
     if (isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))) continue
     // A say-nothing reply (a quiet patrol cycle's bare U+200B) is not drawn, so the
     // question above it is still the newest thing the user reads: its chips stay.
-    // Same rule the transcript and the assistant footer use to skip that row.
-    if (isHiddenInvisibleAssistantRow(m)) continue
+    // Same rule the transcript and the assistant footer use to skip that row. A
+    // reply that is only a steering note asks nothing either; a steer the user
+    // sent left a user row, which ends this scan before it gets here.
+    if (isHiddenInvisibleAssistantRow(m, { steerChip: false })) continue
     // A note may carry options, so a zero-token cron can offer an action without an LLM turn.
     // `isNoteRow` also matches a rehydrated note, whose class the history format drops.
     if (m.role === 'inject' && isNoteRow(m) && m.content) {

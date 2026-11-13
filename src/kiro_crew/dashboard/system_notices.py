@@ -207,7 +207,14 @@ def is_speech_row(role: object, content: object, meta: object) -> bool:
         return False
     # The say-nothing reply a quiet patrol ends on is a bare U+200B: format
     # characters only, truthy as a string, invisible on screen. Not speech.
-    if not (isinstance(content, str) and drop_format_chars(content).strip()):
+    # Nor is a reply that is only kiro-cli's [STEERING steer-…] ack: the chat
+    # strips it and draws no Steered chip there.
+    if not isinstance(content, str):
+        return False
+    from kiro_crew.messaging.driver import strip_steering_markers
+
+    visible = strip_steering_markers(content) if role == "assistant" else content
+    if not drop_format_chars(visible).strip():
         return False
     if is_subagent_completion_row(content, meta):
         return False
