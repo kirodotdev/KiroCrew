@@ -235,7 +235,10 @@ class TestManagedContractAgent:
         self._write_spec(tmp_path, monkeypatch, f"file://{own}")
         with caplog.at_level(logging.WARNING, logger=ctx_mod.logger.name):
             assert ContextBuilder._load_agent_prompt("fork") == ""
-        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+        # No fall back to the shipped contract; the one WARNING names the agent's own file.
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert repr(str(own)) in warnings[0].getMessage()
 
 
 class TestReadPromptFile:

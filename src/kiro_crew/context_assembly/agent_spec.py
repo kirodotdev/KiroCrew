@@ -599,11 +599,9 @@ def _load_agent_prompt(
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.agent_sdk.agent_specs import spec_prompt
     from kiro_crew.file_uri import file_uri_path_text
-    from kiro_crew.member_essential_context import (
-        read_template_spec,
-        resolve_relative_prompt_path,
-    )
+    from kiro_crew.member_essential_context import read_template_spec
 
     try:
         if spec_path is not None:
@@ -620,7 +618,7 @@ def _load_agent_prompt(
         path, data = resolved
         if data is None:
             return ""
-        prompt = data.get("prompt") or ""
+        prompt = spec_prompt(data) or ""
         if not isinstance(prompt, str):
             return ""
         # The managed contract resolves to the contract file for EVERY spec
@@ -636,21 +634,82 @@ def _load_agent_prompt(
         if agent == owner_template:
             return ""
         if prompt.startswith("file://"):
-            source = Path(file_uri_path_text(prompt)).expanduser()
-            if not source.is_absolute():
-                resolved_source = resolve_relative_prompt_path(source, path, project)
-                if resolved_source is None:
-                    return ""
-                source, root = resolved_source
-                prompt_bytes = ctx.safe_read_file_bytes_nolink(str(source), within_root=str(root))
-                if prompt_bytes is None:
-                    logger.debug("Skipping relative agent prompt rejected at read time")
-                    return ""
-                return prompt_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            return ctx.safe_read_file(str(source))
+            return _read_agent_prompt_file(agent, file_uri_path_text(prompt), path, project)
         return prompt
     except (OSError, ValueError, ctx.FileTooLargeError):
         return ""
+
+
+def _is_checkout_spec(spec_path: Path, project: str | None) -> bool:
+    """Whether *spec_path* is a project checkout's spec (``<project>/.kiro/agents``).
+
+    The same test ``resolve_relative_prompt_path`` uses to pick the project root
+    as the containment root. A path that cannot be resolved counts as a checkout,
+    so the stricter rule applies.
+    """
+    if not project:
+        return False
+    from kiro_crew.config.paths import project_agents_dir
+
+    try:
+        return spec_path.parent.resolve() == project_agents_dir(Path(project).resolve()).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return True
+
+
+def _read_agent_prompt_file(agent: str, ref: str, spec_path: Path, project: str | None) -> str:
+    """The text of a custom agent's ``file://`` prompt *ref*, or "" with a WARNING naming it.
+
+    *ref* is expanded as KAS expands it (``$VAR``, ``~``:
+    :func:`kiro_crew.agent_sdk.agent_specs.expand_prompt_ref`). A relative path stays
+    inside its template root (``resolve_relative_prompt_path``). Relative or
+    absolute, the resolved path must pass KAS's prompt-path check
+    (:func:`kiro_crew.agent_sdk.agent_specs.is_unsafe_prompt_path`), since the
+    text is sent to the model. A project checkout's spec is held to its project
+    root for an expanded or absolute path too: the path is resolved (symlinks
+    followed) and read only when it stays inside that root
+    (:func:`_is_checkout_spec`). A file that is missing, refused, unreadable or
+    empty degrades to "" (the session runs without the persona) and is named in
+    one WARNING, so the operator can see why.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew.agent_sdk.agent_specs import expand_prompt_ref, is_unsafe_prompt_path
+    from kiro_crew.member_essential_context import resolve_relative_prompt_path
+
+    def _unread(name: object, why: str) -> str:
+        logger.warning(
+            "Agent %s's prompt file %r is %s, so this session runs without that prompt",
+            agent,
+            str(name),
+            why,
+        )
+        return ""
+
+    try:
+        source = expand_prompt_ref(ref)
+        if source.is_absolute() and not _is_checkout_spec(spec_path, project):
+            source = source.resolve()
+            if is_unsafe_prompt_path(source):
+                return _unread(source, "not an allowed location")
+            text = ctx.safe_read_file(str(source))
+        else:
+            # An absolute *source* replaces the anchor in this join, so the same
+            # resolve-then-contain check holds a checkout's expanded path to its root.
+            resolved_source = resolve_relative_prompt_path(source, spec_path, project)
+            if resolved_source is None:
+                return _unread(ref, "outside the agent's folder")
+            source, root = resolved_source
+            if is_unsafe_prompt_path(source.resolve()):
+                return _unread(source, "not an allowed location")
+            prompt_bytes = ctx.safe_read_file_bytes_nolink(str(source), within_root=str(root))
+            if prompt_bytes is None:
+                return _unread(source, "refused at read time")
+            text = prompt_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except (OSError, RuntimeError, ValueError, ctx.FileTooLargeError) as exc:
+        return _unread(ref, f"unreadable ({type(exc).__name__})")
+    if not text.strip():
+        return _unread(source, "empty")
+    return text
 
 
 def _crewmate_worker_prompt(agent: str, base_prompt: str, session_key: str) -> str:

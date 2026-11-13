@@ -1942,9 +1942,20 @@ between resolution and opening cannot redirect that read outside the root.
 UTF-8 decoding normalizes CRLF and CR like the essential reader; unreadable or
 over-50-MiB execution prompt files are skipped, never truncated.
 A `..` segment that stays inside is valid; an escaping traversal or symlink
-is skipped with a debug log. Sensitive-path checks remain in force, and the
+is skipped with a debug log (the execution prompt also names it in a WARNING). Sensitive-path checks remain in force, and the
 essential reader also retains its managed-memory source refusal. Absolute
-`file://` prompts retain each reader's existing rules. An absolute declared
+`file://` prompts retain each reader's existing rules. The execution prompt
+(`context_assembly/agent_spec.py` `_load_agent_prompt`) reads a spec the way KAS
+does: `systemPrompt` when `prompt` is absent (`acp/kas_prompt.py` `spec_prompt`),
+`$VAR` and `~` expanded in a `file://` ref (`expand_prompt_ref`), and the
+resolved path, relative or absolute, refused where KAS refuses it
+(`acp/kas_prompt_paths.py` `is_unsafe_prompt_path`). For a project checkout's
+spec an expanded or absolute path is held to the project root as a relative one
+is: resolved (symlinks followed), read only when it stays inside that root, and
+otherwise skipped. A user or global spec keeps the absolute-path rule above. A
+file it cannot use
+(missing, refused, unreadable or empty) leaves the block empty and is named in one
+WARNING. An absolute declared
 resource is accepted in either spelling of its declared root: the root is
 compared lexically first and then in the resolved spelling the reader already
 walks and reads under, so a resource recorded in its real path
