@@ -38,6 +38,7 @@ import { isStandaloneDisplay } from '../../lib/standaloneLastRoute'
 import { fuzzyMatch } from '../../utils/fuzzyMatch'
 import { PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, PREVIEW_SESSION_ENVIRONMENTS, previewFlagsLocked, readPreviewFlag } from '../../utils/previewFlags'
 import { i18nT } from '../../i18n/t'
+import { isMac } from '../../utils/platform'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import { SETTINGS_KEYWORDS } from './settingsKeywords'
 import { settingsTabLabel } from './settingsTabLabel'
@@ -152,6 +153,8 @@ export const AUTO_CONNECT_CREWS_SETTING_ID = 'instances.auto-connect-crews'
 
 /** Registry id of "Reopen where I left off", which DisplayPanel draws only in the installed app. */
 export const REOPEN_LAST_PAGE_SETTING_ID = 'display.reopen-where-i-left-off'
+/** Registry id of the terminal's Ctrl+C / Ctrl+V switch, which DisplayPanel draws only off macOS. */
+export const TERMINAL_CTRL_COPY_PASTE_SETTING_ID = 'display.ctrl-c-and-ctrl-v-copy-and-paste'
 
 /** The governance answers the search needs, as the two surfaces resolve them. */
 export interface SettingsSearchGovernance {
@@ -238,6 +241,7 @@ export function settingEntryOffered(
   if (entry.id === ENABLE_REMOTE_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== true
   if (entry.id === AUTO_CONNECT_CREWS_SETTING_ID) return governance.remoteCrewsEnabled !== false
   if (entry.configKey === CHANNELS_SWITCH_KEY) return governance.channelsOn === true
+  if (entry.id === TERMINAL_CTRL_COPY_PASTE_SETTING_ID) return !isMac
   if (!DECISIONS_SETTING_IDS.has(entry.id)) return true
   return governance.decisionsEnabled
 }

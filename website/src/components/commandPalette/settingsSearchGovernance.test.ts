@@ -43,12 +43,19 @@ import {
   GATEWAY_AUTO_UPDATE_SETTING_ID,
   REOPEN_LAST_PAGE_SETTING_ID,
   settingEntryOffered,
+  TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
   type SettingsSearchGovernance,
 } from './settingsSearchCore'
 import { extractFromSource } from '../../../scripts/settingsExtract'
 import { turnOffCrewModeAsLts } from '../../test/crewModeOff'
 import { KIRO_SIGN_IN_SETTING_ID } from './kiroSignInSettingId'
 import type { SettingEntry } from './settingsTypes'
+
+const platform = vi.hoisted(() => ({ mac: false }))
+vi.mock('../../utils/platform', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../utils/platform')>()),
+  get isMac() { return platform.mac },
+}))
 
 const decisionsEntry = (): SettingEntry => {
   const entry = SETTINGS_REGISTRY.find(e => e.id === DECISIONS_SETTING_ID)
@@ -76,6 +83,7 @@ const GOVERNED_IDS = new Set([
   ...DECISIONS_SETTING_IDS, FEATURE_TIPS_SETTING_ID, GATEWAY_AUTO_UPDATE_SETTING_ID, APP_AUTO_DOWNLOAD_SETTING_ID,
   KIRO_SIGN_IN_SETTING_ID, ENABLE_REMOTE_CREWS_SETTING_ID, AUTO_CONNECT_CREWS_SETTING_ID, CHANNELS_SETTING_ID,
   REOPEN_LAST_PAGE_SETTING_ID,
+  TERMINAL_CTRL_COPY_PASTE_SETTING_ID,
 ])
 
 /** Any OTHER entry, as the control: the predicate must gate one card, not the corpus. */
@@ -197,6 +205,19 @@ describe('settingEntryOffered', () => {
     } finally {
       setPreviewFlag(PREVIEW_EXPLORE, false)
     }
+  })
+})
+
+describe('the terminal Ctrl+C / Ctrl+V switch follows the platform DisplayPanel draws it on', () => {
+  afterEach(() => { platform.mac = false })
+
+  it('withholds it on macOS and offers it elsewhere', () => {
+    const entry = entryById(TERMINAL_CTRL_COPY_PASTE_SETTING_ID)
+    platform.mac = true
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    expect(settingEntryOffered(otherEntry(), ON)).toBe(true)
+    platform.mac = false
+    expect(settingEntryOffered(entry, ON)).toBe(true)
   })
 })
 

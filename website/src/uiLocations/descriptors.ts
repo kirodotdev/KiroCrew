@@ -176,6 +176,8 @@ export const SETTING_PREVIEW: Record<string, string> = {
 export const SETTING_CONDITION: Record<string, string> = {
   // Display > View draws Channels' switch only while Channels is turned on.
   'display.show-channels': 'page_turned_on',
+  // Display > Terminal draws the Ctrl+C / Ctrl+V switch only off macOS.
+  'display.ctrl-c-and-ctrl-v-copy-and-paste': 'not_macos',
 }
 
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter).
