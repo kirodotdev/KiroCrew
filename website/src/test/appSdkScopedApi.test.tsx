@@ -191,6 +191,25 @@ describe('createScopedApi (via AppApiProvider) — SSRF / permission guard', () 
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('matches an entry marked exact on that path alone, query included', async () => {
+    const api = getScopedApi(['=/api/apps'])
+    await api.get('/api/apps')
+    await api.get('/api/apps?view=list')
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual(['/api/apps', '/api/apps?view=list'])
+    for (const refused of ['/api/apps/install', '/api/apps/', '/api/appsx', '/api/apps/x/../../apps/registry']) {
+      await expect(api.get(refused)).rejects.toThrow(/not permitted to access/)
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads no wildcard inside an entry marked exact', async () => {
+    const api = getScopedApi(['=/api/apps/*', '=/api/chat*'])
+    for (const refused of ['/api/apps', '/api/apps/x', '/api/chat', '/api/chatx']) {
+      await expect(api.get(refused)).rejects.toThrow(/not permitted to access/)
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('permits a declared path and forwards the normalized path to fetch', async () => {
     const api = getScopedApi(['/api/apps/test'])
     await api.get('/api/apps/test')

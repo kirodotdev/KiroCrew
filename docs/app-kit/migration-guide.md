@@ -40,7 +40,8 @@ Keep abort and stream-reader cleanup in the component that owns the request.
 
 Declared API patterns follow the backend's matcher, including trailing `/*` and
 `*`. Use `/api/example/*` rather than a bare trailing slash when declaring a
-subtree. The client applies the same matcher as app-token authorization and adds
+subtree, and `=/api/example` (seam level 7) for one path whose children you do not
+call. The client applies the same matcher as app-token authorization and adds
 no manifest grants. Review broad
 trailing `*` declarations because they deliberately match sibling string prefixes.
 

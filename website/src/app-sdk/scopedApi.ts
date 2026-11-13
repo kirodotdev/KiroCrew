@@ -126,13 +126,22 @@ export function useCtx(): AppSdkContextValue {
 }
 
 
+/** The leading mark of an entry that names one path and no child (`=/api/apps`),
+ *  as `token_auth_app_scope.EXACT_API_ENTRY_MARK`. Seam level 7. */
+const EXACT_API_ENTRY_MARK = '='
+
 /** Whether a NORMALIZED pathname matches one of the declared API patterns.
  *  Mirrors token_auth._api_pattern_matches: only declared trailing wildcards
- *  are interpreted, and there are no implicit feature grants. */
+ *  are interpreted, an entry marked exact matches only itself, and there are
+ *  no implicit feature grants. */
 function matchesDeclared(allowedPaths: readonly string[], normalized: string): boolean {
   return allowedPaths.some(entry => {
     const pattern = entry.trim()
     if (!pattern) return false
+    if (pattern.startsWith(EXACT_API_ENTRY_MARK)) {
+      const exact = pattern.slice(EXACT_API_ENTRY_MARK.length)
+      return exact !== '' && normalized === exact
+    }
     if (pattern.endsWith('/*')) {
       const base = pattern.slice(0, -2)
       return normalized === base || normalized.startsWith(base + '/')

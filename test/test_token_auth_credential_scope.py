@@ -47,6 +47,19 @@ def test_api_pattern_matches_boundaries() -> None:
     assert not _api_pattern_matches("", "/anything")
 
 
+def test_an_entry_marked_exact_matches_that_path_alone() -> None:
+    assert _api_pattern_matches("=/api/apps", "/api/apps")
+    assert _api_pattern_matches(" =/api/apps ", "/api/apps")
+    for path in ("/api/apps/install", "/api/apps/", "/api/appsx", "/api/app"):
+        assert not _api_pattern_matches("=/api/apps", path), path
+    # No wildcard is read inside an exact entry, and the mark alone names nothing.
+    assert not _api_pattern_matches("=/api/apps/*", "/api/apps/x")
+    assert not _api_pattern_matches("=/api/apps/*", "/api/apps")
+    assert not _api_pattern_matches("=/api/chat*", "/api/chatx")
+    assert not _api_pattern_matches("=", "/")
+    assert not _api_pattern_matches("=", "")
+
+
 def test_app_owns_path_boundaries() -> None:
     assert _app_owns_path("foo", "/apps/foo/api/x")
     assert _app_owns_path("foo", "/apps/foo/ui/index.js")

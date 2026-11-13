@@ -1447,6 +1447,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _APP_PERMS_PRIME_MARGIN,
         _APP_PERMS_TTL,
         _APP_TOKEN_IMPLICIT_ALLOW,
+        EXACT_API_ENTRY_MARK,
         RESERVED_APP_PATH_SEGMENTS,
         _api_pattern_matches,
         _app_api_allowlist,

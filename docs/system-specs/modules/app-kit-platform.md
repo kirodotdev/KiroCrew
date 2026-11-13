@@ -100,9 +100,29 @@ compaction notice keep their built-in rows.
 JSON verb helpers through one API-path check. The check normalizes the request
 before matching declared patterns using the backend's semantics: a bare prefix
 matches itself and children at a slash boundary, trailing `/*` matches the base
-and its children, and trailing `*` matches a string prefix. Blank declarations
-match nothing; declaration whitespace is stripped. No implicit feature grants
-are added. A trailing slash without `*` follows the backend's literal rule.
+and its children, and trailing `*` matches a string prefix. An entry that starts
+with `=` (`EXACT_API_ENTRY_MARK` on both sides) matches the rest of it exactly, with
+no wildcard read inside it, and the mark alone matches nothing. It is seam level 7:
+a host below it reads the entry as a literal no path equals, so it fails closed
+there. Blank declarations match nothing; declaration whitespace is stripped. No
+implicit feature grants are added. A trailing slash without `*` follows the
+backend's literal rule. `test_token_auth_credential_scope.py` and
+`appSdkScopedApi.test.tsx` pin the exact entry on each side.
+
+Dev Fleet's wheel copy is the first to need it (owner ruling of 2026-11-13 on
+#26967, comment 6841699202: an app gets what its built-in already uses, declared in
+the wheel copy first so adoption is no widening). Its page POSTs four routes the
+gateway serves in the app's namespace (`make-live`, `restart-gateway`, `pod-token`,
+`create-release-worktree` under `/api/apps/dev-fleet/`), declared as bare entries
+since none has a child, and its backend-down banner reads the app list, declared as
+`=/api/apps`: a bare `/api/apps` would also cover install, uninstall, enable and
+every other app's routes. Each of the four refuses an app token
+(`_require_owner_human`), and its backend's own calls (`live-target`, its removal
+lease) stay in the namespace the gateway admits without a declaration, so the one
+reach the backend token gains is the read of the list. The app repository declares
+the same list. Pinned by `test/test_dev_fleet_permission_parity.py`, which
+registers the real wheel copy and asks `permission_refusal` of that list (None) and
+of the list with a bare `/api/apps` (`permission_widening`).
 
 `raw` returns a successful `Response` without reading it, preserving binary
 bytes, headers and streams. The caller owns consumption and cancellation;
@@ -6863,9 +6883,10 @@ any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
 pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
-manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), and the desktop
+manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
-an app's windows (§35). Several seams share level 7, so an app that needs one
+an app's windows (§35), and the exact `permissions.api` entry (§ Scoped frontend HTTP
+transport). Several seams share level 7, so an app that needs one
 feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -7199,7 +7220,8 @@ ties the shipped pins to the structural route registry (`route_registry._route_f
 level field, so the tool never picks a level above 1 itself. It reads the pinned tree
 for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
 `permissions.agentTurns` and `permissions.workerAutoApprove` in `app.json` (level 2),
-`credentialMasks` (level 3), `agentReadOnlyDirs` (level 7), and `ctx.turns`,
+`credentialMasks` (level 3), `agentReadOnlyDirs` and an exact `permissions.api` entry
+(level 7), and `ctx.turns`,
 `ctx.untrusted`, `ctx.lifecycle` or
 `ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
 `conftest.py` (level 2), and `ctx.app_token` or `ctx.gateway_origin` there (level 5), read as an attribute of a context-named receiver or as a

@@ -29,7 +29,12 @@
   "permissions": {
     "api": [
       "/apps/dev-fleet/api",
-      "/apps/dev-fleet/api/*"
+      "/apps/dev-fleet/api/*",
+      "/api/apps/dev-fleet/make-live",
+      "/api/apps/dev-fleet/restart-gateway",
+      "/api/apps/dev-fleet/pod-token",
+      "/api/apps/dev-fleet/create-release-worktree",
+      "=/api/apps"
     ],
     "network": true,
     "terminal": true
