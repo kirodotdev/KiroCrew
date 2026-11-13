@@ -1354,14 +1354,6 @@
       "hint": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
     },
     {
-      "id": "developer.github-sign-in-by-kiro-crew",
-      "label": "GitHub sign-in by Kiro Crew",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
-      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Settings > Connections.",
-      "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access."
-    },
-    {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
@@ -1375,6 +1367,14 @@
       "route": "/settings/developer/feature-previews?highlight=developer.mark-out-of-date-dashboard-fields",
       "description": "Marks bot-written Dashboard fields that are out of date.",
       "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in."
+    },
+    {
+      "id": "developer.mcp-sign-in-by-kiro-crew",
+      "label": "MCP sign-in by Kiro Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.mcp-sign-in-by-kiro-crew",
+      "description": "Lets chats use MCP servers that Kiro Crew signs in to, such as GitHub, Asana, Google and servers you add. Turn it on, then connect them in Settings > Connections.",
+      "hint": "Kiro Crew signs in to MCP servers itself and passes the sign-in to chats on a harness it supports, such as Kiro Agent, Claude or Codex. kiro-cli chats sign in as before. Disconnect a server on Connections to remove access."
     },
     {
       "id": "developer.model-for-the-small-model-judge",
