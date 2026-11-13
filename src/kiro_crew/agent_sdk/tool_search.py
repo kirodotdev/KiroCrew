@@ -297,7 +297,7 @@ _DISPATCH_UNDER_A_PARENT = (*_DISPATCH, "kirocrew-work::work_brief")
 #: row still fits its schema-token budget; the budgets live beside the test that
 #: enforces them (``test/test_job_tools.py``), because nothing at run time reads
 #: one. The key is the agent's name: a name with no row (an operator's own agent,
-#: an app's, a crew member's template) keeps today's deferral, and a spec saved
+#: an app's, a crew member's template) has no job tools, and a spec saved
 #: under a shipped name takes that name's row, for the tools it mounts.
 JOB_TOOLS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
@@ -343,9 +343,9 @@ def kas_client_meta_settings(
     """The ``_meta.kiro.settings`` object KAS should read Tool Search from.
 
     Empty when no toggle value was threaded in (``settings is None``): the
-    channel stays open and says nothing, exactly as before. Otherwise the
-    ``toolSearch`` entry is ALWAYS present with an explicit ``enabled`` -- true
-    only when the operator turned it on AND the agent's spec grants the loader.
+    channel stays open and says nothing. Otherwise the ``toolSearch`` entry is
+    ALWAYS present with an explicit ``enabled`` -- true only when the operator
+    turned it on AND the agent's spec grants the loader.
     An unset key would leave the decision to whatever the host defaults to.
 
     ``neverDefer`` carries *never_defer*, the caller's list of what stays direct,
@@ -354,8 +354,8 @@ def kas_client_meta_settings(
     (:func:`kas_never_defer_ids`), and the key is sent even when empty: without
     it every MCP tool of such a spec would be deferred with no way to load one.
     For a spec that grants the loader it is the agent's job tools
-    (:func:`job_tool_ids`), and an empty list sends no key, so an agent with no
-    declared job tools puts on the wire exactly what it did.
+    (:func:`job_tool_ids`), and an empty list sends no key, which leaves KAS's
+    own default in force.
     """
     if settings is None:
         return {}

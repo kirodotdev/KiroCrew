@@ -106,7 +106,7 @@ def kas_hook_checkout(provider: object) -> str | None:
     (``KasHarness.session_extras``), so firing and the stale check never count folder
     hooks the batch was built without.
     shortcut: a human follow-up in a cron tab shares that session and key, so it runs
-    no folder hooks either; splitting them needs a per-turn flag (P1-34 follow-up).
+    no folder hooks either; splitting them needs a per-turn flag.
     """
     # circular import: spec_hooks re-exports this module.
     from kiro_crew.agent_sdk import spec_hooks

@@ -41,10 +41,10 @@ module can never be the module that closes an import cycle.
 Note what that does NOT buy. Importing ``kiro_crew.agent_sdk.provider_identity``
 executes the parent package's ``__init__``, which loads ``backend_install`` and
 ``agent_sdk.drivers.acp`` -- naming the submodule does not skip them. What keeps
-that cheap is that the chain is import-light rather than absent: ``acp_backends``
-is stdlib-only, and ``drivers.acp`` defers every ``kiro_crew.acp`` import into a
-function body, so ``kiro_crew.acp`` itself stays unloaded. That last property is
-pinned by ``test_importing_this_module_does_not_load_the_acp_package``.
+that cheap is that the chain is import-light rather than absent: ``drivers.acp``
+defers every ``kiro_crew.acp`` import into a function body, so ``kiro_crew.acp``
+itself stays unloaded. That last property is pinned by
+``test_importing_this_module_does_not_load_the_acp_package``.
 """
 
 from __future__ import annotations
@@ -54,8 +54,9 @@ from __future__ import annotations
 #: an edition re-registers it.
 PROVIDER_CLAUDE_CODE = "claude_code"
 
-#: ``agent.provider`` value selecting the ACP family (kiro-cli and KAS). The
-#: default, and the only value the public build's config schema accepts.
+#: ``agent.provider`` value selecting the ACP seam, which runs the harness
+#: ``agent.acp_backend`` names. The default, and the only value the public build's
+#: config schema accepts.
 PROVIDER_ACP = "acp"
 
 

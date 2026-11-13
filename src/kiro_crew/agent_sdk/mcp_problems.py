@@ -24,11 +24,12 @@ logger = logging.getLogger(__name__)
 #: block's still-starting row both read this one name, so they cannot drift.
 MCP_STATUS_CAP = 256
 
-#: How long an unattended run (webhook, cron) holds its first prompt for the
-#: agent spec's MCP servers to report. The session's own init drain gives up a
-#: second after the first server reports, which a slow ``node`` server misses;
-#: nobody can reconnect it by hand in these runs, so they wait longer. Bounded,
-#: so a server that never answers costs a run this much and no more.
+#: How long an unattended run (a webhook, cron job, heartbeat, task-runner step
+#: or workflow step) holds its first prompt for the agent spec's MCP servers to
+#: report. The session's own init drain gives up a second after the first server
+#: reports, which a slow ``node`` server misses; nobody can reconnect it by hand
+#: in these runs, so they wait longer. Bounded, so a server that never answers
+#: costs a run this much and no more.
 UNATTENDED_MCP_WAIT_SECS = 30.0
 
 
@@ -148,7 +149,12 @@ def mcp_server_state(provider: Any, name: str) -> dict[str, Any]:
     alike = [known for known in by_name if known.casefold() == name.casefold()]
     # Two servers may differ only by case, so the exact name is read first and a
     # different spelling is taken for a server only when it can mean one.
-    exact = name if name in by_name else alike[0] if len(alike) == 1 else None
+    if name in by_name:
+        exact = name
+    elif len(alike) == 1:
+        exact = alike[0]
+    else:
+        exact = None
     if exact is not None:
         return {"mcp_server_state": by_name[exact]}
     listed = alike or [known for known, state in by_name.items() if state != "connected"]
@@ -236,7 +242,7 @@ def declared_mcp_not_ready_note(provider: Any) -> str:
     """One line naming every declared server the run went without, or ``""``.
 
     For a surface that prints no :func:`session_mcp_problems` line beside it (a
-    cron result), so a failed declared server is named here too.
+    cron or heartbeat result), so a failed declared server is named here too.
     """
     names = declared_mcp_missing(provider)
     if not names:
