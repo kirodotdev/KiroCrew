@@ -1347,6 +1347,20 @@ _KIRO_SETTINGS_MCP_JSON = ".kiro/settings/mcp.json"
 _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 
 
+# ── kiro-cli's tool auto-approve rules ──
+# The engine behind ``kiro`` and ``kas`` reads permission rules from these names in
+# ``settings`` and in ``workspace-roots/<bucket>`` (a hashed name, and nothing else
+# lives there, so the folder is fenced whole). An ``effect: allow`` rule runs its tool
+# with no permission request: the registry's threat, fenced the same way, reads kept.
+# The engine saving a rule the user chose never asks this gate.
+_KIRO_PERMISSION_RULE_LEAVES: tuple[str, ...] = (
+    ".kiro/settings/permissions.yaml",
+    ".kiro/settings/permissions.json",
+    ".kiro/workspace-roots",
+)
+_WRITE_PROTECTED_HOME_PATHS += list(_KIRO_PERMISSION_RULE_LEAVES)
+
+
 #: The ``KIRO_HOME``-relative entries on the write-only tier, as ONE list because
 #: they share an anchoring rule rather than an owner: each is re-anchored under
 #: ``KIRO_HOME``, and like every entry each has its ``$HOME``-rooted form
@@ -1357,6 +1371,7 @@ _WRITE_PROTECTED_HOME_PATHS += [_KIRO_SETTINGS_MCP_JSON]
 _KIRO_CLI_WRITE_TIER_LEAVES: tuple[str, ...] = (
     _KIRO_AGENTS_DIR,
     _KIRO_SETTINGS_MCP_JSON,
+    *_KIRO_PERMISSION_RULE_LEAVES,
     _KIRO_MATE_AGENTS_DIR,
     *_KIRO_MATE_STATE_LEAVES,
 )

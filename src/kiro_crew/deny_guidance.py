@@ -112,7 +112,7 @@ DENY_CLASS_REMOTE_SCRIPT = "remote_script"
 _CLASS_ANCHORS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         DENY_CLASS_TRUST_ROOT,
-        ("governance trust-root", "write-protected config path"),
+        ("governance trust-root", "write-protected config path", "write to protected path"),
     ),
     (
         DENY_CLASS_SSO_CREDENTIAL,

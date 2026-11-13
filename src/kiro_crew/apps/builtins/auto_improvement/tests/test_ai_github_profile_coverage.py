@@ -163,16 +163,22 @@ def test_repo_root_returns_the_tree_when_nothing_exists(tmp_path):
 
 
 def test_write_protected_targets_masks_existing_parent_dirs(tmp_path, monkeypatch):
-    """PARENT directories are returned, and only ones that exist."""
+    """Existing parents are masked without hiding all of ``~/.kiro``."""
     fake_home = tmp_path / "h"
     (fake_home / ".kiro" / "crew").mkdir(parents=True)
+    (fake_home / ".kiro" / "workspace-roots").touch()
     monkeypatch.setattr(gh.Path, "home", staticmethod(lambda: fake_home))
     monkeypatch.setattr(
         security,
         "write_protected_home_paths",
-        lambda: (".kiro/crew/config.json", ".absent/dir/file.json"),
+        lambda: (
+            ".kiro/crew/config.json",
+            ".kiro/workspace-roots",
+            ".absent/dir/file.json",
+        ),
     )
     out = gh.write_protected_targets()
+    assert str(fake_home / ".kiro") not in out
     assert out == (str(fake_home / ".kiro" / "crew"),)
 
 

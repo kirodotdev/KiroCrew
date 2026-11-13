@@ -2267,6 +2267,23 @@ sandbox seal, so a shell write can. A governance ceiling still strips the key: a
 ceiling has an opinion about keeps no `autoApprove`, whatever the setting says, and neither does
 a server a `hooks.confirm_tools` pattern names. Turning `mcp.honour_auto_approve` off puts those
 tools back through the gate: after a restart, every verb no server spec declares is dropped.
+
+**kiro-cli's tool auto-approve rules (`permissions.yaml` / `permissions.json`): the agent's
+file-edit tools cannot write them.** The engine behind the `kiro` and `kas` harnesses reads
+permission rules from these two file names in two places under its user directory:
+`~/.kiro/settings/` (the user's rules) and `~/.kiro/workspace-roots/<bucket>/` (one folder per
+workspace, which also records that workspace's trust answer). A rule with `effect: allow` runs
+its tool with no permission request, so the call skips Kiro Crew's tool gate, the same reason
+the registry leaf above is fenced. `_KIRO_PERMISSION_RULE_LEAVES` puts the two user files and
+the whole workspace folder in `_WRITE_PROTECTED_HOME_PATHS` and in
+`_KIRO_CLI_WRITE_TIER_LEAVES`, so a `KIRO_HOME` move and a symlink below `$HOME` are covered
+the way they are for the registry. Reads are unchanged (`kiro_cli_workspace_trust` reads the
+workspace file). Every other file in `settings` stays writable. The fence is the same tier as
+the registry leaf and has the same reach. The writers that keep working write with their own
+file calls and never ask the gate: the engine saving a rule the user chose, and the user's own
+editor. Kiro Crew itself writes none of these files. A refused edit gets the existing
+`deny_guidance.DENY_CLASS_TRUST_ROOT` guidance (say what needs changing and let the user edit
+it), in the edit gate's wording as well as the hook gate's, for every write-protected path.
 How a kept verb is granted: [mcp](../../architecture/mcp.md), "Managed servers".
 
 **This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`), so it names whatever install that gateway runs. On Windows the entry is `kirocrew.cmd`, a one-line forwarder to the running launcher by absolute path, because a symlink needs a privilege an ordinary session lacks; PATH order outranks PATHEXT order across directories, so it beats a `kirocrew.exe` later on PATH. The forwarder is ASCII and carries no `!`, so every console reads the same path whatever its code page (`chcp 65001`) or delayed-expansion setting (`cmd /V:ON`); a launcher under a non-ASCII directory is named by its 8.3 short name. A forwarder is found even when its target is gone, so a start that cannot write one for this install removes the old one. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.

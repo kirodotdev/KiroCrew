@@ -2020,6 +2020,9 @@ documented design choice — so the shell route rests on the OS sandbox, which s
 the agents dir. The registry leaf gets no seal, by maintainer decision (#14837): an
 `autoApprove` written there is honoured whoever wrote it, until the owner turns
 `mcp.honour_auto_approve` off ([security](security.md), "kiro-cli's MCP registry").
+kiro-cli's permission rule files (`permissions.yaml` / `permissions.json` under
+`~/.kiro/settings` and `~/.kiro/workspace-roots`) are on the same tier, for the same
+reason ([security](security.md), "kiro-cli's tool auto-approve rules").
 
 **The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
