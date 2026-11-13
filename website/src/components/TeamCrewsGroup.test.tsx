@@ -15,6 +15,20 @@ import { RELAY_VIEWER_CREWS_KEY, relayRefusalText, relayRetryable } from '../hoo
 import { timeAgo } from '../utils/timeAgo'
 import { renderWithProviders, createTestStore } from '../test/helpers'
 
+// A per-test stand-in for the hook's answer; null keeps the real hook's answer. The
+// real hook always runs, so the other tests see exactly what they saw before.
+const hookOverride = vi.hoisted(() => ({ value: null as null | Record<string, unknown> }))
+vi.mock('../hooks/useRelayViewerCrews', async importOriginal => {
+  const actual = await importOriginal<typeof import('../hooks/useRelayViewerCrews')>()
+  return {
+    ...actual,
+    useRelayViewerCrews: () => {
+      const real = actual.useRelayViewerCrews()
+      return (hookOverride.value ?? real) as typeof real
+    },
+  }
+})
+
 const crew = (over: Partial<RelayCrewEntry>): RelayCrewEntry => ({
   endpointId: 'ep-1',
   name: 'Build box',
@@ -516,5 +530,39 @@ describe('TeamCrewsGroup account line', () => {
   it('shows no e-mail even if one were sent', async () => {
     const text = await accountLine({ accountType: 'BuilderId', email: 'someone@example.test' })
     expect(text).toBe('Signed in with Builder ID')
+  })
+})
+
+describe('TeamCrewsSwitcher with an empty list', () => {
+  afterEach(() => { hookOverride.value = null })
+
+  it('mounts the group with the account line above the empty text when an account is named', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [], account: { accountType: 'BuilderId' } } as never)
+    mount()
+    const group = await openGroup(userEvent.setup())
+    const line = within(group).getByTestId('team-crews-account')
+    expect(line.textContent).toBe('Signed in with Builder ID')
+    const empty = within(group).getByText('No Team Crews to open.')
+    expect(line.compareDocumentPosition(empty) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('mounts nothing, as before, when no account is named', async () => {
+    withBridge()
+    vi.spyOn(api, 'relayViewerCrews').mockResolvedValue({ crews: [] })
+    const client = mount([sshCrew({ was_connected: true })])
+    await waitFor(() => expect(client.getQueryState(RELAY_VIEWER_CREWS_KEY)?.status).toBe('success'))
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await screen.findByRole('menuitemradio', { name: /Cloud One/ })
+    expect(screen.queryByTestId('team-crews-group')).toBeNull()
+  })
+
+  it('mounts nothing while hidden, even with an account', async () => {
+    // The real hook never pairs hidden with an account, so this pins the guard itself.
+    hookOverride.value = { hidden: true, crews: [], account: { accountType: 'BuilderId' }, refusal: null, retry: () => {}, retrying: false }
+    mount([sshCrew({ was_connected: true })])
+    await userEvent.setup().click(await screen.findByRole('button', { name: /Switch crew/i }))
+    await screen.findByRole('menuitemradio', { name: /Cloud One/ })
+    expect(screen.queryByTestId('team-crews-group')).toBeNull()
   })
 })

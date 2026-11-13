@@ -178,14 +178,18 @@ export function TeamCrewsGroup({ crews, account, refusal, retry, retrying, close
 }
 
 /** The top bar's Crew switcher with the Team Crews group, while the relay viewer is on
- *  and the group has a Crew or a notice (sign-in, setup or load failure) to show. */
+ *  and the group has a Crew, a notice (sign-in, setup or load failure) or the signed-in account to show. */
 export default function TeamCrewsSwitcher({ variant }: { variant: 'strip' | 'inline' }) {
   const { hidden, crews, account, refusal, retry, retrying } = useRelayViewerCrews()
+  // The same label the group's line shows; the hook sends an account only with a loaded list.
+  const accountLabel = account ? accountProviderLabel(account.accountType, account.startUrl) : ''
   return (
     <InstanceTabBar
       variant={variant}
-      // An empty list passes nothing, so the bar stays as it is without the relay.
-      extraGroups={hidden || (refusal === null && crews.length === 0) ? undefined : close => (
+      // Nothing while hidden or loading, or for an empty list with no notice and no account
+      // label, so the bar stays as it is without the relay. A loaded empty list with an
+      // account label still mounts the group, so it says who is signed in.
+      extraGroups={hidden || (refusal === null && crews.length === 0 && !accountLabel) ? undefined : close => (
         <TeamCrewsGroup crews={crews} account={account} refusal={refusal} retry={retry} retrying={retrying} close={close} />
       )}
     />
