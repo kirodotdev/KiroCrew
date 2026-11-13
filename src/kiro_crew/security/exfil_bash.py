@@ -156,9 +156,9 @@ def _data_at_carveout_allows(command: str) -> bool:
     return bool(words) and words[0].raw in _CARVEOUT_VERBS
 
 
-#: Programs a line may run beside the carve-out verbs: shell builtins and a filter
-#: that execute nothing, with every redirection refused (so none writes a file).
-_INERT_LINE_PROGRAMS = frozenset(("echo", "printf", "cat"))
+#: Programs a line may run beside the carve-out verbs: ``echo`` and ``cat``
+#: execute nothing and cannot assign variables; every redirection is refused.
+_INERT_LINE_PROGRAMS = frozenset(("echo", "cat"))
 #: Ends of a command the line reading accepts: a list or a pipe. A paren, a
 #: backtick or a heredoc (``(``, ``)``, a backtick, ``<<``) is refused.
 _INERT_LINE_SEPARATORS = frozenset(("", ";", "&", "&&", "||", "|", "\n"))
@@ -169,7 +169,7 @@ _LOCALE_PREFIX_RE = re.compile(r"(?:TZ|LANG|LC_[A-Z]+)=[A-Za-z0-9_./:+-]*\Z")
 
 def _inert_line_allows(command: str) -> bool:
     """A `-d @` hit in a line every command of which runs no subcommand: a chain,
-    pipe, double-quoted `$(…)` or locale prefix around `date`/`grep`.
+    pipe, double-quoted `$(…)` or locale prefix around `date`/`grep` and `echo`/`cat`.
 
     Reads the shared reader's commands, those of a double-quoted substitution
     included, and fails closed: a live `$` or backtick left in any word (a
@@ -231,8 +231,7 @@ def audit_bash_exfiltration(
             if fnmatch.fnmatch(lower, f"*{pat}*"):
                 return _exfil_denial(reason, rule_id, command, None)
         elif pat in lower:
-            # Fail-closed denial, except an inert `date`/`grep` command (computed
-            # once per command and reused).
+            # Compute the inert `date`/`grep` carve-outs once per command.
             if rule_id == _DATA_EXFIL_FILE_BODY_RULE:
                 if carveout_allows is None:
                     carveout_allows = _data_at_carveout_allows(command) or _inert_line_allows(
@@ -240,6 +239,9 @@ def audit_bash_exfiltration(
                     )
                 if carveout_allows:
                     continue
+            # Lowercasing can expand Unicode characters, so those offsets are not original.
+            if len(lower) != len(command):
+                return _exfil_denial(reason, rule_id, command, None)
             start = lower.index(pat)
             return _exfil_denial(reason, rule_id, command, (start, start + len(pat)))
     for rx, label in _BASH_EXFIL_RES:

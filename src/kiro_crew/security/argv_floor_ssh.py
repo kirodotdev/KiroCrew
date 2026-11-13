@@ -944,10 +944,23 @@ _HEREDOC_DATA_PROGRAMS = frozenset(("cat", "tee", "cd"))
 _HEREDOC_PYTHON_RE = re.compile(r"python(?:3(?:\.\d+)?)?\Z")
 #: Options that leave Python reading its program from stdin or a file, never ``-c``/``-m``.
 _HEREDOC_PYTHON_OPTIONS = frozenset(("-", "-u", "-b", "-i", "-e", "-s", "-q", "-o"))
+#: Text outside the bodies that marks arithmetic or compound syntax, where the shared
+#: reader can take a ``<<`` shift (``((a<<b))``, ``$((a<<b))``) for a heredoc. A paren
+#: covers ``((``, ``$((``, ``$(`` and a subshell; a brace covers ``{ …; }`` and ``${``.
+_HEREDOC_COMPOUND_MARKS = ("(", ")", "{", "}", "`", "[[", "$[")
+#: First words of a command that open or continue compound syntax, or ``let``.
+_HEREDOC_COMPOUND_WORDS = frozenset(
+    "if then elif else fi while until do done for select case esac function let".split()
+)
 
 
 def _is_option(arg: str) -> bool:
     return arg.startswith("-")
+
+
+def _is_word_char(ch: str) -> bool:
+    """True for one letter, digit or underscore; False for anything else, ``""`` included."""
+    return len(ch) == 1 and (ch.isalnum() or ch == "_")
 
 
 def _heredoc_bodies_as_data(text_lower: str) -> str:
@@ -956,25 +969,89 @@ def _heredoc_bodies_as_data(text_lower: str) -> str:
     A body is data to ``cat``/``tee`` (redirected, never piped) and a Python program
     to ``python3 -``, so reading it as argv turned a Python edit script's
     ``a * localhost`` into a glob verb and its target. Fails closed: the text is
-    returned whole when any program on the line is outside those, when Python takes
-    ``-c``/``-m`` (its code could run stdin), or when an unquoted body holds a ``$``
-    or backtick, which bash expands even for ``cat``. Python running a program it
-    reads is the OS network fence's residual (#9806), as ``python3 -c`` is here."""
+    returned whole when the text outside the bodies holds arithmetic or compound
+    syntax (a paren, brace, backtick, ``[[``, ``$[``, or a command starting with a
+    shell keyword or ``let``), when any program on the line is wrapped or outside
+    those, when Python takes ``-c``/``-m`` (its code could run stdin), or when an
+    unquoted body holds a ``$`` or backtick, which bash expands even for ``cat``.
+    A backslash followed by LF or CRLF anywhere also keeps the text whole: the
+    reader does not model continuations that can change a here-document delimiter.
+    The line must hold exactly one ``<<`` (not ``<<<``), and its tag, compared in
+    any letter case, must appear as a whole word only as that operand and its
+    closing line: the reader reads lowered text, while bash matches the delimiter
+    case-sensitively.
+    Tags must be raw ASCII letters, digits or underscores, bare or enclosed in one
+    matching pair of quotes; the check never relies on the decoded delimiter.
+    Python running a program it reads is the OS network fence's residual, as
+    ``python3 -c`` is here."""
     if "<<" not in text_lower:
         return text_lower
     from . import argv_rules as _argv_rules  # local: not names the facade serves
     from . import shell_commands as _shell_commands
 
     commands = _shell_commands.read_commands(text_lower, heredocs=True)
+    outside = _argv_rules._rm._without_bodies(text_lower)
+    folded = text_lower.casefold()
+    tags = [
+        tag
+        for cmd in commands
+        for step in cmd.steps
+        if step.redirect
+        and text_lower.startswith("<<", step.start)
+        and not text_lower.startswith("<<<", step.start)
+        for raw in (
+            "".join(
+                takewhile(
+                    lambda ch: ch not in " \t\n;&|<>()",
+                    text_lower[step.start + 2 :].removeprefix("-").lstrip(" \t"),
+                )
+            ),
+        )
+        for tag in (raw[1:-1] if len(raw) >= 2 and raw[0] in "'\"" and raw[-1] == raw[0] else raw,)
+    ]
+    # Arithmetic and continuations can make the reader hide commands as bodies.
+    # Check continuations in the whole text, including quoted bodies. A body is cut
+    # only under exactly one ``<<`` (not ``<<<``) on the raw text, whose tag, case-folded,
+    # appears as a whole word exactly twice: its operand and its closing line. The
+    # reader reads lowered text, so any other spelling of the tag could close a body
+    # that bash keeps open.
+    if (
+        "\\\n" in text_lower
+        or "\\\r\n" in text_lower
+        or any(mark in outside for mark in _HEREDOC_COMPOUND_MARKS)
+        or any(cmd.words and cmd.words[0].raw in _HEREDOC_COMPOUND_WORDS for cmd in commands)
+        or len(tags) != 1
+        or sum(
+            1
+            for i in range(len(text_lower) - 1)
+            if text_lower.startswith("<<", i)
+            and not text_lower.startswith("<<<", i)
+            and (i == 0 or text_lower[i - 1] != "<")
+        )
+        != 1
+        or not tags[0].isascii()
+        or not tags[0].replace("_", "a").isalnum()
+        or sum(
+            1
+            for i in range(len(folded))
+            if folded.startswith(tags[0].casefold(), i)
+            and (i == 0 or not _is_word_char(folded[i - 1]))
+            and not _is_word_char(folded[i + len(tags[0]) : i + len(tags[0]) + 1])
+        )
+        != 2
+    ):
+        return text_lower
     docs = [doc for cmd in commands for doc in cmd.heredocs]
     if not docs or any(not d.quoted and ("$" in d.body or "`" in d.body) for d in docs):
         return text_lower
     for cmd in commands:
-        words = _shell_normalizer._shell_tokens(" ".join(word.raw for word in cmd.argv))
-        parsed = _argv_rules._program_args(words)
-        if parsed is None:
+        if not cmd.argv and not cmd.heredocs:
             continue
-        program, args = parsed
+        words = _shell_normalizer._shell_tokens(" ".join(word.raw for word in cmd.argv))
+        if not words:
+            return text_lower
+        # Only direct programs qualify; wrapper options can select a different reader.
+        program, args = words[0], words[1:]
         if _HEREDOC_PYTHON_RE.match(program):
             # Its body on stdin is the program (``python3 -``); else options end at the script.
             end = len(args) if cmd.heredocs else len(list(takewhile(_is_option, args)))
@@ -984,7 +1061,7 @@ def _heredoc_bodies_as_data(text_lower: str) -> str:
             return text_lower
         if cmd.heredocs and cmd.separator == "|":
             return text_lower
-    return _argv_rules._rm._without_bodies(text_lower)
+    return outside
 
 
 def _is_ssh_to_self(text_lower: str) -> bool:

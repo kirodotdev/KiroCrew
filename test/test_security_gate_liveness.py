@@ -815,7 +815,25 @@ def _url_payload_command(n: int) -> str:
 #: (the ``-d @`` date carve-out across a chain, pipe, quoted ``$(…)`` or locale
 #: prefix) and ``exfil_bash._exfil_denial`` (each exfil refusal names its rule and
 #: span). No deny pattern or rule is removed. Re-measured.
-_PACKAGE_LINE_BUDGET = 36_100
+#: Raised by 5, from 36,100, to 36,105, for direct-reader heredoc classification
+#: and whole-command exfil spans when lowercasing expands Unicode characters.
+#: No deny pattern or rule is removed. Re-measured.
+#: Raised by 18, from 36,105, to 36,123, for the fail-closed check in
+#: ``argv_floor_ssh._heredoc_bodies_as_data``: a line with arithmetic or compound
+#: syntax outside its heredoc bodies keeps every body as argv. Re-measured.
+#: Raised by 5, from 36,123, to 36,128, for the continuation check in
+#: ``argv_floor_ssh._heredoc_bodies_as_data``: a backslash followed by LF or CRLF
+#: anywhere keeps every body as argv. No deny check is relaxed. Re-measured.
+#: Raised by 20, from 36,128, to 36,148, for raw plain-word heredoc tags in
+#: ``argv_floor_ssh._heredoc_bodies_as_data``. Non-plain tags keep the full text as
+#: argv. The total includes removal of the literal command-hash name exclusion
+#: from the exfil carve-outs; variable-assigning programs stay refused. Re-measured.
+#: Raised by 12, from 36,148, to 36,160, for the facade manifests in ``argv_floor.py``
+#: and ``exfil.py`` naming the heredoc and inert-line helpers they forward. Re-measured.
+#: Raised by 32, from 36,160, to 36,192, for the single-heredoc check in
+#: ``argv_floor_ssh._heredoc_bodies_as_data``: a line with more than one ``<<``, or
+#: whose tag appears again in any letter case, keeps every body as argv. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_192
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
