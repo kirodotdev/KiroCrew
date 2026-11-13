@@ -21254,6 +21254,7 @@
         "client_secret_placeholder": "Client-Secret einfügen",
         "share_google": "Auch bei {{products}} speichern",
         "share_google_help": "Beim Speichern hier werden sie auch mit derselben Client-ID und demselben Secret eingerichtet. Eine Google-App reicht für alle.",
+        "share_google_needs_secret": "Gib auch das Secret ein. Jedes Google-Produkt bekommt dieselbe Client-ID und dasselbe Secret.",
         "share_google_partial": "Bei {{provider}} gespeichert. Drücke Speichern, um es erneut zu versuchen.",
         "share_google_partial_title": "Nicht gespeichert bei {{products}}",
         "set_by_environment": "Durch die Umgebungsvariable {{name}} gesetzt, die jeden hier gespeicherten Wert überschreibt.",

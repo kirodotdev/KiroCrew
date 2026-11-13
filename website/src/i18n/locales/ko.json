@@ -20737,6 +20737,7 @@
         "client_secret_placeholder": "클라이언트 비밀 붙여 넣기",
         "share_google": "{{products}}에도 저장",
         "share_google_help": "여기에서 저장하면 같은 클라이언트 ID와 비밀로 그것들도 설정됩니다. Google 앱 하나로 모두 사용할 수 있습니다.",
+        "share_google_needs_secret": "비밀도 입력해 주세요. 모든 Google 제품에 같은 클라이언트 ID와 비밀이 설정됩니다.",
         "share_google_partial": "{{provider}}에 저장했습니다. 다시 저장을 눌러 주세요.",
         "share_google_partial_title": "{{products}}에는 저장되지 않음",
         "set_by_environment": "환경 변수 {{name}}(으)로 설정되어 있으며, 여기에 저장된 값보다 우선합니다.",

@@ -102,6 +102,10 @@ class PartialShareError extends Error {
   }
 }
 
+function productName(slug: string): string {
+  return CONNECTION_PROVIDERS.find(p => p.slug === slug)?.name ?? slug
+}
+
 interface RedirectRow { slug: string; name: string; uri: string }
 
 /** Set by the Connections page; outside it a draft has no hand-off to guard. */
@@ -132,10 +136,12 @@ function writeCommitted(e: unknown): boolean {
   }
 }
 
-function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
+function ClientCard({ client, readOnly, shareWith, settingSlug, redirects, onUnreached = () => {} }: {
   client: ConnectionOAuthClient
   readOnly: boolean
   shareWith: ConnectionOAuthClient[]
+  /** Slugs a shared Save or Remove has not reached yet; the panel keeps them in the group. */
+  onUnreached?: (slugs: string[]) => void
   /** The settings search id this part answers to (`google` for the Google entry). */
   settingSlug: string
   /** Every product's redirect URI for the Google entry; one row otherwise. */
@@ -226,12 +232,15 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
           const r = await written(peer.slug, () => api.connectionsOAuthClientSave(peer.slug, shared))
           if (agentSpecNotRewritten(r)) result = r
         } catch {
-          failed.push(CONNECTION_PROVIDERS.find(p => p.slug === peer.slug)?.name ?? peer.slug)
+          failed.push(peer.slug)
         }
       }
       if (failed.length > 0) {
         // This card did save: refresh the badges, and keep Save armed for a
         // retry even though the refetched id no longer differs from the draft.
+        // The failed products still hold the old id; they stay in the group
+        // so the retry reaches them.
+        onUnreached(failed)
         setRetryShared(true)
         void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
         throw new PartialShareError(failed)
@@ -246,6 +255,7 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
       setError(null)
       setPartialFailed(null)
       setRetryShared(false)
+      onUnreached([])
       void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
       // The gallery's status rows carry `needsClientConfig`; a save flips it.
       void qc.invalidateQueries({ queryKey: ['connections-status'] })
@@ -271,6 +281,7 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
         ? await written(client.slug, () => api.connectionsOAuthClientDelete(client.slug))
         : undefined
       let firstError: unknown
+      const failed: string[] = []
       for (const peer of shareWith) {
         // A product with any half set by the environment is skipped, the same
         // as the shared Save: a partly owned one has its own form and Remove
@@ -282,9 +293,13 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
           if (agentSpecNotRewritten(r)) result = r
         } catch (e) {
           firstError ??= e
+          failed.push(peer.slug)
         }
       }
       if (firstError !== undefined) {
+        // The products still holding the removed client stay in the group,
+        // so the next Remove reaches them.
+        onUnreached(failed)
         void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
         throw firstError
       }
@@ -301,6 +316,7 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
       setPartialFailed(null)
       setRetryShared(false)
       setRemoveConfirm(false)
+      onUnreached([])
       void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
       void qc.invalidateQueries({ queryKey: ['connections-status'] })
     },
@@ -312,6 +328,12 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
 
   const trimmedId = clientId.trim()
   const idChanged = trimmedId !== (client.client_id ?? '') && !envId
+  // A shared Client ID change waits for its secret: the id alone would pair
+  // with each product's old secret, and an id with no fan-out would split the
+  // group. Requiring the secret keeps every stored id/secret pair whole. A
+  // retry after a partial shared save needs it too, or it would reach no peer.
+  const needsSecret = shareAll && !!trimmedId && (idChanged || retryShared) && !secret && !envSecret && shareWith.some(peer =>
+    peer.client_id_source !== 'env' && peer.client_secret_source !== 'env')
   const dirty = idChanged || secret.length > 0 || secretClear || retryShared
   // Tell the page: while any form holds unsaved input, no card offers the
   // chat hand-off, which navigates away and would drop it.
@@ -321,6 +343,7 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
     return () => reportDraft(settingSlug, false)
   }, [reportDraft, settingSlug, dirty])
   const handleSave = () => {
+    if (needsSecret) return
     const body: ConnectionOAuthClientSave = {}
     // A new secret always travels with the id it was typed next to, so no
     // write (this card's or another card's fan-out) can pair it with a
@@ -341,6 +364,8 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
   const secretDescription = client.confidential
     ? i18nT('pages.settings.connectionsPanel.client_secret_required', { provider: name })
     : i18nT('pages.settings.connectionsPanel.client_secret_optional', { provider: name })
+  // The shared form reads Configured only when every product in its group is.
+  const configured = client.configured && shareWith.every(peer => peer.configured)
 
   return (
     <>
@@ -355,9 +380,9 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
       >
         <div className="flex items-center justify-between gap-3">
           <h4 className="m-0 text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.connectionsPanel.oauth_app')}</h4>
-          <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${client.configured ? 'text-ok' : 'text-muted'}`}>
-            {client.configured ? <Check className="w-3.5 h-3.5" aria-hidden="true" /> : <Lock className="w-3.5 h-3.5" aria-hidden="true" />}
-            {client.configured
+          <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${configured ? 'text-ok' : 'text-muted'}`}>
+            {configured ? <Check className="w-3.5 h-3.5" aria-hidden="true" /> : <Lock className="w-3.5 h-3.5" aria-hidden="true" />}
+            {configured
               ? i18nT('pages.settings.connectionsPanel.configured')
               : i18nT('pages.settings.connectionsPanel.not_configured')}
           </span>
@@ -460,7 +485,7 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
         {error && (
           <ErrorNotice
             title={partialFailed
-              ? i18nT('pages.settings.connectionsPanel.share_google_partial_title', { products: fmtList(partialFailed, { style: 'narrow' }) })
+              ? i18nT('pages.settings.connectionsPanel.share_google_partial_title', { products: fmtList(partialFailed.map(productName), { style: 'narrow' }) })
               : i18nT('pages.settings.connectionsPanel.save_failed')}
             message={partialFailed
               // The product the save landed on, not the entry's "Google".
@@ -505,9 +530,12 @@ function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
                 answers -- a third action in the same row is the one a hurried
                 reader presses by mistake. */}
             {!removeConfirm && (
-              <Btn primary onClick={handleSave} disabled={!dirty || saveMut.isPending}>
-                {saveMut.isPending ? i18nT('pages.settings.connectionsPanel.saving') : i18nT('pages.settings.connectionsPanel.save')}
-              </Btn>
+              <div className="flex items-center gap-2">
+                {needsSecret && <span className="text-[12px] text-muted">{i18nT('pages.settings.connectionsPanel.share_google_needs_secret')}</span>}
+                <Btn primary onClick={handleSave} disabled={!dirty || needsSecret || saveMut.isPending}>
+                  {saveMut.isPending ? i18nT('pages.settings.connectionsPanel.saving') : i18nT('pages.settings.connectionsPanel.save')}
+                </Btn>
+              </div>
             )}
           </div>
         )}
@@ -526,6 +554,9 @@ export function OAuthAppPanel({ slugs, settingSlug, readOnly = false }: { slugs:
     queryKey: OAUTH_CLIENTS_QUERY_KEY,
     queryFn: api.connectionsOAuthClients,
   })
+  // Products a shared Save or Remove has not reached yet. Their stored client
+  // now differs from the form's, but they stay in the group until one does.
+  const [unreached, setUnreached] = useState<string[]>([])
   if (error && !data) {
     // A first-load failure: nothing is typed yet, so the hand-off can destroy
     // nothing and the agent is the right next step.
@@ -558,7 +589,7 @@ export function OAuthAppPanel({ slugs, settingSlug, readOnly = false }: { slugs:
   // card below, like a partly environment-owned one, and stays out of this
   // part's shared Save and Remove: they would overwrite or delete a client the
   // person never saw here.
-  const ownForm = (c: ConnectionOAuthClient) => c !== primary && (
+  const ownForm = (c: ConnectionOAuthClient) => c !== primary && !unreached.includes(c.slug) && (
     (c.client_id_source === 'env') !== (c.client_secret_source === 'env')
     || (c.client_id_source !== 'env' && !!c.client_id && c.client_id !== (primary.client_id ?? ''))
   )
@@ -570,6 +601,7 @@ export function OAuthAppPanel({ slugs, settingSlug, readOnly = false }: { slugs:
       client={primary}
       readOnly={readOnly}
       shareWith={isGoogleSlug(primary.slug) ? clients.filter(c => c.slug !== primary.slug && !ownForm(c)) : []}
+      onUnreached={setUnreached}
       settingSlug={settingSlug}
       redirects={clients.map(c => ({
         slug: c.slug,
@@ -586,6 +618,7 @@ export function OAuthAppPanel({ slugs, settingSlug, readOnly = false }: { slugs:
       .filter(ownForm)
       .map(c => (
         <div key={c.slug} className="mt-4 border-t border-border pt-4">
+          <div className="mb-2 text-[12px] font-medium text-text">{productName(c.slug)}</div>
           <ClientCard
             client={c}
             readOnly={readOnly}

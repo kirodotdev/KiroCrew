@@ -21771,6 +21771,7 @@
         "client_secret_placeholder": "Incolla il client secret",
         "share_google": "Salva anche su {{products}}",
         "share_google_help": "Salvando qui li configuri anche con lo stesso client ID e secret. Una sola app Google li serve tutti.",
+        "share_google_needs_secret": "Inserisci anche il secret. Ogni prodotto Google riceve lo stesso client ID e secret.",
         "share_google_partial": "Salvato su {{provider}}. Premi Salva per riprovare.",
         "share_google_partial_title": "Non salvato su {{products}}",
         "set_by_environment": "Impostato dalla variabile d’ambiente {{name}}, che ha la precedenza su qualsiasi valore salvato qui.",

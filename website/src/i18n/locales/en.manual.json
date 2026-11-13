@@ -10409,6 +10409,7 @@
         "client_secret_placeholder": "Paste the client secret",
         "share_google": "Also save on {{products}}",
         "share_google_help": "Saving here also sets them up with the same Client ID and secret. One Google app serves them all.",
+        "share_google_needs_secret": "Enter the secret too. Every Google product gets the same Client ID and secret.",
         "share_google_partial": "Saved on {{provider}}. Press Save to try again.",
         "share_google_partial_title": "Not saved on {{products}}",
         "set_by_environment": "Set by the environment variable {{name}}, which overrides any value saved here.",

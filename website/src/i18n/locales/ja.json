@@ -20737,6 +20737,7 @@
         "client_secret_placeholder": "クライアントシークレットを貼り付け",
         "share_google": "{{products}} にも保存",
         "share_google_help": "ここで保存すると、同じクライアント ID とシークレットでそれらも設定されます。1 つの Google アプリですべてに対応できます。",
+        "share_google_needs_secret": "シークレットも入力してください。すべての Google プロダクトに同じクライアント ID とシークレットが設定されます。",
         "share_google_partial": "{{provider}} に保存しました。もう一度保存を押してください。",
         "share_google_partial_title": "{{products}} には保存されていません",
         "set_by_environment": "環境変数 {{name}} で設定されており、ここに保存した値より優先されます。",

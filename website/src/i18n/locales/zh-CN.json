@@ -20737,6 +20737,7 @@
         "client_secret_placeholder": "粘贴客户端密钥",
         "share_google": "同时保存到 {{products}}",
         "share_google_help": "在这里保存时，也会用同一个客户端 ID 和密钥设置它们。一个 Google 应用即可服务所有这些产品。",
+        "share_google_needs_secret": "请同时填写密钥。每个 Google 产品都会使用同一个客户端 ID 和密钥。",
         "share_google_partial": "已保存到 {{provider}}。请再按一次保存重试。",
         "share_google_partial_title": "未保存到 {{products}}",
         "set_by_environment": "由环境变量 {{name}} 设置，它会覆盖此处保存的任何值。",

@@ -22288,6 +22288,7 @@
         "client_secret_placeholder": "Вставь секрет клиента",
         "share_google": "Сохранить также в {{products}}",
         "share_google_help": "Сохранение здесь настроит и их с тем же ID клиента и секретом. Одно приложение Google подходит для всех.",
+        "share_google_needs_secret": "Введи и секрет. Каждый продукт Google получает тот же ID клиента и секрет.",
         "share_google_partial": "Сохранено в {{provider}}. Нажми «Сохранить», чтобы повторить.",
         "share_google_partial_title": "Не сохранено в {{products}}",
         "set_by_environment": "Задано переменной окружения {{name}}, которая имеет приоритет над любым сохранённым здесь значением.",
