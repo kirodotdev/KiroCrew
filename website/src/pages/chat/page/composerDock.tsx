@@ -12,6 +12,7 @@ import { setMovedSlot, useMovedSlot } from '../../../hooks/useMoveSlotToFolder'
 import { pathBasename } from '../../../utils/pathBasename'
 import { TipCard, type useTipTrigger } from '../../../components/TipCard'
 import VoicePlaybackBar from '../../../components/VoicePlaybackBar'
+import { VoiceSpeedProvider, VoiceSpeedSaveNotice } from '../../../components/VoiceSpeedControl'
 import { i18nT } from '../../../i18n/t'
 import type { RootState } from '../../../store'
 import FolderSuggestionCard from '../FolderSuggestionCard'
@@ -83,7 +84,10 @@ export function useComposerAboveBand({
     void langGen
     return (
     <>
-      <VoicePlaybackBar />
+      <VoiceSpeedProvider>
+        <VoicePlaybackBar />
+        <VoiceSpeedSaveNotice />
+      </VoiceSpeedProvider>
       <SessionCollabStrip sessionKey={activeSlot} typing={composerTypingSignal} />
       <SendRaceNotice sessionKey={activeSlot} onSendNow={onSendNow} />
       {/* Session-control failures surface HERE, beside the chips they
