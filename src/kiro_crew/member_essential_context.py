@@ -23,7 +23,7 @@ from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
-from kiro_crew.file_uri import file_uri_path_text
+from kiro_crew.file_uri import file_uri_path_text, is_windows_drive_uri
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
@@ -1122,6 +1122,7 @@ def documents_for_member(
     inherits_default_resources: bool = True,
     core_sources_out: set[str] | None = None,
     template_dir: str | None = None,
+    drive_uri_resources: bool = True,
 ) -> list[tuple[str, str]]:
     """Read actual project instructions and the owner's declared template sources.
 
@@ -1145,6 +1146,10 @@ def documents_for_member(
     *template_dir*, used only when *project* is ``None``, is searched for the
     template under its ``.kiro/agents`` (and anchors that template's relative
     prompt). No guide, steering or resource is read from it.
+
+    *drive_uri_resources* ``False`` leaves out every resource declared in the
+    Windows ``file:///C:/...`` spelling (:func:`is_windows_drive_uri`), which
+    kiro-cli does not load.
     """
     documents: list[tuple[str, str]] = []
     seen: set[Path] = set()
@@ -1474,6 +1479,8 @@ def documents_for_member(
         raise MemberEssentialContextError(
             f"Essential template {spec_path}: resources must be a list of declarations"
         )
+    if include_project and not drive_uri_resources:
+        resources = [r for r in resources if not (isinstance(r, str) and is_windows_drive_uri(r))]
     if include_project and isinstance(resources, list):
         if _declared_document_count(resources) > _MAX_DOCUMENTS:
             raise MemberEssentialContextError(f"Essential template {spec_path}: too many resources")
@@ -1763,12 +1770,16 @@ def kiro_launch_documents(template: str, project: str | None) -> list[tuple[str,
     version, so this responsibility includes only default/always steering. The
     implicit scan applies only while the workspace inherits kiro-cli's default
     resources, as it does natively; this model is kiro-cli's by construction, so
-    it takes that verdict itself, once.
+    it takes that verdict itself, once. A resource declared ``file:///C:/...`` on
+    Windows is not counted: kiro-cli does not load that spelling, so the member
+    receives it from Crew instead.
     """
     inherits = member_inherits_default_resources(project)
-    declared = dict(documents_for_member(template, project, native_only=True))
+    declared = dict(
+        documents_for_member(template, project, native_only=True, drive_uri_resources=False)
+    )
     for source, body in documents_for_member(
-        template, project, inherits_default_resources=inherits
+        template, project, inherits_default_resources=inherits, drive_uri_resources=False
     ):
         path = Path(source)
         if path.name == "AGENTS.md" or "steering" in path.parts:
