@@ -1019,6 +1019,28 @@ the main composer -- with configurable send keys and per-slot persisted drafts -
 has exercised it. In-tree surfaces import it from `app-sdk/useComposerDraft`
 by name.
 
+A side question can carry attachments the way a main-composer message can: the
+attach control, Sketch, paste and drop all upload. `pages/chat/useSideChatUploads.ts`
+runs the main composer's upload flow (`components/useChatPaneUploads`, through
+`api.uploadFiles`) under a side key of its own (`sideUploadKey(slot)`), so the
+`composerSendHolds` hold, the cancel registry and the arrivals inbox of a side
+upload never touch the main composer's Send for the same slot, and the other way
+round. Finished paths are staged in the slot's `sideChatDrafts` entry (`files`),
+beside the text, so a chip survives an unmount. An upload that finishes while the
+panel is gone waits in the arrivals inbox until the panel is back. An off-screen
+upload failure goes to that slot's side send status. Send waits while an upload
+runs. On submit, `buildOutgoingTurn` turns the staged images into leading
+`![image](path)` lines of the question (other files become `[attached_file N]`
+markers) and the paths clear with the text. A refused or unconfirmed send hands
+them back as chips beside the typed text (`restoreSideChatDraft`), never as the
+wire lines. The backend needs nothing extra: `build_side_message` returns a plain
+string, a single user segment, so `build_prompt_blocks` sends the picture as an
+ACP image block within the same `_MAX_QUESTION_BYTES` limit. A follow-up chip
+carries its own text and no attachments. `website/src/test/SideChat.attachImage.test.tsx`
+pins this. A steer into a running turn sends text only, so a steered question's
+image reaches the model as its path, not as a block, and a cancelled queued
+question comes back as its wire text, image line included.
+
 `website/src/test/useComposerDraft.test.tsx` holds the behavioural tests, two of
 them rendered inside `StrictMode` (a toggle has to remember what it wrote, so
 the write must happen outside the state updater -- an impure updater loses the

@@ -31,7 +31,7 @@ import type { AppDispatch } from '../store'
  *  picked in, and the AbortController that can end the request. */
 type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
 
-export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError }: {
+export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError, reportOffscreen }: {
   slotKey: string
   dispatch: AppDispatch
   slotKeyRef: MutableRefObject<string>
@@ -39,6 +39,9 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
   setInput: Dispatch<SetStateAction<string>>
   dashCfg: { upload_max_mb?: number } | undefined
   dashCfgError: unknown
+  /** Where a failure for a key not on screen goes, for a host whose upload key
+   *  is not a chat slot (Side Chat); absent, it is that slot's transcript. */
+  reportOffscreen?: (message: string, forSlot: string) => void
 }) {
   // Upload failures shown as a banner, keyed by the slot they were shown for.
   // A banner belongs to the conversation it happened in: rebinding the pane to
@@ -73,8 +76,9 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
    *  than held in component state nobody may ever render. Never dropped. */
   const reportUploadFailure = useCallback((message: string, forSlot: string) => {
     if (mountedRef.current && forSlot === slotKeyRef.current) { setUploadError(message, forSlot); return }
+    if (reportOffscreen) { reportOffscreen(message, forSlot); return }
     dispatch(appendSlotMessage({ slot: forSlot, message: { role: 'error', content: message, cls: '' } }))
-  }, [dispatch, setUploadError, mountedRef, slotKeyRef])
+  }, [dispatch, setUploadError, mountedRef, slotKeyRef, reportOffscreen])
 
   // File upload as a mutation (isPending replaces a manual `uploading` flag).
   //
