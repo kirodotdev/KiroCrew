@@ -19,7 +19,7 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_model_pick_lock``, ``_model_runtime_pick_gen``, ``_model_withheld``,
 ``_model_withheld_for``, ``_origin``, ``_pending_discard_conversation_key``,
 ``_deferred_model_switch_key``, ``_pending_discard_from_wake``, ``_pending_memory_mode``, ``_pending_model_pick``,
-``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_reasoning_effort``,
+``_pending_reset_history_key``, ``_prefetch_ttl_task``, ``_project_hook_files_notice_shown``, ``_reasoning_effort``,
 ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``,
 ``_session_requested_model``,
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
@@ -364,6 +364,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._mcp_banner_shown = {}
     self._hidden_scratch_notice_shown = False
     self._telemetry_notice_shown = ""
+    self._project_hook_files_notice_shown = ""
     # Set by api_chat_slot_project; consumed in _run_chat instead of
     # inline because the endpoint can be reached from inside the kiro-cli
     # process group via the set_project MCP tool.

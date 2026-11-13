@@ -762,15 +762,27 @@ def _read_human_seen(r: _Read) -> None:
         r.slot._human_seen = True
 
 
-#: The characters of the mark ``_telemetry_notice_is_new`` writes: 16 of these.
-#: Any other value is not a mark.
+#: The characters of the mark ``_telemetry_notice_is_new`` and
+#: ``_project_hook_files_notice_is_new`` write: 16 of these. Any other value is not
+#: a mark.
 _HEX = frozenset("0123456789abcdef")
 
 
-def _read_telemetry_notice_shown(r: _Read) -> None:
-    mark = r.meta.get("telemetry_notice_shown")
+def _notice_mark(r: _Read, key: str) -> str | None:
+    mark = r.meta.get(key)
     if isinstance(mark, str) and len(mark) == 16 and set(mark) <= _HEX:
+        return mark
+    return None
+
+
+def _read_telemetry_notice_shown(r: _Read) -> None:
+    if mark := _notice_mark(r, "telemetry_notice_shown"):
         r.slot._telemetry_notice_shown = mark
+
+
+def _read_project_hook_files_notice_shown(r: _Read) -> None:
+    if mark := _notice_mark(r, "project_hook_files_notice_shown"):
+        r.slot._project_hook_files_notice_shown = mark
 
 
 def _read_deferred_notes(r: _Read) -> None:
@@ -1331,6 +1343,16 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: s._telemetry_notice_shown),
         read=_read_telemetry_notice_shown,
     ),
+    # The project hook-files notice the chat showed, as a mark of its folder and
+    # file names; kept the same way, so a restart does not show it again.
+    Field(
+        "project_hook_files_notice_shown",
+        _ALL,
+        attr="_project_hook_files_notice_shown",
+        line=_truthy(lambda s: s._project_hook_files_notice_shown),
+        merge=_truthy(lambda s: s._project_hook_files_notice_shown),
+        read=_read_project_hook_files_notice_shown,
+    ),
     Field(
         "last_user_at",
         frozenset(),
@@ -1515,6 +1537,7 @@ LINE_ORDER: tuple[str, ...] = (
     "auto_tagged",
     "human_seen",
     "telemetry_notice_shown",
+    "project_hook_files_notice_shown",
     "last_user_at",
     "deferred_notes",
     "queued_prompts",
@@ -1575,6 +1598,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "auto_tagged",
     "human_seen",
     "telemetry_notice_shown",
+    "project_hook_files_notice_shown",
     "channel_folder_filed",
     "closed",
     "closed_at",
