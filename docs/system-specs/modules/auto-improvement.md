@@ -577,6 +577,23 @@ are seen too. An option's VALUE goes with it (`nice -n 5 git push` must not leav
 like the command), and the recursion budget REFUSES on exhaustion — for a denylist, "gave up"
 must not mean "allowed".
 
+`eval` and `script -c` / `script --command` run a script too, so their script is re-analyzed
+the same way, and `watch` runs its joined arguments through `sh -c`. Two splits find the
+commands. A quote-aware split walks the characters with quote state and splits only on
+UNQUOTED separators, so `sh -c 'git push; true'` still yields `git push` while quoted data
+(`printf '%s\n' ';' curl`, `rg -F '$(curl' src`) runs nothing. Main's quote-blind split
+always runs as well, so anything it refuses stays refused. When the quote-aware split cannot
+read the text (an unclosed quote, an apostrophe in a heredoc body), only the quote-blind
+split runs, as on main; no command is refused for being unreadable.
+The walk reads bash's `$'...'` / `$"..."` as an ordinary quote opening at the `$`, so the
+script inside is re-analyzed: `eval $'gh pr ready 1'` is refused because the command is
+found, and `bash -c "printf $'a\n'"` stays allowed.
+The walk follows bash's comment rule: an unquoted `#` at the start of a word comments out
+the rest of the line, so an apostrophe in `# it's` never pairs with a quote on another
+line. A `#` inside a word (`echo a#b`) is not a comment. Heredoc bodies are not tracked:
+quotes in a body can still pair up across lines, as on main.
+A redirect target is a file name, so `echo hi > ./curl` stays allowed.
+
 Reaching the subcommand also means skipping GLOBAL OPTIONS correctly. A valueless option must not
 swallow the verb: `git --no-pager push`, `--paginate`, `--bare`, `--literal-pathspecs` and
 `--no-replace-objects` must be refused like a bare `git push`. Value-taking global options are
@@ -607,6 +624,7 @@ pushing) and `exec pytest -q` stay allowed. A dedicated test pins that non-over-
 - Value-taking global options are enumerated per binary (`_VALUE_TAKING_OPTIONS`) and everything else is valueless, so `git --no-pager push` is refused like `git push`; `--exec-path` is excluded because its value is optional. (D-63)
 - Value-taking wrapper long options (`_WRAPPER_VALUE_TAKING_LONG_OPTIONS`, such as `env --unset`) consume their value, so the command behind them is inspected. (D-117)
 - A bare `&` splits commands like `;`, and `(` and `)` split too, so `true & gh pr comment …` and `echo $(gh pr ready)` are refused; a benign trailing `& true` passes. (D-128)
+- `eval`, `script -c` and `watch` scripts are re-analyzed; a quoted separator stays in its word, while main's quote-blind split still runs; text the quote-aware split cannot read gets only the quote-blind split, as on main, and is never refused for that alone; `$'...'` / `$"..."` opens a quote at the `$`, so `eval $'gh pr ready 1'` is refused and `bash -c "printf $'a\n'"` passes; an unquoted word-initial `#` comments out the line, so comment apostrophes cannot hide `sh -c "true;gh pr ready"` on the next line, while `eval 'echo hi' # it's`, `echo a#b` and `printf '%s\n' ';' curl` pass. (D-143)
 
 ### Why the protected-branch denylist normalizes before it matches
 
