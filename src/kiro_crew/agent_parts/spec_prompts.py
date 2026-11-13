@@ -85,8 +85,9 @@ Board's Overview shows that goal, so a goal you never rewrite goes stale there.
 #: that proves it. Carried by every conductor and the worker, worded once here.
 _DEPENDENT_CALLS_RULE = """**A call that depends on another goes in a later step, never the same block.**
 It depends on another when its arguments, or the fact it records or reports,
-are only true once the other has returned. This overrides any instruction to
-batch independent calls.
+are only true once the other has returned, even when it looks independent.
+Calls that truly do not depend on each other, such as several reads or
+searches, still go together in one block.
 
 """
 
