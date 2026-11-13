@@ -188,8 +188,8 @@ def _rows(
 
     With *page*, only the matches whose position is in it are assembled; each
     other match is yielded as ``None``, so a caller that pages still counts
-    them. A match outside the page skips its fingerprint, and with no search
-    term it skips its metadata and its decoded value too, since nothing but the
+    them. A match outside the page skips its fingerprint and its metadata read,
+    and with no search term it skips its decoded value too, since nothing but the
     kind decides it. That keeps a page's cost near the page, not the store.
     """
     from kiro_crew.memory_record_metadata import get_record_metadata, record_identity_or_none
@@ -204,6 +204,7 @@ def _rows(
             return ""
         return f" AND {column} IN ({','.join('?' for _ in values)})" if values else " AND 0"
 
+    tokens = _normalized(query["q"]).split()
     sql = (
         "SELECT CASE WHEN key LIKE 'lesson.%' THEN 'directive' ELSE 'fact' END AS kind, "
         "key AS id, key, value_json, value_json AS text, source, updated_at, '' AS tags, "
@@ -211,15 +212,28 @@ def _rows(
         "SELECT 'episode', id, NULL, NULL, text, '', created_at, tags, importance "
         f"FROM episodic_memories WHERE is_deleted = 0{clause('id', epi_ids)}"
     )
+    # A search matches on three metadata fields too. One join reads them for every
+    # row; a query per row cost most of a searched listing. The join key is
+    # record_identity_or_none in SQL: no metadata for a NULL, empty or non-text id.
+    search_meta, search_join = "", ""
+    if tokens:
+        search_meta = (
+            ", m.category AS _m_category, m.subject AS _m_subject, m.predicate AS _m_predicate"
+        )
+        search_join = (
+            " LEFT JOIN memory_record_meta m ON m.record_id = CASE"
+            " WHEN typeof(b.id) <> 'text' OR b.id = '' THEN NULL"
+            " WHEN b.kind = 'episode' OR substr(b.id, 1, 4) = 'key:' THEN b.id"
+            " ELSE 'key:' || b.id END"
+        )
     if store._lineage == memory_schema.LINEAGE_CREW:
         sql = (
-            f"SELECT b.*, p.derived_from, p.source AS _source, p.updated_at AS _updated "
+            f"SELECT b.*, p.derived_from, p.source AS _source, p.updated_at AS _updated{search_meta} "
             f"FROM ({sql}) b JOIN memory_items p ON p.id = "
-            "CASE WHEN b.kind='episode' THEN b.id ELSE 'key:' || b.id END ORDER BY b.kind,b.id"
+            f"CASE WHEN b.kind='episode' THEN b.id ELSE 'key:' || b.id END{search_join} ORDER BY b.kind,b.id"
         )
     else:
-        sql = f"SELECT b.*, '' AS derived_from FROM ({sql}) b ORDER BY b.kind,b.id"
-    tokens = _normalized(query["q"]).split()
+        sql = f"SELECT b.*, '' AS derived_from{search_meta} FROM ({sql}) b{search_join} ORDER BY b.kind,b.id"
     cursor = store.db.execute(sql, sem_ids + epi_ids)
     matched = -1
     try:
@@ -228,29 +242,26 @@ def _rows(
                 continue
             if query["kind"] != "all" and row["kind"] != query["kind"]:
                 continue
-            if not tokens:
-                matched += 1
-                if page is not None and matched not in page:
-                    yield None
-                    continue
-            record_id = record_identity_or_none(row["kind"], row["id"])
-            meta = get_record_metadata(store.db, record_id) if record_id is not None else {}
-            text = row["text"]
-            if row["value_json"] is not None:
-                try:
-                    text = _search_text(json.loads(row["value_json"]))
-                except (ValueError, TypeError, RecursionError):
-                    pass
-            searchable = f"{row['key'] or ''} {text} {row['tags']} {meta.get('category', '')} {meta.get('subject', '')} {meta.get('predicate', '')}"
-            folded = _normalized(searchable)
             if tokens:
+                text = row["text"]
+                if row["value_json"] is not None:
+                    try:
+                        text = _search_text(json.loads(row["value_json"]))
+                    except (ValueError, TypeError, RecursionError):
+                        pass
+                searchable = f"{row['key'] or ''} {text} {row['tags']} {row['_m_category'] or ''} {row['_m_subject'] or ''} {row['_m_predicate'] or ''}"
+                folded = _normalized(searchable)
                 if not all(token in folded for token in tokens):
                     continue
-                matched += 1
-                if page is not None and matched not in page:
-                    yield None
-                    continue
+            matched += 1
+            if page is not None and matched not in page:
+                yield None
+                continue
+            record_id = record_identity_or_none(row["kind"], row["id"])
+            meta = get_record_metadata(store.db, record_id) if record_id is not None else {}
             record = dict(row)
+            for column in ("_m_category", "_m_subject", "_m_predicate"):
+                record.pop(column, None)
             record["source"] = record.pop("_source", record["source"] or meta.get("source_ref", ""))
             record["updated_at"] = record.pop("_updated", record["updated_at"])
             if (

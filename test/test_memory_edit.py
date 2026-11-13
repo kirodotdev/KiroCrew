@@ -978,15 +978,112 @@ def test_a_page_with_no_search_term_reads_only_its_own_records(store, record_rea
     assert reads == {"metadata": 10, "fingerprint": 10}
 
 
-def test_a_searched_page_fingerprints_only_its_own_records(store, record_reads):
+def test_a_searched_page_reads_only_its_own_records(store, record_reads):
     reads = _seeded(store, record_reads)
     page = memory_edit.list_records(store, {"q": "email"}, limit=10, offset=20)
 
     assert page["total"] == 65 and page["has_more"]
     assert len(page["entries"]) == 10
-    # A search term is matched against each record's metadata, so that is read
-    # for every record; the fingerprint is only for the records returned.
-    assert reads == {"metadata": RECORDS, "fingerprint": 10}
+    # The search matches on metadata fields that the listing query joins in, so
+    # the full metadata row is read only for the records returned.
+    assert reads == {"metadata": 10, "fingerprint": 10}
+
+
+@pytest.mark.parametrize("field", ["category", "subject", "predicate"])
+def test_a_search_matches_a_record_by_each_metadata_field_it_reads(store, field):
+    seed(store, count=2)
+    assert (
+        store.set_semantic(
+            "user.route", "accounts", 1.0, "user_explicit", metadata={field: "Zebrafinch"}
+        )
+        is None
+    )
+    assert store.write_episodic(
+        "We planned the spring trip and agreed on the route.",
+        source="user_explicit",
+        metadata={field: "Zebrafinch"},
+    )
+
+    page = memory_edit.list_records(store, {"q": "zebrafinch"})
+
+    assert page["total"] == 2
+    assert sorted(entry["kind"] for entry in page["entries"]) == ["episode", "fact"]
+    assert {entry["metadata"][field] for entry in page["entries"]} == {"zebrafinch"}
+
+
+def _meta_row(tier, record_id: str, category: str) -> None:
+    tier.db.execute(
+        "INSERT OR REPLACE INTO memory_record_meta"
+        " (record_id, kind, revision, category, content_hash, updated_at)"
+        " VALUES (?, 'fact', 1, ?, '', '2026-01-01')",
+        (record_id, category),
+    )
+
+
+def _semantic_row(tier, key) -> None:
+    tier.db.execute(
+        "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at)"
+        " VALUES (?, '\"x\"', 'user_explicit', '2026-01-01', '2026-01-01')",
+        (key,),
+    )
+
+
+def test_a_search_finds_the_metadata_of_a_key_already_named_as_a_record_id(tmp_path):
+    """A fact whose key starts with ``key:`` is its own record id, not ``key:key:...``."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        _semantic_row(tier, "key:user.note")
+        _meta_row(tier, "key:user.note", "zebrafinch")
+        _meta_row(tier, "key:key:user.note", "wrongbird")
+        tier.db.commit()
+
+        assert memory_edit.list_records(tier, {"q": "zebrafinch"})["total"] == 1
+        assert memory_edit.list_records(tier, {"q": "wrongbird"})["total"] == 0
+    finally:
+        tier.close()
+
+
+def test_a_record_with_no_metadata_row_is_still_found_by_a_search(tmp_path):
+    """A legacy record may have no metadata row; it still matches on its own text."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        _semantic_row(tier, "user.plainnote")
+        tier.db.commit()
+        assert (
+            tier.db.execute(
+                "SELECT COUNT(*) FROM memory_record_meta WHERE record_id = 'key:user.plainnote'"
+            ).fetchone()[0]
+            == 0
+        )
+
+        page = memory_edit.list_records(tier, {"q": "plainnote"})
+
+        assert [entry["id"] for entry in page["entries"]] == ["user.plainnote"]
+        assert page["entries"][0]["metadata"] == {"pending_conflicts": 0}
+    finally:
+        tier.close()
+
+
+@pytest.mark.parametrize(
+    "key, record_id",
+    [("", "key:"), (b"ab", "key:ab")],
+    ids=["empty key", "blob key"],
+)
+def test_a_record_with_no_identity_gets_no_metadata_in_a_search(tmp_path, key, record_id):
+    """``record_identity_or_none`` gives an empty or non-text id no metadata; the
+    listing query must not join one either, even when a row would match."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        _semantic_row(tier, key)
+        _meta_row(tier, record_id, "zebrafinch")
+        tier.db.commit()
+
+        assert memory_edit.list_records(tier, {"q": "zebrafinch"})["total"] == 0
+    finally:
+        tier.close()
 
 
 @pytest.mark.parametrize("query", [{}, {"q": "email"}, {"kind": "fact"}, {"q": "chinese"}])
