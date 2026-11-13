@@ -72,12 +72,14 @@ def write_dump(
     mtime: float,
     domain: str | None = None,
     start: str = "1",
+    alarm_due: int | None = None,
 ) -> Path:
     """A dump in the store's on-disk shape: its 4-line header, then stacks.
 
     ``domain`` defaults to THIS process's PID domain, so a marker written by the
     test process joins it; pass another to model a dump from a container or
-    host that is not the one reading it."""
+    host that is not the one reading it. ``alarm_due`` is the header's record
+    of when the stall alarm was due, in epoch seconds; omitted, none is recorded."""
     global _DUMP_SEQ
     _DUMP_SEQ += 1
     dumps_dir.mkdir(parents=True, exist_ok=True)
@@ -85,7 +87,8 @@ def write_dump(
     header = [
         "# KiroCrew loop-stall crash dump — opened test",  # brand-ok: mirrors the header bytes the store writes
         f"# PID: {pid} @ {domain or crash_dump_store._pid_domain()} start={start}",
-        "# If thread stacks appear below, the event loop wedged and faulthandler fired.",
+        "# If thread stacks appear below, the event loop wedged and faulthandler fired."
+        + ("" if alarm_due is None else f" alarm-due={alarm_due:010d}"),
         "",
     ]
     body = ["Timeout (0:00:25)!", "Thread 0x00007f0000000001 (most recent call first):"]

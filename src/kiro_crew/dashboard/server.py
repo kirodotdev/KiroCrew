@@ -80,6 +80,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     claim_dump_notification,
     dump_age_seconds,
+    dump_fired_at,
     dump_replay_lines,
     newest_dump_with_stacks,
     open_dump_file,

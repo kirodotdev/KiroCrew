@@ -546,8 +546,17 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
             )
             if _age_s < 7 * 86400:  # Less than 7 days old
                 _age_h = _age_s / 3600
-                _icon = "ℹ️ " if _superseded else "⚠️ "
-                print(f"  last dump:   {_icon} {_latest.name} ({_age_h:.1f}h ago)")
+                # The name is when that gateway STARTED (the file is opened at
+                # startup); when the alarm fired is the file's last write.
+                _attribution = cli_doctor.attribute_dump(_latest, cli_doctor.config_dir())
+                # A host-wide pause is a fault of the host, not of the gateway:
+                # shown, never counted as an issue to fix here.
+                _host_pause = _attribution.host_pause_secs is not None
+                _icon = "ℹ️ " if _superseded or _host_pause else "⚠️ "
+                print(
+                    f"  last dump:   {_icon} {_latest.name} "
+                    f"(fired {cli_doctor.dump_fired_at(_latest)}, {_age_h:.1f}h ago)"
+                )
                 if _superseded:
                     print(
                         "               a later gateway session started after it and did "
@@ -565,7 +574,6 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                 # stack and the cron in-flight markers on disk -- no gateway
                 # needed -- and phrased as evidence plus the one action it
                 # supports, or the statement that it supports none.
-                _attribution = cli_doctor.attribute_dump(_latest, cli_doctor.config_dir())
                 print("  attribution:")
                 for _line in cli_doctor.describe(_attribution):
                     print(f"    {_line}")
@@ -575,13 +583,13 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                     _paused_job = cli_doctor.job_pause_state_from_disk(_attribution.job.job_id)
                     if _paused_job is not None:
                         print(f"    job is currently {_paused_job}")
-                    if not _superseded:
+                    if not _superseded and not _host_pause:
                         issues.append(
                             "loop-stall dump attributed to cron job "
                             f"{render._safe_display(_attribution.job.name)} "
                             f"({render._safe_display(_attribution.job.job_id)})"
                         )
-                if not _superseded:
+                if not _superseded and not _host_pause:
                     issues.append(f"recent loop-stall crash dump ({_age_h:.0f}h ago)")
             else:
                 print(
@@ -600,7 +608,7 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
                 "without a clean shutdown and left no stacks"
             )
             print(
-                f"               newest started {_newest_h:.1f}h ago: "
+                f"               newest last written {_newest_h:.1f}h ago: "
                 f"{render._safe_display(_unclean[-1].name)}"
             )
         print(f"  dump dir:    {dumps_dir}")

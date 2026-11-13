@@ -28,6 +28,7 @@ from pathlib import Path
 
 from kiro_crew.cron_inflight import RunningMarker, read_markers, read_recorded_attribution
 from kiro_crew.dashboard.crash_dump_store import (
+    dump_host_pause_secs,
     dump_owner_identity,
     dump_wedged_frames,
     get_dumps_dir,
@@ -135,6 +136,11 @@ class StallAttribution:
     #: Markers left by SOME dead process that is not this dump's owner (an
     #: older crash, a SIGKILL, a power loss). Reported, never attributed.
     unrelated_abandoned: list[RunningMarker] = field(default_factory=list)
+    #: How late the stall alarm fired, when that shows the host stopped running
+    #: the gateway (:func:`~kiro_crew.dashboard.crash_dump_store.dump_host_pause_secs`).
+    #: The stacks are then wherever each thread was descheduled: no frame, and
+    #: no job in flight, is what ended the gateway.
+    host_pause_secs: float | None = None
 
     @property
     def job(self) -> RunningMarker | None:
@@ -190,6 +196,7 @@ def attribute_dump(dump_path: Path, cron_base_dir: Path) -> StallAttribution:
         stuck_in=_innermost_crew_frame(frames),
         gate=_gate_frame(frames),
         owner_pid=owner[0] if owner is not None else None,
+        host_pause_secs=dump_host_pause_secs(dump_path),
     )
     try:
         dump_mtime = dump_path.stat().st_mtime
@@ -287,6 +294,38 @@ def describe(attribution: StallAttribution) -> list[str]:
     """
     a = attribution
     lines: list[str] = []
+    if a.host_pause_secs is not None:
+        lines.extend(_host_pause_lines(a))
+    else:
+        lines.extend(_stall_lines(a))
+    if a.unrelated_abandoned:
+        names = ", ".join(
+            f"'{_inert(m.name)}' ({_inert(m.job_id)}, PID {m.pid})" for m in a.unrelated_abandoned
+        )
+        lines.append(f"other runs cut short by a dead gateway, not by this dump: {names}")
+    return lines
+
+
+def _host_pause_lines(a: StallAttribution) -> list[str]:
+    """The evidence lines for a dump whose alarm fired late (a host-wide pause)."""
+    lines: list[str] = []
+    lines.append(
+        f"the host stopped running the gateway (PID {a.owner_pid}): its stall alarm "
+        f"fired {a.host_pause_secs:.0f}s after it was due, which happens only to a "
+        "process that is not being scheduled"
+    )
+    if a.is_cron and a.job is not None:
+        lines.append(f"cron job {_job_label(a.job)} was in flight but is not implicated")
+    lines.append(
+        "a host-wide pause, not a gateway stall: look at the host (memory pressure, "
+        "a paused VM, a stopped process), not at the stacks"
+    )
+    return lines
+
+
+def _stall_lines(a: StallAttribution) -> list[str]:
+    """The evidence lines for a dump written while the gateway was still scheduled."""
+    lines: list[str] = []
     if a.gate is not None:
         lines.append(f"stuck in the tool permission gate ({_inert(a.gate.short)})")
     elif a.stuck_in is not None:
@@ -315,9 +354,4 @@ def describe(attribution: StallAttribution) -> list[str]:
         lines.append(f"the loop was serving a {a.surface} turn; no cron job is implicated")
     else:
         lines.append("the wedged stack names no known surface; cannot attribute the stall")
-    if a.unrelated_abandoned:
-        names = ", ".join(
-            f"'{_inert(m.name)}' ({_inert(m.job_id)}, PID {m.pid})" for m in a.unrelated_abandoned
-        )
-        lines.append(f"other runs cut short by a dead gateway, not by this dump: {names}")
     return lines

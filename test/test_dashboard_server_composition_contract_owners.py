@@ -547,7 +547,10 @@ async def test_a_prior_crash_dump_is_reported_once_with_its_stacks(
     monkeypatch.setattr(server, "claim_dump_notification", lambda path: claims.append(path) or True)
     monkeypatch.setattr(server, "dump_replay_lines", lambda path: (["frame a", "frame b"], True))
     monkeypatch.setattr(server, "data_home", lambda: tmp_path)
-    monkeypatch.setattr(server, "attribute_dump", lambda path, home: ("attributed", path, home))
+    monkeypatch.setattr(
+        server, "attribute_dump", lambda path, home: types.SimpleNamespace(host_pause_secs=None)
+    )
+    monkeypatch.setattr(server, "dump_fired_at", lambda path: "2026-11-07T18:28:28Z")
     monkeypatch.setattr(server, "describe", lambda attribution: ["It was running cron nightly"])
     state = MagicMock()
     with caplog.at_level(logging.WARNING, logger=_FACADE):

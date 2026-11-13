@@ -180,6 +180,7 @@ from kiro_crew.cron import (  # noqa: F401
 )
 from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     dump_age_seconds,
+    dump_fired_at,
     dump_first_stack_lines,
     dump_superseded,
     dumps_with_stacks,
