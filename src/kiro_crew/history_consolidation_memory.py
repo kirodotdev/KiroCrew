@@ -201,7 +201,7 @@ def _bounded_semantic_table(rows: list[dict], entries: list[dict], cap: int) -> 
 
 
 def _withhold_unseen_deletes(
-    result: dict, visible_keys: frozenset[str] | None, logger: logging.Logger
+    result: dict, visible_keys: frozenset[str] | None, logger: logging.Logger | None
 ) -> tuple[dict, int]:
     """Drop every ``delete`` naming a key the bounded semantic table never showed.
 
@@ -220,7 +220,8 @@ def _withhold_unseen_deletes(
     means no bounded table was rendered and nothing is withheld.
 
     Returns the result (a shallow copy when anything was dropped) and how many
-    distinct keys were withheld; each is logged once, however often it is named.
+    distinct keys were withheld; each is logged once, however often it is named,
+    and not at all when *logger* is ``None`` (a caller that only reads the answer).
     """
     items = result.get("semantic")
     if visible_keys is None or not isinstance(items, list):
@@ -234,13 +235,13 @@ def _withhold_unseen_deletes(
             and isinstance(item.get("key"), str)
             and item["key"] not in visible_keys
         ):
-            if item["key"] not in withheld:
-                withheld.add(item["key"])
+            if item["key"] not in withheld and logger is not None:
                 logger.warning(
                     "Semantic consolidation refused delete of %r: key not in the rendered table"
                     " (omitted above the prompt budget), so the model never saw its value",
                     item["key"],
                 )
+            withheld.add(item["key"])
             continue
         kept.append(item)
     if not withheld:
