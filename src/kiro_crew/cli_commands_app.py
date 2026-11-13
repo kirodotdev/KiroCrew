@@ -191,6 +191,8 @@ def _apply_through_gateway(
             _refuse_session_approval_from_cli(subject)
         # A refusal that already ends its sentence would otherwise print "..".
         print(f"❌ gateway refused: {str(exc).rstrip('.')}. {hint}", file=sys.stderr)
+        for line in app_lifecycle_client.gateway_version_lines(exc.gateway_version, refused=True):
+            print(line, file=sys.stderr)
         sys.exit(1)
     if result is None:
         return False

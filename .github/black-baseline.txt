@@ -251,7 +251,6 @@ test/test_approval_and_update_task.py
 test/test_approval_threading.py
 test/test_apps_registry.py
 test/test_apps_registry_coverage.py
-test/test_apps_routes_coverage.py
 test/test_apps_uninstall_keep_specific.py
 test/test_artifact_companion.py
 test/test_artifact_folder_handlers.py

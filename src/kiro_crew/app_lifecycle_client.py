@@ -16,6 +16,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 
 from kiro_crew.config.loader import read_local_secret
@@ -41,6 +42,9 @@ class AppGatewayError(RuntimeError):
         # The gateway's machine-readable ``code`` when it sent one, so the CLI can
         # act on a refusal (``session_approval_consent_required``) without parsing prose.
         self.code = code
+        # The serving gateway's own version when the client read it (install and
+        # update only), so the CLI can say which gateway refused; "" when unknown.
+        self.gateway_version = ""
 
 
 class AppGatewayTimeout(AppGatewayError):
@@ -204,6 +208,13 @@ def _post_lifecycle_action(
         raise AppGatewayError("gateway returned an empty local dashboard credential")
 
     encoded_credential = urllib.parse.quote(credential, safe="")
+    # Read BEFORE the action: the credential lives two minutes and an action can
+    # take five, so a read after a slow one would always come back unknown.
+    gateway_version = (
+        _read_gateway_version(base, encoded_credential, socket_path, verify_peer)
+        if action in _VERSIONED_ACTIONS
+        else ""
+    )
     body = json.dumps(payload).encode() if payload is not None else None
     request = urllib.request.Request(
         f"{base}{route}?token={encoded_credential}",
@@ -216,6 +227,73 @@ def _post_lifecycle_action(
         f"(may take up to {_ACTION_TIMEOUT_SECS // 60} minutes)",
         file=sys.stderr,
     )
+    try:
+        result = _send_action(request, action, subject, socket_path, verify_peer)
+    except AppGatewayError as exc:
+        exc.gateway_version = gateway_version
+        raise
+    if gateway_version:
+        result["gatewayVersion"] = gateway_version
+    return result
+
+
+# The actions whose answer names the serving gateway's version. An install or update
+# is the one a manifest's ``minKiroCrewVersion`` is checked on, and that check runs in
+# the gateway, which can be older than this CLI until it restarts.
+_VERSIONED_ACTIONS = frozenset({"install", "update"})
+
+
+def _read_gateway_version(
+    base: str, encoded_credential: str, socket_path: Path, verify_peer: Callable[..., None]
+) -> str:
+    """The serving gateway's own version from ``GET /api/version``, or "" when unknown.
+
+    Read just after the credential is minted, over the same peer-verified socket with
+    the same credential, so the gateway that answers it is the one the action goes to.
+    ``/api/version`` ships since 0.10.0, so a gateway older than this CLI still names
+    itself. It only labels the answer, so any failure reads as unknown.
+    """
+    request = urllib.request.Request(f"{base}/api/version?token={encoded_credential}")
+    try:
+        with unix_socket_urlopen(
+            request, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+        ) as response:
+            data = _read_json(response)
+    except Exception:  # noqa: BLE001 — a label must never change the action's outcome
+        return ""
+    version = data.get("version") if isinstance(data, dict) else None
+    return version.strip() if isinstance(version, str) else ""
+
+
+def gateway_version_lines(gateway_version: str, *, refused: bool) -> list[str]:
+    """The lines naming which gateway decided an install or update, and its version."""
+    if not gateway_version:
+        return []
+    from kiro_crew import __version__ as cli_version
+
+    shown = safe_terminal_line(gateway_version)
+    if gateway_version == cli_version:
+        return [f"   Decided by the running gateway, Kiro Crew {shown}."]
+    lines = [
+        f"   Decided by the running gateway, Kiro Crew {shown}; "
+        f"this kirocrew CLI is {cli_version}."
+    ]
+    if refused:
+        lines.append(
+            "   If Kiro Crew is already updated, restart the gateway so it runs the "
+            "same version: kirocrew restart"
+        )
+    return lines
+
+
+def _send_action(
+    request: urllib.request.Request,
+    action: str,
+    subject: str,
+    socket_path: Path,
+    verify_peer: Callable[..., None],
+) -> dict[str, object]:
+    """Send the lifecycle *request* and return the gateway's answer, or raise its refusal."""
     try:
         with unix_socket_urlopen(
             request,
@@ -265,6 +343,10 @@ def print_result(action: str, app_name: str, result: dict[str, object]) -> None:
         else f"{action.title()}{'d' if action.endswith('e') else 'ed'} {app_name}"
     )
     print(f"✅ {safe_terminal_line(rendered_message)}")
+    gateway_version = result.get("gatewayVersion")
+    if isinstance(gateway_version, str):
+        for line in gateway_version_lines(gateway_version, refused=False):
+            print(line)
 
     warnings = result.get("warnings")
     if isinstance(warnings, list):
