@@ -194,6 +194,27 @@ async def test_the_mint_sends_only_the_endpoint_and_reads_the_token(fake: FakeCp
     assert "tokentype" not in headers
 
 
+async def test_the_mint_with_no_profile_sends_exactly_the_endpoint(fake: FakeCps) -> None:
+    fake.answer(200, MINT["examples"][0]["body"])
+    await create_crew_access_token(fake.url, BEARER, TEAM, profile_arn="")
+    assert [r["body"] for r in fake.requests] == [{"endpointId": TEAM}]
+
+
+async def test_the_mint_with_a_profile_adds_only_the_profile_arn(fake: FakeCps) -> None:
+    profile = "arn:aws:codewhisperer:us-east-1:000000000000:profile/EXAMPLEPROFILE"
+    fake.answer(200, MINT["examples"][0]["body"])
+    await create_crew_access_token(fake.url, BEARER, PERSONAL, profile_arn=profile)
+    assert [r["body"] for r in fake.requests] == [{"endpointId": PERSONAL, "profileArn": profile}]
+
+
+async def test_the_list_body_is_unchanged_next_to_a_profile_mint(fake: FakeCps) -> None:
+    fake.answer(200, page(1))
+    fake.answer(200, MINT["examples"][0]["body"])
+    await list_crew_endpoints(fake.url, BEARER, crew_domain=DOMAIN)
+    await create_crew_access_token(fake.url, BEARER, PERSONAL, profile_arn="arn:example")
+    assert fake.requests[0]["body"] == {}
+
+
 async def test_an_iso_expiry_without_renew_in_is_accepted(fake: FakeCps) -> None:
     fake.answer(200, MINT["examples"][1]["body"])
     token = await create_crew_access_token(fake.url, BEARER, TEAM)
