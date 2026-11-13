@@ -8293,7 +8293,9 @@
         "chat_stopped_refused_body": "模型拒绝回答，聊天已停止。请打开聊天查看原因。",
         "chat_stopped_stalled_body": "聊天已停滞且无法恢复。请打开聊天，开始新的聊天。",
         "folder_agent_label_title": "检查文件夹的默认智能体",
-        "folder_agent_label_body": "这些文件夹的默认智能体与某个 Bot 同名，但其中的新聊天不会在该 Bot 上运行：{{folders}}。要使用该 Bot，请在文件夹设置中把它选为默认智能体。"
+        "folder_agent_label_body": "这些文件夹的默认智能体与某个 Bot 同名，但其中的新聊天不会在该 Bot 上运行：{{folders}}。要使用该 Bot，请在文件夹设置中把它选为默认智能体。",
+        "folder_agent_key_title": "检查文件夹的默认智能体",
+        "folder_agent_key_body": "之前的一次更新可能已把这些文件夹从自定义代理换成了同名 Bot，因此其中新聊天会在该 Bot 上运行：{{folders}}。如果你原本想用的是自定义代理，请在文件夹设置中重新把它选为默认智能体。"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",

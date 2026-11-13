@@ -8711,7 +8711,9 @@
         "chat_stopped_refused_body": "Le modèle a refusé de répondre et la discussion s’est arrêtée. Ouvre la discussion pour voir pourquoi.",
         "chat_stopped_stalled_body": "La discussion s’est bloquée et n’a pas pu reprendre. Ouvre la discussion pour en démarrer une nouvelle.",
         "folder_agent_label_title": "Vérifie l’agent par défaut d’un dossier",
-        "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier."
+        "folder_agent_label_body": "L’agent par défaut de ces dossiers porte le nom d’un Bot, mais les nouvelles discussions qui s’y trouvent ne s’exécutent pas sur ce Bot : {{folders}}. Pour utiliser le Bot, choisis-le comme agent par défaut dans les paramètres du dossier.",
+        "folder_agent_key_title": "Vérifie l’agent par défaut d’un dossier",
+        "folder_agent_key_body": "Une mise à jour précédente a peut-être fait passer ces dossiers d’un agent personnalisé au Bot du même nom, donc les nouvelles discussions qui s’y trouvent s’exécutent sur ce Bot : {{folders}}. Si tu voulais l’agent personnalisé, choisis-le à nouveau comme agent par défaut dans les paramètres du dossier."
       },
       "notificationBanner": {
         "dismiss_notification": "Ignorer la notification",
