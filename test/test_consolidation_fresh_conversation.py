@@ -28,6 +28,7 @@ import pytest
 
 from kiro_crew import history_consolidation
 from kiro_crew import history_consolidation_pass as consolidation_pass
+from kiro_crew import history_consolidation_skills as skills
 from kiro_crew.llm_helpers import background_turn, stream_and_collect
 from kiro_crew.session import CONSOLIDATE_KEY
 from kiro_crew.testing import fake_acp_backend
@@ -167,6 +168,52 @@ async def test_the_shared_key_without_a_fresh_conversation_stacks_jobs(tmp_path,
     assert _records(store) == [first["sid"]]
 
 
+# ── skill judges on _bg ──
+
+
+async def _judges_then_a_title(sessions: object) -> None:
+    c = _consolidator(sessions)
+    await skills._dedupe_judge(c, "DEDUPE apples")
+    await skills._merge_skill_update(c, "MERGE-BODY pears", "d", "t", "steps")
+    async with background_turn(sessions, task="chat_title") as client:
+        await stream_and_collect(client, "TITLE prompt")
+
+
+@pytest.mark.asyncio
+async def test_skill_judges_each_send_only_their_own_prompt_on_bg(tmp_path, monkeypatch):
+    sessions, store = _real_manager(tmp_path, monkeypatch)
+    try:
+        await _judges_then_a_title(sessions)
+    finally:
+        await sessions.close_all()
+
+    dedupe, merge, title = _requests(store)
+    assert [r["turn"] for r in (dedupe, merge, title)] == [1, 1, 1]
+    assert "DEDUPE" not in merge["request"]
+    assert "DEDUPE" not in title["request"] and "MERGE-BODY" not in title["request"]
+    assert dedupe["pid"] == merge["pid"] == title["pid"]
+
+
+@pytest.mark.asyncio
+async def test_the_reset_fallback_on_bg_does_not_resume_the_judges_history(tmp_path, monkeypatch):
+    """``_bg`` is a persistent key, unlike ``_consolidate``: its reset must not reload the old one."""
+    from kiro_crew.providers.acp import AcpProvider
+
+    monkeypatch.setattr(
+        AcpProvider, "new_conversation", AsyncMock(side_effect=RuntimeError("no warm reset"))
+    )
+    sessions, store = _real_manager(tmp_path, monkeypatch)
+    try:
+        await _judges_then_a_title(sessions)
+    finally:
+        await sessions.close_all()
+
+    dedupe, merge, title = _requests(store)
+    assert [merge["turn"], title["turn"]] == [1, 1]
+    assert "DEDUPE" not in title["request"] and "MERGE-BODY" not in title["request"]
+    assert dedupe["pid"] != merge["pid"]
+
+
 # ── background_turn seams ──
 
 
@@ -264,6 +311,18 @@ async def test_without_the_flag_the_key_is_recycled_as_before():
     await _one_turn(sessions, fresh=False)
     assert "new_conversation" not in sessions.calls
     assert sessions.calls[-1] == ("recycle", CONSOLIDATE_KEY)
+
+
+@pytest.mark.asyncio
+async def test_a_bg_provider_that_cannot_swap_in_place_is_recycled_not_reset():
+    """There ``_bg``'s one-liners wait on the entry itself; a reset would pop it under them."""
+    sessions = _Sessions()
+    with patch(_USAGE_TARGET):
+        async with background_turn(sessions, task="skill_dedupe", fresh_conversation=True):
+            pass
+    assert "new_conversation" not in sessions.calls
+    assert not [c for c in sessions.calls if c[0] == "reset"]
+    assert sessions.calls[-1] == ("recycle", "_bg")
 
 
 # ── _call_llm ──

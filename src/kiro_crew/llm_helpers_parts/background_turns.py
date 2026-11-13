@@ -610,7 +610,9 @@ async def background_turn(
     ``fresh_conversation`` ends the turn's conversation before the permit is
     released, so the next caller on the key starts from an empty context (see
     :func:`_start_fresh_conversation`). It replaces the recycle for that key and
-    is ignored with ``memory_store``, whose key already lives for one turn.
+    is ignored with ``memory_store``, whose key already lives for one turn. On the
+    shared ``BACKGROUND_KEY`` it applies only when the provider swaps conversations
+    in place (``swaps_conversation_in_place``); otherwise the turn recycles.
 
     Exceptions are deliberately NOT swallowed. Callers distinguish "the session
     could not be acquired" (nothing was sent, so nothing was billed) from "the turn
@@ -775,8 +777,20 @@ async def background_turn(
         # BaseException that no `except Exception` catches. The one await ahead
         # of it, the fresh conversation, runs while the permit is still held, so
         # no waiter can take the key between this turn and the reset.
+        fresh = False
         try:
-            if fresh_conversation and not memory_store:
+            # On a backend with no shared runtime, ``_bg``'s one-liners wait on
+            # this very entry (``_ProviderBgSession``) and the reset fallback would
+            # pop it under them, so such a ``_bg`` turn recycles instead.
+            fresh = (
+                fresh_conversation
+                and not memory_store
+                and (
+                    key != BACKGROUND_KEY
+                    or getattr(client, "swaps_conversation_in_place", False) is True
+                )
+            )
+            if fresh:
                 await _start_fresh_conversation(sessions, key, client)
         finally:
             try:
@@ -828,7 +842,7 @@ async def background_turn(
             try:
                 if memory_store:
                     await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-                elif fresh_conversation:
+                elif fresh:
                     # The fresh conversation above already emptied the context.
                     pass
                 elif key == BACKGROUND_KEY:
