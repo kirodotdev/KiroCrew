@@ -6548,6 +6548,18 @@ method imports what it delegates to at call time. The aws-control package `__ini
 serves `register_routes` lazily for the same reason. Any other in-process code, such as
 an installed app's `on_startup` hook, calls `seams.register` itself.
 
+An installed copy of a builtin (an adopted former built-in, section 33) registers under
+the builtin's id from its `on_startup`, so it replaces the builtin's provider while it
+is loaded. Its provider imports the copy's own modules at call time, and a disable, an
+update or an uninstall unloads them (`module_loader.unload_app_modules`), after which it
+could only raise. The unload therefore calls `seams.release_app(name)`, which hands each
+seam that app holds back to the provider its builtin's `seams.py` registered during the
+one-time load (kept in `_builtin_providers`). The core feature then answers from the wheel
+copy exactly as it did before adoption, whether or not the app is enabled. A seam no
+builtin provides stays with its app, and a builtin's own provider is never touched. A CLI
+process, and a gateway that boots with the app disabled, never run the copy's
+`on_startup`, so the builtin's provider answers there throughout.
+
 A provider answers whether or not its app is enabled, because the core features above
 worked with aws-control switched off (its default). One app holds a seam: a second app
 registering it is refused with `ValueError`, so the answer cannot depend on import order.
@@ -6557,8 +6569,8 @@ never the registry's, so a provider module registering from another thread canno
 deadlock it; a seams module therefore only registers while it is imported, and never
 looks a seam up. The registry is process state and holds no per-caller data.
 
-`test_app_seams.py` pins the registry, the shipped providers, and each core caller's
-answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no module
+`test_app_seams.py` pins the registry, the shipped providers, the hand-back on an
+installed copy's unload, and each core caller's answer with no provider. `test_core_aws_control_decoupling.py` is the gate: no module
 under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 `kiro_crew.apps.builtins.aws_control` in any form. The string constants there that still
 name the package are a pinned list that may only shrink (see `aws-control.md`,
