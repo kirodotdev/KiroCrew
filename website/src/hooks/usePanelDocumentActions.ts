@@ -32,11 +32,25 @@ export interface PanelDocumentActionsOptions {
 
 /** Write a file's new content. `slot` names the chat, so the gateway refuses a
  *  write for one that runs remotely. Shared with the file pop-out window. */
-export async function writeFile(filePath: string, content: string, slot: string | null | undefined): Promise<void> {
+export async function writeFile(filePath: string, content: string, slot: string | null | undefined, baseline?: string): Promise<void> {
+  let expectedRevision: string | undefined
+  if (baseline !== undefined) {
+    const read = await fetchFileRead(filePath, undefined, slot)
+    if (read.ok && read.resourceManaged) {
+      // A fresh revision belongs to the fresh body, never to an older draft.
+      // Checking the baseline first preserves edits when an App saved meanwhile.
+      if (partialReadCause(read) || !read.revision || !/^[a-fA-F0-9]{64}$/.test(read.revision) || read.text !== baseline) {
+        throw Object.assign(new Error(i18nT('components.markdownPanel.save_failed')), {
+          status: 409, code: read.text !== baseline ? 'revision_conflict' : 'revision_required',
+        })
+      }
+      expectedRevision = read.revision
+    }
+  }
   const res = await fetch('/api/file-write' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ path: filePath, content }),
+    body: JSON.stringify({ path: filePath, content, ...(expectedRevision ? { expectedRevision } : {}) }),
   })
   if (!res.ok) {
     // An owner-gated direct fetch: a session minted before the owner was
@@ -229,12 +243,12 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     onOpened?.()
   }, [queryClient, tabsCtl, slotRef, showActionError, onOpened])
 
-  const saveFile = useCallback(async (filePath: string, content: string) => {
+  const saveFile = useCallback(async (filePath: string, content: string, baseline?: string) => {
     // Capture the slot BEFORE awaiting: if the user switches chats mid-save, the
     // draft we reconcile must be the one that owned this save, not whatever slot
     // is active when the write resolves.
     const requestSlot = slotRef.current ?? ''
-    await writeFile(filePath, content, requestSlot)
+    await writeFile(filePath, content, requestSlot, baseline)
     // The saved bytes become the file tab's dirty baseline, so a later re-open
     // of the same path refreshes the buffer instead of (needlessly) preserving
     // it as if it still held unsaved work. The `file:` tab is the ONLY editable

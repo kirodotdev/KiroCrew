@@ -68,6 +68,9 @@ def register_routes(app: web.Application) -> None:
     could therefore stall startup on remote storage for an app that is never used;
     writers create their own directories off-loop instead.
     """
+    from .scoped_documents import register
+
+    register(app)
     base = f"/api/apps/{APP_NAME}"
     # Mutable per-Application state lets the first enabled request publish one
     # recovery task without mutating a frozen aiohttp Application. Registration

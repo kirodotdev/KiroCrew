@@ -30,6 +30,17 @@ def _local_files(handler: Callable[..., Any]) -> Callable[..., Any]:
 
 def register(app: web.Application) -> None:
     """Register the taskrunner routes on *app*."""
+    from kiro_crew.apps.resource_access import register_provider
+    from kiro_crew.dashboard.resource_readers import taskrunner_reader
+
+    async def read_resource(root, resource_id, document, operation, body):
+        state = app.get("state")
+        runner = getattr(state, "task_runner", None)
+        if runner is None:
+            raise ValueError("resource_not_found")
+        return await taskrunner_reader(runner)(root, resource_id, document, operation, body)
+
+    register_provider(app, "taskrunner", read_resource)
     # Task runner (MCP routes via _register_mcp_routes; dashboard-only routes below)
     app.router.add_post("/api/taskrunner/plan", handlers.api_taskrunner_plan)
     app.router.add_post("/api/taskrunner/plan/cancel", handlers.api_taskrunner_plan_cancel)

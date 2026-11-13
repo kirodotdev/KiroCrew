@@ -208,6 +208,12 @@ isolation, and [MCP architecture](docs/architecture/mcp.md) for tool exposure.
 
 ## Security and control
 
+On supported POSIX hosts, saving an existing Notes document requires the
+`baseHash` returned as `contentHash` by its read API. Missing or stale hashes
+return `409 ESTALE` with the current hash. The current Notes editor already
+sends this token; older mtime-only clients must read and echo it before saving.
+Windows keeps its native Owner editor behavior, with scoped App writes disabled.
+
 Kiro Crew enforces approvals, OS isolation where available, sensitive-path and
 credential guards, denied-operation rules, audit records, and an optional
 policy/profile ceiling at the runtime boundary. The dashboard binds to loopback

@@ -93,7 +93,7 @@ interface Props {
    *  the caller has no verdict to report and the stored one stands. `partial`
    *  travels the same way, for the same read. */
   onDiskContent?: (c: string, binary?: boolean, partial?: PartialCause | false) => void
-  onSave: (filePath: string, content: string) => Promise<void>
+  onSave: (filePath: string, content: string, baseline?: string) => Promise<void>
   onClose: () => void
   liveWatch?: boolean
   /** Hands the comment batch to chat. Returning (or resolving) `false`, or
@@ -1050,7 +1050,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     setSaving(true); setSaveError(null)
     const editGen = editGenRef.current
     try {
-      await onSave(filePath, content)
+      if (savedBaseline === undefined) await onSave(filePath, content)
+      else await onSave(filePath, content, savedBaseline)
       // The disk now holds `content`, so whatever the shared `['file-read',
       // path]` entry holds predates it: dropped, not rewritten. This panel puts
       // no body into the shared cache -- it only reads the disk -- and a
@@ -1062,7 +1063,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     catch (err) { setSaveError(err instanceof Error ? err.message : i18nT('components.markdownPanel.save_failed')) }
     finally { setSaving(false) }
-  }, [filePath, content, partial, onSave, qc, evictFileRead])
+  }, [filePath, content, savedBaseline, partial, onSave, qc, evictFileRead])
 
   const handleSaveRef = useRef(handleSave)
   useEffect(() => { handleSaveRef.current = handleSave }, [handleSave])

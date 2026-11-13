@@ -92,8 +92,8 @@ export default function FilePopoutFrame() {
             placeholder={doc.placeholder}
             onContentChange={text => setDoc(d => d && { ...d, text, placeholder: false })}
             onDiskContent={fromDisk}
-            onSave={async (filePath, content) => {
-              await writeFile(filePath, content, slot)
+            onSave={async (filePath, content, baseline) => {
+              await writeFile(filePath, content, slot, baseline)
               setDoc(d => d && { ...d, saved: content })
             }}
             // The panel has asked about unsaved edits before it calls this.

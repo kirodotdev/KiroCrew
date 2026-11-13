@@ -1668,6 +1668,53 @@ the app's page.
 
 ### App token (`ctx.app_token()`)
 
+#### Scoped native resources
+
+`POST /api/resource-access/{workspace}/{provider}/{resourceId}/{document}/{operation}`
+exposes a provider's registered resources. `operation` is `read`, `create` or
+`update`; providers can withhold mutations. Every selector is a bounded single
+ASCII segment, not a path, URL or command. The workspace must be a configured
+workspace name; callers cannot supply its directory.
+
+An App token needs that **exact operation URL** in its installed, owner-approved
+`permissions.api` grants. Prefixes, wildcards and implicit own-app reach do not
+delegate resources. The consumer and provider must remain enabled. Existing
+Owner-only file APIs still refuse App tokens. An empty App claim is admitted
+only for the actual Dashboard Owner, never for another dashboard user.
+
+Read bodies are `{}`. Create bodies are
+`{"content":"...","expectedRevision":null}`. Updates require the SHA-256
+revision returned by the last document read. Responses contain
+`workspace`, `provider`, `resourceId`, `document`, `operation` and `result`.
+Document results contain the exact UTF-8 `content` and its `revision`.
+Revision mismatch and create collision return 409; missing delegation or an
+unknown workspace returns 403. A missing cache is unavailable, not an empty
+authoritative result. An uncertain write must be reconciled by reading the same
+resource, never automatically retried.
+
+Gateway route hooks with `ctx.http_app` may register native adapters through
+`kiro_crew.apps.resource_access.register_provider`. Adapters resolve their own
+native IDs and enforce containment, writable state and document types. They do
+not accept paths or proxy arbitrary HTTP requests. An optional `owner_locator`
+binds the Owner Files editor to the same document transaction. Registration does
+no filesystem work and may be repeated by the same adapter on app re-enable.
+
+The document kernel is `kiro_crew.apps.document_store.DocumentStore`: pinned
+parents, no symlink/hardlink aliases, atomic compare-and-write, create-only
+publication, fsync and readback. Its default content bound is 1 MiB. Lock custody
+is under the gateway cache, not in a vault or source repository. Participating
+Owner editors share the kernel; advisory locks cannot govern arbitrary programs
+that ignore it. Platforms without pinned publication refuse delegated document
+access; native Owner editing retains its existing platform path.
+
+The built-in adapters offer existing Spec documents, native Notes vaults,
+cache-only Issue Radar snapshots, saved Research Lab state/reports, passive
+Design Tweak metadata/proposals and existing Task Runner state/results. They
+offer no agent start, preview start, code application, task execution, delete,
+Git or terminal operation. Research campaigns and connected repositories have
+no native local-workspace ownership field: the exact Owner-approved grant is
+their explicit resource association, not an inference from text or a URL.
+
 `await ctx.app_token()` returns an app token for your app, the same token
 `POST /api/apps/<name>/token` issues, so the Gateway confines it to your
 `permissions.api`. Your hooks run in the Gateway process, and the Gateway keeps your

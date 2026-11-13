@@ -1,5 +1,14 @@
 # Self-Learning, Cron & Dashboard Modules
 
+## Managed document revisions
+
+The Files editor keeps its Owner-only gate. For a document selected by a native
+resource provider, reads expose an exact revision and saves use the shared
+document CAS kernel. A missing revision or changed saved baseline refuses the
+save and preserves the draft. App callers use the separately scoped resource
+API, never this Owner API. The grant, provider, storage and platform contracts
+are in [App Kit resource delegation](app-kit-platform.md#39-explicit-resource-delegation-and-shared-document-transactions).
+
 ## Overview
 
 This module covers self-learning from corrections, scheduled cron jobs, and the web dashboard.

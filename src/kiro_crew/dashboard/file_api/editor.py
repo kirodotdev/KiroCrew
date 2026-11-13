@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from kiro_crew.apps import resource_access as app_resource_access
+    from kiro_crew.apps.document_store import DocumentStoreError
     from kiro_crew.dashboard.handlers.files import (
         _CRED_RUN_REVERSED_RE,
         _FILE_BUSY_ERROR,
@@ -40,6 +42,8 @@ if TYPE_CHECKING:
         bounded_read,
         git_command_env,
         is_sensitive_path,
+        pinned_fs,
+        pinned_parent_replace_supported,
         platform_compat,
         read_bounded_json,
         redact,
@@ -68,6 +72,39 @@ def _read_safe_end(text: str, cap: int) -> int:
     if run_start >= cap or "eyJ" in text[run_start:]:
         return run_start
     return len(text) - _STREAM_HOLDBACK_MAX
+
+
+async def _owner_bound_document(request: web.Request, path: str):
+    from pathlib import Path
+
+    # Native Windows keeps its owner-only editor: the resource API cannot write
+    # there without pinned publication, so no concurrent delegated writer exists.
+    if not pinned_fs.supports_pinned_walk() or not pinned_parent_replace_supported():
+        return None
+    if app_resource_access.REGISTRY not in request.app:
+        return None
+    return await app_resource_access.registry_for(request.app).owner_document(Path(path))
+
+
+def _owner_document_error(code: str, *, path: str, tool_name: str) -> web.Response:
+    public_code = "revision_conflict" if code == "conflict" else code
+    status = 409 if code in {"conflict", "revision_required"} else 400
+    if code == "not_found":
+        status = 404
+    elif code == "document_too_large":
+        status = 413
+    elif code in {"unsupported_platform", "storage_unavailable"}:
+        status = 503
+    elif code == "write_unverified":
+        public_code, status = "write_outcome_unknown", 500
+    _sel().log_tool_invocation(
+        session_key="dashboard",
+        tool_name=tool_name,
+        outcome="failure",
+        resources=path,
+        error=public_code,
+    )
+    return web.json_response({"error": public_code, "code": public_code}, status=status)
 
 
 async def api_file_read(request: web.Request) -> web.Response:
@@ -178,6 +215,16 @@ async def api_file_read(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": _FILE_BUSY_ERROR, "code": "file_busy"}, status=503)
     try:
+        snapshot = None
+        bound = await _owner_bound_document(request, path)
+        if bound is not None:
+            snapshot = await _run_path_probe(
+                bound.store().read,
+                bound.relative,
+                transfer=True,
+                stall_path=path,
+            )
+            outcome = outcome._replace(kind="file", content=snapshot.content, lossy=False)
         if outcome.kind == "read_failed":
             raise OSError(f"file_read could not read {path}")
         if outcome.kind == "binary":
@@ -234,6 +281,10 @@ async def api_file_read(request: web.Request) -> web.Response:
         # nothing in the body can carry it: a file may quote the redaction tag
         # verbatim, or contain the replacement character itself.
         headers = {}
+        if snapshot is not None:
+            headers["X-Resource-Managed"] = "true"
+            if not truncated and content == snapshot.content:
+                headers["X-File-Revision"] = snapshot.revision
         if truncated:
             headers["X-Truncated"] = "true"
         if not as_written.startswith(content):
@@ -267,6 +318,10 @@ async def api_file_read(request: web.Request) -> web.Response:
         else:
             ct = "text/plain"
         return web.Response(text=content, content_type=ct, headers=headers)
+    except DocumentStoreError as exc:
+        return _owner_document_error(exc.code, path=path, tool_name="file_read")
+    except _PathProbeBusy:
+        return _probe_busy_response(resource=path, tool_name="file_read")
     except Exception:
         logging.getLogger(__name__).exception("file_read failed for %s", path)
         _sel().log_tool_invocation(
@@ -424,6 +479,25 @@ async def api_file_write(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "not found"}, status=404)
     try:
+        bound = await _owner_bound_document(request, path)
+        if bound is not None:
+            revision = body.get("expectedRevision")
+            if revision is None:
+                return _owner_document_error("revision_required", path=path, tool_name="file_write")
+            snapshot = await asyncio.to_thread(
+                bound.store().write,
+                bound.relative,
+                body.get("content", ""),
+                operation="update",
+                expected_revision=revision,
+            )
+            _sel().log_tool_invocation(
+                session_key="dashboard",
+                tool_name="file_write",
+                outcome="success",
+                resources=path,
+            )
+            return web.json_response({"ok": True, "revision": snapshot.revision})
         # Off the event loop: see _file_write_blocking's own note on why the
         # whole transaction is offloaded rather than each call individually.
         outcome = await asyncio.to_thread(_file_write_blocking, path, body.get("content", ""))
@@ -439,6 +513,8 @@ async def api_file_write(request: web.Request) -> web.Response:
             session_key="dashboard", tool_name="file_write", outcome="success", resources=path
         )
         return web.json_response({"ok": True})
+    except DocumentStoreError as exc:
+        return _owner_document_error(exc.code, path=path, tool_name="file_write")
     except Exception:
         logging.getLogger(__name__).exception("file_write failed for %s", path)
         _sel().log_tool_invocation(

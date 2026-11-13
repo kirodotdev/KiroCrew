@@ -45,6 +45,9 @@
     ]
   },
   "backend": {
+    "hooks": {
+      "routes": "scoped_documents:register_routes"
+    },
     "entryPoint": "kiro_crew.apps.builtins.md_notebook.server",
     "port": "auto",
     "healthCheck": "/health"
