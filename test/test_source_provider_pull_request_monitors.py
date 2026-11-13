@@ -1613,7 +1613,7 @@ def test_provider_cli_process_shutdown_keeps_every_wait_bounded(monkeypatch):
             self.killed = True
 
     proc = Process()
-    monkeypatch.setattr(provider_cli_module, "_kill_provider_tree", lambda _proc: None)
+    monkeypatch.setattr(provider_cli_module, "_kill_provider_tree", lambda _proc, _group=None: None)
 
     provider_cli_module._stop_provider_process(proc)
 
