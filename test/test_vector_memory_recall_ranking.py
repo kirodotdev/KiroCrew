@@ -7,6 +7,7 @@ FAISS upkeep are in ``test_vector_memory_embedding_lifecycle.py``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 from datetime import datetime, timedelta, timezone
@@ -374,6 +375,120 @@ def test_eligible_rows_scopes_ineligibility_to_candidate_ids_no_full_scan(
     scoped = store._ineligible_ids(list(passed_ids))
     unfiltered = store._ineligible_ids()
     assert scoped == {rid for rid in unfiltered if rid in set(passed_ids)}
+
+
+def _recorded_ids(call) -> object:
+    """The ``record_ids`` an ``_ineligible_ids`` call passed, positional or keyword."""
+    return call.args[0] if call.args else call.kwargs.get("record_ids")
+
+
+def _seed_recall_with_dead_meta(store: VectorMemoryStore) -> tuple[list[float], str]:
+    """Live facts and episodes matching one query, one of each made ineligible,
+    and many dead ``memory_record_meta`` rows a full scan would read.
+
+    Returns the query vector and the id of the ineligible episode.
+    """
+    base = [1.0, 0.0, 0.0, 0.0]
+    for i in range(4):
+        assert (
+            store.set_semantic(f"project.build{i}", f"build session note {i}", 0.9, "user_explicit")
+            is None
+        )
+    # Pairwise cosines of at most 0.5 stay under the write-time dedup threshold,
+    # which refuses a near-copy when faiss is installed; each scores 0.71 against
+    # the query.
+    embeddings = (
+        [1.0, 1.0, 0.0, 0.0],
+        [1.0, 0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [1.0, -1.0, 0.0, 0.0],
+    )
+    for i, embedding in enumerate(embeddings):
+        assert store.write_episodic(
+            f"episode {i} about the build session", embedding=embedding, source="user_explicit"
+        )
+    episode_ids = [
+        row[0]
+        for row in store.db.execute("SELECT id FROM episodic_memories ORDER BY id").fetchall()
+    ]
+    blocked_episode = episode_ids[0]
+    with store._db_lock:
+        store.db.execute(
+            "UPDATE memory_record_meta SET status = 'superseded' "
+            "WHERE record_id = 'key:project.build0'"
+        )
+        store.db.execute(
+            "UPDATE memory_record_meta SET status = 'forgotten' WHERE record_id = ?",
+            (blocked_episode,),
+        )
+        for i in range(2000):
+            store.db.execute(
+                "INSERT INTO memory_record_meta (record_id, kind, revision, status, "
+                "content_hash, updated_at) VALUES (?,?,?,?,?,?)",
+                (f"key:dead-{i}", "fact", 1, "superseded", "h", "2026-01-01"),
+            )
+        store.db.commit()
+    return base, blocked_episode
+
+
+@pytest.mark.parametrize("rung", ["resident", "per_call"])
+def test_semantic_v1_scopes_ineligibility_to_scored_rows(tmp_path: Path, opened, rung) -> None:
+    """The V1 fact scan looks eligibility up for the rows it scored, never by an
+    unscoped ``_ineligible_ids()`` that scans all of ``memory_record_meta``."""
+    store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=4))
+    store.init()
+    _seed_recall_with_dead_meta(store)
+    if rung == "per_call":
+        rung_patch = mock.patch.object(store, "_semantic_scoring_set", return_value=None)
+    else:
+        assert store._semantic_scoring_set() is not None
+        rung_patch = contextlib.nullcontext()
+
+    with (
+        rung_patch,
+        mock.patch.object(store, "_ineligible_ids", wraps=store._ineligible_ids) as eligibility,
+    ):
+        rows = store._semantic_candidates_v1("build session")
+
+    assert eligibility.call_count >= 1
+    assert all(_recorded_ids(call) is not None for call in eligibility.call_args_list)
+    assert sorted(row["key"] for row in rows) == [f"project.build{i}" for i in (1, 2, 3)]
+
+
+@pytest.mark.skipif(not _HAS_NUMPY, reason="the resident rung needs numpy")
+@pytest.mark.parametrize("rung", ["resident", "per_call"])
+def test_sqlite_vector_search_scopes_ineligibility_to_candidates(
+    tmp_path: Path, opened, rung
+) -> None:
+    """The stored-vector episodic search looks eligibility up for its candidates
+    only, never by an unscoped ``_ineligible_ids()``."""
+    store = opened(VectorMemoryStore(db_path=tmp_path / "mem.db", embedding_dim=4))
+    store.init()
+    query, blocked_episode = _seed_recall_with_dead_meta(store)
+    if rung == "per_call":
+        rung_patch = mock.patch.object(store, "_episodic_scoring_set", return_value=None)
+    else:
+        assert store._episodic_scoring_set(len(query)) is not None
+        rung_patch = contextlib.nullcontext()
+
+    with (
+        rung_patch,
+        mock.patch.object(store, "_ineligible_ids", wraps=store._ineligible_ids) as eligibility,
+    ):
+        rows = store._sqlite_vector_search(query, "build session", limit=10, mmr=False)
+
+    assert eligibility.call_count >= 1
+    assert all(_recorded_ids(call) is not None for call in eligibility.call_args_list)
+    ids = {row["id"] for row in rows}
+    assert blocked_episode not in ids
+    live = {
+        row[0]
+        for row in store.db.execute(
+            "SELECT id FROM episodic_memories WHERE id != ?", (blocked_episode,)
+        )
+    }
+    assert len(live) == 3
+    assert ids == live
 
 
 class TestSanitizeDecayRates:

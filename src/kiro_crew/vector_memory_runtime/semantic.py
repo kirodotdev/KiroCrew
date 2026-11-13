@@ -992,13 +992,10 @@ def semantic_candidates_v1(
     else:
         row_tokens = _text_scoring._row_stem_tokens_for_scan(2 * len(all_rows))
 
-    blocked = store._ineligible_ids()
     indexed = _scoring_term_index(store, scoring, identities) if scoring is not None else None
     hits = indexed[0].query(query_words) if indexed is not None else None
     for i, raw in enumerate(all_rows):
         key = raw["key"]
-        if blocked and record_meta.record_id_for("fact", key) in blocked:
-            continue
         identity = identities.get(key)
         label = key if identity is None else store._fact_label({"key": key, "identity": identity})
         key_text = label.replace("_", " ").replace(".", " ")
@@ -1039,6 +1036,20 @@ def semantic_candidates_v1(
                 "cosine": vec_score if query_has_vector else None,
             }
             scored_rows.append((score, r))
+
+    # Only scored rows are tested, so look eligibility up by their record ids (the
+    # PRIMARY KEY) rather than scan memory_record_meta, which only grows.
+    if scored_rows:
+        scored_ids = [
+            record_meta.record_identity_or_none("fact", r["key"]) for _score, r in scored_rows
+        ]
+        blocked = store._ineligible_ids([rid for rid in scored_ids if rid is not None])
+        if blocked:
+            scored_rows = [
+                row
+                for row, rid in zip(scored_rows, scored_ids)
+                if rid is None or rid not in blocked
+            ]
 
     # The key is the last tie-break so the order depends on the rows, never on the
     # order they sit in: a resident set patched in place holds the same rows as
