@@ -22,10 +22,10 @@ const T1 = formatToken(P1)
 
 /** A real send: the wire the gateway queues, recorded in the side table the
  *  way the composer records it (`storeSentPastes`). */
-function sent(text: string) {
+function sent(text: string, sendId = 's1') {
   const turn = buildOutgoingTurn({ text, pastes: [P1] }, 'send')
   const entry = turn.storedPaste!
-  saveStoredPaste(entry.expanded, entry.display, entry.pastes, entry.files)
+  saveStoredPaste(entry.expanded, entry.display, entry.pastes, entry.files, sendId)
   return turn.wire
 }
 
@@ -35,22 +35,28 @@ describe('queueEntryPastes', () => {
   it('finds the blocks this browser recorded under the wire text', () => {
     const wire = sent(`look at ${T1}`)
     expect(wire).toContain('alpha\nbeta\ngamma')
-    expect(queueEntryPastes(wire)).toEqual({ pastes: [P1] })
+    expect(queueEntryPastes(wire, 's1')).toEqual({ pastes: [P1] })
     // The gateway strips trailing whitespace from stored text; the key does too.
-    expect(queueEntryPastes(wire + '\n')).toEqual({ pastes: [P1] })
+    expect(queueEntryPastes(wire + '\n', 's1')).toEqual({ pastes: [P1] })
   })
 
   it('finds nothing for a send another browser made, or one the table evicted', () => {
     const wire = buildOutgoingTurn({ text: `look at ${T1}`, pastes: [P1] }, 'send').wire
-    expect(queueEntryPastes(wire)).toEqual({})
+    expect(queueEntryPastes(wire, 's1')).toEqual({})
+  })
+
+  it('finds nothing for an entry another send made, even when its text matches a recorded paste', () => {
+    const wire = sent(`look at ${T1}`)
+    expect(queueEntryPastes(wire, undefined)).toEqual({})
+    expect(queueEntryPastes(wire, 's-other')).toEqual({})
   })
 
   it('finds a paste collapsed at the threshold whose trailing whitespace the wire lost', () => {
     // 199 characters plus one trailing space: collapsed by the composer, but
     // trimmed below the threshold in the text the entry holds.
     const block: PasteBlock = { id: 'p2', seq: 2, lines: 1, content: 'x'.repeat(199) + ' ' }
-    saveStoredPaste(block.content, formatToken(block), [block])
-    expect(queueEntryPastes(block.content.trimEnd())).toEqual({ pastes: [block] })
+    saveStoredPaste(block.content, formatToken(block), [block], undefined, 's1')
+    expect(queueEntryPastes(block.content.trimEnd(), 's1')).toEqual({ pastes: [block] })
   })
 
   it('returns the blocks in token order, read off the recorded display', () => {
@@ -59,18 +65,18 @@ describe('queueEntryPastes', () => {
     // paste order and its display in token order.
     const turn = buildOutgoingTurn({ text: `${formatToken(long)}\n${T1}`, pastes: [P1, long] }, 'send')
     expect(turn.storedPaste!.pastes).toEqual([P1, long])
-    saveStoredPaste(turn.storedPaste!.expanded, turn.storedPaste!.display, turn.storedPaste!.pastes)
-    expect(queueEntryPastes(turn.wire)).toEqual({ pastes: [long, P1] })
+    saveStoredPaste(turn.storedPaste!.expanded, turn.storedPaste!.display, turn.storedPaste!.pastes, undefined, 's1')
+    expect(queueEntryPastes(turn.wire, 's1')).toEqual({ pastes: [long, P1] })
   })
 
   it('finds nothing for empty text', () => {
-    expect(queueEntryPastes('')).toEqual({})
+    expect(queueEntryPastes('', 's1')).toEqual({})
   })
 })
 
 describe('queue rows carry the blocks', () => {
   it('a queue_push frame builds the row with meta.pastes', () => {
-    const wire = sent(`look at ${T1}`)
+    const wire = sent(`look at ${T1}`, 's-1')
     const state = reducer({ ...initial, activeSlot: 'chat-1' }, appendQueuedMessage({ slot: 'chat-1', content: wire, ts: 't1', queue_id: 'q-1', meta: { sendId: 's-1' } }))
     const row = state.messages.find(m => m.role === 'queued')
     expect(row?.meta).toEqual({ queueId: 'q-1', sendId: 's-1', pastes: [P1] })
@@ -78,9 +84,15 @@ describe('queue rows carry the blocks', () => {
 
   it('a slot-detail hydration builds the row with meta.pastes', () => {
     const wire = sent(`look at ${T1}`)
-    const rows = hydrateQueuedBubbles([], [{ content: wire, queueId: 'q-1', ts: 't1' }])
+    const rows = hydrateQueuedBubbles([], [{ content: wire, queueId: 'q-1', ts: 't1', sendId: 's1' }])
     expect(rows).toHaveLength(1)
-    expect(rows[0].meta).toEqual({ queueId: 'q-1', pastes: [P1] })
+    expect(rows[0].meta).toEqual({ queueId: 'q-1', sendId: 's1', pastes: [P1] })
+  })
+
+  it('a hydrated entry with no sendId carries no pastes key, even when its text matches a recorded paste', () => {
+    const wire = sent(`look at ${T1}`)
+    const rows = hydrateQueuedBubbles([], [{ content: wire, queueId: 'q-1', ts: 't1' }])
+    expect(rows[0].meta).toEqual({ queueId: 'q-1' })
   })
 
   it('a row whose send is not on record carries no pastes key', () => {
@@ -136,3 +148,4 @@ describe('removeQueuedMessage hands the blocks to the drained user row', () => {
     expect('meta' in (state.messages.find(m => m.role === 'user') as object)).toBe(false)
   })
 })
+

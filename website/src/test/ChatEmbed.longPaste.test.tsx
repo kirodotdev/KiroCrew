@@ -18,6 +18,7 @@ import React from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ApiError } from '../api/apiError'
 import { resetEmbedRecoveryForTests } from '../app-sdk/embedSendRecovery'
+import { setBusySendDefault } from '../components/BusySendButton'
 
 const mockGet = vi.fn()
 const mockPost = vi.fn()
@@ -111,6 +112,19 @@ describe('ChatEmbed long-paste collapse', () => {
     expect(own).toHaveLength(1)
     expect(own[0].content).toBe(BIG)
     expect(own[0].meta?.pastes).toEqual([expect.objectContaining({ seq: 1, content: BIG })])
+  })
+
+  it('the optimistic queued card of a busy send draws the chip, not the expanded paste', async () => {
+    setBusySendDefault('queue')
+    mockGet.mockResolvedValue({ messages: [{ role: 'user', content: 'first', ts: 1 }], running: true, title: '', queue: [] })
+    mockPost.mockReturnValue(new Promise(() => {}))
+    await mount()
+    await act(async () => { await vi.advanceTimersByTimeAsync(50) })
+    await paste(BIG)
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /queue message/i })) })
+    const card = screen.getByTestId('queue-card')
+    expect(card.textContent).toMatch(TOKEN)
+    expect(card.textContent).not.toContain('second')
   })
 
   it('a refused send hands the chip back with its block, so the retry still sends the full text', async () => {

@@ -282,13 +282,13 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
     const wasDictated = !optionText && takeDictated(slotKey, PANE_DICTATION_SCOPE)
     const turn = buildOutgoingTurn({ text, files, pastes: blocks, quote: sentQuote, project, dictationNote: wantsDictationNote(wasDictated) }, 'send')
     const { wire: llm, bubble: displayTxt, pastes: bubblePastes } = turn
-    storeSentPastes(turn.storedPaste)
     // sendId correlation (same contract as ChatPage): the wire text differs
     // from the bubble text whenever a folder token serialized, so the store's
     // content-equality fallback can never reconcile the server echo against
     // the optimistic bubble — without this id the echo appends a SECOND user
     // bubble carrying the raw marker.
     const sendId = mintSendId()
+    storeSentPastes(turn.storedPaste, sendId)
     // A crewmate send always appears immediately and stays one bubble: a real
     // queued receipt keeps it, and the queue entry takes its place in the
     // thread. Ordinary Sessions keep their busy-send bubble policy and

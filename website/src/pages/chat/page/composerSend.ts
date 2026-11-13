@@ -476,7 +476,8 @@ export function useComposerSend({
       ? { wire: raw, bubble: raw, inlined: raw, meta: {}, pastes: [], storedPaste: undefined, typedOnly: true }
       : buildOutgoingTurn({ text: raw, files: sentFiles, pastes: activePastes, sessionRefs: sentSessionRefs, knowledge: knowledgeBlock, quote: sentQuote, project: currentProjectRef.current || '', dictationNote }, 'send')
     if (!isolated) knowledgeFetchRef.current.clearPending()
-    storeSentPastes(turn.storedPaste)
+    const sendId = mintSendId()
+    storeSentPastes(turn.storedPaste, sendId)
 
     if (!isolated) setPrefillHint(false)
     // The alias sub-map this send is about to drop, kept as a frozen snapshot
@@ -761,7 +762,6 @@ export function useComposerSend({
     // to this exact optimistic bubble without relying on content equality.
     // The server preserves meta fields on the user row it appends, so the
     // echo carries both this sendId AND the server-minted `mid` (#2845).
-    const sendId = mintSendId()
     meta.sendId = sendId
     const metaPayload = meta
     // A busy snapshot may be stale. The server's user event supplies the

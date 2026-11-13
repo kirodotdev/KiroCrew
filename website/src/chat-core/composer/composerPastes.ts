@@ -77,6 +77,6 @@ export function useComposerPastes(): ComposerPastes {
 
 /** Record a send's blocks in the paste side table (`saveStoredPaste`); a turn
  *  that expanded no paste carries no entry and writes nothing. */
-export function storeSentPastes(entry: StoredPasteEntry | undefined): void {
-  if (entry) saveStoredPaste(entry.expanded, entry.display, entry.pastes, entry.files)
+export function storeSentPastes(entry: StoredPasteEntry | undefined, sendId: string): void {
+  if (entry) saveStoredPaste(entry.expanded, entry.display, entry.pastes, entry.files, sendId)
 }
