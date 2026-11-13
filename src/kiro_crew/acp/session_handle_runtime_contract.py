@@ -187,6 +187,15 @@ class AcpRuntimeProtocol(Protocol):
         ...
 
     @property
+    def engine_is_child(self) -> bool:
+        """Whether the harness relays to a sole engine child that spawns the tools.
+
+        True on KAS's kiro-cli relay: a shell tool's parent is that engine, one
+        level below the harness, so the stalled-shell cleanup pins one more hop.
+        """
+        ...
+
+    @property
     def spawn_monotonic(self) -> float | None:
         """Monotonic time the process was spawned, or ``None`` before spawn.
 

@@ -719,6 +719,9 @@ class AcpRuntime:
         # also the safe default for the classifier, since a spawn that never
         # reached the wrap cannot have been refused by it.
         self._sandbox_wrapped_by_crew = False
+        # Whether the harness said its tools run under its sole engine child
+        # (``SpawnPlan.engine_is_child``), recorded per spawn by the launch.
+        self._engine_is_child = False
         # The mask set this spawn asked for, so a trusted corroboration run can
         # exercise the same mounts rather than a weaker profile.
         self._sandbox_hidden_dirs: tuple[str, ...] = ()
@@ -1093,6 +1096,15 @@ class AcpRuntime:
         harness's wording while the layer the operator must change is Crew's.
         """
         return self._sandbox_wrapped_by_crew
+
+    @property
+    def engine_is_child(self) -> bool:
+        """Whether this runtime's harness relays to a sole engine child that runs the tools.
+
+        Read off the last spawn's plan; the stalled-shell cleanup pins that engine as
+        the shell's parent.
+        """
+        return self._engine_is_child
 
     @property
     def sandbox_mode(self) -> str:

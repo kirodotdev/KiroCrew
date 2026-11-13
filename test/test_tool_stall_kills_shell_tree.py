@@ -17,14 +17,15 @@ import pytest
 from test_acp_liveness import FakeProc
 
 from kiro_crew import _process_group_supervisor, platform_compat
-from kiro_crew.acp import liveness, runtime_liveness
+from kiro_crew.acp import liveness, runtime_liveness, skill_projection
+from kiro_crew.acp.harness.base import SpawnPlan
 from kiro_crew.acp.liveness import (
     InFlightToolTracker,
     LivenessOracle,
     ProcessRow,
     ToolCallState,
 )
-from kiro_crew.acp.runtime import AcpRequestTimeout, AcpRuntime
+from kiro_crew.acp.runtime import AcpRequestTimeout, AcpRuntime, AcpRuntimeError
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.types import STOP_REASON_TOOL_STALL
 from kiro_crew.dashboard.state import build_tool_stall_recovery_prompt
@@ -312,6 +313,94 @@ def test_crew_launcher_requires_one_identified_harness(
     assert oracle.check_tool(RUNTIME, tool)[0] == liveness.VERDICT_WORKING
     assert tool.shell_cleanup_disqualified is True
     assert oracle._tracked_child_start_id is None
+    assert oracle.stalled_shell_tree(RUNTIME) == []
+
+
+def _kas_relay_oracle(fake: FakeProc, *, wrapped: bool, engine=lambda: True) -> LivenessOracle:
+    return LivenessOracle(
+        str(fake.root),
+        now=lambda: 1_000.0,
+        cleanup_tenancy=lambda: 1,
+        sandbox_wrapped_by_crew=lambda: wrapped,
+        engine_is_child=engine,
+    ).fresh()
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["unwrapped", "crew-launcher"])
+def test_kas_relay_uses_the_relays_sole_engine_as_the_shell_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, wrapped: bool
+) -> None:
+    _date_fake_proc_at_100_hz(monkeypatch)
+    fake = FakeProc(tmp_path / "proc")
+    relay = 110 if wrapped else RUNTIME
+    if wrapped:
+        fake.add_pid(RUNTIME, children=[relay], cmdline="kirocrew sandbox launcher")
+    fake.add_pid(relay, children=[120], cmdline="kiro-cli acp --agent-engine v3")
+    fake.add_pid(120, children=[130, 200], cmdline="node acp-server.js --transport=stdio")
+    fake.add_pid(130, cmdline="mcp-server --stdio")
+    fake.add_pid(200, cmdline="/bin/sh -c python slow_query.py")
+    starts = {RUNTIME: "start-runtime", 110: "start-relay", 120: "start-engine"}
+    starts.update({130: "start-mcp", 200: "start-shell"})
+    monkeypatch.setattr(platform_compat, "get_process_start_id", starts.get)
+    oracle = _kas_relay_oracle(fake, wrapped=wrapped)
+
+    assert oracle.check_tool(RUNTIME, _shell_tool())[0] == liveness.VERDICT_WORKING
+    assert oracle._tracked_child_start_id == "start-shell"
+    assert oracle.stalled_shell_tree(RUNTIME) == [(200, "start-shell")]
+
+
+def _raising_engine_probe() -> bool:
+    raise RuntimeError("runtime gone")
+
+
+@pytest.mark.parametrize("failure", ["two-engines", "runtime-parent", "raising", "non-bool"])
+def test_kas_relay_requires_one_identified_engine_parent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, failure: str
+) -> None:
+    _date_fake_proc_at_100_hz(monkeypatch)
+    fake = FakeProc(tmp_path / "proc")
+    if failure == "runtime-parent":
+        # A shell the relay started itself, with no engine between them.
+        fake.add_pid(RUNTIME, children=[200], cmdline="kiro-cli acp --agent-engine v3")
+    else:
+        engines = [120, 121] if failure == "two-engines" else [120]
+        fake.add_pid(RUNTIME, children=engines, cmdline="kiro-cli acp --agent-engine v3")
+        fake.add_pid(120, children=[200], cmdline="node acp-server.js --transport=stdio")
+        if failure == "two-engines":
+            fake.add_pid(121, cmdline="node acp-server.js --transport=stdio")
+    fake.add_pid(200, cmdline="/bin/sh -c python slow_query.py")
+    starts = {RUNTIME: "start-runtime", 120: "start-engine", 121: "start-other"}
+    starts[200] = "start-shell"
+    monkeypatch.setattr(platform_compat, "get_process_start_id", starts.get)
+    engine: Callable[[], object] = {
+        "raising": _raising_engine_probe,
+        "non-bool": lambda: 1,
+    }.get(failure, lambda: True)
+    oracle = _kas_relay_oracle(fake, wrapped=False, engine=engine)
+    tool = _shell_tool()
+
+    assert oracle.check_tool(RUNTIME, tool)[0] == liveness.VERDICT_WORKING
+    assert tool.shell_cleanup_disqualified is True
+    assert oracle._tracked_child_start_id is None
+    assert oracle.stalled_shell_tree(RUNTIME) == []
+
+
+def test_kas_relay_cleanup_rechecks_the_engine_edge(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _date_fake_proc_at_100_hz(monkeypatch)
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(RUNTIME, children=[120], cmdline="kiro-cli acp --agent-engine v3")
+    fake.add_pid(120, children=[200], cmdline="node acp-server.js --transport=stdio")
+    fake.add_pid(200, cmdline="/bin/sh -c python slow_query.py")
+    starts = {RUNTIME: "start-runtime", 120: "start-engine", 200: "start-shell"}
+    monkeypatch.setattr(platform_compat, "get_process_start_id", starts.get)
+    oracle = _kas_relay_oracle(fake, wrapped=False)
+
+    assert oracle.check_tool(RUNTIME, _shell_tool())[0] == liveness.VERDICT_WORKING
+    assert oracle._tracked_child_start_id == "start-shell"
+
+    starts[120] = "start-recycled-engine"
     assert oracle.stalled_shell_tree(RUNTIME) == []
 
 
@@ -1168,6 +1257,7 @@ def _handle(tool: ToolCallState) -> AcpSessionHandle:
     runtime = MagicMock()
     runtime.pid = RUNTIME
     runtime.sandbox_wrapped_by_crew = False
+    runtime.engine_is_child = False
     runtime._last_activity = time.monotonic()
     runtime.is_alive.return_value = True
     runtime.send_notification = AsyncMock()
@@ -1186,6 +1276,44 @@ def test_handle_declares_cleanup_tenancy_without_model_wait_tenancy() -> None:
     assert handle._oracle._cleanup_tenancy() == 2
     assert handle._oracle._crew_sandbox_wrap_status() is False
     handle._runtime.session_tenancy.assert_called_once_with("session-a")
+
+
+@pytest.mark.parametrize("engine", [True, False])
+def test_handle_passes_the_runtimes_engine_fact_to_the_oracle(engine: bool) -> None:
+    handle = _handle(_shell_tool())
+    handle._runtime.engine_is_child = engine
+
+    assert handle._oracle._engine_child_status() is engine
+    assert handle._oracle.fresh()._engine_child_status() is engine
+
+
+@pytest.mark.asyncio
+async def test_runtime_records_the_spawn_plans_engine_fact(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = AcpRuntime(work_dir=tmp_path / "wd", agent="kirocrew", sandbox_mode="off")
+    rt._KILL_TERM_TIMEOUT = 1.0
+    rt._KILL_REAP_TIMEOUT = 1.0
+
+    async def _plan() -> SpawnPlan:
+        return SpawnPlan(
+            argv=[sys.executable, "-c", "import time; time.sleep(60)"], engine_is_child=True
+        )
+
+    async def _failing_handshake(_caps: object) -> None:
+        raise AcpRuntimeError("initialize timed out")
+
+    monkeypatch.setattr(rt, "_resolve_spawn_plan", _plan)
+    monkeypatch.setattr(
+        skill_projection, "prepare_native_skill_projection", lambda _wd, **_kw: None
+    )
+    monkeypatch.setattr(rt, "_initialize_handshake", _failing_handshake)
+    assert rt.engine_is_child is False
+
+    with pytest.raises(AcpRuntimeError, match="initialize timed out"):
+        await rt.spawn()
+
+    assert rt.engine_is_child is True
 
 
 @pytest.mark.asyncio
@@ -1283,14 +1411,14 @@ def test_real_shell_and_child_are_terminated_without_killing_the_runtime(tmp_pat
         dispatch_steady_ts=liveness.steady_now(),
         is_shell=True,
     )
+    oracle = LivenessOracle(
+        cleanup_tenancy=lambda: 1,
+        sandbox_wrapped_by_crew=lambda: False,
+    )
     proc = subprocess.Popen(
         ["/bin/sh", "-c", command],
         cwd=tmp_path,
         start_new_session=True,
-    )
-    oracle = LivenessOracle(
-        cleanup_tenancy=lambda: 1,
-        sandbox_wrapped_by_crew=lambda: False,
     )
     try:
         wait_until(
@@ -1326,3 +1454,105 @@ def test_real_shell_and_child_are_terminated_without_killing_the_runtime(tmp_pat
     finally:
         platform_compat.kill_popen_tree(proc)
         proc.wait(timeout=FALLBACK_TIMEOUT_SECS)
+
+
+_ENGINE_SCRIPT = """
+import os, signal, subprocess
+shell = subprocess.Popen(["/bin/sh", "-c", os.environ["STALL_TEST_SHELL_COMMAND"]])
+shell.wait()
+signal.pause()
+"""
+
+_RELAY_SCRIPT = """
+import signal, subprocess, sys
+subprocess.Popen([sys.executable, "-c", sys.argv[1]])
+signal.pause()
+"""
+
+
+def _live_pid(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux" or os.sysconf("SC_CLK_TCK") <= 0,
+    reason="requires Linux and a /proc tick rate",
+)
+def test_real_kas_relay_shell_is_terminated_without_killing_relay_or_engine(tmp_path) -> None:
+    if not _process_group_supervisor.can_reap():
+        pytest.skip("requires a kernel that pins processes with pidfd_open")
+    from kiro_crew.acp.liveness_proc import strict_direct_children
+
+    command = "/bin/sleep 30 & wait"
+    hz = os.sysconf("SC_CLK_TCK")
+    dispatch_tick = time.clock_gettime_ns(time.CLOCK_BOOTTIME) * hz // 1_000_000_000
+    tool = ToolCallState(
+        title="bash",
+        command=command,
+        dispatch_ts=time.monotonic(),
+        dispatch_boot_ts=dispatch_tick / hz,
+        dispatch_steady_ts=liveness.steady_now(),
+        is_shell=True,
+    )
+    oracle = LivenessOracle(
+        cleanup_tenancy=lambda: 1,
+        sandbox_wrapped_by_crew=lambda: False,
+        engine_is_child=lambda: True,
+    )
+    # relay (the runtime pid, like kiro-cli) -> its sole engine child (like node) -> the shell.
+    # The command travels in the environment so neither the relay's nor the engine's argv
+    # carries it, as with the real engine.
+    relay = subprocess.Popen(
+        [sys.executable, "-c", _RELAY_SCRIPT, _ENGINE_SCRIPT],
+        cwd=tmp_path,
+        env={**os.environ, "STALL_TEST_SHELL_COMMAND": command},
+        start_new_session=True,
+    )
+    try:
+        engine_pid = wait_until(
+            lambda: (strict_direct_children("/proc", relay.pid) or [None])[0],
+            interval=0.02,
+            describe=lambda: f"relay {relay.pid} starting its engine",
+        )
+        wait_until(
+            lambda: oracle.check_tool(relay.pid, tool)[0] == liveness.VERDICT_WORKING,
+            interval=0.02,
+            describe=lambda: "the oracle matching the real shell below the engine",
+        )
+        last_read: list[tuple[int, str]] = []
+
+        def whole_tree() -> list[tuple[int, str]]:
+            last_read[:] = oracle.stalled_shell_tree(relay.pid)
+            return list(last_read) if len(last_read) == 2 else []
+
+        targets = wait_until(
+            whole_tree,
+            interval=0.02,
+            describe=lambda: f"the shell and its child as one tree, last read {last_read}",
+        )
+        shell_pid = targets[-1][0]
+        assert strict_direct_children("/proc", engine_pid) == [shell_pid]
+        assert {relay.pid, engine_pid}.isdisjoint(pid for pid, _ in targets)
+
+        assert (
+            platform_compat.terminate_pids_pinned(
+                targets,
+                protected_pids=(relay.pid,),
+                grace_secs=0.0,
+            )
+            >= 1
+        )
+        wait_until(
+            lambda: not _live_pid(shell_pid),
+            interval=0.02,
+            describe=lambda: f"shell {shell_pid} ending",
+        )
+        assert relay.poll() is None
+        assert _live_pid(engine_pid)
+    finally:
+        platform_compat.kill_popen_tree(relay)
+        relay.wait(timeout=FALLBACK_TIMEOUT_SECS)

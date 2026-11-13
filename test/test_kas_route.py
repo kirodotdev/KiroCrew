@@ -383,6 +383,7 @@ class TestHarnessRoute:
             str(installed.node_bin), str(installed.acp_server)
         )
         assert plan.host_auth is True
+        assert plan.engine_is_child is False
         assert plan.spawn_label == KAS_BUNDLE_SPAWN_LABEL
         assert kas_route.last_spawn_route() == kas_route.KasRoute(
             bundle=True, reason=kas_route.REASON_NO_KIRO_CLI
@@ -424,6 +425,7 @@ class TestHarnessRoute:
         ):
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert plan.argv == build_kas_argv("/opt/kiro/kiro-cli")
+        assert plan.engine_is_child is True
         assert kas_route.last_spawn_route() == kas_route.RELAY
 
     @pytest.mark.asyncio

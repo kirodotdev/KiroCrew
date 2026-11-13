@@ -10,7 +10,7 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``,
-``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_exit_watch_task``,
+``_can_load_session``, ``_child_pids``, ``_derived_spec_snapshot``, ``_engine_is_child``, ``_exit_watch_task``,
 ``_initialize_result``, ``_initialized``, ``_kas_host_auth``, ``_last_activity``, ``_launch_copy_spec``,
 ``_launch_cwd_roots``, ``_launch_process_cwd``, ``_max_age_secs``,
 ``_max_rss_depth``, ``_max_rss_mb``, ``_native_launch_resources``,
@@ -548,6 +548,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
     try:
         plan = await self._resolve_spawn_plan()
         self._max_rss_depth = plan.rss_depth
+        self._engine_is_child = plan.engine_is_child
         argv = plan.argv
         if self._launch_agent and "--agent" in argv:
             # The harness built ``--agent <identity>`` and ran its spawn gates

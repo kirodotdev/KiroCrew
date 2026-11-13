@@ -234,6 +234,16 @@ class SpawnPlan:
     (``spawn_delegates_to_internal_sandbox``); any other harness is unaffected.
     """
 
+    engine_is_child: bool = field(default=False, kw_only=True)
+    """The launched process relays to an engine that runs the tools.
+
+    Stated by the harness that built the argv (KAS's kiro-cli relay): the engine
+    is the launched process's sole direct child and spawns the tool processes, so
+    a shell tool's parent is that engine, one level below the harness. The
+    stalled-shell cleanup pins that hop by identity. The bundle route launches
+    the engine itself and leaves it False.
+    """
+
     host_auth: bool = False
     """Crew answers this process's credential callbacks.
 
