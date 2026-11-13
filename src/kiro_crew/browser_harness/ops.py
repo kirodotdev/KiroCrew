@@ -1070,51 +1070,64 @@ def _screenshot_path(ctx: OpContext) -> Path:
     return directory / f"shot-{stamp}-{secrets.token_hex(3)}.png"
 
 
-def _shot_options(args: dict[str, Any]) -> dict[str, Any]:
-    """The optional ``screenshot`` arguments, checked: ``full``, ``max_dim``, ``ref``, ``region``.
+def _shot_options(args: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """The valid optional ``screenshot`` arguments (``full``, ``max_dim``, ``ref``, ``region``)
+    and a note for each one that is left out.
 
-    Returns the accepted ones, or a refusal (a dict with ``ok`` false). At most one of
-    ``full``, ``ref`` and ``region`` picks what is photographed; with none, the
-    visible part of the page is.
+    No option makes a screenshot fail: an option that is not valid is left out, and
+    when more than one of ``full``, ``ref`` and ``region`` is given, all of them are
+    left out. The screenshot is then taken as without them, the visible page by
+    default, and the notes go back to the agent as the result's ``warning``.
     """
     out: dict[str, Any] = {}
+    notes: list[str] = []
     full = args.get("full")
     if full is not None:
-        if not isinstance(full, bool):
-            return refusal("bad_args", "`full` must be true or false")
-        out["full"] = full
+        if isinstance(full, bool):
+            out["full"] = full
+        else:
+            notes.append("`full` ignored: it must be true or false")
     max_dim = args.get("max_dim")
     if max_dim is not None:
         size = _number(max_dim)
-        if size is None or not SHOT_MIN_DIM <= size <= SHOT_MAX_DIM:
-            return refusal("bad_args", f"`max_dim` must be {SHOT_MIN_DIM} to {SHOT_MAX_DIM} pixels")
-        out["max_dim"] = int(size)
+        if size is not None and SHOT_MIN_DIM <= size <= SHOT_MAX_DIM:
+            out["max_dim"] = int(size)
+        else:
+            notes.append(f"`max_dim` ignored: it must be {SHOT_MIN_DIM} to {SHOT_MAX_DIM} pixels")
     ref = args.get("ref")
     if ref is not None:
-        if not _is_ref(ref):
-            return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
-        out["ref"] = ref
+        if _is_ref(ref):
+            out["ref"] = ref
+        else:
+            notes.append("`ref` ignored: it is not a ref from a snapshot")
     region = args.get("region")
     if region is not None:
         box = _region_box(region)
-        if box is None:
-            return refusal(
-                "bad_args",
-                "`region` needs x, y (>= 0) and width, height (> 0) in page pixels, "
-                "the same pixels as click x,y",
+        if box is not None:
+            out["region"] = box
+        else:
+            notes.append(
+                "`region` ignored: it needs [x, y, width, height] with x, y >= 0 and "
+                "width, height > 0, in the same page pixels as click x,y"
             )
-        out["region"] = box
-    if (out.get("full") is True) + ("ref" in out) + ("region" in out) > 1:
-        return refusal("bad_args", "give only one of `full`, `ref` and `region`")
-    return out
+    chosen = [k for k in ("full", "ref", "region") if k in out and out[k] is not False]
+    if len(chosen) > 1:
+        for key in chosen:
+            del out[key]
+        names = ", ".join(f"`{k}`" for k in chosen)
+        notes.append(f"{names} ignored: give only one of `full`, `ref` and `region`")
+    return out, notes
 
 
 def _region_box(region: Any) -> list[float] | None:
-    """``{x, y, width, height}`` -> ``[x, y, width, height]``, or ``None`` if not a box."""
-    if not isinstance(region, dict):
+    """``[x, y, width, height]`` as four numbers, or ``None`` if not a box.
+
+    A list, not an object: the ``browser`` tool passes only scalars and lists of
+    them (``_args_are_scalar``), so an object-valued ``region`` never gets here.
+    """
+    if not isinstance(region, list) or len(region) != 4:
         return None
-    values = [_number(region.get(k)) for k in ("x", "y", "width", "height")]
-    x, y, width, height = values
+    x, y, width, height = (_number(value) for value in region)
     if x is None or y is None or width is None or height is None:
         return None
     if x < 0 or y < 0 or width <= 0 or height <= 0:
@@ -1122,28 +1135,25 @@ def _region_box(region: Any) -> list[float] | None:
     return [x, y, width, height]
 
 
-async def _shot_clip(
-    ctx: OpContext, options: dict[str, Any]
-) -> list[float] | dict[str, Any] | None:
-    """The viewport box ``[x, y, width, height]`` to photograph, a refusal, or ``None``
-    for the page itself."""
+async def _shot_clip(ctx: OpContext, options: dict[str, Any]) -> tuple[list[float] | None, str]:
+    """The viewport box ``[x, y, width, height]`` to photograph, or ``None`` for the
+    page itself, and a note when ``ref`` could not be used and the page is taken."""
     if "region" in options:
-        return options["region"]
+        return options["region"], ""
     if "ref" not in options:
-        return None
-    resolved = await _resolve(ctx, options["ref"])
+        return None, ""
+    ref = options["ref"]
+    resolved = await _resolve(ctx, ref)
     if not resolved["ok"]:
-        return resolved
+        return None, f"`ref` {ref} ignored: it is not on the current page; re-snapshot"
     width, height = resolved.get("w"), resolved.get("h")
     if not width or not height:
-        return refusal("ref_stale", f"ref {options['ref']} has no size; re-snapshot")
-    return [resolved["x"] - width / 2, resolved["y"] - height / 2, width, height]
+        return None, f"`ref` {ref} ignored: the element has no size; re-snapshot"
+    return [resolved["x"] - width / 2, resolved["y"] - height / 2, width, height], ""
 
 
 async def _screenshot(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
-    options = _shot_options(args)
-    if options.get("ok") is False:
-        return options
+    options, notes = _shot_options(args)
     # A field the person filled through `ask` would be in the pixels (a code, an
     # email; a password once a "show" toggle is clicked). The snapshot withholds it.
     refused = await _refuse_current_url(ctx)
@@ -1153,9 +1163,9 @@ async def _screenshot(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     if blocked is not None:
         return blocked
     await _step(ctx, "Take a screenshot")
-    clip = await _shot_clip(ctx, options)
-    if isinstance(clip, dict):
-        return clip
+    clip, note = await _shot_clip(ctx, options)
+    if note:
+        notes.append(note)
     path = _screenshot_path(ctx)
     # The gateway is the directory's only writer, so it bounds it on each write.
     await asyncio.to_thread(prune_snapshots, path.parent, time.time())
@@ -1190,7 +1200,10 @@ async def _screenshot(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         return blocked
     if staged != path:
         await asyncio.to_thread(os.replace, staged, path)
-    return {"ok": True, "path": str(path)}
+    result: dict[str, Any] = {"ok": True, "path": str(path)}
+    if notes:
+        result["warning"] = "; ".join(notes)
+    return result
 
 
 async def _screenshot_blocked(ctx: OpContext, *, after: bool = False) -> dict[str, Any] | None:
@@ -1386,6 +1399,7 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
             "type_text",
             "press_key",
             "screenshot",
+            "screenshot_clip",
             "page_info",
             "wait_for_load",
         }:

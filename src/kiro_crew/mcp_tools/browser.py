@@ -258,7 +258,12 @@ def _result_text(op: str, result: Any) -> str:
         return f"Browser {op}: ok"
     if op == "screenshot":
         path = str(result.get("path", ""))
-        return f"Browser screenshot saved: {path}\nShow it with ![screenshot]({path})"
+        text = f"Browser screenshot saved: {path}\nShow it with ![screenshot]({path})"
+        # The gateway's own fixed text (ops.py) naming an option it left out.
+        warning = result.get("warning")
+        if isinstance(warning, str) and warning:
+            text += f"\nWarning: {warning}"
+        return text
     if op == "ask":
         return _ask_text(str(result.get("outcome") or "refused"), str(result.get("code") or ""))
     if op == "snapshot":

@@ -161,6 +161,15 @@ def test_list_of_scalars_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out == 'Browser select_option: {"selected": ["a"]}'
 
 
+def test_a_screenshot_warning_reaches_the_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    note = "`full` ignored: it must be true or false"
+    payload = _ok({"path": "/s/shot.png", "warning": note})
+    monkeypatch.setattr(mod, "_post_command", _capture_post([], 200, payload))
+    out = mod.browser("browser", {"op": "screenshot", "args": {"full": "yes"}})
+    assert out.startswith("Browser screenshot saved: /s/shot.png")
+    assert out.endswith(f"\nWarning: {note}")
+
+
 # --- the navigate gate -------------------------------------------------------
 
 

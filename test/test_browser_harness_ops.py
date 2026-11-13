@@ -25,6 +25,7 @@ import pytest
 
 from kiro_crew import browser_snapshots
 from kiro_crew.browser_harness import ops
+from kiro_crew.mcp_tools import browser as browser_tool
 
 _METHOD_RE = re.compile(r"\.(\w+)\((.*)\)$", re.DOTALL)
 
@@ -948,7 +949,7 @@ def test_a_screenshot_by_ref_honours_the_size_cap(fake: FakeBrowser) -> None:
 
 def test_a_screenshot_of_a_region_magnifies_it_to_the_zoom_size(fake: FakeBrowser) -> None:
     _shoot_into(fake, "screenshot_clip")
-    region = {"x": 5, "y": 6, "width": 60, "height": 20}
+    region = [5, 6, 60, 20]
     assert run(ops.run_op("screenshot", {"region": region}, fake.ctx()))["ok"] is True
     (kw,) = _calls(fake, "screenshot_clip")
     assert (kw["x"], kw["y"], kw["width"], kw["height"]) == (5, 6, 60, 20)
@@ -956,42 +957,117 @@ def test_a_screenshot_of_a_region_magnifies_it_to_the_zoom_size(fake: FakeBrowse
     assert fake.page_methods().count("resolve") == 0
 
 
+def test_a_region_screenshot_through_the_browser_tool_reaches_the_capture(
+    fake: FakeBrowser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ``region`` the tool advertises passes its argument gate, which admits
+    only scalars and lists of them, and arrives here as the box it names."""
+    _shoot_into(fake, "screenshot_clip")
+    monkeypatch.setattr(browser_tool.mcp_core, "_vet_browse_governance", lambda s: None)
+    monkeypatch.setattr(browser_tool.mcp_core, "_resolve_session_key", lambda: "")
+    sent: list[dict[str, Any]] = []
+
+    def post(_key: str, op: str, args: dict, _header: str, _timeout: float) -> tuple[int, dict]:
+        # As /api/browser/op answers: a result wrapped when it is ok, a refusal as it is.
+        sent.append(args)
+        result = run(ops.run_op(op, args, fake.ctx()))
+        return 200, ({"ok": True, "result": result} if result.get("ok") else result)
+
+    monkeypatch.setattr(browser_tool, "_post_command", post)
+    out = browser_tool.browser("browser", {"op": "screenshot", "args": {"region": [5, 6, 60, 20]}})
+    assert out.startswith("Browser screenshot saved: "), out
+    assert sent == [{"region": [5, 6, 60, 20]}]
+    (kw,) = _calls(fake, "screenshot_clip")
+    assert (kw["x"], kw["y"], kw["width"], kw["height"]) == (5, 6, 60, 20)
+
+
 @pytest.mark.parametrize(
-    "args",
+    ("args", "named"),
     [
-        {"full": "yes"},
-        {"max_dim": 10},
-        {"max_dim": 99999},
-        {"max_dim": "big"},
-        {"ref": "banana"},
-        {"region": "left"},
-        {"region": {"x": 1, "y": 1, "width": 0, "height": 5}},
-        {"region": {"x": -1, "y": 1, "width": 5, "height": 5}},
-        {"region": {"x": 1, "y": 1, "width": 5}},
-        {"full": True, "ref": "e1"},
-        {"ref": "e1", "region": {"x": 1, "y": 1, "width": 5, "height": 5}},
+        ({"full": "yes"}, "`full` ignored"),
+        ({"max_dim": 10}, "`max_dim` ignored"),
+        ({"max_dim": 99999}, "`max_dim` ignored"),
+        ({"max_dim": "big"}, "`max_dim` ignored"),
+        ({"ref": "banana"}, "`ref` ignored"),
+        ({"region": "left"}, "`region` ignored"),
+        ({"region": [1, 1, 0, 5]}, "`region` ignored"),
+        ({"region": [-1, 1, 5, 5]}, "`region` ignored"),
+        ({"region": [1, 1, 5]}, "`region` ignored"),
+        ({"region": [1, 1, 5, "5"]}, "`region` ignored"),
+        ({"region": {"x": 1, "y": 1, "width": 5, "height": 5}}, "`region` ignored"),
+        ({"full": True, "ref": "e1"}, "`full`, `ref` ignored: give only one"),
+        ({"ref": "e1", "region": [1, 1, 5, 5]}, "`ref`, `region` ignored: give only one"),
     ],
 )
-def test_screenshot_refuses_bad_options_before_touching_the_page(
-    fake: FakeBrowser, args: dict[str, Any]
+def test_a_bad_or_conflicting_option_takes_the_visible_page_and_warns(
+    fake: FakeBrowser, args: dict[str, Any], named: str
 ) -> None:
+    """Every call main answers still succeeds: the option is left out, not refused."""
+    _shoot_into(fake, "screenshot")
     out = run(ops.run_op("screenshot", args, fake.ctx()))
-    assert out["ok"] is False and out["code"] in ("bad_args", "bad_ref")
-    assert fake.calls == []
-
-
-def test_a_screenshot_by_ref_of_a_gone_element_is_ref_stale_and_takes_no_image(
-    fake: FakeBrowser,
-) -> None:
-    fake.page["resolve"] = {"ok": False, "code": "ref_stale"}
-    out = run(ops.run_op("screenshot", {"ref": "e3"}, fake.ctx()))
-    assert out["code"] == "ref_stale"
+    assert out["ok"] is True and Path(out["path"]).read_bytes() == b"\x89PNG"
+    assert named in out["warning"]
+    (kw,) = _calls(fake, "screenshot")
+    assert set(kw) == {"path"}
     assert _calls(fake, "screenshot_clip") == []
 
 
-def test_a_screenshot_by_ref_of_an_element_with_no_size_is_ref_stale(fake: FakeBrowser) -> None:
+def test_a_bad_option_leaves_the_valid_ones_in_place(fake: FakeBrowser) -> None:
+    _shoot_into(fake, "screenshot")
+    out = run(ops.run_op("screenshot", {"full": "yes", "max_dim": 900}, fake.ctx()))
+    assert out["ok"] is True and "`full` ignored" in out["warning"]
+    (kw,) = _calls(fake, "screenshot")
+    assert set(kw) == {"path", "max_dim"} and kw["max_dim"] == 900
+
+
+def test_a_screenshot_with_valid_options_carries_no_warning(fake: FakeBrowser) -> None:
+    _shoot_into(fake, "screenshot")
+    out = run(ops.run_op("screenshot", {"full": True, "max_dim": 900}, fake.ctx()))
+    assert out["ok"] is True and "warning" not in out
+
+
+@pytest.mark.parametrize("args", [{"ref": "e1"}, {"region": [0, 0, 10, 10]}])
+def test_a_page_refused_just_before_a_box_capture_is_not_captured(
+    fake: FakeBrowser, args: dict[str, Any]
+) -> None:
+    """The URL check every page helper gets right before it runs covers the box capture
+    too, as it covers today's screenshot: a tab that reaches a refused page after the
+    guards and before the capture is never photographed."""
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    tab = {"url": "https://example.com/"}
+    fake.helpers["current_tab"] = lambda: dict(tab)
+    fake.page["resolve"] = {"ok": True, "x": 5.0, "y": 5.0, "w": 10.0, "h": 10.0, "tag": "div"}
+    _shoot_into(fake, "screenshot_clip")
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+
+    def step(_label: str) -> None:
+        tab["url"] = "http://127.0.0.1:5173/admin"
+
+    ctx.step = step
+    out = run(ops.run_op("screenshot", args, ctx))
+    assert out["ok"] is False and out["code"] == "redirect_refused"
+    assert _calls(fake, "screenshot_clip") == []
+
+
+def test_a_screenshot_by_ref_of_a_gone_element_takes_the_visible_page_and_warns(
+    fake: FakeBrowser,
+) -> None:
+    fake.page["resolve"] = {"ok": False, "code": "ref_stale"}
+    _shoot_into(fake, "screenshot")
+    out = run(ops.run_op("screenshot", {"ref": "e3"}, fake.ctx()))
+    assert out["ok"] is True and "`ref` e3 ignored" in out["warning"]
+    assert _calls(fake, "screenshot_clip") == []
+    assert [set(kw) for kw in _calls(fake, "screenshot")] == [{"path"}]
+
+
+def test_a_screenshot_by_ref_of_an_element_with_no_size_takes_the_visible_page_and_warns(
+    fake: FakeBrowser,
+) -> None:
     fake.page["resolve"] = {"ok": True, "x": 1.0, "y": 1.0, "tag": "div"}
-    assert run(ops.run_op("screenshot", {"ref": "e3"}, fake.ctx()))["code"] == "ref_stale"
+    _shoot_into(fake, "screenshot")
+    out = run(ops.run_op("screenshot", {"ref": "e3"}, fake.ctx()))
+    assert out["ok"] is True and "has no size" in out["warning"]
     assert _calls(fake, "screenshot_clip") == []
 
 
@@ -1000,7 +1076,7 @@ def test_a_screenshot_by_ref_of_an_element_with_no_size_is_ref_stale(fake: FakeB
     [
         {"full": True},
         {"ref": "e1"},
-        {"region": {"x": 0, "y": 0, "width": 10, "height": 10}},
+        {"region": [0, 0, 10, 10]},
     ],
 )
 def test_every_screenshot_form_keeps_the_secret_field_guard(
