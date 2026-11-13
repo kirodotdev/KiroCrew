@@ -3,8 +3,10 @@
 Feeds the MCP page's hero numbers and its "open chats still use their own
 copies" banner. Every figure is a reading of this host
 (:mod:`kiro_crew.mcp_gateway.footprint`); a figure with any unreadable input is
-``null`` and the page hides it. Read only: nothing here starts, stops or
-reloads anything.
+``null`` and the page hides it. It starts no server and reloads nothing; the
+one process it may start is a single idle stub, once per gateway run, to read
+what a stub costs when none is running
+(:mod:`kiro_crew.mcp_gateway.footprint_probe`).
 
 Owner only, on top of the dashboard's own credential gate: the payload names
 the owner's chats. It carries numbers and chat slot names, never a command
@@ -24,12 +26,8 @@ from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import subprocess_executor
-from kiro_crew.mcp_gateway import footprint
-from kiro_crew.mcp_gateway.launch_approval import (
-    refused_servers,
-    target_env_stem,
-    target_stem,
-)
+from kiro_crew.mcp_gateway import footprint, footprint_probe
+from kiro_crew.mcp_gateway.launch_approval import refused_servers, target_env_stem, target_stem
 from kiro_crew.mcp_utils import mcp_server_alias
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
@@ -214,7 +212,10 @@ async def api_mcp_gateway_footprint(request: web.Request) -> web.Response:
             ]
 
     reading = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), lambda: footprint.measure(sessions, specs, backends)
+        subprocess_executor(),
+        lambda: footprint.measure(
+            sessions, specs, backends, stub_reading=footprint_probe.idle_stub_bytes
+        ),
     )
 
     live_keys = {key for key, _ in sessions}

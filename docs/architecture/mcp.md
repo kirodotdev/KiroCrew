@@ -1429,6 +1429,15 @@ shareable ones nobody chose for, each pinned to the launch read for it. It
 never enables a server turned off by hand (a `false` entry in
 `stub_overrides`), a credential vendor, or a server waiting for approval.
 
+With sharing off no stub runs, so the footprint has no stub to price "with
+sharing" by. The gateway then reads one, once per gateway run
+(`mcp_gateway/footprint_probe.py`, Linux only): it starts a single idle stub
+through the sandbox, has it register on a private unix socket (a fresh `0700`
+directory under the gateway's runtime dir, the socket `0600`, no TCP, removed
+on every way out, a timeout included), round-trips one `initialize`, reads its
+PSS, stops it, and keeps the reading. That probe serves no backend, so no
+server starts.
+
 On the **Sharing** view, each row's control is one switch, **Enable MCP sharing**.
 Turning it on reads the launch, then sends the stub write carrying that
 `expected_launch`. Turning a row's switch off turns a share off. A row refused
