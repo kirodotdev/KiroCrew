@@ -61,6 +61,7 @@ from kiro_crew.acp.client_timeouts import (
 from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _is_safe_oauth_url
 from kiro_crew.acp.client_turn_control import format_command_result, parse_slash_command
 from kiro_crew.acp.elicitation import is_elicitation_request
+from kiro_crew.acp.end_token import drop_end_token
 from kiro_crew.acp.engine_fallback import is_v2_model_fallback, normalize_kiro_v2
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.oauth_offline import with_google_offline_access
@@ -1028,7 +1029,7 @@ async def stream_unsolicited(
         self._turn_done.clear()
         try:
             async with aclosing(
-                self._dispatch_events(_AGENT_STARTED_REQUEST_ID, timeout)
+                drop_end_token(self._dispatch_events(_AGENT_STARTED_REQUEST_ID, timeout))
             ) as events:
                 async for event in events:
                     yield event

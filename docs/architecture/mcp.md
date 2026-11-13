@@ -5958,7 +5958,10 @@ that need the text alone. `nothing_to_do` exists for the turn-end contract the
 base prompt states: after its tool calls a turn ends with a closing text or with
 `nothing_to_do`, never by stopping bare after an ordinary tool — a bare stop
 keeps the recovery ladder, which is what makes the directive the only sanctioned
-silent exit. Its ONE gate is who opened the turn: it applies on a monitor wake
+silent exit. After the call the model writes only the end token its result names
+(`session_directive.QUIET_END_TOKEN`), which the ACP layer drops before any
+consumer reads the turn ([acp-client](../system-specs/modules/acp-client.md),
+"Quiet-end token drop"). Its ONE gate is who opened the turn: it applies on a monitor wake
 (`producer_is_self_wake`) or a headless producer (cron, crew runtime, app or
 task-runner injection), and is REFUSED (`QUIET_END_REFUSED_USER_TURN`,
 `ends_turn` False) on a turn a person opened — a user-facing dashboard turn or

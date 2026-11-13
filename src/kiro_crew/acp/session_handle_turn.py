@@ -61,6 +61,7 @@ from kiro_crew.acp.elicitation import (
     elicitation_reply,
     is_elicitation_request,
 )
+from kiro_crew.acp.end_token import drop_end_token
 from kiro_crew.acp.prompt_blocks import (
     SentImageLedger,
     StagedImages,
@@ -879,8 +880,8 @@ async def _run_turn(
         self._runtime, "acp_backend", ""
     ) in ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR and not prompt_is_adapter_command(_params)
     _held: list[AcpEvent] = []
-    _dispatch = self._dispatch_events(
-        req_id, timeout, extract_command_result=extract_command_result
+    _dispatch = drop_end_token(
+        self._dispatch_events(req_id, timeout, extract_command_result=extract_command_result)
     )
     try:
         # Surface any drain-time rejections (see the pre-turn drain above)

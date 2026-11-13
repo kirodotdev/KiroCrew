@@ -1666,14 +1666,9 @@ against sweep completeness, and are torn down at `close_all`.
   re-arming would turn the quiet end the model asked for into a notice card.
   Late TEXT is dropped at arrival: not accumulated, not streamed as a
   `chat_chunk`, not persisted as an assistant row, so a quiet end renders no
-  assistant bubble whatever the model goes on to say. The field source of such
-  text is not the model's own words: a quiet end leaves the backend's history
-  ending on a tool result, the backend's alternation repair fabricates a
-  self-describing assistant placeholder (`(No assistant response was
-  recorded...)`) to fill that gap on the next request, and the model reads it
-  back as its own prior reply and repeats it after each later quiet end — one
-  grey bubble per patrol cycle. The drop keys on the structured `ends_turn`
-  signal, never on the placeholder's wording. Late text that arrives while a
+  assistant bubble whatever the model goes on to say.
+  The drop keys on the structured `ends_turn`
+  signal, never on the text's wording. Late text that arrives while a
   person's steer is still pending (`slot._pending_steers`) may be their answer,
   so it is held instead: the backend's consumption echo releases it as the
   reply, and every later chunk is kept (codex echoes only at the terminal, so
@@ -1686,6 +1681,16 @@ against sweep completeness, and are torn down at `close_all`.
   placeholder, so it is kept even when the echo never comes; only text with no
   tool call after it is dropped. That is a known trade-off: a turn whose steer
   is requeued keeps the text it wrote before a tool call.
+  **The end token.** The `nothing_to_do` result asks the model to reply with
+  exactly `session_directive.QUIET_END_TOKEN` and nothing else, so
+  the backend's history ends on an assistant message. A history that ended on
+  the tool result instead was filled by the backend's alternation repair with a
+  self-describing placeholder (`(No assistant response was recorded...)`) that
+  the model then copied after each later quiet end, billed every patrol cycle.
+  The ACP layer drops the token where the model's text arrives (`acp/end_token.py`,
+  see [acp-client](acp-client.md), "Quiet-end token drop"), so the runner never
+  sees it: it is not late text, not counted as a contract violation, and a
+  refused quiet end whose model wrote it reads as the empty reply it is today.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened

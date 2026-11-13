@@ -3619,6 +3619,31 @@ also synthesizes a final `EVENT_COMPLETE` so dashboard and CLI callers using
 happened, and a `tool_interrupted`-tagged SEL audit event is written for the security
 log since kiro-cli's cancellation is a permission decision outside Kiro Crew's control.
 
+### Quiet-end token drop (`acp/end_token.py`)
+
+After `nothing_to_do` the model replies with exactly
+`session_directive.QUIET_END_TOKEN`, so the backend's history ends on an
+assistant message instead of a tool result (the gap a backend fills with its own
+placeholder). Every caller of the two turn loops, `AcpClient._dispatch_events`
+(`stream_events` through `_dispatch_prompt_events`, `stream_unsolicited`,
+`stream_command`) and `AcpSessionHandle._dispatch_events` (`_run_turn`), reads
+it through `drop_end_token`, so every prompt, agent-started and command turn on
+every backend passes through it before any consumer sees it. A text segment is
+the run of text chunks between two other events, or before the end of the
+stream. Its chunks are held only while their whitespace-stripped text is still a
+prefix of the token; once it is not, they go out unchanged, in order and with
+their message ids. A segment that equals the token when it ends is dropped.
+There is no tool-name check and no per-backend branch: a model or injected text
+that writes the token can only turn that one reply into the empty reply a turn
+has today, never end a turn, apply a directive or hide other text. A native
+child's text is not the turn's own: it becomes `EVENT_SUBAGENT_ACTIVITY` before
+the drop, so a native child that writes the token shows it on its card, as it
+would show any other text (the consumer refuses a native child's directive).
+`send_message` (`_read_prompt_response`) is not wrapped: its one caller, the
+Knowledge Library's extraction worker, runs a spec meant to declare no tools
+(`knowledge/llm_pool.py` warns when it does not), so its turns do not end on
+`nothing_to_do`.
+
 ### Stale-turn gate (`AcpClient`)
 
 After text has streamed (`_stale_eligible`), a turn whose stdout+stderr fall silent for `_STALE_TURN_TIMEOUT` (90s) is a candidate for "treat as complete". A bare wall-clock reap would false-positive on a genuinely-working-but-quiet backend (a long model generation, or a spawned build emitting nothing to the pipe), ending the turn and losing all subsequent output — the *capture*-side analogue of the same blunt-timeout defect the runtime path guards against for tool-stall. `AcpClient` **oracle-gates** the reap, converging onto the same `LivenessOracle` (`acp/liveness.py`) contract the shared-runtime path uses: on every silent read while `_stale_eligible`, `_consult_liveness_model_wait()` calls `oracle.check_model_wait(self._pid)` (offloaded to `subprocess_executor()` under a 10s `wait_for`; degrades to `VERDICT_UNKNOWN` on any error — fail toward reaping). Consulting on **every** silent read, not only at the 90s mark, is required: the oracle needs a prior sample to compute a CPU/IO movement delta, so with readable counters a fresh oracle's first *submitted* consult returns `UNKNOWN`/`"sampling"` and a single consult at the cutoff would always reap. A missing runtime PID or unreadable counters also return `UNKNOWN`, each with its own evidence string.
