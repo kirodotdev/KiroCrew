@@ -32,7 +32,8 @@
   "permissions": {
     "api": [
       "/api/apps/code-review-sage",
-      "/api/apps/code-review-sage/*"
+      "/api/apps/code-review-sage/*",
+      "/api/source/pull-request"
     ],
     "network": true,
     "storage": true
