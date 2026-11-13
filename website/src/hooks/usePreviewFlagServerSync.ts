@@ -77,6 +77,15 @@ export function usePreviewFlagWriteError(): PreviewFlagWriteError | null {
   return useSyncExternalStore(subscribeWriteError, () => writeError, () => null)
 }
 
+/**
+ * Resolves once every queued write of *flag* has settled (accepted or refused),
+ * at once when none is queued. A reader whose server answer depends on the
+ * switch awaits it, so it never reads the gateway before the switch reached it.
+ */
+export function whenPreviewFlagSaved(flag: string): Promise<void> {
+  return tails.get(flag) ?? Promise.resolve()
+}
+
 /** Reset the module state between tests. */
 export function __resetPreviewFlagServerSyncForTests(): void {
   setWriteError(null)

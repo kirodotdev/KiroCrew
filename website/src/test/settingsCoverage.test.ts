@@ -313,6 +313,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'settings search because the People tab is hidden unless the Shared Crew preview is on',
   },
   'SecretsPanel.tsx': {
+    counts: { Input: 6, textarea: 1 },
+    reason:
+      'add/edit form for one vault item (name, value, login fields, a website to add, note text) ' +
+      '— transient CRUD, not persistent knobs',
+  },
+  'SecretsPanelLegacy.tsx': {
     counts: { Input: 2 },
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
@@ -471,6 +477,12 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'notifications.sound-category-*',
   },
   'SecretsPanel.tsx': {
+    count: 1,
+    reason:
+      'the managed pane labels its SecretField with the slot copy (managedLabel), the anchor ' +
+      'the settingsManual secrets.* entries highlight; one pane per transient credential slot',
+  },
+  'SecretsPanelLegacy.tsx': {
     count: 1,
     reason:
       'managed SecretField labels are selected from a closed kind-to-copy map and the ' +

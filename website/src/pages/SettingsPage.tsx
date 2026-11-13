@@ -27,7 +27,7 @@ import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
-import { SecretsPanel } from './settings/SecretsPanel'
+import { SecretsPanelLegacy } from './settings/SecretsPanelLegacy'
 import { useConnectionsUiEnabled, useConnectionsUiPending } from '../hooks/useConnectionsUi'
 import SettingsSearch from './settings/SettingsSearch'
 import { Btn, ContentSkeleton } from '../components/ui'
@@ -49,6 +49,11 @@ const AgentRunSettings = lazy(() =>
 /** Lazy: the Connections gallery (cards, connect flow, OAuth app parts) is
  *  only needed when that tab opens, so it stays out of the Settings chunk. */
 const ConnectionsPage = lazy(() => import('./connections/ConnectionsPage'))
+/** Lazy: the list-detail Secrets panel draws only behind the Secrets vault
+ *  redesign preview. The default panel stays in this chunk, as it is on main. */
+const SecretsPanel = lazy(() =>
+  import('./settings/SecretsPanel').then(m => ({ default: m.SecretsPanel })),
+)
 /** Lazy: the Browser tab's status card and live-view settings are only needed when that tab opens. */
 const BrowserPanel = lazy(() =>
   import('./settings/BrowserPanel').then(m => ({ default: m.BrowserPanel })),
@@ -65,7 +70,7 @@ import { SettingsCard } from '../components/settings'
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { useConfigPendingCount } from './settings/configPendingQuery'
-import { PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
+import { PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_WEBHOOKS } from '../utils/previewFlags'
 import { GuideTrustRootRegion } from '../guide/trustRoot'
 // Group headers double as the grouping KEY (SidePanelLayout starts a new header
 // whenever this string changes), so they are resolved inside `buildTabs()` —
@@ -261,6 +266,9 @@ export default function SettingsPage() {
   // would drop a draft typed into them when the read flips the page to on.
   const connectionsUiPending = useConnectionsUiPending()
   const sessionEnvironmentsPreview = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
+  // The list-detail Secrets panel hosts its own sub-nav; off, the tab is the
+  // single-page panel and hosts none.
+  const secretsVaultPreview = usePreviewFlag(PREVIEW_SECRETS_VAULT)
   // People exists only while the gateway reports the Shared Crew preview
   // (`KIROCREW_SHARED_CREW_PREVIEW=1`); a browser setting cannot turn it on.
   const sharedCrew = useSharedCrewCapabilities()
@@ -274,7 +282,8 @@ export default function SettingsPage() {
   // the dashboard waits for Apply or Discard there.
   const configPending = useConfigPendingCount() > 0
   const tabs = allTabs.map(t => (
-    t.key === 'about' && updateAvailable ? { ...t, dot: true }
+    t.key === 'secrets' && secretsVaultPreview ? { ...t, hostsSubNav: true }
+    : t.key === 'about' && updateAvailable ? { ...t, dot: true }
       : t.key === 'security' && configPending
         ? { ...t, dot: true, dotLabel: i18nT('pages.settings.securityPanel.configPending.nav_dot') }
         : t
@@ -358,7 +367,15 @@ export default function SettingsPage() {
               : <ConnectionsPage servicesEnabled={connectionsUiEnabled} />}
           </Suspense>
         )}
-        {tab === 'secrets' && <GuideTrustRootRegion><SecretsPanel /></GuideTrustRootRegion>}
+        {tab === 'secrets' && (
+          <GuideTrustRootRegion>
+            {secretsVaultPreview ? (
+              <Suspense fallback={<ContentSkeleton rows={6} />}>
+                <SecretsPanel basePath={SETTINGS_BASE_PATH} />
+              </Suspense>
+            ) : <SecretsPanelLegacy />}
+          </GuideTrustRootRegion>
+        )}
         {tab === 'session-environments' && sessionEnvironmentsPreview && (
           <SettingsCard>
             <Suspense fallback={<ContentSkeleton rows={6} />}>

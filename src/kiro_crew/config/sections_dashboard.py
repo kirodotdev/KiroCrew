@@ -64,6 +64,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "layout_harness",
     "mate_sessions",
     "remote_crew_chat",
+    "secrets_vault",
     "session_environments",
     "session_harness",
     "webhooks",

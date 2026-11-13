@@ -2433,6 +2433,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.secrets-vault-redesign",
+    "label": "Secrets vault redesign",
+    "labelKey": "pages.developer.featurePreviewsTab.secrets_vault",
+    "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.send-pending-approvals-to-chat-apps",
     "label": "Send pending approvals to chat apps",
     "labelKey": "pages.developer.featurePreviewsTab.bridge_approvals",

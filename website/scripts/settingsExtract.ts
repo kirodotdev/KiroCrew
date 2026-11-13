@@ -148,6 +148,8 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'SecurityPanelConfigPending.tsx': 'security',
   'OAuthAppPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
+  // Draws the tab while the Secrets vault redesign preview is off.
+  'SecretsPanelLegacy.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two

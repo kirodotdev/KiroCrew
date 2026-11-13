@@ -10218,6 +10218,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.secrets_vault",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: secrets_vault",
+      "help": "Turn on the 'secrets_vault' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.session_environments",
       "kind": "core",
       "type": "boolean",

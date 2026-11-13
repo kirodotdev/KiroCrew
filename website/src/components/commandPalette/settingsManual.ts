@@ -377,6 +377,9 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     // Managed credential slots are server-provided, so the shared SecretField
     // label is dynamic at extraction time. These entries index the two fixed
     // integration labels and highlight the matching runtime SecretField.
+    // With the Secrets vault redesign preview on, SecretsPanel opens the slot's
+    // pane for these ids itself (SEARCH_PANE_KINDS): the vault's names are not
+    // a fixed sub-page list the UI index could carry.
     id: 'secrets.wakatime-api-key',
     labelKey: 'settings.secrets.wakatime_api_key_label',
     descriptionKey: 'settings.secrets.wakatime_api_key_description',

@@ -1,18 +1,23 @@
-"""Resolve ``secret://NAME`` URIs in MCP server environment variables.
+"""Resolve ``secret://NAME`` and ``secret://NAME#FIELD`` URIs in MCP server env.
 
 At spawn time, env values matching the ``secret://`` scheme are resolved
 against the local :class:`~kiro_crew.secrets.SecretVault`. Resolution is
 in-memory only — the sidecar file on disk retains the raw URI template so
-the secret is never persisted in plaintext outside the vault.
+the secret is never persisted in plaintext outside the vault. The optional
+``#FIELD`` picks one field of a typed item (:mod:`kiro_crew.secrets.items`);
+without it the item's default field is used, so a reference to a plain
+secret reads as it always did.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping
 from pathlib import Path
+from typing import Optional
 
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.secrets import SecretVault
+from kiro_crew.secrets.items import ItemError, parse_reference, resolve_field
 
 #: Scheme prefix for a vault secret reference. Single source of truth: the
 #: importer (``kiro_crew.secrets.migrate``) writes references with this prefix
@@ -131,14 +136,15 @@ def resolve_secret_uris(
     # First pass: classify each env value. Validate every secret reference's
     # name BEFORE touching the vault so a malformed URI fails closed without a
     # store read. ``pending`` maps env-var key -> secret name to resolve.
-    pending: dict[str, str] = {}
+    pending: dict[str, tuple[str, str, Optional[str]]] = {}
     for key, value in env.items():
         if not value.startswith(_SECRET_URI_PREFIX):
             resolved[key] = value
             continue
 
-        secret_name = value[len(_SECRET_URI_PREFIX) :]
-        if not _is_valid_secret_name(secret_name):
+        whole = value[len(_SECRET_URI_PREFIX) :]
+        secret_name, field = parse_reference(whole)
+        if not _is_valid_secret_name(whole):
             # Do NOT echo the raw reference: a malformed name can carry
             # control characters (CWE-117 log injection) and this ValueError
             # propagates to the spawn path's logs unsanitised. Name only the
@@ -152,17 +158,33 @@ def resolve_secret_uris(
                 f"Settings > Secrets in the dashboard (or migrate it with "
                 f"`kirocrew secrets import`)."
             )
-        pending[key] = secret_name
+        pending[key] = (whole, secret_name, field)
 
     if not pending:
         return resolved, secret_keys
 
     vault = SecretVault(config_dir)
-    fetched = vault.get_many(list(pending.values()))
+    # The whole text wins when it is stored, so its NAME#FIELD reading is read
+    # (and decrypted) only for a reference whose whole text is not stored: a
+    # second batch, needed only when a field reference misses as a whole name.
+    fetched = dict(vault.get_items_many(sorted({whole for whole, _, _ in pending.values()})))
+    fallback = {
+        name
+        for whole, name, field in pending.values()
+        if field is not None and name and fetched.get(whole) is None
+    }
+    if fallback:
+        fetched.update(vault.get_items_many(sorted(fallback)))
 
-    for key, secret_name in pending.items():
-        secret_value = fetched.get(secret_name)
-        if secret_value is None:
+    for key, (whole, secret_name, field) in pending.items():
+        # An entry stored under the whole text wins: a name holding ``#`` from
+        # before field references existed keeps resolving as it always did.
+        item = fetched.get(whole)
+        if item is not None:
+            field = None
+        elif field is not None:
+            item = fetched.get(secret_name)
+        if item is None:
             raise ValueError(
                 f"{subject} env var {key!r} references a secret that does not "
                 f"exist in the vault (read the referenced name from the env "
@@ -170,7 +192,19 @@ def resolve_secret_uris(
                 f"Store it under Settings > Secrets in the dashboard (or "
                 f"migrate it with `kirocrew secrets import`)."
             )
-        resolved[key] = secret_value.reveal()
+        item_type, plaintext = item
+        try:
+            resolved[key] = resolve_field(item_type, plaintext.reveal(), field)
+        except ItemError as exc:
+            # Names only the env-var key and the reason code: the field text
+            # after ``#`` is operator config but the secret name next to it is
+            # not echoed anywhere (see _is_valid_secret_name).
+            raise ValueError(
+                f"{subject} env var {key!r} references a field the vault item "
+                f"does not have ({exc.code}). A reference is secret://NAME or "
+                f"secret://NAME#FIELD; a login has username, password, notes "
+                f"and url, a note has text, a secret has value."
+            ) from None
         secret_keys.add(key)
 
     return resolved, secret_keys

@@ -1365,6 +1365,7 @@
     "pages.settings.defaultMcpGrantsSection.failed_remove": "Error notice after the Remove button failed. {{reason}} is a whole sentence filled in at runtime: the gateway's own error message (it may be in English) or the failed_request string. Keep it after the first sentence.",
     "pages.settings.defaultMcpGrantsSection.failed_to_load_session_control": "Error notice under the Dashboard control tools row in Settings > Developer > Agent MCP servers when the read of the server config failed. Session Control is the same feature name the session_control_off string uses; translate it the same way. A Retry button follows the notice.",
     "pages.overview.mcpTab.unreadable_file": "Error line above the MCP servers list (Customize > Connections > MCP Servers) for an MCP config file that was skipped, one line per file. {{file}} is the file's path, kept as written. {{reason}} is a fixed English clause from the gateway, such as \"it is saved as UTF-16; re-save it as UTF-8\", so keep it after the word for because.",
-    "pages.overview.mcpTab.unreadable_files_failed": "Error notice above the MCP servers list (Customize > Connections > MCP Servers) when the read of which MCP config files were skipped for their encoding failed; the list itself may still have loaded."
+    "pages.overview.mcpTab.unreadable_files_failed": "Error notice above the MCP servers list (Customize > Connections > MCP Servers) when the read of which MCP config files were skipped for their encoding failed; the list itself may still have loaded.",
+    "settings.secrets.status_set": "Status line under a vault item in the Settings > Secrets list: this credential is stored. Past participle (the value is set), not the noun."
   }
 }

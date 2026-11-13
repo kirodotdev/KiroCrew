@@ -135,6 +135,11 @@ export type {
   TrustedRegistryRow,
   TrustedRegistriesData,
   ManagedSecret,
+  SecretItemBody,
+  SecretItemFields,
+  SecretItemType,
+  SecretListItem,
+  SecretLoginPublicFields,
   SecretsListResponse,
 } from './client/security'
 export type {
