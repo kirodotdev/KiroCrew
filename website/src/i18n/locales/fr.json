@@ -12656,7 +12656,7 @@
       "prompts_description": "Modèles de prompt réutilisables depuis {{registry}}",
       "prompts_label": "Prompts",
       "skills_description": "Fichiers de connaissances spécialisées que votre agent charge à la demande pour des tâches spécifiques",
-      "mcp_servers_description": "Serveurs d'outils auxquels votre agent se connecte, et la façon dont ils sont partagés entre les discussions",
+      "mcp_servers_description": "Serveurs d'outils auxquels ton agent se connecte, et la façon dont ils sont partagés entre les discussions",
       "skills_label": "Compétences",
       "skills_awaiting_review": "Compétences en attente de validation ({{count}})",
       "skills_awaiting_review_failed": "Impossible de vérifier les compétences en attente de validation",
