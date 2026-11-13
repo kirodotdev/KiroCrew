@@ -8300,7 +8300,9 @@
         "chat_stopped_refused_body": "모델이 답변을 거부해 채팅이 중지되었습니다. 채팅을 열어 이유를 확인하세요.",
         "chat_stopped_stalled_body": "채팅이 멈춘 뒤 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
         "folder_agent_label_title": "폴더의 기본 에이전트 확인",
-        "folder_agent_label_body": "이 폴더들의 기본 에이전트는 Bot과 이름이 같지만, 새 채팅은 그 Bot에서 실행되지 않습니다: {{folders}}. Bot을 사용하려면 폴더 설정에서 기본 에이전트로 선택하세요."
+        "folder_agent_label_body": "이 폴더들의 기본 에이전트는 Bot과 이름이 같지만, 새 채팅은 그 Bot에서 실행되지 않습니다: {{folders}}. Bot을 사용하려면 폴더 설정에서 기본 에이전트로 선택하세요.",
+        "folder_agent_key_title": "폴더의 기본 에이전트 확인",
+        "folder_agent_key_body": "이전 업데이트에서 이 폴더들이 커스텀 에이전트에서 같은 이름의 Bot으로 바뀌었을 수 있어, 새 채팅은 그 Bot에서 실행됩니다: {{folders}}. 커스텀 에이전트를 의도했다면 폴더 설정에서 다시 기본 에이전트로 선택하세요."
       },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",

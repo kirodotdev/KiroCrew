@@ -3253,7 +3253,9 @@
         "chat_stopped_refused_body": "The model declined to answer and the chat stopped. Open the chat to see why.",
         "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one.",
         "folder_agent_label_title": "Check a folder's Default agent",
-        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings."
+        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings.",
+        "folder_agent_key_title": "Check a folder's Default agent",
+        "folder_agent_key_body": "An earlier update may have moved these folders from a custom agent onto the bot of the same name, so new chats there run on that bot: {{folders}}. If you meant the custom agent, pick it again as the Default agent in the folder's settings."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
