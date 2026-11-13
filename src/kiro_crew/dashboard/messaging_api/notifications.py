@@ -95,8 +95,13 @@ async def api_notifications_clear(request: web.Request) -> web.Response:
         if hidden:
             # Clear what the teammate sees and keep what they are withheld: no
             # whole-feed clear, and no clear broadcast that would empty the owner's.
+            # Each cleared note is withdrawn by name instead, so every open view
+            # drops exactly those.
+            cleared = [note.get("ts") for note in state._notification_log if not _is_app_note(note)]
             state._notification_log = hidden
             await state._rewrite_notifications_async()
+            for ts in cleared:
+                state.broadcast_ws("notification_dismiss", {"ts": ts})
             audit_teammate_withheld("notifications_clear")
             return web.json_response({"ok": True})
     await state.clear_notifications()
