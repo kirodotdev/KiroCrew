@@ -8,6 +8,7 @@ warm-up, the DNS-alias verdict layer, and dotless names a hosts file maps.
 from __future__ import annotations
 
 import asyncio
+import socket
 import sys
 import threading
 
@@ -18,6 +19,7 @@ from denied_commands_security_helpers import _REAL_RESOLVED_HOST_VERDICT, _denie
 from kiro_crew import security
 from kiro_crew.security import argv_floor as _argv_floor
 from kiro_crew.security import argv_floor_hosts as _argv_floor_hosts
+from kiro_crew.security import ssh_config_route as _ssh_config_route
 from kiro_crew.testing.wait import async_wait_until, wait_until
 
 # This file replaces ctypes.CDLL, find_library or a cached libc handle for a test,
@@ -643,6 +645,139 @@ class TestSandboxEscapeSshSelfOwnHost:
         _argv_floor._resolve_host_verdict_into_cache("alias.example")
         assert "alias.example" not in cache
         assert "alias.example" not in _argv_floor._HOST_VERDICT_PENDING
+
+    def test_a_name_with_no_such_address_is_not_self(self, monkeypatch):
+        # "No such name" is cached as not-self only when ssh's own config
+        # route is proven not self too; without that proof it caches nothing.
+        # A TEMPORARY failure caches nothing either, so the next call retries.
+        def _gai_error(code):
+            def _gai(host, *args, **kwargs):
+                raise socket.gaierror(code, "resolver error")
+
+            return _gai
+
+        for code, route_clear, cached in (
+            (socket.EAI_NONAME, True, "route"),
+            (socket.EAI_NONAME, False, None),
+            (socket.EAI_AGAIN, True, None),
+        ):
+            cache: "dict[str, bool]" = {}
+            monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", cache)
+            monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", {"proxy-only.example"})
+            monkeypatch.setattr(security.socket, "getaddrinfo", _gai_error(code))
+            monkeypatch.setattr(
+                _ssh_config_route, "route_is_not_self", lambda _h, clear=route_clear: clear
+            )
+            _argv_floor._resolve_host_verdict_into_cache("proxy-only.example")
+            assert cache.get("proxy-only.example") == cached, (code, route_clear)
+            assert "proxy-only.example" not in _argv_floor._HOST_VERDICT_PENDING
+
+    def test_a_name_with_no_such_address_is_still_refused_when_it_is_this_host(self, monkeypatch):
+        # The not-self answer covers only the DNS layer: this host's own name
+        # is refused by the own-name set before DNS is asked, so it stays
+        # refused even when the resolver has no record for it.
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", True)
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"myhost.example.com"}))
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_STAMP", {})
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+
+        def _no_such_name(host, *args, **kwargs):
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+
+        monkeypatch.setattr(security.socket, "getaddrinfo", _no_such_name)
+        monkeypatch.setattr(_ssh_config_route, "route_is_not_self", lambda _h: True)
+        for host in ("proxy-only.example", "myhost.example.com"):
+            _argv_floor._resolve_host_verdict_into_cache(host)
+        assert _denied_by("ssh proxy-only.example id") is None
+        assert _denied_by("ssh myhost.example.com id") == self._RULE
+
+    def test_route_and_dns_allows_have_outer_config_parity(self, monkeypatch, manual_clock):
+        host = "proxy-only.example"
+        manual_clock.install(monkeypatch, _argv_floor_hosts)
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_STAMP", {host: manual_clock.monotonic()})
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(_argv_floor_hosts, "_hosts_file_verdict", lambda _h: False)
+        answers = []
+        for cached in (False, "route"):
+            monkeypatch.setitem(_argv_floor._HOST_VERDICT_CACHE, host, cached)
+            answers.append(_denied_by(f"ssh -F f {host}"))
+        assert answers == [None, None]
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "ssh user@devbox id",
+            "ssh -p 2222 devbox id",
+            "scp -P 2222 f devbox:",
+            "rsync -avP x devbox:",
+        ],
+    )
+    def test_route_cleared_dotless_alias_allows_normal_options(
+        self, monkeypatch, manual_clock, command
+    ):
+        manual_clock.install(monkeypatch, _argv_floor_hosts)
+        monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", frozenset({"own-host"}))
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {"devbox": "route"})
+        monkeypatch.setattr(
+            _argv_floor, "_HOST_VERDICT_STAMP", {"devbox": manual_clock.monotonic()}
+        )
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        monkeypatch.setattr(
+            _argv_floor_hosts,
+            "_hosts_file_verdict",
+            lambda host: None if host == "devbox" else False,
+        )
+        assert _denied_by(command) is None
+
+    @pytest.mark.parametrize("failure", ["self-route", "dns-failure"])
+    def test_failed_route_revalidation_removes_the_old_allow(
+        self, monkeypatch, manual_clock, failure
+    ):
+        host = "proxy-only.example"
+        manual_clock.install(monkeypatch, _argv_floor_hosts)
+        monkeypatch.setattr(_argv_floor, "_resolved_host_verdict", _REAL_RESOLVED_HOST_VERDICT)
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_CACHE", {})
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_STAMP", {})
+        monkeypatch.setattr(_argv_floor, "_HOST_VERDICT_PENDING", set())
+        code = socket.EAI_NONAME
+
+        def no_dns(*_a, **_k):
+            raise socket.gaierror(code, "resolver error")
+
+        monkeypatch.setattr(security.socket, "getaddrinfo", no_dns)
+        monkeypatch.setattr(_ssh_config_route, "route_is_not_self", lambda _h: True)
+        _argv_floor._resolve_host_verdict_into_cache(host)
+        assert _argv_floor._HOST_VERDICT_CACHE[host] == "route"
+        assert _denied_by(f"ssh {host} cmd") is None
+        started = []
+
+        class RecordingThread:
+            def __init__(self, *args, **kwargs):
+                if kwargs.get("name") == "kirocrew-host-verdict":
+                    started.append(kwargs["args"][0])
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return False
+
+        monkeypatch.setattr(_argv_floor_hosts.threading, "Thread", RecordingThread)
+        monkeypatch.setattr(_ssh_config_route, "route_is_not_self", lambda _h: False)
+        if failure == "dns-failure":
+            code = socket.EAI_AGAIN
+        manual_clock.advance(_argv_floor._HOST_VERDICT_ALLOW_TTL + 1)
+        _argv_floor._resolved_host_verdict(host)
+        assert started == [host]
+        _argv_floor._resolve_host_verdict_into_cache(host)
+        assert host not in _argv_floor._HOST_VERDICT_CACHE
+        assert host not in _argv_floor._HOST_VERDICT_STAMP
+        assert _denied_by(f"ssh {host} cmd") == self._RULE
 
     def test_resolver_thread_start_failure_answers_from_seed(self, monkeypatch):
         # ``Thread.start`` can fail under resource exhaustion; the

@@ -69,7 +69,23 @@ from .shell_normalizer import (
 # resolves is classified by its addresses; a DOTTED name whose lookup FAILS
 # is refused per call, deliberately -- answering a failed lookup open would
 # let whoever controls resolution mint an allow by suppressing it, the
-# same class the verdict cache refuses to latch.
+# same class the verdict cache refuses to latch.  The one definite failure,
+# "no such name", is not an allow on its own either: it counts as not this
+# host only for a HostName rewrite without a proxy, one ProxyJump without a
+# ProxyCommand, or exactly ``ssh [-q] -W %h:%p host`` (either option order).
+# The literal hop must pass the live IP-host guard for every DNS address;
+# a matching Host or Match block that sets a destination key (HostName,
+# ProxyJump, ProxyCommand, Canonical*) refuses it. Proxy forms require a
+# literal final HostName and check every locally resolved address, or its IP
+# literal, without checking its Host block. A literal final name with no
+# local DNS answer is left for the proxy to resolve. Other proxy commands,
+# flags, multi-hop routes and unresolved hop destinations stay refused.
+# The proof runs inside the agent's sandbox on sandbox-read config bytes;
+# unreadable Includes, Includes inside blocks, unsupported Match criteria,
+# tier off and a missing backend keep refusing. A route-cleared name has
+# the same standing as a DNS-cleared name: outer -F/-S/rsync -e routing
+# remains the documented network-fence residual. Failed revalidation drops
+# the route-only allow.
 #
 # The strictly larger residual is OUT OF GATE SCOPE by the module's own
 # doctrine (a script body is never a gate subject): interpreter/script-file

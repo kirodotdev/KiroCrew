@@ -827,7 +827,16 @@ def _url_payload_command(n: int) -> str:
 #: ``$NAME`` / ``${NAME}`` references with plain string code instead of regex
 #: (``_is_assignment_prefix``, ``_lone_assignment``, a one-pass ``_substitute``).
 #: Raised by 8, from 36,245, for ``_substitute``'s cap on how much text resolving adds.
-_PACKAGE_LINE_BUDGET = 36_253
+#: Raised by 541, from 36,253, to 36,794, for ``ssh_config_route``: the proof that a
+#: host name with no DNS answer routes elsewhere. It reads the ssh config inside the
+#: sandbox, runs ``ssh -G`` with the config on stdin, and accepts the three route forms
+#: (a ``HostName`` rewrite, one ``ProxyJump``, ``ProxyCommand ssh -W``), refusing
+#: ambiguous config characters while accepting LF and CRLF line endings, and refusing a
+#: final name or hop that is a known own name, with Host patterns matched case-sensitively,
+#: and refusing a final name whose DNS lookup fails for any reason but "no such name",
+#: or a config where a case or trailing-dot spelling of the name could route elsewhere.
+#: Re-measured.
+_PACKAGE_LINE_BUDGET = 36_794
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
