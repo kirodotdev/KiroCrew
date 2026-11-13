@@ -8041,8 +8041,10 @@ declared spelling joins the literal ancestor guards (`readonly_ancestor_guards`)
 parent can be renamed from under its deny; only the entries are guarded, not their
 contents. The spawn that lifts a leaf (the app's own backend, below) leaves that
 spelling's parents unguarded, so the backend can create, rotate and remove the folders it
-keeps its credential in. A namespace mask is a mount, which moves with a renamed parent,
-so that plan gains no guard. No seal or keystone disposition reads a declaration, the
+keeps its credential in. The namespace plan pins the same parents (`parent_pins`), each one
+the agent could rename: a namespace mask is a mount, which moves with a renamed parent inside
+that spawn, but on disk the leaf then sits at a name no mask covers, so the next spawn would
+read it there. No seal or keystone disposition reads a declaration, the
 tool gate reads the shipped built-ins' only, as more refusals (`declared_crew_leaves(installed=False)`, in
 `security._CREW_SECRET_LEAVES`), and the one carve-out that does (the app's own backend,
 below) never lifts a core leaf, so a manifest can only add masks. A built-in's declared
