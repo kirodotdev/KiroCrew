@@ -1516,7 +1516,10 @@ spawn holds the copy as its prepared view and makes the same launch-steering dec
 (`inherits_default_resources`) every Kiro launch makes. An app agent may not take the
 `kirocrew-app-launch-*` prefix; a checkout spec of a copy's name is not refused, because
 kiro-cli never reads it for the copy. A foreign file at the path, a second user-level spec declaring the name,
-or an unregistered agent refuses the turn. A warm-pool process is never claimed for it
+an unregistered agent, or a data home that does not own the shared agents directory
+(`write_failed`: the copy is written through the guarded `_atomic_json_write`; pinned
+by `test_a_launch_copy_is_refused_in_a_foreign_shared_dir`) refuses the turn. A warm-pool
+process is never claimed for it
 (`bypass_app_launch`). After the claim, a Kiro provider that did not ask kiro-cli for
 exactly that copy is refused and reset. Rosters (`list_agents`,
 `is_internal_agent_spec`) leave the copies out, and the copy spawns under its own
