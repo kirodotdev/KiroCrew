@@ -1,9 +1,9 @@
 ---
 title: "MCP gateway: routed servers and the session working directory"
-status: draft
+status: in-progress
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-12
-last-audited: 2026-11-12
+last-audited: 2026-11-13
 audited-at: b2aac45f3a
 doc-pr: null
 implementation-prs: [36277]
@@ -19,9 +19,11 @@ repository owner on 2026-11-12 in the conductor chat ("the key is correctness")
 and is built in [#36277](https://github.com/kirodotdev/KiroCrew/pull/36277)
 (branch `fix/mcp-share-by-cwd`); section 4 describes F as that PR builds it, and
 its spec section "The working-folder question gates routing" in
-`docs/system-specs/modules/mcp-shareability.md` is the authority. Proposal C (section 5)
-is a draft: acceptance is requested from a maintainer, and the status flips when
-one records it here. This document changes no code. Every code reference below
+`docs/system-specs/modules/mcp-shareability.md` is the authority. The owner
+confirmed F on 2026-11-13 by merging this document and asking for the fix to ship,
+so the status is `in-progress`: F is decided and its implementation PR is open.
+Proposal C (section 5) is still a proposal, not decided: acceptance is requested
+from a maintainer, and section 5 records it when one does. This document changes no code. Every code reference below
 names a symbol as it stands on main at `b2aac45f3a`.
 
 ## 1. Problem
