@@ -334,9 +334,11 @@ does not repaint the text it replaced. A suffix row no window row matches (anoth
 writer's append) is served from disk where it sits.
 
 A poller of the newest page reads it incrementally (`dashboard/slot_detail_delta.py`;
-its one caller is the app-sdk `ChatEmbed`, which issues the read on a poll and,
+its callers are the app-sdk `ChatEmbed`, which issues the read on a poll and,
 when its host passes a push channel, on each change signal for the slot -- see
-app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged). A paged read passing `cursor=1` also
+app-kit-platform.md, *ChatEmbed live updates*; the read itself is unchanged -- and
+the dashboard store's newest-page reads, `api.chatSlotDetail` in
+`website/src/api/client/chat.ts`, on every refresh, switch and pane hydrate). A paged read passing `cursor=1` also
 gets `cursor: {from, since, digest}`: the page's first and last row indices and a
 digest over the rows in `[from, since)`, so the last row (the folded streaming
 row) is never inside it. The digest is built from each row's render-memo identity
@@ -362,7 +364,11 @@ malformed triple is `400 invalid_query_params`. The read reaches back to the
 span's `from` so it can be checked, but only rows from the older of `from` and the
 new window start are rendered (`render_from`): about one page plus the rows that
 arrived since the last poll, the same render work as a full page. What shrinks is
-the payload and the reader's merge.
+the payload and the reader's merge. A cursor read that also passes `page_bytes=1`
+is cut by the plain page's byte budget, oldest rows first, with `next_before` and
+`cursor.from` naming the first row sent; a window starting older than the held
+`from` is answered whole. Only the dashboard store sends it, because it pages older
+with `before=next_before`; the embed does not page back, so its window is not cut.
 When a chain member after the first has rotated-archive segments, the archived
 block sits between rows the page serves, so slot detail serves that page through
 `read_messages_chained_full` rather than leaving the block unreachable. A
