@@ -57,6 +57,7 @@ import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { usePinnedScrollOrigin } from '../hooks/usePinnedScrollOrigin'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
@@ -155,6 +156,8 @@ export default function ChatPane({
   // keeps the element ref for the pinned-prompt hook, a handle for the jump
   // pill, and the rendered at-bottom state that shows it.
   const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const paneRootRef = useRef<HTMLDivElement | null>(null)
+  usePinnedScrollOrigin(paneRootRef)
   const listRef = useRef<VirtualTranscriptHandle | null>(null)
   const [isAtBottom, setIsAtBottom] = useState(true)
   const scrollToBottom = useCallback(() => { listRef.current?.scrollToBottom() }, [])
@@ -763,6 +766,7 @@ export default function ChatPane({
   return (
     <SlotProvider slotId={slotKey}>
       <div
+        ref={paneRootRef}
         onMouseDownCapture={onFocus}
         /* Focus capture keeps the grid's focused-pane state true under
            KEYBOARD navigation: tabbing into a pane (or into its portaled
