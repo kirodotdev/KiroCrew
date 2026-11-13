@@ -200,15 +200,20 @@ async def list_crew_endpoints(
 
 
 async def create_crew_access_token(
-    cps_url: str, bearer: str, endpoint_id: str, *, token_type: str = ""
+    cps_url: str, bearer: str, endpoint_id: str, *, token_type: str = "", profile_arn: str = ""
 ) -> CrewAccessToken:
     """A fresh access token for the Crew *endpoint_id*.
 
     *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty.
+    *profile_arn* is sent as ``profileArn`` when set, which CPS needs to open a
+    personal Crew. Empty sends the endpoint alone, as for a team Crew.
     """
     if not isinstance(endpoint_id, str) or not ENDPOINT_ID_RE.match(endpoint_id):
         raise CpsRefused(INVALID_REQUEST, "not a Crew endpoint ID")
-    answer = await _call(cps_url, bearer, MINT_TARGET, {"endpointId": endpoint_id}, token_type)
+    body: dict[str, Any] = {"endpointId": endpoint_id}
+    if profile_arn:
+        body["profileArn"] = profile_arn
+    answer = await _call(cps_url, bearer, MINT_TARGET, body, token_type)
     payload = answer.payload if isinstance(answer.payload, dict) else {}
     token = payload.get("accessToken")
     expires = parse_time(payload.get("expiresAt"))
