@@ -65,17 +65,24 @@ def _reject_pending_approvals(slot: _ChatSlot) -> None:
             # resolved value stays a plain "rejected" so no caller of this future
             # has to learn a new one.
             slot._approval_stopped.add(aid)
-            fut.set_result("rejected")
-            if _mark_permission_resolved(slot.messages, aid, "rejected"):
-                slot._dirty = True
-            sel().log_tool_invocation(
-                session_key=effective_session_key(slot),
-                agent=getattr(slot, "agent", "") or "kirocrew",
-                source="dashboard",
-                tool_name=f"approval_reject:{aid}",
-                tool_kind="permission",
-                outcome="rejected_on_stop",
-            )
+            _settle_approval_rejected(slot, aid, fut, "rejected_on_stop")
+
+
+def _settle_approval_rejected(
+    slot: _ChatSlot, aid: str, fut: asyncio.Future[str], outcome: str
+) -> None:
+    """Reject the pending approval *aid*, mark its card resolved and audit *outcome*."""
+    fut.set_result("rejected")
+    if _mark_permission_resolved(slot.messages, aid, "rejected"):
+        slot._dirty = True
+    sel().log_tool_invocation(
+        session_key=effective_session_key(slot),
+        agent=getattr(slot, "agent", "") or "kirocrew",
+        source="dashboard",
+        tool_name=f"approval_reject:{aid}",
+        tool_kind="permission",
+        outcome=outcome,
+    )
 
 
 def _resolve_stop_event(slot: _ChatSlot, outcome: str) -> None:

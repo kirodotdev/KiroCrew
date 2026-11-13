@@ -398,6 +398,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _rearm_stop_event,
     _reject_pending_approvals,
     _resolve_stop_event,
+    _settle_approval_rejected,
     _settle_discarded_stage_deliveries,
     _start_chosen_restored_card,
     _unchoose_restored_card,

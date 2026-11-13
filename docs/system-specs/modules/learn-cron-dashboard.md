@@ -3565,6 +3565,32 @@ payload, and scan behavior. Pinned by the sendId tests in
 `test_chat_steer.py`, `chatThinkingSteerBoundary.test.ts`, and
 `ChatSliceCoverageSecondPass.test.tsx`.
 
+**A steer typed over an open approval card answers it with Reject.** While
+`session/request_permission` is unanswered the runner is suspended on the
+approval future, and the backend folds a steer in only at the next inference
+boundary, which that pending request never reaches: left alone, the steer
+waits behind the card until it is clicked, Stop is pressed, or the approval
+window expires. So when `steer_into_running_turn` persists a steer that is
+still held (`STEER_STATE_WRITTEN`) and was typed by the owner into the composer
+(`owner_origin`, shown as typed), it calls
+`steer_supersedes_approval.reject_approvals_superseded_by_steer`. A permission
+card's future is resolved with `"rejected"`: it keeps a rejection reason for
+backends that forward one, marks the permission row resolved, broadcasts
+`approval_resolved` so the card clears live, and writes the SEL outcome
+`rejected_by_steer`. An MCP elicitation card (its row's role is
+`elicitation`) is resolved with `cancel` instead, MCP's "dismissed without a
+choice" -- the person moved on rather than refusing the server, the answer a
+Stop also sends -- and its own runner stamps the row, broadcasts
+`elicitation_resolved` and writes the SEL record. A deny-override card
+refuses, as `override_decision` reads every answer but the owner's override
+click. The call runs after the steer RPC returns, so
+the backend already holds the steer when the rejection wakes the runner. A
+peer's, an app's, a channel's or an automation's steer leaves the card open,
+and so does a Shared Crew teammate's, who cannot decide approvals on the card
+either. A steer already consumed never settles a card opened after it, and a
+steer taken back after it was written leaves its card settled. Pinned
+by `test_steer_supersedes_approval.py`.
+
 **Queued and steered text is shown by origin.** The session's own human's text
 reaches the pending queue and steer egresses as typed -- the `queue_push`,
 `queue_edit` and `queue_cancel` frames, the `queue[]` view, the persisted steer
