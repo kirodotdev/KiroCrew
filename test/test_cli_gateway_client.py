@@ -15,7 +15,7 @@ import socket
 import sys
 import urllib.error
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from cli_helpers import (  # noqa: F401 -- the autouse fixture registers by import
@@ -128,10 +128,12 @@ class TestLogout:
     ):
         """The gateway's 500 reason is printed, not only its status."""
 
-        def _cannot_persist():
+        async def _cannot_persist():
             raise OSError("disk full")
 
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", _cannot_persist)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.token_auth.revoke_all_sessions_async", _cannot_persist
+        )
         code = await self._logout_against_the_real_route(
             monkeypatch, server_secret="the-secret", cli_secret="the-secret"
         )
@@ -144,8 +146,8 @@ class TestLogout:
     @pytest.mark.asyncio
     async def test_a_stale_secret_is_named(self, monkeypatch, capsys):
         """A refused secret prints the gateway's reason after the status."""
-        revoke = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
         code = await self._logout_against_the_real_route(
             monkeypatch, server_secret="the-real-one", cli_secret="a-stale-one"
         )

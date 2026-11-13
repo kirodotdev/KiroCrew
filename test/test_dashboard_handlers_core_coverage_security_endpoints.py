@@ -659,14 +659,14 @@ class TestLogout:
             "kiro_crew.dashboard.handlers.core.check_peer_is_self",
             lambda _s: PeerCredResult.MATCH,
         )
-        revoke = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
         resp = await core_mod.api_logout(
             _req(remote="", app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
         )
         assert resp.status == 200
         assert json.loads(resp.body) == {"ok": True}
-        revoke.assert_called_once()
+        revoke.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_unix_peer_mismatch_is_refused(self, monkeypatch, fake_sel) -> None:
@@ -695,10 +695,10 @@ class TestLogout:
         """Fail-closed: an unpersisted revocation must never report success."""
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
 
-        def _boom():
+        async def _boom():
             raise OSError("read-only trust dir")
 
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", _boom)
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", _boom)
         resp = await core_mod.api_logout(
             _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
         )
@@ -710,14 +710,14 @@ class TestLogout:
     @pytest.mark.asyncio
     async def test_successful_revocation_is_audited(self, monkeypatch, fake_sel) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
-        revoke = MagicMock()
-        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions", revoke)
+        revoke = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.token_auth.revoke_all_sessions_async", revoke)
         resp = await core_mod.api_logout(
             _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
         )
         assert resp.status == 200
         assert json.loads(resp.body) == {"ok": True}
-        revoke.assert_called_once()
+        revoke.assert_awaited_once()
         assert fake_sel.log_api_access.call_args.kwargs["outcome"] == "success"
 
 

@@ -1043,7 +1043,7 @@ async def api_logout(request: web.Request) -> web.Response:
     unauthorized revocation.
     """
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
-    from kiro_crew.dashboard.token_auth import revoke_all_sessions  # noqa: F811
+    from kiro_crew.dashboard.token_auth import revoke_all_sessions_async  # noqa: F811
 
     # Reachable over loopback TCP or the dashboard's AF_UNIX socket. A unix peer
     # has an EMPTY request.remote, so the loopback test alone would 403 the
@@ -1072,13 +1072,14 @@ async def api_logout(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "invalid secret"}, status=403)
 
-    # Fail-closed: bump_revocation_gen raises when the persisted counter
-    # cannot be read (bumping from an assumed base could persist a LOWER
+    # Fail-closed: the counter bump raises when neither the live nor the
+    # persisted counter can be read (bumping from an assumed base could persist a LOWER
     # counter, resurrecting revoked sessions after restart) or when the write
     # fails (the counter is left unchanged, so the revocation did not take
-    # effect). Report the failure instead of a false success.
+    # effect). Report the failure instead of a false success. Only the counter
+    # write runs on a worker thread, so a slow disk delays this request, not the loop.
     try:
-        revoke_all_sessions()
+        await revoke_all_sessions_async()
     except OSError:
         logger.warning("logout failed: could not persist session revocation", exc_info=True)
         _sel().log_api_access(

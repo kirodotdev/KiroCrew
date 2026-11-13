@@ -1526,6 +1526,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         replace_legacy_app_secret,
         revoke_access_cookie,
         revoke_all_sessions,
+        revoke_all_sessions_async,
         token_embed_parent_port,
         token_owner_minted_unverified,
         try_consume,
@@ -1547,6 +1548,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.dashboard.origin import (  # noqa: F401
         request_is_unix_socket,
+    )
+    from kiro_crew.dashboard.revocation_gen import (  # noqa: F401
+        persist_next_revocation_gen,
+        publish_revocation_gen,
     )
     from kiro_crew.executors import (  # noqa: F401
         subprocess_executor,
