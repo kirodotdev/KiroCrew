@@ -5,7 +5,7 @@
 // document.body, which these tests pin against.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import DetailView from '../pages/knowledge/DetailView'
@@ -14,6 +14,7 @@ import * as api from '../pages/knowledge/api'
 import type { KnowledgeItem } from '../pages/knowledge/types'
 import type { Source } from '../pages/knowledge/types'
 import { i18nT } from '../i18n/t'
+import { confirmAction } from './confirmAction'
 
 vi.mock('../pages/knowledge/api', () => ({ knowledgeApi: vi.fn() }))
 vi.mock('../components/MarkdownRenderer', () => ({
@@ -99,28 +100,28 @@ describe('knowledge DetailView busy buttons keep focus', () => {
   })
 
   it('the Delete button stays focused while the request is in flight', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     openGate()
     renderDetail()
     const del = await screen.findByRole('button', { name: DELETE })
     act(() => { del.focus() })
     fireEvent.click(del)
+    await confirmAction(DELETE)
     await waitFor(() => expect(del).toHaveAttribute('aria-disabled', 'true'))
-    expect(del).toHaveFocus()
+    await waitFor(() => expect(del).toHaveFocus())
     expect(del).not.toBeDisabled()
     await act(async () => { gate!.resolve({ ok: true }); await gate!.promise })
-    confirmSpy.mockRestore()
   })
 
   it('a cancelled Delete confirm never starts the request', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDetail()
     const del = await screen.findByRole('button', { name: DELETE })
     fireEvent.click(del)
+    const question = await screen.findByRole('dialog')
+    fireEvent.click(within(question).getByRole('button', { name: i18nT('components.confirmDialog.cancel') }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     const deletes = vi.mocked(api.knowledgeApi).mock.calls.filter(([, o]) => (o as RequestInit | undefined)?.method === 'DELETE')
     expect(deletes).toHaveLength(0)
     expect(del).not.toHaveAttribute('aria-disabled')
-    confirmSpy.mockRestore()
   })
 })
 

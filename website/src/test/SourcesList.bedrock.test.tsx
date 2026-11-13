@@ -9,7 +9,8 @@
  * credential-shaped), and the field reset after a successful add.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ComponentProps } from 'react'
 import SourcesList from '../pages/knowledge/SourcesList'
@@ -436,26 +437,22 @@ describe('SourcesList bedrock_kb branch', () => {
       if (path === '/sources/kb1' && method === 'DELETE') { otherSource = false; return { ok: true } }
       return { ok: true }
     }
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderList()
-      await openBedrockForm()
-      fireEvent.change(screen.getByLabelText('Knowledge Base IDs'), { target: { value: 'KBTEST1234' } })
-      fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-east-1' } })
-      const submit = () => screen.getByText('Add Knowledge Base') as HTMLButtonElement
-      await waitFor(() => expect(submit().disabled).toBe(false))
-      fireEvent.click(submit())
-      await screen.findByText(/remove that source first/)
-      expect(submit().disabled).toBe(true)
+    renderList()
+    await openBedrockForm()
+    fireEvent.change(screen.getByLabelText('Knowledge Base IDs'), { target: { value: 'KBTEST1234' } })
+    fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-east-1' } })
+    const submit = () => screen.getByText('Add Knowledge Base') as HTMLButtonElement
+    await waitFor(() => expect(submit().disabled).toBe(false))
+    fireEvent.click(submit())
+    await screen.findByText(/remove that source first/)
+    expect(submit().disabled).toBe(true)
 
-      // Same target, but the source it conflicted with is gone: the stale
-      // refusal no longer holds Add off, and the backend rechecks on retry.
-      fireEvent.click(screen.getByLabelText('Remove source'))
-      await waitFor(() => expect(submit().disabled).toBe(false))
-      expect(screen.queryByText(/remove that source first/)).toBeNull()
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    // Same target, but the conflicting source is gone: the stale refusal
+    // must not hold Add off, and the backend rechecks on retry.
+    fireEvent.click(screen.getByLabelText('Remove source'))
+    await confirmAction('Remove source')
+    await waitFor(() => expect(submit().disabled).toBe(false))
+    expect(screen.queryByText(/remove that source first/)).toBeNull()
   })
 
   it('confirms a Live row removal without promising to delete ingested items', async () => {
@@ -468,17 +465,19 @@ describe('SourcesList bedrock_kb branch', () => {
       }
       return { ok: true }
     }
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     renderList()
     const removes = await screen.findAllByLabelText('Remove source')
     expect(removes).toHaveLength(2)
     fireEvent.click(removes[0])
+    const liveDialog = await screen.findByRole('dialog', { name: 'Remove source' })
+    expect(within(liveDialog).getByText('Remove this knowledge base source? Nothing is stored locally; the knowledge base itself is not touched.', { selector: 'p' })).toBeInTheDocument()
+    await confirmAction('Cancel')
     fireEvent.click(removes[1])
-    // A Live KB ingests nothing, so its confirm must not claim otherwise;
-    // the folder row keeps the shared wording.
-    expect(confirmSpy).toHaveBeenNthCalledWith(1,
-      'Remove this knowledge base source? Nothing is stored locally; the knowledge base itself is not touched.')
-    expect(confirmSpy).toHaveBeenNthCalledWith(2, 'Remove this source and all its ingested items?')
+    const folderDialog = await screen.findByRole('dialog', { name: 'Remove source' })
+    expect(within(folderDialog).getByText('Remove this source and all its ingested items?', { selector: 'p' })).toBeInTheDocument()
+    await confirmAction('Cancel')
+    expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
   })
 
@@ -497,33 +496,30 @@ describe('SourcesList bedrock_kb branch', () => {
       }
       return { ok: true }
     }
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    try {
-      renderList()
-      await screen.findByText('Team KB')
+    renderList()
+    await screen.findByText('Team KB')
 
-      fireEvent.click(screen.getByLabelText('Remove source'))
+    fireEvent.click(screen.getByLabelText('Remove source'))
+    await confirmAction('Remove source')
 
-      const notice = await screen.findByTestId('source-delete-error')
-      expect(screen.getByText('Team KB')).toBeInTheDocument()
-      expect(notice).toHaveTextContent('Unreadable attestation store')
-      expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    const notice = await screen.findByTestId('source-delete-error')
+    expect(screen.getByText('Team KB')).toBeInTheDocument()
+    expect(notice).toHaveTextContent('Unreadable attestation store')
+    expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
 
-      await openBedrockForm()
-      fireEvent.change(screen.getByLabelText('Knowledge Base IDs'), {
-        target: { value: 'UNSAVEDKB123' },
-      })
-      // Navigating to chat here would discard the add form's unsaved KB id.
-      expect(screen.getByTestId('source-delete-error')).toHaveTextContent('Unreadable attestation store')
-      expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+    await openBedrockForm()
+    fireEvent.change(screen.getByLabelText('Knowledge Base IDs'), {
+      target: { value: 'UNSAVEDKB123' },
+    })
+    // Navigating to chat here would discard the add form's unsaved KB id.
+    expect(screen.getByTestId('source-delete-error')).toHaveTextContent('Unreadable attestation store')
+    expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
 
-      fireEvent.click(screen.getByText('Cancel'))
-      failDelete = false
-      fireEvent.click(screen.getByLabelText('Remove source'))
-      await waitFor(() => expect(screen.queryByTestId('source-delete-error')).not.toBeInTheDocument())
-    } finally {
-      confirmSpy.mockRestore()
-    }
+    fireEvent.click(screen.getByText('Cancel'))
+    failDelete = false
+    fireEvent.click(screen.getByLabelText('Remove source'))
+    await confirmAction('Remove source')
+    await waitFor(() => expect(screen.queryByTestId('source-delete-error')).not.toBeInTheDocument())
   })
 
   it('keeps the file and folder branches reachable beside the new type', async () => {

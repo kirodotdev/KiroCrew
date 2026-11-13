@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { i18nT } from '../i18n/t'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
@@ -144,6 +145,16 @@ describe('Knowledge List View — source-first rows', () => {
       // statusFilter defaults to 'active'
       expect(String(call![0])).toContain('status=active')
     })
+  })
+
+  it('states the selected count in its bulk-delete confirmation', async () => {
+    render(<KnowledgePage />, { wrapper: Wrapper })
+    await userEvent.click(await screen.findByText('Artifacts'))
+    await userEvent.click(await screen.findByLabelText(/^Select s3 item A$/))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Delete' })
+    expect(within(dialog).getByText(i18nT('pages.knowledge.index.delete_items_permanently', { count: 1 }), { selector: 'p' })).toBeInTheDocument()
   })
 
   it('copies content of items selected inside a group', async () => {
