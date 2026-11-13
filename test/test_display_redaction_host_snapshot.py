@@ -201,3 +201,24 @@ def test_the_default_path_still_reads_live(monkeypatch: pytest.MonkeyPatch) -> N
     with exfil.scoped_exempt_hosts(ALLOWED):
         cleaned, _, _ = exfil.redact_exfiltration_urls_with_records(TEXT)
     assert cleaned == TEXT
+
+
+def test_a_pako_link_is_judged_under_no_exempt_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Mermaid pako link's decoded views are judged with no host exempt.
+
+    The pako verdict's nested composed scan is handed the empty set, so a render still
+    reads the host set once, for the key, and a diagram URL that only an exemption
+    keeps voids the link under every set. The cache cannot file a verdict judged
+    under one read under another read's key.
+    """
+    from test_mermaid_pako_link_redaction import _key_shaped_url
+
+    # Key-shaped, so pass 3 masks the link unless the pako verdict keeps it.
+    pako = "see " + _key_shaped_url(f"graph LR; A -- {TEXT[4:]} --> B") + " here"
+    masked = display_battery(pako, exempt_hosts=frozenset())
+    assert masked != pako, "the fixture must be masked when the verdict refuses it"
+
+    source = _install(monkeypatch, _HostSource(first=ALLOWED, then=ALLOWED))
+    served = chat_utils._redact_for_display(pako)
+    assert len(source.seen) == 1, "the pako verdict read the host set a second time"
+    assert served == masked

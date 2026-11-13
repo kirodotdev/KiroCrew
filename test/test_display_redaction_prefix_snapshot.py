@@ -5,7 +5,8 @@ exempt-host set and the pass-4 token-parameter prefix set
 (``CredentialPolicy.token_param_exempt_url_prefixes``). The prefix set can move
 between two reads (a companion loads, a policy tightens, a read fails and
 degrades to the empty set), so the key and the battery, including the nested
-scan of a PlantUML diagram's source, must share ONE read.
+scans of a PlantUML diagram's source and a Mermaid pako link's views, must share
+ONE read.
 
 NEUTRAL PLACEHOLDER PREFIX ONLY: a companion's real approval host never appears
 in the public repo.
@@ -16,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from test_mermaid_pako_link_redaction import _key_shaped_url
 from test_plantuml_link_redaction import _encode
 
 import kiro_crew.dashboard.chat_utils as chat_utils
@@ -32,6 +34,8 @@ DIAGRAM = (
     + _encode(f"@startuml\nUser -> Approver: {PREFIX}?token={VALUE}\n@enduml")
     + " here"
 )
+# Key-shaped, so pass 3 masks the link unless its verdict keeps it.
+PAKO = "see " + _key_shaped_url(f"graph LR; User -- {PREFIX}?token={VALUE} --> Approver") + " here"
 ALLOWED: tuple[str, ...] = (PREFIX,)
 NONE: tuple[str, ...] = ()
 
@@ -54,7 +58,7 @@ def _cold_cache() -> Iterator[None]:
     chat_utils._clear_display_redaction_cache()
 
 
-@pytest.mark.parametrize("text", [LINK, DIAGRAM], ids=["link", "diagram"])
+@pytest.mark.parametrize("text", [LINK, DIAGRAM, PAKO], ids=["link", "diagram", "pako"])
 @pytest.mark.parametrize(
     ("first", "then"), [(NONE, ALLOWED), (ALLOWED, NONE)], ids=["tightened", "loosened"]
 )
