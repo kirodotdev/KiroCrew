@@ -208,6 +208,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'ReplyThreadsRow.tsx': DEVELOPER_PREVIEWS,
   // The default agent's opt-in MCP sets, mounted below the preview groups.
   'DefaultMcpGrantsSection.tsx': DEVELOPER_PREVIEWS,
+  // The Session control row DeveloperPanel mounts after Agent MCP servers,
+  // so a SettingRef to `agent.session_control` deep-links to it.
+  'SessionControlSection.tsx': DEVELOPER_PREVIEWS,
   // The Decisions (Jev) card, which FeaturePreviewsSection mounts. Its own file
   // because it is a list and a detail rather than one row, and mapped here for the
   // reason the section above is: a control on a Settings pane that search cannot
