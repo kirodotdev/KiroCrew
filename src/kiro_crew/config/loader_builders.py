@@ -895,6 +895,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             TOOL_APPROVAL_TIMEOUT_MIN,
             TOOL_APPROVAL_TIMEOUT_MAX,
         ),
+        deny_override=section.read("deny_override", _safe_bool),
         # Absent means ON. The grant that decides who may reach a peer
         # session is the AGENT CONFIG, not this switch: the tools come
         # from the `kirocrew-dashboard` MCP server, so an agent that does

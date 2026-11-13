@@ -107,6 +107,7 @@
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
+        "deny_override": true,
         "session_control": true,
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
@@ -1735,6 +1736,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 600
+    },
+    {
+      "path": "agent.deny_override",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Deny Rule Override Card",
+      "help": "When a deny rule refuses the agent's shell command in a dashboard session you drive, show a card that lets you allow it once or for the session. Turn this off to refuse every such command at once, with no card and no wait for an answer; session overrides granted earlier stop applying while it is off and apply again if it is turned back on, until that session ends. Read on each request, so no restart is needed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "agent.session_control",

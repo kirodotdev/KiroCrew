@@ -7,7 +7,7 @@ last-audited: 2026-11-01
 audited-at: 69a0d28622
 doc-pr: null
 implementation-prs: []
-tracking-issues: [26984]
+tracking-issues: [26984, 33406]
 supersedes: []
 superseded-by: []
 ---
@@ -153,9 +153,22 @@ only when all of these hold:
   foreign-session child, or a native sub-agent sharing the session id: the
   transports mark its calls `native_child_call`, and the dashboard marks any call a
   sub-agent activity event named), and the transport delivered its bytes unredacted;
-- the transport's `approve_tool` can carry the keys to its floor.
+- the transport's `approve_tool` can carry the keys to its floor;
+- the operator has not set `agent.deny_override` to `false`.
 
 Otherwise the refusal is today's, byte for byte.
+
+### Operator opt-out
+
+`agent.deny_override` (default `true`) is read on each request, so no restart is
+needed. With `false`, no `deny-rules` refusal is offered as a card: it is refused at
+once, as before the card, in every approval mode. Session overrides granted earlier
+stop applying; they stay on the slot and apply again if the setting is turned back
+on, until that session ends. A card already showing when the setting is turned off
+refuses whatever answer it gets. A present value that is not a boolean loads as
+`false`. A load that discarded the `agent` section or a whole config file also
+reads as `false`, because it carries the default in place of the operator's value;
+the loader keeps that mark until the gateway restarts. Requested in #33406.
 
 ### Backends
 
