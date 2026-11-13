@@ -415,6 +415,8 @@ class TestAGeneratedTurnIsNotCounted:
         with generated_turn():
             composed()  # the loop's own cycle, not counted
         composed()  # the human's first real turn is still the first one counted
+        with pytest.raises(TurnCeilingExceeded):
+            composed()  # and the ceiling still holds after it
 
     def test_only_the_first_gate_in_the_span_is_exempt(self) -> None:
         """The exemption is spent, not span-wide, and this is the whole point.

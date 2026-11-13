@@ -72,11 +72,13 @@ class TestSlotCreatePublishesActiveSet:
         sessions = MagicMock()
         sessions.get_slack_link.return_value = ("", "")
         st = _make_state(sessions)
-        st.get_or_create_slot(name="research-abc123")
+        first = st.get_or_create_slot(name="research-abc123")
         sessions.set_active_dashboard_slots.reset_mock()
 
-        st.get_or_create_slot(name="research-abc123")
+        again = st.get_or_create_slot(name="research-abc123")
 
+        assert again is first
+        assert list(st._slots.values()).count(first) == 1
         assert not sessions.set_active_dashboard_slots.called
 
     def test_slot_creation_survives_a_missing_session_manager(self):
