@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { readPaneDraft, writePaneDraft, takePaneDraft, mergePaneDraft, subscribePaneDraft, suggestPaneDraft, takePaneDraftSwap, PANE_DRAFTS_KEY, LEGACY_PANE_FILE_DRAFTS_KEY, PANE_DRAFTS_MAX_BYTES, __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
+import { readPaneDraft, writePaneDraft, takePaneDraft, mergePaneDraft, subscribePaneDraft, suggestPaneDraft, takePaneDraftSwap, appendPaneDraftReply, takePaneDraftReply, PANE_DRAFTS_KEY, LEGACY_PANE_FILE_DRAFTS_KEY, PANE_DRAFTS_MAX_BYTES, __resetPaneDraftsForTests } from '../utils/chatPaneDrafts'
 import { carryPastes, formatToken, mergeCarriedDraft, type PasteBlock } from '../utils/pasteTokens'
 
 /* The pane's parked drafts must survive the storage layer refusing a write:
@@ -303,5 +303,36 @@ describe('suggestPaneDraft', () => {
       { text: 'second prompt', swap: 'first prompt' },
     ])
     expect(takePaneDraftSwap('m')).toBeUndefined()
+  })
+})
+
+/* A dashboard page's replies to two cards both stay in the chat box: a second
+ * reply is added after the first rather than replacing it, as a suggested
+ * prompt would, and a reply already there is not added twice. */
+describe('appendPaneDraftReply', () => {
+  beforeEach(() => {
+    sessionStorage.clear()
+    __resetPaneDraftsForTests()
+  })
+
+  it('adds a second card\'s reply after the first in a parked composer', () => {
+    appendPaneDraftReply('m', '"Card A": Ship it')
+    appendPaneDraftReply('m', '"Card B": Wait')
+    expect(readPaneDraft('m').text).toBe('"Card A": Ship it\n\n"Card B": Wait')
+  })
+
+  it('does not add a reply the parked composer already holds', () => {
+    appendPaneDraftReply('m', '"Card A": Ship it')
+    appendPaneDraftReply('m', '"Card B": Wait')
+    appendPaneDraftReply('m', '"Card A": Ship it')
+    expect(readPaneDraft('m').text).toBe('"Card A": Ship it\n\n"Card B": Wait')
+  })
+
+  it('hands a live composer the reply to check, once', () => {
+    const arrivals: Array<{ text: string; reply: string | undefined }> = []
+    subscribePaneDraft('m', () => arrivals.push({ text: takePaneDraft('m').text, reply: takePaneDraftReply('m') }))
+    appendPaneDraftReply('m', '"Card A": Ship it')
+    expect(arrivals).toEqual([{ text: '"Card A": Ship it', reply: '"Card A": Ship it' }])
+    expect(takePaneDraftReply('m')).toBeUndefined()
   })
 })
