@@ -4009,6 +4009,15 @@ claimed after its servers started is named that way. The managed-tool-policy rea
 goes over the same capability when one is held: with the masked secret it would be
 refused, and that refusal reads as no exclusions, which would let a capability-backed
 call run a tool the operator excluded.
+A server that holds a pickup never asks its gateway for a relayed tool list
+(`mcp_listing_relay.fetch_listing`): it builds its own list, through this read. And
+the gateway builds a relayed list only on an install whose package tree the
+sandbox seals against a session's agent (`sandbox_tiers.install_root_targets_for`,
+the one classification): building it imports listing modules into the gateway,
+outside the sandbox, on a request a session can cause, so on an editable or
+from-source checkout, which stays writable, the gateway answers "build locally"
+before any listing code runs (mcp.md, "A list is relayed only on an install the
+sandbox seals").
 While it holds a capability, `mcp_core_parts.gateway._api_urlopen` sends every request
 to the agent socket through `unix_socket_urlopen` with `X-Ipc-Capability` and without
 `X-Internal-Secret`; it never falls back to TCP. No pickup, or one the gateway

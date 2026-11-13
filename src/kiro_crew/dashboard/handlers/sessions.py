@@ -235,6 +235,10 @@ if TYPE_CHECKING:
     from kiro_crew.llm_helpers import run_bg_oneliner  # noqa: F401
     from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS  # noqa: F401
     from kiro_crew.mcp_discovery import sync_discovered_servers  # noqa: F401
+    from kiro_crew.mcp_listing_gateway import session_listing_body  # noqa: F401
+    from kiro_crew.mcp_listing_relay import CODE_PARAM  # noqa: F401
+    from kiro_crew.mcp_listing_relay import LISTING_PARAM  # noqa: F401
+    from kiro_crew.mcp_listing_relay import PLACE_PARAM  # noqa: F401
     from kiro_crew.messaging.link import _in_namespace  # noqa: F401
     from kiro_crew.messaging.link import canonical_key  # noqa: F401
     from kiro_crew.platform import redact_log_via_context  # noqa: F401
