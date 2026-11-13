@@ -83,6 +83,8 @@ class _MimoCodeLaunchRig:
         self.loop_thread: int | None = None
         self.client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
         self.adapter = mimocode_mod.MimoCodeLaunch()
+        # Kept on the client before the plan, as ``_spawn`` keeps it.
+        self.client._process_adapter = self.adapter
         self._tmp_path = tmp_path
         real_verify = mimocode_mod._verify_mimocode_routing
         reclaim_of = {
@@ -328,7 +330,7 @@ def _reprojecting_rig(monkeypatch, tmp_path, readback: str, unhonoured: frozense
     rig.client._session_harness_deny_rules = ("docs_search",)
 
     def _resolve_session_mcp_servers():
-        rig.record("reproject", rig.client._mimocode_denies_in_force)
+        rig.record("reproject", rig.client._harness_read_back().denies_in_force)
         rig.client._session_mcp_unhonoured = unhonoured
         return [{"name": "kept"}]
 
@@ -345,7 +347,7 @@ def test_a_deny_the_read_back_finds_out_of_force_re_projects_the_session(
         rig.run()
     _name, _thread, (_argv, seed) = rig.event("verify")
     assert seed["permission"] == {"*": "ask", "docs_search": "deny"}
-    assert rig.client._mimocode_denies_unenforced == frozenset({"docs_search"})
+    assert rig.client._harness_read_back().denies_unenforced == frozenset({"docs_search"})
     # Re-projection sees that no seeded deny held.
     _name, reproject_thread, (in_force_seen,) = rig.event("reproject")
     assert in_force_seen == frozenset()
@@ -361,7 +363,7 @@ def test_a_deny_the_read_back_finds_out_of_force_re_projects_the_session(
 def test_a_deny_the_read_back_finds_in_force_projects_nothing_again(monkeypatch, tmp_path) -> None:
     rig = _reprojecting_rig(monkeypatch, tmp_path, _DENY_HELD, frozenset({"docs"}))
     rig.run()
-    assert rig.client._mimocode_denies_in_force == frozenset({"docs_search"})
+    assert rig.client._harness_read_back().denies_in_force == frozenset({"docs_search"})
     assert "reproject" not in rig.names()
     # The warm step's array stands; no re-projection replaced it.
     assert rig.client._session_mcp_cache == []
@@ -384,7 +386,7 @@ def test_a_re_projection_that_withholds_a_natively_mounted_server_refuses(
     assert "mimocode.json" in str(excinfo.value) and ".claude.json" not in str(excinfo.value)
     _assert_raised_without_context(excinfo)
     rig.event("reproject")
-    assert rig.client._mimocode_native_mounts == frozenset({"other"})
+    assert rig.client._harness_read_back().native_mounts == frozenset({"other"})
     assert rig.reclaimed() == [rig.LAUNCHERS["wrap_version"], rig.LAUNCHERS["wrap_readback"]]
     assert rig.client._unasked_shell_tripwire is False
 

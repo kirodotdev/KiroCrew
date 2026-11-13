@@ -998,11 +998,24 @@ def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None
     )
 
 
-#: The per-harness MCP seams spliced into ``AcpClient``'s session-setup paths, by
-#: harness. Declared rather than discovered so a DELETED splice fails the test below
-#: -- codex is absent because this PR moved its seam onto the harness, and kiro-cli
-#: has none (``--agent`` carries its servers).
-_MCP_SEAM_HOOKS = ["claude", "copilot", "deepseek", "goose", "mimocode", "opencode", "pi"]
+#: The MCP seams spliced into ``AcpClient``'s session-setup paths. Declared rather
+#: than discovered so a DELETED splice fails the test below. ``adapter`` is the one
+#: splice that asks the process adapter for ``self.backend``
+#: (``_adapter_session_mcp_servers``); claude keeps its own gated splice. codex is
+#: absent because its seam is on the harness, and kiro-cli has none (``--agent``
+#: carries its servers).
+_MCP_SEAM_HOOKS = ["adapter", "claude"]
+
+#: The client hook each process adapter's ``session_mcp_servers`` asks, by adapter.
+#: An adapter absent here keeps the base default, which adds no server.
+_ADAPTER_MCP_SEAMS = {
+    "OpencodeLaunch": "opencode",
+    "MimoCodeLaunch": "mimocode",
+    "GooseLaunch": "goose",
+    "DeepseekLaunch": "deepseek",
+    "CopilotLaunch": "copilot",
+    "PiLaunch": "pi",
+}
 
 
 def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
@@ -1043,11 +1056,43 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
         # session is the worst-consequence version of this defect, not the mildest.
         for m in splice.finditer(source):
             h = m.group("h")
+            if h == "adapter":
+                # Gated by construction: the adapter is the one for ``self.backend``,
+                # and each adapter asks only its own hook (the test below).
+                continue
             tail = source[m.end() : m.end() + 80]
             assert re.match(rf"\s+if\s+self\._is_{h}\b", tail), (
                 f"{fn.__name__}: the {h} seam is spliced without its own "
                 f"`if self._is_{h}` guard on that same element"
             )
+
+
+def test_each_process_adapter_asks_only_its_own_mcp_seam() -> None:
+    """H6 at the adapter: the hook a session's array is spliced from is that harness's.
+
+    Every adapter registered for the client is listed, so a new one fails here until
+    it says which client hook it asks, or that it keeps the default of none.
+    """
+    from kiro_crew.acp.harness import _PROCESS_ADAPTERS, ProcessAdapter
+
+    seen = {}
+    for backend, adapter_cls in _PROCESS_ADAPTERS.items():
+        name = adapter_cls.__name__
+        hook = _ADAPTER_MCP_SEAMS.get(name)
+        override = adapter_cls.session_mcp_servers
+        if hook is None:
+            assert (
+                override is ProcessAdapter.session_mcp_servers
+            ), f"{name} overrides session_mcp_servers; declare its hook above"
+            assert adapter_cls().session_mcp_servers(MagicMock()) == []
+            continue
+        seen[name] = hook
+        assert override is not ProcessAdapter.session_mcp_servers, name
+        source = inspect.getsource(override)
+        assert source.count("_session_mcp_servers()") == 1, (name, source)
+        assert f"session._{hook}_session_mcp_servers()" in source, (name, source)
+        assert adapter_cls.backend == backend
+    assert seen == _ADAPTER_MCP_SEAMS
 
 
 def test_codex_mcp_seam_projects_through_its_mirror() -> None:

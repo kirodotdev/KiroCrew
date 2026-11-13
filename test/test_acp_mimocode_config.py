@@ -24,6 +24,8 @@ from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.harness import mimocode as mimocode_harness
 from kiro_crew.acp.harness import mimocode as mimocode_mod
+from kiro_crew.acp.harness import process_adapter_for
+from kiro_crew.acp.harness.base import HarnessReadBack
 from kiro_crew.acp.harness_tool_names import (
     MAX_HARNESS_CONFIG_MCP_SERVERS,
     MAX_HARNESS_TOOL_NAME_LEN,
@@ -113,6 +115,7 @@ def _readback(
     client = AcpClient(
         work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE, extra_env=extra_env or {}
     )
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
     if seed is None:
         seed = mimocode_mod._mimocode_routing_config(ACP_BACKEND_MIMOCODE)
     verdict = mimocode_mod._verify_mimocode_routing(client, ACP_BACKEND_MIMOCODE, list(_ARGV), seed)
@@ -143,7 +146,7 @@ def test_a_read_back_child_that_cannot_run_is_an_exec_issue(
     # Harness remedy (run its command), not the gate's (remove an override).
     assert "'mimo debug config'" in remedy and mimocode_mod.MIMO_INSTALL_COMMAND in remedy
     assert "higher-precedence" not in remedy
-    assert client._mimocode_native_mounts == frozenset(), "no document was read"
+    assert client._harness_read_back().native_mounts == frozenset(), "no document was read"
 
 
 def test_a_non_zero_exit_with_a_silent_child_names_only_the_exit(monkeypatch, tmp_path) -> None:
@@ -197,7 +200,7 @@ def test_an_unparseable_document_is_a_harness_issue(monkeypatch, tmp_path, stdou
     (issue, remedy), _seen, client = _readback(monkeypatch, tmp_path, stdout)
     assert issue == _READBACK_UNPARSED
     assert "'mimo debug config'" in remedy
-    assert client._mimocode_native_mounts == frozenset(), "a refused document set no fields"
+    assert client._harness_read_back().native_mounts == frozenset(), "refused, so nothing set"
 
 
 def test_a_banner_before_the_document_is_tolerated(monkeypatch, tmp_path) -> None:
@@ -210,7 +213,7 @@ def test_a_banner_before_the_document_is_tolerated(monkeypatch, tmp_path) -> Non
     )
     assert verdict == ("", "")
     # Set only after a parse: this passes on the parse branch alone.
-    assert client._mimocode_native_mounts == frozenset({"plain", "srv"})
+    assert client._harness_read_back().native_mounts == frozenset({"plain", "srv"})
 
 
 # ── Bounds on the config's MCP server names
@@ -224,7 +227,7 @@ def test_rewritten_names_at_the_count_bound_are_kept(monkeypatch, tmp_path) -> N
     servers = {f"s.{i}": {} for i in range(MAX_HARNESS_CONFIG_MCP_SERVERS)}
     verdict, _seen, client = _readback(monkeypatch, tmp_path, _mcp_document(servers))
     assert verdict == ("", "")
-    assert len(client._mimocode_config_mcp_servers) == MAX_HARNESS_CONFIG_MCP_SERVERS
+    assert len(client._harness_read_back().config_mcp_servers) == MAX_HARNESS_CONFIG_MCP_SERVERS
 
 
 def test_rewritten_names_past_the_count_bound_refuse(monkeypatch, tmp_path) -> None:
@@ -237,8 +240,8 @@ def test_rewritten_names_past_the_count_bound_refuse(monkeypatch, tmp_path) -> N
         f"{MAX_HARNESS_CONFIG_MCP_SERVERS} Crew tracks per session"
     )
     assert remedy.startswith("Remove MCP servers from MiMo Code's own config")
-    assert client._mimocode_config_mcp_servers == ()
-    assert client._mimocode_native_mounts == frozenset(), "refused before the mounts were kept"
+    assert client._harness_read_back().config_mcp_servers == ()
+    assert client._harness_read_back().native_mounts == frozenset(), "refused before any mount"
 
 
 def test_names_written_as_they_are_count_toward_the_bound(monkeypatch, tmp_path) -> None:
@@ -247,16 +250,16 @@ def test_names_written_as_they_are_count_toward_the_bound(monkeypatch, tmp_path)
     servers = {f"s-{i}_x": {} for i in range(over)}
     (issue, _remedy), _seen, client = _readback(monkeypatch, tmp_path, _mcp_document(servers))
     assert issue.startswith(f"its config mounts {over} MCP servers")
-    assert client._mimocode_config_mcp_servers == ()
-    assert client._mimocode_native_mounts == frozenset(), "refused before the mounts were kept"
+    assert client._harness_read_back().config_mcp_servers == ()
+    assert client._harness_read_back().native_mounts == frozenset(), "refused before any mount"
 
 
 def test_plain_names_at_the_count_bound_are_kept_as_native_mounts(monkeypatch, tmp_path) -> None:
     servers = {f"s-{i}_x": {} for i in range(MAX_HARNESS_CONFIG_MCP_SERVERS)}
     verdict, _seen, client = _readback(monkeypatch, tmp_path, _mcp_document(servers))
     assert verdict == ("", "")
-    assert client._mimocode_config_mcp_servers == ()
-    assert len(client._mimocode_native_mounts) == MAX_HARNESS_CONFIG_MCP_SERVERS
+    assert client._harness_read_back().config_mcp_servers == ()
+    assert len(client._harness_read_back().native_mounts) == MAX_HARNESS_CONFIG_MCP_SERVERS
 
 
 @pytest.mark.parametrize("name_char", ["x", "."], ids=["plain", "rewritten"])
@@ -264,7 +267,7 @@ def test_a_name_at_the_length_bound_is_kept(monkeypatch, tmp_path, name_char) ->
     name = "a" + name_char * (MAX_HARNESS_TOOL_NAME_LEN - 1)
     verdict, _seen, client = _readback(monkeypatch, tmp_path, _mcp_document({name: {}}))
     assert verdict == ("", "")
-    assert client._mimocode_native_mounts == frozenset({name})
+    assert client._harness_read_back().native_mounts == frozenset({name})
 
 
 @pytest.mark.parametrize("name_char", ["x", "."], ids=["plain", "rewritten"])
@@ -278,7 +281,7 @@ def test_a_name_past_the_length_bound_refuses(monkeypatch, tmp_path, name_char) 
     )
     assert name not in issue
     assert remedy.startswith("Remove MCP servers from MiMo Code's own config")
-    assert client._mimocode_native_mounts == frozenset()
+    assert client._harness_read_back().native_mounts == frozenset()
 
 
 @pytest.mark.parametrize("mcp", [None, [], "docs.server", 3], ids=["null", "list", "str", "int"])
@@ -729,10 +732,14 @@ class _ScrubbingSession:
         self._spawn_work_dir = str(tmp_path)
         self._extra_env: dict[str, str] = {}
         self.seen: list[object] = []
+        self.read_back = HarnessReadBack()
 
     @staticmethod
     def _agent_env_for_spawn() -> dict[str, str]:
         return {}
+
+    def _harness_read_back(self) -> HarnessReadBack:
+        return self.read_back
 
     def _scrub_observed(self, value):
         self.seen.append(value)
@@ -1041,6 +1048,7 @@ class TestMimoCodeReadBack:
     @pytest.fixture
     def client(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
         c._session_harness_deny_rules = ("probe_secret",)
         return c
 
@@ -1082,15 +1090,14 @@ class TestMimoCodeReadBack:
             client, monkeypatch, {"permission": {"*": "ask", "probe_secret": "deny"}}
         )
         assert issue == ("", "")
-        assert client._mimocode_denies_unenforced == frozenset()
+        assert client._harness_read_back().denies_unenforced == frozenset()
 
-    def test_an_outranked_deny_is_recorded_on_mimos_own_field(self, client, monkeypatch):
+    def test_an_outranked_deny_is_recorded_on_the_read_back(self, client, monkeypatch):
         issue = self._read_back(
             client, monkeypatch, {"permission": {"probe_secret": "deny", "*": "ask"}}
         )
         assert issue == ("", "")
-        assert client._mimocode_denies_unenforced == frozenset({"probe_secret"})
-        assert client._opencode_denies_unenforced == frozenset()
+        assert client._harness_read_back().denies_unenforced == frozenset({"probe_secret"})
 
     def test_an_outranked_deny_on_a_native_mount_refuses_the_session(self, client, monkeypatch):
         issue, remedy = self._read_back(
@@ -1132,7 +1139,7 @@ class TestMimoCodeReadBack:
             "mcp": {"probe": {"enabled": False}},
         }
         assert self._read_back(client, monkeypatch, resolved) == ("", "")
-        assert client._mimocode_native_mounts == frozenset()
+        assert client._harness_read_back().native_mounts == frozenset()
 
     def test_an_agent_printed_with_an_empty_permission_starts(self, client, monkeypatch):
         """0.1.15 prints ``permission: {}`` for a model-only agent (``agent.build.model``,
@@ -1142,7 +1149,7 @@ class TestMimoCodeReadBack:
             "agent": {"build": {"model": "probe/m", "options": {}, "permission": {}}},
         }
         assert self._read_back(client, monkeypatch, resolved) == ("", "")
-        assert client._mimocode_denies_unenforced == frozenset()
+        assert client._harness_read_back().denies_unenforced == frozenset()
 
     def test_an_operators_deny_after_the_star_starts(self, client, monkeypatch):
         """A deny after the floor holds in MiMo Code: the call never runs."""
@@ -1165,7 +1172,7 @@ class TestMimoCodeReadBack:
             {"permission": {"*": "ask", "probe_secret": "deny"}, "mcp": {"probe": {}}},
         )
         assert issue == ("", "")
-        assert client._mimocode_native_mounts == frozenset({"probe"})
+        assert client._harness_read_back().native_mounts == frozenset({"probe"})
 
     def test_an_operators_own_outranked_deny_is_still_refused(self, client, monkeypatch):
         issue, remedy = self._read_back(
@@ -1214,24 +1221,24 @@ class TestMimoCodeDeniesInForce:
     @pytest.fixture
     def client(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
         c._session_harness_deny_rules = ("probe_secret",)
         return c
 
     def test_a_seed_that_carries_the_rule_keeps_it(self, client):
         seed = json.dumps({"permission": {"*": "ask", "probe_secret": "deny"}})
         assert mimocode_harness.settle_mimocode_denies(client, seed) == frozenset()
-        assert client._mimocode_denies_in_force == {"probe_secret"}
-        assert client._opencode_denies_in_force is None
+        assert client._harness_read_back().denies_in_force == {"probe_secret"}
 
     def test_a_seed_that_left_the_rule_out_loses_it(self, client):
         assert mimocode_harness.settle_mimocode_denies(
             client, json.dumps({"permission": "ask"})
         ) == {"probe_secret"}
-        assert client._mimocode_denies_in_force == frozenset()
+        assert client._harness_read_back().denies_in_force == frozenset()
 
     def test_an_outranked_rule_is_lost_too(self, client):
         seed = json.dumps({"permission": {"*": "ask", "probe_secret": "deny"}})
-        client._mimocode_denies_unenforced = frozenset({"probe_secret"})
+        client._harness_read_back().denies_unenforced = frozenset({"probe_secret"})
         assert mimocode_harness.settle_mimocode_denies(client, seed) == {"probe_secret"}
 
     def test_a_lost_rule_withholds_its_server_on_the_re_projection(self, agents_dir, tmp_path):
@@ -1241,6 +1248,7 @@ class TestMimoCodeDeniesInForce:
             ["@narrowed"],
         )
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
         assert "narrowed" in [e["name"] for e in c._resolve_session_mcp_servers()]
         assert c._session_harness_deny_rules == ("narrowed_danger",)
         assert mimocode_harness.settle_mimocode_denies(c, json.dumps({"permission": "ask"})) == {
@@ -1249,27 +1257,33 @@ class TestMimoCodeDeniesInForce:
         assert "narrowed" not in [e["name"] for e in c._resolve_session_mcp_servers()]
         assert c._session_mcp_unhonoured == frozenset({"narrowed"})
 
-    def test_an_opencode_field_does_not_narrow_a_mimocode_session(self, agents_dir, tmp_path):
-        """The projection reads THIS session's harness in-force set."""
+    def test_an_unsettled_read_back_does_not_narrow_the_session(self, agents_dir, tmp_path):
+        """The projection reads THIS session's read-back, which has settled no denies."""
         _write_spec(
             agents_dir,
             {"narrowed": {"command": "/bin/x", "disabledTools": ["danger"]}},
             ["@narrowed"],
         )
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-        c._opencode_denies_in_force = frozenset()
+        c._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+        assert c._harness_read_back().denies_in_force is None
         assert "narrowed" in [e["name"] for e in c._resolve_session_mcp_servers()]
+        # Settled with the rule out, the same projection withholds it: the check is live.
+        c._harness_read_back().denies_in_force = frozenset()
+        assert "narrowed" not in [e["name"] for e in c._resolve_session_mcp_servers()]
 
     def test_a_re_projection_that_narrows_a_native_mount_refuses(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-        c._mimocode_native_mounts = frozenset({"second"})
+        c._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+        c._harness_read_back().native_mounts = frozenset({"second"})
         c._session_mcp_unhonoured = frozenset({"second"})
         with pytest.raises(mimocode_harness.AcpToolGateUnroutable, match="second"):
             mimocode_harness.refuse_native_mount_of_unhonoured(c)
 
     def test_a_re_projection_that_narrows_only_array_servers_starts(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-        c._mimocode_native_mounts = frozenset({"other"})
+        c._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+        c._harness_read_back().native_mounts = frozenset({"other"})
         c._session_mcp_unhonoured = frozenset({"second"})
         assert mimocode_harness.refuse_native_mount_of_unhonoured(c) is None
         # Overlap refuses: the start above is from disjoint sets, not an inert check.
@@ -1282,7 +1296,7 @@ class TestMimoCodeDeniesInForce:
 
         source = inspect.getsource(mimocode_harness)
         assert "lost = settle_mimocode_denies(session, self._config_content)" in source
-        assert source.count("session._mimocode_denies_in_force = ") == 1
+        assert source.count("read_back.denies_in_force = ") == 1
         arm = inspect.getsource(mimocode_harness.MimoCodeLaunch.resolve_spawn)
         arm = arm[arm.index("lost = settle_mimocode_denies(") :]
         assert arm.index("session._resolve_session_mcp_servers") < arm.index(

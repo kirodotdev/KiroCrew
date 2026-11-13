@@ -287,7 +287,12 @@ Where that hand-written code lives follows the transport. A harness driven throu
 `CodexHarness.resolve_spawn` is the worked shape — while a per-session harness
 declares it in its own `ProcessAdapter`, also in `acp/harness/<name>.py` and
 registered in `acp.harness.process_adapter_for` (`PiLaunch.resolve_spawn` is the
-worked shape). Both hand their plan to the one launch tail, `acp.launch.launch`,
+worked shape). `AcpClient` keeps that instance for the life of the process
+(`_process_adapter`, dropped by `_reset_state`): a routing read-back records what it
+found in the adapter's own `read_back` (`HarnessReadBack`), which the client reads
+through `_harness_read_back`, and the client asks the adapter for the host's own
+`session/new` / `session/load` entries through `session_mcp_servers`, whose default
+adds none. Both hand their plan to the one launch tail, `acp.launch.launch`,
 so neither writes the session process's sandbox wrap, scratch window or spawn;
 an enforced host's routing read-back child is wrapped inside its adapter, with
 the session's mask. The

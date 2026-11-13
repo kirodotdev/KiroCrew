@@ -13,7 +13,7 @@ Instance fields written: ``_capability_projection_gaps``, ``_claude_worker_built
 ``_mcp_mount_opened_at``, ``_mcp_mount_servers``,
 ``_mcp_pruned``, ``_mcp_pruned_names``,
 ``_mcp_pruned_omitted``, ``_mcp_report_frame_floor``, ``_member_dispatch_mounted``,
-``_member_stub_allowlist``, ``_mimocode_disabled_servers``, ``_pending_oauth_requests``,
+``_member_stub_allowlist``, ``_pending_oauth_requests``,
 ``_pi_mcp_handoff``, ``_session_agent_spec``,
 ``_session_harness_deny_rules``, ``_session_mcp_cache``,
 ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
@@ -24,9 +24,8 @@ Instance fields written: ``_capability_projection_gaps``, ``_claude_worker_built
 Instance fields read: ``_agent``, ``_channel_id``, ``_child_env_names``,
 ``_claude_inline_settings``, ``_claude_local_settings_excluded``, ``_mcp_gateway_overlay``,
 ``_mcp_gateway_socket``, ``_mcp_notifications``,
-``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_mimocode_config_mcp_servers``,
-``_mimocode_denies_in_force``, ``_native_skill_projection``,
-``_opencode_config_mcp_servers``, ``_opencode_denies_in_force``, ``_pi_gate_nonce``,
+``_mcp_json_names``, ``_mcp_ref_spec``, ``_mcp_report``, ``_native_skill_projection``,
+``_pi_gate_nonce``,
 ``_pi_mcp_server_names``, ``_session_id``, ``_session_key``, ``_side_read_only``,
 ``_spawn_work_dir``, ``_stub_session_token``, ``_work_dir``, ``member_context``.
 """
@@ -378,14 +377,9 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         # identity through the signed mapping rather than through an env key
         # a warm-pool rekey can leave stale.
         session_token=self._stub_session_token,
-        # The deny rules the opencode or MiMo Code read-back found in force (None
-        # before any were seeded), so a later re-parse withholds a server whose rule
-        # is not. Each harness's launch records its own.
-        harness_denies_in_force=(
-            getattr(self, "_mimocode_denies_in_force", None)
-            if self.backend == ACP_BACKEND_MIMOCODE
-            else getattr(self, "_opencode_denies_in_force", None)
-        ),
+        # The deny rules this harness's read-back found in force (None before any
+        # were seeded), so a later re-parse withholds a server whose rule is not.
+        harness_denies_in_force=self._harness_read_back().denies_in_force,
     )
     self._spec_denied_tools = projection.denied_tools
     if self.backend in ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS:
@@ -405,7 +399,7 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     if self.backend == ACP_BACKEND_MIMOCODE:
         # MiMo Code also mounts servers of its own config, which withholding an
         # element cannot reach, so its read-back refuses one switched off whole.
-        self._mimocode_disabled_servers = projection.disabled_servers
+        self._harness_read_back().disabled_servers = projection.disabled_servers
     self._session_harness_deny_rules = projection.harness_deny_rules
     self._spec_zero_tools = projection.zero_tools
     self._claude_worker_builtin_tools = projection.builtin_tools
@@ -1638,10 +1632,6 @@ def _harness_mcp_server_names(self: AcpClient) -> tuple[str, ...]:
     on pi the pooled stubs are not in the placed array, and pi spells each of their
     tools after its name. An instance built without ``__init__`` has none.
     """
-    found = (
-        getattr(self, "_mimocode_config_mcp_servers", ())
-        if self.backend == ACP_BACKEND_MIMOCODE
-        else getattr(self, "_opencode_config_mcp_servers", ())
-    )
+    found = self._harness_read_back().config_mcp_servers
     handed_off = getattr(self, "_pi_mcp_server_names", ())
     return tuple(dict.fromkeys([*self._placed_mcp_server_names(), *found, *handed_off]))
