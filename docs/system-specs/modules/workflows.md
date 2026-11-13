@@ -1825,7 +1825,7 @@ allocate nothing and are not tested.
 
 Live progress reaches the browser as a `workflow_run_event` WS broadcast carrying
 the redacted event plus the run's `session_key`, and the frontend
-(`website/src/apps/workflows/runModel.ts`) folds the stream into a phase tree and a
+(`website/src/components/workflows/runModel.ts`) folds the stream into a phase tree and a
 budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
 user gets a synthesized answer rather than a raw blob. That turn's prompt is the
@@ -1921,7 +1921,7 @@ nothing -- honest at run time even if the pin is ever relaxed. `open_session` an
 `session` node, because the work it starts runs in another session and never reports
 in this run's stream; `set_session_mode` starts nothing and is narration.
 
-`website/src/apps/workflows/planModel.ts` merges the plan with the stream. Both inputs
+`website/src/components/workflows/planModel.ts` merges the plan with the stream. Both inputs
 are coerced to text at that seam, because nothing between a script and the graph
 guarantees a string: `ctx.phase(123)` records a numeric `title`, `ctx.agent(...,
 label=123)` a numeric `label`, and `runModel` reads event fields with a cast and no
@@ -1991,6 +1991,15 @@ false` and `hidden: true`; it exposes `/validate`, `/run` and `/examples` over i
 own stdlib HTTP server. Its `/run` endpoint uses the deterministic `_stub_agent`;
 real agent orchestration runs through the gateway service and the MCP/HTTP surfaces
 above.
+
+The run views are core, not part of that app: `website/src/components/workflows/`
+holds the event-stream and plan models, the run snapshot hook, the run tree and
+graph, the source panel and the Runs list. They read only the core run registry
+(`/api/workflows/*`), and the chat, the session sidebar and Customize → Workflows
+render them whether or not the app is installed. The app's own UI is the
+`/workflows` page in `website/src/apps/workflows/` (the Author view over its
+backend, plus the core Runs list), reached from core only through its
+`builtinRegistry.ts` row; `workflowsBoundary.test.ts` pins that.
 
 `/examples` serves the scripts in [`examples/workflows/`](examples/workflows/),
 which `server.py::_examples_dir()` locates by walking up from the module toward the
@@ -2155,8 +2164,8 @@ crashing.
 
 | Gate | Guarantees | Pinned by | Constrains |
 |---|---|---|---|
-| E1 | Undocumented. The only statement of intent is an inline comment in `website/src/apps/workflows/WorkflowsPage.tsx` ("invalid script blocks the run") on the run handler, which validates before it runs. No test asserts it by id. | Nearest coverage: `website/src/test/WorkflowsPage.test.ts` (pure event-stream folding), `website/playwright/builtin-apps.spec.ts` (`/workflows` renders). | `website/src/apps/workflows/WorkflowsPage.tsx` |
-| E2, E3, E4 | Undocumented. These ids appear only inside the range `E1-E4`, described as Playwright gates against a dev instance; no individual id is defined or asserted anywhere in the tree. | See `website/src/test/WorkflowsPage.test.ts` (which names the range) and `website/playwright/builtin-apps.spec.ts`. | `website/src/apps/workflows/` |
+| E1 | Undocumented. The only statement of intent is an inline comment in `website/src/apps/workflows/WorkflowsPage.tsx` ("invalid script blocks the run") on the run handler, which validates before it runs. No test asserts it by id. | Nearest coverage: `website/src/test/workflowRunModel.test.ts` (pure event-stream folding), `website/playwright/builtin-apps.spec.ts` (`/workflows` renders). | `website/src/apps/workflows/WorkflowsPage.tsx` |
+| E2, E3, E4 | Undocumented. These ids appear only inside the range `E1-E4`, described as Playwright gates against a dev instance; no individual id is defined or asserted anywhere in the tree. | See `website/src/test/workflowRunModel.test.ts` (which names the range) and `website/playwright/builtin-apps.spec.ts`. | `website/src/apps/workflows/` |
 
 The backend half of the tab is covered without gate ids, in
 `test_workflows_app.py` (manifest shape, `handle_validate` / `handle_run` /

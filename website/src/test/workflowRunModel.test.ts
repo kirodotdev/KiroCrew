@@ -7,7 +7,7 @@
  * dev instance; these are the deterministic floor under them.
  */
 import { describe, it, expect } from 'vitest'
-import { groupByPhase, latestBudget } from '../apps/workflows/WorkflowsPage'
+import { groupByPhase, latestBudget } from '../components/workflows/runModel'
 
 function ev(type: string, data: Record<string, unknown> = {}, seq = 0) {
   return { run_id: 'wf_t', seq, ts: 't', type, data }

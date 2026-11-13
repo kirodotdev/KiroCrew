@@ -4,7 +4,7 @@
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { WorkflowRunSummary } from '../../types'
-import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import type { ChatState, WorkflowRunProgress } from './state'
 import { isUnsafeKey, safeKey, workflowText } from './wire'
 

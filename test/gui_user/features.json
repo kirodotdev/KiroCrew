@@ -3622,7 +3622,7 @@
         "src/kiro_crew/apps/builtins/workflows/app.json",
         "src/kiro_crew/apps/builtins/workflows/server.py",
         "website/src/apps/workflows/WorkflowsPage.tsx",
-        "website/src/apps/workflows/WorkflowsRuns.tsx"
+        "website/src/components/workflows/WorkflowsRuns.tsx"
       ],
       "priority": "P2",
       "merged_from": [

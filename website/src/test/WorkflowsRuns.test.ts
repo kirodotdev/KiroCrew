@@ -16,7 +16,7 @@ import {
   orderRuns,
   type RunStatus,
   type RunSummary,
-} from '../apps/workflows/WorkflowsRuns'
+} from '../components/workflows/WorkflowsRuns'
 
 function run(over: Partial<RunSummary> = {}): RunSummary {
   return {

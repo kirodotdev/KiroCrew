@@ -8,7 +8,7 @@
  * which is what decides same-origin, and it has an off-DOM fallback.
  */
 
-import { normalizeRunSessionKey } from '../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../components/workflows/runModel'
 import { chatDeepLinkSlot } from './navIntent'
 
 /** Base for resolving a relative href when there is no document to resolve

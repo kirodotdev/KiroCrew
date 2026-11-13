@@ -48,7 +48,7 @@ vi.mock('../api/client', () => ({
     },
   },
 }))
-vi.mock('../apps/workflows/WorkflowSourceCode', () => ({
+vi.mock('../components/workflows/WorkflowSourceCode', () => ({
   default: ({
     source,
     sourceFormat,
@@ -69,7 +69,7 @@ vi.mock('../apps/workflows/WorkflowSourceCode', () => ({
     />
   ),
 }))
-vi.mock('../apps/workflows/WorkflowsRuns', () => ({
+vi.mock('../components/workflows/WorkflowsRuns', () => ({
   default: () => <div>Unified workflow runs</div>,
 }))
 

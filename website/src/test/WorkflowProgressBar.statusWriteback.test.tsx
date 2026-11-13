@@ -17,7 +17,7 @@ import WorkflowProgressBar from '../pages/chat/WorkflowProgressBar'
 
 const snapshotRef: { current: { status?: string; error?: string | null; events?: unknown[]; source?: string } | null } = { current: null }
 
-vi.mock('../apps/workflows/useRunSnapshot', () => ({
+vi.mock('../components/workflows/useRunSnapshot', () => ({
   useRunSnapshot: () => ({ snapshot: snapshotRef.current, error: null }),
 }))
 
