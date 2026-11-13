@@ -55,6 +55,10 @@ set -eu
 # venv -- producing a broken install (ImportError: No module named 'aiohttp').
 unset PYTHONPATH PYTHONHOME
 
+# The app expands a leading ~ in KIROCREW_HOME, and a quoted value reaches this
+# script unexpanded, so expand it once here for every read and child below.
+case "${KIROCREW_HOME:-}" in "~" | "~/"*) KIROCREW_HOME="$HOME${KIROCREW_HOME#?}" ;; esac
+
 # The URL contract splits by class: FEED_BASE serves the mutable pointers
 # (latest-cli.json), ARTIFACT_BASE serves the bytes (wheels, cli-manifest.json).
 # Both are aliases of the same distribution today; --cdn / KIROCREW_CDN_BASE
@@ -561,8 +565,9 @@ CHANNEL_PATH="$CHANNEL"
 # or empty output when it cannot be resolved. Used to compare two directory
 # paths for identity rather than string equality. Kept POSIX (`cd` + `pwd -P`)
 # because `realpath`/`readlink -f` are not portable to macOS's base install.
+# CDPATH is cleared because a hit through it makes `cd` echo the directory too.
 _canon_dir() {
-  ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null || printf ''
+  ( CDPATH=''; cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null || printf ''
 }
 
 # True when canonical path $1 IS $2 or is nested beneath it. Used to reject any
@@ -1550,11 +1555,23 @@ _unzip_notice() {
   echo "To use Kiro CLI, install the unzip package first (Debian/Ubuntu: 'sudo apt-get install -y unzip'; Fedora/RHEL/Amazon Linux: 'sudo dnf install -y unzip')." >&2
 }
 _unzip_notice "$(uname -s 2>/dev/null || true)"
+# KIROCREW_HOME may be set for this command only, and a shell without it uses
+# ~/.kiro/crew, so both endings name the data home (as an absolute path: a
+# relative one would depend on the directory a later command runs from) and
+# the shell-profile line that keeps it.
+_data_home_note() {
+  [ -n "${KIROCREW_HOME:-}" ] || return 0
+  _dh_abs="$(_canon_dir "$_DATA_HOME")"
+  echo "  This install used the data home $_dh_abs (from KIROCREW_HOME)."
+  echo "  Every kirocrew command needs it set too, or it uses ~/.kiro/crew; add this to your shell profile:"
+  echo "  export KIROCREW_HOME=\"$_dh_abs\""
+}
 if [ "$_kas_rc" -eq 3 ]; then
   echo "" >&2
   echo "Kiro Crew is installed, but this host cannot run the built-in KAS engine (the reason is above)." >&2
   echo "Without a signed-in kiro-cli, the default agent runs on that engine, so a chat cannot start here." >&2
   echo "An agent that does not use the engine is not affected; pass --no-kas to skip this step next time." >&2
+  _data_home_note >&2
   [ "$_KC_REPLACED_INSTALL" = 1 ] || _KC_EXIT=3
 else
   # Point at the actual next step, not just --help: a user who ran the one-liner
@@ -1565,6 +1582,7 @@ else
   # up front that it needs sudo.
   echo ""
   echo "Next steps:"
+  _data_home_note
   echo "  kirocrew gateway            # start the dashboard now (http://localhost:5476)"
   echo "  kirocrew service install    # needs sudo on Linux; run it 24/7 as a service (survives logout, restarts on crash)"
   echo "  kirocrew --help             # everything else"
