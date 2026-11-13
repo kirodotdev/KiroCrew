@@ -34,7 +34,10 @@ from kiro_crew.agent_sdk import tool_gate as gate
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_PREFERRED_PERMISSION_CONFIG,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
+    permission_config_for,
+    permission_value_for,
     prompt_command_issue,
     session_config_drift_issue,
 )
@@ -249,6 +252,25 @@ def test_every_forbidden_mode_backend_is_session_config_routed() -> None:
     """The tripwire reads the routing table's option, so a row elsewhere would be inert."""
     for backend in ACP_BACKEND_FORBIDDEN_MODES:
         assert gate.routing_for(backend) is gate.Routing.SESSION_CONFIG
+
+
+def test_every_value_crew_writes_reads_back_as_no_drift() -> None:
+    """The read-back after Crew's own write must accept whatever that write chose."""
+    for backend in ACP_BACKEND_FORBIDDEN_MODES:
+        option_id, _ = permission_config_for(backend)
+        _, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
+        offered = [{"id": option_id, "options": [{"value": preferred}]}]
+        for advertised in ([], offered):
+            written = permission_value_for(backend, advertised)
+            update = {
+                "sessionUpdate": "config_option_update",
+                "configOptions": [{"id": option_id, "currentValue": written}],
+            }
+            assert session_config_drift_issue(backend, update) == "", (
+                f"{backend}: Crew writes {option_id}={written!r} and its own drift check calls "
+                "that drift; accept the required value or the same-option preferred value, "
+                "and keep a forbidden mode drifting"
+            )
 
 
 def _tripwire_client(backend: str = COPILOT) -> tuple[AcpClient, list]:
