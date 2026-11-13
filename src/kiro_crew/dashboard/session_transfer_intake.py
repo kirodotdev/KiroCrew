@@ -267,35 +267,29 @@ class _MemoryWaitTimedOut(Exception):
     """The host did not free enough memory within the wait budget."""
 
 
-def _cgroup_memory_bounds() -> tuple[int | None, int | None]:
+def _cgroup_memory_bounds(*, measured_only: bool = False) -> tuple[int | None, int | None]:
     """The tightest memory limit on this process's own cgroup ancestry and the
-    headroom left under it, in bytes; ``None`` for either when no limit applies
-    or it cannot be read. **Blocking IO (small /proc and /sys reads).**
+    headroom left under it, in bytes; ``(None, None)`` off Linux or with no finite
+    limit. **Blocking IO (small /proc and /sys reads).**
 
     A gateway in a memory-limited unit or container (the dev-fleet pod unit sets
     ``MemoryMax``) is killed at that limit however much the host has free, so
-    the host-wide readings alone would admit what the gateway cannot hold. The
-    walk and the headroom reading are the ones subagent sizing uses, so both
-    budgets see the same ceiling.
+    the host-wide readings alone would admit what the gateway cannot hold. Both
+    figures come from the one walk subagent sizing uses
+    (``subagent._container_cgroup_reading``), so import admission, spawn admission
+    and the dashboard's ``/api/system`` see the same ceiling.
+
+    The callers differ only when a limit is found but no level's usage can be
+    read: import admission (the default) takes the headroom as ``0`` and waits;
+    the dashboard passes ``measured_only=True`` and gets ``None``, so its free
+    figure is bounded by the limit alone, as the resource posture reads it.
     """
     if not platform_compat.IS_LINUX:
         return None, None
     from kiro_crew import subagent
 
-    limit: int | None = None
-    for leaf, mount, v2 in subagent._cgroup_memory_roots():
-        name = "memory.max" if v2 else "memory.limit_in_bytes"
-        directory = leaf
-        while True:
-            value = subagent._read_int_file(str(directory / name))
-            if value is not None and 0 <= value < subagent._CGROUP_UNLIMITED:
-                limit = value if limit is None else min(limit, value)
-            if directory == mount:
-                break
-            directory = directory.parent
-    headroom_gb = subagent._container_cgroup_available_gb()
-    headroom = int(headroom_gb * 1024**3) if headroom_gb >= 0 else None
-    return limit, headroom
+    limit, headroom_gb = subagent._container_cgroup_reading(measured_only=measured_only)
+    return limit, int(headroom_gb * 1024**3) if headroom_gb >= 0 else None
 
 
 def _gateway_memory() -> tuple[int | None, int | None]:
