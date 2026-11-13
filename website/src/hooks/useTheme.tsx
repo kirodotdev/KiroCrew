@@ -523,6 +523,12 @@ export interface ThemeContextValue {
   preference: ModePreference
   cycle: () => void
   setTheme: (pref: ModePreference) => void
+  /**
+   * Show `pref` in this tab without saving it to the workspace. The theme
+   * schedule switches through this: it is device-local, so its switch must not
+   * become the mode every other device boots into.
+   */
+  applyLocalTheme: (pref: ModePreference) => void
   colorTheme: ColorTheme
   setColorTheme: (t: ColorTheme) => void
   /**
@@ -1361,14 +1367,18 @@ function useThemeState(): ThemeContextValue {
     return () => mql.removeEventListener('change', handler)
   }, [mode])
 
-  const setMode_ = useCallback((pref: ModePreference) => {
+  const applyLocalMode = useCallback((pref: ModePreference) => {
     safeSetItem('mc-theme', pref)
     setMode(pref)
     setResolved(resolveMode(pref))
     const ct = (localStorage.getItem('mc-color-theme') as ColorTheme) || DEFAULT_COLOR_THEME
     broadcast(pref, ct)
+  }, [])
+
+  const setMode_ = useCallback((pref: ModePreference) => {
+    applyLocalMode(pref)
     persistTheme({ mode: pref })
-  }, [persistTheme])
+  }, [applyLocalMode, persistTheme])
 
   const cycleMode = useCallback(() => {
     const next: ModePreference = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
@@ -1626,6 +1636,7 @@ function useThemeState(): ThemeContextValue {
     preference: mode,
     cycle: cycleMode,
     setTheme: setMode_,
+    applyLocalTheme: applyLocalMode,
     colorTheme,
     setColorTheme,
     themeSwitching,

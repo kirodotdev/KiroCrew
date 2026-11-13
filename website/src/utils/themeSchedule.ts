@@ -11,9 +11,9 @@
  * called: a location the user did not give is a location this feature does not
  * have, and the schedule falls back to the fixed times instead.
  *
- * The schedule never pins the mode. It names boundaries, and the driver applies
- * the scheduled mode once per boundary, so a mode the user picks by hand holds
- * until the next scheduled switch (`dueScheduledMode`).
+ * The schedule never pins the mode. It names boundaries, and the driver shows
+ * each period's mode unless the user picked a mode by hand on this device since
+ * that period began, so a hand pick holds until the next switch (`dueScheduledMode`).
  */
 
 import type { ResolvedMode } from '../hooks/useTheme'
@@ -30,8 +30,8 @@ export interface ThemeSchedule {
   /** Coarse location for sunrise/sunset, in decimal degrees (north / east positive). */
   latitude: number | null
   longitude: number | null
-  /** Epoch ms of the last boundary the driver applied; null = none yet. */
-  appliedAt: number | null
+  /** Epoch ms of the last mode picked by hand on this device while the schedule ran; null = none since it last changed. */
+  pickedAt: number | null
 }
 
 export const THEME_SCHEDULE_STORAGE_KEY = 'mc-theme-schedule'
@@ -43,7 +43,7 @@ export const DEFAULT_THEME_SCHEDULE: ThemeSchedule = {
   darkAt: '19:00',
   latitude: null,
   longitude: null,
-  appliedAt: null,
+  pickedAt: null,
 }
 
 const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/
@@ -82,7 +82,7 @@ export function parseThemeSchedule(raw: string | null): ThemeSchedule {
     darkAt: typeof d.darkAt === 'string' && isValidClockTime(d.darkAt) ? d.darkAt : DEFAULT_THEME_SCHEDULE.darkAt,
     latitude: finiteOrNull(d.latitude),
     longitude: finiteOrNull(d.longitude),
-    appliedAt: finiteOrNull(d.appliedAt),
+    pickedAt: finiteOrNull(d.pickedAt),
   }
 }
 
@@ -139,28 +139,59 @@ function clockOn(base: Date, offsetDays: number, hhmm: string): Date {
   return new Date(base.getFullYear(), base.getMonth(), base.getDate() + offsetDays, h, m)
 }
 
-/** Every scheduled switch from two days before `now` to two days after, oldest first. */
+/** How far back to look for the day a polar day or night began (longer than any polar period). */
+const MAX_POLAR_LOOKBACK_DAYS = 200
+
+/**
+ * Every scheduled switch from two days before `now` to two days after, oldest
+ * first, with consecutive same-mode boundaries merged into the earliest one.
+ *
+ * Merging is what keeps a polar day or night from re-switching at every local
+ * midnight: the whole run is one boundary, so a mode picked by hand during it
+ * holds. For the same reason the sun window reaches back past `now - 2 days` to
+ * the last day that had a sunrise or sunset, so a run's start (and with it
+ * `scheduledModeAt().since`) stays the same from one day to the next.
+ */
 function boundariesAround(now: Date, schedule: ThemeSchedule): Boundary[] {
   const out: Boundary[] = []
   const useSun = schedule.method === 'sun' && hasSunLocation(schedule)
-  for (let offset = -2; offset <= 2; offset++) {
+  const lat = schedule.latitude as number
+  const lon = schedule.longitude as number
+  const noonOn = (offset: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset, 12)
+  let first = -2
+  if (useSun) {
+    while (first > -MAX_POLAR_LOOKBACK_DAYS && sunTimes(noonOn(first), lat, lon).kind !== 'normal') first--
+  }
+  // The latest instant emitted for an earlier day. A day's sunset can fall after
+  // the next local midnight (local midnight before solar midnight), so a whole-day
+  // polar boundary is placed after it rather than at midnight: otherwise the
+  // previous evening's sunset would sort after it and win the whole polar day.
+  let latest = -Infinity
+  for (let offset = first; offset <= 2; offset++) {
     if (useSun) {
-      const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset, 12)
-      const sun = sunTimes(day, schedule.latitude as number, schedule.longitude as number)
+      const sun = sunTimes(noonOn(offset), lat, lon)
       if (sun.kind === 'normal') {
         out.push({ at: sun.sunrise.getTime(), mode: 'light' })
         out.push({ at: sun.sunset.getTime(), mode: 'dark' })
+        latest = Math.max(latest, sun.sunrise.getTime(), sun.sunset.getTime())
       } else {
         // No sunrise or sunset that day: the whole day takes one mode, from midnight.
         const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).getTime()
-        out.push({ at: midnight, mode: sun.kind === 'polar-day' ? 'light' : 'dark' })
+        const at = Math.max(midnight, latest + 1)
+        out.push({ at, mode: sun.kind === 'polar-day' ? 'light' : 'dark' })
+        latest = Math.max(latest, at)
       }
     } else if (schedule.lightAt !== schedule.darkAt) {
       out.push({ at: clockOn(now, offset, schedule.lightAt).getTime(), mode: 'light' })
       out.push({ at: clockOn(now, offset, schedule.darkAt).getTime(), mode: 'dark' })
     }
   }
-  return out.sort((a, b) => a.at - b.at)
+  out.sort((a, b) => a.at - b.at)
+  const merged: Boundary[] = []
+  for (const b of out) {
+    if (merged.length === 0 || merged[merged.length - 1].mode !== b.mode) merged.push(b)
+  }
+  return merged
 }
 
 /** The mode the schedule calls for at `now`, and when that period started and ends. */
@@ -181,9 +212,9 @@ export function scheduledModeAt(
 }
 
 /**
- * The mode to apply now, or null when nothing is due. A boundary is applied once:
- * after it is recorded in `appliedAt`, a manual mode change holds until the next
- * boundary passes.
+ * The mode this device should show now, or null when the schedule leaves the
+ * mode alone: it is off, it names no switch, or a mode was picked by hand
+ * (`pickedAt`) since the current period began, which holds until the next one.
  */
 export function dueScheduledMode(
   now: Date,
@@ -192,6 +223,6 @@ export function dueScheduledMode(
   if (!schedule.enabled) return null
   const current = scheduledModeAt(now, schedule)
   if (!current) return null
-  if (schedule.appliedAt !== null && schedule.appliedAt >= current.since) return null
+  if (schedule.pickedAt !== null && schedule.pickedAt >= current.since) return null
   return { mode: current.mode, boundary: current.since }
 }

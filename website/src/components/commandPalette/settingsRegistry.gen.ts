@@ -2594,8 +2594,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "display.dark-from",
-    "label": "Dark from",
+    "id": "display.dark-theme-from",
+    "label": "Dark theme from",
     "labelKey": "pages.settings.displayPanel.theme_schedule_dark_at",
     "tab": "display",
     "type": "input",
@@ -2801,8 +2801,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "display.light-from",
-    "label": "Light from",
+    "id": "display.light-theme-from",
+    "label": "Light theme from",
     "labelKey": "pages.settings.displayPanel.theme_schedule_light_at",
     "tab": "display",
     "type": "input",
@@ -2955,10 +2955,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.remote_editor.host"
   },
   {
-    "id": "display.switch-on-a-schedule",
-    "label": "Switch on a schedule",
+    "id": "display.switch-light-and-dark-on-a-schedule",
+    "label": "Switch light and dark on a schedule",
     "labelKey": "pages.settings.displayPanel.theme_schedule",
-    "hint": "Switches between light and dark automatically. A mode you pick by hand stays until the next scheduled switch.",
+    "hint": "A mode you pick by hand stays until the next scheduled switch.",
     "tab": "display",
     "type": "toggle",
     "occurrence": 1,

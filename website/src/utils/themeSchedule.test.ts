@@ -82,6 +82,25 @@ describe('scheduledModeAt', () => {
     expect(scheduledModeAt(new Date('2026-12-21T12:00:00Z'), arctic)?.mode).toBe('dark')
   })
 
+  // West of its time zone's meridian (here 18.96 W on UTC) local midnight comes
+  // before solar midnight, so the last sunset before polar day (17 May, 00:38 on
+  // 18 May) falls after the first polar day's local midnight.
+  const lateSunset = schedule({ method: 'sun', latitude: 69.65, longitude: -18.96 })
+
+  it('starts polar day light even when the previous sunset falls after local midnight', () => {
+    expect(sunTimes(new Date('2026-05-18T12:00:00Z'), 69.65, -18.96).kind).toBe('polar-day')
+    expect(scheduledModeAt(new Date('2026-05-18T10:00:00Z'), lateSunset)?.mode).toBe('light')
+  })
+
+  it('treats a polar day as one period, so it does not re-switch at each midnight', () => {
+    const first = scheduledModeAt(new Date('2026-05-19T10:00:00Z'), lateSunset)
+    const later = scheduledModeAt(new Date('2026-05-25T10:00:00Z'), lateSunset)
+    expect(first?.mode).toBe('light')
+    expect(later?.since).toBe(first?.since)
+    const picked = { ...lateSunset, pickedAt: first!.since + 1 }
+    expect(dueScheduledMode(new Date('2026-05-25T10:00:00Z'), picked)).toBeNull()
+  })
+
   it('has no schedule when light and dark start at the same time', () => {
     expect(scheduledModeAt(new Date('2026-03-10T12:00:00Z'), schedule({ method: 'fixed', lightAt: '08:00', darkAt: '08:00' }))).toBeNull()
   })
@@ -94,15 +113,17 @@ describe('dueScheduledMode', () => {
     expect(dueScheduledMode(new Date('2026-03-10T12:00:00Z'), { ...fixed, enabled: false })).toBeNull()
   })
 
-  it('applies the current period once, then leaves a manual change alone until the next boundary', () => {
+  it('names the current period until a mode is picked by hand, then holds that pick until the next boundary', () => {
     const noon = new Date('2026-03-10T12:00:00Z')
     const due = dueScheduledMode(noon, fixed)
     expect(due).toEqual({ mode: 'light', boundary: Date.parse('2026-03-10T07:00:00Z') })
-    const applied = { ...fixed, appliedAt: due!.boundary }
-    // Same period: nothing is due, so a mode picked by hand holds.
-    expect(dueScheduledMode(new Date('2026-03-10T18:59:00Z'), applied)).toBeNull()
+    // Still due later in the same period: nothing recorded means nothing to hold.
+    expect(dueScheduledMode(new Date('2026-03-10T18:59:00Z'), fixed)).toEqual(due)
+    const picked = { ...fixed, pickedAt: noon.getTime() }
+    // Same period: a mode picked by hand holds.
+    expect(dueScheduledMode(new Date('2026-03-10T18:59:00Z'), picked)).toBeNull()
     // The next boundary passes: the schedule takes over again.
-    expect(dueScheduledMode(new Date('2026-03-10T19:00:00Z'), applied)).toEqual({
+    expect(dueScheduledMode(new Date('2026-03-10T19:00:00Z'), picked)).toEqual({
       mode: 'dark',
       boundary: Date.parse('2026-03-10T19:00:00Z'),
     })

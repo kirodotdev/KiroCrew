@@ -1511,10 +1511,10 @@
       "hint": "The font the whole dashboard uses, including chat, the composer, and sidebar session and folder names. Pick one installed on the machine you view the dashboard from, or type any font name — a Nerd Font renders its glyphs and a programming font shows its ligatures."
     },
     {
-      "id": "display.dark-from",
-      "label": "Dark from",
+      "id": "display.dark-theme-from",
+      "label": "Dark theme from",
       "tab": "display",
-      "route": "/settings/display/theme?highlight=display.dark-from"
+      "route": "/settings/display/theme?highlight=display.dark-theme-from"
     },
     {
       "id": "display.default-for-new-sessions",
@@ -1632,10 +1632,10 @@
       "route": "/settings/display/theme?highlight=display.latitude"
     },
     {
-      "id": "display.light-from",
-      "label": "Light from",
+      "id": "display.light-theme-from",
+      "label": "Light theme from",
       "tab": "display",
-      "route": "/settings/display/theme?highlight=display.light-from"
+      "route": "/settings/display/theme?highlight=display.light-theme-from"
     },
     {
       "id": "display.longitude",
@@ -1720,11 +1720,11 @@
       "configKey": "dashboard.remote_editor.host"
     },
     {
-      "id": "display.switch-on-a-schedule",
-      "label": "Switch on a schedule",
+      "id": "display.switch-light-and-dark-on-a-schedule",
+      "label": "Switch light and dark on a schedule",
       "tab": "display",
-      "route": "/settings/display/theme?highlight=display.switch-on-a-schedule",
-      "hint": "Switches between light and dark automatically. A mode you pick by hand stays until the next scheduled switch."
+      "route": "/settings/display/theme?highlight=display.switch-light-and-dark-on-a-schedule",
+      "hint": "A mode you pick by hand stays until the next scheduled switch."
     },
     {
       "id": "display.theme",

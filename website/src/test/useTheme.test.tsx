@@ -93,6 +93,26 @@ describe('useTheme', () => {
     expect(localStorage.getItem('mc-theme')).toBe('light')
   })
 
+  it('saves a picked mode to the workspace, but not one shown by applyLocalTheme', async () => {
+    mockMatchMedia(true)
+    const { api } = await import('../api/client')
+    const save = vi.spyOn(api, 'updateThemeConfig').mockResolvedValue({} as never)
+    try {
+      const { result } = renderThemeHook()
+      act(() => result.current.applyLocalTheme('dark'))
+      expect(result.current.preference).toBe('dark')
+      expect(localStorage.getItem('mc-theme')).toBe('dark')
+      await act(async () => {})
+      expect(save).not.toHaveBeenCalled()
+
+      act(() => result.current.setTheme('light'))
+      await act(async () => {})
+      expect(save).toHaveBeenCalledWith({ mode: 'light' })
+    } finally {
+      save.mockRestore()
+    }
+  })
+
   it('reacts to OS theme change when preference is system', () => {
     const { setMatches } = mockMatchMedia(true)
     const { result } = renderThemeHook()

@@ -446,7 +446,7 @@ rather than re-downloading.
 
 ### Scheduled light and dark
 
-Settings → Display → Theme carries a *Switch on a schedule* toggle under the Mode
+Settings → Display → Theme carries a *Switch light and dark on a schedule* toggle under the Mode
 picker. Its method is either **sunrise and sunset** or **custom times** (a light
 start and a dark start, `HH:MM`). Both are read on the device clock: calendar days
 and clock times are built with the local `Date` constructor, so the schedule
@@ -459,14 +459,34 @@ follows the device time zone, daylight-saving shifts included.
   equation (`sunTimes`) over a coarse latitude/longitude the user typed. Nothing
   is fetched and the browser geolocation API is never called. With no location
   the sun method falls back to the custom times. A day with no sunrise or sunset
-  (polar day or night) keeps one mode from midnight.
+  (polar day or night) keeps one mode from midnight, or from just after the
+  previous day's last event when that falls after midnight. Consecutive
+  boundaries of the same mode merge into the first, and the window reaches back
+  to the last day with a sunrise or sunset, so a whole polar day or night is one
+  period that does not re-switch at each midnight.
 - **The schedule never pins the mode.** `ThemeScheduleDriver` (mounted beside
-  `ThemeExperienceLayer` in `main.tsx`) applies the scheduled mode through the same
-  `setTheme` the Mode picker uses, once per boundary, and records that boundary in
-  `appliedAt` (`dueScheduledMode`). A mode picked by hand therefore holds until the
-  next scheduled switch. Editing when the schedule switches clears `appliedAt`, so
-  the new schedule applies at once. The driver re-checks at the next boundary, at
-  least hourly, and when the tab becomes visible.
+  `ThemeExperienceLayer` in `main.tsx`) shows each period's mode unless a mode
+  was picked by hand on this device since that period began (`dueScheduledMode`).
+  The driver notices a pick (any `setTheme`: the Mode picker, the palette, the
+  cycle key) and records its time in `pickedAt`, so the pick holds in every tab
+  of this device until the next scheduled switch. Editing when the schedule
+  switches clears `pickedAt`, so the new schedule applies at once. The driver
+  re-checks at the next boundary, at least hourly, and when the tab becomes
+  visible.
+- **Its switches stay on this device.** The driver switches through
+  `applyLocalTheme`, which updates the tab and the `mc-theme` render cache but
+  never writes the workspace mode (`PUT /api/config/theme`). Otherwise one
+  device's schedule would become the mode every other device boots into, with a
+  schedule or without one. A pick by hand still goes through `setTheme` and the
+  workspace, as it does with the schedule off.
+- **Boot and tabs.** The driver waits for `themeBootReady`, because the boot read
+  adopts the workspace mode when it lands. Because nothing it shows is saved, it
+  re-asserts the period's mode each time it starts watching, so a reload, a new
+  tab, or a boundary another tab reached first all end on the scheduled mode.
+  When storage refuses the `pickedAt` write, the store keeps its snapshot (no
+  re-render loop) and the driver remembers the pick in memory, so it is not
+  overridden. The Settings rows show a storage failure as an `ErrorNotice`, and a
+  typed latitude or longitude the browser refused stays in its field.
 
 ### Catalog failure
 

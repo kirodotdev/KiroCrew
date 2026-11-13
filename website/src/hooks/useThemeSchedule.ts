@@ -42,28 +42,37 @@ function subscribe(listener: () => void): () => void {
   }
 }
 
-/** Write the schedule. A change to WHEN it switches clears `appliedAt`, so it applies at once. */
-export function writeThemeSchedule(next: ThemeSchedule): void {
+/**
+ * Write the schedule.
+ *
+ * Returns false, and leaves the snapshot untouched, when the browser refuses the
+ * write (storage full or blocked). Publishing a snapshot that storage does not
+ * hold would make the next `read()` reparse the old value into a new object,
+ * re-running every subscriber's effect, which would retry the same write forever.
+ */
+export function writeThemeSchedule(next: ThemeSchedule): boolean {
   const raw = JSON.stringify(next)
-  safeSetItem(THEME_SCHEDULE_STORAGE_KEY, raw)
+  if (!safeSetItem(THEME_SCHEDULE_STORAGE_KEY, raw)) return false
   snapshotRaw = raw
   snapshot = next
   notify()
+  return true
 }
 
 export function readThemeSchedule(): ThemeSchedule {
   return read()
 }
 
-/** Fields that decide when the schedule switches; editing one re-applies it now. */
+/** Fields that decide when the schedule switches; editing one clears a hand pick, so it applies now. */
 const TIMING_FIELDS: ReadonlyArray<keyof ThemeSchedule> = ['enabled', 'method', 'lightAt', 'darkAt', 'latitude', 'longitude']
 
-export function useThemeSchedule(): [ThemeSchedule, (patch: Partial<ThemeSchedule>) => void] {
+/** Apply `patch` to the stored schedule; false when the browser refused to store it. */
+export function useThemeSchedule(): [ThemeSchedule, (patch: Partial<ThemeSchedule>) => boolean] {
   const schedule = useSyncExternalStore(subscribe, read, read)
   const update = useCallback((patch: Partial<ThemeSchedule>) => {
     const current = read()
     const timingChanged = TIMING_FIELDS.some(k => k in patch && patch[k] !== current[k])
-    writeThemeSchedule({ ...current, ...patch, ...(timingChanged ? { appliedAt: null } : {}) })
+    return writeThemeSchedule({ ...current, ...patch, ...(timingChanged ? { pickedAt: null } : {}) })
   }, [])
   return [schedule, update]
 }

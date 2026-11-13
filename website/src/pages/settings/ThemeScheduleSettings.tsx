@@ -1,11 +1,12 @@
 /**
- * Settings → Display → Theme: the "Switch on a schedule" rows, under the Mode
+ * Settings → Display → Theme: the "Switch light and dark on a schedule" rows, under the Mode
  * picker. The schedule is device-local (see `useThemeSchedule`), so these rows
  * write localStorage and carry a `settingId`, not a gateway `configKey`.
  */
 
 import { useId, useState } from 'react'
 import { Sunrise, Clock } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsButtonGroup, SettingsInput, SettingsToggle } from '../../components/settings'
 import { useThemeSchedule } from '../../hooks/useThemeSchedule'
 import { i18nT } from '../../i18n/t'
@@ -30,29 +31,41 @@ function deviceTimeZone(): string {
 /**
  * A typed coordinate field's state: '' clears the stored value, a number in range
  * sets it, and anything else is held as a draft (and flagged) without being stored.
+ * A valid value the browser refused to store is kept as an `unsaved` draft too, so
+ * leaving the field does not silently put the old value back.
  */
-function useCoordinate(value: number | null, isValid: (v: number | null) => v is number, commit: (v: number | null) => void) {
+function useCoordinate(value: number | null, isValid: (v: number | null) => v is number, commit: (v: number | null) => boolean) {
   const [draft, setDraft] = useState<string | null>(null)
+  const [unsaved, setUnsaved] = useState(false)
   const errorId = useId()
   const text = draft ?? (value === null ? '' : String(value))
   const parsed = text.trim() === '' ? null : Number(text)
   return {
     text,
     errorId,
+    unsaved,
     invalid: parsed !== null && !isValid(parsed),
     onChange: (v: string) => {
       setDraft(v)
       const n = v.trim() === '' ? null : Number(v)
-      if (n === null || isValid(n)) commit(n)
+      setUnsaved((n === null || isValid(n)) && !commit(n))
     },
-    onBlur: () => setDraft(null),
+    onBlur: () => { if (!unsaved) setDraft(null) },
   }
 }
 
 export function ThemeScheduleSettings() {
   const [schedule, update] = useThemeSchedule()
-  const latitude = useCoordinate(schedule.latitude, isValidLatitude, v => update({ latitude: v }))
-  const longitude = useCoordinate(schedule.longitude, isValidLongitude, v => update({ longitude: v }))
+  // Set when the browser refused the last change (storage full or blocked).
+  const [saveFailed, setSaveFailed] = useState(false)
+  const save = (patch: Parameters<typeof update>[0]) => {
+    const saved = update(patch)
+    setSaveFailed(!saved)
+    return saved
+  }
+  const latitude = useCoordinate(schedule.latitude, isValidLatitude, v => save({ latitude: v }))
+  const longitude = useCoordinate(schedule.longitude, isValidLongitude, v => save({ longitude: v }))
+  const draftUnsaved = latitude.unsaved || longitude.unsaved
   const timeZone = deviceTimeZone()
   const useSun = schedule.method === 'sun'
   const located = hasSunLocation(schedule)
@@ -64,12 +77,19 @@ export function ThemeScheduleSettings() {
     <>
       <SettingsToggle
         label={i18nT('pages.settings.displayPanel.theme_schedule')}
-        description={i18nT('pages.settings.displayPanel.theme_schedule_timezone', { timeZone })}
+        description={i18nT('pages.settings.displayPanel.theme_schedule_description', { timeZone })}
         hint={i18nT('pages.settings.displayPanel.theme_schedule_hint')}
         settingId="display.theme-schedule"
         checked={schedule.enabled}
-        onChange={enabled => update({ enabled })}
+        onChange={enabled => save({ enabled })}
       />
+      {draftUnsaved ? (
+        /* No hand-off: the typed latitude or longitude the browser refused is held
+           only in this field, and opening the agent would unmount it. */
+        <ErrorNotice message={saveFailed ? i18nT('components.themeExperienceLayer.save_failed_storage') : null} />
+      ) : (
+        <ErrorNotice askAgent message={saveFailed ? i18nT('components.themeExperienceLayer.save_failed_storage') : null} />
+      )}
       {schedule.enabled && (
         <div className="flex flex-col gap-1 pl-3 border-l border-border">
           <SettingsButtonGroup
@@ -79,7 +99,7 @@ export function ThemeScheduleSettings() {
               { value: 'sun', label: i18nT('pages.settings.displayPanel.theme_schedule_sun'), icon: <Sunrise className="w-3.5 h-3.5" /> },
               { value: 'fixed', label: i18nT('pages.settings.displayPanel.theme_schedule_fixed'), icon: <Clock className="w-3.5 h-3.5" /> },
             ]}
-            onChange={v => update({ method: v as ThemeScheduleMethod })}
+            onChange={v => save({ method: v as ThemeScheduleMethod })}
           />
           {useSun && (
             <>
@@ -125,13 +145,13 @@ export function ThemeScheduleSettings() {
                 label={i18nT('pages.settings.displayPanel.theme_schedule_light_at')}
                 type="time"
                 value={schedule.lightAt}
-                onChange={v => { if (isValidClockTime(v)) update({ lightAt: v }) }}
+                onChange={v => { if (isValidClockTime(v)) save({ lightAt: v }) }}
               />
               <SettingsInput
                 label={i18nT('pages.settings.displayPanel.theme_schedule_dark_at')}
                 type="time"
                 value={schedule.darkAt}
-                onChange={v => { if (isValidClockTime(v)) update({ darkAt: v }) }}
+                onChange={v => { if (isValidClockTime(v)) save({ darkAt: v }) }}
               />
               {schedule.lightAt === schedule.darkAt && (
                 <div className="text-[12px] text-danger" aria-live="polite">{i18nT('pages.settings.displayPanel.theme_schedule_same_times')}</div>
