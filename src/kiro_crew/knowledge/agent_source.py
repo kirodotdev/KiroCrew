@@ -33,7 +33,12 @@ from datetime import datetime
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
-from .ingestion import DUPLICATE_JOB_STATUS, ImportChunkBudgetError, IngestionPipeline
+from .ingestion import (
+    DUPLICATE_JOB_STATUS,
+    FileTooLargeError,
+    ImportChunkBudgetError,
+    IngestionPipeline,
+)
 from .store import AUTO_ADDED_PROP, KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -436,7 +441,7 @@ async def add_agent_document(
     other source gets -- and the same pre-ingest duplicate gate.
 
     Returns a result dict with ``status`` in ``added`` / ``duplicate`` /
-    ``error``.
+    ``deferred`` / ``error``.
     """
     async with _ADD_LOCK:
         return await _add_agent_document(
@@ -632,6 +637,12 @@ async def _add_agent_document(
                                     content_hash, preserve_if_orphans=True)
             return {"status": "deferred", "reason": str(exc),
                     "slug": slug, "source_id": source_id}
+        except FileTooLargeError as exc:
+            # Over ``knowledge.max_ingest_file_mb``: a refused document, not a
+            # gateway fault. The pipeline already warned and wrote nothing.
+            await asyncio.to_thread(clear_ingesting, store, source_id, slug,
+                                    content_hash, preserve_if_orphans=True)
+            return {"status": "error", "error": str(exc)}
         except BaseException:
             # Any other failure (including cancellation) before the finalize hop
             # ran leaves no ``active`` row for THIS attempt; drop its intent
