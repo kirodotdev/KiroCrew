@@ -115,8 +115,8 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
                     slot = str(obj.get("slot") or "")
                     if not slot or not is_session_slot(slot):
                         continue
-                    credits = obj.get("credits")
-                    if not isinstance(credits, (int, float)) or not math.isfinite(credits):
+                    credits = _finite_number(obj.get("credits"))
+                    if credits is None:
                         continue
                     # Normalize bare dashboard keys to the full session-key form.
                     key = spend_key_for_slot(slot)

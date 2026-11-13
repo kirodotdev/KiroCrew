@@ -1485,7 +1485,12 @@ JSON while `json.loads` still accepts them: one such row travels silently into a
 `web.json_response` body no browser can parse, taking down every panel that
 reads the store instead of losing one turn's numbers. `cost_breakdown`
 additionally skips non-finite rows on read, because shards written before this
-guard can already contain them.
+guard can already contain them. The same readers never let one row's bad number
+fail the read: `_parse_token_history` reads a token or `cost` field that is not a
+finite number (a null, a string, an int wider than a double) as 0;
+`cost_breakdown` counts a row with no credits as a turn that billed none and
+skips one whose `credits` is not a finite number, and `slot_spend` skips both,
+all through `usage_spend._finite_number`.
 
 **Subagent turns are excluded from both readers.** `usage.is_session_slot(slot)`
 drops any row whose `telemetry_channel_of` is `subagent`, at the point the row is
