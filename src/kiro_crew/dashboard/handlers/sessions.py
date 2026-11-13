@@ -1715,14 +1715,39 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
 
 
 async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -> str | None:
-    """One refresh (:func:`_fetch_usage_bg`), then the plan-credit alert check.
+    """One refresh (:func:`_fetch_usage_bg`), then the plan-credit alert check on its reading.
 
-    The check is off until ``telemetry.plan_alert_pcts`` lists a percentage, and
-    it never raises, so the refresh's outcome is what the caller gets either way.
+    Only a refresh that runs is checked: :func:`_fetch_usage_bg` tests ``_usage_fetching``
+    before its first await, so the flag read here, with no await between, says whether the
+    call refreshes or returns at once because another refresh is running, which checks its
+    own reading. The check never raises, so the refresh's outcome is what the caller gets.
     """
+    ran = not _usage_fetching
     outcome = await _fetch_usage_bg(vault_owned=vault_owned)
-    await plan_credit_alerts.notify_if_crossed(state, _usage_cache)
+    if ran:
+        await _alert_on_cached_reading(state)
     return outcome
+
+
+async def _alert_on_cached_reading(state: DashboardState) -> None:
+    """Run :func:`plan_credit_alerts.notify_if_crossed` on the reading the GET would serve.
+
+    The reading and the identity it was published under are taken in one step, as the GET
+    takes them, and judged by the GET's rule (:func:`_reading_not_servable`) on a fresh
+    :func:`_vault_owns_usage` verdict: a reading the GET would not serve is not checked.
+    That identity names the account the alert record is kept for. Off, with no identity
+    read, while ``telemetry.plan_alert_pcts`` is empty. Never raises.
+    """
+    usage, vault_fp, user_id = _usage_cache, _usage_cache_vault_fp, _usage_cache_user_id
+    try:
+        if not await plan_credit_alerts.enabled():
+            return
+        if await _reading_not_servable(await _vault_owns_usage(), usage, vault_fp):
+            return
+    except Exception:  # noqa: BLE001 - an alert miss must not break the usage refresh
+        logger.warning("Plan credit alert: could not check the reading's account", exc_info=True)
+        return
+    await plan_credit_alerts.notify_if_crossed(state, usage, vault_fp=vault_fp, user_id=user_id)
 
 
 async def api_sessions_usage(request: web.Request) -> web.Response:
