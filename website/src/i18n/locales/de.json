@@ -6067,7 +6067,9 @@
     "voicePlaybackBar": {
       "preparing": "Audio wird vorbereitet…",
       "playing": "Wird vorgelesen",
-      "stop": "Vorlesen stoppen"
+      "stop": "Vorlesen stoppen",
+      "restart": "Erneut vorlesen",
+      "restartFromStart": "Von vorn erneut vorlesen"
     },
     "avatarBuilder": {
       "apply": "Übernehmen",

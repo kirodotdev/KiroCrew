@@ -6407,7 +6407,9 @@
     "voicePlaybackBar": {
       "preparing": "Подготовка аудио…",
       "playing": "Идёт озвучивание",
-      "stop": "Остановить озвучивание"
+      "stop": "Остановить озвучивание",
+      "restart": "Повторить",
+      "restartFromStart": "Озвучить заново с начала"
     },
     "avatarBuilder": {
       "apply": "Применить",

@@ -6237,7 +6237,9 @@
     "voicePlaybackBar": {
       "preparing": "Preparando o áudio…",
       "playing": "Lendo em voz alta",
-      "stop": "Parar a leitura"
+      "stop": "Parar a leitura",
+      "restart": "Ler de novo",
+      "restartFromStart": "Ler de novo desde o início"
     },
     "avatarBuilder": {
       "apply": "Aplicar",

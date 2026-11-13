@@ -1,12 +1,12 @@
 import { useLayoutEffect, useRef } from 'react'
-import { Loader2, Square, Volume2 } from 'lucide-react'
+import { Loader2, RotateCcw, Square, Volume2 } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import { focusComposer } from '../pages/chat/composerFocus'
 import { useAppSelector } from '../store'
 import { Btn } from './ui'
 
-/** Shows above the composer while a reply is being prepared or read aloud, with a Stop button. */
+/** Shows above the composer while a reply is being prepared or read aloud, with Read again and Stop buttons. */
 export default function VoicePlaybackBar() {
   const playing = useAppSelector(s => s.chat.voicePlaying)
   const preparing = useAppSelector(s => s.chat.voicePreparing)
@@ -30,6 +30,17 @@ function Bar({ playing }: { playing: boolean }) {
         <span role="status" className="min-w-0 flex-1 truncate">
           {i18nT(playing ? 'components.voicePlaybackBar.playing' : 'components.voicePlaybackBar.preparing')}
         </span>
+        <Btn
+          type="button"
+          onClick={() => window.dispatchEvent(new Event('voice-restart'))}
+          aria-label={i18nT('components.voicePlaybackBar.restartFromStart')}
+          title={i18nT('components.voicePlaybackBar.restartFromStart')}
+          className="shrink-0 bg-bg px-2 py-0.5 [@media(hover:none)]:min-h-10"
+          data-testid="voice-playback-restart"
+        >
+          <RotateCcw className="lucide-inline shrink-0" aria-hidden="true" />
+          <span className="max-[360px]:sr-only">{i18nT('components.voicePlaybackBar.restart')}</span>
+        </Btn>
         <Btn
           type="button"
           onClick={() => window.dispatchEvent(new Event('voice-stop'))}

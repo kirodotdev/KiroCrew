@@ -25,6 +25,17 @@ type VoiceProgress = {
   spokenLen: number
 }
 
+/** One synthesis request of the current playback context, kept so Restart can
+ *  speak the context again from its first sentence. `clientFallback` marks a
+ *  manual Read aloud that may be spoken on the client when the gateway cannot
+ *  synthesize. */
+type VoiceRequest = {
+  slot: string
+  text: string
+  request_id: string
+  clientFallback: boolean
+}
+
 const isAssistantRow = (m: ChatMessage): boolean => m.role === 'assistant'
 
 /** The newest reply of the turn that just ended, or null when that turn
@@ -99,7 +110,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const clientSpeakingRef = useRef(false)
   // Active-slot requests that have not delivered audio yet, behind `voicePreparing`.
   const awaitingAudioRef = useRef(new Set<string>())
-  const pendingVoiceRef = useRef<{ slot: string; text: string; request_id: string } | null>(null)
+  const pendingVoiceRef = useRef<VoiceRequest | null>(null)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const autoSpeakRef = useRef(false)
   // Speech offsets belong to one concrete message. A segment for another slot
@@ -107,6 +118,10 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   // from zero even while the previous message remains in the transcript.
   const voiceProgressRef = useRef<VoiceProgress | null>(null)
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
+  // The requests of the current playback context in the order they were
+  // spoken, for Restart. A new context (Stop, a new turn, a new manual Read
+  // aloud, a slot change) empties it through `stopVoice`.
+  const spokenRef = useRef<VoiceRequest[]>([])
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
 
   return useMemo<VoicePlayback>(() => {
@@ -158,7 +173,9 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       return started
     }
 
-    const stopVoice = () => {
+    // Tears down all output and in-flight requests, leaving the playback
+    // context (spoken requests, speech progress) intact.
+    const silenceVoice = () => {
       voiceMutedRef.current = true
       voiceEpochRef.current++
       // Any client-side fallback speech shares the one output channel, so Stop,
@@ -188,6 +205,11 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       voiceQueueRef.current = []
       voicePlayingRef.current = false
       dispatch(setVoicePlaying(false))
+    }
+
+    const stopVoice = () => {
+      silenceVoice()
+      spokenRef.current = []
     }
 
     const releaseVoiceOnSocketLoss = () => {
@@ -229,25 +251,29 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       return current
     }
 
-    const enqueueVoiceSynthesis = (slot: string, text: string) => {
+    // `replay` re-submits a saved request on its own, keeping the request
+    // boundaries it was first spoken with.
+    const enqueueVoiceSynthesis = (slot: string, text: string, replay?: { clientFallback: boolean }) => {
       // The first sentence starts immediately. While it synthesizes, combine
       // completed sentences into the next request to amortize local model startup.
       const pending = pendingVoiceRef.current
-      if (pending?.slot === slot && pending.text.length + text.length < 4000) {
+      if (!replay && pending && !pending.clientFallback && pending.slot === slot && pending.text.length + text.length < 4000) {
         pending.text += '\n' + text
         return
       }
       const epoch = voiceEpochRef.current
       const request_id = createVoiceRequestId()
-      const request = { slot, text, request_id }
+      const clientFallback = replay?.clientFallback ?? false
+      const request = { slot, text, request_id, clientFallback }
       pendingVoiceRef.current = request
+      spokenRef.current.push(request)
       voiceRequestsRef.current.set(request_id, slot)
       awaitAudio(request_id)
       synthChainRef.current = synthChainRef.current.then(async () => {
         if (pendingVoiceRef.current === request) pendingVoiceRef.current = null
         if (epoch !== voiceEpochRef.current || voiceMutedRef.current) return
         try {
-          await api.voiceSynthesize(slot, request.text, { request_id })
+          await api.voiceSynthesize(slot, request.text, { request_id, clientFallback })
         } catch {
           if (!voiceRequestsRef.current.delete(request_id)) return
           audioSettled(request_id)
@@ -256,6 +282,20 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           }
         }
       })
+    }
+
+    // Speaks the current playback context again from its first sentence. The
+    // speech progress stays, so a reply that is still streaming under
+    // auto-speak continues after the replayed sentences.
+    const restartVoice = () => {
+      const saved = spokenRef.current.filter(request => request.slot === storeFocusedSlot())
+      if (!saved.length) return
+      silenceVoice()
+      voiceMutedRef.current = false
+      spokenRef.current = []
+      for (const { slot, text, clientFallback } of saved) {
+        enqueueVoiceSynthesis(slot, text, { clientFallback })
+      }
     }
 
     const flushVoiceTail = (slot: string, message: ChatMessage) => {
@@ -403,11 +443,20 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           stopVoice()
           if (autoSpeakRef.current && typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
         }
+        const onVoiceRestart = () => {
+          restartVoice()
+          if (typeof AudioContext !== 'undefined') getPcmPlayer().unlock()
+        }
         const onVoiceStart = (event: Event) => {
           const { slot, request_id, clientFallback, text } = (event as CustomEvent<{ slot: string; request_id: string; clientFallback?: boolean; text?: string }>).detail
+          const requestedHere = voiceRequestsRef.current.has(request_id)
           voiceRequestsRef.current.set(request_id, slot)
           if (slot === storeFocusedSlot()) {
             voiceMutedRef.current = false
+            // A request this hook did not submit is a manual Read aloud.
+            if (!requestedHere && typeof text === 'string') {
+              spokenRef.current.push({ slot, text, request_id, clientFallback: !!clientFallback })
+            }
             // Pin the fallback eligibility and the current epoch now, so a later
             // Stop / new turn (which bumps the epoch) invalidates it and a
             // cancelled reply cannot start speaking on the client afterwards.
@@ -437,11 +486,13 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           if (!autoSpeakRef.current) stopVoice()
         }
         window.addEventListener('voice-stop', onVoiceStop)
+        window.addEventListener('voice-restart', onVoiceRestart)
         window.addEventListener('voice-synthesis-start', onVoiceStart)
         window.addEventListener('voice-synthesis-failed', onVoiceFailed)
         window.addEventListener('voice-config-changed', onVoiceConfigChanged)
         return () => {
           window.removeEventListener('voice-stop', onVoiceStop)
+          window.removeEventListener('voice-restart', onVoiceRestart)
           window.removeEventListener('voice-synthesis-start', onVoiceStart)
           window.removeEventListener('voice-synthesis-failed', onVoiceFailed)
           window.removeEventListener('voice-config-changed', onVoiceConfigChanged)

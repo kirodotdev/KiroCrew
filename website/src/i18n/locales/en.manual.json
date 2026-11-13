@@ -1745,7 +1745,9 @@
     "voicePlaybackBar": {
       "preparing": "Preparing audio…",
       "playing": "Reading aloud",
-      "stop": "Stop reading"
+      "stop": "Stop reading",
+      "restart": "Read again",
+      "restartFromStart": "Read again from the start"
     },
     "avatarBuilder": {
       "apply": "Apply",
