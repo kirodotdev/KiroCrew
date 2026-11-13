@@ -67,6 +67,7 @@ from kiro_crew.metrics.consent_pins import (  # noqa: F401
     outbound_consented,
     pin_env_var,
 )
+from kiro_crew.metrics.consent_worker_stacks import CONSENT_THREAD_NAME, describe_consent_workers
 from kiro_crew.metrics.recorder import MetricsRecorder
 from kiro_crew.metrics.recorder_build import _agent_key, _Build  # noqa: F401
 from kiro_crew.platform.context import (
@@ -631,8 +632,8 @@ _build_generation = 0
 # otherwise the config route's own write would put the SDK import back on the loop.
 _ever_built = False
 # True while a consent-check worker is running, so a busy window does not spawn one
-# thread per request. Cleared in the worker's finally, so a crash costs one window
-# rather than stranding the check.
+# thread per request. Set after the worker started and cleared in its finally, so
+# neither a crash nor a failed start strands the check.
 _check_in_flight = False
 
 
@@ -1690,20 +1691,20 @@ def _schedule_consent_check_locked() -> None:
     """Hand the recheck to a worker. Call under ``_lock``.
 
     Stamps nothing itself: the worker owns the clock, so a failed or superseded
-    check cannot leave the window permanently expired. The in-flight flag is
-    cleared in the worker's ``finally``, so a crash delays the next check by one
-    window rather than stranding it.
+    check cannot leave the window permanently expired. The in-flight flag is set
+    only once ``start()`` returned, so a thread that cannot start leaves no flag
+    behind; the worker's ``finally`` (which needs ``_lock``, held here) clears it.
     """
     global _check_in_flight
     if _check_in_flight:
         return
-    _check_in_flight = True
     threading.Thread(
         target=_consent_worker,
         args=(_build_generation,),
-        name="kirocrew-telemetry-consent",
+        name=CONSENT_THREAD_NAME,
         daemon=True,
     ).start()
+    _check_in_flight = True
 
 
 def get_recorder() -> MetricsRecorder:
@@ -1901,12 +1902,13 @@ def _wait_for_in_flight_consent_worker() -> None:
         with _lock:
             if not _check_in_flight:
                 return
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                "reset_for_testing: a consent-check worker is still in flight "
-                f"after {_RESET_WAIT_BOUND_SECS}s; a test must never proceed "
-                "with a live stale worker able to mutate module state"
-            )
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    "reset_for_testing: a consent-check worker is still in flight "
+                    f"after {_RESET_WAIT_BOUND_SECS}s; a test must never proceed "
+                    "with a live stale worker able to mutate module state; "
+                    + describe_consent_workers()
+                )
         time.sleep(_RESET_WAIT_POLL_SECS)
 
 
