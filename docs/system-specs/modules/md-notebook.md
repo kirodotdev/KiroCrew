@@ -626,6 +626,8 @@ including the conflict path. The suite is split by topic: `test/test_md_notebook
 `test/test_md_notebook_settings_sync.py` (change polling, sync stamps, settings and the
 auto-sync loop), with shared fixtures in `test/md_notebook_helpers.py`.
 `test/test_md_notebook_git_ops.py` pins Git subprocess lifecycle,
+`test/test_core_md_notebook_decoupling.py` pins that no core module imports the app and
+lists, with a reason each, the core strings that still name it,
 `test/test_sandbox_md_notebook_carveout.py` pins the state-file carve-out and orphan sweep,
 and `src/kiro_crew/apps/builtins/md_notebook/tests/test_md_notebook_windows.py` covers the
 native Windows branches. All are collected because `setup.cfg` includes both `test` and
