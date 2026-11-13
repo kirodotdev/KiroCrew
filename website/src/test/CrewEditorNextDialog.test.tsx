@@ -1094,6 +1094,15 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     await waitFor(() => expect(mockApi.deleteKirocrewAgent).toHaveBeenCalled())
   })
 
+  it('says the deleted bot\u2019s memory is kept and a new bot can take it over', async () => {
+    const dialog = await openNew()
+    fireEvent.click(within(dialog).getByTestId('next-rail-danger'))
+    const pane = await within(dialog).findByTestId('next-pane-danger')
+    expect(pane).toHaveTextContent('memory and past chats are kept. A new bot can take that memory over')
+    fireEvent.click(within(dialog).getByTestId('next-delete-crew'))
+    expect(pane).toHaveTextContent('A new bot can start from its memory.')
+  })
+
   it('cancels the armed danger delete', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-danger'))

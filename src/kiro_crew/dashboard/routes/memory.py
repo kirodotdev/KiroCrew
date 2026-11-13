@@ -74,6 +74,7 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/memory/retired/restore", handlers.api_memory_retired_restore)
     app.router.add_get("/api/memory/retired", handlers.api_memory_retired)
     app.router.add_get("/api/memory/stores", handlers.api_memory_stores)
+    app.router.add_get("/api/memory/ownerless-stores", handlers.api_memory_ownerless_stores)
     app.router.add_get("/api/memory/backups", handlers.api_memory_backups)
     app.router.add_post("/api/memory/backup", handlers.api_memory_backup)
     app.router.add_post("/api/memory/restore", handlers.api_memory_restore)

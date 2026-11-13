@@ -294,11 +294,14 @@ card's goal as its goal; its description stays empty until it or you write one.
 What the Bot is working on right now is its task list on the Crew board,
 not part of the goal.
 
-Creating a Bot allocates its memory store for it. That store cannot later
+Creating a Bot allocates its memory store for it, unless it takes over a
+deleted Bot's kept memory (below). That store cannot later
 be pointed somewhere else or shared with another Bot — `kirocrew agent
 update --memory-store` refuses it — because a Bot's memory is its identity.
 Deleting a Bot removes it, along with its picture and its goal check-ins. Its
-workspace, its memory and its past chats are kept.
+workspace, its memory and its past chats are kept. A new Bot can take that
+memory over: pick it under **Memory** in the New Bot dialog's **Advanced
+settings**, and the new Bot owns that store and its past chats.
 
 ## Memory
 

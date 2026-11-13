@@ -922,6 +922,13 @@ class MemoryStoreConfig:
         default="",
         metadata=_meta("Owner Member", "Display label of the Bot owning this memory store."),
     )
+    former_owner: str = field(
+        default="",
+        metadata=_meta(
+            "Former Owner",
+            "The name the deleted bot that left this kept member store showed; display only.",
+        ),
+    )
     memory_version: int = field(
         default=1,
         metadata=_meta("Memory Version", "1 for existing memory; 2 for member memory."),
