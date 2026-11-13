@@ -31,12 +31,12 @@ from __future__ import annotations
 
 import ast
 import inspect
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+import source_corpus
 from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are requested by name
     _client,
     chat_run_fixture,
@@ -382,7 +382,6 @@ async def test_a_withheld_turn_opens_no_stream_and_still_retires_the_line(
 # that defaults to "not the person", so a new producer is never echoed until it
 # says it is.
 
-_REPO_SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 _ORIGIN_KWARGS = (
     "_directive_user_origin",
     "_directive_channel_origin",
@@ -408,10 +407,14 @@ def _system_dispatch_sites() -> list[tuple[str, dict[str, Any]]]:
     of its values and is covered by the predicate tests below.
     """
     sites: list[tuple[str, dict[str, Any]]] = []
-    for path in sorted(_REPO_SRC.rglob("*.py")):
+    root = source_corpus.src_root()
+    # This runs at collection on every worker, so it parses only the files that
+    # spell ``_run_chat``: a call to it cannot exist anywhere else.
+    for path, _text, tree in source_corpus.parsed_candidates(
+        require_all=("_run_chat",), skip_syntax_errors=False
+    ):
         if "/tests/" in path.as_posix():
             continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -431,7 +434,7 @@ def _system_dispatch_sites() -> list[tuple[str, dict[str, Any]]]:
                 or origin.get("_turn_actor") not in (None, "", "user")
             )
             if system:
-                rel = path.relative_to(_REPO_SRC).as_posix()
+                rel = path.relative_to(root).as_posix()
                 sites.append((f"{rel}:{node.lineno}", origin))
     return sites
 
