@@ -1,12 +1,12 @@
 ---
 title: Host resource pressure goes on the work ledger and wakes the conductor, which pauses dispatch
-status: accepted
+status: partial
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-13
 last-audited: 2026-11-13
-audited-at: 9b32941be6
-doc-pr: null
-implementation-prs: []
+audited-at: 00c5418f06
+doc-pr: 36304
+implementation-prs: [36481, 36657]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,11 +14,29 @@ superseded-by: []
 
 # RFC: Host resource pressure goes on the work ledger and wakes the conductor
 
-Status: accepted. The repository owner asked for this on 2026-11-13 in the
-conductor chat and chose the design below (option C of the design study). It
-takes effect when this document merges; the code change follows in its own PR
-and rebases onto the base that carries this document. Nothing is built. Every
-code reference was read at `9b32941be6`.
+Status: partial. §3 to §10 ship in #36481; §12 (a pressure level change
+releases a person-wait hold once) ships separately in
+[#36657](https://github.com/kirodotdev/KiroCrew/pull/36657). The repository
+owner asked for this on 2026-11-13 in the conductor chat and chose the design
+below (option C of the design study). This document merged first in #36304; the
+code shipped in [#36481](https://github.com/kirodotdev/KiroCrew/pull/36481), which names
+three placements the design left open:
+
+- The record is `<data home>/work-ledger/host/pressure.json`
+  (`host_pressure.path`): a reserved `host/` directory of the
+  `work-ledger/` tree (in `RESERVED_ROOT_DIRS`, so board scans step over it),
+  under the tree's sandbox mask, so a worker cannot forge it. A read accepts
+  only a short episode id and caps `reading` at 200 characters.
+- The critical refusal sits in `_create_item` only. `create_bound_item` (a
+  remote peer's create for a hub's item) already has the peer's own `crew_busy`
+  gate.
+- The refusal calls `admission_check()`, a live probe, not
+  `cached_admission_check()` as §3.5 says: that cache refreshes only when asked,
+  so the first `create` after recovery could be refused on a stale verdict. The
+  store runs off the event loop, so the probe blocks nothing.
+
+The design text below was read at `9b32941be6`; the shipped code at
+`00c5418f06`.
 
 This document lands on its own because it changes what the goal conductor does
 by default (it pauses dispatch on host pressure) and which `create` the work
@@ -91,6 +109,12 @@ A record whose `updated_at` is older than 3 samples (90 s) reads as absent. A
 torn or missing file reads as absent and never raises. So a gateway that died
 or restarted mid-episode cannot leave a stale `critical` behind. Absent means
 proceed, the same as `admission_check` on `unknown`.
+
+A `clear` record is written once and never refreshed, so it reads for 900 s
+(three patrol ticks) instead. A conductor that was mid-turn when memory
+recovered, or whose push was refused, still reads `clear` on its next tick and
+gets its resume wake. A `clear` that outlives the episode is harmless: it means
+proceed, the same as absent.
 
 The conductor writes its response on its own ledger with the existing actions
 (`decide` on each held item), so the board shows the cause and the pause.
@@ -238,7 +262,7 @@ Exit criteria:
   `work_ledger_read` and wakes each watched conductor once.
 - At critical, `create` is refused `host_pressure_critical` and writes nothing.
 - On recovery each conductor gets one wake, and the record reads `clear`, then
-  absent after 90 s with no refresh.
+  absent after 900 s.
 
 ## 11. Open questions
 

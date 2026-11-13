@@ -20,6 +20,21 @@ from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_pol
 
 
 @pytest.fixture(autouse=True)
+def _ledger_create_ignores_live_memory(_floor_monkeypatch):
+    """A work-ledger ``create`` never depends on this runner's free memory.
+
+    ``_create_item`` refuses ``host_pressure_critical`` when the cached admission
+    verdict refuses, and that verdict probes live memory, which a CI runner can
+    have at under 2 GB. So every create in the suite would pass or fail by runner.
+    The refusal is pinned off here; the refusal tests put the real one back.
+    """
+    from kiro_crew import work_ledger
+
+    # Through the facade, which writes the patch into every module holding the name.
+    _floor_monkeypatch.setattr(work_ledger, "_refuse_if_host_critical", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _small_default_host(_floor_monkeypatch):
     """Size every ``"auto"`` start limit from a fixed small host, not this machine.
 

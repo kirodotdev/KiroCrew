@@ -528,6 +528,10 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
     "read_message_detail": ("session_read_message for detail the record does not carry",),
     "close_item": ("work_ledger_record action=close with the item's state",),
     "goal_plan": ("a finding rewrites the plan at once", "rewrite the goal text's plan and"),
+    "host_pressure": (
+        "host memory pressure pauses dispatch",
+        "while host_pressure is present it wins: dispatch nothing",
+    ),
     # The rule IS "read goal-conductor"; its conductor mode counterpart is the chain itself.
     "skill_first": ("name: goal-conductor",),
 }

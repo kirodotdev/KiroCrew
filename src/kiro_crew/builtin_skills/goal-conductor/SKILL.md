@@ -662,6 +662,26 @@ ask, do not stop the loop. It stays armed, and the first cycle after the answer
 resumes. A concurrency refusal is not a stop at all — the next landing frees a
 seat.
 
+**Host memory pressure pauses dispatch.** The gateway watches host memory and,
+while it is short, `work_ledger_read` carries `conductor.host_pressure`
+(`level`, `since`, `age_secs`, `reading`). A level change wakes your patrol once
+(rfc-work-ledger-resource-pressure). Act on the level:
+
+- **`tight`** — dispatch nothing new (`create`, `bind`, `session_create`); let
+  the items in flight run. Put `paused: host memory tight (<reading>)` in the
+  round report.
+- **`critical`** — the same, and `decide` + `session_send` each open item whose
+  worker is about to run a heavy step: hold full suites, builds and subagent
+  waves until `host_pressure` clears; light work is fine. The ledger backs this:
+  a `create` is refused `host_pressure_critical` until memory frees.
+- **`clear`, or no `host_pressure`** — resume dispatch, and send "resume" to the
+  items you held.
+
+While `host_pressure` is present it wins: dispatch nothing. Once it is clear or
+absent, `resource_status` sizes each wave again. Never kill a worker for
+pressure, and never ask the person: it is not one of the ask cases. A pause is
+not a stop; the loop stays armed.
+
 **Then drop your chat.** Every patrol turn re-sends your whole conversation,
 and a conductor that runs for days pays for it on every quiet cycle. Your state
 already lives in the two ledgers, and each wake carries their snapshot. So once

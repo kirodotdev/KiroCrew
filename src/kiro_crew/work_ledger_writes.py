@@ -13,7 +13,7 @@ from __future__ import annotations
 import secrets
 from typing import Any
 
-from kiro_crew import work_preview
+from kiro_crew import resource_status, work_preview
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.session_ledger import _store_name
 from kiro_crew.work_ledger_records import (
@@ -22,6 +22,7 @@ from kiro_crew.work_ledger_records import (
     CODE_DEPTH_EXCEEDED,
     CODE_DUPLICATE_ITEM,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
+    CODE_HOST_PRESSURE_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -450,6 +451,7 @@ def _create_item(
         )
     with _existing_conductor_lock(slot_key):
         live = _admit_create_locked(slot_key)
+        _refuse_if_host_critical()
         if checked_round is None:
             checked_round = live.round
         item_id = mint_item_id()
@@ -520,6 +522,27 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
             field="concurrency_cap",
         )
     return live
+
+
+def _refuse_if_host_critical() -> None:
+    """Refuse a create while host memory is critical. Writes nothing.
+
+    rfc-work-ledger-resource-pressure §3.5: the code backstop for a conductor that
+    misses the pause rule, under the admission contract: critical refuses; tight,
+    unknown and ``agent.admission_gate: false`` admit. A live probe, not the cached
+    verdict: that cache refreshes only when asked, so the first create after memory
+    recovered would be judged on a stale refusal. This runs off the loop (the route
+    calls the store through ``asyncio.to_thread``) and the probe is one memory read.
+    Checked after the caps, so a board at a cap still hears about the cap.
+    """
+    decision = resource_status.admission_check()
+    if not decision.admitted:
+        raise WorkLedgerError(
+            f"create refused: {decision.reason}. Dispatch nothing new until memory is "
+            "no longer critical",
+            code=CODE_HOST_PRESSURE_CRITICAL,
+            field="host_pressure",
+        )
 
 
 def create_bound_item(
