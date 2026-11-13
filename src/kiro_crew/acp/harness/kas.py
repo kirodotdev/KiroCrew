@@ -59,7 +59,12 @@ from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_mcp_json_legacy import legacy_mcp_json
 from kiro_crew.acp.kas_prompt import prompt_unread_notice, spec_prompt
-from kiro_crew.acp.kas_settings_mcp import excluded_whole, include_mcp_json, stamp_settings_mcp
+from kiro_crew.acp.kas_settings_mcp import (
+    declared_servers,
+    excluded_whole,
+    include_mcp_json,
+    stamp_settings_mcp,
+)
 from kiro_crew.acp.kas_spec_carry import use_aws_notice
 from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.kas_steering import inheritance_off_notice, with_kas_steering
@@ -89,6 +94,7 @@ from kiro_crew.acp.types import (
     METHOD_KAS_SESSION_DELETE,
     METHOD_KAS_TOOLS_CHANGED,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_LOAD,
     METHOD_SESSION_NEW,
 )
 from kiro_crew.agent import ForkGovernanceUnresolved
@@ -970,6 +976,11 @@ class KasHarness(MembershipHarness):
         every TLS call. kiro-cli sets the same default when it spawns KAS
         (``apply_node_system_ca_env`` in its ``launch.rs``), so the relay needs
         nothing from Crew.
+
+        Both routes get ``KIRO_DISABLE_SESSION_TITLE_LLM=true`` unless the
+        inherited env already sets it (``false`` included): it stops the engine's
+        own title request at a session's first prompt, a title Crew never reads
+        (acp-client.md, "No engine session titles on KAS").
         """
         from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
 
@@ -983,6 +994,7 @@ class KasHarness(MembershipHarness):
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_child_env_defaults(env)
+        env.setdefault("KIRO_DISABLE_SESSION_TITLE_LLM", "true")
 
     @property
     def verifies_agent_activation(self) -> bool:
@@ -1319,14 +1331,11 @@ class KasHarness(MembershipHarness):
             unmatched.update(unmatched_disabled_globs(projected.get("mcpServers")))
             # The mcp.json / cli.json reads the wire envelope finishes the block
             # from, read here off the loop and beside the session's own directory.
-            declared = spec.get("mcpServers")
             custom_agents = stamp_settings_mcp(
                 custom_agents,
                 agent,
                 session_cwd or work_dir,
-                declared=(
-                    [n for n in declared if n not in muted] if isinstance(declared, dict) else ()
-                ),
+                declared=declared_servers(spec),
                 # Called for every session so the first one records the list; only
                 # a user-level spec can be on it, since a checkout's spec of the
                 # same name is not the file that was recorded.
@@ -1435,10 +1444,15 @@ class KasHarness(MembershipHarness):
         after the batch's entries, so the ``set_mode`` that follows is what
         queues the agent's servers, behind Kiro Crew's.
 
-        ``session/load`` and a batch whose first entry has no id are sent as built,
-        as the same object; the caller's dicts are never mutated.
+        ``session/load`` names no mode, because the engine resumes in the one it
+        stored, but registers the start agent under the same refusals: that
+        stored mode is the start agent while a re-open a person waits on is under
+        way (:func:`~kiro_crew.acp.kas_start_agent.parking_load`), and a mode the
+        batch does not carry resumes in ``vibe``. Any other method, and a batch
+        whose first entry has no id, is sent as built, as the same object; the
+        caller's dicts are never mutated.
         """
-        if method != METHOD_SESSION_NEW:
+        if method not in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD):
             return params, agent
         meta = params.get("_meta")
         if not isinstance(meta, dict):
@@ -1456,6 +1470,10 @@ class KasHarness(MembershipHarness):
         if held is not None:
             kiro = {**kiro, "customAgents": held}
             wire_id = START_AGENT_ID
+        if method == METHOD_SESSION_LOAD:
+            if held is None:
+                return params, agent
+            return {**params, "_meta": {**meta, "kiro": kiro}}, agent
         return {**params, "_meta": {**meta, "kiro": {**kiro, "modeId": wire_id}}}, agent
 
     def start_mode_ran_servers(self, mode_id: str) -> bool:

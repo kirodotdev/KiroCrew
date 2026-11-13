@@ -12,8 +12,10 @@ warning a scan logs when every spec it read failed.
 from __future__ import annotations
 
 import errno
+import hashlib
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
@@ -132,6 +134,35 @@ _KIRO_AGENTS_DIR: Path | None = None
 def _kiro_agents_dir() -> Path:
     """The kiro-cli agents directory, resolved against the live data home."""
     return _KIRO_AGENTS_DIR if _KIRO_AGENTS_DIR is not None else kiro_agents_dir()
+
+
+#: The prefix ``pinned_fs_primitives.open_fenced_for_read`` gives its link-count refusal.
+_HARDLINK_REFUSAL = "refusing to read a hardlinked file"
+
+# Digests of the resolved paths whose hardlink refusal this process has logged at
+# WARNING: a fixed 32 bytes each, at most _HARDLINK_WARNED_MAX of them. Past the cap
+# one WARNING says so and every later refusal logs at DEBUG.
+_HARDLINK_WARNED_MAX = 1024
+_HARDLINK_WARNED: set[bytes] = set()
+_HARDLINK_WARNED_LOCK = threading.Lock()
+
+
+def _first_hardlink_refusal(real: Path) -> bool:
+    """Whether this is the process's first hardlink refusal of *real*; records it."""
+    key = hashlib.sha256(os.fsencode(real)).digest()
+    with _HARDLINK_WARNED_LOCK:
+        if key in _HARDLINK_WARNED or len(_HARDLINK_WARNED) > _HARDLINK_WARNED_MAX:
+            return False
+        if len(_HARDLINK_WARNED) == _HARDLINK_WARNED_MAX:
+            # One sentinel entry past the cap marks the overflow as reported.
+            _HARDLINK_WARNED.add(b"")
+            logger.warning(
+                "More than %d hardlinked agent configs refused; later refusals log at DEBUG",
+                _HARDLINK_WARNED_MAX,
+            )
+            return False
+        _HARDLINK_WARNED.add(key)
+        return True
 
 
 def _audit_denied(*, operation: str, source: str, resources: str, error: str) -> None:
@@ -319,7 +350,12 @@ def _read_agent_spec(
         # Both values come from an untrusted filename (the refusal message
         # quotes the spelling), so they are rendered with ``%r``: a newline in
         # the name is escaped instead of starting a forged log record.
-        logger.warning("Skipping agent config %r: %r", path, exc)
+        level = logging.WARNING
+        if str(exc).startswith(_HARDLINK_REFUSAL) and not _first_hardlink_refusal(real):
+            # A hard-linked install tree is refused on every read; one WARNING
+            # per path says so, and the repeats would bury every other line.
+            level = logging.DEBUG
+        logger.log(level, "Skipping agent config %r: %r", path, exc)
         return None
     except PermissionError:
         if platform_compat.IS_WINDOWS:

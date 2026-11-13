@@ -60,13 +60,13 @@ function holdChunk(): () => void {
 
 vi.mock('../apps/overlayRegistry', () => ({
   getBuiltinOverlay: (id: string) => {
-    if (id === 'command-bar') {
+    if (id === 'launcher') {
       return ({ open }: { open: boolean }) => {
         // Records the MOUNT, not the render output: "closed means unmounted" is a
         // statement about the component tree, and an overlay that returns null while
         // closed would satisfy an output-only assertion either way.
         mounted()
-        return open ? <div data-testid="command-bar" /> : null
+        return open ? <div data-testid="owned-overlay" /> : null
       }
     }
     if (id === 'slow') return SlowOverlay
@@ -79,12 +79,18 @@ vi.mock('../apps/overlayRegistry', () => ({
   },
 }))
 
+// The shell's own launcher, switched by `dashboard.command_bar_enabled`.
+vi.mock('./commandBar/CommandBarOverlay', () => ({
+  default: ({ open, initialQuery }: { open: boolean; initialQuery?: string }) =>
+    open ? <div data-testid="core-command-bar" data-initial={initialQuery ?? ''} /> : null,
+}))
+
 const OWNED: SlotOwners = {
-  'quick-search': { app: 'command-bar', overlayId: 'command-bar' },
+  'quick-search': { app: 'launcher', overlayId: 'launcher' },
 }
 
 const SLOW: SlotOwners = {
-  'quick-search': { app: 'command-bar', overlayId: 'slow' },
+  'quick-search': { app: 'launcher', overlayId: 'slow' },
 }
 
 const THROWS: SlotOwners = {
@@ -104,12 +110,31 @@ describe('QuickSearchSurface', () => {
   it('renders the shell palette when no app owns the slot', () => {
     render(<QuickSearchSurface owners={{}} open onClose={() => {}} />)
     expect(screen.getByTestId('legacy-palette')).toBeTruthy()
-    expect(screen.queryByTestId('command-bar')).toBeNull()
+    expect(screen.queryByTestId('owned-overlay')).toBeNull()
+  })
+
+  it('opens the Command Bar when its setting is on and no app owns the slot', async () => {
+    render(<QuickSearchSurface owners={{}} commandBar open onClose={() => {}} />)
+    // Waits across QuickSearchSurface's `lazy(() => import('./commandBar/CommandBarOverlay'))`.
+    await waitFor(() => expect(screen.getByTestId('core-command-bar')).toBeTruthy(), { timeout: 5000 })
+    expect(screen.queryByTestId('legacy-palette')).toBeNull()
+  })
+
+  it('keeps the palette while the Command Bar setting is off or not loaded', () => {
+    render(<QuickSearchSurface owners={{}} commandBar={false} open onClose={() => {}} />)
+    expect(screen.getByTestId('legacy-palette')).toBeTruthy()
+    expect(screen.queryByTestId('core-command-bar')).toBeNull()
+  })
+
+  it('gives an owning app overlay the gesture over the Command Bar', async () => {
+    render(<QuickSearchSurface owners={OWNED} commandBar open onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('owned-overlay')).toBeTruthy())
+    expect(screen.queryByTestId('core-command-bar')).toBeNull()
   })
 
   it('renders the owning app overlay instead of the palette', async () => {
     render(<QuickSearchSurface owners={OWNED} open onClose={() => {}} />)
-    await waitFor(() => expect(screen.getByTestId('command-bar')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('owned-overlay')).toBeTruthy())
     expect(screen.queryByTestId('legacy-palette')).toBeNull()
   })
 
@@ -131,7 +156,7 @@ describe('QuickSearchSurface', () => {
     // would otherwise stay enabled behind a dismissed surface and refetch on the next
     // window focus, turning a closed search into a background corpus scan.
     render(<QuickSearchSurface owners={OWNED} open={false} onClose={() => {}} />)
-    await waitFor(() => expect(screen.queryByTestId('command-bar')).toBeNull())
+    await waitFor(() => expect(screen.queryByTestId('owned-overlay')).toBeNull())
     expect(mounted).not.toHaveBeenCalled()
     expect(screen.queryByTestId('legacy-palette')).toBeNull()
   })
@@ -318,18 +343,32 @@ describe('QuickSearchSurface', () => {
     error.mockRestore()
   })
 
-  it('the topbar trigger describes the surface slot ownership actually opens', () => {
-    // While an app owns the slot the gesture opens a launcher, so a trigger reading
+  it('the topbar trigger describes the surface the gesture actually opens', () => {
+    // While the Command Bar is on (or an app owns the slot) the gesture opens a
+    // launcher, so a trigger reading
     // "search for anything" is the most visible mispromise in the product. Asserted on
     // the source rather than by mounting App: this is a one-line branch inside a very
     // large component, and the repo already uses source-shape assertions for exactly
     // this trade-off (see providerLabels.test.ts).
     const src = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(path.join(__dirname, '..', f), 'utf-8')).join('\n')
-    // Both the visible label and the accessible name follow ownership, and the mobile
-    // icon-only trigger carries the same accessible name as the desktop one.
+    // Both the visible label and the accessible name follow the launcher, and the
+    // mobile icon-only trigger carries the same accessible name as the desktop one.
     expect(src).toContain("i18nT('app.k_run_a_command')")
-    const owned = src.split("slotOwners['quick-search']").length - 1
+    expect(src).toContain("const quickSearchLauncher = commandBarOn || Boolean(slotOwners['quick-search'])")
+    const owned = src.match(/quickSearchLauncher\s*\?/g)?.length ?? 0
     expect(owned).toBeGreaterThanOrEqual(4)
+  })
+  it('hands the surface the Command Bar setting the shell read from config', () => {
+    // The setting replaced the Command Bar app's enable switch: the shell reads
+    // `dashboard.command_bar_enabled` from the shared config query (off until it
+    // loads, so the palette serves the gesture as it did before the app list came
+    // back) and passes it to this surface.
+    const shell = readFileSync(path.join(__dirname, '..', 'shell/appShell.tsx'), 'utf-8')
+    const app = readFileSync(path.join(__dirname, '..', 'App.tsx'), 'utf-8')
+    expect(shell).toContain("queryKey: ['kirocrewConfig']")
+    expect(shell).toContain('cfg.dashboard?.command_bar_enabled !== false')
+    expect(shell).toContain('const commandBarOn = commandBarSetting === true')
+    expect(app).toContain('commandBar={commandBarOn}')
   })
   it('only the newest app-nav response may publish slot ownership', () => {
     // A pending RETRY is cancelled up-front, but a fetch already in flight cannot be:
@@ -342,14 +381,14 @@ describe('QuickSearchSurface', () => {
     expect(guards).toBeGreaterThanOrEqual(2)
   })
   it('gates every user-visible promise on the trigger, not just some of them', () => {
-    // The label and aria-label were made to follow slot ownership in an earlier round
+    // The label and aria-label were made to follow the launcher in an earlier round
     // and `title` was missed, so hovering promised the corpus search the launcher
     // omits while the words under the cursor said otherwise. The recurring cause is
     // fixing one attribute of a set, so the assertion is on the SET: no promise-bearing
     // attribute on either trigger may mention search unconditionally.
     const src = ['App.tsx', 'shell/appShell.tsx', 'shell/topbar/shellHeader.tsx', 'shell/nav/navRail.tsx', 'shell/nav/navRow.tsx'].map(f => readFileSync(path.join(__dirname, '..', f), 'utf-8')).join('\n')
     expect(src).not.toMatch(/title=\{i18nT\('app\.search_everywhere_k'\)\}/)
-    const gated = src.split("slotOwners['quick-search']").length - 1
+    const gated = src.match(/quickSearchLauncher\s*\?/g)?.length ?? 0
     expect(gated).toBeGreaterThanOrEqual(5)
   })
 })

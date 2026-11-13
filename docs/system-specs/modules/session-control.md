@@ -42,7 +42,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 | `session_summary` | `GET /api/session-control/summary` | Read another session's cached intent summary + liveness, authorized as `session_read_message` is; never generates one |
 | `work_dispatch` | `POST /api/work-ledger/record`, then `POST /api/session-control/create`, `record` again and `POST /api/session-control/send` | Create a work item, open its worker, bind it and seed it in one call ([rfc-work-dispatch](../../request-for-change/rfc-work-dispatch.md)). No route of its own: the MCP process calls the four routes in order as the caller, sends the seed only after `bind` succeeded and only to the key `create` returned, and on a failure names the step and closes what it made (session, then item). The step-1 create carries `dispatch`; `/api/work-ledger/record` strips it before schema validation and refuses `no_ledger` when the verified caller owns no ledger, so `work_dispatch` never opens one and only `kirocrew-work`'s `work_ledger_record` does (rfc-work-dispatch amendment 2026-10-28); not auto-approved |
-| `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller manages (its creator until `session_handoff` names another manager); move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
+| `session_queue` | `POST /api/session-control/queue` | List or move queue entries on a session the caller manages (its creator until `session_handoff` names another manager; with `agent.session_manager_chain` on, any manager up the line); move reaches only entries the caller queued (sender stamp), and a move earlier may pass only the caller's own entries |
 
 `session_adopt` and `session_release` reshape the session tree, so both go
 through `authorize_target` like every other verb and add tree checks of their
@@ -224,7 +224,9 @@ The MCP tool writes `released` on an `idle` or `queued` row's line, never on a
 process exists.
 
 The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
-`unknown`. A tree-backed row absent from the dashboard is `closed` or `lost`: the
+`unknown`. `queued` means an entry will start on its own: a queue holding only
+cards restored after a restart (`is_held_queue_entry`) reads `idle`, since those
+wait for a person. A tree-backed row absent from the dashboard is `closed` or `lost`: the
 roster records that a session the dashboard no longer holds still existed, and
 its folded lifecycle says which fate it met. `closed` (carrying `closed_at`) is
 the DELIBERATE tab close -- the worker finished and its tab was closed

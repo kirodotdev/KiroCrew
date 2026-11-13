@@ -293,8 +293,12 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         # ``declared_store_names`` matches the order of the pass that wrote the backups.
         # ``owned_store_path`` makes an undeclared name, or a declared one whose path
         # is not that store's own file, one skipped row rather than a traceback.
-        for name in [only] if only else declared_store_names():
-            path = owned_store_path(name)
+        declared = declared_store_names()
+        for name in [only] if only else declared:
+            # An undeclared --store is answered here: ``owned_store_path`` would log
+            # its resolution failure with a traceback, which the CLI's console
+            # handler prints on stderr above the one-line answer.
+            path = owned_store_path(name) if name in declared else None
             if path is None:
                 print(f"{name}: not a declared memory store")
                 if only:
@@ -324,9 +328,12 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
             raise ValueError("--store names no store; nothing was restored.")
         chosen = getattr(args, "from_backup", None)
         if getattr(args, "cancel_pending", False):
-            from kiro_crew.memory_stores import owned_store_path
+            from kiro_crew.memory_stores import declared_store_names, owned_store_path
 
-            path = owned_store_path(target_store)
+            # An undeclared --store is refused here: ``owned_store_path`` would log
+            # its resolution failure with a traceback above the one-line refusal.
+            is_declared = target_store in declared_store_names()
+            path = owned_store_path(target_store) if is_declared else None
             if chosen or path is None:
                 raise ValueError("Cancel requires an available memory store and cannot use --from")
             cancelled = memory_backup.cancel_pending_restore(path)
@@ -662,6 +669,97 @@ def _memory_forget(store: VectorMemoryStore, args: argparse.Namespace) -> None:
         print("Forgotten.")
 
 
+def _memory_dream(args: argparse.Namespace) -> None:
+    """``kirocrew memory dream run|list``: ask for a Dreaming run, or print its approval list.
+
+    ``run`` only leaves a request for the gateway, which starts the pass under its own
+    lock and idle check. ``list`` opens the store's file read-only and prints ids,
+    kinds and counts (and a proposed merged sentence); it never writes.
+    """
+    from kiro_crew import memory_dream
+
+    if getattr(args, "dream_action", None) == "run":
+        if memory_dream.configured_mode() != memory_dream.MODE_PROPOSE:
+            print(
+                "Error: memory.dream is off. Turn it on first: "
+                "kirocrew config set memory.dream propose",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        memory_dream.request_manual_run()
+        print(
+            "Requested. The gateway runs Dreaming on its next memory visit (about a "
+            "minute) once no chat turn is running. Nothing is applied; read the list "
+            "with: kirocrew memory dream list"
+        )
+        return
+    store_name = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+    db_path = _admitted_store_path(store_name, KiroCrewConfig.load(), may_create=False)
+    if db_path is None:
+        sys.exit(1)
+    listing: dict = {"proposals": [], "last_run": None, "state": {}}
+    if db_path.exists():
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            listing = memory_dream.read_list(conn)
+        except (sqlite3.Error, StdlibSQLiteError):
+            logging.getLogger("kiro_crew.cli_commands").debug(
+                "no Dreaming list in %s", db_path, exc_info=True
+            )
+        finally:
+            conn.close()
+    if getattr(args, "json", False):
+        print(json.dumps(listing, indent=2, ensure_ascii=False))
+        return
+    proposals = listing["proposals"]
+    if not proposals:
+        print("No Dreaming proposals.")
+    for p in proposals:
+        keys = ", ".join(str(k) for k in p.get("keys", []))
+        print(f"  [{p.get('kind')}] {safe_terminal_line(keys)}  (run {p.get('run')})")
+        if p.get("changes"):
+            print(f"    would change: {safe_terminal_line(', '.join(map(str, p['changes'])))}")
+        if p.get("text"):
+            print(f"    merged: {safe_terminal_line(str(p['text']))}")
+    run = listing["last_run"]
+    if isinstance(run, dict):
+        print(
+            f"Last run {run.get('run')} ({run.get('trigger')}, {run.get('ended_at')}): "
+            f"{run.get('rows', 0)} rows, proposed {run.get('proposed') or {}}, "
+            f"refused {run.get('refused') or {}}, stopped={run.get('stopped')}"
+        )
+
+
+def _memory_shadow(args: argparse.Namespace) -> None:
+    """``kirocrew memory shadow report``: per-stage shadow counts, read-only.
+
+    Reads the injection receipts and the store's file through a ``mode=ro``
+    connection (never ``init()``); a missing source prints as "no data".
+    """
+    from kiro_crew import memory_shadow_report as report
+    from kiro_crew.injection_receipts import _receipt_dir
+
+    since = report.parse_since(getattr(args, "since", None))
+    store_name = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+    cfg = KiroCrewConfig.load()
+    db_path = _admitted_store_path(store_name, cfg, may_create=False)
+    if db_path is None:
+        sys.exit(1)
+    data = report.build_report(
+        store=store_name,
+        receipt_dir=_receipt_dir(),
+        db_path=db_path,
+        memory_config=cfg.memory,
+        since=since,
+        stage=getattr(args, "stage", None),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    for line in report.render_text(data):
+        print(safe_terminal_line(line))
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -710,6 +808,21 @@ def _memory_verb(args: argparse.Namespace) -> None:
     # "create-store" names the store that does not exist yet, so nothing opens first.
     if action == "create-store":
         _memory_create_store(args)
+        return
+    # No verb: print the usage line without opening (and so creating) the store.
+    if action is None:
+        print(
+            "Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|backup|"
+            "backups|restore|create-store|carve|retired|forget|import|dream|shadow}"
+        )
+        return
+    # "dream" reads a store's file read-only, or only leaves a request for the gateway.
+    if action == "dream":
+        _memory_dream(args)
+        return
+    # "shadow" reads receipts and a store's file read-only, so nothing opens first.
+    if action == "shadow":
+        _memory_shadow(args)
         return
     cfg = KiroCrewConfig.load()
     # Only `export` and `import` name a store here; every other verb resolves the

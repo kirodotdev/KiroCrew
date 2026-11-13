@@ -55,14 +55,21 @@ def _entry(name: str, status: str, meta: dict | None = _CLIENT) -> dict:
     return entry
 
 
+def _deliver(handle: AcpSessionHandle, frame: JsonRpcMessage | None) -> None:
+    """Hand *frame* to the session the way the runtime does: report, then queue."""
+    if frame is not None:
+        handle._mcp_report.fold_frame(frame)
+    handle._queue.put_nowait(frame)
+
+
 def _handle(*frames: JsonRpcMessage) -> AcpSessionHandle:
     handle = AcpSessionHandle.__new__(AcpSessionHandle)
     handle._session_id = _SID
-    handle._mcp_report = McpSessionReport()
+    handle._mcp_report = McpSessionReport(folded_on_arrival=True)
     handle._mcp_report.begin_session([])
     handle._queue = asyncio.Queue()
     for frame in frames:
-        handle._queue.put_nowait(frame)
+        _deliver(handle, frame)
     handle._apply_init_notification = lambda *_a, **_k: None  # type: ignore[method-assign]
     return handle
 
@@ -208,15 +215,22 @@ class TestGovernedStart:
         await handle.wait_mcp_ready(("kirocrew-core",), 30.0, governed=True)
         assert handle._mcp_report._failed == ["kirocrew-core"]
 
+    def test_a_drop_on_a_host_that_sent_nothing_calls_no_other_server_starting(self):
+        """The drop is Kiro Crew's own finding. It is not the host reporting."""
+        report = McpSessionReport(folded_on_arrival=True)
+        report.begin_session([{"name": "github"}])
+
+        session_handle_mcp._record_drops(report, ("kirocrew-core",))
+
+        assert report.not_ready() == {"failed": ("kirocrew-core",)}
+
     @pytest.mark.asyncio
     async def test_a_named_server_keeps_the_full_budget_past_the_settle(self, monkeypatch):
         # A cold server the host named before the settle is not cut short.
         monkeypatch.setattr(session_handle_mcp, "GOVERNED_SETTLE_SECS", 0.1)
         handle = _handle(_status(_entry("kirocrew-core", "connecting")))
         loop = asyncio.get_running_loop()
-        loop.call_later(
-            0.3, handle._queue.put_nowait, _status(_entry("kirocrew-core", "connected"))
-        )
+        loop.call_later(0.3, _deliver, handle, _status(_entry("kirocrew-core", "connected")))
         await handle.wait_mcp_ready(("kirocrew-core",), 30.0, governed=True)
         assert handle._mcp_report._failed == []
         assert "kirocrew-core" in handle._mcp_report._ready
@@ -232,6 +246,28 @@ class TestGovernedStart:
         handle = _handle(None)
         with pytest.raises(AcpRuntimeDead):
             await handle.wait_mcp_ready(_REQUIRED, 0.2, governed=True)
+
+    @pytest.mark.asyncio
+    async def test_the_barrier_writes_no_older_success_over_a_newer_failure(self):
+        # Both snapshots were folded as they arrived. The barrier reads the queue
+        # behind them and is satisfied by the older one; the report keeps the newer.
+        handle = _handle(
+            _status(_entry("kirocrew-core", "connected")),
+            _status(_entry("kirocrew-core", "failed")),
+        )
+        await handle.wait_mcp_ready(("kirocrew-core",), 5.0)
+        assert handle._mcp_report._failed == ["kirocrew-core"]
+        assert handle._mcp_report._ready == []
+
+    @pytest.mark.asyncio
+    async def test_a_server_that_reported_while_read_as_absent_keeps_its_report(self):
+        # Its frame has arrived and is in the report; the barrier gives up before
+        # reading it and must not record the server as dropped.
+        handle = _handle()
+        handle._mcp_report.fold_frame(_status(_entry("kirocrew-core", "connected")))
+        await handle.wait_mcp_ready(("kirocrew-core",), 0.2, governed=True)
+        assert handle._mcp_report._failed == []
+        assert handle._mcp_report._ready == ["kirocrew-core"]
 
     @pytest.mark.asyncio
     async def test_a_later_frame_still_moves_a_dropped_server_to_ready(self):

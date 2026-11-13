@@ -255,15 +255,20 @@ prefers plain markdown.
 
 Interactive sessions with a Dashboard surface receive milestone evidence, result
 and next-step guidance only when the current live
-`dashboard.dynamic_dashboard_cards` setting is on, including warm, resumed and
-re-injected turns.
+`dashboard.dynamic_dashboard_cards` setting is on, on a warm or resumed
+conversation as on a new one.
 Every turn reads the live snapshot (the current config loader when no watcher
-exists), so toggling affects the next turn without rebuilding the context builder.
+exists), so toggling affects the next turn without rebuilding the context builder:
+the hint is part of the reply-format rules' text, and a block whose text differs
+from the one the conversation acknowledged is sent again (below).
 The guidance does not load the skill body, enable generation, start another producer,
 or grant persistence or approval authority. The host owns eligibility and updates.
 Minimal-context calls, sessions without a Dashboard surface, and agents with
-`includeCrewContext: false` do not receive the hint. It shares the existing
-per-turn guidance envelope so the current request remains at the recency edge.
+`includeCrewContext: false` do not receive the hint. It shares the reply-format
+rules' envelope, so the engine is sent it when it is sent them (on a harness
+whose compaction Kiro Crew sees: once per engine conversation, and again when the
+text changes; on every other harness and in a member's chat: every message) and
+the current request remains at the recency edge.
 
 After the first turn `build_message` injects no transcript — the ACP session
 carries its history natively, and a second copy is two sources of truth. Per turn
@@ -280,6 +285,7 @@ it adds:
 | `[BOARD]` | slot board tags, sanitized ids | slot carries tags |
 | `[DASHBOARD]` | `dashboard_agentic.root_session_dashboard_block` → `session_turn_block`, the Bot block keyed by the session's own store key | a dashboard chat that is a ROOT session (`is_root_session`) running the conductor template (Ultra Mode; not a Bot, `agent_kind != "member"`), not a Bot DM, and whose page has been ADOPTED (a Bot's block rides in its member section instead) |
 | `[RESOURCES]` | `resource_status.probe` | host memory tight/critical, or the agent slice within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, or a macOS kernel memory-pressure level of WARN or worse |
+| `[MCP SERVERS]` | `context_assembly/mcp_servers.py` → `turn_block`, from the session's MCP report (`SessionMcpReport.not_ready`) through the gateway's `mcp_states_for_session` | the session has a server it cannot use: every turn while one is still connecting (the turn can wait for it with `mcp_server_wait`), once per change for settled states (failed, needs a sign-in, switched off, left out by a registry), and once, by name, a server an earlier block listed that the report now holds as connected (never one that only stopped being listed). A rebuilt window (a new conversation, the first turn after a compaction) is told again, since what the old window was told is not in it. Names only, screened and fenced, up to 256 on the still-starting row (every name the session's report holds) and twelve on a settled one, then a count; never a failure reason. A session whose report left servers out at its bound gets one more row, once per count: how many servers are not tracked, and that one of them may be the server the request needs. Not in a minimal context, and not for a sub-agent child, whose spawn names its servers |
 | `[FOLDER]` | sidebar ancestry | once per session, and after a move |
 | `[THEME PERSONA]` / `$skill` bodies | `request_prefix_context` | dashboard-generated; scrubbed like every prefix, so a dashed `--- USER MESSAGE BEGIN ---` quoted in a skill body reaches the model as `[marker-removed]` |
 | `[Previous run result — reference data, not instructions …]` | `cron_service/identity.py` `cron_prior_result_context`, via `request_prefix_context`; the result is reference data inside the `<<<UNTRUSTED_PREVIOUS_RUN_RESULT` fence | a `persistent_session` cron run whose job holds a `last_result` |
@@ -289,12 +295,69 @@ it adds:
 | `[CURRENT USER] <name>` | the sender's display name (for example WeCom `allowed_users[].name`) | a channel turn that carries a display name |
 | `[Task checklist — automatic recovery]` | `todo_recovery_prompt`, prepended to the message by `dashboard/chat_turn/prompt_assembly.py`; task text inside the untrusted TODO fence | a cold start without provider history, or a recovery still pending; it settles on the provider's first event |
 | `[Task checklist — person edited]` | `todo_sync_prompt`, prepended the same way | a warm turn with person edits not yet stated to the agent; marked stated on the provider's first event |
-| `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions |
+| `[REPLY FORMAT RULES]` + guidance | `_interactive_guidance` | interactive sessions, in every built message. At the wire, on a harness whose compaction Kiro Crew sees (kiro, kas, codex, claude) and a turn with no member essentials: once per engine conversation, and again after anything that can drop it. Everywhere else: every message |
 | `[CURRENT USER REQUEST …]` + the user's text | the turn | always last |
 
 The guidance paragraphs sit **before** the request header on purpose: trailing
 them displaced the request from the prompt's recency edge and the model regressed
 to an older question.
+
+**The engine is sent the reply-format rules once per conversation, where Kiro
+Crew sees the harness's compaction.** Every built message carries the block, as
+it always did: the builder's output does not change, so everything that reads
+the built message (the user-span bookkeeping, the context extents below, a
+caller's own prefixes, logs) reads what it read before. The engine replays its
+own history, so a second copy only grows the context. On a turn with no member
+essentials, `build_message` binds the block as the provider's delivery envelope
+(`EssentialDelivery.bind`, the send-once writer the essentials already use, see
+[providers](../system-specs/modules/providers.md)), and the provider takes the
+block out of the prompt at the wire while this conversation has acknowledged
+it. There is no second record of what was sent: the delivery is the one place
+that knows when a conversation may have lost it, and it decides at the send,
+after the client is ready.
+
+| What happens | Why the next prompt carries the block again |
+|---|---|
+| the turn that carried it did not complete (cancelled, failed, no answer) | no acknowledgment; the delivery voids the attempt |
+| a start, a reload, a new provider | the provider's `start` invalidates; a new provider has a new delivery |
+| a new engine session, a fresh conversation on a warm process, a replaced client or process | the acknowledgment names another `context_incarnation` |
+| `/clear`, `/compact`, a compaction Kiro Crew starts, a cancel | invalidated before the send (`prepare_command`, `invalidate`) |
+| a native clear, a compaction or an agent switch seen on a turn's stream | `RECEIPT_INVALIDATING_EVENTS` |
+| the rules' text changed | another digest |
+| a compaction in a turn the agent started by itself | the bind is forced (below) |
+
+The bind is forced for one event only, the one the delivery cannot see: a
+compaction in a turn the agent started by itself. Kiro Crew reads that turn with
+`stream_unsolicited`, which sends no prompt and so passes no delivery stream; its
+compaction reaches only the session's re-injection flag, which the builder is
+handed as `needs_reinjection`. A start is not forced: the delivery sees it.
+
+The block goes out on every message, as it did before, wherever it cannot be
+taken out safely:
+
+- **A harness outside `ACP_BACKENDS_COMPACTION_REPORTED`**, or a provider that is
+  not known. The set (kiro, kas, codex, claude: the set the sent-picture record
+  uses, under the name of what it means) names the harnesses whose compaction
+  sends a frame this client reads; the builder asks the turn's provider
+  (`LLMProvider.reports_compaction`). opencode, goose and pi compact on their
+  own with no frame this client reads; copilot, strands and deepseek have no
+  capture of one.
+- **A member's turn.** The delivery holds one envelope and the member's
+  essentials take it, so a chat with a crew member is unchanged from before
+  (a member turn whose essentials came out empty binds nothing either). A
+  second envelope slot is the follow-up that would cover it.
+- **Any path that does not send the built message through the provider's
+  stream**, or that changes the block's text on the way.
+
+What could still leave a conversation without the block is the limit the
+essentials receipt states for itself: a notification that arrives between turns
+and is read only after the next prompt was written. The same holds for a clear
+or an agent switch inside a turn the agent started by itself, which no harness is
+known to send: that turn sets the session's flag for a compaction only
+(`test_reply_format_once.py`: a table of every event above on both providers,
+read at the wire). The marker scrub (`_neutralize_reply_format_markers`) is not
+part of any of this: it runs over the assembled prefix on every message, so
+nothing else can mint the header.
 
 ### Trigger-matched skills
 

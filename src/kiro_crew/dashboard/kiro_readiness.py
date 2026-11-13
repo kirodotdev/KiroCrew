@@ -22,6 +22,7 @@ latched value can be arbitrarily stale. That splits the callers in two:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -50,11 +51,26 @@ _KIRO_NOT_READY_RESPONSE = {
 }
 # A probe that timed out is not a sign-in wall, so it must not carry that code: the
 # dashboard would tell a user whose CLI may be installed and signed in to sign in.
+KIRO_PROBE_TIMED_OUT_CODE = "kiro_probe_timed_out"
 _KIRO_PROBE_TIMED_OUT_RESPONSE = {
     "error": "The Kiro CLI check timed out. The CLI may be installed and signed in; "
     "try again in a moment.",
-    "code": "kiro_probe_timed_out",
+    "code": KIRO_PROBE_TIMED_OUT_CODE,
 }
+
+
+def is_probe_timeout_refusal(refusal: web.Response) -> bool:
+    """Whether *refusal* is the gate's timed-out answer, not its sign-in wall.
+
+    Read from the answer the gate gave, never from the service again: a probe
+    can land between the gate's read and a second one.
+    """
+    try:
+        body = json.loads(refusal.text or "")
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("code") == KIRO_PROBE_TIMED_OUT_CODE
+
 
 # When was the current refusal last reported at WARNING? ``None`` means "not yet, warn
 # now". Module-level because the gate must work with no service at all (the fail-closed

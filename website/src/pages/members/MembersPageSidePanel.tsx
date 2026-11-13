@@ -32,7 +32,7 @@ import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import CrewDashboardTab from './CrewDashboardTab'
 import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
-import { mergePaneDraft, suggestPaneDraft } from '../../utils/chatPaneDrafts'
+import { appendPaneDraftReply, suggestPaneDraft } from '../../utils/chatPaneDrafts'
 import { sendCardReply } from './sendCardReply'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
@@ -571,12 +571,13 @@ export function MembersPageSidePanel({
           member={activeMemberName}
           displayName={crewDisplayName(activeView ?? active)}
           avatar={(activeView ?? active)?.avatar}
-          // A needs-you option or a suggested prompt lands in this crewmate's
-          // chat box; the person sends it. The composer is revealed (focused on
-          // desktop) so the result of the click is where the reader looks.
+          // A suggested prompt or a needs-you option lands in this crewmate's chat
+          // box; the person sends it. The composer is revealed (focused on
+          // desktop) so the result of the click is where the reader looks. A
+          // suggested prompt replaces the one before it while untouched...
           onAct={activeSlot ? (text: string) => { suggestPaneDraft(activeSlot, text); revealComposer() } : undefined}
-          // A late-refused reply, when a newer one is already in the box: added, never swapped in.
-          onActKeep={activeSlot ? (text: string) => { mergePaneDraft(activeSlot, text, []); revealComposer() } : undefined}
+          // ...while a page's reply is added after the others, so several cards are answered in one message.
+          onActKeep={activeSlot ? (text: string) => { appendPaneDraftReply(activeSlot, text); revealComposer() } : undefined}
           // One click sends it into THIS crewmate's thread, only when the person turned
           // "Send replies in one click" on for it (off, the default: no send is offered,
           // so a page's `send` fills the composer exactly as `act` does and nothing

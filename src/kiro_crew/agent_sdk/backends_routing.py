@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 from enum import Enum
 from typing import FrozenSet
 
@@ -31,6 +32,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -109,6 +111,9 @@ from kiro_crew.agent_sdk.backends import (
 #   reads no kiro agent spec, so the derived spec cannot express a read-only posture.
 # * pi: Crew's gate extension asks about every call but expresses no read-only
 #   posture.
+# * mimocode: for opencode's reason, and one of its own: its ``memory``, ``history``
+#   and ``task`` tools run without asking (``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``), so
+#   a side turn could not be confined to reads even if every asked call were.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -302,6 +307,12 @@ ACP_BACKENDS_NATIVE_WORKFLOWS = frozenset({ACP_BACKEND_KAS})
 #: matchers meet the Strands built-in names through
 #: :data:`kiro_crew.acp.harness_tool_names.STRANDS_TOOL_IDS_BY_KIRO_TOOL`, for a
 #: call the gate proved is that built-in only.
+#:
+#: mimocode is NOT a member, although it asks under the same seed opencode does: several
+#: of its own tools never reach its permission service at all (``memory``,
+#: ``history``, ``task``, and an edit under its memory directory; ``cron`` too,
+#: which the launch pins off), so a PreToolUse hook would be skipped on exactly
+#: those calls, the claude and codex ground.
 ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS = frozenset(
     {ACP_BACKEND_KAS, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_STRANDS}
 )
@@ -485,6 +496,11 @@ ACP_BACKEND_ROUTING: dict = {
     # pi's and deepseek's member. Live capture:
     # ``test/fixtures/acp_frames/strands/permission-deny-allow-live.jsonl``.
     ACP_BACKEND_STRANDS: Routing.VERIFIED_GATE_EXTENSION,
+    # opencode's mechanism under MiMo Code's own variable: ``permission: "ask"`` in
+    # ``MIMOCODE_CONFIG_CONTENT``, read back from ``mimo debug config`` before the
+    # session spawns. Measured on 0.1.15: every shell and MCP call then sends
+    # ``session/request_permission`` (``test/fixtures/acp_frames/mimocode``).
+    ACP_BACKEND_MIMOCODE: Routing.VERIFIED_SEEDED_SETTINGS,
 }
 
 
@@ -553,6 +569,7 @@ ACP_BACKEND_PREFERRED_PERMISSION_CONFIG: dict = {
 #: ``UNVERIFIED`` instead.
 ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_OPENCODE: ("permission", "ask"),
+    ACP_BACKEND_MIMOCODE: ("permission", "ask"),
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
 }
 
@@ -807,17 +824,94 @@ def permission_value_for(backend: str, config_options: object) -> str:
     """
     option_id, required = permission_config_for(backend)
     preferred_id, preferred = ACP_BACKEND_PREFERRED_PERMISSION_CONFIG.get(backend, ("", ""))
-    if not preferred or preferred_id != option_id or not isinstance(config_options, list):
+    if not preferred or preferred_id != option_id:
         return required
+    return preferred if offers_config_value(config_options, option_id, preferred) else required
+
+
+def offers_config_value(config_options: object, option_id: str, value: str) -> bool:
+    """Whether ``session/new``'s *config_options* list *value* among *option_id*'s choices.
+
+    Anything unreadable is False: the adapter is not known to offer it.
+    """
+    if not isinstance(config_options, list):
+        return False
     for option in config_options:
         if not isinstance(option, dict) or option.get("id") != option_id:
             continue
         values = option.get("options")
         if isinstance(values, list) and any(
-            isinstance(entry, dict) and entry.get("value") == preferred for entry in values
+            isinstance(entry, dict) and entry.get("value") == value for entry in values
         ):
-            return preferred
-    return required
+            return True
+    return False
+
+
+@dataclass(frozen=True)
+class KnownLimitation:
+    """A harness problem a newer adapter release fixes, as plain data.
+
+    Read today by :func:`known_limitation_issue` for a new chat's notice; kept free
+    of any surface so a Settings card row can read the same entries later.
+    """
+
+    #: Stable handle for tests and a later card row's label key.
+    id: str
+    #: The ``agent.acp_backend`` id this applies to.
+    harness: str
+    #: The condition: the session is affected while ``session/new`` does NOT offer
+    #: this ``(option_id, value)`` (:func:`offers_config_value`).
+    missing_config_value: tuple[str, str]
+    #: What the user reads, in English like every other new-chat notice.
+    message: str
+    #: The package the fix ships in.
+    needs_adapter: str
+    #: The first ``needs_adapter`` release with the fix; ``""`` while none exists.
+    fixed_in: str
+
+
+#: Every known limitation, in the order a chat shows them.
+#:
+#: codex: Crew writes ``mode=external-sandbox`` only when the adapter offers it
+#: (:data:`ACP_BACKEND_PREFERRED_PERMISSION_CONFIG`); without it the session keeps
+#: ``read-only``, whose own OS sandbox Crew's sandbox refuses, so every shell command
+#: fails. The condition is that same offer, so the notice cannot disagree with what
+#: the session writes. No codex-acp release offers it yet
+#: (agentclientprotocol/codex-acp#732 is unmerged), so ``fixed_in`` is empty.
+KNOWN_LIMITATIONS: tuple[KnownLimitation, ...] = (
+    KnownLimitation(
+        id="codex_shell_in_crew_sandbox",
+        harness=ACP_BACKEND_CODEX,
+        missing_config_value=ACP_BACKEND_PREFERRED_PERMISSION_CONFIG[ACP_BACKEND_CODEX],
+        message=(
+            "Shell commands, git included, fail in this codex chat: this codex-acp "
+            "does not offer the external-sandbox mode Kiro Crew's sandbox needs. "
+            "No codex-acp release adds it yet (agentclientprotocol/codex-acp#732). "
+            "Once one does, a Kiro Crew update will name the release to install."
+        ),
+        # ``ACP_BACKEND_NODE_ADAPTER_PACKAGES[codex]``, spelled out: this leaf may not
+        # import ``backends_launch``; a test holds the two equal.
+        needs_adapter="@agentclientprotocol/codex-acp",
+        fixed_in="",
+    ),
+)
+
+
+def known_limitation_issue(backend: str, config_options: object) -> str:
+    """The notice for each :data:`KNOWN_LIMITATIONS` entry this session has, else ``""``.
+
+    *config_options* is the session's ``session/new`` ``configOptions``. Silent
+    while there are none (both drivers start from ``[]``), as the other new-chat
+    notices are before the handshake: no options is no evidence of a missing offer.
+    """
+    if not isinstance(config_options, list) or not config_options:
+        return ""
+    return " ".join(
+        entry.message
+        for entry in KNOWN_LIMITATIONS
+        if entry.harness == backend
+        and not offers_config_value(config_options, *entry.missing_config_value)
+    )
 
 
 def permission_setting_for(backend: str) -> tuple:

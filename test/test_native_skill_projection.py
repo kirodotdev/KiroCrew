@@ -188,7 +188,7 @@ def test_registry_mode_on_an_ungovernable_sign_in_projects_as_without_registry_m
     assert settings["chat.disableInheritingDefaultResources"] is True
 
 
-def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree):
+def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree, monkeypatch):
     """The runtime records the launch steering from the in-memory view while
     kiro-cli loads the alias file, so a file holding fewer resources than the
     view would make the folder skip a guide kiro-cli never loaded.
@@ -196,6 +196,9 @@ def test_launch_record_resources_match_the_alias_file_kiro_cli_loads(native_tree
     from kiro_crew import member_essential_context
 
     _home, agents, project = native_tree
+    # ``~/.kiro/crew`` is managed state the guide reader refuses; a ``tmp_path`` under
+    # it (an agent session's scratch) would be refused, so the account home is a sibling.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: project.parent / "account"))
     guides = {
         ".kiro/steering/conventions.md": "# Conventions\n",
         ".kiro/steering/nested/review.md": "# Review\n",

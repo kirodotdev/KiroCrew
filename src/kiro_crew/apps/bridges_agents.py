@@ -46,6 +46,8 @@ from kiro_crew.config.loader import (
     schedule_materialized_agents_refresh,
 )
 from kiro_crew.file_uri import file_uri_path_text
+from kiro_crew.mcp_cleanup import mcp_entry_is_muted
+from kiro_crew.mcp_provenance import DERIVED_KEY
 from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
@@ -245,7 +247,7 @@ def _ceiling_filtered_allowed(refs: object, agent_name: str = "") -> list[Any]:
 
 
 def _apply_agent_mcp_policy(
-    agent_data: dict[str, Any], agent_name: str, policy: dict[str, Any]
+    agent_data: dict[str, Any], agent_name: str, policy: dict[str, Any], *, builtin: bool = False
 ) -> dict[str, Any]:
     """Merge an app's MCP policy into one materialized agent config.
 
@@ -266,6 +268,10 @@ def _apply_agent_mcp_policy(
     are NOT added to ``tools``.  Explicit tool lists rather than a wildcard: the
     app discovers the real tool names, so a server that grows a tool cannot
     quietly slip through a stale pattern.
+
+    ``builtin`` is whether the app is first party (shipped and holding its own
+    install): only then may a grant copy a server the default agent mounts, since a
+    user-installed app writes its own policy file and no owner consent covers it.
     """
     per_agent = (policy.get("agents") or {}).get(agent_name) or {}
     granted = per_agent.get("servers") or {}
@@ -287,6 +293,15 @@ def _apply_agent_mcp_policy(
     # Needed by BOTH branches: a policy entry names a server, it does not carry
     # the launch spec, so the real command/args/env come from the ambient config.
     ambient = _global_mcp_specs() if (granted or neutralized) else {}
+    # What the default agent mounts: the rebuild's merge of the MCP page's store,
+    # registry installs and edition servers over the global file, store winning a tie.
+    # Another app's server is that app's, never a grant's to copy.
+    mounted: dict[str, Any] = {}
+    if granted and builtin:
+        from kiro_crew import agent as agent_mod
+
+        app_owned = agent_mod._app_owned_mcp_keys()
+        mounted = {k: v for k, v in _mounted_mcp_servers().items() if k not in app_owned}
 
     for name, spec in granted.items():
         if not isinstance(spec, dict):
@@ -296,12 +311,24 @@ def _apply_agent_mcp_policy(
         # top of it the entry is command-less, so the server never launches and
         # its tools are simply absent -- the agent reports "not available" with
         # nothing in any log. (Same defect the neutralize branch below had.)
-        base = servers.get(name) or ambient.get(name) or _managed_mcp_spec(name)
+        base = servers.get(name) or _managed_mcp_spec(name)
+        if not base:
+            base = mounted.get(name) or ambient.get(name)
+            # A copied server the default agent does not start stays off: turned off
+            # in MCP Management, not yet consented, or a secret:// reference withheld.
+            if mcp_entry_is_muted(base):
+                logger.warning(
+                    "Skipping MCP grant for %r on agent %r: the server is turned off "
+                    "or withheld for the default agent",
+                    name,
+                    agent_name,
+                )
+                continue
         if not isinstance(base, dict) or not base.get("command"):
             logger.warning(
                 "Skipping MCP grant for %r on agent %r: no launch spec found in "
-                "the agent config, the global MCP config, or the host's managed "
-                "servers",
+                "the agent config, the host's managed servers, the default agent's "
+                "servers, or the global MCP config",
                 name,
                 agent_name,
             )
@@ -309,6 +336,7 @@ def _apply_agent_mcp_policy(
         merged = {**base, **spec}
         merged.pop("neutralized", None)
         merged.pop("disabled", None)  # a grant un-disables a denied server
+        merged.pop(DERIVED_KEY, None)  # the rebuild's record, true only in its own file
         # `mountOnly` (set by a policy for a built-in grant) means: mount the
         # server so the tool is visible, but keep it OFF allowedTools no matter
         # what the ceiling says, so every call routes through the approval gate
@@ -510,6 +538,19 @@ def _audit_declared_mcp_tools(
         logger.debug("SEL audit unavailable for mcpTools restriction", exc_info=True)
 
 
+def _mounted_mcp_servers() -> dict[str, Any]:
+    """Server name -> entry from Kiro Crew's own agent config, the servers the default
+    agent mounts; ``{}`` when it cannot be read."""
+    try:
+        with _mcp_lock():
+            data = _read_mcp_json_unlocked()
+    except Exception as exc:  # noqa: BLE001 — never block agent materialization
+        logger.warning("Cannot read the default agent's MCP servers: %s", exc)
+        return {}
+    servers = data.get("mcpServers")
+    return servers if isinstance(servers, dict) else {}
+
+
 def _own_mcp_servers(app_name: str) -> dict[str, Any]:
     """The app's OWN registered MCP servers, keyed as ``<app>:<server>``.
 
@@ -524,14 +565,7 @@ def _own_mcp_servers(app_name: str) -> dict[str, Any]:
     not load for it, silently.
     """
     prefix = f"{app_name}:"
-    try:
-        with _mcp_lock():
-            data = _read_mcp_json_unlocked()
-    except Exception as exc:  # noqa: BLE001 — never block agent materialization
-        logger.warning("App %s: cannot read registered MCP servers: %s", app_name, exc)
-        return {}
-    servers = data.get("mcpServers") or {}
-    return {k: v for k, v in servers.items() if k.startswith(prefix)}
+    return {k: v for k, v in _mounted_mcp_servers().items() if k.startswith(prefix)}
 
 
 def _managed_mcp_spec(name: str) -> dict[str, Any] | None:
@@ -1021,6 +1055,9 @@ def _register_agents(
         agents_dir.mkdir(parents=True, exist_ok=True)
         policy = _agent_mcp_policy(app_name)
         own_servers = _own_mcp_servers(app_name)
+        from kiro_crew.apps.execution import builtin_app_names
+
+        builtin = app_name in builtin_app_names()
 
         screened_root = screen_app_path(app_root) if manifest.agents else Containment.UNCHECKED
         for agent_path_str in manifest.agents:
@@ -1130,7 +1167,7 @@ def _register_agents(
                 # the HOST agent's config, not the global mcp.json, so without this
                 # merge the reference dangles and the tool silently never mounts.
                 _materialize_managed_refs(agent_data)
-                merged = _apply_agent_mcp_policy(agent_data, agent_name, policy)
+                merged = _apply_agent_mcp_policy(agent_data, agent_name, policy, builtin=builtin)
                 # Enforce permissions.mcpTools: withhold every host-managed tool the
                 # app did not declare via managedToolPolicy.exclude. BEFORE
                 # _preserve_user_agent_edits, which treats managedToolPolicy as

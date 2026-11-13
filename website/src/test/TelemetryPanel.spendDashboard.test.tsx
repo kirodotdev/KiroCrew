@@ -277,3 +277,36 @@ describe('TelemetryPanel — the spend tab opens on the answer', () => {
     expect(document.querySelectorAll('[aria-hidden="false"]').length).toBe(0)
   })
 })
+
+// A dollar-billed harness records `cost` and leaves `credits` empty, so the
+// gateway sums the window from `cost` and says so with `unit: 'usd'`. Read as
+// credits, a $4.25 window rendered as a bare "4.25" under "Credits".
+describe('TelemetryPanel — a window billed in dollars', () => {
+  const usd = {
+    unit: 'usd',
+    credits: 4.25,
+    per_turn: 0.0425,
+    prior_credits: 1.5,
+    prior_per_turn: 0.03,
+    priciest: { credits: 0.9, slot: 'chat-1-1700000000', ts: '2026-08-05' },
+    by_model: [row('claude-x', 4.25)],
+    by_category: [row('dashboard', 4.25)],
+    conversations: [convo({ credits: 4.25 })],
+  }
+
+  it('writes every amount as money and names it cost', async () => {
+    await mount(usd)
+    await waitFor(() => expect(screen.getAllByText('$4.25').length).toBeGreaterThan(0))
+    expect(screen.getByText('cost $1.50 · turns 50')).toBeInTheDocument()
+    expect(screen.getByText('Cost by origin')).toBeInTheDocument()
+    expect(screen.getByText('Cost by model')).toBeInTheDocument()
+    expect(screen.getByText('$0.90')).toBeInTheDocument()
+    expect(screen.queryByText('Credits by model')).toBeNull()
+  })
+
+  it('keeps credits when the gateway sends no unit', async () => {
+    await mount()
+    await waitFor(() => expect(screen.getByText('Credits by model')).toBeInTheDocument())
+    expect(screen.getByText('credits 500 · turns 50')).toBeInTheDocument()
+  })
+})

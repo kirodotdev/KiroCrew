@@ -210,8 +210,9 @@ export const PREVIEW_MATE_SESSIONS = `${PREVIEW_FLAG_PREFIX}mate-sessions`
 export const PREVIEW_EXPLORE = `${PREVIEW_FLAG_PREFIX}explore`
 
 /**
- * Crew-owned GitHub sign-in: the gateway signs in to GitHub itself and serves it
- * to KAS chats (`connections/crew_oauth.py`). Server-only: the gateway reads
+ * Crew-owned MCP sign-in: the gateway signs in to MCP servers (GitHub, Asana,
+ * Google, DCR cards, owner-added servers) itself and serves them to chats on a
+ * bridged harness, never kiro-cli (`connections/crew_oauth.py`). Server-only: the gateway reads
  * `dashboard.feature_previews.crew_oauth` per call, so nothing in the dashboard
  * reads this key. Default OFF.
  */
@@ -258,6 +259,19 @@ export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-sta
 export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
 
 /**
+ * The Secrets vault redesign: Settings > Secrets as a list-detail pane
+ * (`SecretsPanel.tsx`) that also stores logins and notes.
+ *
+ * Default OFF, and OFF is the single-page panel on `main`
+ * (`SecretsPanelLegacy.tsx`), with the tab hosting no sub-nav. The gateway reads
+ * the same switch (`dashboard.feature_previews.secrets_vault`) for
+ * `GET /api/secrets`: off, the listing is names only with no `items`, as before.
+ * The typed write is not gated: it is additive, so a plain `{name, value}`
+ * write keeps its old shape and the legacy panel works against it unchanged.
+ */
+export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -281,6 +295,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
+  PREVIEW_SECRETS_VAULT,
 ]
 
 /**

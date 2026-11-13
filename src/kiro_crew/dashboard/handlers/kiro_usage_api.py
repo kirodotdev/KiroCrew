@@ -1,4 +1,4 @@
-"""Direct RTS ``GetUsageLimits`` client for real Kiro credit usage.
+"""Direct ``GetUsageLimits`` client for real Kiro credit usage.
 
 Background — why this module exists
 -----------------------------------
@@ -6,9 +6,10 @@ kiro-cli's ``/usage`` stdout stopped emitting the overage/total for org-managed
 KIRO POWER accounts (it now caps at ``10000 of 10000 covered in plan``). The
 dashboard credit pill scraped that text, so it froze at the plan limit even
 when the account was well into overage. The real numbers still exist — the Kiro
-IDE credit meter reads them from the ``GetUsageLimits`` API on the CodeWhisperer
-runtime service (RTS). This module calls that same API so KiroCrew surfaces the
-true used/limit/overage regardless of how kiro-cli reshuffles its stdout.
+IDE credit meter reads them from the ``GetUsageLimits`` API. This module calls
+that same API on the Kiro control plane (``management.<region>.kiro.dev``), the
+host kiro-cli itself uses for it, so Kiro Crew surfaces the true
+used/limit/overage regardless of how kiro-cli reshuffles its stdout.
 
 Whose credits are these?
 ------------------------
@@ -56,7 +57,8 @@ store (``~/.local/share`` — not a sensitive path, so it cannot route through
 ``safe_read_file_internal``, but the credential read is still SEL-audited via
 ``hooks.emit_internal_read_audit`` and fails closed if the audit cannot be
 recorded — opened read-only). It does NOT self-refresh the token via SSO-OIDC
-(kiro-cli keeps the SQLite token fresh during normal use) — on 401/403 it fails
+(kiro-cli keeps the SQLite token fresh during normal use) — on 401/403 (or the
+control plane's 400 ``AccessDeniedException`` for a dead token) it fails
 closed and the caller falls back to the legacy text scrape.
 
 That freshness dependency is an OPERATIONAL requirement, not just an
@@ -106,29 +108,54 @@ from kiro_crew import hooks
 # The kiro-cli store is also read in this process through the shim; one SQLite
 # library keeps the other readers' locks when this connection closes.
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.identity_stores import AUTH_TOKEN_KEYS, Trust, parse_token_expiry, sqlite_dbs
+from kiro_crew.identity_stores import (
+    AUTH_EXTERNAL_IDP_TOKEN_KEY,
+    AUTH_TOKEN_KEYS,
+    Trust,
+    parse_token_expiry,
+    sqlite_dbs,
+)
 
 logger = logging.getLogger(__name__)
 
-# Commercial RTS hosts (control 1): literals in this file, never config-derived.
-# eu-central-1 is a different hostname, not a regional spelling of the
-# us-east-1 one — ``codewhisperer.eu-central-1.amazonaws.com`` does not resolve.
-# A missing ARN or a region outside this table falls back to us-east-1.
-_RTS_ENDPOINTS = {
-    "us-east-1": "https://codewhisperer.us-east-1.amazonaws.com",
-    "eu-central-1": "https://q.eu-central-1.amazonaws.com",
+# Kiro control-plane hosts (control 1): source literals, never config-derived.
+# The hosts kiro-cli sends GetUsageLimits and ListAvailableProfiles to, and the
+# same entries as sign-in's ``auth/login/control_plane._CPS_ENDPOINTS`` (a test
+# holds the two equal). A copy rather than an import, because importing
+# ``kiro_crew.auth`` here would load it and aiohttp at dashboard boot. A missing
+# ARN or a region outside this table falls back to us-east-1.
+_USAGE_ENDPOINTS = {
+    "us-east-1": "https://management.us-east-1.kiro.dev/",
+    "eu-central-1": "https://management.eu-central-1.kiro.dev/",
+    "eu-west-1": "https://management.eu-central-1.kiro.dev/",
 }
-_DEFAULT_RTS_REGION = "us-east-1"
-_RTS_ENDPOINT = _RTS_ENDPOINTS[_DEFAULT_RTS_REGION]
+_DEFAULT_USAGE_REGION = "us-east-1"
+_USAGE_ENDPOINT = _USAGE_ENDPOINTS[_DEFAULT_USAGE_REGION]
 _SVC = "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService"
 _TARGET_GET_USAGE = f"{_SVC}.GetUsageLimits"
 _TARGET_LIST_PROFILES = f"{_SVC}.ListAvailableProfiles"
 #: Pages one profile lookup may read, the same bound as the sign-in listing's.
 _LIST_PROFILES_MAX_PAGES = 20
+# The control plane refuses a GetUsageLimits that names no profile
+# (400 ValidationException "Invalid profileArn."). An account with no listed
+# profile is a Builder ID one, and kiro-cli sends this fixed profile for it. The
+# same value as ``kiro_crew.auth.provider.BUILDER_ID_PROFILE_ARN`` (a test holds
+# them equal), copied for the boot-import reason given above.
+_BUILDER_ID_PROFILE_ARN = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
+# ``__type`` names (the part after ``#``) of a 400 that refuses the bearer
+# itself. The control plane answers a dead token with
+# ``400 AccessDeniedException "Invalid token"`` (namespaced ``__type``)
+# where the CodeWhisperer runtime host answers 401, so such a 400 counts as a
+# 401 here.
+_AUTH_REFUSAL_400_TYPES = frozenset({"AccessDeniedException", "UnauthorizedException"})
 _CONTENT_TYPE = "application/x-amz-json-1.0"
 # A Kiro/Q user-agent is required for the IDE-origin code path; without it the
 # API rejects the request.
 _USER_AGENT = "AmazonQ-For-CLI/1.24.0 ua/2.0 os/linux lang/rust KiroCrew"
+# The ``TokenType`` header value for an External IdP token. The control plane
+# picks its authenticator from it and refuses such a token without it, as
+# ``auth/login/control_plane.cps_headers`` and kiro-cli both send it.
+TOKEN_TYPE_EXTERNAL_IDP = "EXTERNAL_IDP"
 _TIMEOUT_SECS = 15
 # Aggregate wall-clock budget across ALL candidate tokens. Each token can cost
 # several 15s requests (paged ListAvailableProfiles + GetUsageLimits), so without
@@ -158,15 +185,18 @@ AUTH_OK = "ok"
 #: all three, and none of them can be told apart without claiming more than is
 #: known.
 AUTH_NO_CREDENTIAL = "no_credential"
-#: A credential was tried against GetUsageLimits and answered 401, i.e. it is no
-#: longer honoured (revoked or rotated out from under us).
+#: A credential was tried against GetUsageLimits and was refused as a credential
+#: (:func:`_is_auth_refusal`: a 401, or a 400 whose ``__type`` is
+#: ``AccessDeniedException`` / ``UnauthorizedException``), i.e. the service does
+#: not honour it (revoked or rotated out from under us).
 #:
-#: 401 ONLY. A 403 is authenticated-but-not-permitted -- an entitlement problem,
+#: Those ONLY. A 403 is authenticated-but-not-permitted -- an entitlement problem,
 #: where "sign in again" would be wrong advice -- so it stays :data:`AUTH_OTHER`,
-#: as does a 401 that ListAvailableProfiles absorbs (``_list_profile_arn``
-#: reports any non-200 as None, so that case presents as an unproven candidate
-#: and is not observable here). Narrow on purpose: telling a user with a working
-#: sign-in to re-authenticate is its own defect.
+#: as does any other 400 (a ``ValidationException`` is a malformed request, not a
+#: dead sign-in) and a refusal that ListAvailableProfiles absorbs
+#: (``_list_profile_arn`` reports any non-200 as None, so that case presents as an
+#: unproven candidate and is not observable here). Narrow on purpose: telling a
+#: user with a working sign-in to re-authenticate is its own defect.
 AUTH_REJECTED = "rejected"
 #: Not an auth problem, or not provably one: no CREDIT breakdown for the account,
 #: an unproven candidate, a transport error, a 403, an unparseable body.
@@ -244,8 +274,10 @@ _SQLITE_AUDIT_READ_ID = "kiro_usage_api.sqlite_token"
 _MAX_CREDITS = 1_000_000.0
 _MAX_BONUS_GRANTS = 32
 _MAX_BONUS_NAME_CHARS = 100
+#: Longest ``days_left`` a nested grant reports, matching the text parser's bound.
+_MAX_BONUS_DAYS_LEFT = 3_650
 
-# Cap the RTS response body so an oversized or indefinitely-streamed response
+# Cap the usage response body so an oversized or indefinitely-streamed response
 # cannot exhaust memory or tie up a shared subprocess worker. The usage JSON is
 # a few KB; 1 MB is comfortably above any real response.
 _MAX_RESP_BYTES = 1_000_000
@@ -404,8 +436,20 @@ def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime, str | 
     return (tok, expiry, user_id)
 
 
-def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime, str | None] | None:
-    """Return ``(access_token, expiry)`` from a kiro-cli/amazon-q SQLite store.
+class _StoreToken(NamedTuple):
+    """One live token read from a SQLite store, with the ``TokenType`` its key implies."""
+
+    token: str
+    expiry: datetime
+    user_id: str | None
+    token_type: str = ""
+
+
+def _token_from_sqlite(db: Path, now: datetime) -> _StoreToken | None:
+    """Return the live token from a kiro-cli/amazon-q SQLite store.
+
+    ``token_type`` is :data:`TOKEN_TYPE_EXTERNAL_IDP` when the token was read under
+    kiro-cli's External IdP key, else empty.
 
     Opened read-only; the token value is never logged. This is the live token
     source on Linux, where the JSON cache file is not refreshed. The store is
@@ -463,7 +507,10 @@ def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime, str | No
                 # IdC userId when the blob carries it. Bounded; not a secret.
                 uid_raw = blob.get("userId") or blob.get("user_id")
                 user_id = uid_raw[:128] if isinstance(uid_raw, str) and uid_raw else None
-                return (tok, expiry, user_id)
+                token_type = (
+                    TOKEN_TYPE_EXTERNAL_IDP if key == AUTH_EXTERNAL_IDP_TOKEN_KEY else ""
+                )
+                return _StoreToken(tok, expiry, user_id, token_type)
         # Audit-on-every-outcome: the DB was opened, so record the access even
         # when it yielded no usable token (missing rows / malformed blob / query
         # failure) — otherwise an opened credential store would leave no trail.
@@ -497,6 +544,8 @@ class _Candidate(NamedTuple):
     expiry: datetime
     from_cli_store: bool
     user_id: str | None = None
+    # ``TokenType`` header for both control-plane calls made with this token.
+    token_type: str = ""
 
 
 def _candidate_tokens() -> list[_Candidate]:
@@ -532,20 +581,23 @@ def _candidate_tokens() -> list[_Candidate]:
     # Deduped by token value, keeping the latest expiry seen for it and ORing the
     # provenance: the same token can appear in more than one store, and if any of
     # them is kiro-cli's own store then it is kiro-cli's credential.
-    freshest: dict[str, tuple[datetime, bool, str | None]] = {}
+    freshest: dict[str, tuple[datetime, bool, str | None, str]] = {}
 
-    def _add(found: tuple[str, datetime, str | None] | None, *, from_cli_store: bool) -> None:
+    def _add(
+        found: tuple[str, datetime, str | None] | _StoreToken | None, *, from_cli_store: bool
+    ) -> None:
         if not found:
             return
-        tok, exp, uid = found
+        tok, exp, uid, tt = _StoreToken(*found)
         current = freshest.get(tok)
         if current is None:
-            freshest[tok] = (exp, from_cli_store, uid)
+            freshest[tok] = (exp, from_cli_store, uid, tt)
         else:
-            cur_exp, cur_cli, cur_uid = current
-            # OR provenance; prefer first non-None userId (same token = same user).
+            cur_exp, cur_cli, cur_uid, cur_tt = current
+            # OR provenance; prefer first non-None userId and the first non-empty
+            # token type (same token = same user and sign-in).
             freshest[tok] = (max(exp, cur_exp), cur_cli or from_cli_store,
-                             cur_uid if cur_uid is not None else uid)
+                             cur_uid if cur_uid is not None else uid, cur_tt or tt)
 
     for read_id in _JSON_TOKEN_READ_IDS:
         _add(_token_from_json(read_id, now), from_cli_store=False)
@@ -555,7 +607,7 @@ def _candidate_tokens() -> list[_Candidate]:
         _add(_token_from_sqlite(db, now), from_cli_store=False)
     # (from_cli_store, expiry) descending: own-store tokens first, freshest first.
     ranked = sorted(freshest.items(), key=lambda kv: (kv[1][1], kv[1][0]), reverse=True)
-    return [_Candidate(tok, exp, own, uid) for tok, (exp, own, uid) in ranked]
+    return [_Candidate(tok, exp, own, uid, tt) for tok, (exp, own, uid, tt) in ranked]
 
 
 def _anchor_user_id(candidates: list[_Candidate]) -> str | None:
@@ -589,43 +641,55 @@ def _region_from_arn(arn: str | None) -> str:
     """Return the CodeWhisperer region in ``arn``, or the commercial default.
 
     Profile ARNs are ``arn:aws:codewhisperer:<region>:<account>:profile/<name>``.
-    A missing or malformed ARN, or a region not in :data:`_RTS_ENDPOINTS`,
+    A missing or malformed ARN, or a region not in :data:`_USAGE_ENDPOINTS`,
     falls back to us-east-1 so the request still goes to a known AWS prod host.
     """
     if not isinstance(arn, str) or not arn:
-        return _DEFAULT_RTS_REGION
+        return _DEFAULT_USAGE_REGION
     parts = arn.split(":")
     if len(parts) < 6 or parts[2] != "codewhisperer":
-        return _DEFAULT_RTS_REGION
+        return _DEFAULT_USAGE_REGION
     region = parts[3]
-    return region if region in _RTS_ENDPOINTS else _DEFAULT_RTS_REGION
+    return region if region in _USAGE_ENDPOINTS else _DEFAULT_USAGE_REGION
 
 
-def _rts_endpoint(arn: str | None = None) -> str:
-    """Hardcoded RTS host for ``arn``'s region (control 1)."""
-    return _RTS_ENDPOINTS[_region_from_arn(arn)]
+def _usage_endpoint(arn: str | None = None) -> str:
+    """Hardcoded control-plane host for ``arn``'s region (control 1)."""
+    return _USAGE_ENDPOINTS[_region_from_arn(arn)]
 
 
-def _post(token: str, target: str, payload: dict, *, endpoint: str | None = None) -> _Resp:
-    """POST an AWS-JSON request to the hardcoded RTS endpoint over urllib.
+def _post(
+    token: str,
+    target: str,
+    payload: dict,
+    *,
+    endpoint: str | None = None,
+    token_type: str = "",
+) -> _Resp:
+    """POST an AWS-JSON request to the hardcoded control-plane endpoint over urllib.
 
     TLS verification (control 2) and no-redirect (control 3) come from
     :func:`_build_opener`. A non-2xx HTTP *response* is returned as a ``_Resp``
     (requests parity — the caller branches on ``status_code``); only a
     transport-level failure raises :class:`_RequestError`. ``endpoint`` selects
-    the regional host; omitted, it is the us-east-1 default.
+    the regional host; omitted, it is the us-east-1 default. ``token_type`` is
+    :data:`TOKEN_TYPE_EXTERNAL_IDP` for an External IdP token and goes out as the
+    ``TokenType`` header; empty sends none.
     """
     body = json.dumps(payload).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": _CONTENT_TYPE,
+        "X-Amz-Target": target,
+        "User-Agent": _USER_AGENT,
+    }
+    if token_type:
+        headers["TokenType"] = token_type
     req = urllib.request.Request(
-        endpoint or _RTS_ENDPOINT,
+        endpoint or _USAGE_ENDPOINT,
         data=body,
         method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": _CONTENT_TYPE,
-            "X-Amz-Target": target,
-            "User-Agent": _USER_AGENT,
-        },
+        headers=headers,
     )
     opener = _build_opener()
     try:
@@ -680,6 +744,7 @@ def _list_profile_arn(
     expected_arn: str | None = None,
     endpoint: str | None = None,
     deadline: float | None = None,
+    token_type: str = "",
 ) -> str | None:
     """Return the profile ARN this token should use, or None.
 
@@ -696,7 +761,7 @@ def _list_profile_arn(
 
     The answer is account-stable per (token, question), so a found ARN is
     memoized in ``_PROFILE_ARN_CACHE`` keyed by :func:`_profile_cache_key`
-    (never the token itself) to save one RTS round-trip per refresh. Three
+    (never the token itself) to save one control-plane round-trip per refresh. Three
     things are deliberately NOT cached: transient failures (network error,
     non-200), a 200 with no profiles, and an anchored miss (expected ARN
     absent from the list) — an empty or incomplete list can be post-login
@@ -719,7 +784,13 @@ def _list_profile_arn(
         if deadline is not None and time.monotonic() > deadline:
             return None
         try:
-            r = _post(token, _TARGET_LIST_PROFILES, request, endpoint=endpoint)
+            r = _post(
+                token,
+                _TARGET_LIST_PROFILES,
+                request,
+                endpoint=endpoint,
+                token_type=token_type,
+            )
         except _RequestError:
             return None
         if r.status_code != 200:
@@ -797,6 +868,54 @@ def _bounded(value: object) -> float | None:
     if not math.isfinite(f) or f < 0 or f > _MAX_CREDITS:
         return None
     return f
+
+
+def _nested_bonuses(credit: dict) -> list[dict[str, object]]:
+    """The active bonus grants GetUsageLimits nests under the CREDIT entry (``bonuses``).
+
+    Each grant names itself in ``displayName``; ``bonusCode`` is a redemption code
+    and is never shown. A grant whose ``status`` is present and not ``ACTIVE`` is
+    over. ``days_left`` is the whole days until ``expiresAt`` (epoch seconds), as
+    kiro-cli's ``/usage`` shows it, and is omitted when the time is missing or out
+    of range.
+    """
+    grants = credit.get("bonuses")
+    if not isinstance(grants, list):
+        return []
+    out: list[dict[str, object]] = []
+    for g in grants:
+        if len(out) >= _MAX_BONUS_GRANTS:
+            break
+        if not isinstance(g, dict):
+            continue
+        status = g.get("status")
+        if status is not None and str(status).upper() != "ACTIVE":
+            continue
+        used = _bounded(g.get("currentUsageWithPrecision"))
+        if used is None:
+            used = _bounded(g.get("currentUsage"))
+        limit = _bounded(g.get("usageLimitWithPrecision"))
+        if limit is None:
+            limit = _bounded(g.get("usageLimit"))
+        name = g.get("displayName")
+        if used is None or limit is None or limit <= 0:
+            continue
+        if not isinstance(name, str) or not name or not name.isprintable():
+            continue
+        entry: dict[str, object] = {
+            "name": name[:_MAX_BONUS_NAME_CHARS],
+            "used": used,
+            "total": limit,
+        }
+        try:
+            seconds_left = float(g.get("expiresAt")) - time.time()  # type: ignore[arg-type]
+            days: int | None = math.floor(seconds_left / 86400)
+        except (TypeError, ValueError, OverflowError):
+            days = None
+        if days is not None and 0 <= days <= _MAX_BONUS_DAYS_LEFT:
+            entry["days_left"] = days
+        out.append(entry)
+    return out
 
 
 def _map_response(data: dict) -> dict | None:
@@ -923,8 +1042,10 @@ def _map_response(data: dict) -> dict | None:
     # dashboard never branches on source. Retain every bounded grant; the legacy
     # scalar fields mirror the first one for older clients.
     _bonus_markers = ("FREE_TRIAL", "FREETRIAL", "TRIAL", "BONUS", "PROMO", "GIFT", "WELCOME")
-    bonus_credits: list[dict[str, object]] = []
+    bonus_credits: list[dict[str, object]] = _nested_bonuses(credit)
     for b in breakdowns:
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
         if b is credit:
             continue
         rtype = str(b.get("resourceType") or "").upper()
@@ -963,9 +1084,30 @@ def _map_response(data: dict) -> dict | None:
 #: Longest e-mail published, matching ``parse_whoami_output``'s bound.
 _MAX_EMAIL_CHARS = 254
 
-#: The ``_Attempt.reason`` of a request the service refused as malformed. The
-#: vault read retries once without ``isEmailRequired`` on exactly this answer.
+#: The ``_Attempt.reason`` of a request the service refused as malformed. A read
+#: that asked for the e-mail retries once without ``isEmailRequired`` on exactly
+#: this answer, unless the 400 refused the credential (see
+#: :func:`_email_flag_refused`).
 _EMAIL_REJECTED_REASON = "HTTP 400"
+
+
+def _is_auth_refusal(r: _Resp) -> bool:
+    """True when a non-200 answer refuses the bearer token itself.
+
+    A 401, or a 400 whose ``__type`` (bare, or after its ``#`` namespace) is in
+    :data:`_AUTH_REFUSAL_400_TYPES`. A 403, any other 400 and an unreadable
+    body are not: see :data:`AUTH_REJECTED`.
+    """
+    if r.status_code == 401:
+        return True
+    if r.status_code != 400:
+        return False
+    try:
+        body = r.json()
+    except ValueError:
+        return False
+    kind = body.get("__type") if isinstance(body, dict) else None
+    return isinstance(kind, str) and kind.rsplit("#", 1)[-1] in _AUTH_REFUSAL_400_TYPES
 
 
 def _user_email(data: object) -> str:
@@ -1031,6 +1173,19 @@ class _Attempt(NamedTuple):
     unauthorized: bool = False
 
 
+def _email_flag_refused(attempt: _Attempt) -> bool:
+    """True when a failed read may be the service refusing ``isEmailRequired``.
+
+    A plain 400, never one that refused the credential: asking again without the
+    flag would only send the same dead token a second time.
+    """
+    return (
+        attempt.result is None
+        and attempt.reason == _EMAIL_REJECTED_REASON
+        and not attempt.unauthorized
+    )
+
+
 def _get_usage(
     token: str,
     arn: str | None,
@@ -1038,37 +1193,44 @@ def _get_usage(
     name_anchor: str | None,
     endpoint: str,
     want_email: bool = False,
+    token_type: str = "",
 ) -> _Attempt:
     """THE GetUsageLimits request and response mapping, for one credential.
 
     Shared by :func:`fetch_usage_limits` (each discovered candidate) and
     :func:`fetch_usage_limits_with_credential` (Crew's vault token), so the
-    payload, the 401-only ``AUTH_REJECTED`` rule and the CREDIT mapping have one
-    copy. ``arn`` goes in the payload; ``name_anchor`` is the anchor the
+    payload, the ``AUTH_REJECTED`` rule and the CREDIT mapping have one
+    copy. ``arn`` goes in the payload, or :data:`_BUILDER_ID_PROFILE_ARN` when
+    it is None; ``name_anchor`` is the anchor the
     ListAvailableProfiles probe was asked about, which keys the display-name
     cache. ``want_email`` asks the API for the account's e-mail
     (``isEmailRequired``, as kiro-cli does) and maps ``userInfo.email`` onto
     ``email``; only the vault path sets it, because there the credential is the
     signed-in account's by construction and nothing else can name its address.
+    ``token_type`` is passed to :func:`_post` as the credential's ``TokenType``.
     Raises nothing it does not raise today: callers wrap it.
     """
-    payload: dict[str, object] = {"origin": "AI_EDITOR"}
-    if arn:
-        payload["profileArn"] = arn
+    # The fixed Builder ID profile goes in the request only. ``_profile_arn``
+    # below stays ``arn``, so an account with no profile is still reported as
+    # having none.
+    payload: dict[str, object] = {
+        "origin": "AI_EDITOR",
+        "profileArn": arn or _BUILDER_ID_PROFILE_ARN,
+    }
     if want_email:
         payload["isEmailRequired"] = True
     try:
-        r = _post(token, _TARGET_GET_USAGE, payload, endpoint=endpoint)
+        r = _post(token, _TARGET_GET_USAGE, payload, endpoint=endpoint, token_type=token_type)
     except _RequestError as e:
         reason = f"request failed: {type(e).__name__}"
         logger.debug("Kiro usage API %s", reason)
         return _Attempt(None, reason)
     if r.status_code != 200:
-        # Do not log the token, only the status. 401 only: see AUTH_REJECTED for
-        # why a 403 must not be read as an auth refusal.
+        # Do not log the token, only the status. See AUTH_REJECTED for why a
+        # 403 or a ValidationException 400 must not be read as an auth refusal.
         reason = f"HTTP {r.status_code}"
         logger.debug("Kiro usage API returned %s", reason)
-        return _Attempt(None, reason, unauthorized=r.status_code == 401)
+        return _Attempt(None, reason, unauthorized=_is_auth_refusal(r))
     try:
         body = r.json()
     except ValueError:
@@ -1097,7 +1259,7 @@ def _get_usage(
 
 
 def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
-    """Fetch real credit usage via the direct RTS API. Synchronous (uses urllib).
+    """Fetch real credit usage via the direct control-plane API. Synchronous (uses urllib).
 
     A candidate credential is used only when its ownership by the signed-in
     account is PROVEN. There are two proofs, and ``expected_arn`` selects which:
@@ -1158,7 +1320,7 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
     # Resolve once from the whoami ARN so ListAvailableProfiles and
     # GetUsageLimits hit the same regional host. Unknown/absent region stays
     # on the us-east-1 default (control 1: the URL is still a file literal).
-    endpoint = _rts_endpoint(expected_arn)
+    endpoint = _usage_endpoint(expected_arn)
     # Apply IdC userId ownership filter when the signed-in user's userId is
     # available from kiro-cli's own store. This is the third proof of ownership,
     # beyond ARN-anchored and source-anchored: two accounts on the same IdC org
@@ -1180,13 +1342,15 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
         candidates = [c for c in candidates
                       if c.user_id is None or c.user_id == active_user_id]
     reason = "unknown"
-    # Set when GetUsageLimits itself answers 401 for some candidate. Tracked
+    # Set when GetUsageLimits itself refuses some candidate's credential
+    # (``_is_auth_refusal``). Tracked
     # separately from ``reason`` (which is prose for the log) because it is the
     # one non-empty outcome that licenses a "sign in again" message.
     saw_unauthorized = False
     deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     for candidate in candidates:
         token = candidate.token
+        token_type = candidate.token_type
         if time.monotonic() > deadline:
             # Bound total time so a host with several stale tokens can't stall
             # the pill for minutes; degrade to the text scrape instead.
@@ -1205,7 +1369,11 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
                 )
                 continue
             arn = _list_profile_arn(
-                token, expected_arn=expected_arn, endpoint=endpoint, deadline=deadline
+                token,
+                expected_arn=expected_arn,
+                endpoint=endpoint,
+                deadline=deadline,
+                token_type=token_type,
             )
             if expected_arn and (not arn or arn != expected_arn):
                 # ARN-anchored mode: the expected profile is genuinely absent
@@ -1245,15 +1413,22 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
             # proof, so it does not ask and this is byte-for-byte as before.
             want_email = expected_arn is None
             attempt = _get_usage(
-                token, arn, name_anchor=expected_arn, endpoint=endpoint, want_email=want_email
+                token,
+                arn,
+                name_anchor=expected_arn,
+                endpoint=endpoint,
+                want_email=want_email,
+                token_type=token_type,
             )
-            if want_email and attempt.result is None and attempt.reason == _EMAIL_REJECTED_REASON:
+            if want_email and _email_flag_refused(attempt):
                 # The e-mail is an extra, never a condition of the reading: a 400
                 # may be the service refusing ``isEmailRequired`` for this kind
                 # of sign-in, so ask once more without it before giving up -- the
                 # same fallback the vault path takes. A reading with no billed
                 # e-mail then simply attaches no whoami e-mail downstream.
-                attempt = _get_usage(token, arn, name_anchor=expected_arn, endpoint=endpoint)
+                attempt = _get_usage(
+                    token, arn, name_anchor=expected_arn, endpoint=endpoint, token_type=token_type
+                )
             if attempt.result is not None:
                 return attempt.result._replace(user_id=active_user_id)
             reason = attempt.reason
@@ -1288,7 +1463,9 @@ def signed_in_user_id() -> str | None:
     return _anchor_user_id(candidates)
 
 
-def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> UsageResult:
+def fetch_usage_limits_with_credential(
+    token: str, profile_arn: str | None, *, token_type: str = ""
+) -> UsageResult:
     """Fetch credit usage with ONE caller-supplied credential. Synchronous (urllib).
 
     The path for Kiro Crew's own sign-in vault, which needs no kiro-cli: the
@@ -1301,31 +1478,50 @@ def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> U
 
     The stored ARN is used as-is. Without one (Builder ID, social) the
     ListAvailableProfiles probe's first ARN is used when the token lists any,
-    which an enterprise identity stored without its ARN needs to avoid a 403.
+    which an enterprise identity stored without its ARN needs to avoid a 403;
+    a token that lists none reads with the fixed Builder ID profile.
+
+    ``token_type`` is :data:`TOKEN_TYPE_EXTERNAL_IDP` for an External IdP
+    sign-in and rides both control-plane calls; empty for every other sign-in.
 
     Same contract as :func:`fetch_usage_limits`: never raises, never logs the
     token, and the request/mapping is the one :func:`_get_usage` body.
     """
     if not token:
         return UsageResult(None, AUTH_NO_CREDENTIAL)
-    endpoint = _rts_endpoint(profile_arn)
+    endpoint = _usage_endpoint(profile_arn)
     deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     try:
-        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint, deadline=deadline)
+        arn = profile_arn or _list_profile_arn(
+            token, endpoint=endpoint, deadline=deadline, token_type=token_type
+        )
         if profile_arn:
             # Fills the display-name cache only; the stored ARN is the answer.
-            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint, deadline=deadline)
+            _list_profile_arn(
+                token,
+                expected_arn=profile_arn,
+                endpoint=endpoint,
+                deadline=deadline,
+                token_type=token_type,
+            )
         elif arn:
             # A discovered ARN names its own region; send the read there.
-            endpoint = _rts_endpoint(arn)
+            endpoint = _usage_endpoint(arn)
         attempt = _get_usage(
-            token, arn, name_anchor=profile_arn, endpoint=endpoint, want_email=True
+            token,
+            arn,
+            name_anchor=profile_arn,
+            endpoint=endpoint,
+            want_email=True,
+            token_type=token_type,
         )
-        if attempt.result is None and attempt.reason == _EMAIL_REJECTED_REASON:
+        if _email_flag_refused(attempt):
             # The e-mail is an extra, never a condition of the reading: a 400
             # may be the service refusing ``isEmailRequired`` for this kind of
             # sign-in, so ask once more without it before giving up.
-            attempt = _get_usage(token, arn, name_anchor=profile_arn, endpoint=endpoint)
+            attempt = _get_usage(
+                token, arn, name_anchor=profile_arn, endpoint=endpoint, token_type=token_type
+            )
     except Exception:  # noqa: BLE001 - never let an unexpected shape escape
         logger.debug("Kiro usage API: unexpected error for the vault credential", exc_info=True)
         return UsageResult(None, AUTH_OTHER)

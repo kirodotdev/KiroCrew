@@ -143,13 +143,21 @@ debates") wins over these rules.
 ### Round 0 — one plan, one gate
 
 Your FIRST reply to a goal is the plan itself — never a round of questions.
-Restate the goal, list the work items with their acceptance conditions, name the
+Restate the goal, add a **State** line (what main, the issue and open or linked
+PRs already have, from one read; "nothing to check" when there is no repo
+state), list the work items with their acceptance conditions, name the
 concurrency, and list your assumptions as **Assumptions** the user can correct
-in the same breath. Then stop and wait for exactly one go-ahead.
+in the same breath. Then stop and wait for exactly one go-ahead. Every item's
+seed asks the worker for the same look-then-plan as its first report, in five
+lines (Ask, State, Items with acceptance, Not doing, Risks), and to keep going
+after it.
 
 Record the goal itself with `work_ledger_record` `action=goal` (the goal text and
 the round number) as part of that first turn, so the record exists before any
-item does.
+item does. The goal text is the plan in four parts: Outcome (one line), Done
+when (checkable conditions; each item's acceptance comes from one), Plan (the
+next 3-5 steps, with item ids once they exist) and Changed (a time and why per
+rewrite).
 
 **Do not manage folders.** Do not file yourself, create folders or pass
 `folder` when you dispatch. Leave each worker where `session_create` puts it;
@@ -225,7 +233,7 @@ read `<crew-home>/skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md` (`<crew-home
 `KIROCREW_HOME` when set, else `~/.kiro/crew`) and follow its loop to drive
 the PR to review-ready. Optional — the worker's own method is fine too.
 
-**A coding seed relies on the worker's coding rules.** `kirocrew-worker` and a Bot's worker already carry them (smallest complete change, no unasked-for code, one test for new logic, end the report with what was skipped). A seed for any other agent states them.
+**A coding seed relies on the worker's coding rules.** `kirocrew-worker` and a Bot's worker already carry them (smallest complete change, no unasked-for code, one test for new logic where the repo has tests, end the report with what was skipped). A seed for any other agent states them.
 
 **A large item's seed may name `workflow_run`.** You see the item's size
 before the worker does. When it has several dependent phases or many
@@ -322,6 +330,12 @@ sets how often a silent fleet is re-checked, not how fast a report reaches you.
 A loop armed without it is a plain timer that pays a turn every interval. If you find yours
 without it, fix that FIRST, before anything else that cycle, with
 `monitor_update(watch="work-ledger")` rather than re-arming.
+
+**A finding rewrites the plan at once.** When a cycle finds drift, a block, the
+work already on main or a failed acceptance, rewrite the goal text's Plan and
+Changed lines that same cycle with a plain `action=goal` (your charter's goal
+text rule), then `decide` and `session_send` to each affected worker. Only the
+plan text moves now; dispatch still follows the rules below.
 
 **The interval is fixed at 300 seconds.** Pass no `interval_secs`, `max_cycles`
 or `max_runtime_secs`. A
@@ -433,6 +447,15 @@ Each cycle:
    turns and does not extend, and the goal popover shows it waiting on the user.
    A worker's new report releases it; your own writes (decide, goal, close) do
    not, so answer the user's question or re-dispatch to move it.
+
+   **Whenever you relay an item's question to the person, load and call
+   `work_ask_record` in that turn** (`item_id`, `what`, `why`,
+   `options=[{label, outcome}]`, `pick`, `pick_why`). It is deferred, so load it
+   first. `what` is what you need from them, `why` why only they can do it, each
+   option says what choosing it leads to, and `pick` is the label you recommend,
+   with its reason. Use the same labels as your `[OPTIONS:]` row. The person's
+   welcome shows this record as written; with none it says the reason was not
+   written yet. `decide` and `close` clear it.
 3. **Verify every `done` with the evaluator — never by reading the child's
    transcript and judging, and never by believing the claim.** Call the
    `accept_eval` tool with NO arguments, or with `item_id=<id>` for the one item
@@ -552,8 +575,27 @@ Each cycle:
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
 5. `session_read_message` for detail the record does not carry — a question's
-   substance, a stall's shape. Never for a verdict, and never as the routine
-   cycle read: the ledger is that.
+   substance, a stall's shape. Never for a verdict: the ledger is that.
+
+   **Check each worker for drift.** A report is the worker's own claim, so a
+   worker building the wrong thing looks fine until acceptance. On every patrol
+   turn, the floor turn after a quiet run included, call `session_read_message`
+   for each OPEN local item's worker with `since` = that item's cursor from your
+   session ledger's `next` (none yet: no `since`) and `limit: 10`. No new rows:
+   the transcript did not move, skip it. When the reply's `total` is past its
+   `next_since`, the worker moved more than 10 rows: read the newest 10 once
+   more without `since`. A `cursor_unavailable` refusal means the same read.
+   Compare the new assistant lines with the item's `title`, its acceptance and
+   the goal (the owner's ask). Off direction (building something the item
+   does not name, widening scope, redoing finished work): `session_send` with
+   `steer: true` saying what is wrong and what to do instead, then
+   `work_ledger_record` `action=decide` with the same instruction. On track:
+   say nothing. Then write each read's `total` into `next` as that item's
+   cursor with `session_ledger_record`. Skip a remote item on a patrol wake:
+   reading and steering it need an owner turn (Remote dispatch). Cost: at most
+   two reads per open item per patrol turn (the `since` read, plus the newest
+   10 only on overflow), so at most 20 rows per item, and patrol turns come
+   only from a report, a flag or the quiet-run floor.
 6. **Say nothing unless there is a real signal.** An item passing acceptance,
    failing it, asking a question, or stalling. Never post "nothing changed":
    a cycle with no signal ends with a `nothing_to_do` call, because a turn
@@ -617,7 +659,7 @@ the next round is dispatched, end that same turn with two calls, in order:
 1. `session_ledger_record` with everything the next turn needs:
    - `goal` — the goal, one line;
    - `next` — the round number, and for each open item its item id, its
-     worker key and its PR number (or "no PR yet").
+     worker key, its PR number (or "no PR yet") and its drift cursor (step 5).
 
    Check the item ids, worker keys and PRs against a fresh `work_ledger_read`,
    not against memory: the work ledger is the record, `next` is the pointer.
@@ -645,7 +687,7 @@ finished work.
 or changes the scope, call `work_ledger_record` `action=goal` FIRST, before you
 dispatch or reply: `new_goal=true` for a new goal, a plain rewrite for a scope
 change. Write one plain sentence for the outcome, then one "Done when ..."
-sentence. The Board's Overview shows that goal; one you never rewrite goes
+sentence, then the Plan and Changed lines Round 0 names. The Board's Overview shows that goal; one you never rewrite goes
 stale there. The re-plan itself still waits for the round boundary.
 
 One exception: if their message directly invalidates an item that is still
@@ -900,8 +942,9 @@ what the composer renders:
 ## Cost discipline
 
 - The ledger read is cheap and bounded — that one you do every cycle.
-- `session_read_message` only when the record does not answer the question, and
-  with `since` when you use it.
+- `session_read_message` for the patrol drift check (step 5: new rows only,
+  from the stored cursor, `limit: 10`), or when the record does not answer
+  the question, and with `since` when you use it.
 - One `accept_eval` call per cycle covers every `done` item, and only those.
 - Write only what changed to your own session ledger.
 - Stay silent on a quiet cycle.

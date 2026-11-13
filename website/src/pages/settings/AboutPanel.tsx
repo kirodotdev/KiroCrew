@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Download, Copy } from 'lucide-react'
-import { SettingsLink } from '../../components/SettingsLink'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Download, Copy } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
@@ -15,6 +14,8 @@ import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGateway
 import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from './AboutPanelUpdateSwitches'
 import { AboutPanelUpcomingUpdate } from './AboutPanelUpcomingUpdate'
+import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
+import ReleasesPanel from './ReleasesPanel'
 import { api } from '../../api/client'
 import { useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
@@ -30,6 +31,7 @@ import { feedbackTracker } from '../../feedbackTracker'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 import { gatewayStopCommand } from '../../hooks/useUpdateSubscription'
 import { useInstallDispatch } from '../../hooks/useInstallDispatch'
+import { agentInstallDispatchQuery, agentInstallLatchQuery, armAgentInstall, releaseAgentInstall } from '../../hooks/useAgentInstallLatch'
 import { editionBuildVersion, foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
@@ -231,9 +233,14 @@ export function AboutPanel() {
   // Install-and-restart, with its one-way latch and the reset for a refused or
   // aborted handoff (see useInstallDispatch).
   const {
-    installMutation, dispatched: installDispatched, dispatchInstall,
+    installMutation, dispatched: ownInstallDispatched, dispatchInstall,
     armed: updateArmed, canArmOnQuit, canRestartNow, restartNow, restartNowPending, restartNowFailed,
   } = useInstallDispatch(updateState)
+  // The install an agent request's click dispatches when its download lands
+  // runs in useAgentInstallLatch; the panel shows it as its own.
+  const { data: agentInstallDispatch } = useQuery(agentInstallDispatchQuery)
+  const installDispatched = ownInstallDispatched || !!agentInstallDispatch?.dispatched
+  const installRefused = installMutation.isError || !!agentInstallDispatch?.failed
   // An agent's pending request for THIS packaged install. Polled while on
   // desktop; the poll is also how the card leaves — a decline, an expiry, or
   // the install itself (which quits the app under this tab) all end it.
@@ -252,14 +259,10 @@ export function AboutPanel() {
   // ordinary card uses. With a stage already present, install; otherwise
   // download and let the `downloaded` state's Install button (or the
   // deferred-on-quit install) finish it — exactly as a manual click would.
-  const [agentInstallArmed, setAgentInstallArmed] = useState(false)
-  const agentInstallArmedRef = useRef(false)
-  // The armed click has seen its download START (`downloading`, which the main
-  // process emits at once for a click it re-checks). What makes a later
-  // `checking` or `not-available` mean "that download was dropped" rather than
-  // the state the click was made from (see agentDownloadDropped).
-  const [agentArmSawDownload, setAgentArmSawDownload] = useState(false)
-  const agentArmSawDownloadRef = useRef(false)
+  // The click armed for a download is held app-wide and finished by
+  // useAgentInstallLatch (shell/appShell.tsx), so it survives leaving this tab.
+  const { data: agentInstallLatch } = useQuery(agentInstallLatchQuery)
+  const agentInstallArmed = !!agentInstallLatch
   // Before dispatching the install, retire the request by the id the card
   // showed. The install quits the app; on relaunch into the new version, a
   // request left on disk would put the card straight back up asking for a
@@ -277,95 +280,19 @@ export function AboutPanel() {
       retireAgentRequest()
       dispatchInstall()
     } else {
-      agentArmSawDownloadRef.current = false
-      agentInstallArmedRef.current = true
-      setAgentArmSawDownload(false)
-      setAgentInstallArmed(true)
+      armAgentInstall(queryClient, pendingAgentRequest?.request_id)
       downloadMutation.mutate()
     }
   }
-  // Query-cache listeners run for every updater payload, before React Query
-  // batches observer renders. The refs preserve the event order for one armed
-  // click even when `downloading` and its cancellation share a render.
-  //
-  // Read in that order, a payload also says when a click's request ended
-  // before any download started. For a click made with nothing found, the
-  // main process checks first: `not-available` and a failed check end the
-  // request there, and so does `found` on the feed lane with auto-download
-  // off, where it waits for a Download click. The managed lane follows its
-  // `found` with `downloaded` at once, and with auto-download on the download
-  // starts; the feed lane says which on the `found` itself, and a shell too old
-  // to say leaves the cached preference to answer. Left armed, the click keeps both request actions disabled and
-  // installs whatever a later download brings, with nobody clicking. The
-  // rendered state cannot say this: a click is also made FROM each of them.
-  useEffect(() => queryClient.getQueryCache().subscribe(event => {
-    if (event.type !== 'updated'
-      || event.query.queryKey.length !== 1
-      || event.query.queryKey[0] !== 'update-state') return
-    const pushed = event.query.state.data as UpdateState | null | undefined
-    if (!agentInstallArmedRef.current) return
-    if (pushed?.state === 'downloading') {
-      agentArmSawDownloadRef.current = true
-      setAgentArmSawDownload(true)
-      return
-    }
-    const info = queryClient.getQueryData<UpdateInfo | null>(updateInfoQuery.queryKey)
-    const ended = agentArmSawDownloadRef.current
-      ? pushed?.state === 'not-available' || pushed?.state === 'checking'
-      : pushed?.state === 'not-available'
-        || (pushed?.state === 'error' && pushed.phase === 'check')
-        || (pushed?.state === 'found' && (pushed.autoDownload ?? info?.autoDownload) === false && !info?.updateCommand)
-    if (!ended) return
-    agentInstallArmedRef.current = false
-    agentArmSawDownloadRef.current = false
-    setAgentInstallArmed(false)
-    setAgentArmSawDownload(false)
-  }), [queryClient])
-  const agentDownloadLanded = agentInstallArmed && updateState?.state === 'downloaded'
-  useEffect(() => {
-    // The download the request card started has landed: finish it. One shot —
-    // `agentInstallArmed` is cleared so a later, unrelated download does not
-    // ride this click.
-    if (!agentDownloadLanded || installDispatched) return
-    agentInstallArmedRef.current = false
-    agentArmSawDownloadRef.current = false
-    setAgentInstallArmed(false)
-    setAgentArmSawDownload(false)
-    retireAgentRequest()
-    dispatchInstall()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentDownloadLanded, installDispatched])
   // A download the card started that then FAILED — the updater's own
   // download-phase error, or the IPC rejecting — must release the click, or
-  // both request actions stay disabled with no way forward.
+  // both request actions stay disabled with no way forward. The IPC is this
+  // panel's own mutation, so its release is here; the rest is the latch's.
   const agentDownloadFailed = agentInstallArmed
     && (downloadMutation.isError || (updateState?.state === 'error' && updateState.phase === 'download'))
-  // A download the card asked for that the main process then DROPS must release the
-  // click too: it re-checks the feed first, and a retraction (`not-available`) or a
-  // channel switch (a fresh `checking`) ends that click without an error. A click
-  // left armed keeps both request actions disabled and installs the next build that
-  // downloads, hours later, with nobody clicking.
-  //
-  // Only AFTER the click's `downloading`: both states are also ones a click is made
-  // FROM (the card stays enabled through them), and from there the main process
-  // discovers first and then downloads. Read off the current state alone, that
-  // click would be released on the next render and its download would land with
-  // nothing left to install it.
   useEffect(() => {
-    if (!agentInstallArmed || updateState?.state !== 'downloading') return
-    agentArmSawDownloadRef.current = true
-    setAgentArmSawDownload(true)
-  }, [agentInstallArmed, updateState?.state])
-  const agentDownloadDropped = agentInstallArmed && agentArmSawDownload
-    && (updateState?.state === 'not-available' || updateState?.state === 'checking')
-  const agentDownloadEnded = agentDownloadFailed || agentDownloadDropped
-  useEffect(() => {
-    if (!agentDownloadEnded) return
-    agentInstallArmedRef.current = false
-    agentArmSawDownloadRef.current = false
-    setAgentInstallArmed(false)
-    setAgentArmSawDownload(false)
-  }, [agentDownloadEnded])
+    if (agentInstallArmed && downloadMutation.isError) releaseAgentInstall(queryClient)
+  }, [agentInstallArmed, downloadMutation.isError, queryClient])
   // Failures the request card must SHOW (errors-use-error-notice): a poll that
   // keeps failing means an approval could land unseen; a refused download means
   // the click did nothing. The poll uses the same consecutive-failure threshold
@@ -585,6 +512,13 @@ export function AboutPanel() {
   // reports its darwin default everywhere.
   const manualUrl = info?.downloadUrl || null
   const showManualFallback = !!manualUrl && (cardReady || cardFailed)
+  // Whether the running bytes are the followed lane's stable release, so the
+  // release-list fallback keeps or drops the running release's own section.
+  const desktopBytesAreStable = followedLanePublishesRunningBytes({
+    followedChannel: info?.channel,
+    laneAnswered: runningAheadOfLane === true || runningAheadOfLane === false,
+    runningAheadOfLane: runningAheadOfLane === true,
+  })
   const updateCard: React.ReactNode = showUpdateCard ? (
     <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="update-card">
       <div className="flex items-start justify-between gap-3">
@@ -665,7 +599,7 @@ export function AboutPanel() {
           testId="update-download-request-error"
         />
       )}
-      {!cardFailed && installMutation.isError && (
+      {!cardFailed && installRefused && (
         <ErrorNotice
           variant="inline"
           message={i18nT('pages.settings.aboutPanel.install_failed_reason', { reason: i18nT(UPDATE_ERROR_KEYS.installUnknown) })}
@@ -716,9 +650,7 @@ export function AboutPanel() {
           </span>
         </span>
       )}
-      {updateState?.notes ? (
-        <div className="p-2.5 bg-card rounded-md border border-border max-h-40 overflow-y-auto text-[12px] text-text whitespace-pre-wrap">{updateState.notes}</div>
-      ) : null}
+      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} />
     </div>
   ) : null
 
@@ -896,6 +828,16 @@ export function AboutPanel() {
     </a>
   )
 
+  // Desktop channel controls: shown for an install with a lane its owner reads.
+  const desktopChannelShown = isDesktop && !!channel && !isExternallyManaged && !isGatewayPolicyManaged
+  const desktopChannelSwitchable = !!info?.channelSwitchable && !!desktopApi?.setChannel
+  // Check for updates, wherever the install can check for itself: the desktop
+  // updater's own lane, or a gateway with no update or channel move on screen
+  // (that state offers the update instead).
+  const showCheckButton = isDesktop
+    ? !isExternallyManaged && !updatesDisabled && !isGatewayPolicyManaged
+    : !(showUpdate || channelMovePending)
+
   return (
     <>
       <Card style={HERO_BG}>
@@ -914,7 +856,7 @@ export function AboutPanel() {
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
               <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
                     title={versionLanesDiffer ? i18nT('pages.settings.aboutPanel.app_lane_title') : undefined}
-                    data-testid="about-version">
+                    data-testid="about-version" data-setting-label={i18nT('pages.settings.aboutPanel.version_label')}>
                 {versionLanesDiffer && (
                   <span className="font-sans font-medium text-muted mr-1" data-testid="about-version-lane">{i18nT('pages.settings.aboutPanel.app_lane_label')}</span>
                 )}
@@ -1011,8 +953,92 @@ export function AboutPanel() {
           </span>
         </div>
 
-        {isDesktop && channel && !isExternallyManaged && !isGatewayPolicyManaged && (
-          info?.channelSwitchable && desktopApi?.setChannel ? (
+        {/* The read-only channel and the Check button sit with the version they
+            describe. The Updates card below holds what changes it: the channel
+            switcher, the update itself and the auto-update switch. */}
+        {desktopChannelShown && !desktopChannelSwitchable && (
+          <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              {info?.channelLockedByPolicy ? (
+                <span className="inline-flex items-center gap-2">
+                  {channelLabel(channel)}
+                  {/* A build that cannot follow the required channel names both:
+                      the lane it is on, and the one the policy requires. */}
+                  {info.requiredChannel && info.requiredChannel !== channel && (
+                    <span className="text-muted" data-testid="channel-requires">
+                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
+                    </span>
+                  )}
+                  <LockedByPolicyBadge />
+                </span>
+              ) : channel}
+          </Row>
+        )}
+        {gwLtsLane && (
+          <div data-testid="gateway-channel-locked">
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              <span className="inline-flex items-center gap-2">
+                {channelLabel(effectiveGwChannel)}
+                <LockedByPolicyBadge />
+              </span>
+            </Row>
+          </div>
+        )}
+        {showCheckButton && (
+          <div className="mt-2">
+            <Btn
+              primary={isDesktop}
+              onClick={() => (isDesktop ? checkMutation.mutate() : gwUpdate.gwCheck.mutate())}
+              disabled={isDesktop ? checking : gwUpdate.gwCheck.isPending}
+              data-testid="about-check-for-updates"
+            >
+              <RefreshCw size={13} className={`lucide-inline ${(isDesktop ? checking : gwUpdate.gwCheck.isPending) ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
+            </Btn>
+          </div>
+        )}
+        {isPrerelease && (
+          // NOT behind the disclosure: a user already running prerelease bytes
+          // is exactly who must see the ask, and hiding it behind a click means
+          // the people whose bug reports matter most never read it.
+          //
+          // NOT gated on `isDesktop` either, which is what it used to be: a
+          // wheel install is a first-class insider/nightly lane (release.yml
+          // publishes to cli/<channel>/), and gating on the desktop shell meant
+          // every CLI prerelease user — the ones with no updater and no app
+          // menu — saw nothing here at all.
+          // Deliberately NOT warn-tinted with an alert triangle: a first-time
+          // reader took that as "something is wrong with my installation" and
+          // was reluctant to click a link inside it. This is a request for help,
+          // so it speaks in the app's own accent voice, and the anchor names
+          // GitHub because the destination is a new-issue form — a surprise
+          // worth spending four words to avoid.
+          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
+               data-testid="prerelease-report-note">
+            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
+            <span className="text-text leading-relaxed">
+              {/* ONE catalog string carrying the anchor: splitting it into
+                  fragments around the link would lock every language into
+                  English clause order. `Trans` (not a hand-rolled split on a
+                  mustache literal) is what lets the translator move the anchor
+                  to wherever the target grammar needs it. */}
+              <Trans
+                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
+                components={{
+                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                }}
+              />
+            </span>
+          </div>
+        )}
+        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
+      </Card>
+
+      <Card>
+        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
+        {/* The channel controls open the card: switching lanes is how the next
+            update is chosen, and the pending-move note below them points at the
+            installer command further down this card. */}
+        {desktopChannelShown && desktopChannelSwitchable && (
             <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
                 <div className="flex flex-col items-start min-w-0">
@@ -1083,33 +1109,6 @@ export function AboutPanel() {
                 />
               )}
             </div>
-          ) : (
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
-              {info?.channelLockedByPolicy ? (
-                <span className="inline-flex items-center gap-2">
-                  {channelLabel(channel)}
-                  {/* A build that cannot follow the required channel names both:
-                      the lane it is on, and the one the policy requires. */}
-                  {info.requiredChannel && info.requiredChannel !== channel && (
-                    <span className="text-muted" data-testid="channel-requires">
-                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
-                    </span>
-                  )}
-                  <LockedByPolicyBadge />
-                </span>
-              ) : channel}
-            </Row>
-          )
-        )}
-        {gwLtsLane && (
-          <div data-testid="gateway-channel-locked">
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
-              <span className="inline-flex items-center gap-2">
-                {channelLabel(effectiveGwChannel)}
-                <LockedByPolicyBadge />
-              </span>
-            </Row>
-          </div>
         )}
         {showGwChannelSwitcher && (
           // Gateway (CLI / wheel / cloud source) channel switcher: the same two
@@ -1240,52 +1239,12 @@ export function AboutPanel() {
                 <AlertCircle size={13} className="lucide-inline shrink-0 text-warn" />
                 <span>{i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note_version', {
                   channel: effectiveGwChannel,
-                  version: gwTargetDisplay || gwStatusLatestDisplay,
+                  version: (newestIsLocal ? gwTargetDisplay : '') || gwStatusLatestDisplay,
                 })}</span>
               </span>
             )}
           </div>
         )}
-        {isPrerelease && (
-          // NOT behind the disclosure: a user already running prerelease bytes
-          // is exactly who must see the ask, and hiding it behind a click means
-          // the people whose bug reports matter most never read it.
-          //
-          // NOT gated on `isDesktop` either, which is what it used to be: a
-          // wheel install is a first-class insider/nightly lane (release.yml
-          // publishes to cli/<channel>/), and gating on the desktop shell meant
-          // every CLI prerelease user — the ones with no updater and no app
-          // menu — saw nothing here at all.
-          // Deliberately NOT warn-tinted with an alert triangle: a first-time
-          // reader took that as "something is wrong with my installation" and
-          // was reluctant to click a link inside it. This is a request for help,
-          // so it speaks in the app's own accent voice, and the anchor names
-          // GitHub because the destination is a new-issue form — a surprise
-          // worth spending four words to avoid.
-          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
-               data-testid="prerelease-report-note">
-            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
-            <span className="text-text leading-relaxed">
-              {/* ONE catalog string carrying the anchor: splitting it into
-                  fragments around the link would lock every language into
-                  English clause order. `Trans` (not a hand-rolled split on a
-                  mustache literal) is what lets the translator move the anchor
-                  to wherever the target grammar needs it. */}
-              <Trans
-                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
-                components={{
-                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
-                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
-                }}
-              />
-            </span>
-          </div>
-        )}
-        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
-      </Card>
-
-      <Card>
-        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
         {isDesktop ? (<>
           {isExternallyManaged ? (
             // The marker's owner (a distro/enterprise package manager) replaces
@@ -1425,11 +1384,6 @@ export function AboutPanel() {
               <p className="text-sm text-muted">
                 {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
               </p>
-              <div>
-                <Btn primary onClick={() => checkMutation.mutate()} disabled={checking}>
-                  <RefreshCw size={13} className={`lucide-inline ${checking ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
-                </Btn>
-              </div>
               {status && <div className="text-[13px]">{status}</div>}
               {/* The followed lane has never published these bytes (the running
                   build is ahead of its feed), so "up to date" above is about the
@@ -1530,27 +1484,15 @@ export function AboutPanel() {
 
         {/* Directly under the update controls, never a pop-up. */}
         <AboutPanelUpcomingUpdate />
-
-        {/* The full changelog used to be inlined here, open by default. It grows
-            without bound while this card's job -- stating the identity of this
-            install -- is bounded to one screen forever, so the archive moved to
-            its own Releases panel and this is the link to it. See
-            pages/settings/ReleasesPanel.tsx. */}
-        <div className="mt-3 pt-3 border-t border-border">
-          <SettingsLink
-            tab="releases"
-            className="text-[13px] text-accent hover:underline inline-flex items-center gap-1.5"
-          >
-            <History size={13} className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.settings.aboutPanel.view_all_releases')}
-          </SettingsLink>
-        </div>
       </Card>
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
         <AboutPanelUpdateConfirm gwUpdate={gwUpdate} gwDiverged={gwDiverged} gwDivergedText={gwDivergedText} runningVersion={gatewayVersion} />
       )}
+
+      {/* The running release's notes, then a capped list of earlier ones. */}
+      <ReleasesPanel />
 
       <ReportProblemCard />
     </>

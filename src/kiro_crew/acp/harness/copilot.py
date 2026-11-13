@@ -49,7 +49,7 @@ from typing import Any
 from kiro_crew import acp_tool_gate, platform_compat
 from kiro_crew.acp import launch as launch_mod
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import TOOL_CALL_CACHE_MAX_KEY_CHARS
-from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
+from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.mcp_startable import prune_unstartable
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_COPILOT
@@ -526,6 +526,10 @@ class CopilotLaunch(ProcessAdapter):
                 *((session._copilot_mcp_config_path,) if session._copilot_mcp_config_path else ()),
             ),
         )
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """The Copilot CLI session's own ``mcpServers`` entries, warmed by the spawn."""
+        return session._copilot_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Drop the permission sources Copilot CLI would otherwise read above the session."""

@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -23,6 +23,7 @@ import { EditionPreviewRows } from './EditionPreviewRows'
 import { ReplyThreadsRow } from './ReplyThreadsRow'
 import { i18nT } from '../../i18n/t'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 import { LOCKED_FEATURE_PREVIEWS, useControlLocked } from '../../utils/editionLocks'
 
 
@@ -137,6 +138,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
+    case PREVIEW_SECRETS_VAULT: return i18nT('pages.developer.featurePreviewsTab.secrets_vault')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
     case PREVIEW_SESSION_HARNESS: return i18nT('pages.developer.featurePreviewsTab.session_harness')
     default: return i18nT('pages.settings.developerPanel.feature_previews')
@@ -195,6 +197,7 @@ export function FeaturePreviewsSection() {
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
+  const secretsVault = usePreviewFlag(PREVIEW_SECRETS_VAULT)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
   const sessionHarness = usePreviewFlag(PREVIEW_SESSION_HARNESS)
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
@@ -212,15 +215,21 @@ export function FeaturePreviewsSection() {
   const sharedCrewNeedsRestart = !!sharedCrewSetting && (sharedCrewSetting.restart_required
     || (!sharedCrewSetting.env_override && sharedCrewSetting.enabled !== sharedCrewSetting.active))
   // A dropped restart response is ambiguous until the setting can be read back.
+  const restartRefusal = useRestartRefusal(() => {
+    setGatewayRestarting(false)
+    setRestartFailed(true)
+  })
   const restartGateway = useMutation({
     mutationFn: () => api.restartGateway(),
-    onMutate: () => setRestartFailed(false),
+    onMutate: () => { setRestartFailed(false); restartRefusal.begin() },
     onSuccess: () => setGatewayRestarting(true),
     onError: (e: unknown) => {
       // The person declined the "work is running" confirmation: nothing failed.
       if (e instanceof WorkConfirmDeclined) {
+        restartRefusal.end()
         setGatewayRestarting(false)
       } else if (e instanceof ApiError) {
+        restartRefusal.end()
         setGatewayRestarting(false)
         setRestartFailed(true)
       } else {
@@ -580,7 +589,7 @@ export function FeaturePreviewsSection() {
             </div>
           </div>
         )}
-        {/* Crew-owned GitHub sign-in (`dashboard.feature_previews.crew_oauth`): a
+        {/* Crew-owned MCP sign-in (`dashboard.feature_previews.crew_oauth`): a
             gateway switch, read per call by `connections/crew_oauth.py`, and the
             only one (the old `connections.crew_oauth` is ignored). */}
         {!previewsOff && (
@@ -590,6 +599,16 @@ export function FeaturePreviewsSection() {
             hint={i18nT('pages.developer.featurePreviewsTab.crew_oauth_desc')}
             checked={crewOauth}
             onChange={v => setPreviewFlag(PREVIEW_CREW_OAUTH, v)}
+          />
+        )}
+        {/* Secrets vault redesign (`secrets_vault`): Settings > Secrets as a
+            list-detail pane; off, the tab is the single-page panel. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.secrets_vault')}
+            description={i18nT('pages.developer.featurePreviewsTab.secrets_vault_desc')}
+            checked={secretsVault}
+            onChange={v => setPreviewFlag(PREVIEW_SECRETS_VAULT, v)}
           />
         )}
       </PreviewGroup>

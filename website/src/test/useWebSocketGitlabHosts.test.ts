@@ -142,6 +142,24 @@ describe('useWebSocket GitLab allowlist invalidation', () => {
     expect(configInvalidations()).toBe(2)
   })
 
+  // The decision-model picker and the Decisions card read the ceiling through their
+  // own queries; the provider read is kept forever, so without this a model the
+  // administrator just allowed would stay greyed until a reload.
+  it('re-reads the decision-model answers on a governance-ceiling generation change', () => {
+    const decisionsInvalidations = (name: string) =>
+      invalidated.filter(key => Array.isArray(key) && key[0] === name).length
+    renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], governanceGeneration: 1 }) })
+    expect(decisionsInvalidations('decisionsProvider')).toBe(1)
+    expect(decisionsInvalidations('decisionsConsent')).toBe(1)
+    act(() => { ws.simulateMessage({ type: 'slots', data: [], governanceGeneration: 2 }) })
+    expect(decisionsInvalidations('decisionsProvider')).toBe(2)
+    expect(decisionsInvalidations('decisionsConsent')).toBe(2)
+  })
+
   it('treats the first governance generation of a reconnect as unknown', () => {
     vi.useFakeTimers()
     renderHook(() => useWebSocket(), { wrapper })

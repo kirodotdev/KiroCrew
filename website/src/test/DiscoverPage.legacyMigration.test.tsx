@@ -11,6 +11,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route, useNavigationType } from 'react-router-dom'
 
 // Data identity is owned by useAppsData (mocked here — this test pins the
@@ -44,14 +46,16 @@ function LibraryProbe() {
 function renderApps() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps']}>
-        <Routes>
-          <Route path="/apps" element={<DiscoverPage />} />
-          <Route path="/apps/library" element={<LibraryProbe />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps']}>
+          <Routes>
+            <Route path="/apps" element={<DiscoverPage />} />
+            <Route path="/apps/library" element={<LibraryProbe />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

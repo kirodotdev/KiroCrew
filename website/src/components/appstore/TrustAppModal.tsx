@@ -28,6 +28,8 @@ import Modal from '../Modal'
 import ErrorNotice from '../ErrorNotice'
 import { Badge, Btn } from '../ui'
 import SessionApprovalModes from './SessionApprovalModes'
+import TrustAppDesktopBox from './TrustAppDesktopBox'
+import type { DesktopRequest } from './desktopRequest'
 import { i18nT } from '../../i18n/t'
 import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../../utils/errorReport'
 import { safeHref } from '../../utils/safeHref'
@@ -67,6 +69,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   workerAutoApprove?: boolean
   /** The `permissions.reachableByUserSessions` verbs: what your chats may do to the sessions it runs. */
   reachableByUserSessions?: string[]
+  /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
+  desktop?: DesktopRequest
   /**
    * True when the manifest widens `sessionApproval` to the owner's member
    * threads (`permissions.memberThreads`). Shown only inside the session
@@ -663,6 +667,9 @@ export default function TrustAppModal({
     <Modal
       open={!!app}
       onClose={onCancel}
+      // Cancel is off while the grant and its install run; Escape, the backdrop
+      // and the X must be too, or the dialog a late failure renders in is gone.
+      dismissDisabled={pending}
       maxWidth={560}
       guideTrustRoot
       title={i18nT('components.appstore.trustAppModal.title', { app: name })}
@@ -796,6 +803,9 @@ export default function TrustAppModal({
               <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.user_session_reach_note')}</p>
             </div>
           )}
+          {/* Shown with the grants because the windows run the app's own code on the
+              desktop, over every other program, while the app is on. */}
+          <TrustAppDesktopBox request={app.desktop} />
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">

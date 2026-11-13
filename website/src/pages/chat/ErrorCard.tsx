@@ -20,6 +20,7 @@ import { AgentSpecChoiceCard, agentSpecAmbiguity } from './AgentSpecChoiceCard'
 import { injectOpensTurn } from './RecoveryCard'
 import { resumeProseFor } from './gatewayNotice'
 import { WorkConfirmDeclined } from '../../utils/workInFlight'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
 /** Where a capability refusal's fix lives: the member's Approvals section in
  *  the crewmate editor, or the editor itself (its Built from field picks the
@@ -459,11 +460,16 @@ function RestartGatewayCard({ displayText, onRestartGateway }: {
   // broken launcher or interpreter), so pressing again fails the same way. Both drop
   // the button. `retry`: anything else, where a second press can work.
   const [failure, setFailure] = useState<{ title: string; detail: string; next: 'owner' | 'terminal' | 'retry' } | null>(null)
+  const restartRefusal = useRestartRefusal(detail => {
+    setRestarting(false)
+    setFailure({ title: i18nT('pages.chat.errorCard.restart_gateway_failed'), detail, next: 'retry' })
+  })
   const restart = useMutation({
     mutationFn: onRestartGateway,
-    onMutate: () => setFailure(null),
+    onMutate: () => { setFailure(null); restartRefusal.begin() },
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
+      restartRefusal.end()
       // Declining the "work is running" confirmation (raised by the client's
       // restart wrapper) is a quiet cancel: no failure card.
       if (e instanceof WorkConfirmDeclined) return

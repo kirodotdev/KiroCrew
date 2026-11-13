@@ -308,7 +308,7 @@ Takes no arguments. The roster of sessions you stood up, and what each is doing.
 | `status` | Meaning | What to do |
 |---|---|---|
 | `working` | A turn is in flight | Wait |
-| `queued` | Idle, messages waiting to run | Wait; a steer would land on nothing |
+| `queued` | Idle, messages waiting that will run on their own (a card restored after a restart waits for a person, so it reads `idle`) | Wait; a steer would land on nothing |
 | `idle` | Open and doing nothing | This is the one that needs a decision, unless the row's `looping` is true: its own loop (a `monitor_start` waiting on CI) will wake it, so wait |
 | `closed` | The crew log has it, the dashboard does not, and its last life ended by a deliberate tab close (carries `closed_at`) | It finished and closed its tab; nothing to re-dispatch |
 | `lost` | The crew log has it, the dashboard does not, and it did not close cleanly — a turn was open, a process recycle or destroy tore it down, or its lifecycle could not be read | Re-dispatch it |
@@ -495,11 +495,14 @@ the target then reads the correction last. Moving it ahead would make the older
 message run last and undo the correction.
 
 The target must be a session you manage: one you created, or one handed to you
-with `session_handoff`. Once you hand a session on, you lose its queue as you do
-its transcript (`not_creator`). It passes the same gate as the other
-session tools: an archived session is not open (`target_not_found`), and
-scheduled-run, incognito, app-scoped, channel-linked and mirrored sessions are
-refused.
+with `session_handoff`. With `agent.session_manager_chain` on, it can also be a
+session managed by a session you manage, down the line. With the switch off,
+once you hand a session on, you lose its queue as you do its transcript
+(`not_creator`); with it on, you keep it while you still manage the session you
+handed it to. It passes the
+same gate as the other session tools: an archived session is not open
+(`target_not_found`), and scheduled-run, incognito, app-scoped, channel-linked
+and mirrored sessions are refused.
 
 ### `session_adopt` and `session_release`
 

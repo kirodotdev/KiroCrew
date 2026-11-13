@@ -79,6 +79,7 @@ from kiro_crew.dashboard.chat_api import project_lists as _owner_project_lists
 from kiro_crew.dashboard.chat_api import prompt_queue as _owner_prompt_queue
 from kiro_crew.dashboard.chat_api import resume as _owner_resume
 from kiro_crew.dashboard.chat_api import resume_identity as _owner_resume_identity
+from kiro_crew.dashboard.chat_api import resume_live as _owner_resume_live
 from kiro_crew.dashboard.chat_api import resume_window as _owner_resume_window
 from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_relaunch
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
@@ -218,19 +219,21 @@ from kiro_crew.dashboard.chat_api.prompt_queue import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _hydrate_slot_from_history,
-    _live_slot_for_resume,
-    _live_slot_resume_payload,
     _materialise_slot_from_history,
     _normalise_structured_content,
     _redact_history_rows,
     _resume_refusal_response,
-    _resume_session_identity,
     _resume_slot_from_history_noted,
     api_chat_slot_resume,
     resume_slot_from_history,
 )
 from kiro_crew.dashboard.chat_api.resume_identity import (  # noqa: F401
     _pinned_live_outcome,
+)
+from kiro_crew.dashboard.chat_api.resume_live import (  # noqa: F401
+    _live_slot_for_resume,
+    _live_slot_resume_payload,
+    _resume_session_identity,
 )
 from kiro_crew.dashboard.chat_api.resume_window import (  # noqa: F401
     _reconcile_slot_window,
@@ -278,6 +281,7 @@ from kiro_crew.dashboard.chat_api.slot_create import (  # noqa: F401
     api_chat_slot_create,
 )
 from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
+    SLOT_DETAIL_PAGE_BYTE_BUDGET,
     _append_unflushed_tail,
     _append_unflushed_tail_from_offset,
     _bounded_slot_page,
@@ -290,6 +294,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
     _is_answered_permission,
     _load_redacted,
     _note_owner_focus,
+    _oldest_over_byte_budget,
     _same_persisted_body,
     _snapshot_slot_window,
     api_chat_slot_detail,
@@ -336,9 +341,11 @@ from kiro_crew.dashboard.chat_api.slot_model import (  # noqa: F401
     _broadcast_context_reset,
     _is_jev_route_pick,
     _model_rejected_reason,
+    _read_model_field,
     _reapply_effort_after_live_switch,
     _try_live_model_switch,
     _wire_model_id,
+    _with_warning,
     api_chat_slot_model,
     api_chat_slots_model,
     switch_slot_model,
@@ -395,6 +402,7 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _rearm_stop_event,
     _reject_pending_approvals,
     _resolve_stop_event,
+    _settle_approval_rejected,
     _settle_discarded_stage_deliveries,
     _start_chosen_restored_card,
     _unchoose_restored_card,
@@ -597,6 +605,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: F401
     autocompact_commits,
     tighten_line_for_appends,
+    turn_timeout_commits,
 )
 from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: F401
     close_metadata_under_lock,
@@ -1443,6 +1452,7 @@ _facade_compose(
         _owner_prompt_queue,
         _owner_resume,
         _owner_resume_identity,
+        _owner_resume_live,
         _owner_resume_window,
         _owner_session_relaunch,
         _owner_slot_approval,

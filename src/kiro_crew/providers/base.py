@@ -107,6 +107,21 @@ class SessionMcpReport(Protocol):
     #: not name. An unattended run's notice names them.
     def declared_never_reported(self) -> tuple[str, ...]: ...
 
+    #: The servers this session cannot use right now, by state (``connecting``,
+    #: ``failed``, ``needs_sign_in``, ``disabled``, ``registry_dropped``); empty
+    #: when all are usable. A turn's ``[MCP SERVERS]`` block and ``mcp_server_wait``
+    #: read it.
+    def not_ready(self) -> dict[str, tuple[str, ...]]: ...
+
+    #: Called, with no argument, each time a frame changed the report. Set
+    #: through ``LLMProvider.set_mcp_report_changed_hook``.
+    on_change: Callable[[], None] | None
+
+    #: True when the transport already folds each frame into the report as it
+    #: arrives, so a reader of the turn's MCP events only republishes and does
+    #: not ``record_event`` them as well.
+    folded_on_arrival: bool
+
 
 class LLMProvider(ABC):
     """Abstract LLM backend."""
@@ -115,6 +130,12 @@ class LLMProvider(ABC):
     #: just before it starts the provider (rule: ``kiro_crew.start_priority``); a
     #: provider started anywhere else starts BACKGROUND.
     start_priority: StartPriority = StartPriority.BACKGROUND
+    #: The session layer sets this beside ``start_priority`` when the start is the
+    #: dashboard owner's return to a saved chat (the focus resume prefetch): the
+    #: start stays ``BACKGROUND`` in the queues, and a person is about to wait on
+    #: it all the same (rule: ``acp.mcp_start_wait.person_waits``). A provider
+    #: that resumes nothing never reads it.
+    focus_resume: bool = False
 
     #: True only on a provider whose ``supports_effort()`` reports the live
     #: model. The base ``supports_effort()`` returns a placeholder False, so a
@@ -154,6 +175,17 @@ class LLMProvider(ABC):
     @property
     def native_steering(self) -> bool:
         """Whether the serving harness owns conditional steering selection."""
+        return False
+
+    @property
+    def reports_compaction(self) -> bool:
+        """Whether Kiro Crew sees a compaction of this session's conversation.
+
+        True only for a harness in ``ACP_BACKENDS_COMPACTION_REPORTED``. False is
+        "not known": a caller that sends something once per conversation then
+        sends it on every message, so a compaction it never heard of cannot
+        leave the conversation without it.
+        """
         return False
 
     @property
@@ -1043,6 +1075,23 @@ class LLMProvider(ABC):
         remove. A provider without one returns None explicitly.
         """
         return None
+
+    def set_mcp_report_changed_hook(self, hook: Callable[[], None] | None) -> None:
+        """Have *hook* called each time a frame changed this session's MCP report.
+
+        The report follows its servers for as long as the transport reads
+        (``McpSessionReport.fold_frame``), turn or no turn, and this is how a
+        reader learns it moved without polling: a server that connects ten
+        seconds after the first reply ended is published then. The hook runs on
+        the event loop, inside the transport's reader, so it must return at
+        once; ``None`` removes it. It follows the session: a transport that
+        re-opens the session hands it to the new report and calls it. A reader
+        handed another provider sets it there. A provider that keeps no report
+        ignores this.
+        """
+        report = self.mcp_session_report()
+        if report is not None:
+            report.on_change = hook
 
     def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
         """Have *hook* told the server name when an MCP sign-in Crew started ends unconnected.

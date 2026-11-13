@@ -26,7 +26,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, screen, fireEvent, waitFor } from '@testing-library/react'
-import { renderWithProviders } from '../../test/helpers'
+import { createConnectedTestStore, renderWithProviders } from '../../test/helpers'
 
 const { refreshAppStore, refreshRegistries } = vi.hoisted(() => ({
   refreshAppStore: vi.fn(),
@@ -148,7 +148,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     refreshRegistries.mockResolvedValue(
       registriesResult({ ok: false, failed: ['broken-registry'] }),
     )
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
   })
@@ -162,7 +162,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
         { name: 'down-registry', ok: false },
       ],
     }))
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText(
       'components.registryManager.refresh_sign_in_refused '
@@ -173,7 +173,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
 
   it('surfaces a rejected refresh POST via its error message, and still refetches', async () => {
     refreshRegistries.mockRejectedValue(new Error('registry backend unreachable'))
-    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    const { queryClient } = renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     await clickRefresh()
     expect(
@@ -187,7 +187,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
 
   it('keeps both sources firing: a rejected store refresh still reports, and the registries call still ran', async () => {
     refreshAppStore.mockRejectedValue(new Error('store refresh failed'))
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText('store refresh failed')).toBeInTheDocument()
     expect(refreshRegistries).toHaveBeenCalledTimes(1)
@@ -197,7 +197,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     refreshRegistries.mockResolvedValue(
       registriesResult({ ok: false, failed: ['broken-registry'] }),
     )
-    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    const { queryClient } = renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
@@ -211,7 +211,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
     refreshRegistries.mockResolvedValueOnce(
       registriesResult({ ok: false, failed: ['broken-registry'] }),
     )
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await clickRefresh()
     expect(await screen.findByText(FAILED_BANNER)).toBeInTheDocument()
 
@@ -226,7 +226,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
   it('says so when the refreshed listing is the offline fallback', async () => {
     // Offline the store POST still resolves ok and the listing still answers
     // 200, so only the listing's own flag can explain why the store shrank.
-    const { queryClient } = renderWithProviders(<DiscoverPage />)
+    const { queryClient } = renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     queryClient.setQueryData(['registry'], { apps: [], catalogUnavailable: true })
     await clickRefresh()
     expect(await screen.findByText('pages.appsPage.store_catalog_unreachable')).toBeInTheDocument()
@@ -239,7 +239,7 @@ describe('DiscoverPage manual refresh outcome reporting', () => {
   })
 
   it('leaves a banner another writer set alone on a successful refresh', async () => {
-    renderWithProviders(<DiscoverPage />)
+    renderWithProviders(<DiscoverPage />, { store: createConnectedTestStore() })
     await screen.findByRole('button', { name: REFRESH_LABEL })
 
     // Stand in for the update hook reporting a failed Update All — the same

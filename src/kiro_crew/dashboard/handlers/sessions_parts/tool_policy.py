@@ -41,6 +41,8 @@ from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, int
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import _sel
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+from kiro_crew.mcp_listing_gateway import session_listing_body
+from kiro_crew.mcp_listing_relay import CODE_PARAM, LISTING_PARAM, PLACE_PARAM
 from kiro_crew.platform import redact_log_via_context
 
 # The family logs under the facade's name, which log filters and caplog assertions key on.
@@ -563,8 +565,14 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     or 400/404 when the session cannot be identified (deny-by-default:
     callers that cannot prove identity get an error, not an empty policy).
     Authenticated via X-Internal-Secret + X-Session-Key.
+
+    A server that names itself in the ``listing`` query parameter is answered
+    the same policy with its ``initialize`` result and filtered tool list
+    beside it, or the reason it must build them itself
+    (``kiro_crew.mcp_listing_gateway``). Only for a caller this route
+    authenticated as the session; every refusal below is unchanged.
     """
-    _, refusal = await internal_memory_scope(
+    member_store, refusal = await internal_memory_scope(
         request, "api_session_tool_policy", claimed_session=request.headers.get("X-Session-Key", "")
     )
     if refusal is not None:
@@ -605,7 +613,19 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
     if not agent_name and state.sessions:
         agent_name = state.sessions.get_agent(session_key)
 
-    if not agent_name:
+    # A session's own servers start, and ask for their listing, before the start
+    # that spawned them has registered the session. For that request alone the
+    # agent is the one that start recorded; a plain policy read keeps the 404
+    # below, so nothing a call is judged by moves.
+    listing_for = (
+        request.query.get(LISTING_PARAM, "") if request.get("internal_auth") is True else ""
+    )
+    unregistered = False
+    if not agent_name and listing_for and state.sessions:
+        agent_name = state.sessions.starting_agent(session_key)
+        unregistered = bool(agent_name)
+
+    def not_resolved() -> web.Response:
         _sel().log_api_access(
             caller=session_key,
             operation="session_tool_policy",
@@ -615,8 +635,13 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "agent not resolved"}, status=404)
 
+    if not agent_name:
+        return not_resolved()
+
     # Sanitize agent_name to prevent path traversal
     if "/" in agent_name or "\\" in agent_name or ".." in agent_name:
+        if unregistered:
+            return not_resolved()
         _sel().log_api_access(
             caller=session_key,
             operation="session_tool_policy",
@@ -634,6 +659,10 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         policy = await asyncio.to_thread(
             _read_managed_tool_policy_sync, kiro_agents_dir(), agent_name
         )
+    except (AmbiguousAgentSpecError, ManagedToolPolicyUnreadable) if unregistered else ():
+        # No policy of an unregistered session is answered, an unreadable one
+        # included: its server reads it itself once the session is registered.
+        return not_resolved()
     except AmbiguousAgentSpecError as exc:
         # Two specs declare this agent's name. The policy is undefined, not
         # empty, so it is answered with a status the caller cannot mistake for
@@ -679,10 +708,31 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    # The caller's own listing, built off the loop like the read above. Asked for
+    # by a server, so only an internally authenticated request is answered one.
+    listing_body = ""
+    if listing_for:
+        listing_body = await asyncio.to_thread(
+            session_listing_body,
+            policy,
+            listing_for,
+            session_key,
+            agent_name,
+            code=request.query.get(CODE_PARAM, ""),
+            place=request.query.get(PLACE_PARAM, ""),
+            private_member=bool(member_store),
+            unregistered=unregistered,
+        )
+    if unregistered:
+        # The listing or the reason there is none, and no policy: this session's
+        # policy read is not answered until it is registered.
+        return web.Response(text=listing_body, content_type="application/json")
     if policy is None:
         # This agent has no policy: no spec file, or a spec declaring none.
         # A genuinely absent policy is an empty one, so the answer is unchanged
         # -- and still not logged as a success, since nothing was parsed.
+        if listing_body:
+            return web.Response(text=listing_body, content_type="application/json")
         return web.json_response({})
 
     _sel().log_api_access(
@@ -692,6 +742,8 @@ async def api_session_tool_policy(request: web.Request) -> web.Response:
         source="dashboard",
         resources=f"agent={agent_name}",
     )
+    if listing_body:
+        return web.Response(text=listing_body, content_type="application/json")
     return web.json_response(policy)
 
 

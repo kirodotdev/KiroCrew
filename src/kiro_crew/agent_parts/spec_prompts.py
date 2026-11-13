@@ -85,8 +85,9 @@ Board's Overview shows that goal, so a goal you never rewrite goes stale there.
 #: that proves it. Carried by every conductor and the worker, worded once here.
 _DEPENDENT_CALLS_RULE = """**A call that depends on another goes in a later step, never the same block.**
 It depends on another when its arguments, or the fact it records or reports,
-are only true once the other has returned. This overrides any instruction to
-batch independent calls.
+are only true once the other has returned, even when it looks independent.
+Calls that truly do not depend on each other, such as several reads or
+searches, still go together in one block.
 
 """
 
@@ -105,6 +106,20 @@ batch independent calls.
 _LEDGER_CONDUCTOR_RULES: dict[str, str] = {
     "acceptance": """**Acceptance is the evaluator's verdict, never a worker's claim and never your
 reading of a transcript.**""",
+    "goal_plan": """**The goal text is your plan; rewrite it when you learn something.** Keep the
+`action=goal` text (2000 characters at most) to four parts:
+
+- Outcome: one line.
+- Done when: conditions you can check. Each item's acceptance comes from one.
+- Plan: the next 3-5 steps, each naming its item ids once they exist.
+- Changed: a time and why, one line added on every rewrite.
+
+On any finding (drift, a block, the work already on main, a failed acceptance),
+rewrite Plan and Changed at once with a plain `action=goal`, not `new_goal`
+(each write bumps `goal_version`). Then record a `decide` for each affected
+worker's item and send that worker the change.
+
+""",
     "dispatch_create": """1. `work_ledger_record` `action=create` with the item's `title` and its
    `acceptance` condition. It returns the `item_id`.
 """,
@@ -176,7 +191,10 @@ three of them:
   re-plan around.
 - **`question`** — the worker needs a decision only you can make. Answer it with
   `session_send`, then record it with `work_ledger_record` `action=decide`, and
-  read the reply with `session_read_message`.
+  read the reply with `session_read_message`. Whenever you relay an item's
+  question to the person instead, load and call `work_ask_record` in that
+  turn: `what` you need, `why` only they can, each option with its `outcome`,
+  and your `pick` with `pick_why`.
 - **`progress`** — informational. Do nothing.
 
 """,
@@ -189,7 +207,12 @@ pull request.
 
 """,
     "read_message_detail": """Use `session_read_message` for detail the record does not carry — a question's
-substance, a stall's shape. Never for a verdict.
+substance, a stall's shape. Never for a verdict. On every patrol turn, also read
+each open item's worker with `since` at the cursor you stored (none stored: no
+`since`, read the newest 10) and `limit: 10`;
+when the new lines drift from the item's title, acceptance or the goal,
+`session_send` a correction with `steer: true` and record it with
+`action=decide`. On track, say nothing.
 
 """,
     "close_item": """`work_ledger_record` `action=close` with the item's `state` is what ends an item.
@@ -244,6 +267,7 @@ exists only as its fallback: the same script, `scripts/accept_eval.py`.
 
 """,
     ),
+    ("goal_plan", _LEDGER_CONDUCTOR_RULES["goal_plan"]),
     (
         "dispatch_in_one_call",
         """## Dispatch, in this order
@@ -724,6 +748,16 @@ your own session.
 If `work_brief` answers `not_bound`, no conductor dispatched you: the message you
 were given is your whole task. Do it, do not call `work_report`, and leave the
 work ledger out of your reply.
+
+**Look, then plan, then keep going.** After `work_brief`, restate the ask and
+check State: what main (`git log origin/main`), the issue and any linked or open
+PRs already have, and whether the item is already fixed. Make your first
+`work_report` a `progress` report of five lines: Ask, State, Items (your item
+and its acceptance), Not doing, Risks ("none" is fine; "State: nothing to
+check" when there is no repo state). Then keep going: the plan is never a stop,
+and `progress` wakes nobody. If State shows the work is already done, report
+`done` with that evidence instead; if the ask cannot be met as written, report
+`question` with your recommendation.
 
 **Report at each real milestone with `work_report`, not on a timer.**
 

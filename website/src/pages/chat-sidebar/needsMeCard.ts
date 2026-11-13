@@ -9,7 +9,7 @@
 import type { ChatMessage, ChatSlot } from '../../types'
 import type { SessionSummary } from '../../types/sessionSummary'
 import type { ElicitationField, ElicitationMeta } from '../chat/ElicitationCard'
-import { replyOptions } from '../chat/command-center/model'
+import { offeredReplyOptions } from '../chat/command-center/model'
 
 /** One question of a question card, as `chat.pendingQuestions` stores it. */
 export interface CardQuestion {
@@ -50,13 +50,14 @@ export function lastAssistantText(messages: readonly ChatMessage[]): string {
 
 /** Whether a row is in a state the person owes: an approval, an open question
  *  card, or an idle session whose last reply asks for a choice
- *  (`replyOptions`, the Command Center's rule). A blocked row (a safety
+ *  (`offeredReplyOptions`, the rule the Command Center keys its card on, so a
+ *  reply whose every option is command-shaped still counts). A blocked row (a safety
  *  rule refused a call, or the session waits on other work) is not one, and a
  *  row whose only pending approval turns out to be a safety-rule refusal gets no
  *  card either: `collectAsks` drops that ask, and the card shows only when at
  *  least one ask remains. */
-export function slotNeedsMe(slot: Parameters<typeof replyOptions>[0] & Pick<ChatSlot, 'pending_approval' | 'needs_input'>, hasQuestion: boolean): boolean {
-  return !!slot.pending_approval || !!slot.needs_input || hasQuestion || replyOptions(slot).length > 0
+export function slotNeedsMe(slot: Parameters<typeof offeredReplyOptions>[0] & Pick<ChatSlot, 'pending_approval' | 'needs_input'>, hasQuestion: boolean): boolean {
+  return !!slot.pending_approval || !!slot.needs_input || hasQuestion || offeredReplyOptions(slot).length > 0
 }
 
 function str(v: unknown): string {

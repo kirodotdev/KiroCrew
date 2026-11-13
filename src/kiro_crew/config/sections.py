@@ -157,6 +157,7 @@ from kiro_crew.config.sections_agent_fields import (  # noqa: F401
     JAIL_MODE_OFF,
     JAIL_MODE_ON,
     KAS_BUNDLE_DEFAULT_URL,
+    KAS_FAIL_CLOSED_WEB_FETCH_BLOCKED_HELP,
     KAS_REFUSE_PLAIN_HTTP_MCP_HEADERS_HELP,
     MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE,
     MEMBER_APPROVAL_MODES,
@@ -484,6 +485,8 @@ from kiro_crew.config.sections_telegram import (  # noqa: F401
 )
 from kiro_crew.config.sections_telemetry import (  # noqa: F401
     _DEFAULT_BEACON_ENDPOINT,
+    DEFAULT_METRICS_MAX_TOTAL_MB,
+    DEFAULT_METRICS_RETENTION_DAYS,
     TelemetryConfig,
     WakaTimeConfig,
 )

@@ -73,7 +73,15 @@ function matchConfident(tag: string): string | null {
   // Regional variant of a supported language: confident only when the primary
   // subtag maps to a single supported code AND that code carries no region of
   // its own (so `en` matches `en-GB`, but `zh-CN` does not match `zh-TW`).
-  const primary = normalized.split('-')[0]
+  const parts = normalized.split('-')
+  const primary = parts[0]
+  // Bare `zh`, `zh-Hans*`, `zh-SG` and `zh-MY` are Simplified script, the same
+  // script as the zh-CN catalog, so they are confident matches, not loose ones.
+  const simplifiedScript = primary === 'zh' && (parts.length === 1 || ['hans', 'sg', 'my'].includes(parts[1]))
+  if (simplifiedScript) {
+    const simplified = DETECTABLE_CODES.find(c => c === 'zh-CN')
+    if (simplified) return simplified
+  }
   const candidates = DETECTABLE_CODES.filter(c => c.split('-')[0].toLowerCase() === primary)
   if (candidates.length === 1 && !candidates[0].includes('-')) return candidates[0]
   return null

@@ -617,7 +617,7 @@ describe('AssistantMessage', () => {
     // without a cue HERE the reader perceives nothing happening and clicks again.
     const idle = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onLoadEarlier={vi.fn()} />)
     openOverflow()
-    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeInTheDocument()
     expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
     idle.unmount()
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onLoadEarlier={vi.fn()} loadingOlder />)
@@ -672,7 +672,7 @@ describe('AssistantMessage', () => {
     const forkItem = screen.getByTitle('Fork conversation from here')
     expect(forkItem).toBeDisabled()
     expect(forkItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(forkItem.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-split')).not.toBeInTheDocument()
 
     await act(async () => { resolveFork(); await Promise.resolve() })
     expect(screen.getByTitle('Fork conversation from here')).not.toBeDisabled()
@@ -754,7 +754,7 @@ describe('AssistantMessage', () => {
       render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} forkDirectionChoice />)
       openOverflow()
       for (const id of ['fork-from-here', 'fork-with-history']) {
-        expect(screen.getByTestId(id).querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+        expect(screen.getByTestId(id).querySelector('svg.lucide-split')).toBeInTheDocument()
       }
     })
 
@@ -828,7 +828,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       // The plain entry forks with history here, so its label says no more than it did.
       expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork conversation from here')
-      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeInTheDocument()
       expect(screen.queryByTestId('fork-with-history')).toBeNull()
     })
 
@@ -865,7 +865,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
       // The spinner takes the icon's place, so the label keeps its column beside its neighbours.
-      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-split')).toBeNull()
       expect(screen.getByTestId('fork-with-history-label').querySelectorAll('svg')).toHaveLength(1)
       expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
       expect(screen.getByTestId('fork-with-history')).toHaveAttribute('aria-disabled', 'true')
@@ -902,7 +902,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
       // The spinner takes the icon's place here too, so both entries' labels stay in one column.
-      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeNull()
       expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
       expect(screen.getByTestId('fork-with-history')).toHaveAttribute('aria-disabled', 'true')
       expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Forking…')
@@ -965,7 +965,7 @@ describe('AssistantMessage', () => {
       fireEvent.click(screen.getByTestId('fork-from-here'))
       openOverflow()
       expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeNull()
       await act(async () => { resolveFork(); await Promise.resolve() })
     })
   })

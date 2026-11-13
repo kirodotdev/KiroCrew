@@ -183,6 +183,7 @@ registerBuiltinSurface({
 const CAPABILITY_SUB_ITEM_ICONS: Record<string, ReactElement> = {
   crews: <Bot size={16} />,
   skills: <BookOpen size={16} />,
+  'mcp-servers': <Server size={16} />,
   knowledge: <Library size={16} />,
   prompts: <MessageSquareText size={16} />,
   steering: <ScrollText size={16} />,
@@ -207,13 +208,6 @@ for (const s of CAPABILITY_SUB_ITEM_NAV) {
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.capabilities,
   icon: <KiroGhostMark size={16} />,
-})
-
-// MCP servers and MCP sharing, between Customize and Settings. Connections (the
-// provider cards and their OAuth apps) is a Settings tab.
-registerBuiltinSurface({
-  ...BUILTIN_SURFACE_NAV.mcp,
-  icon: <Server size={16} />,
 })
 
 registerBuiltinSurface({

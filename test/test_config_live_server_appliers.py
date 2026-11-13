@@ -223,6 +223,57 @@ class TestServerAppliers:
         )
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("outcome", ["raised", "unreadable"])
+    async def test_a_background_model_rebuild_that_did_not_land_defers_for_retry(
+        self, outcome: str
+    ) -> None:
+        """ConfigWatch retries only an applier that raises. A swallowed failure, or
+        an unwritten rebuild logged as rebuilt, left the lite and heartbeat specs
+        on the previous background model until a restart."""
+        state = SimpleNamespace(workflow_service=None, channel_manager=None)
+        apply = self._register(state)["agent.role_models.background"].callback()
+
+        def _rebuild() -> tuple[Path, bool]:
+            if outcome == "raised":
+                raise OSError("spec directory is read-only")
+            return (Path("/home/x/.kiro/agents/kirocrew.json"), False)
+
+        with (
+            # Mocked so the code on main, which calls this one, touches no real spec.
+            patch("kiro_crew.agent.rebuild_agent_config", MagicMock()),
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", _rebuild),
+            pytest.raises((OSError, RuntimeError)),
+        ):
+            await apply(
+                ConfigChange(
+                    old=KiroCrewConfig(),
+                    new=KiroCrewConfig(),
+                    changed=frozenset({"agent.role_models.background"}),
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_shared_home_refusal_is_audited_by_the_rebuild_and_retried(self) -> None:
+        """A refusal goes through the rebuild, whose guard writes the denied audit
+        row, and is deferred for retry like any unwritten rebuild: the same
+        contract the agent.model applier runs under."""
+        state = SimpleNamespace(workflow_service=None, channel_manager=None)
+        apply = self._register(state)["agent.role_models.background"].callback()
+        spec = Path("/home/x/.kiro/agents/kirocrew.json")
+        change = ConfigChange(
+            old=KiroCrewConfig(),
+            new=KiroCrewConfig(),
+            changed=frozenset({"agent.role_models.background"}),
+        )
+        rebuild = MagicMock(return_value=(spec, False))
+        with (
+            patch("kiro_crew.agent.rebuild_agent_config_reporting", rebuild),
+            pytest.raises(RuntimeError, match="shared agent home"),
+        ):
+            await apply(change)
+        rebuild.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_successful_retry_notifies_that_the_saved_model_is_active(self) -> None:
         """Recovery must resolve the operator-visible failure state."""
         state = SimpleNamespace(
@@ -352,6 +403,25 @@ class TestServerAppliers:
                 old=cfg, new=cfg, changed=frozenset({"dashboard.feature_previews.crew_mode"})
             )
         )
+        state.push_refresh.assert_called_once_with("config")
+
+    def test_a_command_bar_switch_change_tells_every_dashboard_to_refresh(self) -> None:
+        """`kirocrew config set dashboard.command_bar_enabled` reaches open dashboards.
+
+        The shell picks what the shortcut opens from a config query that never goes
+        stale on its own, so only a refresh frame makes it re-read the switch. An
+        unrelated dashboard write pushes nothing.
+        """
+        state = SimpleNamespace(
+            workflow_service=None, channel_manager=None, push_refresh=MagicMock()
+        )
+        sub = self._register(state)["dashboard.command_bar_enabled"]
+        assert sub.prefixes == ("dashboard.command_bar_enabled",)
+        apply = sub.callback()
+        cfg = KiroCrewConfig()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.folder_sort"})))
+        state.push_refresh.assert_not_called()
+        apply(ConfigChange(old=cfg, new=cfg, changed=frozenset({"dashboard.command_bar_enabled"})))
         state.push_refresh.assert_called_once_with("config")
 
     @pytest.mark.asyncio
@@ -550,6 +620,7 @@ class TestServerAppliers:
             "dashboard.feature_previews",
             "dashboard.stale_wake",
             "apps",
+            "dashboard.command_bar_enabled",
             "dashboard.terminal.enabled",
             "crewmate.harness_fallback",
         }

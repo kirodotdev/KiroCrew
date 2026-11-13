@@ -30,6 +30,8 @@ vi.mock('../hooks/useTheme', () => ({ useTheme: () => ({ theme: 'light' }) }))
 vi.mock('../components/AppIcon', () => ({ default: () => <div data-testid="app-icon" /> }))
 
 import AppDetailPage from '../pages/AppDetailPage'
+import { normalizeInstalledApp } from '../components/appstore/types'
+import type { InstalledApp } from '../components/appstore/types'
 
 // A slug with no i18n catalog entry, so the rendered title is the merged value
 // rather than a translated first-party name.
@@ -104,5 +106,65 @@ describe('AppDetailPage — registry rows normalized at the fetch site', () => {
     await waitFor(() => expect(heroTitle()).toBe('minimal-row'))
     expect(screen.queryByText('42')).not.toBeInTheDocument()
     expect(screen.queryByText('[object Object]')).not.toBeInTheDocument()
+  })
+
+  it('a store row with a string `highlights` and broken `mcpServers` entries still renders', async () => {
+    // app.json is third-party: the backend copies `highlights` and checks only
+    // that `mcpServers` is an object, so each value can be any JSON.
+    getApp.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    listRegistry.mockResolvedValue(envelope([{
+      name: 'odd-row',
+      displayName: 'Odd Row',
+      description: 'An app with odd fields.',
+      installed: false,
+      origin: 'registry',
+      highlights: 'Fast and simple',
+      manifest: { mcpServers: { broken: null, text: 'nope', ok: { command: 'odd-mcp', autoApprove: '*' } } },
+    }]))
+    renderDetail('odd-row')
+
+    await waitFor(() => expect(heroTitle()).toBe('Odd Row'))
+    expect(screen.getByText('odd-mcp')).toBeInTheDocument()
+    expect(screen.queryByText('broken')).not.toBeInTheDocument()
+    expect(screen.queryByText('Fast and simple')).not.toBeInTheDocument()
+  })
+
+  it("a store row's raw permissions show only what the parser would grant", async () => {
+    // The parser grants a capability only on a literal `true` and a list only
+    // from a real list; the raw store row said "false" and gave `api` a string.
+    getApp.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
+    listRegistry.mockResolvedValue(envelope([{
+      name: 'perm-row',
+      displayName: 'Perm Row',
+      description: 'An app with odd permissions.',
+      installed: false,
+      origin: 'registry',
+      manifest: { permissions: { storage: 'false', network: true, api: '/api/chat' } },
+    }]))
+    renderDetail('perm-row')
+
+    await waitFor(() => expect(heroTitle()).toBe('Perm Row'))
+    expect(screen.getByText('Network: yes')).toBeInTheDocument()
+    expect(screen.queryByText('Storage: yes')).not.toBeInTheDocument()
+    expect(screen.queryByText('/api/chat')).not.toBeInTheDocument()
+  })
+
+  it('an installed app with broken `mcpServers` entries still renders its valid one', async () => {
+    listRegistry.mockResolvedValue(envelope([]))
+    // `api.getApp` normalizes in the client, so the mock does what it does.
+    getApp.mockResolvedValue(normalizeInstalledApp({
+      name: 'odd-installed', displayName: 'Odd Installed', version: '1.0.0', enabled: true,
+      origin: 'local', installed: true,
+      manifest: {
+        displayName: 'Odd Installed', description: 'Installed with odd servers.', version: '1.0.0',
+        mcpServers: { broken: null, ok: { url: 'http://127.0.0.1:9/mcp', autoApprove: ['read', 7] } },
+      },
+    } as unknown as InstalledApp))
+    renderDetail('odd-installed')
+
+    await waitFor(() => expect(heroTitle()).toBe('Odd Installed'))
+    expect(screen.getByText('http://127.0.0.1:9/mcp')).toBeInTheDocument()
+    expect(screen.getByText('read')).toBeInTheDocument()
+    expect(screen.queryByText('broken')).not.toBeInTheDocument()
   })
 })

@@ -655,6 +655,14 @@ class DashboardState:
         # connection (``slot_retention.note_foreground``). The idle sweep never
         # archives a slot someone is looking at.
         self._foreground_slots: dict[int, str] = {}
+        # The slot an owner dashboard last reported focused, and the other slots
+        # reported alongside it, kept across a blur or a closed socket so the
+        # shutdown flush still records what the person was looking at.
+        self.last_focused_slot: str = ""
+        self.last_visible_slots: tuple[str, ...] = ()
+        # Tabs a client focused while the startup restore still owed them, in the
+        # order asked; the restore builds them before the rest of its queue.
+        self.restore_front_keys: list[str] = []
         # Return-triggered warm task briefs: when each thread was last on screen
         # in an owner view (wall time, this process only), a read-saving "not
         # eligible before" cache, and the live tasks. The claim and the durable
@@ -662,9 +670,6 @@ class DashboardState:
         self._warm_task_brief_last_seen: dict[str, float] = {}
         self._warm_task_brief_not_before: dict[str, float] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._warm_task_brief_model_active: set[str] = set()
-        # Threads whose in-flight model call was dropped by a real cancel.
-        self._warm_task_brief_abandoned: set[str] = set()
         # Threads whose brief has posted its opener: leaving keeps the brief.
         self._warm_task_brief_opened: set[str] = set()
         # Truncating-save claims, keyed by slot map key (see
@@ -1226,6 +1231,7 @@ class DashboardState:
     ack_notification = _dashboard_services.ack_notification
     unack_notification = _dashboard_services.unack_notification
     resolve_skill_review_notifications = _dashboard_services.resolve_skill_review_notifications
+    acknowledge_notifications_where = _dashboard_services.acknowledge_notifications_where
     clear_notifications = _dashboard_services.clear_notifications
     ensure_context_snapshots_loaded = _dashboard_services.ensure_context_snapshots_loaded
     context_snapshot_for = _dashboard_services.context_snapshot_for

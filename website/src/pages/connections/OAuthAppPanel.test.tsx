@@ -450,8 +450,8 @@ describe('OAuthAppPanel — one Google app for every Google card', () => {
     expect(within(gmail).getByText('Saved on Gmail. Press Save to try again.')).toBeInTheDocument()
     expect(within(gmail).queryByText('Could not save the OAuth app')).not.toBeInTheDocument()
     expect(saveMock).toHaveBeenCalledTimes(3)
-    // Gmail took the save, so its badge refreshes from the list...
-    expect(await within(gmail).findByText('Configured')).toBeInTheDocument()
+    // Gmail took the save, but Docs did not, so the group is not fully set up...
+    expect(await within(gmail).findByText('Needs configuration')).toBeInTheDocument()
     expect(within(gmail).getByLabelText('Client ID')).toHaveValue('g-id')
     // ...and Save stays armed even though the draft now matches the stored id.
     expect(within(gmail).getByRole('button', { name: 'Save' })).toBeEnabled()
@@ -553,14 +553,91 @@ describe('OAuthAppPanel — one Google app for every Google card', () => {
     expect(saveMock.mock.calls.map(c => c[0])).toEqual(['gmail', 'google-docs'])
   })
 
-  it('keeps a Client ID change alone on its own card, so no other card gets a mismatched pair', async () => {
+  it('asks for the secret before a shared Client ID change, then sends the whole pair to every product', async () => {
     await mount(googleCards())
     const gmail = cardFor(GOOGLE_ENTRY_SLUG)
     fireEvent.change(within(gmail).getByLabelText('Client ID'), { target: { value: 'g-id' } })
+    // The id alone would sit next to each product's old secret, or split the group.
+    expect(within(gmail).getByRole('button', { name: 'Save' })).toBeDisabled()
+    expect(within(gmail).getByText('Enter the secret too. Every Google product gets the same Client ID and secret.')).toBeInTheDocument()
     fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+    expect(saveMock).not.toHaveBeenCalled()
 
-    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(1))
-    expect(saveMock).toHaveBeenCalledWith('gmail', { client_id: 'g-id' })
+    fireEvent.change(within(gmail).getByLabelText('Client secret'), { target: { value: 'g-secret' } })
+    expect(within(gmail).queryByText(/Enter the secret too/)).not.toBeInTheDocument()
+    fireEvent.click(within(gmail).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveMock).toHaveBeenCalledTimes(3))
+    const body = { client_id: 'g-id', client_secret: 'g-secret' }
+    expect(saveMock.mock.calls).toEqual([['gmail', body], ['google-drive', body], ['google-docs', body]])
+  })
+
+  it('does not ask for a secret when the shared Client ID is emptied', async () => {
+    await mount([
+      { ...googleCard('gmail', 48104), client_id: 'g-id', client_id_source: 'config' },
+      { ...googleCard('google-drive', 48103), client_id: 'g-id', client_id_source: 'config' },
+    ])
+    const google = cardFor(GOOGLE_ENTRY_SLUG)
+    fireEvent.change(within(google).getByLabelText('Client ID'), { target: { value: '' } })
+    expect(within(google).queryByText(/Enter the secret too/)).not.toBeInTheDocument()
+    expect(within(google).getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  it('keeps products a shared save missed in the group, so the retry reaches them', async () => {
+    const stored = { client_id_source: 'config' as const, client_secret_set: true, client_secret_source: 'vault' as const, configured: true }
+    const at = (id: string, slug: string, port: number) => ({ ...googleCard(slug, port), ...stored, client_id: id })
+    saveMock.mockImplementation((slug: string) =>
+      slug === 'google-docs' ? Promise.reject(new Error('boom')) : Promise.resolve({ ok: true, client: null }))
+    await mount([at('a-id', 'gmail', 48104), at('a-id', 'google-drive', 48103), at('a-id', 'google-docs', 48110)])
+    // The refetch after the partial save: Docs still holds the old client.
+    listMock.mockResolvedValue(listResponse([at('b-id', 'gmail', 48104), at('b-id', 'google-drive', 48103), at('a-id', 'google-docs', 48110)]))
+    const google = cardFor(GOOGLE_ENTRY_SLUG)
+    fireEvent.change(within(google).getByLabelText('Client ID'), { target: { value: 'b-id' } })
+    fireEvent.click(within(google).getByRole('button', { name: /Replace/ }))
+    fireEvent.change(within(google).getByLabelText('Client secret'), { target: { value: 'b-secret' } })
+    fireEvent.click(within(google).getByRole('button', { name: 'Save' }))
+    expect(await within(google).findByText('Not saved on Google Docs')).toBeInTheDocument()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    // Docs differs now, yet it is not split off into its own form.
+    expect(document.querySelector(`[data-setting-id="${oauthClientSettingId('google-docs')}"]`)).toBeNull()
+    expect(within(google).getByText('Not saved on Google Docs')).toBeInTheDocument()
+
+    // A retry with the secret emptied could reach no other product, so it waits for the secret.
+    fireEvent.change(within(google).getByLabelText('Client secret'), { target: { value: '' } })
+    expect(within(google).getByRole('button', { name: 'Save' })).toBeDisabled()
+    fireEvent.change(within(google).getByLabelText('Client secret'), { target: { value: 'b-secret' } })
+
+    saveMock.mockReset().mockResolvedValue({ ok: true, client: null })
+    listMock.mockResolvedValue(listResponse([at('b-id', 'gmail', 48104), at('b-id', 'google-drive', 48103), at('b-id', 'google-docs', 48110)]))
+    fireEvent.click(within(google).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(saveMock).toHaveBeenCalledWith('google-docs', { client_id: 'b-id', client_secret: 'b-secret' }))
+    await waitFor(() => expect(within(google).queryByText('Not saved on Google Docs')).not.toBeInTheDocument())
+  })
+
+  it('keeps products a shared Remove missed in the group, so the next Remove reaches them', async () => {
+    const stored = { client_id: 'g-id', client_id_source: 'config' as const, client_secret_set: true, client_secret_source: 'vault' as const, configured: true }
+    deleteMock.mockImplementation((slug: string) =>
+      slug === 'google-docs' ? Promise.reject(new Error('boom')) : Promise.resolve({ ok: true, client: null }))
+    await mount(['gmail', 'google-drive', 'google-docs'].map((slug, i) => ({ ...googleCard(slug, 48104 + i), ...stored })))
+    listMock.mockResolvedValue(listResponse([
+      googleCard('gmail', 48104), googleCard('google-drive', 48105), { ...googleCard('google-docs', 48106), ...stored },
+    ]))
+    const google = cardFor(GOOGLE_ENTRY_SLUG)
+    fireEvent.click(within(google).getByRole('button', { name: /Remove the Google OAuth app/ }))
+    fireEvent.click(within(google).getByRole('button', { name: 'Remove OAuth app' }))
+    expect(await within(google).findByText('boom')).toBeInTheDocument()
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2))
+    expect(document.querySelector(`[data-setting-id="${oauthClientSettingId('google-docs')}"]`)).toBeNull()
+
+    deleteMock.mockReset().mockResolvedValue({ ok: true, client: null })
+    // The confirm stays armed after the failure, so one press retries.
+    fireEvent.click(within(google).getByRole('button', { name: 'Remove OAuth app' }))
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('google-docs'))
+  })
+
+  it('reads Needs configuration on the shared form while any product in its group is not set up', async () => {
+    const stored = { client_id: 'g-id', client_id_source: 'config' as const, client_secret_set: true, client_secret_source: 'vault' as const, configured: true }
+    await mount([{ ...googleCard('gmail', 48104), ...stored }, googleCard('google-drive', 48103)])
+    expect(within(cardFor(GOOGLE_ENTRY_SLUG)).getByText('Needs configuration')).toBeInTheDocument()
   })
 
   it('keeps a secret saved without a Client ID, or a cleared secret, on its own card', async () => {
@@ -684,14 +761,20 @@ describe('OAuthAppPanel — one Google app for every Google card', () => {
     expect(deleteMock.mock.calls.map(c => c[0])).toEqual(['gmail', 'google-drive'])
   })
 
-  it('gives a Google product with a different stored client its own form, out of the shared Save and Remove', async () => {
+  it('gives a Google product with a different stored client its own row in the Google part, out of the shared Save and Remove', async () => {
     const stored = { client_id_source: 'config' as const, client_secret_set: true, client_secret_source: 'vault' as const, configured: true }
-    await mount([
+    const { container } = await mount([
       { ...googleCard('gmail', 48104), ...stored, client_id: 'g-id' },
       { ...googleCard('google-drive', 48103), ...stored, client_id: 'other-id' },
+      { ...googleCard('google-docs', 48110), client_id: 'docs-id', client_id_source: 'config' },
     ])
-    // Drive's own client is shown, on its own form.
-    expect(within(cardFor('google-drive')).getByLabelText('Client ID')).toHaveValue('other-id')
+    // Each differing product is a named row in the same part, with its own client and true state.
+    const drive = cardFor('google-drive')
+    expect(within(drive).getByLabelText('Client ID')).toHaveValue('other-id')
+    expect(within(drive).getByText('Configured')).toBeInTheDocument()
+    expect(within(cardFor('google-docs')).getByText('Needs configuration')).toBeInTheDocument()
+    expect(within(drive.parentElement!).getByText('Google Drive')).toBeInTheDocument()
+    expect(container.querySelectorAll('[data-setting-id^="connections-oauth-client-"]')).toHaveLength(3)
     const google = cardFor(GOOGLE_ENTRY_SLUG)
     fireEvent.click(within(google).getByRole('button', { name: /Remove the Google OAuth app/ }))
     fireEvent.click(within(google).getByRole('button', { name: 'Remove OAuth app' }))

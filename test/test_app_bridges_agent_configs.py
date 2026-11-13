@@ -53,12 +53,8 @@ class TestBuiltinAgentNamesAreNamespaced:
                     f"collide with any other install claiming that global name"
                 )
                 checked += 1
-        if checked == 0:
-            # No shipped builtin declares an agent yet, so there is nothing to
-            # check — but a guard that passes on an empty sample is worthless, so
-            # say so out loud rather than pass silently. The first agent-declaring
-            # builtin turns this on.
-            pytest.skip("no builtin declares agents yet — guard is vacuous")
+        # A guard that passes on an empty sample is worthless.
+        assert checked, "no shipped builtin declares an agent -- the guard is vacuous"
 
 
 class TestUserAgentEditsSurviveRefresh:
@@ -184,10 +180,7 @@ class TestUserAgentEditsSurviveRefresh:
         }
         root = _REPO_ROOT / "src/kiro_crew/apps/builtins"
         templates = sorted(root.glob("*/agents/*.json"))
-        if not templates:
-            # Same reasoning as the namespacing guard above: nothing ships an
-            # agent template yet, and a silent pass would hide that.
-            pytest.skip("no builtin ships an agent template yet")
+        assert templates, "no builtin ships an agent template -- the guard is vacuous"
         for tpl in templates:
             keys = set(json.loads(tpl.read_text(encoding="utf-8")))
             undecided = keys - _FRAMEWORK_OWNED_AGENT_KEYS - preferences
@@ -223,6 +216,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
         # into a valid builtin's persisted manifest.
         declared.discard("config_keys_error")
         declared.discard("credential_masks_errors")
+        declared.discard("agent_readonly_dirs_errors")
 
         manifest = AppManifest.from_dict(
             {
@@ -243,6 +237,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "mcpServers": {"m": {"command": "c"}},
                 "config_keys": ["probe-owned"],
                 "credentialMasks": ["secrets.json"],
+                "agentReadOnlyDirs": ["notes"],
                 "platform": {"requiresDesktopApp": True},
                 "permissions": {"storage": True},
                 "ui": {"entry": "ui/dist/index.js"},
@@ -401,6 +396,91 @@ class TestNeutralizeEntryShape:
         )
         missing = [k for k, v in out["mcpServers"].items() if not v.get("command")]
         assert missing == [], f"entries without command: {missing}"
+
+
+class TestAGrantResolvesWhatTheDefaultAgentMounts:
+    """A built-in app's grant takes its launch spec from the servers the default agent mounts.
+
+    The rebuild merges the MCP page's store, registry installs and edition servers
+    over the global ``mcp.json`` into the default agent's spec, the store winning a
+    tie. A copied server that is muted (turned off, or a ``secret://`` reference
+    nothing resolves) is withheld, and so is another app's own server.
+    """
+
+    def test_a_grant_takes_the_mounted_spec_and_withholds_a_muted_one(self, tmp_path, monkeypatch):
+        from kiro_crew import agent as agent_mod
+        from kiro_crew.apps import bridges
+        from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY
+
+        spec = tmp_path / "kirocrew.json"
+        mounted = {
+            "store-srv": {"command": "store-cmd", DERIVED_KEY: {"from": "kirocrew"}},
+            "both-srv": {"command": "store-cmd"},
+            "off-srv": {"command": "off-cmd", "disabled": True},
+            "vault-srv": {"command": "vault-cmd", "disabled": True, WITHHELD_KEY: True},
+            "other-app:srv": {"command": "other-cmd"},
+        }
+        spec.write_text(json.dumps({"mcpServers": mounted}), encoding="utf-8")
+        monkeypatch.setattr(bridges, "_mcp_json_path", lambda: spec)
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: {"other-app:srv": True})
+        monkeypatch.setattr(
+            bridges,
+            "_global_mcp_specs",
+            lambda: {
+                "both-srv": {"command": "global-cmd"},
+                "off-srv": {"command": "off-cmd"},
+                "global-srv": {"command": "global-cmd"},
+                "global-off-srv": {"command": "global-cmd", "disabled": True},
+            },
+        )
+        names = [*mounted, "global-srv", "global-off-srv"]
+        out = bridges._apply_agent_mcp_policy(
+            {"name": "a", "tools": [], "mcpServers": {}},
+            "a",
+            {"agents": {"a": {"servers": {name: {} for name in names}}}},
+            builtin=True,
+        )
+        assert out["mcpServers"] == {
+            "store-srv": {"command": "store-cmd"},
+            "both-srv": {"command": "store-cmd"},
+            "global-srv": {"command": "global-cmd"},
+        }
+        assert out["tools"] == ["@store-srv", "@both-srv", "@global-srv"]
+
+    def test_a_user_installed_app_grant_never_reaches_a_mounted_only_server(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        """A user-installed app writes its own grant file, so its grant keeps main's
+        sources, even under a shipped built-in's name; once the built-in holds the
+        install, the same grant copies the server, which shows the grant was read."""
+        from kiro_crew import agent as agent_mod
+        from kiro_crew.apps import bridges, execution
+        from kiro_crew.apps.manager import InstalledApp, _write_installed, app_dir
+
+        mounted = {"mcpServers": {"store-srv": {"command": "store-cmd"}}}
+        (tmp_path / "mcp.json").write_text(json.dumps(mounted), encoding="utf-8")
+        monkeypatch.setattr(bridges, "_global_mcp_specs", lambda: {})
+        monkeypatch.setattr(agent_mod, "_app_owned_mcp_keys", lambda: {})
+        src = _make_app_source(tmp_path, name="grant-app")
+        monkeypatch.setattr(execution, "_builtin_manifest_sources", lambda: (src.parent.resolve(),))
+        manifest = AppManifest.from_dict(json.loads((src / APP_MANIFEST_FILENAME).read_text()))
+        grant = {"agents": {"my-agent": {"servers": {"store-srv": {}}}}}
+        policy = app_dir("grant-app") / "data" / bridges.AGENT_MCP_POLICY_FILE
+        policy.parent.mkdir(parents=True)
+        policy.write_text(json.dumps(grant), encoding="utf-8")
+        written = app_env["kiro_agents"] / "grant-app--my-agent.json"
+
+        _write_installed("grant-app", InstalledApp(name="grant-app", source=str(src)))
+        bridges._register_agents("grant-app", manifest, src)
+        user_installed = json.loads(written.read_text())
+        assert "store-srv" not in user_installed.get("mcpServers", {})
+        assert "@store-srv" not in user_installed.get("tools", [])
+
+        _write_installed("grant-app", InstalledApp(name="grant-app", source="builtin"))
+        bridges._register_agents("grant-app", manifest, src)
+        assert json.loads(written.read_text())["mcpServers"]["store-srv"] == {
+            "command": "store-cmd"
+        }
 
 
 class TestDeclaredMcpToolsAreEnforced:

@@ -116,14 +116,21 @@ def _register_config_watch(
         # subagent role is read live at spawn and needs no rebuild.
         if not change.touched("agent.role_models.background"):
             return
-        try:
-            from kiro_crew.agent import rebuild_agent_config
+        from kiro_crew.agent import rebuild_agent_config_reporting
 
-            await asyncio.to_thread(rebuild_agent_config)
-            logger.info("agent.role_models.background changed -- background agent specs rebuilt")
-        except Exception:
-            # PlatformCompositionError too: boot enforces composition; the previous spec stays.
-            logger.warning("background-model rebuild failed", exc_info=True)
+        # Raised, never swallowed: ConfigWatch retries only an applier that
+        # raises, so a failed or unwritten rebuild would otherwise leave the
+        # specs on the previous background model until a restart. Same contract
+        # as the agent.model applier, a shared-home refusal (wrote=False)
+        # included. PlatformCompositionError raises here too; the previous spec
+        # stays.
+        _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
+        if not wrote:
+            raise RuntimeError(
+                "background agent spec rebuild did not write (shared agent home "
+                "refused, or the existing spec could not be read)"
+            )
+        logger.info("agent.role_models.background changed -- background agent specs rebuilt")
 
     default_model_failure_notified = False
 
@@ -251,6 +258,14 @@ def _register_config_watch(
         if change.touched("dashboard.feature_previews"):
             state.push_refresh("config")
 
+    def _push_command_bar(change: ConfigChange) -> None:
+        # What the quick-search shortcut opens is read from the shared config query
+        # too (the shell, its trigger labels and the Settings toggle), so a switch
+        # set from the CLI, $EDITOR or another dashboard reaches every open one only
+        # through a refresh frame.
+        if change.touched("dashboard.command_bar_enabled"):
+            state.push_refresh("config")
+
     async def _sync_stale_wake(change: ConfigChange) -> None:
         # The `dashboard_stale_wake` preview's one cron job exists only while the
         # preview is on, from whichever writer flipped it (dashboard, CLI, $EDITOR).
@@ -330,6 +345,11 @@ def _register_config_watch(
             name="dashboard.stale_wake",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
+        live.subscribe(
+            "dashboard.command_bar_enabled",
+            callback=_push_command_bar,
+            name="dashboard.command_bar_enabled",
+        ),
         live.subscribe(
             "dashboard.terminal.enabled",
             callback=_apply_terminal_enabled,

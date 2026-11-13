@@ -165,6 +165,29 @@ def _withheld_env_count(
 # gatewayd's coherence re-hash read, so the PoolKey gate holds.
 _ENV_VAR_PLACEHOLDER = re.compile(r"\$\{(?:env:)?([^}]+)\}")
 
+#: Windows environment names are case-insensitive: ``os.environ`` answers any
+#: spelling there and iterating it yields upper-cased names, so a placeholder name
+#: folds to upper case before it is looked up. POSIX names stay case-sensitive.
+_ENV_NAMES_CASE_INSENSITIVE = os.name == "nt"
+
+
+def _placeholder_key(name: str) -> str:
+    """The spelling *name* is held under in :func:`_placeholder_source_env`'s view."""
+    return name.upper() if _ENV_NAMES_CASE_INSENSITIVE else name
+
+
+def _placeholder_value(view: Mapping[str, str], name: str) -> str | None:
+    """The value a ``${name}`` reference resolves to in *view*, ``None`` on a miss.
+
+    The exact spelling is tried first; on Windows the folded spelling follows, which
+    is where the filtered view keeps every name. A credential-filtered name is
+    absent from the view in every spelling, so folding cannot reach it.
+    """
+    hit = view.get(name)
+    if hit is None and _ENV_NAMES_CASE_INSENSITIVE:
+        hit = view.get(name.upper())
+    return hit
+
 
 def _placeholder_source_env() -> dict[str, str]:
     """The environment view a placeholder may dereference.
@@ -237,7 +260,8 @@ def _expand_env_placeholders(
     :func:`_placeholder_source_env` view), leaving an unresolved reference as a
     literal ``${VAR}`` (kiro-cli parity, including dropping the ``env:`` prefix
     on a miss). A reference to a credential-filtered name is the same miss,
-    logged so the operator can tell a refusal from a typo.
+    logged so the operator can tell a refusal from a typo. On Windows a name
+    matches in any letter case, as the platform's own environment does.
 
     Encountering any reference marks the pass uncacheable via *notes* (see
     ``_RewritePassNotes.env_placeholder_seen``) — the environment is not a
@@ -249,9 +273,10 @@ def _expand_env_placeholders(
         name = match.group(1)
         if notes is not None:
             notes.env_placeholder_seen = True
-        resolved = env_view.get(name)
+        resolved = _placeholder_value(env_view, name)
         if resolved is None:
-            if name in os.environ or name in _configured_agent_env():
+            key = _placeholder_key(name)
+            if key in os.environ or key in _configured_agent_env():
                 logger.warning(
                     "declared env placeholder ${%s} names a credential-filtered "
                     "variable; left as a literal",

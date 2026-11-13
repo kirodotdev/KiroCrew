@@ -327,13 +327,18 @@ export function Histogram({
   labelClass = 'w-20 text-right font-mono text-muted',
   valueClass = 'w-12',
   barDecorative = false,
+  formatValue = fmtNumber,
 }: {
   rows: { key: string; label: React.ReactNode; count: number; title?: string }[]
   labelClass?: string
   valueClass?: string
   barDecorative?: boolean
+  /** How the figure beside each bar is written; a plain count by default. */
+  formatValue?: (n: number) => string
 }) {
-  const peak = Math.max(1, ...rows.map(r => r.count))
+  // Scaled to the largest row, not floored at 1: spend in dollars is mostly
+  // below one, and a floor of 1 drew every such bar as a sliver.
+  const peak = Math.max(0, ...rows.map(r => r.count)) || 1
   return (
     <div className="flex flex-col gap-1">
       {rows.map(r => (
@@ -348,7 +353,7 @@ export function Histogram({
               style={{ width: `${(r.count / peak) * 100}%`, background: 'var(--muted-strong)' }}
             />
           </div>
-          <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{fmtNumber(r.count)}</span>
+          <span className={`${valueClass} shrink-0 text-right font-mono tabular-nums`}>{formatValue(r.count)}</span>
         </div>
       ))}
     </div>

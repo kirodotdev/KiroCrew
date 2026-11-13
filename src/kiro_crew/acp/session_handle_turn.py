@@ -69,6 +69,7 @@ from kiro_crew.acp.prompt_blocks import (
     summarize_prompt_structure,
 )
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
+from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 from kiro_crew.acp.session_handle_watchdog import _WORKING_NEVER_LOGGED
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
@@ -279,6 +280,9 @@ async def prompt(
         )
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
         return
+    # The servers this session's start left to its first turn: a prompt that
+    # does not carry them waits briefly here, before any turn state is touched.
+    await hold_untold_first_turn(self, message)
     turn = self._run_turn(_build, timeout, sign_in_ask=sign_in_ask, prompt_gate=prompt_gate)
     try:
         async for event in turn:
@@ -351,6 +355,8 @@ async def stream_command(
             "command": {"command": cmd_name, "args": cmd_args},
         }
 
+    # A command carries no context block, so it is never told (see prompt()).
+    await hold_untold_first_turn(self)
     # Same deterministic finalization as prompt(): see the comment there.
     turn = self._run_turn(
         _build,

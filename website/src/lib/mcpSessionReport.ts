@@ -111,3 +111,93 @@ export function mcpSessionExtraServers(
 export function mcpSessionHasReport(report?: McpSessionReport | null): boolean {
   return Boolean(report)
 }
+
+/**
+ * One server's state: `connected`, or one of the keys of the report's `states`.
+ * The words are read off the report and never worked out here, so the chat
+ * cannot call a server "connecting" that the gateway reported as failed.
+ */
+export type McpSessionLoadState =
+  | 'connecting'
+  | 'needs_sign_in'
+  | 'failed'
+  | 'disabled'
+  | 'registry_dropped'
+  | 'connected'
+
+/** The not-ready states, in the order a name is matched against them. */
+const NOT_READY_ORDER: readonly Exclude<McpSessionLoadState, 'connected'>[] = [
+  'connecting',
+  'needs_sign_in',
+  'failed',
+  'disabled',
+  'registry_dropped',
+]
+
+export interface McpSessionLoadRow {
+  name: string
+  state: McpSessionLoadState
+}
+
+export interface McpSessionLoading {
+  /** Servers still connecting. Empty means nothing is loading. */
+  connecting: string[]
+  /** Servers that connected. */
+  ready: string[]
+  /**
+   * The servers the count is about, still-connecting ones first: every
+   * `connecting` and every `ready` server, so its length is the count's total.
+   */
+  counted: McpSessionLoadRow[]
+  /**
+   * The servers the count leaves out, because none of them is loading: failed,
+   * waiting for a sign-in, switched off, or left out by policy.
+   */
+  uncounted: McpSessionLoadRow[]
+  /**
+   * The report left servers out because one of its lists was full. A server
+   * with no state may be one of those, so it is not known to be loading.
+   */
+  partial: boolean
+}
+
+/** Wire data: keep the strings of a list, each once, in order. */
+function names(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((n): n is string => typeof n === 'string' && n !== ''))]
+}
+
+/**
+ * Which of this session's servers are still connecting, which are ready, and
+ * what is true of the rest.
+ *
+ * Read from `states` only. A report without it (a gateway or an agent backend
+ * that does not say which servers are still connecting) yields no `connecting`
+ * entry, so nothing is ever drawn as loading on a guess: a server missing from
+ * every bucket is *unreported*, which is not the same claim.
+ *
+ * A server is in exactly one row. A not-ready state wins over `ready`, so a
+ * server that reconnects is not also counted as ready.
+ */
+export function mcpSessionLoading(report?: McpSessionReport | null): McpSessionLoading {
+  const states = report?.states
+  const seen = new Set<string>()
+  const take = (state: McpSessionLoadState, list: unknown): McpSessionLoadRow[] => {
+    const fresh = names(list).filter(n => !seen.has(n))
+    for (const name of fresh) seen.add(name)
+    return fresh.map(name => ({ name, state }))
+  }
+  const notReady = NOT_READY_ORDER.flatMap(state =>
+    states && typeof states === 'object' ? take(state, states[state]) : [],
+  )
+  const connecting = notReady.filter(row => row.state === 'connecting')
+  const ready = take('connected', report?.ready)
+  const omitted = report?.states_omitted
+  return {
+    connecting: connecting.map(row => row.name),
+    ready: ready.map(row => row.name),
+    counted: [...connecting, ...ready],
+    uncounted: notReady.filter(row => row.state !== 'connecting'),
+    partial: typeof omitted === 'number' && omitted > 0,
+  }
+}

@@ -148,7 +148,10 @@ DEFAULT_POOL_SIZE = 0
 # the old 1536 default recycled ordinary sessions after one heavy turn. 4096
 # sits above those healthy sizes and still bounds a runaway tree, which with no
 # ceiling at all grows until the host runs out of memory. A recycled session
-# keeps its history and restarts on its next message.
+# keeps its history and restarts on its next message. No fixed figure sits above
+# every healthy tree: each local MCP server adds about 0.1 GB, so a fresh process
+# with 57 of them reads 7 GB. A runtime the watchdog finds already over the
+# ceiling is held at that footprint instead (``session_rss_rebound``).
 DEFAULT_WATCHDOG_RSS_MAX_MB = 4096
 # session.reconcile_max_kills — root candidates the runtime reconciler may signal
 # the tree of in one pass. Defaults to the budget the arm already ships with, so an

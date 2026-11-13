@@ -1,10 +1,10 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
-import { offlineReason } from '../utils/offlineReason'
+import { isRelayCrewWindow, isRelayRetrying, offlineReason } from '../utils/offlineReason'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -38,6 +38,7 @@ import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
 import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
@@ -216,6 +217,32 @@ export function useAppShell() {
       : gatewayConnecting
         ? i18nT('app.gateway_connecting')
         : offlineReason(offlineCause)
+  // A relay Crew window still retrying a dropped connection shows the calm
+  // reconnecting view (RelayReconnectingView) instead of the outage styling;
+  // a refusal, an ended session and an expired sign-in keep theirs. That view
+  // is then the one live region speaking the state, so the capsule's region
+  // and the focus-mode stand-in say nothing until the state changes again.
+  const relayCrewWindow = useRef(isRelayCrewWindow()).current
+  const relayRetrying = relayCrewWindow && !connected && !gatewayConnecting && !authRequired
+    && isRelayRetrying(offlineCause, relayCrewWindow)
+  const gatewayStatusAnnounce = relayRetrying ? '' : gatewayStatusMsg
+  // The retry makes <main> and the docked terminal inert, which drops their
+  // focused element (usually the composer) to <body>. Remember it as the retry
+  // starts and give it focus back when the connection returns, unless the user
+  // has focused something else meanwhile. A layout effect, like focus mode's
+  // hand-off, so the read lands before the browser's focus fixup for inert.
+  const relayFocusReturn = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    if (relayRetrying) {
+      const active = document.activeElement
+      relayFocusReturn.current = active instanceof HTMLElement && active !== document.body ? active : null
+      return
+    }
+    const el = relayFocusReturn.current
+    relayFocusReturn.current = null
+    const focusLost = !document.activeElement || document.activeElement === document.body
+    if (el && el.isConnected && focusLost) el.focus({ preventScroll: true })
+  }, [relayRetrying])
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
@@ -400,16 +427,29 @@ export function useAppShell() {
     privacyAcked,
     privacyAckVersion,
     themeBootReady,
+    themeBootRead,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
   } = useTheme()
-  const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion, themeBootReady, markOnboarded })
+  // First run's chapters write the host's flags, so they wait for the host's own
+  // answer. A failed boot read leaves only this browser's flags, which a new
+  // browser does not have; it may go on only where they already say first run
+  // is done.
+  const firstRun = useFirstRunChapters({
+    onboarded, importOnboarded, privacyAcked, privacyAckVersion,
+    themeBootReady: themeBootReady && (themeBootRead || onboarded),
+    hostStateUnread: themeBootReady && !themeBootRead && !onboarded,
+    markOnboarded,
+  })
   // Decided once per document: the URL does not change under a mounted App.
   const lookPreviewFrame = isLookPreviewFrame()
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
+  // Finish an agent update request's approved install wherever the user is
+  // when its download lands, not only on Settings > About.
+  useAgentInstallLatch()
   // Notify the main process whenever the gateway status reports a security
   // policy provider governs this install's updates, so the feed lane stands down.
   usePolicyGovernedNotification()
@@ -621,6 +661,19 @@ export function useAppShell() {
   // quick-search gesture to the wrong surface. Only the newest generation may write.
   const appNavGenRef = useRef(0)
   const [slotOwners, setSlotOwners] = useState<SlotOwners>({})
+  // The quick-search launcher switch (`dashboard.command_bar_enabled`, Settings ->
+  // Display -> View), on unless the stored value is a literal `false`. Until the
+  // config has loaded, or when it cannot be read, the gesture opens the palette.
+  // `select` keeps the shell from re-rendering on every other config change.
+  const { data: commandBarSetting } = useQuery({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (cfg: { dashboard?: { command_bar_enabled?: boolean } }) => cfg.dashboard?.command_bar_enabled !== false,
+  })
+  const commandBarOn = commandBarSetting === true
+  // Whether the gesture opens a launcher rather than a search, for the labels on
+  // the controls that open it.
+  const quickSearchLauncher = commandBarOn || Boolean(slotOwners['quick-search'])
   const queryClient = useQueryClient()
   const refreshAppNav = useCallback((attempt = 0, joinPending = false) => {
     // Cancel any pending retry up-front so external triggers (the reconnect
@@ -1061,7 +1114,8 @@ export function useAppShell() {
 
   return {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
-    gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
+    gatewayStatusMsg, gatewayStatusAnnounce, relayCrewWindow, relayRetrying,
+    focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
     colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
@@ -1071,7 +1125,7 @@ export function useAppShell() {
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
     mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
-    toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,

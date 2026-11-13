@@ -357,7 +357,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Central policy fetch failures",
         "platform/policy_distribution_boot.py",
         "The failure text of a central governance-policy fetch, which reaches TWO "
-        "surfaces: `kirocrew policy fetch` on stdout and a `logger` line (durable, "
+        "surfaces: `kirocrew policy fetch` on stderr and a `logger` line (durable, "
         "and served to the dashboard by `GET /api/logs`). The bytes are not ours -- a "
         "malformed document reaches the message through a parser error, and `json`'s "
         "errors quote the offending text, so an endpoint that echoes back the "
@@ -503,6 +503,16 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "content read off a live slot, so it can carry a credential a tool "
         "printed — the same output-boundary reason as the session-storage inventory "
         "below, with the reader being an LLM rather than the browser.",
+    ),
+    (
+        "Session control queue",
+        "dashboard/session_control_queue.py",
+        "The first 50 queued entries on a session the caller manages, whether a "
+        "person, another session or the caller queued them, served by "
+        "`POST /api/session-control/queue` to the calling agent. Queued text has "
+        "not run yet, so it can carry a key someone pasted; the excerpt and the "
+        "entry id are redacted on the way out for the same reason as the "
+        "session-control read above.",
     ),
     (
         "Session storage inventory",

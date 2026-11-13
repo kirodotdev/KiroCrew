@@ -733,6 +733,39 @@ class TestResumeExpectedIdentity:
         assert state._slots == {}
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", [123, ["x"], {"a": 1}])
+    async def test_a_non_string_key_is_refused_before_a_slot_is_created(
+        self, tmp_path, monkeypatch, key
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post("/api/chat/slots/guarded/resume", json={"key": key})
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (400, "invalid_field_type")
+        assert state._slots == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("title", [5, ["t"], {"a": 1}])
+    async def test_a_non_string_title_is_not_stored_as_the_slot_title(
+        self, tmp_path, monkeypatch, title
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.conversation_log.append("dashboard:guarded", "user", "hello")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat/slots/guarded/resume", json={"key": "dashboard:guarded", "title": title}
+            )
+
+        assert response.status == 200
+        assert isinstance(state._slots["guarded"].title, str)
+
+    @pytest.mark.asyncio
     async def test_an_app_gets_the_same_answer_for_a_foreign_open_session_with_or_without_a_pin(
         self, tmp_path, monkeypatch
     ):

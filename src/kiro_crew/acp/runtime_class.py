@@ -34,6 +34,7 @@ from kiro_crew.acp.client import CLIENT_NAME
 from kiro_crew.acp.harness import HarnessAdapter, harness_for
 from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.runtime_liveness import _DEFAULT_MAX_AGE_SECS, _DEFAULT_MAX_RSS_MB
 from kiro_crew.acp.runtime_process_tree import EMPTY_WALK_RETRY_DELAY, ChildRecord
 from kiro_crew.acp.runtime_start import _INIT_NOTIFICATION_BUFFER_LIMIT, StartCollector
@@ -98,6 +99,8 @@ class AcpRuntime:
     _root_identity = _rt_tree._root_identity
     _root_identity_holds = _rt_tree._root_identity_holds
     refresh_process_tree = _rt_tree.refresh_process_tree
+    wait_tree_recorded = _rt_tree.wait_tree_recorded
+    _record_tree_in_background = _rt_tree._record_tree_in_background
     _snapshot_descendants = _rt_tree._snapshot_descendants
     _rescan_descendants_later = _rt_tree._rescan_descendants_later
     _signal_tree = _rt_tree._signal_tree
@@ -153,6 +156,7 @@ class AcpRuntime:
     # ``session/load`` end to end: ``kiro_crew.acp.runtime_session_load``.
     load_session = _rt_load.load_session
     _wait_managed_mcp = _rt_load._wait_managed_mcp
+    _park_in_start_agent = _rt_load._park_in_start_agent
     # The sessions held and how each leaves: ``kiro_crew.acp.runtime_session_registry``.
     session_activity_at = _rt_registry.session_activity_at
     unregister_session = _rt_registry.unregister_session
@@ -168,6 +172,9 @@ class AcpRuntime:
     _mcp_init_progress = _rt_registry._mcp_init_progress
     _session_start_stalled = _rt_registry._session_start_stalled
     _stage_init_frame = _rt_registry._stage_init_frame
+    _open_mcp_report = _rt_registry._open_mcp_report
+    _mcp_reports = _rt_registry._mcp_reports
+    _fold_mcp_frame = _rt_registry._fold_mcp_frame
     _finish_session_init = _rt_registry._finish_session_init
     # Putting a session on its agent: ``kiro_crew.acp.runtime_mode_activation``.
     _skill_projection_lock = _rt_mode._skill_projection_lock
@@ -449,6 +456,11 @@ class AcpRuntime:
         # sessionId -> the cwd its ``session/new`` / ``session/load`` named, so the
         # paths kiro-cli reports against ``_launch_process_cwd`` map to it.
         self._session_cwds: dict[str, str] = {}
+        # sessionId -> that session's MCP report, registered with its queue. The
+        # reader loop folds each frame that names the session into it as the
+        # frame arrives (``_fold_mcp_frame``); the session's handle holds the
+        # same object.
+        self._session_mcp_reports: dict[str, McpSessionReport] = {}
         # The session tree's work directory when this runtime is not the tree's
         # first process (a companion runtime spawned for a parent's subagents,
         # or the successor of a recycled ``_bg`` runtime). Re-validated at spawn
@@ -569,6 +581,10 @@ class AcpRuntime:
         # before answering. The reader loop counts them; load_session reads the
         # count to tell a restored conversation from a freshly created record.
         self._load_replay_frames: dict[str, int] = {}
+        # Session ids the engine holds a parked copy of: loaded to make the
+        # start agent the stored mode, not yet confirmed freed
+        # (``runtime_session_load._park_in_start_agent``).
+        self._parked_copies: set[str] = set()
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
@@ -610,6 +626,9 @@ class AcpRuntime:
         # The one deferred scan a spawn schedules when its own saw no
         # descendant (_snapshot_descendants). Cancelled by the kill.
         self._descendant_rescan_task: asyncio.Task[None] | None = None
+        # The background descendant passes still running
+        # (_record_tree_in_background). Every kill waits for them.
+        self._start_tree_scans: set[asyncio.Task[None]] = set()
         # Two independent clocks so a failure never extends the life of an old
         # success: ``_result_at`` is stamped ONLY when a non-empty result is
         # stored (that result may be replayed until it expires), while
@@ -1027,6 +1046,15 @@ class AcpRuntime:
     #: just answered ``initialize`` and may fork a moment later. One is enough
     #: because every later session start scans again. Nothing waits on it.
     _DESCENDANT_RESCAN_DELAY = EMPTY_WALK_RETRY_DELAY
+
+    #: How long a kill waits for a background descendant pass still running
+    #: (``wait_tree_recorded``) before it gives up on it, cancels it and acts on
+    #: the record the earlier passes wrote, as a kill that ran before the pass
+    #: did. One pass at 64 MCP servers takes about 1 s on macOS, but its walk
+    #: is a ``pgrep`` per process and a ``ps`` per pid, each bounded at 2 s, so
+    #: a hung one has no useful bound of its own. Equal to the pre-teardown
+    #: refresh's bound (``process_identity.TREE_REFRESH_TIMEOUT``).
+    _KILL_TREE_WAIT_SECS = 3.0
 
     #: Why a teardown reached nothing, per ``_root_identity`` verdict. "holds" is
     #: reachable here too: the tree kill ran and the root exited under it, which

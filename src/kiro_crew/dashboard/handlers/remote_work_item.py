@@ -9,7 +9,8 @@ Three pieces, all behind the ``work_ledger.remote_dispatch`` Feature Preview:
 * ``GET /api/chat/slots/{slot}/work-item``: the worker-owned fields of that slot's
   item plus its event tail, for the hub to ingest.
 * ``PATCH /api/chat/slots/{slot}/work-item``: the hub's ``decision``, the one
-  conductor-owned field that changes after create.
+  conductor-owned field that changes after create, and ``trust: false``, which
+  ends the grant :func:`grant_remote_trust` armed at create.
 
 With the preview off a create's ``work_item`` is ignored and both routes answer
 404, so this gateway behaves exactly as it does without this module. Owner token
@@ -30,6 +31,7 @@ from kiro_crew import remote_dispatch_mailbox as mailbox
 from kiro_crew import work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.dashboard import remote_dispatch_headroom
+from kiro_crew.dashboard.approval_posture import REMOTE_TRUST_SCOPE_PREFIX, remote_scope_denied
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
     require_owner_dashboard_request,
@@ -230,6 +232,93 @@ async def bind_work_item(
     return None
 
 
+# ── the conductor's Trust, carried to its bound worker (RFC §4) ───────────
+
+
+def remote_trust_scope(slot_key: str) -> str:
+    """The grant key for one bound worker slot, never one for the crew."""
+    return REMOTE_TRUST_SCOPE_PREFIX + slot_key
+
+
+def remote_trust_active(slot_key: str) -> bool:
+    """Whether *slot_key* holds a live remote grant. A pure read: expires nothing."""
+    from kiro_crew.safety_override import safety_override
+
+    scope = remote_trust_scope(slot_key)
+    if remote_scope_denied(scope):
+        return False
+    return safety_override().scope_remaining_secs(scope) > 0
+
+
+def reserve_remote_trust(slot: Any, parsed: mailbox.MailboxRequest) -> bool:
+    """Reserve the remote scope on a newborn *slot* before any client can see it.
+
+    A person's Normal or Reads from then on clears the reservation
+    (``_end_trust_scopes``), and :func:`grant_remote_trust` arms only a reservation
+    that survived. Until it is armed, ``is_scope_active`` answers False for it. A
+    slot that already holds Trust, Reads or a scope keeps it.
+    """
+    if not parsed.trust:
+        return False
+    if (
+        getattr(slot, "_trust", False)
+        or getattr(slot, "_trust_reads", False)
+        or getattr(slot, "_trust_scope", "")
+    ):
+        return False
+    slot._trust_scope = remote_trust_scope(slot.key)
+    return True
+
+
+async def grant_remote_trust(state: Any, slot: Any, parsed: mailbox.MailboxRequest) -> bool:
+    """Arm the grant reserved by :func:`reserve_remote_trust`; True when armed.
+
+    A ``SafetyOverride`` scoped grant on this one slot (``_trust_scope``), so the
+    worker auto-approves as a Trust chat's own child does. It is audited
+    fail-closed at activation, lasts this crew's own ad-hoc duration
+    (``agent.yolo_duration``, held to ``yolo_max_seconds``), and is refused when
+    this crew's ``approval_modes`` policy denies ``trust`` or ``yolo``. The deny
+    rules and ``hooks.confirm_tools`` bind it as they bind any trusted slot.
+    shortcut: no renewal, so a worker past the TTL asks again; slide it on the
+    hub's pull if that proves short.
+    """
+    scope = remote_trust_scope(slot.key)
+    if not parsed.trust or getattr(slot, "_trust_scope", "") != scope:
+        # Never reserved, or a person picked another mode since.
+        return False
+    from kiro_crew.approval_mode_policy import session_mode_permitted
+    from kiro_crew.safety_override import safety_override
+
+    operation = "chat_slot_create.work_item_trust"
+    if not session_mode_permitted("trust"):
+        slot._trust_scope = ""
+        _audit("dashboard", operation, "denied", resources=slot.key, error="policy_denies_trust")
+        return False
+    result = await asyncio.to_thread(safety_override().activate_scoped, scope, "remote_dispatch")
+    if not result.active:
+        if slot._trust_scope == scope:
+            slot._trust_scope = ""
+        _audit("dashboard", operation, "denied", resources=slot.key, error="grant_refused")
+        return False
+    if state._slots.get(slot.key) is not slot or slot._trust_scope != scope:
+        # Closed, or a person picked another mode, while the grant was armed.
+        await asyncio.to_thread(safety_override().deactivate_scope, scope)
+        return False
+    _audit("dashboard", operation, "ok", resources=f"{slot.key} item={parsed.item_id}")
+    return True
+
+
+async def revoke_remote_trust(state: Any, slot_key: str) -> None:
+    """End *slot_key*'s remote grant, if it holds one. Idempotent."""
+    from kiro_crew.safety_override import safety_override
+
+    scope = remote_trust_scope(slot_key)
+    await asyncio.to_thread(safety_override().deactivate_scope, scope)
+    slot = state._slots.get(slot_key) if state is not None else None
+    if slot is not None and getattr(slot, "_trust_scope", "") == scope:
+        slot._trust_scope = ""
+
+
 async def discard_work_item(
     slot_key: str,
     parsed: mailbox.MailboxRequest,
@@ -264,6 +353,12 @@ async def close_work_item_for_slot(slot_key: str) -> None:
     """
 
     async def _close() -> str | None:
+        # The slot is going, so its remote grant goes first, whatever the preview
+        # says. Inside the drained step, and a failed revoke still closes the item.
+        try:
+            await revoke_remote_trust(None, slot_key)
+        except Exception:  # noqa: BLE001 - a close must never fail on the revoke
+            logger.warning("remote trust for %s: could not revoke it", slot_key, exc_info=True)
         bound = await asyncio.to_thread(mailbox.bound_mailbox, slot_key)
         if bound is None:
             return None
@@ -365,12 +460,15 @@ async def api_chat_slot_work_item_get(request: web.Request) -> web.Response:
                 "last_report_at": item.last_report_at,
             },
             "events": [event.to_dict() for event in events],
+            # So the hub can revoke a grant its conductor has stopped backing (RFC §4).
+            "trust_active": remote_trust_active(request.match_info.get("slot", "")),
         }
     )
 
 
 async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
-    """PATCH /api/chat/slots/{slot}/work-item — the hub's new ``decision``, only."""
+    """PATCH /api/chat/slots/{slot}/work-item — the hub's new ``decision``, and/or
+    ``trust: false``, which ends the worker's remote grant (RFC §4)."""
     bound, refusal = await _slot_mailbox(request, "chat_slot_work_item.decide")
     if refusal is not None:
         return refusal
@@ -379,16 +477,25 @@ async def api_chat_slot_work_item_patch(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None
-    extra = sorted(set(body) - {"decision"})
-    if extra or "decision" not in body:
+    extra = sorted(set(body) - {"decision", "trust"})
+    if extra or not body:
         # The hub owns the decision here and nothing else: a worker-owned field
         # (status, summary, artifacts, pr, last_report_at) is the worker's to write.
         return _refuse_400(
             "invalid_value",
-            "this route takes exactly one field, decision",
+            "this route takes decision, trust: false, or both",
             field=extra[0] if extra else "decision",
         )
+    if "trust" in body and body["trust"] is not False:
+        # A grant is armed only at create; the hub may only end one.
+        return _refuse_400("invalid_value", "trust may only be false", field="trust")
     board, item_id = bound
+    if "trust" in body:
+        slot_key = request.match_info.get("slot", "")
+        await revoke_remote_trust(request.app["state"], slot_key)
+        _audit(_caller(request), "chat_slot_work_item.trust_revoke", "ok", resources=item_id)
+        if "decision" not in body:
+            return web.json_response({"ok": True, "item_id": item_id, "trust_active": False})
     async with _board_lock(board):
         dirty = await _refuse_if_dirty(board, _caller(request), "chat_slot_work_item.decide")
         if dirty is not None:

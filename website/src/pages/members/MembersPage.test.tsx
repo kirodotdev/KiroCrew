@@ -562,6 +562,35 @@ describe('MembersPage roster', () => {
     expect(screen.queryByTestId('member-column-load-error')).toBeNull()
     expect(await probeAddCrewmate()).toEqual({ held: false, reason: null })
   })
+
+  it.each(['member-roster-retry', 'member-column-load-retry'])(
+    'keeps the load-failure notices and a focused, inert %s up while the retry runs',
+    async (retryId) => {
+      ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+      renderWithProviders(<MembersPage />, { queryDefaults: { retryDelay: 0 } })
+      const retry = await screen.findByTestId(retryId)
+      let answer!: (v: unknown) => void
+      ;(api.members as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((r) => { answer = r }))
+      retry.focus()
+      fireEvent.click(retry)
+      await waitFor(() => expect(screen.getByTestId(retryId)).toHaveAttribute('aria-disabled', 'true'))
+      // The same node, still focused: the notice did not unmount for the retry.
+      expect(screen.getByTestId(retryId)).toBe(retry)
+      expect(retry).toHaveFocus()
+      expect(screen.getByTestId('member-roster-error')).toBeInTheDocument()
+      expect(screen.getByTestId('member-column-load-error')).toBeInTheDocument()
+      expect(screen.getByTestId('member-count')).toHaveTextContent('\u2014')
+      expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your bots.' })
+      // Inert, not disabled: a second press starts no second read.
+      const calls = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+      fireEvent.click(retry)
+      expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls)
+      answer({ members: [row()], default_agent: 'kirocrew' })
+      expect(await rosterRow('oncall')).toBeInTheDocument()
+      expect(screen.queryByTestId('member-roster-error')).toBeNull()
+      expect(screen.queryByTestId('member-column-load-error')).toBeNull()
+    },
+  )
 })
 
 /* The roster is a React Query read (issue #9418). These cases pin what that

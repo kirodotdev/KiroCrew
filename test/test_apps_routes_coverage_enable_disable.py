@@ -272,6 +272,35 @@ class TestEnableBranches:
             assert (await resp.json())["enabled"] is False
 
     @pytest.mark.asyncio
+    async def test_a_failed_rollback_does_not_claim_the_app_is_disabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `disable_app` fails closed; when it fails the reply must say so, not
+        # report a disable that did not happen.
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, setup={"onEnable": "setup.sh"})
+
+        async def _failed(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {"output": "boom", "failed": True}
+
+        monkeypatch.setattr(routes_mod, "_run_lifecycle_script", _failed)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
+        monkeypatch.setattr(
+            routes_mod,
+            "disable_app",
+            lambda n: AppResult(ok=False, name=n, error="could not record the disable"),
+        )
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable")
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "on_enable_failed"
+        assert "remains disabled" not in body["error"]
+        assert "could not be disabled" in body["error"]
+        assert "could not record the disable" in body["error"]
+
+    @pytest.mark.asyncio
     async def test_hook_failure_becomes_a_warning_not_a_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -700,7 +729,11 @@ class TestRecordReadsRunOffTheLoop:
             open_reads, reads[:] = list(reads), []
             assert (await client.post(f"/api/apps/{APP}/disable")).status == 200
             disable_reads = list(reads)
-        assert enable_reads == [("get_app", False), ("app_enabled_state", False)]
+        assert enable_reads == [
+            ("get_app", False),
+            ("app_enabled_state", False),
+            ("get_app", False),
+        ]
         assert open_reads == [("get_app", False)]
         assert disable_reads == [("get_app", False), ("app_enabled_state", False)]
 

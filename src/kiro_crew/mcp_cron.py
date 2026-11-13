@@ -54,7 +54,7 @@ from kiro_crew.cron_script import (
 )
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
-from kiro_crew.mcp_core import (
+from kiro_crew.mcp_core_parts.identity import (
     _resolve_session_key,
     require_strict_session_key,
     strict_identity_diagnosis,
@@ -150,7 +150,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     if current_caller() is not None or _resolve_session_key():
         # The gateway authenticates the request and resolves its captured session
         # execution before opening the cron store.
-        from kiro_crew.mcp_core import _post
+        from kiro_crew.mcp_core_parts.gateway import _post
 
         session_key, refusal = require_strict_session_key(
             "Cannot identify this cron caller. Reopen the conversation.",
@@ -749,7 +749,10 @@ def _owned_by(jobs: list[CronJob], session_key: str) -> list[CronJob]:
 _AUTO_APPROVAL_OWNER_ONLY = (
     "Error: approval_mode 'auto' can only be turned on by the owner. "
     "Create or update the job without it, then ask the user to turn on "
-    "auto-approve for this job on the Schedule page."
+    "auto-approve for this job: on the Schedule page, open the job, set its "
+    "Approval field to Auto-approve and save; or run "
+    "`kirocrew cron update <job-id> --approval-mode auto`. A later tool edit to "
+    "the job's message, agent, model, schedule, channel or thread turns it off again."
 )
 
 
@@ -761,7 +764,8 @@ _AUTO_RESETTING_FIELDS = frozenset(
 
 _AUTO_APPROVAL_RESET_NOTE = (
     " Auto-approve was turned off because the job changed; ask the user to turn it "
-    "back on for this job on the Schedule page."
+    "back on: on the Schedule page, open the job, set its Approval field to "
+    "Auto-approve and save; or run `kirocrew cron update {job_id} --approval-mode auto`."
 )
 
 
@@ -1216,7 +1220,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         )
         note = _sub_floor_timeout_note(args["timeout_secs"]) if "timeout_secs" in args else ""
         if was_auto:
-            note += _AUTO_APPROVAL_RESET_NOTE
+            note += _AUTO_APPROVAL_RESET_NOTE.format(job_id=updated.id)
         note += _never_fires_note(updated)
         return f"Updated job: {updated.id} ({updated.name}) [{sched_str}]{caveat}{note}"
 

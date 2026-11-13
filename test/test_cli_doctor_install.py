@@ -62,6 +62,29 @@ class TestPathLauncherOwnership:
         assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
         assert str(via_link) not in out
 
+    def test_the_crew_home_forwarder_counts_as_this_install(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """An agent shell on Windows finds ``kirocrew-bin\\kirocrew.cmd`` first."""
+        from kiro_crew.env_own_kirocrew import windows_forwarder
+
+        exe = tmp_path / "install" / "Scripts" / "kirocrew.cmd"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        forwarder = tmp_path / "crew" / "kirocrew-bin" / "kirocrew.cmd"
+        forwarder.parent.mkdir(parents=True)
+        body = windows_forwarder(str(exe))
+        assert body is not None
+        forwarder.write_bytes(body)
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda c, **kw: str(forwarder))
+        monkeypatch.setattr("kiro_crew.agent._resolve_kirocrew_bin", lambda: str(exe))
+
+        cli_doctor._doctor_path_launcher()
+
+        out = capsys.readouterr().out
+        assert f"kirocrew CLI: ✅ {os.path.realpath(exe)}" in out
+        assert "different install" not in out
+
     def test_divergent_launcher_names_both_paths(self, monkeypatch, tmp_path, capsys) -> None:
         wheel = tmp_path / "crew-venv" / "bin" / "kirocrew"
         wheel.parent.mkdir(parents=True)

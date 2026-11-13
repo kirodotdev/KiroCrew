@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 from functools import partial
@@ -806,6 +807,38 @@ async def add_source(request: web.Request) -> web.Response:
     if existing:
         return _source_exists_response(source_type, existing["id"])
 
+    # A folder typed with a trailing separator or a "." segment names the same
+    # directory as its plain spelling, but the check above matches spellings
+    # exactly. When a row already holds one of those spellings, answer with that
+    # row instead of adding a second one that would ingest the folder again.
+    # The new row keeps the spelling it was given, as before. Lexical only: ".."
+    # is never collapsed, since that can change which directory a symlinked
+    # path names.
+    if source_type in ("local_folder", "obsidian_vault") and probe is not None and probe.is_dir:
+        plain = str(Path(uri))
+        for spelling in dict.fromkeys((plain, plain + os.sep, plain + os.sep + ".")):
+            if spelling == uri:
+                continue
+            same = await asyncio.to_thread(store.get_source_by_uri, spelling)
+            if same:
+                logger.warning(
+                    "Folder source %s is already registered as %s; not adding it again",
+                    uri,
+                    spelling,
+                )
+                # The row's id under "id" too, the key every caller reads: the
+                # md-notebook app confirms the id it gets back, as it does for a
+                # 409, and the Knowledge tab's follow-up sync is a no-op for a
+                # folder (its connector never reports changes; the watcher
+                # scans it).
+                return web.json_response(
+                    {
+                        "id": same["id"],
+                        "status": "exists",
+                        "warning": f"This folder is already a source ({spelling}).",
+                    }
+                )
+
     # The name every insert below stores, resolved once the uri is final; a
     # blank name falls back to the uri. Only a bedrock_kb name is cut, and it
     # is cut rather than refused: the search reads those rows through
@@ -823,6 +856,18 @@ async def add_source(request: web.Request) -> web.Response:
         from kiro_crew.platform import redact_via_context
 
         stored_name = redact_via_context(stored_name)[:bedrock_name_cap]
+    # JSON allows escaped lone surrogates; UTF-8, which SQLite binds the name
+    # as, does not. Every path below that answers 2xx inserts it.
+    try:
+        stored_name.encode("utf-8")
+    except UnicodeEncodeError:
+        return web.json_response(
+            {
+                "error": "name contains characters that cannot be encoded",
+                "code": "text_not_encodable",
+            },
+            status=400,
+        )
 
     # Folder sources: discovery walk + pending_confirmation (no auto-scan)
     if source_type in ("local_folder", "obsidian_vault"):
@@ -1026,6 +1071,18 @@ async def rename_source(request: web.Request) -> web.Response:
         if len(name) > _MAX_SOURCE_NAME_LEN:
             return web.json_response(
                 {"error": f"name must be {_MAX_SOURCE_NAME_LEN} characters or fewer"}, status=400
+            )
+        # JSON allows escaped lone surrogates; UTF-8, which SQLite binds the
+        # name as, does not.
+        try:
+            name.encode("utf-8")
+        except UnicodeEncodeError:
+            return web.json_response(
+                {
+                    "error": "name contains characters that cannot be encoded",
+                    "code": "text_not_encodable",
+                },
+                status=400,
             )
     if patterns is not None:
         if row["source_type"] not in ("local_folder", "obsidian_vault"):

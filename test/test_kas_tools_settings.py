@@ -30,6 +30,15 @@ def _spec(**over):
     return base
 
 
+@pytest.fixture
+def fail_closed_web_fetch(monkeypatch):
+    """``agent.kas_fail_closed_web_fetch_blocked`` on, at both readers."""
+    from kiro_crew.acp import kas_permissions, kas_unread_commands
+
+    monkeypatch.setattr(kas_permissions, "fails_closed_on_uncarried_blocked", lambda: True)
+    monkeypatch.setattr(kas_unread_commands, "fails_closed_on_uncarried_blocked", lambda: True)
+
+
 class TestRegexToGlob:
     @pytest.mark.parametrize(
         ("regex", "glob"),
@@ -184,10 +193,40 @@ class TestTranslation:
         assert _lost({"fs_write": {"fallbackAction": "ask-me"}}) == ["fs_write.fallbackAction"]
 
     def test_web_fetch_blocked_matches_the_host_only(self):
-        settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", r"https://evil\.com/.*"]}}
+        settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", r".*evil\.com.*"]}}
+        assert _rules(settings) == [
+            {
+                "capability": "web_fetch",
+                "match": ["*pastebin.com*", "*evil.com*"],
+                "effect": "deny",
+            }
+        ]
+        assert _lost(settings) == []
+
+    @pytest.mark.parametrize(
+        "uncarried",
+        [r"https://evil\.com/.*", r"evil\.(com|net)", "x" * 2000],
+        ids=["whole-url", "regex-syntax", "over-long"],
+    )
+    def test_by_default_an_uncarried_blocked_entry_adds_no_rule(self, uncarried):
+        """Off by default: the entry is named, the carried host deny still travels."""
+        settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", uncarried]}}
         assert _rules(settings) == [
             {"capability": "web_fetch", "match": ["*pastebin.com*"], "effect": "deny"}
         ]
+        assert _lost(settings) == ["web_fetch.blocked"]
+
+    @pytest.mark.parametrize(
+        "uncarried",
+        [r"https://evil\.com/.*", r"evil\.(com|net)", "x" * 2000],
+        ids=["whole-url", "regex-syntax", "over-long"],
+    )
+    def test_opted_in_an_uncarried_blocked_entry_denies_every_fetch(
+        self, uncarried, fail_closed_web_fetch
+    ):
+        """``agent.kas_fail_closed_web_fetch_blocked`` on: one deny over "*"."""
+        settings = {"web_fetch": {"blocked": [r".*pastebin\.com.*", uncarried]}}
+        assert _rules(settings) == [{"capability": "web_fetch", "match": ["*"], "effect": "deny"}]
         assert _lost(settings) == ["web_fetch.blocked"]
 
     def test_an_allow_list_past_the_rule_bound_never_sinks_the_denies(self):
@@ -378,3 +417,18 @@ class TestNotice:
         """goose and opencode fire spec hooks too, but never receive the rules."""
         spec = _spec(toolsSettings={"read": {"deniedPaths": ["x"]}})
         assert spec_keys_without_carrier(spec) == ["toolsSettings"]
+
+
+@pytest.mark.parametrize(
+    ("stored", "on"), [(True, True), (False, False), ("true", False), (None, False)]
+)
+def test_fail_closed_is_read_from_the_agent_config(tmp_path, _floor_monkeypatch, stored, on):
+    """Only a JSON ``true`` under ``agent`` turns the fail-closed deny on."""
+    import json
+
+    from kiro_crew.acp.kas_unread_commands import fails_closed_on_uncarried_blocked
+
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    agent = {} if stored is None else {"kas_fail_closed_web_fetch_blocked": stored}
+    (tmp_path / "config.json").write_text(json.dumps({"agent": agent}), encoding="utf-8")
+    assert fails_closed_on_uncarried_blocked() is on

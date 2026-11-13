@@ -53,6 +53,21 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
   // Every one is GOVERNED: each id is also in `settingsSearchCore.DECISIONS_SETTING_IDS`,
   // so a search that KNOWS `capabilities.decisions` is denied offers none of them, and a
   // user with the feature available can still find the switch they are looking for.
+  // The hosted provider's API key. It REPLACES the entry extracted from the key field
+  // only to anchor the link on that provider's entry in the picker rather than on the
+  // field, which is drawn once the reader chooses the entry: the link lands on the
+  // entry and highlights it, and opening it is the reader's own pick. Governed, like
+  // the three below (`DECISIONS_SETTING_IDS`).
+  {
+    id: 'developer.jev-api-key',
+    labelKey: 'pages.developer.featurePreviewsTab.decisions_api_key_label',
+    descriptionKey: 'pages.developer.featurePreviewsTab.decisions_api_key_desc',
+    tab: 'developer',
+    params: { sub: 'feature-previews' },
+    type: 'input',
+    occurrence: 1,
+    settingId: 'developer.jev-api-key',
+  },
   {
     id: 'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
     labelKey: 'pages.developer.featurePreviewsTab.decisions_tool_args',
@@ -188,6 +203,27 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     tab: 'about',
     type: 'buttonGroup',
     occurrence: 1,
+  },
+  {
+    // About itself, so "version" or "about" finds the page. The anchor is the
+    // install card's version chip (`data-setting-label` in AboutPanel.tsx).
+    id: 'about.version',
+    labelKey: 'pages.settings.aboutPanel.version_label',
+    descriptionKey: 'settings.tabs.about.description',
+    tab: 'about',
+    // Read-only; no primitive fits, and the type only steers the icon.
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    // The release notes section at the foot of About (ReleasesPanel.tsx carries
+    // the `data-setting-label` anchor). `release=notes` scrolls to and focuses it.
+    id: 'about.release-notes',
+    labelKey: 'pages.settings.releases.section_label',
+    tab: 'about',
+    type: 'select',
+    occurrence: 1,
+    params: { release: 'notes' },
   },
   {
     // Per-channel notification mute + priority overrides: rows are fetched at
@@ -377,6 +413,9 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     // Managed credential slots are server-provided, so the shared SecretField
     // label is dynamic at extraction time. These entries index the two fixed
     // integration labels and highlight the matching runtime SecretField.
+    // With the Secrets vault redesign preview on, SecretsPanel opens the slot's
+    // pane for these ids itself (SEARCH_PANE_KINDS): the vault's names are not
+    // a fixed sub-page list the UI index could carry.
     id: 'secrets.wakatime-api-key',
     labelKey: 'settings.secrets.wakatime_api_key_label',
     descriptionKey: 'settings.secrets.wakatime_api_key_description',

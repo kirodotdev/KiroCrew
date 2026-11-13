@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, act } from '@testing-library/react'
+import { render, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -13,9 +13,9 @@ import notificationsReducer from '../store/notificationsSlice'
 
 /* The gateway can prepare an assistant message for a slot outside any turn
  * (the warm task brief's opener, then a background model call). The slots
- * frame says so with `preparing`, and the pane shows the SAME working
- * indicator a turn shows until a frame drops it. It is not a turn: the
- * composer stays idle so a send is never queued behind it. */
+ * frame says so with `preparing`, and the pane shows a pending reply bubble
+ * holding the caption until a frame drops it. It is not a turn: the composer
+ * stays idle so a send is never queued behind it. */
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -54,6 +54,9 @@ import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
 const SLOT = 'member-radar'
+// ChatPane -> PreparingReplyBubble -> React.lazy(PreparingReplyBubbleView): the first
+// wait on the bubble includes that chunk's import, slow under coverage load.
+const LAZY_BUBBLE_TIMEOUT_MS = 5000
 // An earlier, ordinary row: the catch-up has no separate opener any more.
 const OPENER = { role: 'assistant', content: 'The fix is in review.', cls: 'msg msg-a', ts: '2026-10-21T10:00:00Z' }
 
@@ -97,29 +100,28 @@ beforeEach(() => {
 })
 
 describe('a message prepared outside a turn', () => {
-  it("shows the mate's typing bubble while preparing, and drops it with the frame that clears it", async () => {
+  it("shows the caption inside a reply bubble while preparing, and drops it with the frame that clears it", async () => {
     const store = makeStore(true)
     const view = renderPane(store, true)
-    const line = await view.findByTestId('crewmate-live-activity')
-    expect(line.dataset.activity).toBe('working')
-    // The caption names what is coming; the finished message replaces it.
-    expect(line).toHaveTextContent('Preparing your catch-up…')
-    expect(view.getByTestId('crewmate-typing-bubble').dataset.shown).toBe('true')
+    const bubble = await view.findByTestId('chat-pane-preparing-catch-up', undefined, { timeout: LAZY_BUBBLE_TIMEOUT_MS })
+    // The caption sits in the bubble the welcome lands in, not under it.
+    expect(bubble.querySelector('.message-bubble')).toHaveTextContent('Preparing your catch-up…')
+    expect(view.queryByTestId('crewmate-live-activity')).toBeNull()
     // Not a turn: a send now goes straight through, never queued behind it.
     expect(selectComposerBusy(store.getState(), SLOT)).toBe(false)
 
     act(() => { store.dispatch(sseSlots([row(false)] as Parameters<typeof sseSlots>[0])) })
-    expect(view.queryByTestId('crewmate-live-activity')).toBeNull()
+    await waitFor(() => expect(view.queryByTestId('chat-pane-preparing-catch-up')).toBeNull())
   })
 
-  it('an ordinary pane shows the chat footer while preparing', async () => {
+  it('an ordinary pane shows the bubble, not a running footer, while preparing', async () => {
     const store = makeStore(true)
     const view = renderPane(store, false)
-    expect(await view.findByTestId('chat-footer')).not.toBeNull()
-    expect(view.getByTestId('chat-pane-preparing-catch-up')).toHaveTextContent('Preparing your catch-up…')
-    act(() => { store.dispatch(sseSlots([row(false)] as Parameters<typeof sseSlots>[0])) })
+    const bubble = await view.findByTestId('chat-pane-preparing-catch-up', undefined, { timeout: LAZY_BUBBLE_TIMEOUT_MS })
+    expect(bubble.querySelector('.message-bubble')).toHaveTextContent('Preparing your catch-up…')
     expect(view.queryByTestId('chat-footer')).toBeNull()
-    expect(view.queryByTestId('chat-pane-preparing-catch-up')).toBeNull()
+    act(() => { store.dispatch(sseSlots([row(false)] as Parameters<typeof sseSlots>[0])) })
+    await waitFor(() => expect(view.queryByTestId('chat-pane-preparing-catch-up')).toBeNull())
   })
 
   it("shows the gateway's caption naming what is checked, in both pane kinds", async () => {
@@ -130,10 +132,10 @@ describe('a message prepared outside a turn', () => {
       return store
     }
     const mate = renderPane(withCaption(), true)
-    expect(await mate.findByTestId('crewmate-live-activity')).toHaveTextContent(caption)
+    expect(await mate.findByTestId('chat-pane-preparing-catch-up', undefined, { timeout: LAZY_BUBBLE_TIMEOUT_MS })).toHaveTextContent(caption)
     mate.unmount()
     const pane = renderPane(withCaption(), false)
-    expect(await pane.findByTestId('chat-pane-preparing-catch-up')).toHaveTextContent(caption)
+    expect(await pane.findByTestId('chat-pane-preparing-catch-up', undefined, { timeout: LAZY_BUBBLE_TIMEOUT_MS })).toHaveTextContent(caption)
   })
 
   it('a pane opened on a slot that is not preparing shows no indicator', async () => {
@@ -141,6 +143,6 @@ describe('a message prepared outside a turn', () => {
     // work that already ended.
     const view = renderPane(makeStore(false), true)
     await view.findByText(OPENER.content)
-    expect(view.queryByTestId('crewmate-live-activity')).toBeNull()
+    expect(view.queryByTestId('chat-pane-preparing-catch-up')).toBeNull()
   })
 })

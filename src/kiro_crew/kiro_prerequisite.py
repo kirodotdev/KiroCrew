@@ -202,6 +202,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_process import (  # noqa: F401
         _MAX_CAPTURED_OUTPUT,
+        _NOT_IN_CREW_SANDBOX_ERROR,
         _PROCESS_GROUP_SUPERVISOR,
         _PROCESS_GROUP_SUPERVISOR_CODE,
         _PROCESS_GROUP_SUPERVISOR_ERROR,
@@ -364,6 +365,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         resource_limit_supervisor_argv,
         sandboxed_spawn_argv,
         shielded_prepare_off_loop,
+        wrapped_by_crew_sandbox,
     )
     from kiro_crew.security import (  # noqa: F401
         redact,

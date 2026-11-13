@@ -41,6 +41,7 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 __all__ = [
     "HarnessAdapter",
+    "HarnessReadBack",
     "LaunchAdapter",
     "NotificationAliases",
     "ProcessAdapter",
@@ -122,6 +123,36 @@ class SpawnContext:
     gate nonce, a resolved adapter version)."""
 
 
+@dataclass
+class HarnessReadBack:
+    """What a host's read-back of its own resolved config found, for one spawn.
+
+    A :class:`ProcessAdapter` owns one, and the session reads it through
+    :meth:`ProcessSession._harness_read_back` for as long as it keeps that adapter.
+    Every default is "nothing known", which is also the answer for a session that
+    keeps no adapter.
+    """
+
+    denies_in_force: frozenset[str] | None = None
+    """Crew's deny rules the read-back found in force, handed to every later
+    projection so it withholds a server whose rule is not. ``None`` until this spawn
+    has seeded any."""
+
+    denies_unenforced: frozenset[str] = frozenset()
+    """The seeded deny rules the read-back found outranked by another rule."""
+
+    native_mounts: frozenset[str] = frozenset()
+    """Servers the host mounts from its own config."""
+
+    config_mcp_servers: tuple[str, ...] = ()
+    """MCP server names in the host's own config that it rewrites, so a fused tool
+    title from one of them splits back exactly."""
+
+    disabled_servers: frozenset[str] = frozenset()
+    """Servers switched off in Crew, recorded by the projection, which the read-back
+    refuses when the host mounts one itself."""
+
+
 class ProcessSession(Protocol):
     """What a :class:`ProcessAdapter` may read, write and ask of the session it launches.
 
@@ -129,7 +160,8 @@ class ProcessSession(Protocol):
     carrying these members. The attributes are the session's own state, named as the
     session names them, because the session's turn-time code reads them after the
     launch: the gate tripwires read the nonces, the settings writer reads the
-    adapter version, the routing check reads the config's MCP server names.
+    adapter version. A config read-back is the adapter's own
+    (:class:`HarnessReadBack`), reached through :meth:`_harness_read_back`.
     """
 
     _spawn_work_dir: str
@@ -138,18 +170,16 @@ class ProcessSession(Protocol):
     _model: str
     _agent_version_read: bool
     _claude_adapter_disk_version: str
-    _opencode_config_mcp_servers: tuple[str, ...]
     _session_harness_deny_rules: tuple[str, ...]
     _session_mcp_unhonoured: frozenset[str]
-    _opencode_denies_in_force: frozenset[str] | None
-    _opencode_denies_unenforced: frozenset[str]
-    _opencode_native_mounts: frozenset[str]
+    _mimocode_governed_stop: tuple[str, str] | None
     _session_mcp_cache: list[dict[str, Any]] | None
     _pi_gate_nonce: str
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
     _deepseek_gate_nonce: str
+    _unasked_shell_tripwire: bool
     _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
     _launch_mcp_servers: list[Any] | None
@@ -175,6 +205,30 @@ class ProcessSession(Protocol):
 
     def _session_mcp_servers(self) -> list[dict[str, Any]]:
         """The warmed array, in memory: empty for a harness outside the array set."""
+
+    def _harness_read_back(self) -> HarnessReadBack:
+        """The kept adapter's :class:`HarnessReadBack`, or an empty one when none is kept.
+
+        The session keeps its adapter before :meth:`ProcessAdapter.resolve_spawn`
+        runs, so what the launch records here is what the session reads after it."""
+
+    def _opencode_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The opencode session's ``mcpServers`` entries."""
+
+    def _mimocode_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The MiMo Code session's ``mcpServers`` entries."""
+
+    def _goose_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The goose session's ``mcpServers`` entries."""
+
+    def _deepseek_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The DeepSeek Harness session's ``mcpServers`` entries."""
+
+    def _copilot_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The Copilot CLI session's ``mcpServers`` entries."""
+
+    def _pi_session_mcp_servers(self) -> list[dict[str, Any]]:
+        """The pi session's ``mcpServers`` entries."""
 
     def _pooled_mcp_servers(self) -> list[dict[str, Any]]:
         """The pooled broker stubs the session/new array appends (blocking)."""
@@ -507,7 +561,23 @@ class ProcessAdapter(LaunchAdapter):
     so the two halves cannot disagree about which spawn they describe. Every host
     error is an ``AcpError`` -- the type ``AcpClient.ensure_ready`` ladders on -- and
     a missing component's carries the command that installs it.
+
+    The session keeps the instance for the life of its process and asks it the
+    questions below; ``AcpClient._reset_state`` drops it with the process.
     """
+
+    def __init__(self) -> None:
+        #: What this spawn's read-back of the host's own config found. Empty for a
+        #: host that reads nothing back.
+        self.read_back = HarnessReadBack()
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """This host's entries in the session's ``session/new`` / ``session/load`` array.
+
+        In-memory reads of what the spawn warmed, never an executor hop: the call
+        site is shared with kiro-cli. The default adds no server.
+        """
+        return []
 
     async def prepare_spawn_env(
         self,

@@ -730,6 +730,7 @@ class TestParentReadsNothingOnFaith:
 
 def test_helpers_build_a_parseable_pdf_without_the_child():
     """The fixture is what the tests say it is: a real one-page PDF."""
-    pdfplumber = pytest.importorskip("pdfplumber")
+    import pdfplumber
+
     with pdfplumber.open(io.BytesIO(text_pdf("fixture check"))) as pdf:
         assert [p.extract_text() for p in pdf.pages] == ["fixture check"]

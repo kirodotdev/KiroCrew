@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import pytest
+from named_cases_helpers import named_cases
 
 from kiro_crew.history import ConversationLog
 from kiro_crew.messaging import sessions_view as sv
@@ -31,83 +32,106 @@ class TestEachForm:
     @pytest.mark.parametrize(
         "raw, plain",
         [
-            # <url|label> -> label
-            ("see <https://example.com/a_b|the doc>", "see the doc"),
-            # Slack's auto-link labels a URL with itself: read like a bare URL.
-            (_RAW, "how is kirodotdev/KiroCrew#21964 looking"),
-            # bare <url>: a GitHub issue or PR is owner/repo#N ...
-            ("<https://github.com/o/r/issues/12>", "o/r#12"),
-            ("<https://github.com/o/r/pull/7/files>", "o/r#7"),
-            ("<https://www.github.com/o/r/pull/7>", "o/r#7"),
-            # ... anything else host + a short path
-            ("<https://example.com/docs/guide>", "example.com/docs/guide"),
-            ("<https://example.com/a/b/c/d?x=1>", "example.com/a/b/…"),
-            ("<https://example.com>", "example.com"),
-            ("<https://github.com/o/r>", "github.com/o/r"),
-            ("<mailto:a@example.com|a@example.com>", "a@example.com"),
-            # channel refs
-            ("in <#C123|general>", "in #general"),
-            ("in <#C123>", "in #channel"),
-            # mentions: a label when Slack sent one, else never a raw id
-            ("ask <@U123ABC>", "ask @someone"),
-            ("ask <@U123ABC|kyle>", "ask @kyle"),
-            ("ask <@W9>", "ask @someone"),
-            # broadcasts and other specials
-            ("<!here> deploy", "@here deploy"),
-            ("<!channel> <!everyone>", "@channel @everyone"),
-            ("<!subteam^S1|@devs> ping", "@devs ping"),
-            ("<!subteam^S1> ping", "@team ping"),
-            ("on <!date^1392734382^{date}|Feb 18>", "on Feb 18"),
-            # entities, unescaped after the brackets are read
-            ("a &amp; b &lt;tag&gt;", "a & b <tag>"),
-            # ... unless the decoded text would be read as a link next time
-            ("&lt;https://x.com&gt;", "&lt;https://x.com&gt;"),
-            # anything else in brackets is left as written
-            ("x <not a link> y", "x <not a link> y"),
-            # whitespace folds
-            ("two\nlines  here", "two lines here"),
-            # a closed label that merely starts the URL is the person's label
-            ("<https://github.com/o/r|github>", "github"),
-            ("<https://github.com/o/r/issues/5|h>", "h"),
-            # an empty label reads like a bare URL
-            ("<https://github.com/o/r/issues/5|>", "o/r#5"),
-            # unknown specials and non-Slack brackets stay as written
-            ("<!-- note --> keep", "<!-- note --> keep"),
-            ("<!foo> x", "<!foo> x"),
-        ],
-    )
-    def test_reads_like_slack_shows_it(self, raw: str, plain: str) -> None:
-        assert slack_title_text(raw) == plain
-
-    @pytest.mark.parametrize(
-        "raw, plain",
-        [
-            # A title made of only a link.
-            (f"<{_GH}>", "kirodotdev/KiroCrew#21964"),
-            ("<https://example.com/spec|Q3 spec>", "Q3 spec"),
-        ],
-    )
-    def test_a_title_that_is_only_a_link(self, raw: str, plain: str) -> None:
-        assert slack_title_text(raw) == plain
-
-    @pytest.mark.parametrize(
-        "stored, plain",
-        [
-            # What an earlier build persisted: cut inside the auto-link label.
-            (_STORED, "how is kirodotdev/KiroCrew#21964"),
-            # Cut inside a real label, and inside the URL itself.
-            ("read <https://example.com/x|the design do", "read the design do…"),
-            (
-                "help with this one <https://github.com/kirodotdev/KiroCrew/iss",
-                "help with this one github.com/kirodotdev/KiroCrew/…",
+            *named_cases(
+                "test_reads_like_slack_shows_it",
+                "raw, plain",
+                [
+                    # <url|label> -> label
+                    ("see <https://example.com/a_b|the doc>", "see the doc"),
+                    # Slack's auto-link labels a URL with itself: read like a bare URL.
+                    (_RAW, "how is kirodotdev/KiroCrew#21964 looking"),
+                    # bare <url>: a GitHub issue or PR is owner/repo#N ...
+                    ("<https://github.com/o/r/issues/12>", "o/r#12"),
+                    ("<https://github.com/o/r/pull/7/files>", "o/r#7"),
+                    ("<https://www.github.com/o/r/pull/7>", "o/r#7"),
+                    # ... anything else host + a short path
+                    ("<https://example.com/docs/guide>", "example.com/docs/guide"),
+                    ("<https://example.com/a/b/c/d?x=1>", "example.com/a/b/…"),
+                    ("<https://example.com>", "example.com"),
+                    ("<https://github.com/o/r>", "github.com/o/r"),
+                    ("<mailto:a@example.com|a@example.com>", "a@example.com"),
+                    # channel refs
+                    ("in <#C123|general>", "in #general"),
+                    ("in <#C123>", "in #channel"),
+                    # mentions: a label when Slack sent one, else never a raw id
+                    ("ask <@U123ABC>", "ask @someone"),
+                    ("ask <@U123ABC|kyle>", "ask @kyle"),
+                    ("ask <@W9>", "ask @someone"),
+                    # broadcasts and other specials
+                    ("<!here> deploy", "@here deploy"),
+                    ("<!channel> <!everyone>", "@channel @everyone"),
+                    ("<!subteam^S1|@devs> ping", "@devs ping"),
+                    ("<!subteam^S1> ping", "@team ping"),
+                    ("on <!date^1392734382^{date}|Feb 18>", "on Feb 18"),
+                    # entities, unescaped after the brackets are read
+                    ("a &amp; b &lt;tag&gt;", "a & b <tag>"),
+                    # ... unless the decoded text would be read as a link next time
+                    ("&lt;https://x.com&gt;", "&lt;https://x.com&gt;"),
+                    # anything else in brackets is left as written
+                    ("x <not a link> y", "x <not a link> y"),
+                    # whitespace folds
+                    ("two\nlines  here", "two lines here"),
+                    # a closed label that merely starts the URL is the person's label
+                    ("<https://github.com/o/r|github>", "github"),
+                    ("<https://github.com/o/r/issues/5|h>", "h"),
+                    # an empty label reads like a bare URL
+                    ("<https://github.com/o/r/issues/5|>", "o/r#5"),
+                    # unknown specials and non-Slack brackets stay as written
+                    ("<!-- note --> keep", "<!-- note --> keep"),
+                    ("<!foo> x", "<!foo> x"),
+                ],
             ),
-            ("ping <@U12", "ping @someone"),
-            # Cut right after the bar: the URL is whole, the label never began.
-            ("see <https://github.com/o/r/issues/5|", "see o/r#5"),
+            *named_cases(
+                "test_a_title_that_is_only_a_link",
+                "raw, plain",
+                [
+                    # A title made of only a link.
+                    (f"<{_GH}>", "kirodotdev/KiroCrew#21964"),
+                    ("<https://example.com/spec|Q3 spec>", "Q3 spec"),
+                ],
+            ),
+            *named_cases(
+                "test_escaped_text_never_becomes_a_construct",
+                "raw, plain",
+                [
+                    # A person typed these as text in Slack; they stay text rather than
+                    # turning into a broadcast or vanishing.
+                    ("use &lt;!here&gt; ok", "use &lt;!here&gt; ok"),
+                    ("&lt;!-- note --&gt; keep", "<!-- note --> keep"),
+                    ("a &amp;lt; b", "a &amp;lt; b"),
+                ],
+            ),
+            *named_cases(
+                "test_a_construct_cut_open_by_a_truncation",
+                "stored, plain",
+                [
+                    # What an earlier build persisted: cut inside the auto-link label.
+                    (_STORED, "how is kirodotdev/KiroCrew#21964"),
+                    # Cut inside a real label, and inside the URL itself.
+                    ("read <https://example.com/x|the design do", "read the design do…"),
+                    (
+                        "help with this one <https://github.com/kirodotdev/KiroCrew/iss",
+                        "help with this one github.com/kirodotdev/KiroCrew/…",
+                    ),
+                    ("ping <@U12", "ping @someone"),
+                    # Cut right after the bar: the URL is whole, the label never began.
+                    ("see <https://github.com/o/r/issues/5|", "see o/r#5"),
+                ],
+            ),
+            *named_cases(
+                "test_cut_labels_read_as_a_person_wrote_them",
+                "stored, plain",
+                [
+                    # An earlier dashboard fallback already ended the cut label with "…".
+                    ("see <https://github.com/o/r/issues/1|github.com/o/r/is…", "see o/r#1"),
+                    # A short cut-off word is the person's label, not the URL's start.
+                    ("ask <https://help.x.com|help", "ask help…"),
+                ],
+            ),
         ],
     )
-    def test_a_construct_cut_open_by_a_truncation(self, stored: str, plain: str) -> None:
-        assert slack_title_text(stored) == plain
+    def test_a_title_reads_as_slack_shows_it(self, raw: str, plain: str) -> None:
+        assert slack_title_text(raw) == plain
 
     def test_plain_text_is_unchanged(self) -> None:
         assert slack_title_text("Fix Kiro Crew issue 21964") == "Fix Kiro Crew issue 21964"
@@ -164,20 +188,6 @@ _CORPUS = [
 def test_converting_twice_changes_nothing(raw: str) -> None:
     once = slack_title_text(raw)
     assert slack_title_text(once) == once
-
-
-@pytest.mark.parametrize(
-    "raw, plain",
-    [
-        # A person typed these as text in Slack; they stay text through any
-        # number of passes rather than turning into a broadcast or vanishing.
-        ("use &lt;!here&gt; ok", "use &lt;!here&gt; ok"),
-        ("&lt;!-- note --&gt; keep", "<!-- note --> keep"),
-        ("a &amp;lt; b", "a &amp;lt; b"),
-    ],
-)
-def test_escaped_text_never_becomes_a_construct(raw: str, plain: str) -> None:
-    assert slack_title_text(raw) == plain
 
 
 def test_a_saved_converted_title_relists_unchanged(tmp_path: Path) -> None:
@@ -366,7 +376,7 @@ def test_a_non_string_slack_title_does_not_break_the_listing(tmp_path: Path) -> 
     assert "dashboard_chat-2" in titles
 
 
-# ── Round two: settled output, cut labels, imported threads ──────────────────
+# ── Round two: settled output, imported threads ──────────────────────────────
 
 
 def test_converting_twice_changes_nothing_for_any_input() -> None:
@@ -401,19 +411,6 @@ def test_converting_twice_changes_nothing_for_any_input() -> None:
         raw = "".join(rng.choice(atoms) for _ in range(rng.randint(1, 14)))
         once = slack_title_text(raw)
         assert slack_title_text(once) == once, raw
-
-
-@pytest.mark.parametrize(
-    "stored, plain",
-    [
-        # An earlier dashboard fallback already ended the cut label with "…".
-        ("see <https://github.com/o/r/issues/1|github.com/o/r/is…", "see o/r#1"),
-        # A short cut-off word is the person's label, not the URL's start.
-        ("ask <https://help.x.com|help", "ask help…"),
-    ],
-)
-def test_cut_labels_read_as_a_person_wrote_them(stored: str, plain: str) -> None:
-    assert slack_title_text(stored) == plain
 
 
 def test_a_row_copied_from_a_slack_thread_titles_as_plain_text() -> None:

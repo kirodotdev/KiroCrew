@@ -394,10 +394,14 @@ class OrphanStallMonitor(ManagerComponent):
             if coordinator is None:
                 return
             callbacks: list[Any] = []
+            # A run still parking counts: its report can reach the writer thread
+            # ahead of this tick before ``yield_slot`` has set ``_slot_released``.
             live_waiters = frozenset(
                 (task_id, info._taskq_generation)
                 for task_id, info in self._manager._agents.items()
-                if not info.done and not info.reaped and info._slot_released
+                if not info.done
+                and not info.reaped
+                and (info._slot_released or info._dependency_parking)
             )
             woken = await store.run(
                 coordinator.tick, callbacks=callbacks, live_waiters=live_waiters

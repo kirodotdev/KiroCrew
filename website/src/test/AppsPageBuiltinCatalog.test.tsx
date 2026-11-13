@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 // --- Mocks (same shape as AppsPageDiscover.test.tsx) -------------------------
@@ -52,14 +54,16 @@ const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
 function renderPage() {
   return render(
-    <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/apps']}>
-        <Routes>
-          <Route path="/apps" element={<AppsPage />} />
-          <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
-        </Routes>
-      </MemoryRouter>
-    </QueryClientProvider>,
+    <Provider store={createConnectedTestStore()}>
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={['/apps']}>
+          <Routes>
+            <Route path="/apps" element={<AppsPage />} />
+            <Route path="/apps/detail/:name" element={<div data-testid="detail-route" />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 

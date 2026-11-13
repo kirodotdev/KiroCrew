@@ -617,9 +617,24 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
     from kiro_crew.cron import job_zone_name
 
+    action = getattr(args, "cron_action", None)
+    if action not in (
+        "list",
+        "adopt",
+        "add",
+        "update",
+        "remove",
+        "pause",
+        "resume",
+        "trigger",
+        "preview",
+    ):
+        # Before the service below, which creates cron-history/ on a fresh data home.
+        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        return
+
     svc = CronService(base_dir=config_dir())
 
-    action = getattr(args, "cron_action", None)
     if action == "list":
         # Read-only on folders: the filter resolves an EXISTING folder and never
         # creates one, and an unknown or ambiguous reference is an error rather
@@ -789,8 +804,12 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             if val is not None:
                 if field == "channel":
 
-                    val = val.strip() or None
-                    if val is None:
+                    val = val.strip()
+                    if not val:
+                        # Blank clears the delivery channel, as cron_update does,
+                        # and the thread, which belongs to the channel it was in.
+                        kwargs[field] = ""
+                        kwargs["thread_ts"] = ""
                         continue
                     if len(val) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(val):
                         print(
@@ -825,6 +844,14 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         # ``--every 0`` and a blank ``--cron`` name no schedule, and the store
         # treats an empty schedule value as "unchanged". Say so instead of
         # reporting an update that did not happen; the other fields still apply.
+        # A blank ``--name`` or ``--message`` is kept as it was by the store too;
+        # warn, and leave the update (and its exit code) as it is.
+        for text_field in ("name", "message"):
+            if text_field in kwargs and not kwargs[text_field]:
+                print(
+                    f"Warning: an empty --{text_field} leaves the {text_field} unchanged",
+                    file=sys.stderr,
+                )
         blank_schedule = False
         if "every_secs" in kwargs and kwargs["every_secs"] == 0:
             del kwargs["every_secs"]
@@ -985,9 +1012,6 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
 
     elif action == "preview":
         _cron_preview(args)
-
-    else:
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
 
 
 def _cron_preview(args: argparse.Namespace) -> None:

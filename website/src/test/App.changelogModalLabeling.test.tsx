@@ -12,7 +12,7 @@
  * a viewport-bounded column wide enough for a real release's section, which does
  * not change width when the full changelog is opened.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { i18nT } from '../i18n/t'
 import { renderWithProviders } from './helpers'
@@ -164,6 +164,13 @@ describe('changelog modal labeling', () => {
   })
 
   it('takes focus on open, keeps Tab inside, and closes on Escape with focus restored', async () => {
+    // The modal opens on mount, so whatever holds focus then is what it hands
+    // focus back to. Without one, the only place left is <body>.
+    const opener = document.createElement('button')
+    opener.textContent = 'opener'
+    document.body.appendChild(opener)
+    opener.focus()
+    onTestFinished(() => opener.remove())
     renderWithProviders(<App />, { route: '/chat', preloadedState: stateFor('0.7.1') })
     const dialog = await screen.findByTestId('changelog-modal')
     // Focus moves in once the dialog's effects have run.
@@ -192,9 +199,8 @@ describe('changelog modal labeling', () => {
 
     fireEvent.keyDown(last, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('changelog-modal')).toBeNull())
-    // Focus goes back to the page, not lost with the unmounted dialog.
-    expect(document.activeElement).not.toBe(document.body)
-    expect(document.body.contains(document.activeElement)).toBe(true)
+    // Focus goes back to what held it before, not lost with the unmounted dialog.
+    expect(document.activeElement).toBe(opener)
   })
 
   it('is sized for a real release and keeps its width when the full changelog opens', async () => {

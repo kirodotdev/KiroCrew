@@ -174,7 +174,7 @@ def test_the_page_names_the_default_on_apps(doc_text: str) -> None:
     on = sorted(
         str(m["displayName"]) for m in _manifests().values() if m.get("defaultEnabled") is True
     )
-    assert on == ["Command Bar", "Task Runner"], (
+    assert on == ["Task Runner"], (
         f"the set of default-enabled shipped apps changed to {on}; update the "
         "'on from a fresh install' sentence in apps.md and this expectation"
     )

@@ -284,6 +284,74 @@ plaintext in a file the agent can read. See [Secrets vault](secrets-vault.md) fo
 the vault refuses the agent, and [Blocked commands](blocked-commands.md) for what
 happens when the agent tries to read one anyway.
 
+## Atlassian organization admin checklist
+
+An Atlassian organization admin can limit which apps may sign in to Atlassian's
+MCP server and what they may do there. With those limits on, an Atlassian
+sign-in from Kiro Crew, or its tool calls, fail until the admin allows this
+install. This section is the list to hand that admin. It mixes two sources, and
+each part says which: what Kiro Crew does (from its source), and what Atlassian
+Administration offers (from Atlassian's docs, not walked by Kiro Crew on a real
+organization).
+
+**1. The redirect address (Kiro Crew).** The Atlassian card shows the address
+this install signs in with, under the warning triangle beside **Connect**. Copy
+it from there. Which address applies depends on what runs the sign-in:
+
+| What runs the sign-in | When | Redirect address | Domain entry the admin needs |
+|---|---|---|---|
+| Kiro Crew itself, local | The **MCP sign-in by Kiro Crew** feature preview (`dashboard.feature_previews.crew_oauth`, which also covers the Atlassian card) is on, chats run on a backend Kiro Crew bridges such as Kiro Agent, and `dashboard.url` is not a public HTTPS address | `http://127.0.0.1:48100/callback` | `http://127.0.0.1:*/**` covers it |
+| Kiro Crew itself, on a gateway with a public HTTPS `dashboard.url` | As above, with `dashboard.url` set to `https://<dashboard host>` | `https://<dashboard host>/api/connections/oauth/callback` | `https://<dashboard host>/**`, its own entry |
+| Kiro CLI or the KAS engine | Every other case | A loopback address whose port that runtime picks at each sign-in | `http://127.0.0.1:*/**` and `http://localhost:*/**` |
+
+**2. What to allow in Atlassian Administration (Atlassian's docs).** Everything
+below lives at [admin.atlassian.com](https://admin.atlassian.com): pick the
+organization, then **Connectors → Atlassian MCP server**.
+
+- **Domains.** The list of redirect patterns allowed to sign in. Atlassian
+  describes `http://localhost:*/**` and `http://127.0.0.1:*/**` as the entries
+  that let local clients finish an OAuth sign-in, which an admin may keep or
+  remove, and an **Allow Atlassian supported domains** switch an admin may turn
+  off. If the entry from the table is missing, the admin adds it with **Add
+  domain**. An `https://` address always needs its own entry; `http://` is
+  accepted only for `localhost` and `127.0.0.1`.
+- **Permissions.** Read, Write and Search, each allowed or blocked per app
+  (Jira, Confluence and others). Allow the ones the agent should use.
+- **Authentication.** OAuth 2.1 is the default and is what Kiro Crew uses. The
+  API token switch does not affect it.
+- **IP allowlist.** Managed elsewhere in Atlassian Administration, not on the MCP
+  server page. If the organization uses one, MCP requests must come from an
+  allowed address. Kiro Crew's requests to Atlassian leave from the machine that
+  runs the gateway, so that machine's public address is the one to allow.
+  Atlassian notes the consent page can still appear from a blocked address; the
+  tool calls then fail.
+
+**3. What the sign-in asks for (Kiro Crew).** When Kiro Crew runs the sign-in
+itself, it asks for every scope Atlassian's server advertises, because
+Atlassian's sign-in challenge names none and the catalogue recommends none. That
+is about 40 scopes today, each shaped `<verb>:<product>:agent-interface`, for
+example `read:jira:agent-interface`, `write:jira:agent-interface`,
+`delete:jira:agent-interface` and `manage:jira:agent-interface`, plus scopes for
+Confluence, Jira Service Management, Bitbucket, Loom, Talent, Assets and more,
+and `offline_access`. The live list is the `scopes_supported` field of
+[Atlassian's resource document](https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp).
+When Kiro CLI or the KAS engine runs the sign-in, that runtime chooses
+the scopes. The scope verbs do not map one to one onto the Permissions tab: the
+tab has Read, Write and Search, while the scopes also say `delete` and `manage`,
+and Atlassian's docs do not say which permission governs those.
+
+**4. When Atlassian refuses.** If Atlassian sends the sign-in back refused with
+`access_denied`, the card says that either the consent was declined or the
+organization's admin does not allow the connection, because that answer means
+either. Whether an admin block arrives that way or on a page of Atlassian's own
+has not been checked on a real organization. The exact messages Atlassian shows,
+and what the admin changes for each, are in
+[Troubleshooting](troubleshooting.md#atlassian-says-access-denied-your-organization-admin).
+
+Atlassian's own pages: [Control Atlassian MCP server settings](https://support.atlassian.com/security-and-access-policies/docs/control-atlassian-rovo-mcp-server-settings/),
+[Configure Atlassian MCP server permissions](https://support.atlassian.com/security-and-access-policies/docs/configure-atlassian-mcp-server-permissions/)
+and [Available Atlassian MCP server domains](https://support.atlassian.com/security-and-access-policies/docs/available-atlassian-rovo-mcp-server-domains/).
+
 ## Health: what a row's badge means
 
 Each row carries the result of a real handshake — Kiro Crew launches the stdio
@@ -432,10 +500,11 @@ env names only, never their values. A row's state is one of:
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
 | **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
 
-A paused row's switch reads off, and pressing it takes you to its approve button
-instead of approving anything. A row that cannot share but still carries a mark has
-**Remove** in place of a switch, which takes the mark off. **Enable all shareable**
-lists the servers it would share by name, and shares them only when you confirm.
+A paused row has no switch. It offers its approve button and **Don't share this
+server**, which takes the mark off and approves nothing. A row that cannot share
+but still carries a mark has **Remove** in place of a switch, which takes the mark
+off. **Enable all shareable** lists the servers it would share by name, and shares
+them only when you confirm.
 
 **Pre-install npm servers** installs each server started with `npx` (or
 `npm exec`) that has Share on and is not paused, ahead of time, so a chat starts it

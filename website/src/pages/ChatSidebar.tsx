@@ -290,7 +290,7 @@ function ChatSidebar({
   const flatView = lane === 'flat'
   const conductorView = lane === 'conductor'
   const {
-    activeFilters, filtersPaused, setAllFiltersPaused, clearAllFilters,
+    activeFilters, pausedFilters, filtersPaused, setAllFiltersPaused, toggleFilterPaused, clearAllFilters,
     filterHiddenFolders, setFilterHiddenFolders, toggleFolderFilter, unhideFolderChain,
     showAllFolders, filterTagIds, toggleTagFilter, clearTagFilter, foldersShelved, setFoldersShelved,
     toggleFoldersShelved, toggleFilter, disableFilter, enableFilter, groupByKind, toggleGroupByKind,
@@ -301,7 +301,7 @@ function ChatSidebar({
     slotsLoaded, workflowActiveSet, automationRunningSet, subagentCounts, subagentStartedCounts, subagentApprovalCounts, unreadSet,
     recentWindowMs, recentAmountDraft, setRecentAmountDraft, recentUnitDraft, selectRecentPreset,
     commitRecentAmount, changeRecentUnit, runningSet, recentSet,
-  } = useSessionStatusFilters({ unreadSlots, activeFilters, filtersPaused, enableFilter, localSlots, disableFilter })
+  } = useSessionStatusFilters({ unreadSlots, activeFilters, pausedFilters, enableFilter, localSlots, disableFilter })
   const creatingSlot = useAppSelector(s => s.chat.creatingSlot)
   const connected = useConnected()
   // Shared Crew creator filter: server-side, so a non-All value swaps the lanes
@@ -491,7 +491,7 @@ function ChatSidebar({
       tags: { resolved: activeTagIds, raw: filterTagIds },
       models: { passes: modelFilterPasses, active: activeModelKeys.size > 0 },
       search: { text: slotFilter, folderMatches: folderNameMatchIds },
-      status: { active: activeFilters, hidden: hiddenFilters, paused: filtersPaused, recentWindowMs },
+      status: { active: activeFilters, hidden: hiddenFilters, paused: pausedFilters, recentWindowMs },
       folders: { hiddenSubtree: filterHiddenSubtree, pinnedSubtree: pinnedFolderSubtree, active: folderFilterActive },
     },
     clears: { tags: clearTagFilter, models: clearModelFilter, search: clearSearch, status: clearAllFilters, folder: clearFolderHide, hides: clearHiddenFilters },
@@ -986,7 +986,7 @@ function ChatSidebar({
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
-    filterSortOpen, filtersPaused, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
+    filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
     folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
@@ -1004,7 +1004,7 @@ function ChatSidebar({
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, resumeAll, revealedContainers,
     revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
-    seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
+    seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused, toggleFilterPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
     setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,

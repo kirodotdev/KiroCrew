@@ -58,7 +58,10 @@ class TestForgetCache:
 
     def test_missing_cache_is_a_no_op(self, mod, monkeypatch, tmp_path):
         monkeypatch.setattr(mod, "_cache_path", lambda: tmp_path / "absent.json")
+        neighbour = tmp_path / "other.json"
+        neighbour.write_text("{}", encoding="utf-8")
         mod.forget_cache()  # must not raise
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["other.json"]
 
     def test_an_unlink_error_never_raises(self, mod, monkeypatch, tmp_path):
         # Same degrade-don't-500 contract as every other disk touch in these
@@ -80,7 +83,9 @@ class TestForgetCache:
 
 
 class _FakeRequest:
-    """Minimal stand-in: neither handler reads anything off the request."""
+    """Minimal stand-in: the listing reads only ``app`` (no ``state``) off the request."""
+
+    app: dict[str, Any] = {}
 
 
 @pytest.fixture()

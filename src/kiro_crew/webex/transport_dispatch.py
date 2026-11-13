@@ -405,6 +405,26 @@ class WebexDispatcher:
         # as if it were a mid-turn instruction.
         route = _route_of(inbound)
         session_key = self._session_key(route)
+        # A reply answering a bridged approval note is decided here and starts no
+        # turn; a re-entered drain was checked already, a stop is never an answer,
+        # and a message carrying a file is content for a turn, not an answer. It
+        # runs before the native intercept, which matches by sender and text
+        # alone: an "approve" in the bridged note's thread answers that note, never
+        # a native prompt open in the same DM.
+        from kiro_crew.webex.bridge_reply import consume_bridged_reply
+
+        if (
+            permitted
+            and interpret_commands
+            and cmd != "stop"
+            and not inbound.file_urls
+            and await consume_bridged_reply(
+                getattr(self, "dashboard_state", None),
+                inbound,
+                lambda note: self._reply(inbound, note),
+            )
+        ):
+            return
         if _APPROVALS.has_pending(self._approval_key(route)):
             answered = await self._maybe_answer_approval(inbound, session_key, permitted=permitted)
             if answered:

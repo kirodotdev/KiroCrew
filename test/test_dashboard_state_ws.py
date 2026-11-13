@@ -1183,7 +1183,9 @@ class TestOwnerSourceStatusTransport:
         # would otherwise receive credential-backed chip status). The enriched
         # list is carried separately in `_slots_list_ws` for the WS path only.
         sse_note = sse_queue.get_nowait()
-        assert "ci" not in str(sse_note["_slots_list"])
+        assert all(
+            "ci" not in link for row in sse_note["_slots_list"] for link in row["source_links"]
+        )
         assert "state" not in sse_note["_slots_list"][0]["source_links"][0]
         # The enriched WS-only list DOES carry status (delivered to WS
         # dashboard-user sockets, re-filtered for app tokens in

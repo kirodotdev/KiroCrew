@@ -1,12 +1,12 @@
 ---
 title: Bounded-time restore for large sessions - tail window for fully read tabs, focus-first order, one walk for a slot's folds, and a CI fixture at the threshold
-status: draft
+status: partial
 author: kirocrew agent session, directed by chenmingwei23
 created: 2026-11-12
 last-audited: 2026-11-12
-audited-at: 029b6db029
+audited-at: 0feaa8be90
 doc-pr: 35916
-implementation-prs: []
+implementation-prs: [35960, 36141, 36259, 36035]
 tracking-issues: [35875]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Bounded-time restore for large sessions
 
-Status: draft. This is part B of [#35875](https://github.com/kirodotdev/KiroCrew/issues/35875). Part A (readiness in the composer) is a separate document. Main-side references were read at `029b6db029`. The document changes no code.
+Status: partial. Accepted 2026-11-13 by maintainer chenmingwei23 (Mingwei) on #35875: https://github.com/kirodotdev/KiroCrew/issues/35875#issuecomment-6841428443. 1.2 and 1.1 are behaviour changes approved by this acceptance. This is part B of [#35875](https://github.com/kirodotdev/KiroCrew/issues/35875). Part A (readiness in the composer) is a separate document. Main-side references were read at `029b6db029`. The document changes no code.
 
 ## Summary
 
@@ -138,8 +138,8 @@ Everything not listed here is pure performance with identical outputs.
 
 ## 5. Decisions requested
 
-1. Accept the 16 MB threshold and the 500-row window, or set others.
-2. Accept the three behaviour changes in section 3.
+1. Decided: the threshold is 16 MB and the window is 500 rows (https://github.com/kirodotdev/KiroCrew/issues/35875#issuecomment-6841428443).
+2. Decided: 1.1 (tail window) and 1.2 (focus-first order) are accepted behaviour changes (https://github.com/kirodotdev/KiroCrew/issues/35875#issuecomment-6841428443).
 3. Decided: section 1.3 is delivered as its own pull request (section 6).
 
 ## 6. Delivery plan

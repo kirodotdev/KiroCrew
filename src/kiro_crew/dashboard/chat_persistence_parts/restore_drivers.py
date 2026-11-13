@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         _prefetch_recent_session,
         _prefetch_rehydrate_inputs,
         _read_mcp_app_claims,
+        _read_open_slot_focus,
         _read_open_slots_snapshot,
         _recent_session_slot_name,
         _reconcile_mcp_app_claims,
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
         _transcripts_may_be_remote_only,
         crew_bound_on_disk,
         effective_session_key,
+        foreground_slot_keys,
         live_loop_slot_keys,
         logger,
         notify_left_in_history,
@@ -264,13 +266,15 @@ def _loop_slot_keys() -> set[str] | None:
 def _open_slot_restore_plan(
     conv_log: ConversationLog, keys: list[object]
 ) -> tuple[list[object], set[str] | None]:
-    """Order the open-tab keys newest first and read which tabs a loop drives. BLOCKING.
+    """Order the open-tab keys focus first and read which tabs a loop drives. BLOCKING.
 
-    Newest is the transcript's mtime, which advances on every message, so the
-    tabs the restore budget keeps are the ones most recently used. The second
-    value is the set of slot keys an armed auto-nudge loop drives (always
-    restored), or ``None`` when the loop store cannot be read; the restore then
-    applies no budget rather than leave a loop's tab unbuilt, which ends the loop.
+    The tab focused at the last shutdown comes first, then the tabs that were
+    visible beside it, then the rest newest first. Newest is the transcript's
+    mtime, which advances on every message, so the tabs the restore budget keeps
+    are the ones most recently used. The second value is the set of slot keys an
+    armed auto-nudge loop drives (always restored), or ``None`` when the loop
+    store cannot be read; the restore then applies no budget rather than leave a
+    loop's tab unbuilt, which ends the loop.
     """
 
     def _mtime(raw: object) -> float:
@@ -280,7 +284,50 @@ def _open_slot_restore_plan(
         mtime = conv_log.session_mtime(slot_transcript_key(key))
         return float(mtime) if isinstance(mtime, (int, float)) else 0.0
 
-    return sorted(keys, key=_mtime, reverse=True), _loop_slot_keys()
+    focus, visible = _read_open_slot_focus()
+    rank: dict[str, int] = {}
+    for position, raw in enumerate([focus, *visible]):
+        name = _sanitize_open_slot_key(raw)
+        if name is not None:
+            rank.setdefault(name, position)
+
+    def _order(raw: object) -> tuple[int, float]:
+        name = _sanitize_open_slot_key(raw)
+        if name in rank:
+            return (0, float(rank[name]))
+        return (1, -_mtime(raw))
+
+    return sorted(keys, key=_order), _loop_slot_keys()
+
+
+def _restore_queue(state: DashboardState, keys: list[object]) -> "Iterator[tuple[int, object]]":
+    """Yield ``(index, key)`` in restore order, pulling forward tabs a client focused.
+
+    A tab focused while the restore still owes it moves to the front of what is
+    left. *keys* is reordered in place, so ``keys[index:]`` is always the unread
+    remainder, which the abort path carries.
+    """
+    # A focus reported before the owed keys were published (while the snapshot was
+    # still being read) was not enqueued by the report; the live foreground is the
+    # newer answer, so it goes ahead of the saved focus.
+    owed = state.restoring_open_slot_keys
+    live = foreground_slot_keys(state)
+    for name in sorted(live, key=lambda k: k != state.last_focused_slot):
+        if name in owed and name not in state._slots and name not in state.restore_front_keys:
+            state.restore_front_keys.append(name)
+    index = 0
+    while index < len(keys):
+        asked = state.restore_front_keys
+        moved = 0
+        while asked:
+            wanted = asked.pop(0)
+            for at in range(index + moved, len(keys)):
+                if _sanitize_open_slot_key(keys[at]) == wanted:
+                    keys.insert(index + moved, keys.pop(at))
+                    moved += 1
+                    break
+        yield index, keys[index]
+        index += 1
 
 
 def _over_restore_budget(state: DashboardState, key: str, looped: set[str] | None) -> bool:
@@ -694,7 +741,7 @@ async def restore_open_slots_async(state: DashboardState) -> int:
             kiro_model_map = await asyncio.to_thread(_build_kiro_model_map)
             # main's restore budget plan, kept.
             keys, looped = await asyncio.to_thread(_open_slot_restore_plan, conv_log, keys)
-            for reached, raw in enumerate(keys):
+            for reached, raw in _restore_queue(state, keys):
                 key = _sanitize_open_slot_key(raw)
                 if key is None or key in state._slots:
                     continue

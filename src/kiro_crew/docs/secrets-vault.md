@@ -24,8 +24,49 @@ Use **Settings → Secrets** in the dashboard. The panel lists the names it hold
 adds a new entry, and deletes one. It never shows a stored value back to you —
 listing returns names only, so a screenshot of the panel leaks nothing.
 
+With **Secrets vault redesign** turned on in **Settings → Developer → Feature
+Previews**, the tab changes shape. The left list holds every entry the vault
+knows, grouped into the credentials Kiro Crew uses by name and your
+own; picking one opens it on the right. **Add secret** asks what you are
+storing first: a **Secret** (one value, an API key or token), a **Login** (a
+website sign-in: username, password, the sites it belongs to) or a **Note**. The pane shows the `secret://` references
+to paste, and lets you replace or delete the entry. **Used by** lists what
+reads the entry now: MCP servers (their `env`, or an owner-added server's
+sign-in), `.env` credential keys, scheduled jobs' approved grants, the
+`agent.deepseek_env`, `agent.strands_env` and `tunnel.relay_lease_credential`
+settings, Connections cards' sign-ins, the Bitbucket Server, Linear, Jev and
+OpenTelemetry integrations, `kirocrew secrets authorize` approvals and Sprites
+profiles. **No use found** means none of those reads it, which is how you spot
+a likely stale entry; it is not proof, since a feature not on that list can
+still read an entry by name. It never shows a stored
+value back to you: a login lists its username and websites, nothing else, so a
+screenshot of the panel leaks nothing. On a phone the list is the page and a
+row opens its pane.
+
 If a value fails to save, the form keeps what you typed rather than clearing it,
 so you do not have to fetch the credential again.
+
+## Signing in to a website from the vault
+
+With the same preview on, when the agent's browser asks you to sign in, the
+sign-in card lists your saved logins for that site, one button each, labelled
+by the account's username. The first three show; **More** shows the rest. Click
+one and Kiro Crew types its username and password into the page for you;
+the agent never sees them and only learns whether the sign-in went through.
+Nothing is filled until you click.
+
+A login counts as "for that site" when it shares the site's base domain: a
+login saved for `appleid.apple.com` is offered on `developer.apple.com`, but one
+for `alice.github.io` is not offered on `bob.github.io`. For `localhost` or an
+IP address the host and port must match exactly. A login saved for an `https`
+address is never offered on an `http` page.
+
+To use a different account, open **Other account** and type it. When no saved
+login matches, the card asks you to type, as before. Either way, tick **Save to
+Secrets** if you want to keep what you typed. It is off by default. After the sign-in is
+typed into the page, the login is saved as a new entry named after the site
+(`github.com`, or `github.com (2)` if that name is taken); an existing entry is
+never replaced.
 
 ## Moving credentials out of `.env`
 

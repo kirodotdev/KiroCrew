@@ -1399,7 +1399,7 @@ another is recorded even though the engine delivered nothing for it.
 
 | Field | Type | Required | Meaning | Enum |
 |---|---|---|---|---|
-| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe. | `probe` |
+| `producer` | string | required | Which mechanism made the observation. Closed: the emitter refuses a value outside the vocabulary instead of coercing it, so a reader can tell a measured record from a sentence an agent typed. `probe` is the structured monitor's provider probe, `warm_brief` the warm welcome's pull-request read. | `probe`, `warm_brief` |
 | `kind` | string | required | The monitored kind of the subject, as the monitoring registry names it — `github_pull_request`, `gitlab_merge_request`, and so on. Passed through from the armed monitor, which validated it at arm time. | |
 | `target` | string | required | The subject's full URL, exactly as the monitor was armed on it. | |
 | `fingerprint` | string | required | The probe's own dedupe digest of the facts it acts on. An entry is written only when this differs from the previous observation's, so consecutive entries for one subject are consecutive DISTINCT states. | |
@@ -1529,7 +1529,7 @@ the routes still read that cache.
 | `slot` | string | required | The board's key: the conductor slot this mutation belongs to. A worker's report names the conductor's slot, not its own, so one board folds under one key whichever party wrote the entry. | |
 | `actor` | string | required | Which party wrote this entry. The field sets the two may set are disjoint. | `conductor`, `worker` (closed) |
 | `by` | string | required | The acting session's slot key: equal to `slot` for a conductor entry, the bound worker's key for a report. | |
-| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `report`, `retire`, `destroy` (closed) |
+| `action` | string | required | The one mutation this entry records. The fields below are the ones that action set; an omitted field means unchanged. | `create`, `goal`, `bind`, `decide`, `verdict`, `close`, `accept`, `ask`, `report`, `retire`, `destroy` (closed) |
 | `item_id` | string | optional | The item acted on. Absent only for `goal`, the board-level header write. | |
 | `goal` | string | optional | The board's objective, when `goal` set one. | |
 | `round` | int | optional | The board's or the item's round counter, when set. | |
@@ -1550,13 +1550,14 @@ the routes still read that cache.
 | `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
 | `pr` | int | optional | The pull request number, set by `report`. | |
 | `event` | string | optional | The one-line item event this mutation appends to the item's tail. | |
-| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close`, `retire`, `destroy` (closed) |
+| `event_kind` | string | optional | Which kind of item event this is. Absent only for `goal`. | `create`, `bind`, `report`, `decision`, `verdict`, `close`, `retire`, `destroy`, `ask` (closed) |
 | `event_id` | string | optional | The store's content-addressed id of the event this write appended. | |
 | `event_ts` | string | optional | The store's stamp on that event. | |
 | `created_at` | string | optional | The item's committed creation stamp, carried by `create`. | |
 | `last_report_at` | string | optional | The item's committed last-report stamp, carried by `report`. | |
 | `closed_at` | string | optional | The item's committed close stamp, carried by `close`. | |
 | `pending_since` | string | optional | When the item's run of `pending` verdicts began, carried by a `pending` `verdict`. Any other verdict, or an `accept`, clears it. | |
+| `ask` | object | optional | What the item needs from the person, set by `ask`: `{what, why, options: [{label, outcome}], pick, pick_why, written_at}`, `written_at` the store's stamp. `decide` and `close` clear it without logging the field. | |
 | `board_round` | int | optional | The board's committed round, carried by a baseline entry. | |
 | `board_created_at` | string | optional | The board's committed creation stamp, carried by a baseline entry. | |
 | `goal_version` | int | optional | The header's goal-write count after this write, set by `goal`. | |

@@ -23,6 +23,7 @@ from kiro_crew.work_vocab import (
     WorkBoardForgotten,
     WorkBoardItem,
     WorkBoardView,
+    coerce_ask,
     coerce_retired_bindings,
 )
 
@@ -125,6 +126,7 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "summary",
     "artifacts",
     "pr",
+    "ask",
 )
 
 
@@ -392,6 +394,9 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
         for name in _WORK_BASELINE_FIELDS:
             if name in data:
                 item[name] = _work_field(name, data[name])
+        if item.get("ask") is None:
+            # Held only while set, as the store's record holds it.
+            item.pop("ask", None)
         # The committed stamps ride along: an item with a report or a close from
         # before the projection keeps them across a rebuild.
         for name in ("last_report_at", "closed_at", "decided_at", "pending_since"):
@@ -584,6 +589,10 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         for name in allowed:
             if name in data:
                 item[name] = _work_field(name, data[name])
+        if action in ("decide", "close") or item.get("ask") is None:
+            # ``decide`` and ``close`` clear the ask record (the store does the same,
+            # and logs no field for it); it is held only while set.
+            item.pop("ask", None)
         if action == "close":
             item["closed_at"] = _work_stamp(data.get("closed_at"), stamp_ms)
         elif action == "decide":
@@ -653,6 +662,8 @@ def _work_field(name: str, value: Any) -> Any:
         return _as_int(value) if value is not None else None
     if name == "retired_bindings":
         return coerce_retired_bindings(value)
+    if name == "ask":
+        return coerce_ask(value)
     if name == "reason":
         return _work_reason(value)
     if name == "wake_at":

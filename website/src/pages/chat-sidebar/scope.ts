@@ -299,6 +299,8 @@ export interface SidebarScope {
   activeFilters: ReturnType<typeof useSessionFilterState>['activeFilters']
   filtersPaused: ReturnType<typeof useSessionFilterState>['filtersPaused']
   setAllFiltersPaused: ReturnType<typeof useSessionFilterState>['setAllFiltersPaused']
+  pausedFilters: ReturnType<typeof useSessionFilterState>['pausedFilters']
+  toggleFilterPaused: ReturnType<typeof useSessionFilterState>['toggleFilterPaused']
   filterHiddenFolders: ReturnType<typeof useSessionFilterState>['filterHiddenFolders']
   toggleFolderFilter: ReturnType<typeof useSessionFilterState>['toggleFolderFilter']
   showAllFolders: ReturnType<typeof useSessionFilterState>['showAllFolders']

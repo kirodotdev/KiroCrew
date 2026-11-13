@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
+import { X, Plus, Split, Loader2, Circle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import ErrorNotice from './ErrorNotice'
 import { api, ApiError } from '../api/client'
@@ -56,6 +56,7 @@ export default function SessionGridView({
   openSideChat,
   leading,
   onFileOpen,
+  onFolderOpen,
   onOpenCrewTab,
 }: {
   /** Leave split mode entirely (everything closed, or a lone empty placeholder). */
@@ -82,6 +83,8 @@ export default function SessionGridView({
    *  with ITS OWN session, not the host's active one — a file opened from a
    *  non-focused pane in split view must bind to that pane's slot (#9921). */
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number; slot?: string | null }) => void
+  /** The folder twin of `onFileOpen`, stamped with each pane's slot the same way. */
+  onFolderOpen?: (path: string, opts?: { slot?: string | null }) => void
   /** The host's single Crew Mode dispatch-notice reveal, forwarded to each pane
    *  so a split pane uses the SAME reveal path as the single-chat surface. */
   onOpenCrewTab?: (slot: string) => void
@@ -184,6 +187,7 @@ export default function SessionGridView({
       const openFileForPane = onFileOpen
         ? (path: string, opts?: { line?: number; endLine?: number }) => onFileOpen(path, { ...opts, slot: paneSlot })
         : undefined
+      const openFolderForPane = onFolderOpen ? (path: string) => onFolderOpen(path, { slot: paneSlot }) : undefined
       // The single-chat composer is not mounted in split view, so the grid
       // hands the "Start Dictation with a Key" binding to exactly one pane:
       // the one that last took focus (a click or a focus move into it). A
@@ -203,6 +207,7 @@ export default function SessionGridView({
           openSideChat={openSideChat}
           leading={paneLeading}
           onFileOpen={openFileForPane}
+          onFolderOpen={openFolderForPane}
           onOpenCrewTab={onOpenCrewTab}
         />
       )
@@ -409,7 +414,7 @@ function PlaceholderPane({
           title={forkSourceSlot ? i18nT('components.sessionGridView.fork_child_session', { name: forkSourceTitle || forkSourceSlot }) : i18nT('components.sessionGridView.no_session_to_fork_yet')}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
+          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Split size={13} />} {i18nT('components.sessionGridView.fork')}
         </button>
       </div>
 

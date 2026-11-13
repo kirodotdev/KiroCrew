@@ -812,6 +812,11 @@ export function McpManagement({
                 refusal && !launchIsApprovable(refusal)
                   ? i18nT('pages.mcpManagement.approval_not_approvable_here')
                   : null
+              // A paused, approvable row draws two buttons. Below md they get a
+              // full-width line under the name: in the `auto` track their width
+              // would leave the name no room. `refusal` is set only on a marked
+              // row (rowState), so this is ShareAction's two-button branch.
+              const pausedControls = refusal !== undefined && launchIsApprovable(refusal)
               const hintId = `mcp-share-hint-${s.name}`
               const detailsOpen = openDetails.has(s.name)
               const describedBy = hint ? hintId : detailsOpen ? detailsWhyId(s.name) : undefined
@@ -866,7 +871,13 @@ export function McpManagement({
                         {i18nT(stateLabelKey(state, refusal))}
                       </span>
                     </td>
-                    <td className="col-start-2 row-start-1 p-0 text-right align-top md:table-cell md:px-4 md:py-2.5">
+                    <td
+                      className={
+                        pausedControls
+                          ? 'col-span-2 col-start-1 row-start-4 min-w-0 p-0 text-left align-top md:table-cell md:px-4 md:py-2.5 md:text-right'
+                          : 'col-start-2 row-start-1 p-0 text-right align-top md:table-cell md:px-4 md:py-2.5'
+                      }
+                    >
                       <ShareAction
                         server={s}
                         refusal={refusal}

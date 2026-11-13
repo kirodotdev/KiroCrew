@@ -366,8 +366,9 @@ _UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
         # write-protect table (`_CREW_HOME_PREFIXES` + the literal suffix).
         "apps/ops-mission-control/data/rotation.yaml",
         "apps/ops-mission-control/data/incidents/index.json",
-        # spec-builder's trust keystone: `config_dir() / "trust" / ...`.
-        "trust/spec-builder-decisions.json",
+        # spec-builder's decision record, in the `trust/` directory its manifest
+        # declares read-only to agents: `config_dir() / "apps" / "spec-builder" / ...`.
+        "apps/spec-builder/data/trust/spec-builder-decisions.json",
         # Optional dev-only override read from KIROCREW_PROJECT_DIR by
         # `agent_parts/spec_build.py`'s `_shipped_defaults()`; the shipped file is
         # `config/defaults.json`, which resolves.

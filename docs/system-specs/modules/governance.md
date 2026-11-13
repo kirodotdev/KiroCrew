@@ -2023,7 +2023,7 @@ the agents dir. The registry leaf gets no seal, by maintainer decision (#14837):
 
 **The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 
-**Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
+**Every other harness's own permission files sit on the same write-only tier**, listed per harness in `agent_sdk.native_allow_stores.NATIVE_ALLOW_STORES`: claude `~/.claude/settings*.json`, goose `permission.yaml` and `config.yaml`, opencode's global config, MiMo Code's global config (`~/.config/mimocode/`; its other relocation, `MIMOCODE_HOME`, is refused at the launch), codex `config.toml`, pi `settings.json` and `extensions/`, copilot `mcp-config.json` and `installed-plugins/` (its `config.json`, which carries its permission settings, is already refused both ways as its credential leaf), each also at its harness's own home variable (`GOOSE_PATH_ROOT`, `XDG_CONFIG_HOME`, `CLAUDE_CONFIG_DIR` / `CLAUDE_HOME`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `COPILOT_HOME`) and through a symlinked config dir, plus a project's own harness config in any directory (`PROJECT_ALLOW_STORES`): `.claude/settings*.json`, opencode's `opencode.json` / `opencode.jsonc` and everything under `.opencode/`, MiMo Code's `mimocode.json` / `mimocode.jsonc` and everything under `.mimocode/` (the home directory's own `.mimocode/` included), and pi's `.pi/settings.json`, `.pi/mcp.json` and everything under `.pi/extensions/`. goose reads no project file of this kind, and copilot's are not listed: a Copilot session is refused outright where one exists (`acp/harness/copilot.py`). `agent.env` refuses each of those home variables, so a store cannot move for the harness child alone. Only the agent's file-edit tools are refused; a shell write to these files is not fenced yet. `test/test_native_allow_stores.py` fails when a harness has neither a row nor a stated reason.
 
 That residual matters for the same reason the whole gap did. Since
 `hooks.on_tool_call` runs **only** from the `EVENT_PERMISSION_REQUEST` branch (the
@@ -3058,6 +3058,13 @@ denials leave the same forensic trail.
   profile. An app's own in-process tool calls (which carry `KIROCREW_APP_NAME`)
   do bind a per-app profile. App blast-radius is contained today by the `apps`
   activation allowlist + per-surface profiles.
+- **A harness whose MCP calls carry no identity is refused before it mounts.** An
+  OpenCode-family MCP call carries only its fused `<server>_<tool>` title, so the `mcp`
+  scope is never asked about it. `governance.mcp_scope_governed_now()` answers whether
+  the ceiling or any configured profile constrains `mcp` at all (scope-level,
+  fail-closed; a deny-mode ruleset with no patterns does not count), and a `mimocode`
+  session that would mount any server is refused at launch and stopped mid-session
+  when the answer turns yes (acp-client.md, MiMo Code). `opencode` does not ask it yet.
 - **Shell GUI automation is a `commands` item, never re-parsed.** `osascript`,
   `cliclick`, `xdotool`, `ydotool`, `wtype`, `screencapture`, `scrot`, `grim`,
   `import -window` and `nircmd` inside a Bash tool are governed by the
@@ -3770,14 +3777,19 @@ evaluation, no SEL row and no second `await`; past that line consent IS on, whic
 exactly when a denial is a fact an auditor needs recorded.
 
 **The reads are presentation, not the control.**
-`GET /api/decisions/consent` folds a denial into `permits` (there is no separate
-reason field — nothing read one, and the surface a caller acts on is the 403);
+`GET /api/decisions/consent` folds a denial into `permits` and reports it beside
+that as `withdrawn`, so the card tells a refusal from consent given for another
+address (the surface a caller acts on is still the 403);
 `GET /api/dashboard/config` reports a read-only `decisions_enabled`
-(`decisions/capability.py`) and the frontend draws the Decisions card in
-Settings › Developer › Feature Previews only when it is `true`. A denial withholds
-the CARD rather than disabling it — the section's other unavailable states (an old
-gateway, an unreadable config) fade the card and name the fix because the user can
-act on those, and a ceiling is not something they can act on. The field is dropped
+(`decisions/capability.py`), and the Decisions card in Settings › Developer ›
+Feature Previews draws its controls only when it is `true`. A literal `false` draws
+the card's name and one plain notice that the administrator's policy turned decision
+models off for this dashboard, with no switch and no picker: a ceiling is not something
+the user can act on, so it is stated rather than shown as a disabled control. The notice
+claims nothing about other surfaces, which a policy may treat differently, and a failed
+refetch shows the read failure rather than the last denial. An absent field draws no
+card. The section's other unavailable states (an old gateway, an unreadable config)
+fade the card and name the fix, because the user can act on those. The field is dropped
 from the `PUT` body (both settings surfaces round-trip the whole `GET`), so it can
 never be written. The ceiling viewer needs no i18n key: the humanising fallback
 renders the `decisions` leaf as "Decisions".
@@ -3816,6 +3828,14 @@ seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, 
 
 ```json
 {"version": 1, "capabilities": {"decisions": {"scopes": {"models": {"mode": "allow", "allow": ["jev-latest"]}, "points": {"mode": "deny", "deny": ["tool.risk"]}}}}}
+```
+
+**Which decision models: the `providers` list.** A fourth inner ruleset, `providers` (`identifier`), is the per-model allow list: every decision model the picker offers has its own entry, by its picker id (`decisions/capability.py::provider_id`: `jev` for the hosted provider, each local preset id (`plumb-4b`, `strands-decider-2b`, `laya`), `sagemaker`; "No model" is never asked). Each is an exact check, never a host parse: `jev` is the configured address equal to the hosted default endpoint, a preset is the address the provider route builds for it, `sagemaker` is the `sagemaker://` scheme. The ids are stable policy ids: they are the ids the picker stores, a policy names them, and renaming one would silently turn an allow or deny into a no-op, so `test_decisions_provider_allowlist.py` pins the list. An endpoint the owner wrote by hand has no id and is not governed by the list (the row's `enabled` off switch and the `endpoints` list still apply to it). Every check that reads the row for the CONFIGURED provider asks that provider's entry too, inside the same policy-generation bracket (`capability.is_decisions_denied(provider=...)`): the send path (`gate._consented_for`), the consent and provider writes (`403 decisions_capability_denied`), the consent carry, the SageMaker connection test and the local runtime's resume. So a model the list refuses is neither selectable nor used, whichever writer named it in `config.json`, and the recorded consent stays in place but inert. `GET /api/decisions/provider` reports the per-model answer as `provider_permitted`, and the picker draws a refused model greyed with the administrator's wording. Like `models` and `endpoints` it binds the decision provider only, not the judge's LLM lane. A ceiling without the list permits every model. The row's `enabled` stays the full off switch, for which the card draws a plain notice, about this dashboard only, in place of its controls. Detail: [decisions](decisions.md) section 7.2.
+
+Only the exact hosted default endpoint counts as `jev`, so a fleet that wants the hosted host refused however it is spelled names it in the `endpoints` host list as well; the edition snippet carries both:
+
+```json
+{"version": 1, "capabilities": {"decisions": {"scopes": {"providers": {"mode": "deny", "deny": ["jev"]}, "endpoints": {"mode": "deny", "deny": ["api.typesafe.ai"]}}}}}
 ```
 
 ### Extensions, app versions and developer mode — `capabilities.extension_install`, `app_versions`, `capabilities.app_dev_mode`
@@ -4447,7 +4467,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   It keeps the auto-approve surface it decides itself (`may_skip_gate` with
   `BUILTIN_TOOL_SCOPES` / `BUILTIN_TOOL_CAPABILITIES`, `strip_ungoverned_auto_approve`,
   the `hooks.confirm_tools` gate, `may_skip_gate_now`, `withheld_by_confirm_tools`,
-  `sanitize_agent_config_governance`) and the two boot checks,
+  `mcp_scope_governed_now`, `sanitize_agent_config_governance`) and the two boot checks,
   `assert_governance_floor` and `assert_governance_paths_protected`. Its owners, one
   responsibility each, lowest layer first; new work goes to the owner it belongs to:
   - `platform/governance_parts/matching.py` — the enforcer-owned registries `_MATCHERS` /

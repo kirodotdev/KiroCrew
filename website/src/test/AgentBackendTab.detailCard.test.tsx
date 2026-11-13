@@ -643,7 +643,7 @@ describe('AgentBackendTab MCP ability card', () => {
     )
     const rule = await screen.findByText(/stops every tool on the same server/)
     const link = within(rule).getByRole('link', { name: 'Open the MCP Servers list' })
-    expect(link).toHaveAttribute('href', '/mcp')
+    expect(link).toHaveAttribute('href', '/capabilities?tab=mcp-servers')
   })
 
   it('marks the per-call exception as an exception, right under the rule', async () => {

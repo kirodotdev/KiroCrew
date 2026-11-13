@@ -125,7 +125,9 @@ so nothing re-endorses a tampered `enabled: true`; while the keystone is pending
 ordinary save of it is refused (`file_pending_review`) until the owner applies or discards. Where the
 sandbox seals the keystone, a copy that cannot be written aborts the save, and an
 unreadable copy reads as an unreadable keystone (disabled). A keystone with no endorsed copy
-yet is read as written until the gateway's first save of it endorses it. A keystone that
+yet is endorsed as it is by the gateway's next start (`adopt_unendorsed`, a JSON object stored
+as Kiro Crew writes one); any other is read as written until the gateway's first save of it
+endorses it or a later start adopts it. A keystone that
 differs from its copy (a hand edit, or an in-sandbox write) is PENDING: `is_enabled()` keeps
 reading the endorsed copy until the dashboard owner applies or discards the change in
 Settings > Security (owner-gated, CSRF-guarded, never an agent or MCP tool), so writing
@@ -2568,9 +2570,14 @@ The lock matters because the rebuild READS the keystone and WRITES the spec. Out
 it, two overlapping PUTs interleave: an enable's slower rebuild can land its spec
 *after* a later disable's, leaving a spec that mounts — and therefore spawns — the
 server the keystone now forbids. Holding `_get_config_lock()` makes read-decide-write
-atomic against every keystone writer, so whichever rebuild finishes last is the one
-that read the final state. It is a plain reacquisition: the write block has already
-exited its own, and `rebuild_agent_config` never takes this lock.
+atomic against every keystone writer in the gateway, so whichever rebuild finishes last
+is the one that read the final state. It is a plain reacquisition: the write block has
+already exited its own, and `rebuild_agent_config` never takes this lock.
+`kirocrew config pending` writes the keystone from another process and asks for a
+restart instead of rebuilding. The PUT's write (`_write_state`) refuses a pending
+keystone before it reads it, so it cannot publish a stale copy over that command's
+Apply; what remains is the window `refuse_save_if_pending` documents, an outside edit
+and its Apply both landing inside one save.
 
 App agents are rewritten in the same step, after the host rebuild and before the
 reset. An app agent that references `@kirocrew-computer` gets the entry in its

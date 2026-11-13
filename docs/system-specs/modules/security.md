@@ -307,19 +307,26 @@ by evidence: on each POSIX save `config.write_provenance.staging_hook` reads the
 `(dev, ino)` off the writer's own descriptor BEFORE the rename publishes it (a stat of the name
 afterwards could meet a file someone else put there) and records it, with the identity of the file it replaces, under the leaf's name in
 `<data_home>/config-provenance/published`, headed by a nonce fresh to the gateway process. The
-gateway lists only the latest identity per name, so an older file it once wrote, put back at the
-name, refuses as a rollback. A record that cannot be rewritten is removed before the save goes
+gateway admits only the latest identity per name, so an older file it once wrote, put back at the
+name, refuses as a rollback. It admits that identity for a pass that saw any file of the unbroken
+run of its own saves that led to it (bounded, `write_provenance._MAX_RUN`): on a fresh host the boot
+writers save several times within one spawn's window, and with only the last save listed, two saves
+between a pass and its pin would refuse that spawn (a first boot's default-install registry clone
+is one). Every file between the pass's and the latest left the name through the gateway's own
+rename, so nothing the pass inspected is left at another name. A save that replaced a file the
+gateway did not publish starts a new run, so a rewrite by anything else in between still refuses. A record that cannot be rewritten is removed before the save goes
 ahead, and a save whose record can be neither rewritten nor removed is refused, so the record
 never vouches for a file older than the one at the name. It holds descriptors on both the replaced and
-the published file, so the
-inode cannot be freed and its number reused by another file while it is vouched for. The plan carries the record's path, that nonce and the two
+the published file of every save in the run, so no
+inode can be freed and its number reused by another file while it is vouched for. The plan carries the record's path, that nonce and the two
 names (`published_file_record`). On a changed occupant at one of those names, and only after
 the kind check, the launcher (`_published_by_gateway`) accepts when the entry at the name is the
 same kind of entry the pass saw (the same link, for a symlinked config, which the writer writes
 through), the object it pinned is a regular file, and the record -- opened no-follow, first line
-equal to the plan's nonce -- lists that object as published under the name by a save that
-replaced the very file this spawn's pass saw there (each entry is `<replaced> -> <published>`,
-so a save by another process in between, or an older gateway file put back, is not vouched for). One read answers,
+equal to the plan's nonce -- lists that object as published under the name for the very file this spawn's pass saw there
+(each entry is `<replaced> -> <published>`, one per file of the run, each naming the run's latest
+file, so a save by another process in between, or an older gateway file put back, is not vouched
+for). One read answers,
 because the record is written before the file it vouches for is published. Everything else refuses
 as before: a rewrite the gateway did not make, a swap after one of its writes (the swapped-in
 object is not listed), a record from another gateway process, and any other sealed name. The
@@ -385,11 +392,15 @@ endorsing puts the prior copy back, and a copy that exists but cannot be read ra
 of reading as "none" (which would serve the disk bytes). A symlinked `config.json` /
 `config.local.json` is endorsed under its LOGICAL name: the protected leaf is matched by
 resolved identity against the data-home name (`loosening_provenance.leaf_for`), so resolving
-the link for locking and writing does not lose it. Nothing endorses a file at rest: a file
-with no copy yet is not pending and loads as written, as before this check. The gateway's own
-first save of it endorses first, so the usual detach leaves no gap. Known limit: a host-side
-rename by something else (an editor that saves by rename) also detaches the bind, and until
-the gateway's first save of that file an in-sandbox write after it loads as written. It applies ONLY where that per-file bind can
+the link for locking and writing does not lose it. The one endorsement of a file at rest: the gateway's
+start endorses each protected file that has no copy yet (`adopt_unendorsed`), once, before any
+session of the run, only a regular file holding a JSON object stored as Kiro Crew writes one; a
+leaf that already has a copy is never adopted again, so a later start leaves a differing file
+pending. Any other file with no copy is not pending and loads as written until the gateway's own
+first save of it (which endorses first, so the usual detach leaves no gap) or a later start
+adopts it. Known limit, for such a file only: a host-side rename by something else (an
+editor that saves by rename) also detaches the bind, and until the gateway's first save of that
+file an in-sandbox write after it loads as written. It applies ONLY where that per-file bind can
 actually lapse -- a Linux host that can build the namespace sandbox
 (`loosening_provenance.enforcement_active`, host facts only, so it never reads the file it
 protects). Inside a sandbox it is always on without a probe, which the sandbox's seccomp
@@ -407,7 +418,9 @@ the channel users cannot mute (`notifications.settings.PROTECTED_CHANNELS`), at 
 priority: the edit is not in effect until the owner decides, so no mute may hide that it is
 waiting. The Settings nav dot reads only the pending count (the GET below and the
 `config_pending_changed` WebSocket event), never the bell or its preferences. Only the
-dashboard OWNER resolves it: `POST /api/security/config-pending/{leaf}/apply` endorses the
+OWNER resolves it, in the dashboard or, without one, from their own terminal with `kirocrew config
+pending` (the same writer and signature check; refused inside a Kiro Crew sandbox, not an MCP
+tool): `POST /api/security/config-pending/{leaf}/apply` endorses the
 on-disk version and `.../discard` restores the endorsed copy, each through the leaf's own
 endorsing writer, each behind `require_owner_dashboard_request` and the dashboard CSRF
 barrier, and each naming the reviewed version's signature (409 when the file changed since).
@@ -1201,20 +1214,133 @@ gateway and offers no tools. Out of scope: an app-registered
 server (whether an app may name a vault secret is a separate decision) and a
 hand-written agent file that Kiro Crew does not rebuild.
 
+**Typed items (`secrets/items.py`).** An entry is one ciphertext under one
+name; `items.py` decides what the PLAINTEXT inside it looks like. Three types:
+`secret` (the plaintext IS the value, no wrapper -- every entry stored before
+types existed is this type byte for byte, so nothing migrates), `login`
+(`username`, `password`, `urls` as plain http(s) addresses that may not carry a username or
+password, and `notes`, as one canonical JSON object) and `note` (`text`). The type sits in
+the entry in the clear (`type`, with `updated_at`) so a listing can group
+without decrypting, and it is bound into the AES-GCM AAD
+(`v1 + scope + NUL + name + NUL + type`; a `secret` keeps the original
+name-only AAD), so relabelling an entry's type in the store makes it fail to
+decrypt instead of being read as another type. A login's URL and username are
+INSIDE the ciphertext, not in the plaintext index, because a store that leaked
+would otherwise say which sites a person has an account on. Bounds: a login or
+note field is at most `MAX_FIELD_CHARS` (a plain secret's value keeps no bound,
+as before item types), a login carries at most `MAX_LOGIN_URLS`; every
+value is kept as given (only the emptiness check strips). A login keeps no
+one-time-password seed.
+
+A reference is `secret://NAME` or `secret://NAME#FIELD` (`items.parse_reference`
+splits on the FIRST `#`; the dashboard write therefore refuses a name holding
+`#`, and an entry already stored under such a name still resolves whole,
+because `resolve_secret_uris` tries the whole text first). `#FIELD` is read by
+MCP server env resolution (`mcp_gateway/secret_uri.py`) only; the channel
+credential and agent env readers take the whole text as the name. With no field the reference means the type's
+DEFAULT field (`password` for a login, `text` for a note, the value for a
+secret), and `SecretVault.get` / `get_many` / `get_with_revision` answer that
+same default, so every consumer written for a plain secret keeps working when
+the entry under that name becomes a login. An unknown field fails
+closed with an `ItemError` whose `code` is stable
+(`unknown_field`); the
+resolver's message names only the env-var key and that code, never the name or
+a value. The whole item is `get_items_many`; the write is
+`set_item_with_revision`, which validates through `items.validate_item` inside
+the store lock and writes a `secret` item as exactly the entry
+`set_with_revision` writes. Updating an item of the same type, a field a
+listing never shows (`items.KEPT_WHEN_ABSENT`: a login's `password`,
+`notes`; a note's `text`) that the request leaves out keeps its stored value,
+read and rewritten under that one lock; `notes` sent as `""` is cleared, while
+`password` and `text` are required, so `""` for either is refused
+(`missing_field`). That is
+what lets the edit form, which cannot show those fields, save without erasing
+them. With the `secrets_vault` feature preview off, `GET /api/secrets` answers
+as before typed items: names only (`list_names`), no `items`, nothing
+decrypted. With it on, a listing decrypts each typed item for its public fields
+(`get_items_readable`); one whose own ciphertext fails to decrypt is listed
+with `corrupt: true` so it can be deleted, and the rest still list. A missing
+or unreadable key file, or a key that opens no stored entry (another
+install's key beside a restored store), is not a per-item failure: the listing answers
+`500 vault_unreadable` and marks nothing corrupt, because every entry is intact
+and restoring the key is the fix.
+
 Security properties:
 
-- **Write-only surface.** The vault is stored (`POST /api/secrets`), listed by
-  name (`GET /api/secrets` — names only, values never returned) and deleted
+- **Write-only surface.** The vault is stored (`POST /api/secrets`, a plain
+  `{"name","value"}` or a typed `{"name","type","fields"}`), listed
+  (`GET /api/secrets` -- `names`, plus `items` with each entry's `type`,
+  `revision`, `updated_at` and a login's `fields` = `items.public_view`:
+  username and URLs; never a password, seed, note text or secret
+  value) and deleted
   (`DELETE /api/secrets/{name}`) from the dashboard **Settings → Secrets** tab,
   all behind `_owner_only`. There is deliberately **no** read-back path, on the
-  CLI or the API — a stored value cannot be retrieved, only replaced or
+  CLI or the API — a stored credential cannot be retrieved, only replaced or
   deleted, so a prompt-injected agent has no oracle to exfiltrate it through.
+  The public fields of a login are decrypted on the gateway for that listing;
+  they are the part of the item a password manager shows in its list and are
+  not credentials.
   A store answers with the stored entry's `revision`, a short digest of its
   ciphertext under a fresh nonce that says nothing about the value, and
   `DELETE /api/secrets/{name}?if_revision=` deletes only while the entry still
   has that revision (check and delete under one store lock, `409 changed`
   otherwise). A change card's Undo of a secret it saved uses it, so a value saved
   over it since is never deleted in its place.
+- **Usage listing.** `GET /api/secrets/usage` (`dashboard/handlers/secrets_usage.py`,
+  behind `_owner_only`) answers, per stored item, the places that would resolve
+  it: an MCP server's `env` in an agent spec, a crewmate file the rewriter
+  takes (`mate_overlays.list_mate_sources`), or the global
+  `~/.kiro/settings/mcp.json` (both read strictly: a spec or file that fails to
+  read marks the scan incomplete), a credential key of the data-home
+  `.env`, a scheduled job's approved grant (`secret_env`, not a pending request),
+  and the `agent.deepseek_env`, `agent.strands_env` and
+  `tunnel.relay_lease_credential` settings, plus the client and token entries
+  Crew-owned OAuth reads by name for each Connections card and each recorded
+  owner-added remote server (names computed with `crew_oauth_dcr.client_entry_name`
+  and `crew_oauth.token_entry_name`, never matched by pattern, never read), and
+  the other by-name readers in `dashboard/handlers/secrets_usage_readers.py`
+  (Bitbucket Server, Linear, Jev, OTLP headers, Sprites profiles and the token
+  each saved Sprites machine was made with, `kirocrew secrets authorize`
+  approvals), each by its owner module's own rule and only while it is set to
+  read the entry now. A settings load that fell back to defaults (an unreadable
+  `config.json` or `config.local.json`, or a discarded section) marks every
+  settings-backed kind incomplete instead of reading the defaults. Because any code can read the vault by
+  name, an item absent from the answer is shown as "no use found", never as
+  unused. Each place is matched as its own
+  resolver reads it (whole name first, then `NAME#FIELD` where the reader takes a
+  field). A row carries the place's kind, its name and the key holding the
+  reference, never a value or file content; every place name and key (a job
+  name, a grant key, a spec's server and env key) goes through the Schedule
+  board's redaction. A kind that cannot be read is listed in `incomplete`, so the
+  pane never calls an item unused on a partial scan. With the `secrets_vault`
+  preview off the route reads nothing and answers as the path did before it
+  existed (405, `Allow: DELETE`). A remote server's `headers`
+  and the process environment are not scanned: the first is never resolved, and
+  the second is not a reference Kiro Crew wrote.
+- **Browser sign-in reads a login inside the gateway only.** Under the
+  `secrets_vault` feature preview, a browser `credentials` quick ask may be
+  answered from a vault login (`browser_harness/vault_fill.py`; see
+  [browser](browser.md), "Sign-in from the Secrets vault"). This is no read-back
+  path: the owner's card receives each matching login's entry name and username,
+  never a password; the person's click on the owner-only
+  `POST /api/browser/ask/answer` (internal secret refused) names one, and the
+  gateway reads its username and password and writes them straight into the
+  bound, re-verified page field. The agent's `ask` op and its outcome words do
+  not change. The offered usernames reach only the owner-only live event, for
+  the person to pick by; no password reaches it, and no password or username
+  reaches the agent, a log, the SEL, the replay, the poll or the tool result. A login is offered by base domain (eTLD+1 from the
+  bundled Public Suffix List), exact host and port where there is none, and never
+  from https onto an http page. The same quick ask stores what the person TYPED
+  only when they ticked "Save to Secrets store" (off by default, offered whenever they
+  type, beside a match too), only after the fill landed, and only as a new item
+  (`SecretVault.add_item_under_free_name` picks a free name under the store
+  lock, so nothing is overwritten, and skips every name `POST /api/secrets` would
+  refuse the same caller, through `secrets.reserved_name_check`: a Connections
+  client secret, the WakaTime OAuth tokens, and for a remote caller a channel
+  credential, so a remote session cannot plant one from the browser card; the
+  route and that check share `_managed_name_owned` and `_remote_channel_reserved`,
+  so each rule is written once). One SEL row per vault fill and per save
+  names the item and the origin.
 - **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
   which the OS-level sandbox bind-mounts away from the agent subprocess tree,
   so the agent cannot read the ciphertext off disk either. On Linux a mount
@@ -1489,6 +1615,23 @@ spawn plan, so `test_sandbox_governance_mask.py`'s pin that every tool-gate crew
 a sandbox disposition holds for it. The
 installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops
 that app's masks from its next spawn; that residual is stated, not sealed.
+
+**App-declared agent-read-only directories.** An app's manifest may also list
+directories under its own data directory in `agentReadOnlyDirs`
+([app-kit-platform](app-kit-platform.md#39-an-apps-agent-read-only-directories-are-declared-in-its-manifest-seam-level-7)),
+read by the same engine. Each declared spelling joins the write-protected rows of
+`sensitive_write_path_refusal` and the crew-home `READONLY` targets and seal parents in
+`sandbox_argv._live_plan_host`, so it is fenced from an agent's file tools and sealed
+read-only, with its parents guarded against rename, in every sandbox mode. On the event
+loop the gate reads the rows from a listing taken on the `mc-pathres` threads within the
+anchor rebuild's budget and reused for a second; a listing that misses it refuses, and
+later checks refuse at once while it still runs.
+`sandbox_aliases._establish_app_readonly_dirs` refuses a spawn when a link sits at a
+declared spelling or below the data home on the way to it, and on Linux creates an absent
+one inside an existing app `data/`, so its seal is not vacuous. Only the app's own backend spawn gets it back
+(`sandbox_tiers.app_declared_readonly_targets`, exact spelling, never a core leaf).
+Tightening only: no read+write row, mask or core disposition reads a declaration, so
+`test_sandbox_governance_mask.py`'s pin is unchanged.
 
 Hides credential paths from kiro-cli subprocess tree using platform-native isolation:
 
@@ -1949,7 +2092,8 @@ and audit-free; a real operator trust grant retains its once-per-endpoint audit.
 **Array-nested target paths bind on both planes (issue #6558).** A batch-shaped tool carries its real targets inside an array argument (`{"operations": [{"mode": "Line", "path": …}]}`). The sensitive-path keystone (the tool gate's `param-paths` tier, over `target_paths` / `TargetPaths`) was made nesting-aware first; the governance INTERSECTION plane (`platform/governance_parts/tool_calls.py` `_tool_arg_paths` / `classify_tool_args`) previously read only the TOP level, so a nested path produced no `(scope, item)` pair, `gate_decision` hit its permit-by-default `if not pairs` branch, and an operator ceiling denying `filesystem.read`/`filesystem.write` outside the workspace never bound on the nested spelling. The bounded, depth-aware, iterative walk now lives in ONE shared lower-level module, `kiro_crew.platform.tool_paths` (stdlib-only, imports neither `hooks` nor `governance`, so there is no cycle — `hooks` imports `governance`), and BOTH planes delegate to it. The third extractor, `hooks._SEARCH_DENY_ARG_KEYS`, stays flat by design (documented residual below) and is out of scope.
 - **Truncated-scan policy on the permit-by-default plane.** The shared walk is bounded (`_TARGET_PATH_MAX_PATHS`=256, `_TARGET_PATH_MAX_NODES`=10_000) and reports a `truncated` flag. The `hooks` keystone fails SAFE by hard-denying any truncated scan. The governance plane is permit-by-default and must NOT blanket-deny an ungoverned standalone host, so on truncation it emits the filesystem scope(s) the tool kind implies (`edit`→`filesystem.write`; `read`→`filesystem.read`; unknown-kind-without-command→both) against a synthetic, never-permittable item (`_TRUNCATED_SCAN_ITEM`, containing a NUL byte so no allow-list pattern can match it). Effect: a prefix-bounded ALLOW-mode ceiling that confines the scope to a workspace DENIES the unverifiable call (closing the "bury the path past 10_000 nodes to escape the ceiling" fail-open), while an ungoverned scope still permits it (permit-by-default preserved). (A catch-all ALLOW pattern — `**`/`/**`/`*` — does match the marker via fnmatch and permits, but such a ceiling confines nothing and is unconstrained anyway, so this is consistent with its own posture rather than a bypass.) A DENY-mode ceiling that blocks only specific paths permits the marker — a targeted deny is not a general confinement and a partial scan cannot prove the buried path hit that one pattern; the always-on resolved keystone remains the authoritative guard for the sensitive tiers there. This resolves issue #6558 open-question-2 (option (c)); rejected: (a) permit-as-before keeps the fail-open, (b) unconditional deny over-blocks ungoverned hosts and every unrelated scope.
 
-**Spec Builder's decision record** (`trust/spec-builder-decisions.json`) — the app
+**Spec Builder's decision record** (`apps/spec-builder/data/trust/spec-builder-decisions.json`,
+in the directory the app's manifest declares in `agentReadOnlyDirs`): the app
 refuses a second answer for the same normalized question. Each record is bound to a
 fingerprint of the rendered id, title, and order-independent option set, so reordering the
 same choices cannot reopen a settled question while an agent reusing an id for a new question
@@ -2124,7 +2268,7 @@ a server a `hooks.confirm_tools` pattern names. Turning `mcp.honour_auto_approve
 tools back through the gate: after a restart, every verb no server spec declares is dropped.
 How a kept verb is granted: [mcp](../../architecture/mcp.md), "Managed servers".
 
-**This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`, POSIX only), so it names whatever install that gateway runs. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.
+**This install's `kirocrew` link** (`<data home>/kirocrew-bin/kirocrew`) is how an agent shell's `kirocrew` reaches the gateway it runs under rather than an older install's launcher in `~/.local/bin` (#24087: a 0.1.2 CLI found there rewrote `config.json` without the member identity fields). `env.augmented_path` lists the directory ahead of `~/.local/bin` and keeps the interpreter directory last, so `python` and `pip` resolve as before; the directory holds that one link and nothing else. The gateway repoints it on every start (`agent.refresh_own_kirocrew_link`), so it names whatever install that gateway runs. On Windows the entry is `kirocrew.cmd`, a one-line forwarder to the running launcher by absolute path, because a symlink needs a privilege an ordinary session lacks; PATH order outranks PATHEXT order across directories, so it beats a `kirocrew.exe` later on PATH. The forwarder is ASCII and carries no `!`, so every console reads the same path whatever its code page (`chcp 65001`) or delayed-expansion setting (`cmd /V:ON`); a launcher under a non-ASCII directory is named by its 8.3 short name. A forwarder is found even when its target is gone, so a start that cannot write one for this install removes the old one. A write would choose the `kirocrew` every later lookup runs, so the leaf is in `_WRITE_PROTECTED_HOME_PATHS` for the file-edit tool and is a `READONLY`, precreated, no-follow leaf for every OS sandbox, the same treatment as `models` below. `test/test_own_kirocrew_link.py` pins the lookup and the seals.
 
 **Downloaded model weights** (`<data home>/models`) are write-protected at the file-edit tool boundary because the speech and embedding loaders verify a digest and then reopen the file by path. `models` is a directory entry in `_WRITE_PROTECTED_HOME_PATHS`, so `is_sensitive_write_path()` refuses edits anywhere below it while `is_sensitive_path()` continues to allow reads. The shell-command gate matches no paths; this section therefore claims no Bash text-layer protection. `test_security_keystone_leaves.py::TestModelWeightsAreWriteProtected` pins that boundary. The OS sandbox covers the shell: `models` is a `READONLY` leaf in `sandbox._CREW_READONLY_LEAVES`, mounted read-only in every mode, for the same reason. It is READONLY rather than `HIDDEN` because the in-sandbox knowledge embedder loads its GGUF from it, and every writer (the embedding and speech downloaders, the decoder fetch into `models/ffmpeg`, the speech loader's crash marker) runs in the gateway. It is also on `_CREW_PRECREATE_READONLY_DIR_LEAVES`: every reader resolves a file by name, so an empty directory means no model exactly as an absent one does, and the directory bind shows the gateway's later downloads, so a fresh install is sealed before its first download rather than left writable until then. A sandboxed spawn that needs a writable directory of its own cannot get one beneath this leaf, because a private window opens only inside a `HIDDEN` tree. The decision runtime's own work directory therefore lives at `run/decisions/<id>`, an `extra_writable_dirs` carve-out of the `run` seal. `test_sandbox_governance_mask.py` pins the seal on both backends.
 
@@ -2238,6 +2382,7 @@ exactly `outbound` so a second spelling cannot accrete.
 - **Cross-chunk streaming redaction** (`StreamRedactor`): per-chunk redaction misses a credential split across a token/streaming/Slack chunk boundary (a chunk ending `...AKIA` and the next starting `IOSFODNN7...` each individually escape `redact_credentials()`, so raw fragments reach WebSocket/SSE/Slack consumers). `StreamRedactor` is a rolling-buffer redactor: it withholds the trailing run of credential-class characters (`_CRED_CLASS` — letters/digits + URL/base64/connection-string punctuation, the possible start of a not-yet-complete credential) until a non-credential-class terminator arrives or the stream ends, then rejoins and redacts before emitting on the wire. Holdback is bounded by `_STREAM_HOLDBACK_MAX = 512` (larger than the longest fixed-format credential) so a split token is always rejoined; `flush()` redacts the buffered remainder at segment/stream end. Adds at most one chunk of latency. **Streaming JWT/JWE ceiling**: JWTs (esp. RS256/ES256 with embedded claims) routinely exceed 512 chars, so a terminal token longer than the DoS floor would otherwise be bisected — the first `len-512` chars emitted raw before `flush()` redacts only the held tail. When the withheld tail matches `_PARTIAL_JWT_TAIL_RE` (`eyJ…` optionally followed by up to FOUR `.`-separated base64url segments — `{0,4}`, so a 5-segment compact JWE escalates too, matching the batch JWE ceiling — anchored to buffer end) the cap is raised to `_STREAM_HOLDBACK_JWT_MAX = 4096` so the whole token is rejoined before emission; the 512-char floor still applies to every non-credential run. A trailing in-progress `?token=`/`&token=` parameter value (`_TOKEN_PARAM_PARTIAL_RE`, mirroring the batch pass-4 anchor incl. its case-folded name and value class) escalates the same way — without it a >=512-char opaque token value would be bisected at the floor, committing the `token=` anchor into the redacted prefix while the anchor-less tail reached `flush()` and streamed raw. **Split-Bearer holdback**: an `Authorization: Bearer <token>` header spans whitespace (not in `_CRED_CLASS`), so the cred-class run alone would commit the `Authorization: Bearer ` prefix and leak the token on the next chunk. `_BEARER_ANCHOR_PARTIAL_RE` (case-insensitive, JSON-aware, `\Z`-anchored, matching any prefix of an in-progress `Authorization: Bearer <token>`) makes `feed` pull the commit index back to the anchor start (`i = min(i, anchor.start())`), holding header + token together, and escalates the cap so an opaque OAuth/refresh/SSO Bearer token >512 chars (no `eyJ`) is not bisected either. **Fail-closed ceiling**: when a credential-anchored tail (JWT/JWE/Bearer) exceeds the 4096 ceiling, `feed` FAILS CLOSED — it redacts+emits the confirmed-safe prefix, appends `_REDACTED_CREDENTIAL_TAG` (`[REDACTED: credential]`, shared with the batch redactor), and DROPS the oversized tail rather than bisecting it; a plain cred-class run with NO credential anchor is still committed verbatim (bisected — no data loss, DoS bound intact)
 - **Streamed canonical-tag fixed point:** a chunk boundary after the interior space in a member of `CREDENTIAL_REDACTION_TAGS` would let token-parameter pass 4 re-redact the `[REDACTED:` head and duplicate the remaining label, so `StreamRedactor.feed()` pulls its safety cut back when the buffer tail is a STRICT prefix of a module-owned canonical tag. The lookback is bounded by the longest registered tag; a complete tag commits normally; and the cut is applied after STRONG classification, so it never raises the DoS cap or authorizes a fail-closed drop. An incomplete prefix at `flush()` remains ordinary text.
 - **A tool call or an approval prompt does not end the dashboard's redaction window.** The dashboard runner cuts the reply into rows at each tool call and approval prompt, but the model's text on either side is one run of characters, so a credential can start before the cut and finish after it; flushing `_wsred` there would stream and save both halves unmatched. So the cut (`chat_runner._cut_segment`) leaves the run the wire redactor still withholds in the redactor and off the row it was cut from, when the whole segment's save shows that run as written (a run the save already redacts ends a value the segment holds whole, and the window ends there as at the reply's end). The redactor's next output settles it (`_settle_held`), judged on raw text, never on the redacted output (a pass that keeps a label and replaces only its value, like `?token=`, leaves the label on the output as written): when the raw run redacted together with the raw text after it (the slot's raw segment copy) equals the run unchanged followed by that text redacted alone (`_stands_alone`), no value starts in one and ends in the other, and the run is a word of its own and goes back on its row (`_give_back_run`: the row's content is patched in place, with the save's glued-footer repair run over the rebuilt text, and open tabs get a `chat_message_update` in the row's display form); otherwise the run opens the segment it continued into (`_open_segment_with`: prepended to the raw copy and the streamed text), so that row's whole-text save and the linked-channel final reply redact the credential as one text, and its placeholder sits in the segment where the credential completed. Narration before the cut stays on its row and out of the final reply. One piece per cut crossed before any output, so a run held over several cuts goes back piece by piece; a segment wholly held at its cut keeps an empty row until its piece returns (an empty row draws nothing: `isHiddenInvisibleAssistantRow`, and the Mochi panel's `ChatPanel` skips it the same way). A run given back reaches open tabs as that row patch, not as a `chat_chunk`; the Mochi panel takes the same patch (`panelBridge` hands it on as a `_patch` frame keyed by the row's `mid`). It is also queued on the slot's delivery queue as the `chunk` row it was held back from (`push_wire_frame`: not in the window, which already holds it, and not on the WebSocket), so the /api/chat SSE stream and the OpenAI-compatible replies, which join the chunks they drain, carry every word in order. A held run is also settled at the reply's end, at a steer cut and before a compaction, `/clear` or agent-switch reset drops the segment (`_drop_wire_tail`), and on an abnormal end (`_persist_partial_reply`, which at a shutdown also saves a row the run went back on, since the graceful save ran before it). The Slack stream carries its held run across a `wait` the same way (`move_back`, `_give_back`). The crew log's `message/sent` for the row is written at the cut, ahead of the tool call, without the held run; a run given back is written as its own `message/sent` under the same turn and model call (`_log_given_back`), so a model call's text is its entries joined in order. A run that is one short plain word ending a sentence (`text_redaction.ends_plain_sentence`, the one rule the dashboard cut and the Slack stream share: a letter, up to 18 lowercase letters, an optional short `'` contraction, then `.`, and unchanged by `redact`) is not held when no earlier cut holds a run: no credential starts in such a word or continues through it (every anchored prefix is mixed-case, digit or symbol, the bare base64-class run ends at `.`, and the 20-character cap keeps the Discord shape out), so the cut flushes the redactor and the row keeps its last word while the tool runs. The Slack stream releases the same word before a tool card, a `wait` or an approval prompt (`release_sentence_end`), except while a run carried across an earlier `wait` is still waiting for `_give_back`. Accepted residuals: while a tool runs or an approval waits, the row before it lacks any other held last run, and so does that row's `assistant` frame on the delivery queue, which is sent at the cut (a reader that joins those frames instead of the chunks misses the run). Pinned by `test_chat_runner_redact_across_tool_boundary.py` and, for the tabs that apply the patch, `chatSlice.heldRunPatch.test.ts` (dashboard) and `mochiHeldRunPatch.test.tsx` (Mochi panel).
+- **When the dashboard lets a held tail go.** The dashboard releases a held tail only when more text ends the run, at a display boundary, or when the engine has reported the end of the turn (its `session/prompt` answer). A credential split across chunks is never shown in parts. A held tail that is one plain word ending a sentence (a letter, at most 18 lowercase letters, an optional apostrophe part, one period) and that the redactor leaves unchanged is released at once. Everything else is held as today. `_on_text_chunk` calls `StreamRedactor.release_sentence_end()` after each `feed`: a withheld run that `ends_plain_sentence` accepts (the rule the tool-call cut and the Slack stream already share, described above) is committed with its own chunk, so the reply's last word shows when the engine writes it instead of at the prompt's answer. No later text can make such a word part of a credential, and no pattern needs one on its left to match, so the stream never shows more than it did. It is not always the same byte for byte: text glued to the word is read without it, so a pattern that a `.` on its left switches off (the two-part link token) masks such a run whole on the live stream where the uncut run is masked in its second part; the saved reply is redacted whole as before. A value being dropped is never released this way, and neither is a run the structured detectors still read a unit in (with their switch on, `hvs.` opens a token and is not a sentence end). The release is the dashboard's alone: the Slack stream keeps its own release before a tool card, and the messaging driver and every other consumer of `StreamRedactor` never call the method and hold the run as before. The engine's own end-of-turn frame (KAS's `turn_end`) is deliberately not a release point: the same prompt can still write text after it (a steering continuation, a turn of its own), so a run shown there could be the first half of a value the later text completes. Pinned by `test_stream_tail_release.py`.
 - **A chat segment is saved as its raw copy redacted once.** Chat text is redacted one streamed delta at a time, and a delta boundary can cut a value, so per-delta redaction can leave pieces of it (a blocked link's query after the placeholder its first piece became). The segment flush (`chat_runner._redact_segment`) therefore saves the slot's raw copy of the same deltas, with the same glued-footer reflow the streamed text gets, through both removers once: the same text and records the same reply gets when it streams in one delta. A pass is not monotone in its context (a credential at a delta start, a piece of base64), so each value a per-delta pass replaced (`chat_runner._redact_delta`: the addresses `redact_exfiltration_urls_with_records(removed_out=)` hands back and the values of `redact_credentials_with_records(defer_token_param=True)`) is checked on its own against the whole-text result. Default refuse: main's own save (the streamed text redacted again) is the only proof that text is safe to keep. Every run of word characters the saved text shows, blocked-link domains included, must appear in it (`_saved_text_shows_more`); nothing else vouches for a run, so no glued, quoted or forged shape can launder a value a delta's redaction hid, and the segment is withheld instead. A blocked-link record is kept only for a placeholder the saved text holds and when its quoted fields are pieces of main's text or of an address a delta blocked whole (`_links_main_shows`); any other record is dropped and its placeholder stays. The raw copy is never edited to drop a value (a mask changes what the next pass matches). It fails closed and saves `_SEGMENT_UNCHECKED_TEXT` with no records, never the raw text, when: there is no raw copy (past `_SEGMENT_RAW_MAX_CHARS`), the raw copy's hash of per-delta redactions is not the streamed text's, a redaction pass raises, the whole-text result holds such a value more often than the streamed text's own redaction does, or a saved record holds a value a per-delta pass removed as a credential (a blocked link's `url`, `path` or `domain`; a credential record's `view_command`, `profile_command` or source `command`, `path` or `section`). Accepted cost: a reply whose base64 blob a delta cut so a piece of it was removed is withheld. With no streamed deltas the text itself is redacted. Open exposure: the five live `StreamRedactor` sites (`chat_turn/stream_chunks.py` `_wsred` and `_thinkred`, `chat_threads.py`, `handlers/side.py`, `messaging/driver.py`, `slack/handler_runtime/stream.py`) and native subagent card output still redact each chunk alone, so a cut blocked link can reach them in pieces until #20817 lands. The subagent output SSE tail (`handlers/core.py` `api_session_agent_stream`) does not: each poll is redacted and sent up to the start of its last line with text in it, and the rest waits for the next poll; while the part before that line and the rest redact differently apart than together (a value on a line after its label), or a credential match spans that line's start (a Bearer label is kept, so a token cut from it can redact the same apart), all of it waits. The last poll sends what is held, and a hold past `_AGENT_STREAM_HOLD_MAX` characters is redacted and sent as one piece, after which the stream sends nothing but `event: done`, since the next read could carry the rest of a value it cuts. So a link, or a credential with its label, split between two reads is redacted whole; a read that ends after a label's separator or opening quote, before any of a value on a later line, still sends the label's line on its own. The link pass rewrites its blocked links longest first, for every caller, so a blocked link that prefixes a longer blocked one (the same link with a token appended) cannot rewrite the longer one's head and leave its tail; which links are blocked, the warnings and the records are unchanged. The link check, the display pass and `StreamRedactor` are otherwise unchanged.
 - Defense against write-then-execute attacks: even if the LLM tricks kiro-cli into running a credential-extracting script, the output is scrubbed before the LLM can use it in follow-up messages
 
@@ -2403,7 +2548,7 @@ continue to apply.
   - **Pass 1 (whole-string glob):** every deny glob is matched against the full input. If a pattern matches and no exception pattern also matches the full input, the command is denied immediately. This closes evasion vectors where the deny string spans a shell separator boundary.
   - **Pass 2 (per-segment glob):** only runs if pass 1 found a glob match AND the full input also matched at least one exception. The input is split on shell separators (`;`, `&&`, `||`, `|`, `&`, `$()`, backticks, newlines) into independent segments, and each segment is re-evaluated. `_DENY_EXCEPTIONS` carries one scoped carve-out (#8802): the two `local-destructive-rm-rf-*` rules are excepted for a segment that BEGINS with a read-only search verb (`grep`/`egrep`/`fgrep`), so searching for those rules' own literals is not treated as running them — which prevented nothing, since the payload completes from a file the gate never scans. Three conditions carry that safety, and each one closed a real bypass found in review: the globs are **verb-anchored** with no leading `*` (a leading `*` is an unanchored substring test under `fnmatch`, and `*/grep *` would exonerate `rm -rf / /bin/grep x`); `_exception_eligible` requires the view to be a **single plain command** — no `$` `` ` `` `( ) { } < >` and no separator (`|` `;` `&` newline), because the separator list above covers neither `<(` / `>(` / `${` nor a bare `(`, and such a construct otherwise stays glued inside a search-verb segment and still executes — a character class rather than a list of opener spellings, which lost twice (to `<(`, then to a bash 5.3 funsub); the separators are refused for the Pass 1 whole-string view specifically, so an exception cannot speak for a compound command whose later stage executes what the search emitted (`grep '<literal>' payload.py | python`); and the verb list is confined to the `grep` family because the premise is that the verb cannot execute its operands, which is a property of the tool (`rg --pre <cmd>` and `ack --pager <cmd>` do execute, so both are excluded). Path-qualified invocations are likewise not excepted: a glob cannot express "the first token's basename is the verb". The globs are matched against the command behind one exact leading `Running: ` (kiro-cli's shell-title prefix, `denied_rules._exception_applies`): both deny tiers judge that title as a subject of its own, so without it a search's title was refused for a command the carve-out exonerates. A second prefix, any other spelling, or a prefix that does not start the view is read as text and earns nothing, so a title never gets a weaker verdict than the command it displays. An exception is granted only if its SEL `deny_exception` audit write succeeds, so the path is fail-closed.
   - SEL audit events emitted on every denial (`deny_event`, recorded under the `git push` label for git-publish) and every exception grant (`deny_exception`).
-  - **A person's in-session override** (`is_denied(..., waived=...)`, [rfc-deny-session-override](../../request-for-change/rfc-deny-session-override.md), #26984). The key a refusal's first line names after `DENY_REASON_PREFIX` (the pattern, git-publish rule id or floor rule id its return site passes to `_deny_reason`) is the override's identity. Each return site whose key is in `waived` writes a `deny_exception` with mechanism `session_override` and, only if that write succeeded, steps aside; evaluation continues, so another rule the command breaks still refuses (`_DenyWaiver`). The `deny-rules` tier drops every key a governance pin holds and every companion `SecurityOverlay` pattern before calling it (`deny_waiver.waivable_keys`), `PolicyAuthority` drops the overlay patterns again, and no other gate tier reads the waivers. A self-guard key is never waived (`deny_waiver.deny_key_is_self_guard`): every self-protection floor listed under *Self-protection (argv-structural floor)*, the ungated ones included, the git-publish floor's unverifiable-target key (that branch reads no push target, so a waiver would also pass a protected-branch push carrying any substitution), and every rule of the `self-protection` or `credential-exfil` category. `_DenyWaiver` drops those keys whatever the caller passes, and the self-protection floor sites, the unverifiable-target branch and the interpreter-joined match never consult it, so those floors still run unconditionally and keep their flat refusal. The dashboard offers the override card (`dashboard/deny_override.py`) only for a `deny-rules` refusal whose key is not a self-guard key, in a slot a person drives, in a turn the owner sent from the dashboard (`_turn_owner_sent`, with no messaging-channel steer admitted into it), on a backend whose transport stamps `AcpEvent.child_calls_marked` (the per-transport allowlists `ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED` and `ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED`; codex and any unproven backend fail closed), never for a pinned or overlay key, a subagent's request, an unverified command, or an app-, cron-, channel- or Slack-bound slot; only the owner's own click answers it, and a trust or YOLO sweep never does. "Allow for this session" stores the key on the slot only after the re-judge with it waived allows the call, and a later call reuses it only under the same eligibility, so another dashboard user's turn, a cron delivery or an app message that starts a turn in that slot gets neither the waiver nor a card. A command that breaks two overridable rules is refused and cannot be waived: each card waives one rule, and nothing is stored while another still refuses. The transport floor re-judges the approval with the same keys. Pinned by `test/test_deny_session_override.py`.
+  - **A person's in-session override** (`is_denied(..., waived=...)`, [rfc-deny-session-override](../../request-for-change/rfc-deny-session-override.md), #26984). The key a refusal's first line names after `DENY_REASON_PREFIX` (the pattern, git-publish rule id or floor rule id its return site passes to `_deny_reason`) is the override's identity. Each return site whose key is in `waived` writes a `deny_exception` with mechanism `session_override` and, only if that write succeeded, steps aside; evaluation continues, so another rule the command breaks still refuses (`_DenyWaiver`). The `deny-rules` tier drops every key a governance pin holds and every companion `SecurityOverlay` pattern before calling it (`deny_waiver.waivable_keys`), `PolicyAuthority` drops the overlay patterns again, and no other gate tier reads the waivers. A self-guard key is never waived (`deny_waiver.deny_key_is_self_guard`): every self-protection floor listed under *Self-protection (argv-structural floor)*, the ungated ones included, the git-publish floor's unverifiable-target key (that branch reads no push target, so a waiver would also pass a protected-branch push carrying any substitution), and every rule of the `self-protection` or `credential-exfil` category. `_DenyWaiver` drops those keys whatever the caller passes, and the self-protection floor sites, the unverifiable-target branch and the interpreter-joined match never consult it, so those floors still run unconditionally and keep their flat refusal. The dashboard offers the override card (`dashboard/deny_override.py`) only for a `deny-rules` refusal whose key is not a self-guard key, in a slot a person drives, in a turn the owner sent from the dashboard (`_turn_owner_sent`, with no messaging-channel steer admitted into it), on a backend whose transport stamps `AcpEvent.child_calls_marked` (the per-transport allowlists `ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED` and `ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED`; codex and any unproven backend fail closed), never for a pinned or overlay key, a subagent's request, an unverified command, or an app-, cron-, channel- or Slack-bound slot; only the owner's own click answers it, and a trust or YOLO sweep never does. "Allow for this session" stores the key on the slot only after the re-judge with it waived allows the call, and a later call reuses it only under the same eligibility, so another dashboard user's turn, a cron delivery or an app message that starts a turn in that slot gets neither the waiver nor a card. A command that breaks two overridable rules is refused and cannot be waived: each card waives one rule, and nothing is stored while another still refuses. The transport floor re-judges the approval with the same keys. The operator switch `agent.deny_override` (default `true`) gates all of it: `slot_may_override` reads it on each request (`deny_override_enabled`, `false` when the read raises or the load degraded the `agent` section or a whole config file), so with `false` no card is offered and no session override applies, and the card answer path reads it again, so a card already showing when it is turned off refuses whatever the answer. Session overrides stay on the slot while it is off and apply again if it is turned back on, until the slot ends. Pinned by `test/test_deny_session_override.py`.
 > **Removed with the standalone provider.** A former check
 > (`cc_agent.find_overbroad_cc_deny_rules`, the `seed_isolated_cc_config`
 > isolation seed, and the `kirocrew doctor` surfacing of over-broad
@@ -2774,7 +2919,12 @@ no file, and a sandboxed process cannot create the file first with `disable_all`
 - **Write (dashboard):** the `/api/security/denied-commands` mutations run
   `_write_denied_state` — an atomic read-modify-write of `denied_commands.json`
   under the shared config lock, routed through
-  `atomic_write(restrict_to_owner=True)`. The lockdown lands on the temp file
+  `atomic_write(restrict_to_owner=True)`. A save other than the owner's Apply or
+  Discard refuses a pending file before it reads it, as the `computer_use.json`
+  PUT does, so it cannot publish a stale copy over a `kirocrew config pending`
+  Apply from another process; what remains is the window
+  `refuse_save_if_pending` documents, an outside edit and its Apply both landing
+  inside one save. The lockdown lands on the temp file
   before any content reaches it, so the keystone never exists in a
   world-readable file: 0o600 on POSIX, owner-only DACL on Windows. On a
   lockdown failure `atomic_write` raises by default (the same fail-loud
@@ -3088,7 +3238,7 @@ a `( )` group, a quote, `#` or `[[` in a chain, past the length or part bounds),
 which runs without a refusal (`spec_denied_gate.spec_denies_refusal`). An
 entry KAS carries is not named.
 
-**KAS spec `web_fetch.trusted` on a plain URL** (`spec-builtin-grant` row, `kas_spec_denies.web_fetch_gate`, `spec_denied_gate.url_literal`) — kiro-cli matches each `web_fetch.blocked` / `trusted` entry against the whole URL, anchored and case-sensitive: a blocked match refuses, then a trusted match runs without a prompt (`evaluate_url_permission` in kiro-cli's `crates/agent/src/agent/permissions.rs`). KAS matches a `web_fetch` rule on the host only, so the translation carries a blocked entry that maps to a host as a KAS host deny and names the rest, and carries no trusted entry; Crew's gate adds no refusal. It grants a KAS `web_fetch` whose `rawInput.url` a trusted entry names, read with string work only, never as a regex: a plain URL (equal) or a plain URL followed by `.*` (`startswith`), with an optional `^`/`\A` and `$`/`\z`, and a backslash before ASCII punctuation read as that character (`\<`, `\>` and a trailing `\$` refused). The grant holds only when every blocked entry has the same shape and none matches the URL, the URL has no control character, and the spec's own `permissions` has no `ask` or `deny` reaching `web_fetch` and is not refused by the merge. Any other entry keeps main's prompt and is named in the session notice. shortcut: a blocked entry KAS cannot express still applies only as main applies it; whole-URL blocked refusal is follow-up work (#33068).
+**KAS spec `web_fetch.trusted` on a plain URL** (`spec-builtin-grant` row, `kas_spec_denies.web_fetch_gate`, `spec_denied_gate.url_literal`) — kiro-cli matches each `web_fetch.blocked` / `trusted` entry against the whole URL, anchored and case-sensitive: a blocked match refuses, then a trusted match runs without a prompt (`evaluate_url_permission` in kiro-cli's `crates/agent/src/agent/permissions.rs`). KAS matches a `web_fetch` rule on the host only, so the translation carries a blocked entry that maps to a host as a KAS host deny and names the rest, and carries no trusted entry; Crew's gate adds no refusal. It grants a KAS `web_fetch` whose `rawInput.url` a trusted entry names, read with string work only, never as a regex: a plain URL (equal) or a plain URL followed by `.*` (`startswith`), with an optional `^`/`\A` and `$`/`\z`, and a backslash before ASCII punctuation read as that character (`\<`, `\>` and a trailing `\$` refused). The grant holds only when every blocked entry has the same shape and none matches the URL, the URL has no control character, and the spec's own `permissions` has no `ask` or `deny` reaching `web_fetch` and is not refused by the merge. Any other entry keeps main's prompt and is named in the session notice. A blocked entry KAS cannot carry is named and refuses nothing by default; with `agent.kas_fail_closed_web_fetch_blocked` on (off by default), the translation sends one KAS `web_fetch` deny over `*` in place of that key's host denies, so the agent fetches no URL until the entry is fixed, and the notice says every web fetch is refused. shortcut: whole-URL blocked matching is follow-up work (#33068).
 
 **KAS spec shell allowlist (`denyByDefault`)** — a spec that sets
 `toolsSettings.shell.denyByDefault` (either shell key; any value but `false`) has
@@ -3951,6 +4101,15 @@ claimed after its servers started is named that way. The managed-tool-policy rea
 goes over the same capability when one is held: with the masked secret it would be
 refused, and that refusal reads as no exclusions, which would let a capability-backed
 call run a tool the operator excluded.
+A server that holds a pickup never asks its gateway for a relayed tool list
+(`mcp_listing_relay.fetch_listing`): it builds its own list, through this read. And
+the gateway builds a relayed list only on an install whose package tree the
+sandbox seals against a session's agent (`sandbox_tiers.install_root_targets_for`,
+the one classification): building it imports listing modules into the gateway,
+outside the sandbox, on a request a session can cause, so on an editable or
+from-source checkout, which stays writable, the gateway answers "build locally"
+before any listing code runs (mcp.md, "A list is relayed only on an install the
+sandbox seals").
 While it holds a capability, `mcp_core_parts.gateway._api_urlopen` sends every request
 to the agent socket through `unix_socket_urlopen` with `X-Ipc-Capability` and without
 `X-Internal-Secret`; it never falls back to TCP. No pickup, or one the gateway
@@ -4270,8 +4429,17 @@ parent remain eligible, while a child attached to a recycled root or
 intermediate PID is rejected. Failure to retain the primary handle or validate
 its identity, create a Toolhelp snapshot, or complete any initial or later
 enumeration fails the operation closed; opened child handles are closed before
-the error propagates. One deadline covers process exit, initial and terminal
-discovery, and inherited output-pipe closure.
+the error propagates. The run receives a tracker failure as that error, never
+as a cancellation: it ends the leader and every retained handle, logs the
+reason, and returns a failed result marked `tree_unverified`, which a probe
+reader treats as unknown and not as the child's answer (`kiro_cli._probe_ran`).
+The cached probes (`--version`, `chat --help`) leave that answer out of their
+cache, so the next reader probes again; after
+`kiro_cli._UNVERIFIED_PROBE_ATTEMPTS` such runs in a row on one binary the
+answer is cached as unknown, as a timed-out probe's is.
+A cancellation of the run itself still propagates after the same teardown. One
+deadline covers process exit, initial and terminal discovery, and inherited
+output-pipe closure.
 
 Unverified candidate version probes route through
 `sandboxed_spawn_argv(..., mode="strict")` on POSIX. The outer sandbox launches
@@ -4280,6 +4448,30 @@ preventing a planted `kiro-cli` basename from selecting the provider's trusted
 internal macOS delegation path. The strict wrapper additionally hides the
 configured data home, `~/.kiro/crew`, `~/.kirocrew`, and all known Kiro
 identity stores, so setup probes cannot read Kiro Crew state or bearer tokens.
+
+The Tool Search gate's read of a kiro-cli found only through `PATH`
+(`kiro_cli_path_probe`) is the same shape and follows one rule: **the probe
+never has more reach than the session's own launch of the same file.** `PATH`
+can lead with a directory an agent writes to, so its `--version` runs through
+the same runner as the candidate probes above (`kiro_prerequisite._run_process`,
+`sandboxed_spawn_argv(mode="strict")` behind the system `env` entry, output
+captured up to the runner's fixed bound and the process tree ended on a
+timeout), with
+the `--version` probe environment above and nothing else. A host with no
+sandbox backend is refused by the chokepoint itself. The runner's
+`require_crew_sandbox` keyword, which only this read passes, refuses the spawn
+with no child started when the
+wrap did not put the child in Kiro Crew's own sandbox (an
+unsandboxed opt-in, a gateway that itself runs inside a sandbox); every other
+caller of the runner leaves it off and runs as before. The read is not
+run on Windows, which has no sandbox backend. It adds no seal and no mask: the
+keyword only declines to run. Every such case answers "unknown", which keeps
+Kiro Crew's own MCP servers out of deferral. The pinned install and an absolute
+`KIROCREW_KIRO_BIN` keep their own read (`kiro_cli_version_at`), which runs
+inside the sandbox at the configured tier, as a session runs the same binary
+(`kiro_cli._sandboxed_probe`; its fixed argv still runs on a host with no
+sandbox backend); no file is added to that route.
+
 Trust is "the CLI runs, and it has a valid login": a Kiro CLI that answers
 `--version` is eligible for `whoami`, regardless of install
 source, owner, or fixed path. Kiro Crew is not the authority on where Kiro CLI

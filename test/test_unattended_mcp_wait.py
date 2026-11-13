@@ -73,13 +73,13 @@ def test_declared_servers_skip_disabled_ones_and_survive_until_the_next_session(
 
 
 def test_servers_past_the_cap_are_counted_and_never_read_as_ready():
-    from kiro_crew.acp.mcp_session_report import BUCKET_CAP
+    from kiro_crew.acp.mcp_session_report import STATUS_CAP
 
     report = McpSessionReport()
     report.begin_session([])
-    names = [f"s{i}" for i in range(BUCKET_CAP + 1)]
+    names = [f"s{i}" for i in range(STATUS_CAP + 1)]
     report.record_declared({"mcpServers": {name: {} for name in names}})
-    for name in names[:BUCKET_CAP]:
+    for name in names[:STATUS_CAP]:
         report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
 
     assert report.declared_omitted == 1
@@ -87,6 +87,20 @@ def test_servers_past_the_cap_are_counted_and_never_read_as_ready():
 
     report.begin_session([])
     assert report.declared_omitted == 0
+
+
+def test_65_declared_servers_that_all_connected_leave_nothing_not_ready():
+    """One bound for every reader: the wait, the notice and the live reading agree."""
+    report = McpSessionReport()
+    report.begin_session([])
+    names = [f"s{i}" for i in range(65)]
+    report.record_declared({"mcpServers": {name: {} for name in names}})
+    for name in names:
+        report.record_event(EVENT_MCP_SERVER_INITIALIZED, name)
+
+    assert report.declared_not_ready() == ()
+    assert report.declared_never_reported() == ()
+    assert report.not_ready() == {}
 
 
 def test_a_server_muted_with_a_non_boolean_disabled_is_not_waited_for():
@@ -259,6 +273,12 @@ def test_without_the_opt_in_the_global_mcp_json_is_not_waited_for(tmp_path, monk
 # ── The shared-runtime session handle ───────────────────────────────────────
 
 
+def _deliver(handle: AcpSessionHandle, frame) -> None:
+    """Hand *frame* to the session as the runtime's reader does: report, then queue."""
+    handle.mcp_session_report().fold_frame(frame)
+    handle._queue.put_nowait(frame)
+
+
 @pytest.mark.asyncio
 async def test_handle_holds_the_first_prompt_for_a_slow_declared_server():
     """drain_init gives up on the slow server; the unattended wait does not."""
@@ -269,13 +289,13 @@ async def test_handle_holds_the_first_prompt_for_a_slow_declared_server():
     report.begin_session([])
     report.record_declared(_SPEC)
 
-    q["sA"].put_nowait(_initialized("sA", "atlassian"))
+    _deliver(handle, _initialized("sA", "atlassian"))
     await handle.drain_init(duration=0.2, idle_exit=0.01, no_report_ceiling=0.05)
     # The defect: the session would now prompt without the slow server.
     assert report.declared_unreported() == ("azure-devops",)
 
     waiter = asyncio.ensure_future(handle.wait_for_declared_mcp(60.0))
-    q["sA"].put_nowait(_initialized("sA", "azure-devops"))
+    _deliver(handle, _initialized("sA", "azure-devops"))
     missing = await await_until(waiter, what="the wait to end once the server reported")
 
     assert missing == ()
@@ -300,7 +320,7 @@ async def test_handle_declared_wait_counts_an_owed_compaction_terminal():
             params={"status": {"type": "failed"}},
         )
     )
-    q["sA"].put_nowait(_initialized("sA", "atlassian"))
+    _deliver(handle, _initialized("sA", "atlassian"))
 
     missing = await handle.wait_for_declared_mcp(1.0)
 
@@ -317,7 +337,7 @@ async def test_handle_wait_is_bounded_and_names_the_server_that_never_reported()
     report = handle.mcp_session_report()
     report.begin_session([])
     report.record_declared(_SPEC)
-    q["sA"].put_nowait(_initialized("sA", "atlassian"))
+    _deliver(handle, _initialized("sA", "atlassian"))
 
     missing = await _bounded(handle.wait_for_declared_mcp(0.05), what="the bounded wait")
 

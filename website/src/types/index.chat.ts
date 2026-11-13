@@ -5,7 +5,7 @@
 // content blocks; notifications and their channels; approvals; history session
 // rows. Consumers import them from `types/index.ts`.
 import type { WebAppMetadata } from './index.artifacts'
-import type { SessionAttribution } from './index.sharedCrew'
+import type { PublicPrincipal, SessionAttribution } from './index.sharedCrew'
 import type { SourceProviderId } from './index.sources'
 
 /** One open ledger item that does not name a person (`crew_work.items`). */
@@ -110,6 +110,32 @@ export interface McpSessionReport {
    * Optional because an older gateway sends no such key.
    */
   restart_to_load?: string[]
+  /**
+   * The servers this session cannot use right now, by what is true of each.
+   * Optional: a gateway or an agent backend that does not report it sends no
+   * such key, and then no server is known to be connecting.
+   */
+  states?: McpSessionStates
+  /**
+   * Not zero when the report left servers out because one of its lists was
+   * full: it is then partial. A total of what each list left out, not a
+   * number of servers.
+   */
+  states_omitted?: number
+}
+
+/** A session's not-ready servers by state; a state with no server is left out. */
+export interface McpSessionStates {
+  /** Declared and not reported yet: still starting. */
+  connecting?: string[]
+  /** Waits for a person to authorize it. */
+  needs_sign_in?: string[]
+  /** Reported a failed start. */
+  failed?: string[]
+  /** Switched off by its owner, or reported disabled by the host. */
+  disabled?: string[]
+  /** Dropped by the host's registry instead of started. */
+  registry_dropped?: string[]
 }
 
 /** A Slack code channel a session runs in (`slack/code_channels/dashboard_view.py`).
@@ -292,6 +318,9 @@ export interface ChatSlot extends TurnIdentityFields {
   incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
+  /** Of those, the restored cards no drain starts on its own (`readyQueueDepth`).
+   *  Absent on an older gateway. */
+  queue_held_depth?: number
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
   code_channel?: CodeChannelInfo
   /** Code channels are on but not read yet, so this Slack-linked row may still
@@ -317,6 +346,11 @@ export interface ChatSlot extends TurnIdentityFields {
   /** Shared Crew creator (`shared_crew.attribution`), public shape. Display only. */
   attribution?: SessionAttribution | null
   created_by?: string
+  /** Shared Crew: the people who have written here, creator first, then most
+   *  recent (`shared_crew.participants`), public shape. Display only. */
+  participants?: PublicPrincipal[]
+  /** How many people the gateway's capped `participants` list dropped. */
+  participants_dropped?: number
   /** True on a Crew Mode root: a root session running a conductor template
    *  (`crew_mode.stamp_rows`). The session list styles and filters on it. */
   crew_mode_root?: boolean

@@ -34,6 +34,16 @@ Four parts:
   the running turn (the request is still unanswered, so the steer is queued and
   not dropped); the transport then rejects through its floor-refusal branch.
 
+One more rule rides the same window, on KAS only (``_backend_of(...) == ACP_BACKEND_KAS``):
+a shell command is refused while a file write announced before it in the same
+batch (:func:`is_file_edit`) has not finished and the command names that file
+(its path, or a word ending in its basename; any command when the write names
+no path). KAS starts a batch's calls in no
+fixed order, so the command could run before the file exists; it also asks one
+permission at a time, so the command cannot be held until the write lands
+(that would hold back the write's own request). The model runs the command
+again in its next step (``DENY_CAUSE_BATCH_WRITE_RUN``).
+
 A call the agent spec auto-approves never reaches ``approve_tool``, so on KAS
 :func:`withhold_write_auto_approval` keeps each write-class MCP tool out of the
 projected auto-approval while the guard is on; the gate answers it instead
@@ -61,6 +71,7 @@ from typing import Any
 
 from kiro_crew.acp._dispatch_parts.tool_call_provenance import (
     MAX_ACTIVE_TOOL_CALLS,
+    TOOL_CALL_CACHE_MAX_PATH_CHARS,
     liveness_key,
 )
 from kiro_crew.acp.batch_guard_tokens import (
@@ -72,7 +83,8 @@ from kiro_crew.acp.batch_guard_tokens import (
     tokens_of,
 )
 from kiro_crew.acp.program_name import windows_program_name
-from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.constants import DENY_CAUSE_BATCH_READ_WRITE, DENY_CAUSE_BATCH_WRITE_RUN
 from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL, KIRO_TOOL_ALIASES
 from kiro_crew.security import argv_rules as _argv_rules
 from kiro_crew.security import shell_commands as _shell_commands
@@ -139,12 +151,15 @@ _READ_BUILTINS: frozenset[str] = frozenset(
     }
 )
 _SHELL_BUILTINS: frozenset[str] = frozenset({"execute_bash", "execute_pwsh", "run_command"})
+#: The built-in writes that create or change a file a later command may run.
+_FILE_EDIT_BUILTINS: frozenset[str] = frozenset({"fs_write", "fs_append", "str_replace"})
 
 #: Kiro Crew's own MCP tools, keyed by ``(server, tool)``.
 _WRITE_MCP_TOOLS: frozenset[tuple[str, str]] = frozenset(
     {
         ("kirocrew-work", "work_report"),
         ("kirocrew-work", "work_ledger_record"),
+        ("kirocrew-work", "work_ask_record"),
         ("kirocrew-work", "work_ledger_rebuild"),
         ("kirocrew-dashboard", "session_send"),
         ("kirocrew-dashboard", "session_broadcast"),
@@ -473,6 +488,67 @@ def classify(event: Any, extra_write_commands: tuple[str, ...] = ()) -> str:
     return ""
 
 
+def is_file_edit(event: Any) -> bool:
+    """Whether *event* is a built-in file write (``fs_write``, ``fs_append``,
+    ``str_replace``, by kiro-cli or KAS name), or names no tool and has the ACP
+    kind ``edit``."""
+    server, name = _tool_identity(event)
+    if server:
+        return False
+    if name:
+        builtin = KIRO_TOOL_ALIASES.get(name, name)
+        return (
+            builtin in _FILE_EDIT_BUILTINS
+            or KIRO_CLI_NAME_BY_KAS_TOOL.get(builtin, "") in _FILE_EDIT_BUILTINS
+        )
+    return str(getattr(event, "tool_kind", "") or "") == "edit"
+
+
+def _edit_paths(event: Any) -> frozenset[str]:
+    """The target of a file write *event*, as each full path and its basename,
+    from its arguments' ``path`` (or ``file_path``) and the edit's diff path.
+
+    A path over :data:`TOOL_CALL_CACHE_MAX_PATH_CHARS` makes the target unknown
+    (empty), never a cut path: the member stays bounded, and an unknown target
+    refuses any command batched after the write."""
+    raw = getattr(event, "raw_tool_params", None)
+    found = [raw.get(k) for k in ("path", "file_path")] if isinstance(raw, dict) else []
+    found.append(getattr(event, "diff_path", ""))
+    out: set[str] = set()
+    for path in found:
+        if isinstance(path, str) and path.strip():
+            if len(path) > TOOL_CALL_CACHE_MAX_PATH_CHARS:
+                return frozenset()
+            out.add(path)
+            out.add(_basename(path))
+    out.discard("")
+    return frozenset(out)
+
+
+def _basename(word: str) -> str:
+    return word.rstrip("/\\").replace("\\", "/").rsplit("/", 1)[-1]
+
+
+#: Shell operators a word may be glued to (``hello.py>out.txt``), split off
+#: before the words of a command are compared with a write's path.
+_SHELL_GLUE = str.maketrans({c: " " for c in ";|&<>()`'\"="})
+
+
+def _command_names(command: str) -> frozenset[str]:
+    """Each word of *command* and its basename, for matching a write's path.
+
+    shortcut: a command reaching the file only through a name it builds (``import
+    hello``, a glob, ``$VAR``) is not matched and runs as on main; widen this if
+    such a race is seen.
+    """
+    out: set[str] = set()
+    for word in command[:MAX_CLASSIFIED_COMMAND_CHARS].translate(_SHELL_GLUE).split():
+        out.add(word)
+        out.add(_basename(word))
+    out.discard("")
+    return frozenset(out)
+
+
 def is_creator(event: Any, extra_write_commands: tuple[str, ...] = ()) -> bool:
     """Whether the RESULT of *event* carries new ids that a later call may quote:
     a ledger ``create``, a ``gh pr``/``issue create``, a ``git commit`` or
@@ -633,6 +709,11 @@ class _Member:
     tokens: frozenset[str] = frozenset()
     creator: bool = False
     output: frozenset[str] = frozenset()
+    #: A file write (:func:`is_file_edit`), for the write-then-run rule.
+    edit: bool = False
+    #: The write's target, as full paths and basenames (:func:`_edit_paths`);
+    #: empty when the frames named none.
+    paths: frozenset[str] = frozenset()
 
     def class_with(self, extra_write_commands: tuple[str, ...]) -> str:
         if self.command and extra_write_commands:
@@ -766,12 +847,20 @@ class BatchWindow:
         self._guessed = set()
 
     def dispatched(
-        self, call_id: str, klass: str, command: str = "", *, text: str = "", creator: bool = False
+        self,
+        call_id: str,
+        klass: str,
+        command: str = "",
+        *,
+        text: str = "",
+        creator: bool = False,
+        edit: bool = False,
+        paths: frozenset[str] = frozenset(),
     ) -> None:
         """A ``tool_call`` frame announced *call_id* with class *klass* (and, for a
         shell call, *command*; *text* is its argument text, the command when not
-        given; *creator* marks a call whose result mints ids). A second frame for
-        the same id updates it."""
+        given; *creator* marks a call whose result mints ids; *edit* a file
+        write, *paths* its target). A second frame for the same id updates it."""
         key = liveness_key(call_id)
         if not key:
             return
@@ -780,6 +869,8 @@ class BatchWindow:
             command[:MAX_CLASSIFIED_COMMAND_CHARS],
             self._tokens(text or command),
             creator,
+            edit=edit,
+            paths=paths,
         )
         if key in self._members:
             # A later frame for a call already held (a refinement, a repeat)
@@ -813,6 +904,8 @@ class BatchWindow:
             new.tokens or held.tokens,
             new.creator or held.creator,
             held.output,
+            new.edit or held.edit,
+            new.paths or held.paths,
         )
 
     def refresh(
@@ -844,6 +937,26 @@ class BatchWindow:
         stays a member of its batch."""
         self._open.pop(liveness_key(call_id), None)
         self.printed(call_id, output)
+
+    def open_edit_before(self, call_id: str) -> bool:
+        """Whether a file write announced before *call_id* in this batch is still
+        open (not finished, or not even approved yet) and the command
+        (*call_id*'s held command) may read it: a word of the command is the
+        write's path, or ends in its basename. A write whose path the frames did
+        not name counts for any command. Never raises."""
+        key = liveness_key(call_id)
+        command = self._members.get(key)
+        if command is None:
+            return False
+        self._expire_open()
+        names = _command_names(command.command)
+        for held, member in self._members.items():
+            if held == key:
+                return False
+            if member.edit and held in self._open:
+                if not member.paths or member.paths & names:
+                    return True
+        return False
 
     def printed(self, call_id: str, output: str) -> None:
         """*call_id* returned *output*, in a terminal update or one before it; the
@@ -1011,6 +1124,8 @@ def note_dispatched(window: BatchWindow | None, event: Any) -> None:
             command,
             text=_input_text(event),
             creator=is_creator(event),
+            edit=is_file_edit(event),
+            paths=_edit_paths(event) if is_file_edit(event) else frozenset(),
         )
     except Exception:
         logger.debug("batch guard: could not classify a tool call", exc_info=True)
@@ -1150,7 +1265,7 @@ def refusal_outcome(reason: str | None) -> tuple[str, dict[str, str] | None]:
     if reason is not None:
         return OUTCOME_REJECTED_BATCH_GUARD, {
             "mechanism": AUDIT_MECHANISM,
-            "cause": DENY_CAUSE_BATCH_READ_WRITE,
+            "cause": cause_for(reason),
         }
     from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 
@@ -1199,6 +1314,38 @@ def note_printed(window: BatchWindow | None, call_id: str, output: Any = "") -> 
 
 
 # ── Approval ──
+
+#: KAS runs the calls of one batch in no fixed order, so a shell command can start
+#: before a file write announced ahead of it has finished. KAS also asks one
+#: permission at a time, so holding the command until the write lands would
+#: block the write's own request; the command is refused instead.
+# shortcut: KAS only, where the race was measured; drop the rule once KAS runs a
+# batch's mutating calls in order.
+
+#: The refusal for a shell command batched after an unfinished file write.
+WRITE_RUN_REFUSAL = (
+    "Blocked by the batch guard: the file write in this same step has not finished. "
+    "Nothing ran. Run this command again in your next step."
+)
+
+
+def cause_for(reason: str) -> str:
+    """The deny cause of a batch-guard refusal *reason*."""
+    if reason == WRITE_RUN_REFUSAL:
+        return DENY_CAUSE_BATCH_WRITE_RUN
+    return DENY_CAUSE_BATCH_READ_WRITE
+
+
+def _backend_of(transport: Any) -> str:
+    """The ACP backend id of a client (``backend``) or a session handle (its
+    runtime's ``acp_backend``)."""
+    try:
+        value = getattr(transport, "backend", None)
+        if not isinstance(value, str):
+            value = getattr(getattr(transport, "_runtime", None), "acp_backend", None)
+    except Exception:
+        value = None
+    return value if isinstance(value, str) else ""
 
 
 def guard_settings() -> tuple[bool, tuple[str, ...]]:
@@ -1257,9 +1404,16 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
     enabled, extra_write_commands = await asyncio.to_thread(guard_settings)
     if not enabled:
         return None
-    reason = window.refusal_for(
-        call_id, classify(event, extra_write_commands), extra_write_commands
-    )
+    if (
+        _backend_of(transport) == ACP_BACKEND_KAS
+        and _is_shell_call(event)
+        and window.open_edit_before(call_id)
+    ):
+        reason: str | None = WRITE_RUN_REFUSAL
+    else:
+        reason = window.refusal_for(
+            call_id, classify(event, extra_write_commands), extra_write_commands
+        )
     if reason is None:
         return None
     from kiro_crew.deny_notice import steer_refusal_notice
@@ -1269,7 +1423,7 @@ async def screen_approval(transport: Any, event: Any) -> str | None:
             transport,
             str(getattr(event, "title", "") or ""),
             reason,
-            cause=DENY_CAUSE_BATCH_READ_WRITE,
+            cause=cause_for(reason),
         )
     except asyncio.CancelledError:
         # A cancel here skips the caller's reject, and an unanswered permission
@@ -1319,7 +1473,7 @@ def audit_refusal(event: Any, reason: str, *, request_id: str | int = "") -> Non
             metadata={
                 "reason": permission_floor.loggable_reason(reason),
                 "mechanism": AUDIT_MECHANISM,
-                "cause": DENY_CAUSE_BATCH_READ_WRITE,
+                "cause": cause_for(reason),
             },
         )
     except Exception:

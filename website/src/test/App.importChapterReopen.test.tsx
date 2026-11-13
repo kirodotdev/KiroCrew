@@ -35,6 +35,7 @@ const themeState = {
   privacyAcked: true,
   privacyAckVersion: null as number | null,
   themeBootReady: false,
+  themeBootRead: true,
   themes: [],
   // Read by the Customize chapter `/onboarding` opens once the import step closes.
   allThemes: [],
@@ -109,10 +110,10 @@ describe('Import chapter, reopened by hand', () => {
   })
 
   it('opens a changed Privacy notice that came due under the importer once the importer exits', async () => {
-    // An older acknowledged notice and an unreadable status: the notice is due.
+    // An older acknowledged notice and local recording on: the notice is due.
     themeState.privacyAckVersion = 0
-    const beacon = vi.spyOn(api, 'beaconStatus').mockRejectedValue(new Error('502'))
-    const collection = vi.spyOn(api, 'collectionStatus').mockRejectedValue(new Error('502'))
+    const beacon = vi.spyOn(api, 'beaconStatus').mockResolvedValue({ enabled: false } as never)
+    const collection = vi.spyOn(api, 'collectionStatus').mockResolvedValue({ enabled: true, env_pinned: false } as never)
     // "Skip all" records the import chapter as done before it closes.
     const importState = vi.spyOn(api, 'onboardingImportState').mockResolvedValue({} as never)
     onTestFinished(() => { beacon.mockRestore(); collection.mockRestore(); importState.mockRestore() })
@@ -133,8 +134,8 @@ describe('Import chapter, reopened by hand', () => {
 
   it('keeps the tour /onboarding asked for after passing a notice that came due under the importer', async () => {
     themeState.privacyAckVersion = 0
-    const beacon = vi.spyOn(api, 'beaconStatus').mockRejectedValue(new Error('502'))
-    const collection = vi.spyOn(api, 'collectionStatus').mockRejectedValue(new Error('502'))
+    const beacon = vi.spyOn(api, 'beaconStatus').mockResolvedValue({ enabled: false } as never)
+    const collection = vi.spyOn(api, 'collectionStatus').mockResolvedValue({ enabled: true, env_pinned: false } as never)
     const importState = vi.spyOn(api, 'onboardingImportState').mockResolvedValue({} as never)
     // Held until the notice is due, so the import step ends under it.
     let finishScan: (value: unknown) => void = () => {}
@@ -158,7 +159,9 @@ describe('Import chapter, reopened by hand', () => {
     // An empty scan ends the `/onboarding` import step by itself.
     await act(async () => { finishScan({ sources: [], skipped: [], merge_only: true }) })
     const dialog = await screen.findByRole('dialog', { name: 'Privacy' })
-    fireEvent.click(await within(dialog).findByRole('button', { name: 'Continue without changes' }))
+    const keepOn = await within(dialog).findByRole('button', { name: 'Keep on' })
+    await waitFor(() => expect(keepOn).toBeEnabled())
+    fireEvent.click(keepOn)
 
     expect(await screen.findByText('Pick your look')).toBeInTheDocument()
     await act(async () => {})

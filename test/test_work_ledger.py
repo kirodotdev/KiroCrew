@@ -54,9 +54,11 @@ def test_worker_statuses_are_exactly_four_and_separate_blocked_from_question():
     assert set(worker_statuses(False)) == {"progress", "done", "blocked", "question"}
 
 
-def test_event_kinds_are_exactly_nine():
-    # ``retire`` and ``destroy`` are the hub's own remote-dispatch writes (wave 8).
+def test_event_kinds_are_exactly_ten():
+    # ``retire`` and ``destroy`` are the hub's own remote-dispatch writes (wave 8);
+    # ``ask`` is the conductor's record of what an item needs from the person.
     assert wl.EVENT_KINDS == {
+        "ask",
         "create",
         "bind",
         "report",
@@ -510,6 +512,18 @@ def test_close_accepted_needs_a_pass_verdict(verdicts):
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="rejected")
     closed = wl.read_work_item(CONDUCTOR, item_id)
     assert closed is not None and closed.state == "rejected"
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_create_refuses_an_acceptance_that_is_not_strict_json(bad):
+    """A NaN/Infinity in the acceptance would serialise to a bare `NaN`/`Infinity`
+    token that the Crew board's strict JSON.parse rejects, so it is refused at the
+    store, never minted."""
+    wl.ensure_conductor(CONDUCTOR, goal="g")
+    with pytest.raises(wl.WorkLedgerError) as caught:
+        wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"x": bad})
+    assert (caught.value.code, caught.value.field) == (wl.CODE_INVALID_VALUE, "acceptance")
+    assert wl.list_work_items(CONDUCTOR) == []
 
 
 def test_an_unknown_item_and_an_unknown_action_are_named_distinctly():
@@ -1698,3 +1712,124 @@ def test_only_the_phase_2_seams_import_the_module():
         f"allowlisted module(s) no longer import the store: {sorted(stale)}. Either a "
         "seam moved (fix the entry) or it is gone (delete it)."
     )
+
+
+# ── the ask record ─────────────────────────────────────────────────────────
+
+
+def test_ask_records_options_and_pick_and_decide_clears_it():
+    item_id = _new_item()
+    wl.apply_ask_record(
+        CONDUCTOR,
+        item_id,
+        what="Merge PR #12?",
+        why="Only you can approve a merge.",
+        options=[{"label": "Merge it", "outcome": "ships today"}, {"label": "Hold"}],
+        pick="Merge it",
+        pick_why="all checks pass",
+    )
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask is not None
+    assert item.ask["options"] == [
+        {"label": "Merge it", "outcome": "ships today"},
+        {"label": "Hold", "outcome": ""},
+    ]
+    assert (item.ask["pick"], item.ask["pick_why"]) == ("Merge it", "all checks pass")
+    assert item.ask["written_at"]
+    assert wl.WorkItem.from_dict(item.to_dict()).ask == item.ask
+    # The event is ``ask``, never ``decision``: recording why a question waits is
+    # not its answer.
+    assert [e.kind for e in wl.read_events(CONDUCTOR, item_id)] == ["create", "ask"]
+    wl.apply_conductor_action(CONDUCTOR, "decide", item_id=item_id, decision="merge")
+    cleared = wl.read_work_item(CONDUCTOR, item_id)
+    assert cleared is not None and cleared.ask is None
+    assert "ask" not in cleared.to_dict()
+
+
+def test_close_clears_the_ask_record():
+    item_id = _new_item()
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Pick a name")
+    wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="abandoned")
+    closed = wl.read_work_item(CONDUCTOR, item_id)
+    assert closed is not None and closed.ask is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"what": ""},
+        {"what": "x", "options": [{"label": "A"}], "pick": "B"},
+        {"what": "x", "options": [{"label": "A"}, {"label": "A"}]},
+        {"what": "x", "options": [{"outcome": "no label"}]},
+        {"what": "x", "pick_why": "no pick"},
+        {"what": "x", "options": [{"label": str(i)} for i in range(7)]},
+    ],
+)
+def test_ask_refuses_a_malformed_record(fields):
+    item_id = _new_item()
+    with pytest.raises(wl.WorkLedgerError):
+        wl.apply_ask_record(CONDUCTOR, item_id, **fields)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask is None
+
+
+def test_coerce_ask_drops_a_pick_that_is_not_a_label():
+    from kiro_crew.work_vocab import coerce_ask
+
+    raw = {
+        "what": "w",
+        "written_at": "t",
+        "options": [{"label": "A"}],
+        "pick": "Z",
+        "pick_why": "y",
+    }
+    assert coerce_ask(raw)["pick"] == ""
+    assert coerce_ask(raw)["pick_why"] == ""
+    assert coerce_ask({"what": "w"}) is None
+    assert coerce_ask("text") is None
+
+
+@pytest.mark.parametrize("ask_first", [True, False])
+def test_an_ask_and_a_report_in_one_second_are_ordered_by_the_event_log(monkeypatch, ask_first):
+    """Stamps tie inside one second; the ledger's own event order decides whether the
+    ask record explains the question waiting now."""
+    from kiro_crew.dashboard.handlers import work_ledger_board as board
+
+    same_second = wl._now_iso()
+    # Through the facade, which forwards the patch to every owner that binds it.
+    monkeypatch.setattr(wl, "_now_iso", lambda: same_second)
+    item_id = _new_item()
+
+    def ask():
+        wl.apply_ask_record(CONDUCTOR, item_id, what="Merge it?")
+
+    def report():
+        wl.apply_worker_report(
+            CONDUCTOR, item_id, status="question", summary="new ask", reason="needs_human"
+        )
+
+    for write in (ask, report) if ask_first else (report, ask):
+        write()
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask["written_at"] == item.last_report_at
+    events = [event.to_dict() for event in wl.read_events(CONDUCTOR, item_id)]
+    # Ask then report: the report is a newer question. Report then ask: the ask explains it.
+    assert board.ask_is_current(events) is (not ask_first)
+
+
+def test_a_repeated_ask_in_one_second_after_a_report_stays_current(monkeypatch):
+    """Two same-`what` asks in one second stay two events, so the second one still
+    follows the report between them and explains the question waiting now."""
+    from kiro_crew.dashboard.handlers import work_ledger_board as board
+
+    same_second = wl._now_iso()
+    monkeypatch.setattr(wl, "_now_iso", lambda: same_second)
+    item_id = _new_item()
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Merge it?")
+    wl.apply_worker_report(
+        CONDUCTOR, item_id, status="question", summary="new ask", reason="needs_human"
+    )
+    wl.apply_ask_record(CONDUCTOR, item_id, what="Merge it?")
+    events = [event.to_dict() for event in wl.read_events(CONDUCTOR, item_id)]
+    assert [event["kind"] for event in events].count("ask") == 2
+    assert board.ask_is_current(events) is True

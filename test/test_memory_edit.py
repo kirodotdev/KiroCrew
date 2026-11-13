@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from kiro_crew import memory_edit, memory_stores
+from kiro_crew import memory_edit, memory_record_metadata, memory_stores
 from kiro_crew.config import loader
 from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
@@ -924,3 +924,197 @@ def test_editing_a_fact_with_a_finite_stored_value_still_proceeds(store):
     before = memory_edit.list_records(store, {"q": "language"}, limit=10)["entries"][0]
     after = memory_edit._after(store, before, {"type": "set", "value": "English"})
     assert json.loads(after["value_json"]) == "English"
+
+
+# -- a page of the list reads its own records, not the whole store -------------- #
+#
+# ``list_records`` returns one page and the total. The total needs every match
+# counted; it does not need every match's metadata, decoded value and fingerprint.
+
+RECORDS = 66  # what ``seed`` writes: 65 addresses and one language
+
+
+@pytest.fixture
+def record_reads(monkeypatch):
+    """How many records had their metadata read and their fingerprint computed."""
+    counts = {"metadata": 0, "fingerprint": 0}
+    real_metadata = memory_record_metadata.get_record_metadata
+    real_record = memory_edit._record
+
+    def metadata(db, record_id):
+        counts["metadata"] += 1
+        return real_metadata(db, record_id)
+
+    def record(row):
+        counts["fingerprint"] += 1
+        return real_record(row)
+
+    monkeypatch.setattr(memory_record_metadata, "get_record_metadata", metadata)
+    monkeypatch.setattr(memory_edit, "_record", record)
+    return counts
+
+
+def _seeded(store, record_reads: dict) -> dict:
+    """Seed the store, then start the counts at zero: the seeding reads records too."""
+    seed(store)
+    record_reads.update(metadata=0, fingerprint=0)
+    return record_reads
+
+
+def _whole(store, query: dict) -> list[dict]:
+    """Every match, assembled the way the unpaged callers read them."""
+    rows = list(memory_edit._rows(store, memory_edit._query(query)))
+    for row in rows:
+        memory_edit._conflict_count(store, row)
+    return rows
+
+
+def test_a_page_with_no_search_term_reads_only_its_own_records(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {}, limit=10, offset=20)
+
+    assert page["total"] == RECORDS and page["has_more"]
+    assert len(page["entries"]) == 10
+    assert reads == {"metadata": 10, "fingerprint": 10}
+
+
+def test_a_searched_page_reads_only_its_own_records(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {"q": "email"}, limit=10, offset=20)
+
+    assert page["total"] == 65 and page["has_more"]
+    assert len(page["entries"]) == 10
+    # The search matches on metadata fields that the listing query joins in, so
+    # the full metadata row is read only for the records returned.
+    assert reads == {"metadata": 10, "fingerprint": 10}
+
+
+@pytest.mark.parametrize("field", ["category", "subject", "predicate"])
+def test_a_search_matches_a_record_by_each_metadata_field_it_reads(store, field):
+    seed(store, count=2)
+    assert (
+        store.set_semantic(
+            "user.route", "accounts", 1.0, "user_explicit", metadata={field: "Zebrafinch"}
+        )
+        is None
+    )
+    assert store.write_episodic(
+        "We planned the spring trip and agreed on the route.",
+        source="user_explicit",
+        metadata={field: "Zebrafinch"},
+    )
+
+    page = memory_edit.list_records(store, {"q": "zebrafinch"})
+
+    assert page["total"] == 2
+    assert sorted(entry["kind"] for entry in page["entries"]) == ["episode", "fact"]
+    assert {entry["metadata"][field] for entry in page["entries"]} == {"zebrafinch"}
+
+
+def _meta_row(tier, record_id: str, category: str) -> None:
+    tier.db.execute(
+        "INSERT OR REPLACE INTO memory_record_meta"
+        " (record_id, kind, revision, category, content_hash, updated_at)"
+        " VALUES (?, 'fact', 1, ?, '', '2026-01-01')",
+        (record_id, category),
+    )
+
+
+def _semantic_row(tier, key) -> None:
+    tier.db.execute(
+        "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at)"
+        " VALUES (?, '\"x\"', 'user_explicit', '2026-01-01', '2026-01-01')",
+        (key,),
+    )
+
+
+def test_a_search_finds_the_metadata_of_a_key_already_named_as_a_record_id(tmp_path):
+    """A fact whose key starts with ``key:`` is its own record id, not ``key:key:...``."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        _semantic_row(tier, "key:user.note")
+        _meta_row(tier, "key:user.note", "zebrafinch")
+        _meta_row(tier, "key:key:user.note", "wrongbird")
+        tier.db.commit()
+
+        assert memory_edit.list_records(tier, {"q": "zebrafinch"})["total"] == 1
+        assert memory_edit.list_records(tier, {"q": "wrongbird"})["total"] == 0
+    finally:
+        tier.close()
+
+
+def test_a_record_with_no_metadata_row_is_still_found_by_a_search(tmp_path):
+    """A legacy record may have no metadata row; it still matches on its own text."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        _semantic_row(tier, "user.plainnote")
+        tier.db.commit()
+        assert (
+            tier.db.execute(
+                "SELECT COUNT(*) FROM memory_record_meta WHERE record_id = 'key:user.plainnote'"
+            ).fetchone()[0]
+            == 0
+        )
+
+        page = memory_edit.list_records(tier, {"q": "plainnote"})
+
+        assert [entry["id"] for entry in page["entries"]] == ["user.plainnote"]
+        assert page["entries"][0]["metadata"] == {"pending_conflicts": 0}
+    finally:
+        tier.close()
+
+
+@pytest.mark.parametrize(
+    "key, record_id",
+    [("", "key:"), (b"ab", "key:ab")],
+    ids=["empty key", "blob key"],
+)
+def test_a_record_with_no_identity_gets_no_metadata_in_a_search(tmp_path, key, record_id):
+    """``record_identity_or_none`` gives an empty or non-text id no metadata; the
+    listing query must not join one either, even when a row would match."""
+    tier = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
+    tier.init()
+    try:
+        _semantic_row(tier, key)
+        _meta_row(tier, record_id, "zebrafinch")
+        tier.db.commit()
+
+        assert memory_edit.list_records(tier, {"q": "zebrafinch"})["total"] == 0
+    finally:
+        tier.close()
+
+
+@pytest.mark.parametrize("query", [{}, {"q": "email"}, {"kind": "fact"}, {"q": "chinese"}])
+def test_the_pages_together_are_the_unpaged_listing(store, query):
+    seed(store)
+    whole = _whole(store, query)
+    paged: list[dict] = []
+    offset = 0
+    while True:
+        page = memory_edit.list_records(store, query, limit=25, offset=offset)
+        assert page["total"] == len(whole)
+        paged += page["entries"]
+        offset += 25
+        assert page["has_more"] == (offset < len(whole))
+        if not page["has_more"]:
+            break
+    assert paged == whole
+
+
+def test_a_page_past_the_end_is_empty_and_still_counts_every_record(store, record_reads):
+    reads = _seeded(store, record_reads)
+    page = memory_edit.list_records(store, {}, limit=50, offset=500)
+
+    assert page == {"entries": [], "total": RECORDS, "has_more": False}
+    assert reads == {"metadata": 0, "fingerprint": 0}
+
+
+def test_an_unpaged_read_still_assembles_every_record(store, record_reads):
+    """The callers that act on a whole selection pass no page and get every record."""
+    reads = _seeded(store, record_reads)
+    rows = list(memory_edit._rows(store, memory_edit._query({})))
+
+    assert len(rows) == RECORDS and all(row is not None for row in rows)
+    assert reads == {"metadata": RECORDS, "fingerprint": RECORDS}

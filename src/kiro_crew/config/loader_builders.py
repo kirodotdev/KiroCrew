@@ -799,6 +799,9 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         kas_refuse_plain_http_mcp_headers=section.read(
             "kas_refuse_plain_http_mcp_headers", _safe_bool
         ),
+        kas_fail_closed_web_fetch_blocked=section.read(
+            "kas_fail_closed_web_fetch_blocked", _safe_bool
+        ),
         kas_bundle_url=_sections.coerce_kas_bundle_url(section.get("kas_bundle_url")),
         native_skill_projection=section.read("native_skill_projection", _safe_bool),
         default_agent=section.get("default_agent"),
@@ -895,6 +898,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             TOOL_APPROVAL_TIMEOUT_MIN,
             TOOL_APPROVAL_TIMEOUT_MAX,
         ),
+        deny_override=section.read("deny_override", _safe_bool),
         # Absent means ON. The grant that decides who may reach a peer
         # session is the AGENT CONFIG, not this switch: the tools come
         # from the `kirocrew-dashboard` MCP server, so an agent that does
@@ -1235,8 +1239,18 @@ def _dict_or_default(value: object, default: dict) -> dict:
 
 def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
     section = _sections.SectionReader(TelemetryConfig, telemetry_data)
+    enabled = bool(section.get("enabled"))
+    # An install that turned the heartbeat off and never set ``enabled`` has
+    # already said no to telemetry, so recording follows it instead of the
+    # field default. A rule at load time: no config file is rewritten.
+    if "enabled" not in telemetry_data and telemetry_data.get("beacon_enabled") is False:
+        enabled = False
+    # A stored ``0`` disk cap is read as written, even where an older build's
+    # whole-document save put it there: 0 is the documented "no limit", so a
+    # stored 0 and an untouched old default are the same bytes and only the user
+    # can say which one it is. ``superseded_defaults`` reports both caps instead.
     return TelemetryConfig(
-        enabled=bool(section.get("enabled")),
+        enabled=enabled,
         local_dir=str(section.get("local_dir")),
         export_interval_seconds=section.read("export_interval_seconds", _safe_int),
         retention_days=section.read("retention_days", _safe_int),
@@ -1425,6 +1439,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
             "recent_tint_count", _safe_int, RECENT_TINT_COUNT_MIN, RECENT_TINT_COUNT_MAX
         ),
         show_unread_dot=section.read("show_unread_dot", _safe_bool),
+        command_bar_enabled=section.read("command_bar_enabled", _safe_bool),
         folder_sort=section.read("folder_sort", _folder_sort_from),
         session_sort=section.read("session_sort", _session_sort_from),
         update_nudge=(

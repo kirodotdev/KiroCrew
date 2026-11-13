@@ -203,6 +203,7 @@ class TestAgentCreate:
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert saved["agents"]["research"]["workspace"] == "default"
         assert set(saved["workspaces"]) == {"default"}
+        assert "is not configured" not in capsys.readouterr().err
 
     def test_a_named_workspace_is_stored_as_given(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -223,7 +224,10 @@ class TestAgentCreate:
         assert saved["agents"]["research"]["workspace"] == "oncall"
         assert set(saved["workspaces"]) == {"default"}
         assert not (data_home() / "workspace-oncall").exists()
-        assert "Workspace: oncall" in capsys.readouterr().out
+        # Saved as given, with the same warning `agent update` prints.
+        captured = capsys.readouterr()
+        assert "Warning: workspace 'oncall' is not configured" in captured.err
+        assert "Workspace: oncall" in captured.out
 
     def test_create_duplicate_exits_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

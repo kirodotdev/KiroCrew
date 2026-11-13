@@ -91,11 +91,12 @@ describe('shell boot order', () => {
       'api.approvals',
       'fetch:/api/terminal/sessions',
       'api.mobileConnectMethods',
+      // The Command Bar switch (`dashboard.command_bar_enabled`), read by the shell.
+      'api.kirocrewConfig',
       'api.listApps',
       'api.listRegistry',
       'api.crons',
       'api.sessionsUsage',
-      'api.kirocrewConfig',
       'api.system',
       'api.chatSlots',
       'api.status',

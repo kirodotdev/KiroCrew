@@ -207,11 +207,12 @@ class TestProgressAwareWedgeDetection:
         import ast
         import inspect
 
-        from kiro_crew import mcp_core
+        from kiro_crew.mcp_core_parts import gateway
         from kiro_crew.mcp_shared import DEFERRED_STEP_STUCK_SECS
 
-        # The host-isolation floor replaces _post with a network-free double.
-        source = ast.parse(inspect.getsource(mcp_core))
+        # The host-isolation floor replaces _post with a network-free double, so the
+        # default is read from the source of the module that defines it.
+        source = ast.parse(inspect.getsource(gateway))
         post = next(
             node
             for node in source.body

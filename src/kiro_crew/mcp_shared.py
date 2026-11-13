@@ -298,6 +298,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         listable_tools,
         serve_before_handlers,
         take_early_frames,
+        within_policy,
     )
     from kiro_crew.mcp_shared_policy import (  # noqa: F401
         _EXCLUDED_TOOLS_CACHE_MAX,
@@ -358,3 +359,4 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew.install_liveness import is_pooled_backend  # noqa: F401
+    from kiro_crew.mcp_listing_relay import RelayedFrames  # noqa: F401

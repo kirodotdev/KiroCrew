@@ -25,7 +25,7 @@ from named_cases_helpers import named_cases
 from test_config_load_pipeline import _DECLARED_EXCEPTIONS, _document, _section_fields
 
 from kiro_crew.acp_backends import selectable_backends
-from kiro_crew.config import loader, sections, validation
+from kiro_crew.config import loader, sections
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS, DEFAULT_MINT_TIMEOUT_SECS
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS
 from kiro_crew.stt import models as stt_models
@@ -46,10 +46,15 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "conductor_own_child_verbs"): False,
     # Fail closed: a malformed value must not move kiro-cli's KAS extract.
     ("agent", "kas_repair_kiro_cli_extract"): False,
+    # Fail closed the same way: a malformed value turns the override card off.
+    ("agent", "deny_override"): False,
     # A present but malformed harness choice is an unusable explicit choice, not
     # an absent key: it takes the Kiro CLI floor, never the KAS product default.
     ("agent", "acp_backend"): "",
     ("skills", "project_skills_enabled"): False,
+    # Fail closed: a present non-bool must not ride the on default back into
+    # local recording.
+    ("telemetry", "enabled"): False,
     # Resolved by the loader's own degradation rule before the enum check runs.
     ("stt", "provider"): "off",
     # An unreadable stored choice may have been a privacy choice: Temporary.
@@ -111,7 +116,6 @@ def _build(tmp_path: Path, document: dict) -> loader.KiroCrewConfig:
 # A wrong-typed value, through the read and build stages.
 
 
-@pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
 class TestAWrongTypedValueLoadsTheFieldDefault:
     @pytest.mark.parametrize("section", [name for name, _ in _section_fields()])
     def test_every_field_of_the_section(self, staged_load, section):
@@ -258,7 +262,6 @@ class TestTheDeclaredDepartures:
         assert read(_build(tmp_path, document)) == built
         assert read(_BARE) != built
 
-    @pytest.mark.skipif(not validation._HAS_JSONSCHEMA, reason="jsonschema not installed")
     @pytest.mark.parametrize(("document", "read", "built", "loaded"), _BUILD_DEPARTURES)
     def test_a_load_reads_the_declared_value_or_the_validated_default(
         self, staged_load, document, read, built, loaded

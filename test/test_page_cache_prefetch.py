@@ -94,6 +94,8 @@ def test_an_unreadable_file_never_raises(tmp_path, monkeypatch):
     threads = _record_prefetch_threads(monkeypatch)
     page_cache.prefetch([folder], name="kc-test-dir")
     _join(threads, "kc-test-dir")
+    # A directory is not a file to read: nothing is handed to the child for it.
+    assert page_cache._candidates(folder) == []
 
 
 def test_read_now_reads_on_the_calling_thread_and_skips_none(tmp_path, monkeypatch):

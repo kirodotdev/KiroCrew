@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
 
 from kiro_crew import cron_inflight
@@ -34,12 +35,56 @@ from kiro_crew.cron_service.execution import (
 from kiro_crew.cron_service.model import CronJob
 from kiro_crew.cron_service.store import CronStoreBusy
 from kiro_crew.metrics.events import CRON_FIRES
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 if TYPE_CHECKING:
     from kiro_crew.cron import CronService
 
 #: The cron service's logger: operators filter, and tests ``caplog``, on ``kiro_crew.cron``.
 logger = logging.getLogger("kiro_crew.cron")
+
+JOB_KIND_SCRIPT = "script"
+JOB_KIND_COMMAND = "command"
+JOB_KIND_AGENT = "agent"
+
+
+def job_kind(job: CronJob) -> str:
+    """What a run of *job* executes: a Python script, a shell command, or an agent turn."""
+    if job.script:
+        return JOB_KIND_SCRIPT
+    if job.command:
+        return JOB_KIND_COMMAND
+    return JOB_KIND_AGENT
+
+
+def _run_root(
+    job: CronJob, claim: _RunClaim | None
+) -> AbstractContextManager[trace_surfaces.Surface]:
+    """The trace root of one run of *job*: anchor ``cron <kind>``, keyed by the run."""
+    kind = job_kind(job)
+    return trace_surfaces.root(
+        trace_surfaces.TRIGGER_CRON,
+        run_name=kind,
+        run_key=(job.id, claim.marker_run) if claim is not None else (),
+        root_session_key=f"cron:{job.id}",
+        step="" if kind == JOB_KIND_AGENT else f"run {kind}",
+        attrs={"kirocrew.cron.job_id": job.id, "kirocrew.cron.job_kind": kind},
+    )
+
+
+def _run_status(job: CronJob, claim: _RunClaim | None, status: str) -> str:
+    """How a run ended, for its trace, by the scheduler's own reading of it."""
+    if claim is not None and claim.cancelled:
+        return trace_surfaces.STATUS_CANCELLED
+    # The reaper ended it on its deadline, the same failure as the wait_for one.
+    if claim is not None and claim.reaped:
+        return trace_surfaces.STATUS_FAILED
+    # A payload that never started is neither a success nor a failure of the job.
+    if job.run_never_started:
+        return trace_surfaces.STATUS_SKIPPED
+    if job.last_status == "error":
+        return trace_surfaces.STATUS_FAILED
+    return status
 
 
 async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -> None:
@@ -83,12 +128,7 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
         job.auto_paused_at_start = job.auto_paused
         # Counted before the jitter sleep, so a run cancelled in jitter still
         # counts. ``script`` and ``command`` cost no tokens; ``agent`` does.
-        if job.script:
-            kind = "script"
-        elif job.command:
-            kind = "command"
-        else:
-            kind = "agent"
+        kind = job_kind(job)
         seams.emit_counter(CRON_FIRES, {"kind": kind, "trigger": trigger})
         # Apply jitter to spread execution unless strict_schedule is set or manual
         jitter = self._compute_jitter(job) if trigger != "manual" else 0
@@ -278,40 +318,47 @@ async def _execute_with_timeout(
     )
     # Read by the timeout handler, so a failure is not counted twice.
     job.failure_recorded = False
-    try:
-        await asyncio.wait_for(self._execute(job, claim), timeout=deadline)
-    except asyncio.TimeoutError:
-        # A timeout skips _cron_callback's alerts; _alert_timeout reports it.
-        # Dedup state is cleared so a later real error is not dropped, and a
-        # dispatched run's timeout counts toward auto-pause.
-        job.last_status = "error"
-        job.last_error = f"Timed out after {deadline}s"
-        job.last_run_ts = seams.time.time()
-        job.last_failure_hash = ""
-        job.last_failure_at = 0.0
-        # Not counted when the run already recorded its failure (one run, one
-        # failure), nor when the payload never started: a loop stall during
-        # the fire-time gate would otherwise auto-pause a job that ran nothing.
-        # _execute clears that marker before the callback, so a real overrun counts.
-        counted = not job.failure_recorded and not job.run_never_started
-        if counted:
-            job.record_failure()
-        # The deadline cancelled _execute before its one-shot disable, so it
-        # is done here (the result merge persists it). A delete_after_run
-        # one-shot is a failed run: the finally below auto-pauses it.
-        if run_parks_one_shot(job):
-            job.enabled = False
-        logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
-        # Alerted on the count's own terms: a run that already recorded its
-        # failure was reported by the handler that recorded it, and a run whose
-        # payload never started is not a failure of the job.
-        if counted:
-            self._alert_timeout(job, job.last_error)
-    finally:
-        # A failed one-shot is auto-paused, not consumed; in a finally so a
-        # cancel after the failure still parks it (``freeze_terminal_record``
-        # applies the same rule on cancel or reap).
-        auto_pause_failed_one_shot(job, job.last_status)
+    # One trace per run (tracing/surfaces.py): a ``cron <kind>`` anchor the run's
+    # turns join, each retry the callback re-enters is the next attempt of the
+    # same turn, and a script or command run is a step span. Opened around the
+    # deadline, so a run the deadline ends is traced as failed, not cancelled.
+    with _run_root(job, claim) as surface:
+        try:
+            await asyncio.wait_for(self._execute(job, claim), timeout=deadline)
+        except asyncio.TimeoutError:
+            surface.status = trace_surfaces.STATUS_FAILED
+            # A timeout skips _cron_callback's alerts; _alert_timeout reports it.
+            # Dedup state is cleared so a later real error is not dropped, and a
+            # dispatched run's timeout counts toward auto-pause.
+            job.last_status = "error"
+            job.last_error = f"Timed out after {deadline}s"
+            job.last_run_ts = seams.time.time()
+            job.last_failure_hash = ""
+            job.last_failure_at = 0.0
+            # Not counted when the run already recorded its failure (one run, one
+            # failure), nor when the payload never started: a loop stall during
+            # the fire-time gate would otherwise auto-pause a job that ran nothing.
+            # _execute clears that marker before the callback, so a real overrun counts.
+            counted = not job.failure_recorded and not job.run_never_started
+            if counted:
+                job.record_failure()
+            # The deadline cancelled _execute before its one-shot disable, so it
+            # is done here (the result merge persists it). A delete_after_run
+            # one-shot is a failed run: the finally below auto-pauses it.
+            if run_parks_one_shot(job):
+                job.enabled = False
+            logger.error("Cron job '%s' timed out after %ds", job.name, deadline)
+            # Alerted on the count's own terms: a run that already recorded its
+            # failure was reported by the handler that recorded it, and a run whose
+            # payload never started is not a failure of the job.
+            if counted:
+                self._alert_timeout(job, job.last_error)
+        finally:
+            # A failed one-shot is auto-paused, not consumed; in a finally so a
+            # cancel after the failure still parks it (``freeze_terminal_record``
+            # applies the same rule on cancel or reap).
+            auto_pause_failed_one_shot(job, job.last_status)
+            surface.status = _run_status(job, claim, surface.status)
 
 
 def _alert_timeout(self: CronService, job: CronJob, detail: str) -> None:

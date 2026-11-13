@@ -792,7 +792,22 @@ def _url_payload_command(n: int) -> str:
 #: ``bounded_judgment``, one shared budget of resolver wait that every off-loop
 #: request checks before it is sent and that clamps only candidate waits; and the
 #: three lines the ``paths`` facade's manifest lists for them. No check was relaxed.
-_PACKAGE_LINE_BUDGET = 35_804
+#: Raised by 20, from 35,804, to 35,824, for ``StreamRedactor.release_sentence_end`` in
+#: ``text_redaction``: a withheld run that is one plain word ending a sentence can be
+#: committed before the next chunk arrives. No pattern, pass or commit boundary moved.
+#: Raised by 77, from 35,824, to 35,901, for ``paths_targets._app_readonly_dir_rows``
+#: and its facade manifest rows: the write gate's listing of the apps'
+#: ``agentReadOnlyDirs`` rows runs on the ``mc-pathres`` threads within the anchor
+#: rebuild's budget for every caller and is reused for a second on the event loop, so
+#: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
+#: at once while that listing is still in flight. Re-measured.
+#: Raised by 96, from 35,901, to 35,997, for the ``local-destructive-rm-rf-root``
+#: row's scratch view (``rm_floor.scratch_rm_view``): the words of a plain ``rm``
+#: whose every operand is a direct ``/tmp/<name>`` entry are blanked for the shipped
+#: row only, and ``is_denied`` judges that row on the view while its events keep the
+#: command as submitted. Every other row, an operator's copy, and the rm floor for
+#: ``/`` and ``~`` read the full text. Re-measured.
+_PACKAGE_LINE_BUDGET = 35_997
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

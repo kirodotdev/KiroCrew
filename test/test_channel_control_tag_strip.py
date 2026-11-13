@@ -35,6 +35,8 @@ from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
 TAG = "<!-- keep-visible -->"
 DELIVER = "<!-- deliver:slack -->"
+OPTION_ACTION = "<!-- option-action:close=Done -->"
+PICK = f"Pick one.\n[OPTIONS: Yes | No]\n{OPTION_ACTION}"
 QUOTED = "the `<!-- ordinary -->` comment and the `<!-- keep-visible -->` tag stay"
 
 
@@ -61,6 +63,8 @@ class TestStripControlCommentsHidePartial:
             "<!-- deliver:sl",
             "<!-- deliver:slack --",
             "<!-- plan_task_id:ab",
+            "<!-- option-act",
+            "<!-- option-action:close=Do",
         ):
             assert strip_control_comments(f"Report\n{partial}", hide_partial=True) == "Report"
 
@@ -118,6 +122,12 @@ class TestSplitTrailingProtocolSuffixControlTags:
         text = f"body\n[OPTIONS: a | b]\n{TAG}"
         assert split_trailing_protocol_suffix(text) == ("body\n", f"[OPTIONS: a | b]\n{TAG}")
 
+    def test_option_action_after_options_rides_with_the_options(self) -> None:
+        assert split_trailing_protocol_suffix(PICK) == (
+            "Pick one.\n",
+            f"[OPTIONS: Yes | No]\n{OPTION_ACTION}",
+        )
+
     def test_quoted_tag_is_not_protocol(self) -> None:
         assert split_trailing_protocol_suffix(QUOTED) == (QUOTED, "")
 
@@ -166,17 +176,23 @@ class TestSlackStreamHold:
         assert hold == "<!-- keep-vis"
         assert _resolve_comment_hold(hold, text) == ("", "<!-- keep-vis")
 
-    def test_three_maximal_stacked_tags_stay_held(self) -> None:
-        # Every tail the grammar admits fits the hold: three families stacked
-        # once each at the 256-byte body bound.
+    def test_four_maximal_stacked_tags_stay_held(self) -> None:
+        # Every tail the grammar admits fits the hold: four families, one
+        # line each, at the 256-byte body bound.
         tail = (
             "<!-- keep-visible -->\n"
             + f"<!-- deliver:{'d' * 249} -->\n"
-            + f"<!-- plan_task_id:{'p' * 243} -->"
+            + f"<!-- plan_task_id:{'p' * 243} -->\n"
+            + f"<!-- option-action:{'o' * 242} -->"
         )
         hold, buf = _filter_options_brackets(f"Report\n{tail}", "", "")
         assert hold == tail and buf == "Report\n"
         assert _resolve_comment_hold(hold, f"Report\n{tail}") == ("", "")
+
+    def test_option_action_after_options_is_dropped_at_the_seal(self) -> None:
+        hold, buf = _filter_options_brackets(PICK, "", "")
+        assert hold == OPTION_ACTION and buf == "Pick one.\n\n"
+        assert _resolve_comment_hold(hold, PICK) == ("", "")
 
     def test_options_hold_is_not_resolved_here(self) -> None:
         assert _resolve_comment_hold("[OPTI", "x [OPTI") == ("[OPTI", "")
@@ -261,6 +277,26 @@ class TestSlackRenderer:
 
         asyncio.run(scenario())
 
+    def test_option_action_after_options_keeps_the_choices(self) -> None:
+        async def scenario() -> None:
+            r, rec = self._renderer()
+            await r.on_text_chunk(PICK)
+            await r.on_done()
+            sent = [str(kw) for _name, kw in rec.calls]
+            assert all("option-action" not in s for s in sent), sent
+            actions = [
+                block
+                for name, kw in rec.calls
+                if name == "post_blocks"
+                for block in kw["blocks"]
+                if block.get("type") == "actions"
+            ]
+            assert actions, "the options control must still be posted"
+            buttons = [e for e in actions[0]["elements"] if e["type"] == "button"]
+            assert [e["text"]["text"] for e in buttons] == ["Yes", "No"]
+
+        asyncio.run(scenario())
+
 
 # ── Discord ────────────────────────────────────────────────────────────────
 
@@ -296,6 +332,18 @@ class TestDiscordRenderer:
         await r.on_text_chunk(f"Report\n{DELIVER}")
         await r.on_done()
         assert all("deliver:" not in t for t in _discord_texts(cli))
+
+    @pytest.mark.asyncio
+    async def test_option_action_after_options_keeps_the_choices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        r, cli = self._renderer(monkeypatch)
+        await r.on_text_chunk(PICK)
+        await r.on_done()
+        assert all("option-action" not in t for t in _discord_texts(cli))
+        comps = cli.final_components()
+        assert comps is not None
+        assert [b["label"] for row in comps for b in row["components"]] == ["Yes", "No"]
 
     @pytest.mark.asyncio
     async def test_quoted_tag_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,6 +399,19 @@ class TestTelegramRenderer:
         assert all("deliver:" not in t for t in _telegram_texts(cli))
 
     @pytest.mark.asyncio
+    async def test_option_action_after_options_keeps_the_choices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        r, cli = self._renderer(monkeypatch)
+        await r.on_turn_start()
+        await r.on_text_chunk(PICK)
+        await r.on_done()
+        assert all("option-action" not in t for t in _telegram_texts(cli))
+        kb = cli.final_markup()
+        assert kb is not None
+        assert [b["text"] for row in kb["inline_keyboard"] for b in row] == ["Yes", "No"]
+
+    @pytest.mark.asyncio
     async def test_quoted_tag_survives(self, monkeypatch: pytest.MonkeyPatch) -> None:
         r, cli = self._renderer(monkeypatch)
         await r.on_turn_start()
@@ -392,6 +453,25 @@ class TestWebexRenderer:
         await r.on_text_chunk(f"Report\n{DELIVER}")
         await r.on_done()
         assert cli.edits == [("MSG1", "ROOM", "Report")]
+
+    @pytest.mark.asyncio
+    async def test_option_action_after_options_keeps_the_choices(self) -> None:
+        cli = WebexFake()
+        published = []
+        r = WebexRenderer(
+            cli,
+            "ROOM",
+            WEBEX_CAPABILITIES,
+            thread_id="",
+            uploads_allowed=False,
+            publish_choices=lambda nonce, choices: published.append(list(choices)),
+        )
+        await r.on_turn_start()
+        await r.on_text_chunk(PICK)
+        await r.on_done()
+        assert cli.edits[-1][2] == "Pick one."
+        assert all("option-action" not in str(s) for s in cli.sent_full)
+        assert published == [["Yes", "No"]]
 
     @pytest.mark.asyncio
     async def test_quoted_tag_survives(self) -> None:

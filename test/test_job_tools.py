@@ -41,14 +41,18 @@ _SHIPPED_AGENTS = {name[: -len(".json")] for name in OWNED_KIRO_AGENT_FILES}
 #: shortens a description; raising a budget is a decision to spend those tokens
 #: in every request, made here in the open.
 JOB_TOOL_BUDGETS: dict[str, int] = {
-    "kirocrew": 3_300,
+    # 4,673: 3,182 for the sub-agent tools and ``mcp_server_wait``, 1,491 for the six
+    # most used small tools (``_MAIN_CHAT_MOST_USED``); plus 5%, the next 50 up.
+    "kirocrew": 4_950,
     "kirocrew-worker": 1_200,
     "kirocrew-mate-worker": 1_200,
-    "kirocrew-pipeline-conductor": 7_600,
-    "kirocrew-security-conductor": 7_600,
-    "kirocrew-conductor": 7_800,
-    "kirocrew-ledger-conductor": 7_800,
-    "kirocrew-team-lead": 7_800,
+    # 7,653 with ``mcp_server_wait`` (63 tokens, on every row): the next 50 up.
+    "kirocrew-pipeline-conductor": 7_700,
+    "kirocrew-security-conductor": 7_700,
+    # 7,808 with it: the next 50 up.
+    "kirocrew-conductor": 7_850,
+    "kirocrew-ledger-conductor": 7_850,
+    "kirocrew-team-lead": 7_850,
 }
 
 
@@ -167,7 +171,7 @@ class TestJobToolIds:
         ]
 
     def test_a_single_tool_grant_lists_that_tool_alone(self):
-        spec = {"tools": ["tool_search", "@kirocrew-core/spawn_run", "@kirocrew-core/wait"]}
+        spec = {"tools": ["tool_search", "@kirocrew-core/spawn_run", "@kirocrew-core/learn_add"]}
         assert job_tool_ids("kirocrew", spec) == ["kirocrew-core::spawn_run"]
 
     def test_the_wildcard_reaches_the_servers_the_spec_declares(self):
@@ -188,7 +192,7 @@ class TestJobToolIds:
         )
         assert listed == set(JOB_TOOLS[agent_name])
         assert listed < everything
-        assert "kirocrew-core::memory_recall" in everything - listed
+        assert "kirocrew-core::learn_add" in everything - listed
 
     def test_the_answer_is_the_same_for_every_session_of_an_agent(self):
         """Fixed per agent: the tool definitions its requests open with do not

@@ -448,6 +448,8 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     "ACP_BACKENDS_NATIVE_WORKFLOWS": None,
     # claude's compaction frame is the standard ACP ``compaction_update``, not an X frame.
     "ACP_BACKENDS_SENT_IMAGE_RECORD": frozenset({"codex", "kas", "kiro"}),
+    # The set above under the name of what it means; the same three captures.
+    "ACP_BACKENDS_COMPACTION_REPORTED": frozenset({"codex", "kas", "kiro"}),
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or
@@ -490,6 +492,8 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_DEFAULT_PSEUDO_MODEL": "standard ACP: advertised model list and config options",
     "ACP_BACKENDS_ULTRACODE_CONFIG_OPTION": "standard ACP: advertised config options",
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": "standard ACP: advertised model id values",
+    "ACP_BACKENDS_MODEL_SELECT_UNCHECKED": "standard ACP: session/set_config_option result",
+    "ACP_BACKENDS_UNASKED_NATIVE_TOOLS": "standard ACP: tool_call with no request_permission",
     "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": "standard ACP timing; changes only error text",
@@ -538,6 +542,10 @@ EXPECTED_AGENT_NAMES: dict[str, frozenset[str]] = {
     "deepseek": frozenset({"deepseek-harness-acp"}),
     "copilot": frozenset({"Copilot"}),
     "strands": frozenset({"@strands-agents/cli"}),
+    # MiMo Code keeps its parent's agentInfo.name, so the name alone cannot tell a
+    # mimocode capture from an opencode one; the header's backend and its 0.1.x
+    # agent_version are what separate them.
+    "mimocode": frozenset({"OpenCode"}),
 }
 
 # kiro-cli and KAS are one binary speaking one ``_kiro`` dialect, and KAS's

@@ -78,6 +78,7 @@ from kiro_crew.crew_log.store_segment_reads import (
     _anchor_exists,
     _has_content,
     _iter_entries_located,
+    _offset_below,
     _parses_to_object,
     _read_first_entry_seq,
     _read_header_line,
@@ -794,7 +795,7 @@ class CrewLog:
         read_budget.count_read(self._id, "digest", hashed, 0)
         return (digest.hexdigest(), hashed)
 
-    def raw_records_through(self, seq: int) -> int | None:
+    def raw_records_through(self, seq: int, *, hasher: "Any | None" = None) -> int | None:
         """How many raw entry records end at the entry numbered *seq*, or ``None``.
 
         This is the boundary :meth:`raw_prefix_digest` has to be given, and it
@@ -817,6 +818,10 @@ class CrewLog:
         unreadable or unframeable segment, or a file whose records do not reach it.
         A savepoint is then not written, which costs a cold fold rather than
         recording a boundary nothing can check.
+
+        *hasher* (a ``hashlib`` object) is fed every record this walk counts, the
+        same bytes :meth:`raw_prefix_digest` hashes, so a caller that needs both the
+        boundary and its digest pays one walk instead of two.
         """
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
             return None
@@ -833,6 +838,8 @@ class CrewLog:
                             if index == 0:
                                 continue  # the header
                             seen += 1
+                            if hasher is not None:
+                                hasher.update(raw)
                             stripped = raw.strip()
                             if not stripped:
                                 continue
@@ -995,7 +1002,12 @@ class CrewLog:
     ) -> Iterator[Entry]:
         """:meth:`iter_from`'s walk, adding each decoded record to *tally* when given."""
         walked = 0
-        located = self._iter_segments_located(resume=usable, cuts=cuts, contains=contains)
+        # A rendering read checks no advancing seq, so the prefix below *seq* is not
+        # owed a decode: it may seek (see ``_iter_segments_located``).
+        seek = seq if not strict_seq and usable is None else None
+        located = self._iter_segments_located(
+            resume=usable, cuts=cuts, contains=contains, seek=seek
+        )
         for entry, segment, at in located:
             if tally is not None:
                 if top and not tally.records and entry.seq >= seq:
@@ -1117,10 +1129,16 @@ class CrewLog:
         resume: "ResumePoint | None" = None,
         cuts: int | None = None,
         contains: bytes | None = None,
+        seek: int | None = None,
     ) -> "Iterator[tuple[Entry, str, int]]":
         """Every entry of every segment with its segment name and byte offset.
 
         Oldest first, refusing bad provenance.
+
+        *seek* is a seq the caller skips everything below, given only by the rendering
+        reads, which check no advancing seq: on a unit of ONE segment the walk starts at
+        a record :func:`_offset_below` finds by bisecting the bytes, so the prefix below
+        is never decoded. More than one segment, or a resume point, reads as before.
 
         Every segment repeats the header because retention may remove the first one.
         Each header must therefore identify this same crew log and schema before any
@@ -1155,6 +1173,8 @@ class CrewLog:
             # previous segment's LAST one, which a prefilter would skip.
             contains = None
         from_index, from_offset = self._resume_at(paths, resume, newest_end, cuts)
+        if seek is not None and seek > 1 and len(paths) == 1 and not from_offset:
+            from_offset = _offset_below(paths[0], seek, newest_end or 0)
         for index, path in enumerate(paths):
             if index < from_index:
                 continue
@@ -1210,7 +1230,9 @@ class CrewLog:
         """The entry at *seq*, or ``None``.
 
         Stops as soon as the stream passes *seq*: entries are written in seq
-        order, so a miss costs the prefix, not the file.
+        order, so a miss costs the prefix, not the file. On a unit of one segment the
+        walk starts at a record found by bisecting the bytes, so a hit near the end
+        costs about one span of records rather than the whole prefix.
 
         Reads across SEGMENTS, like :meth:`iter_from`. Reading only the newest file
         made a point read of a rotated entry answer ``None`` -- indistinguishable
@@ -1223,7 +1245,7 @@ class CrewLog:
 
         walked = 0
         found: Entry | None = None
-        for entry in self._iter_segments():
+        for entry, _segment, _at in self._iter_segments_located(seek=seq):
             walked += 1
             if entry.seq >= seq:
                 found = entry if entry.seq == seq else None
@@ -1274,7 +1296,7 @@ class CrewLog:
         ``before`` is exclusive, so feeding ``next_before`` straight back walks
         the history without repeating or skipping a line.
         """
-        return self._page(before, limit, keep=lambda _entry: True)
+        return self._page(before, limit, keep=lambda _entry: True, seek=True)
 
     def thread_page(
         self, anchor: int, before: int | None = None, limit: int = DEFAULT_PAGE_LIMIT
@@ -1290,11 +1312,10 @@ class CrewLog:
             before, limit, keep=lambda entry: entry.thread == anchor or entry.seq == anchor
         )
 
-    def _page(self, before: int | None, limit: int, *, keep: Callable[[Entry], bool]) -> Page:
+    def _page(
+        self, before: int | None, limit: int, *, keep: Callable[[Entry], bool], seek: bool = False
+    ) -> Page:
         bound = max(1, min(int(limit), MAX_PAGE_LIMIT))
-        # One extra slot answers "is there an older entry" exactly, so the
-        # cursor is None precisely when the caller has seen everything.
-        window: deque[Entry] = deque(maxlen=bound + 1)
         # Across SEGMENTS, like `iter_from` and `get`. Reading only the newest file
         # made paging stop dead at a rotation boundary and report `next_before` as
         # None -- telling the caller it had seen the whole history when it had seen
@@ -1302,13 +1323,35 @@ class CrewLog:
         # truncating that is the one answer it must not give.
         from kiro_crew.crew_log import read_budget
 
-        walked = 0
-        for entry in self._iter_segments():
-            walked += 1
-            if before is not None and entry.seq >= before:
-                continue
-            if keep(entry):
-                window.append(entry)
+        # A plain page may start a little below the oldest seq it can keep (see
+        # ``_iter_segments_located``), and stops at *before*. Its answer is proven when
+        # the window overflowed -- every entry below then fell out of it anyway -- or
+        # when the walk began at its segment's first seq; otherwise (gaps, a damaged
+        # first record) the page is read again from the top, in full. It starts twice
+        # the page below *before*, so up to half the seqs there may be missing lines.
+        top = (before if before is not None else self._last_seq + 1) - 2 * (bound + 1)
+        start = max(top, 2) if seek else None
+        while True:
+            # One extra slot answers "is there an older entry" exactly, so the
+            # cursor is None precisely when the caller has seen everything.
+            window: deque[Entry] = deque(maxlen=bound + 1)
+            walked = kept = 0
+            from_top = False
+            for entry, segment, _at in self._iter_segments_located(seek=start):
+                if not walked:
+                    from_top = entry.seq == _segment_first_seq(Path(segment))
+                walked += 1
+                if before is not None and entry.seq >= before:
+                    if start is not None:
+                        break  # a seeked walk keeps no entry past *before*
+                    continue
+                if keep(entry):
+                    window.append(entry)
+                    kept += 1
+            if start is None or kept > bound + 1 or from_top or not walked:
+                break
+            read_budget.count_read(self._id, "page", walked, 0)
+            start = None
         # Counted as one read whose answer is the window it kept.
         read_budget.count_read(self._id, "page", walked, len(window))
         newest_first = list(reversed(window))

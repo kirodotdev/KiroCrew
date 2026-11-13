@@ -714,9 +714,12 @@ class CodexHarness(MembershipHarness):
         # under the new name until the runtime recycles, and one that switches
         # between command and url under the same name conflicts with the
         # placeholder until then. Project-level .codex/config.toml overrides
-        # are not covered. A session/new that carries mcpServers replaces the
-        # whole mcp_servers table in codex-acp's createSessionConfig, dropping
-        # this override for any session that mounts servers that way. A
+        # are not covered. This override is lost in a session/new or
+        # session/load that carries mcpServers. codex-acp's createSessionConfig
+        # sets the mcp_servers key of the config overrides that it sends to
+        # codex to those servers alone, and codex loads the config.toml
+        # servers beneath the overrides, so that session starts the
+        # config.toml servers too. A
         # foreground session, a Bot's worker included, gets no override at all,
         # so codex starts the config.toml servers beside the servers Crew
         # mounts. A mounted server takes the place of a config.toml server with

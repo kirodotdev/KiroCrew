@@ -31,6 +31,7 @@ import {
   type CrewWorkerGroup,
 } from '../../lib/crewWorkers'
 import { crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
+import { crewWorkersGapMs, readCrewWorkers } from '../../lib/crewWorkersPoll'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 import { parseSourceLinkUrl } from '../../utils/pullRequestLinks'
@@ -93,9 +94,9 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
   const { t } = useTranslation()
   const listed = useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => api.crewWorkers(root),
+    queryFn: () => readCrewWorkers(root),
     enabled: !!root,
-    refetchInterval: q => (listNotServed(q.state.error) ? false : MATE_SESSIONS_POLL_MS),
+    refetchInterval: q => (listNotServed(q.state.error) ? false : crewWorkersGapMs(root, MATE_SESSIONS_POLL_MS)),
   })
   const live = useMemo(() => liveMateWorkers(liveSlots, root), [liveSlots, root])
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data?.workers, live])

@@ -639,7 +639,8 @@ class TestDocumentPass:
 
     @pytest.mark.asyncio
     async def test_a_workbook_reports_its_sheet_and_row(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         root = tmp_path / "sheets"
         root.mkdir()
         book = openpyxl.Workbook()
@@ -658,7 +659,6 @@ class TestDocumentPass:
     ):
         """openpyxl opens the container itself, so without the inventory vet a
         crafted workbook reaches the XML parser on its extension alone."""
-        pytest.importorskip("openpyxl")
         path = tmp_path / "bomb.xlsx"
         with zipfile.ZipFile(path, "w") as zf:
             zf.writestr("xl/workbook.xml", "<workbook/>")
@@ -1289,7 +1289,8 @@ class TestAParseIsBoundedByTheDeadline:
     """
 
     def test_a_workbook_of_empty_rows_stops_at_the_deadline(self, tmp_path, monkeypatch):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "blank.xlsx"
         book = openpyxl.Workbook()
         sheet = book.active
@@ -1309,7 +1310,8 @@ class TestAParseIsBoundedByTheDeadline:
         assert segments == ()
 
     def test_a_workbook_within_the_deadline_reports_complete(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "ok.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1402,7 +1404,8 @@ class TestPartialParsesAreHonest:
     def test_a_mid_read_failure_is_not_whole(self, tmp_path, monkeypatch):
         """Rows already read are real and are kept; the reader did not see the
         rest, so the answer is short."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "breaks.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"
@@ -1444,7 +1447,8 @@ class TestPartialParsesAreHonest:
 
     def test_the_character_cap_is_not_whole(self, tmp_path, monkeypatch):
         """A match past the cap is invisible, so the answer must say it is partial."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         monkeypatch.setattr(f, "_GREP_DOC_MAX_CHARS", 20)
         path = tmp_path / "long.xlsx"
         book = openpyxl.Workbook()
@@ -1463,7 +1467,8 @@ class TestPartialParsesAreHonest:
         it, so a wide row is N references until a join makes it N copies -- and the
         zip expansion gate counts the string once. The row must be assembled inside
         the remaining budget, so no string longer than the cap is ever built."""
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         monkeypatch.setattr(f, "_GREP_DOC_MAX_CHARS", 100)
         path = tmp_path / "wide.xlsx"
         book = openpyxl.Workbook()
@@ -1515,7 +1520,6 @@ class TestWorkbookExpansion:
         """The shared inventory vet bounds member COUNT and central-directory
         size, not expansion, so a single hugely-compressed member passed it and
         reached openpyxl's XML parser."""
-        pytest.importorskip("openpyxl")
         path = tmp_path / "bomb.xlsx"
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr("xl/workbook.xml", "<workbook/>")
@@ -1538,7 +1542,8 @@ class TestWorkbookExpansion:
         assert opened == []
 
     def test_a_workbook_within_the_cap_is_still_read(self, tmp_path):
-        openpyxl = pytest.importorskip("openpyxl")
+        import openpyxl
+
         path = tmp_path / "small.xlsx"
         book = openpyxl.Workbook()
         book.active.title = "Ledger"

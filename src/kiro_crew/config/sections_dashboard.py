@@ -64,6 +64,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "layout_harness",
     "mate_sessions",
     "remote_crew_chat",
+    "secrets_vault",
     "session_environments",
     "session_harness",
     "webhooks",
@@ -459,7 +460,7 @@ class DashboardConfig:
             "Raise it on a host that does heavy subprocess work (long builds, "
             "test suites, many child reaps), which can wedge the loop briefly "
             "without being genuinely dead. Clamped to 10s..300s. The desktop app's "
-            "liveness probe kills at roughly 20s independently, so a value "
+            "liveness probe kills after about a minute independently, so a value "
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
             restart=True,
@@ -992,6 +993,15 @@ class DashboardConfig:
             "Show the unread dot on a sidebar session card when the agent finished "
             "and you have not read the result. Folder and aggregate unread counts "
             "are not affected.",
+        ),
+    )
+    command_bar_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Command Bar Enabled",
+            "Open the Command Bar launcher on the quick-search shortcut (Cmd+K or "
+            "Ctrl+K). Off opens the search palette instead, which also searches "
+            "knowledge, skills and prompts.",
         ),
     )
     # Literal enum rather than FOLDER_SORT_MODES: that constant lives in

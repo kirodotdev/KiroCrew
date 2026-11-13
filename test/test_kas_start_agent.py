@@ -14,7 +14,7 @@ import pytest
 
 from kiro_crew.acp.harness import harness_for
 from kiro_crew.acp.kas_agents import KAS_MAX_CUSTOM_AGENTS
-from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID, parking_load, with_start_agent
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -120,13 +120,34 @@ class TestSessionRequest:
         )
         assert out["_meta"]["kiro"] == {"customAgents": [_own()], "modeId": "kirocrew"}
 
-    def test_a_load_is_sent_as_built(self):
+    def test_a_load_registers_the_start_agent_and_names_no_mode(self):
+        """The engine resumes in the mode it stored, which may be the start agent."""
         params = {**_request(_own(mcpServers=_SERVERS)), "sessionId": "s1"}
+        before = copy.deepcopy(params)
+        out, activated = harness_for(ACP_BACKEND_KAS).session_request(
+            METHOD_SESSION_LOAD, params, "kirocrew", agent_capabilities={}
+        )
+        kiro = out["_meta"]["kiro"]
+        assert [entry["id"] for entry in kiro["customAgents"]] == ["kirocrew", START_AGENT_ID]
+        assert kiro["customAgents"][0]["mcpServers"] == _SERVERS
+        assert "modeId" not in kiro
+        assert activated == "kirocrew"
+        assert params == before
+
+    def test_a_load_whose_agent_gets_no_start_agent_is_sent_as_built(self):
+        params = {**_request(_own()), "sessionId": "s1"}
         out, activated = harness_for(ACP_BACKEND_KAS).session_request(
             METHOD_SESSION_LOAD, params, "kirocrew", agent_capabilities={}
         )
         assert out is params
         assert activated == "kirocrew"
+
+    def test_another_host_sends_a_load_as_built(self):
+        params = {**_request(_own(mcpServers=_SERVERS)), "sessionId": "s1"}
+        out, _activated = harness_for(ACP_BACKEND_KIRO).session_request(
+            METHOD_SESSION_LOAD, params, "kirocrew", agent_capabilities={}
+        )
+        assert out is params
 
     def test_only_the_start_agent_is_a_start_mode_without_servers(self):
         """Reports staged in the start agent still count; any other start mode's do not."""
@@ -135,3 +156,61 @@ class TestSessionRequest:
         for mode_id in ("vibe", "kirocrew", ""):
             assert kas.start_mode_ran_servers(mode_id) is True
         assert harness_for(ACP_BACKEND_KIRO).start_mode_ran_servers(START_AGENT_ID) is True
+
+
+class TestParkingLoad:
+    """The load that brings a stored session back with nothing to start."""
+
+    def _load(self, *entries: object) -> dict:
+        return {
+            "sessionId": "s1",
+            "cwd": "/w",
+            "mcpServers": [{"name": "kirocrew-core"}],
+            "_meta": {"_kiro.dev/session_file": "", "kiro": {"customAgents": list(entries)}},
+        }
+
+    def test_the_own_agent_declares_no_server_and_the_session_sends_none(self):
+        target = {"id": "helper", "prompt": "p", "mcpServers": {"docs": {"command": "docs"}}}
+        start = with_start_agent([_own(mcpServers=_SERVERS)])[-1]
+        params = self._load(_own(mcpServers=_SERVERS, includeMcpJson=True), target, start)
+        before = copy.deepcopy(params)
+        parked = parking_load(params)
+        assert parked is not None
+        own, kept, last = parked["_meta"]["kiro"]["customAgents"]
+        assert "mcpServers" not in own
+        assert own["includeMcpJson"] is False
+        assert {k: v for k, v in own.items() if k != "includeMcpJson"} == _own()
+        assert kept is target and last is start
+        assert parked["mcpServers"] == []
+        assert parked["sessionId"] == "s1" and parked["cwd"] == "/w"
+        assert parked["_meta"]["_kiro.dev/session_file"] == ""
+        assert params == before
+
+    @pytest.mark.parametrize(
+        "params",
+        [
+            {"sessionId": "s1", "mcpServers": []},
+            {"sessionId": "s1", "_meta": {"kiro": {}}},
+            {"sessionId": "s1", "_meta": {"kiro": {"customAgents": [_own(mcpServers=_SERVERS)]}}},
+            {
+                "sessionId": "s1",
+                "_meta": {"kiro": {"customAgents": [{"id": START_AGENT_ID, "prompt": "p"}]}},
+            },
+            {"sessionId": "s1", "_meta": {"kiro": {"customAgents": ["kirocrew", "x"]}}},
+        ],
+        ids=["no-meta", "no-batch", "no-start-agent", "start-agent-alone", "not-a-dict"],
+    )
+    def test_a_load_with_no_start_agent_to_park_in_is_not_parked(self, params):
+        assert parking_load(params) is None
+
+    def test_a_target_the_user_named_like_the_start_agent_is_not_parked_in(self):
+        """Only the entry this module appends is server-less; the id alone proves nothing."""
+        named_alike = {
+            "id": START_AGENT_ID,
+            "prompt": "p",
+            "mcpServers": {"docs": {"command": "docs"}},
+        }
+        batch = [_own(mcpServers=_SERVERS, tools=["subagent"]), named_alike]
+        # The batch as the harness sends it: an entry with the id is already there.
+        assert with_start_agent(batch) is None
+        assert parking_load(self._load(*batch)) is None

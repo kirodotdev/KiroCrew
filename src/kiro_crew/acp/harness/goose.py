@@ -26,7 +26,7 @@ import yaml  # type: ignore[import-untyped]
 
 from kiro_crew import acp_tool_gate
 from kiro_crew.acp import launch as launch_mod
-from kiro_crew.acp.harness.base import ProcessAdapter, SpawnContext, SpawnPlan
+from kiro_crew.acp.harness.base import ProcessAdapter, ProcessSession, SpawnContext, SpawnPlan
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_GOOSE
 
@@ -159,6 +159,7 @@ class GooseLaunch(ProcessAdapter):
     backend = ACP_BACKEND_GOOSE
 
     def __init__(self) -> None:
+        super().__init__()
         # Set by resolve_spawn; read by prepare_spawn_env for the same spawn.
         self._side_scratch: Callable[[], Path | None] | None = None
 
@@ -240,6 +241,10 @@ class GooseLaunch(ProcessAdapter):
             )
         root = await to_thread(build_side_goose_root, goose_config_dir(env), Path(scratch))
         env[_ENV_GOOSE_PATH_ROOT] = str(root)
+
+    def session_mcp_servers(self, session: ProcessSession) -> list[dict[str, Any]]:
+        """The goose session's own ``mcpServers`` entries, warmed by the spawn."""
+        return session._goose_session_mcp_servers()
 
     def apply_spawn_env(self, env: dict[str, str], *, spawned_binary: str | None = None) -> None:
         """Nothing beyond the seed, which reaches the child through the session's overlay."""

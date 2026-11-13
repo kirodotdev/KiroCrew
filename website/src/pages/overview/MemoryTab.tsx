@@ -19,6 +19,7 @@ import MemoryStoreCard, {
 import MemoryCarveCard from './MemoryCarveCard'
 import MemoryRetiredCard from './MemoryRetiredCard'
 import MemoryBackupsCard from './MemoryBackupsCard'
+import MemoryFailuresCard from './MemoryFailuresCard'
 import MemberMemoryPanel from './MemberMemoryPanel'
 import MemoryRecordsEditor from './MemoryRecordsEditor'
 import MemoryDocCard from './MemoryDocCard'
@@ -337,6 +338,11 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     setLessons(d.lessons || [])
     setLessonsLoadError(null)
   }, [])
+  // A lesson saved from the Repeated failures card: with vector memory on, the
+  // list the page shows is the vector card's semantic browser, not `lessons`.
+  const reloadSavedLesson = useCallback(async () => {
+    await Promise.all([loadLessons(), queryClient.invalidateQueries({ queryKey: ['member-memory', 'default'] })])
+  }, [loadLessons, queryClient])
   const showLessons = useCallback((step: 'load' | 'add') => {
     const seq = lessonsReadSeq.current + 1
     return loadLessons().catch((e: unknown) => {
@@ -385,8 +391,8 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     }
   }
   const lessonComparators = useMemo(() => ({
-    rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
-    category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
+    rule: (a: Lesson, b: Lesson) => compareText(a.rule, b.rule),
+    category: (a: Lesson, b: Lesson) => compareText(a.category, b.category),
     repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
     source: (a: Lesson, b: Lesson) => compareText(a.source ?? '', b.source ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
@@ -854,6 +860,12 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     {storeReadable && <MemoryCarveCard key={`carve-${store}`} store={store} />}
     {storeReadable && <MemoryRetiredCard key={`retired-${store}`} store={store} />}
     <MemoryBackupsCard key={`backups-${store}`} store={store} />
+    {/* Its open draft joins the page's leave guards through `docDirty`. */}
+    <MemoryFailuresCard
+      refreshTrigger={refreshTrigger}
+      onLessonSaved={reloadSavedLesson}
+      onDirtyChange={d => setDocDirty(old => old.failures === d ? old : { ...old, failures: d })}
+    />
     {!vectorActive && (
       <Card id={LESSONS_CARD_ID}><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
       <div className="flex gap-2 items-center flex-wrap mb-3">

@@ -612,6 +612,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "carries one more copy, and a wrong membership is a defect -- a picture a "
         "silent compaction dropped would be withheld"
     ),
+    "ACP_BACKENDS_COMPACTION_REPORTED": (
+        "whether the engine is sent the reply-format rules once per conversation and "
+        "again after a compaction, or with every message. The model has the rules "
+        "either way; outside the set each message carries one more copy, and a wrong "
+        "membership is a defect -- rules a silent compaction dropped would not return"
+    ),
     "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": (
         "what answers a full context on a harness Crew cannot hand /compact to. The "
         "card already reports whether /compact works, which is the part a reader "
@@ -745,6 +751,11 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "Both states hold the governance ceiling, so it is no feature a reader "
         "would choose a harness for"
     ),
+    "ACP_BACKENDS_MODEL_SELECT_UNCHECKED": (
+        "who checks a model value against the advertised select, the harness or "
+        "the client. Either way an unadvertised value is refused rather than "
+        "applied, so the model-switch line reads the same"
+    ),
     "ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY": (
         "which directory a host resolves its agent specs from, and therefore "
         "whether the session's project checkout scopes the broker-overlay lookup. "
@@ -788,6 +799,13 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "answers a narrower question the pool asks about, and a wrong membership "
         "admits a backend whose native tools stay live under a spec that meant to "
         "deny them, which is a defect"
+    ),
+    "ACP_BACKENDS_UNASKED_NATIVE_TOOLS": (
+        "whether some of the harness's own tools run with no permission request "
+        "under the asking posture Crew seeds. An input to the zero-tool-ban rule "
+        "above and nothing else; the reader-facing half, how and whether this "
+        "harness is made to ask, is the `tool_approval` line, so a card line here "
+        "would say the same thing twice"
     ),
     "ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD": (
         "whether a freshly installed MCP server reaches a RUNNING session. The one "

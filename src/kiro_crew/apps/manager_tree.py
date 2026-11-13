@@ -102,7 +102,17 @@ def _check_path_safety(path: str) -> bool:
     Rejects ``..``, ``/``, and ``\\`` to prevent directory traversal
     when the path is used as a key in file-system lookups (e.g.
     ``apps_dir() / name``).
+
+    On Windows it also rejects a drive spec such as ``D:x``: it has no
+    separator, yet joining it onto a path changes the drive. Elsewhere such
+    a name is one plain component and stays accepted.
     """
+    if os.name == "nt":
+        # Call-time import: a module-level one would be served by the facade.
+        import ntpath
+
+        if ntpath.splitdrive(path)[0]:
+            return False
     return ".." not in path and "/" not in path and "\\" not in path
 
 

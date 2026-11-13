@@ -27,6 +27,10 @@ export interface ConnectionProvider {
   /** Gallery bucket from the backend's closed `PROVIDER_CATEGORIES` vocabulary;
    *  catalog metadata only, nothing renders or gates on it yet. */
   category?: string
+  /** `<file>.md#<anchor>` of the shipped docs section an organization admin
+   *  follows to allow this install's sign-in. Its presence makes the status feed
+   *  report `signInRedirect`, and a refused sign-in links to it. */
+  org_admin_guide?: string
   /**
    * How the OAuth client comes into being. Absent means kiro-cli registers one
    * at runtime (DCR). `preregistered` means an operator must register an app

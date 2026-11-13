@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -58,6 +59,40 @@ def _make_app(store, watcher=None):
 
 class TestAddSourceFolder:
     @pytest.mark.asyncio
+    async def test_a_folder_spelled_with_a_trailing_slash_or_dot_is_added_once(self, store, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        watcher = MagicMock()
+        watcher._folder_watcher = MagicMock()
+        watcher._folder_watcher._walk = MagicMock(return_value=[])
+
+        # The platform separator, as the handler builds its alternate spellings
+        # with os.sep.
+        trailing, dotted = f"{vault}{os.sep}", f"{vault}{os.sep}."
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            first = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": trailing
+            })
+            assert first.status == 201
+            first_id = (await first.json())["id"]
+            for spelling in (str(vault), trailing, dotted):
+                resp = await client.post("/api/knowledge/sources", json={
+                    "source_type": "local_folder", "uri": spelling
+                })
+                data = await resp.json()
+                if spelling == trailing:
+                    # The exact stored spelling keeps its existing answer.
+                    assert resp.status == 409 and data["id"] == first_id
+                else:
+                    # Another spelling of it is answered with that row, not refused.
+                    assert resp.status == 200
+                    assert data["status"] == "exists"
+                    assert data["id"] == first_id
+
+        uris = [r["uri"] for r in store.db.execute("SELECT uri FROM sources").fetchall()]
+        assert uris == [trailing]
+
+    @pytest.mark.asyncio
     async def test_folder_returns_pending_confirmation(self, store, tmp_path):
         vault = tmp_path / "vault"
         vault.mkdir()
@@ -93,6 +128,25 @@ class TestAddSourceFolder:
                     "name": "test", "source_type": "local_folder", "uri": str(vault)
                 })
             assert resp.status == 403
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_type", ["local_folder", "local_file"])
+    async def test_an_unencodable_name_is_a_400_not_a_500(self, store, tmp_path, source_type):
+        # JSON's \ud800 decodes to a str UTF-8 cannot encode, and the insert
+        # binds the name as UTF-8, so it answered 500 before.
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "a.md").write_text("x")
+        uri = str(vault) if source_type == "local_folder" else str(vault / "a.md")
+        watcher = MagicMock()
+        watcher._folder_watcher._walk = MagicMock(return_value=[])
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "n\ud800", "source_type": source_type, "uri": uri
+            })
+            assert resp.status == 400
+            assert (await resp.json()).get("code") == "text_not_encodable"
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
 
 
 class TestConfirmSource:
@@ -321,6 +375,31 @@ class TestRenameSource:
         async with TestClient(TestServer(_make_app(store))) as client:
             resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"name": 123})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rename_unencodable_name_is_a_400_not_a_500(self, store):
+        sid = store.add_source("Old", "local_file", "/tmp/doc.md")
+        async with TestClient(TestServer(_make_app(store))) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json={"name": "\ud800"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "text_not_encodable"
+        assert store.db.execute("SELECT name FROM sources WHERE id = ?", (sid,)).fetchone()["name"] == "Old"
+
+    @pytest.mark.asyncio
+    async def test_item_update_unencodable_text_is_a_400_not_a_500(self, store):
+        from kiro_crew.dashboard.handlers.knowledge import update_item
+
+        sid = store.add_source("S", "local_file", "/tmp/doc.md")
+        iid = store.add_item(title="t", content="c", item_type="note", source_id=sid)
+        app = _make_app(store)
+        app.router.add_patch("/api/knowledge/items/{id}", update_item)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(f"/api/knowledge/items/{iid}", json={"title": "\ud800"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "text_not_encodable"
+            ok = await client.patch(f"/api/knowledge/items/{iid}", json={"tags": ["\ud800"]})
+            assert ok.status == 200  # a list is stored as escaped JSON, as before
+        assert store.get_item(iid)["title"] == "t"
 
     @pytest.mark.asyncio
     async def test_rename_too_long_rejected(self, store):

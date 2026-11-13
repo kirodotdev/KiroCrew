@@ -134,7 +134,9 @@ jobs:
     # minutes inside the cap, which is the invariant, for about the same total
     # lane wall time. Eight is also the last count that stays two waves; past
     # it the next lever is the slow tests themselves, not a ninth shard.
-    timeout-minutes: 40
+    # The cap is 60: on a slow or capacity-limited macOS arm64 runner a shard
+    # with no failing test can stall for minutes and still be running at 40.
+    timeout-minutes: 60
     strategy:
       max-parallel: 4
       # Full failure picture across shards, same as backend-test.
@@ -312,7 +314,7 @@ jobs:
       # mac runner.
       #
       # `if: always()` and not `failure()`: a shard that times out at the
-      # 40-minute cap is `cancelled`, which is exactly the outcome whose node ids
+      # 60-minute cap is `cancelled`, which is exactly the outcome whose node ids
       # a human most needs, and `failure()` would drop it. `tee` has already
       # written whatever ran before the cap.
       - name: Upload the shard's pytest log

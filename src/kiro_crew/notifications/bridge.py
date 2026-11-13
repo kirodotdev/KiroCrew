@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 #: Transport ids ``deliver_to`` may name. Validated against the KNOWN set, not the
 #: connected one, so a stored route survives a transport that is down for a while.
-BRIDGE_TRANSPORTS: tuple[str, ...] = ("slack", "discord", "telegram", "webex", "wecom")
+BRIDGE_TRANSPORTS: tuple[str, ...] = ("slack", "discord", "telegram", "webex", "wecom", "feishu")
 
 #: ``deliver_min_priority`` values, tightest first. ``all`` also routes passive notes.
 DELIVER_MIN_PRIORITIES: tuple[str, ...] = ("critical", "default", "all")

@@ -699,6 +699,23 @@ class TestDoctorAgentAuthOnTheBundleRoute:
         assert "kiro-cli's own sign-in; could not check" in out
         assert "Kiro Crew vault; not signed in" not in out
 
+    @pytest.mark.parametrize("signed_in", [False, None])
+    def test_the_relay_route_remedy_names_kas_login_first(self, monkeypatch, capsys, signed_in):
+        """A relay host reached by ssh may have no browser, so the remedy names
+        ``kirocrew kas login`` before the dashboard card, as ``kirocrew chat`` does."""
+        from kiro_crew import acp_backends
+
+        cfg = self._Cfg("kas", False)
+        monkeypatch.setattr(cli_doctor.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+        monkeypatch.setattr(acp_backends, "selectable_backend_values", lambda: ["kas"])
+        monkeypatch.setattr(cli_doctor, "_kiro_cli_signed_in", lambda: signed_in)
+        monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: False)
+        monkeypatch.setattr("kiro_crew.auth.bridge.describe_vault_identity", lambda: None)
+        cli_doctor._doctor_agent_auth()
+        out = capsys.readouterr().out
+        assert "(KAS through kiro-cli's relay)" in out
+        assert "Sign in with `kirocrew kas login` (or in the dashboard:" in out
+
 
 class TestDoctorKas:
     """`kirocrew doctor` KAS backend section — gated on acp_backend == kas.

@@ -1081,11 +1081,14 @@ async def test_a_failed_successor_start_parks_other_peoples_entries_for_the_retr
     await mgr.close_all()
 
 
-def test_the_parked_queue_is_count_bounded_and_the_overflow_is_logged(caplog):
+def test_the_parked_queue_is_count_bounded_and_the_overflow_is_logged(caplog, monkeypatch):
     from unittest.mock import MagicMock
 
     from kiro_crew import session_lifecycle as sl
+    from kiro_crew.session_lifecycle_parts import parked_queue
 
+    # The drop counter is module-wide; start this test's count from zero.
+    monkeypatch.setattr(parked_queue, "_parked_dropped", 0)
     sessions = MagicMock()
     entries = tuple((f"ts-{i}", "x", {}) for i in range(sl.PARKED_QUEUE_MAX + 2))
     with caplog.at_level("WARNING", logger=sl.__name__):

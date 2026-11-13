@@ -716,8 +716,9 @@ def _oidc_auth(expires_in_secs: float = 300) -> builder_id.DeviceAuthorization:
 
 
 async def _begin_oidc(service, monkeypatch, provider: str, **kwargs) -> dict:
-    async def _fake_register(region, *, session):
-        return builder_id.RegisteredClient(client_id="cid-1", client_secret="csec-1")
+    async def _fake_register(region, *, session, scopes=builder_id.OIDC_SCOPES):
+        _fake_register.scopes = scopes  # type: ignore[attr-defined]
+        return builder_id.RegisteredClient(client_id="cid-1", client_secret="csec-1", scopes=scopes)
 
     async def _fake_start(client, *, region, start_url, session):
         _fake_start.seen = {"region": region, "start_url": start_url}  # type: ignore[attr-defined]
@@ -727,6 +728,7 @@ async def _begin_oidc(service, monkeypatch, provider: str, **kwargs) -> dict:
     monkeypatch.setattr(builder_id, "start_device_authorization", _fake_start)
     result = await service.begin_device(provider, **kwargs)
     result["_seen"] = getattr(_fake_start, "seen", {})
+    result["_scopes"] = getattr(_fake_register, "scopes", None)
     return result
 
 
@@ -945,6 +947,34 @@ async def test_poll_idc_one_refusal_and_one_profile_signs_in(tmp_path, monkeypat
 
 _US_CPS = "https://management.us-east-1.kiro.dev/"
 _EU_CPS = "https://management.eu-central-1.kiro.dev/"
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_refused_profile_lookup_logs_what_it_asked(tmp_path, monkeypatch, caplog):
+    """A refused lookup names the start URL, region and control planes in its final line.
+
+    Without them a browser approved as another user, a wrong start URL and a wrong
+    region all leave the same line, and the log cannot say which one happened.
+    """
+    refused = _FakeResp(403, {"message": "forbidden"})
+    service, _ = _service(
+        tmp_path,
+        responses=[_FakeResp(200, {"accessToken": "at-log", "expiresIn": 3600}), refused, refused],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start", region="eu-west-1"
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.auth.service"):
+        await service.poll_device(begin["login_id"])
+    [line] = [
+        r.getMessage()
+        for r in caplog.records
+        if "could not resolve IdC profile ARN" in r.getMessage()
+    ]
+    assert "start URL https://acme.awsapps.com/start" in line
+    assert "region eu-west-1" in line
+    assert f"control planes asked: {_EU_CPS}, {_US_CPS}" in line
+    assert "at-log" not in line
 
 
 @pytest.mark.parametrize(
@@ -1538,3 +1568,235 @@ async def test_poll_oidc_answer_that_cannot_be_read_costs_no_budget(tmp_path, mo
     assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
     for _ in range(MAX_POLL_TRANSPORT_FAILURES):
         assert await service.poll_device(begin["login_id"]) == {"status": "pending"}
+
+
+# --- relay viewer control plane (gamma) asked first --------------------------------
+
+_GAMMA_CPS = "https://management.gamma.kiro.example"
+
+
+def _viewer_config(monkeypatch, *, enabled: bool, url: str, prefix: str = "") -> None:
+    """Point the service's config read at a tunnel section with these viewer settings."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config import loader
+
+    tunnel = SimpleNamespace(
+        relay_viewer_enabled=enabled,
+        relay_viewer_cps_url=url,
+        relay_viewer_oidc_scope_prefix=prefix,
+    )
+    monkeypatch.setattr(
+        loader.KiroCrewConfig,
+        "load",
+        classmethod(lambda cls, *a, **k: SimpleNamespace(tunnel=tunnel)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_asks_the_relay_viewer_control_plane_first(tmp_path, monkeypatch):
+    """A gamma profile lives only at the viewer's gamma CPS, so that host is asked first."""
+    _viewer_config(monkeypatch, enabled=True, url=_GAMMA_CPS)
+    arn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/GAMMA"
+    service, session = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-g", "expiresIn": 3600}),
+            _page([{"arn": arn, "profileName": "Gamma"}]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start", region="us-west-2"
+    )
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "authorized",
+        "provider": "Enterprise",
+    }
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None and saved.profile_arn == arn
+    cps_calls = [c for c in session.calls_with_headers if "kiro" in c[0]]
+    assert [c[0] for c in cps_calls] == [_GAMMA_CPS]
+    assert cps_calls[0][2]["Authorization"] == "Bearer at-g"
+
+
+@pytest.mark.parametrize(
+    "enabled, url",
+    [(False, _GAMMA_CPS), (True, "")],
+    ids=["viewer-off", "url-unset"],
+)
+@pytest.mark.asyncio
+async def test_poll_idc_without_the_viewer_asks_only_the_prod_control_planes(
+    tmp_path, monkeypatch, enabled, url
+):
+    _viewer_config(monkeypatch, enabled=enabled, url=url)
+    service, session = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-p", "expiresIn": 3600}),
+            _page([]),
+            _page([]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "no_kiro_profile",
+    }
+    assert [u for u, _ in session.calls if "kiro" in u] == [_US_CPS, _EU_CPS]
+
+
+@pytest.mark.parametrize(
+    "viewer_answer",
+    [
+        _FakeResp(403, {"message": "forbidden"}),
+        _UnreadableResp(
+            status=502, err=UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+        ),
+        _FailingResp(aiohttp.ClientConnectionError("name does not resolve")),
+        _FailingResp(asyncio.TimeoutError()),
+        _page([]),
+    ],
+    ids=["refused", "refused-undecodable-body", "connect-error", "timeout", "no-profiles"],
+)
+@pytest.mark.asyncio
+async def test_poll_idc_falls_through_to_prod_when_the_viewer_host_has_nothing(
+    tmp_path, monkeypatch, viewer_answer
+):
+    _viewer_config(monkeypatch, enabled=True, url=_GAMMA_CPS)
+    arn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/PROD"
+    service, session = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-f", "expiresIn": 3600}),
+            viewer_answer,
+            _page([{"arn": arn, "profileName": "Prod"}]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "authorized",
+        "provider": "Enterprise",
+    }
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None and saved.profile_arn == arn
+    assert [u for u, _ in session.calls if "kiro" in u] == [_GAMMA_CPS, _US_CPS]
+
+
+@pytest.mark.asyncio
+async def test_poll_idc_unreachable_viewer_host_and_empty_prod_is_lookup_failed(
+    tmp_path, monkeypatch
+):
+    """The viewer host may hold the profile, so empty prod lists do not mean "no profile"."""
+    _viewer_config(monkeypatch, enabled=True, url=_GAMMA_CPS)
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at-u", "expiresIn": 3600}),
+            _FailingResp(asyncio.TimeoutError()),
+            _page([]),
+            _page([]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert await service.poll_device(begin["login_id"]) == {
+        "status": "error",
+        "code": "profile_lookup_failed",
+    }
+    assert TokenStore(tmp_path).resolve() is None
+
+
+@pytest.mark.asyncio
+async def test_list_available_profiles_does_not_ask_a_prod_viewer_url_twice():
+    session = _FakeSession([_page([]), _page([])])
+    listing = await control_plane.list_available_profiles(
+        "at", region="us-east-1", session=session, viewer_cps_url=_US_CPS.rstrip("/")
+    )
+    assert listing.profiles == []
+    assert [u for u, _ in session.calls] == [_US_CPS.rstrip("/"), _EU_CPS]
+
+
+# --- OIDC scopes change only with an explicit scope prefix ----------------------------
+
+_PUBLIC_SCOPES = (
+    "codewhisperer:completions",
+    "codewhisperer:analysis",
+    "codewhisperer:conversations",
+)
+# A made-up prefix: the tests never name a real non-prod one.
+_TEST_PREFIX = "test_prefix"
+_PREFIXED_SCOPES = (
+    "test_prefix:completions",
+    "test_prefix:analysis",
+    "test_prefix:conversations",
+)
+
+
+@pytest.mark.parametrize(
+    "enabled, url, prefix, expected",
+    [
+        (True, _GAMMA_CPS, "", _PUBLIC_SCOPES),
+        (True, _US_CPS, "", _PUBLIC_SCOPES),
+        (False, "", "", _PUBLIC_SCOPES),
+        (True, _GAMMA_CPS, _TEST_PREFIX, _PREFIXED_SCOPES),
+        (False, "", _TEST_PREFIX, _PREFIXED_SCOPES),
+    ],
+    ids=["viewer-non-prod-unset", "viewer-prod-unset", "viewer-off-unset", "set", "set-viewer-off"],
+)
+@pytest.mark.parametrize("provider", ["idc", "builder_id"])
+@pytest.mark.asyncio
+async def test_begin_oidc_changes_scopes_only_with_the_scope_prefix_setting(
+    tmp_path, monkeypatch, provider, enabled, url, prefix, expected
+):
+    """The viewer's control plane URL never changes the scopes, prod or not; only the
+    explicit prefix does, for both SSO-OIDC flows."""
+    _viewer_config(monkeypatch, enabled=enabled, url=url, prefix=prefix)
+    service, _ = _service(tmp_path)
+    kwargs = {"start_url": "https://acme.awsapps.com/start"} if provider == "idc" else {}
+    begin = await _begin_oidc(service, monkeypatch, provider, **kwargs)
+    assert begin["_scopes"] == expected
+
+
+@pytest.mark.parametrize(
+    "prefix", ["", "Bad", "has:colon", "has space", "x" * 64, "9lead", "dash-ed"]
+)
+def test_an_invalid_scope_prefix_keeps_the_public_scopes(prefix):
+    from kiro_crew.auth.login import endpoints
+
+    assert endpoints.oidc_scopes(prefix) == _PUBLIC_SCOPES
+    assert endpoints.oidc_scopes(_TEST_PREFIX) == _PREFIXED_SCOPES
+    assert endpoints.OIDC_SCOPES == _PUBLIC_SCOPES
+
+
+@pytest.mark.parametrize(
+    "prefix, recorded",
+    [(_TEST_PREFIX, list(_PREFIXED_SCOPES)), ("", None)],
+    ids=["prefix-set", "prod"],
+)
+@pytest.mark.asyncio
+async def test_poll_idc_records_non_default_scopes_on_the_saved_token(
+    tmp_path, monkeypatch, prefix, recorded
+):
+    """The saved token says which scopes its registration holds, so the next sign-in
+    reuses it only for the same ones; a prod token is stored exactly as before."""
+    _viewer_config(monkeypatch, enabled=True, url=_GAMMA_CPS, prefix=prefix)
+    arn = "arn:aws:codewhisperer:us-east-1:111122223333:profile/P"
+    service, _ = _service(
+        tmp_path,
+        responses=[
+            _FakeResp(200, {"accessToken": "at", "expiresIn": 3600}),
+            _page([{"arn": arn, "profileName": "P"}]),
+        ],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start"
+    )
+    assert (await service.poll_device(begin["login_id"]))["status"] == "authorized"
+    saved = TokenStore(tmp_path).resolve()
+    assert saved is not None
+    assert saved.extra.get(builder_id.OIDC_SCOPES_EXTRA_KEY) == recorded

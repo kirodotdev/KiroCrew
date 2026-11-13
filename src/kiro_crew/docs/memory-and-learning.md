@@ -118,6 +118,7 @@ Switches that change what is written or injected:
 | `memory.rule_authority_order: "enforce"` | Unchanged | Rules saved as yours (`learn_add`, dashboard, CLI) come first in the rule block, then inferred rules (`"shadow"` only records what would change; default `"off"` does neither) |
 | `memory.member_lesson_dedup: "enforce"` | A private store skips a lesson that copies a stored one, and retires a new near-copy before a dashboard turn sees it (turning it off restores them); lessons you taught are never folded (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.relevance_rule: "enforce"` | Unchanged | Past findings, task facts and project and history sections join a new session only when they share a word of 3 or more letters, or a two-character Chinese or Japanese pair, with your first message; a fact also needs the private store's evidence check. The rule block is unchanged (`"shadow"` only records what would change; default `"off"` does neither) |
+| `memory.dream: "propose"` | While no chat runs, an offline pass lists copies, near-copies, work status and old untagged rules it would clean up; read the list with `kirocrew memory dream list`. Nothing is applied, and lessons you taught are never proposed for change | Unchanged |
 | `memory.inject_memory: false` | Unchanged | Stored memory block withheld |
 | `memory.inject_lessons: false` | Unchanged | Lessons and user-profile blocks withheld |
 
@@ -125,6 +126,19 @@ Incognito sessions still read stored memory but write none, and Temporary
 sessions neither read nor write it, whatever these keys say. The keys apply to
 every surface (dashboard, channels, cron, sub-agents) at once, where a memory
 mode is chosen per session.
+
+To see what the `"shadow"` (and `"propose"`) stages above have recorded, run
+`kirocrew memory shadow report`. Per stage it prints the flag, when its window
+started, the days and session starts seen against the bar (14 days and 200
+session starts), and how many items the new policy would change. It shows
+counts only, never memory text, and writes nothing. `--stage <name>` adds counts
+by day, `--since 7d` or `--since YYYY-MM-DD` moves the start, `--store <name>`
+reads another store, and `--json` prints the same data as JSON. Only `shadow`
+counters and sampled fields count; Dreaming keeps `propose`. If a window starts
+partway through a UTC day, the report excludes that day from counters, samples
+and session starts and reports the next UTC midnight as `window_start`. This
+conservatively undercounts readiness by at most one day, avoiding counters that
+mix policy versions. A start exactly at UTC midnight keeps that day.
 
 ## Memory Modes
 

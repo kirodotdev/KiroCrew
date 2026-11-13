@@ -55,7 +55,9 @@ from kiro_crew.constants import (
 from kiro_crew.env import nvm_dirs as _nvm_dirs
 from kiro_crew.jsonl_util import rotate_jsonl_at as _rotate_jsonl_at
 from kiro_crew.owner_only_files import ensure_directory as _ensure_directory
-from kiro_crew.owner_only_files import owner_only_opener_for as _owner_only_opener_for
+from kiro_crew.owner_only_files import (
+    open_log_for_append_owner_only as _open_log_for_append_owner_only,
+)
 from kiro_crew.sandbox import (
     MD_NOTEBOOK_APP_NAME,
     RLIMIT_PROFILE_BUILD,
@@ -63,6 +65,7 @@ from kiro_crew.sandbox import (
     _md_notebook_degraded_mask_dirs,
     app_backend_visible_targets,
     app_declared_mask_targets,
+    app_declared_readonly_targets,
     carveout_shadowed_by_foreign_mask,
     cgroup_scope_argv,
     popen_limited,
@@ -1212,6 +1215,10 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # data directory, from every other spawn; its backend is their reader. Only the
     # declaration of the code this spawn executes is lifted, on the same provenance.
     _visible = _visible + app_declared_mask_targets(app_name, builtin=_admitted_builtin)
+    # The directories it declares in ``agentReadOnlyDirs`` are sealed read-only for every
+    # other spawn; its backend is their writer, so their exact spellings lift those seals
+    # for this spawn only, on the same provenance.
+    _visible = _visible + app_declared_readonly_targets(app_name, builtin=_admitted_builtin)
     if _shipped_md_notebook:
         # Move legacy Notes state into the state directory before the backend reads it.
         # Spawn prep runs the same move on sandboxed hosts; this call covers a host with no
@@ -1310,13 +1317,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
         # aside with the shared ``rotate_jsonl_at`` primitive when it is full,
         # so append does not grow it without bound.
         _rotate_jsonl_at(log_path, _BACKEND_LOG_MAX_BYTES)
-        log_fh = open(
-            log_path,
-            "a",
-            encoding="utf-8",
-            errors="replace",
-            opener=_owner_only_opener_for(log_path),  # 0600 inside the data home
-        )
+        log_fh = _open_log_for_append_owner_only(log_path)  # owner-only on Windows too
         # Where THIS session's output begins. backend.log is opened in append
         # mode, so it may already hold prior sessions' lines; the immediate-exit
         # diagnostic below must read only from here, or a stale "errno 98" from a
@@ -1617,6 +1618,7 @@ if _typing.TYPE_CHECKING:
         _pidfile_lock,
         _pidfile_path,
         _read_pidfile,
+        _read_pidfile_for_update,
         _write_pidfile,
         atomic_write,
         json,

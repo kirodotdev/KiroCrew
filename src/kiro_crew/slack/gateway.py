@@ -134,6 +134,7 @@ from kiro_crew.constants import (
     LEAKED_TOOL_CALL_NOTE,
     NO_TOOL_CALLS_NOTE,
     SUBAGENT_COMPLETION_META_KEY,
+    UNVERIFIED_MODEL_NOTE,
 )
 from kiro_crew.context import ContextBuilder, session_store_for_turn
 from kiro_crew.context_management import summarize_result
@@ -441,6 +442,7 @@ from kiro_crew.session import (
     SessionClosingError,
     SessionManager,
 )
+from kiro_crew.session_map import SessionMap
 from kiro_crew.session_start_sizing import resolve_session_start_sizing
 from kiro_crew.skills import SkillsLoader
 from kiro_crew.slack.client import RealSlackClient

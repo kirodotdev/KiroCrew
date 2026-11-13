@@ -87,10 +87,19 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
         # display battery in.
         "crew_timeline.py",
+        # Pure helper: `_read_entry` redacts a participant label read back from the
+        # agent-editable metadata line and emits nothing. The egress is the slot
+        # projection and `dashboard/handlers/members_roster.py`, the registered
+        # sink that serves the Bots roster.
+        "shared_crew/participants.py",
         # Pure helper: `redact` returns the redacted string and emits nothing. Its
         # only caller is `dashboard/warm_task_brief.py`, the registered sink that
         # posts the result.
         "dashboard/warm_task_brief_inputs.py",
+        # Pure helper: `redact_whole` returns a redacted copy and emits nothing. Its
+        # only caller is `dashboard/warm_task_brief.py`, the registered sink that
+        # posts the welcome.
+        "dashboard/warm_task_brief_check.py",
         # The redaction cards' owner-only route (allowed hosts). It applies no
         # redactor; the call-site scan matches its
         # handler names (`api_redaction_allow_host`, ...).
@@ -876,6 +885,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/cron_script_source.py",
         "dashboard/handlers/cron_secret_grants.py",
         "dashboard/handlers/cron_shared.py",
+        # The Secrets usage scan redacts every place name and key it returns
+        # (a job's name and grant key, a spec's server and env key) exactly as
+        # the Schedule board (cron_board.py, above) does, for the same
+        # owner-only dashboard HTTP surface; it opens no other output path.
+        "dashboard/handlers/secrets_usage.py",
         # Same class as the dashboard handlers around it: the five debug reads
         # redact every string they return -- a gateway description, a classified
         # refusal, a process roster -- but the egress boundary is the loopback
@@ -993,6 +1007,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "mcp_tools/app_tools.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",
+        "mcp_tools/control_parts/mcp_wait.py",
         "mcp_tools/control_parts/monitor.py",
         "mcp_tools/knowledge.py",
         "mcp_tools/messaging.py",

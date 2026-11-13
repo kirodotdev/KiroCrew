@@ -46,6 +46,7 @@
             "preparing_lang": "",
             "stop_declined": false,
             "queue_depth": 0,
+            "queue_held_depth": 0,
             "stopping": false,
             "pending_approval": false,
             "pending_approval_info": null,
@@ -110,6 +111,8 @@
               },
               "created_at": null
             },
+            "participants": [],
+            "participants_dropped": 0,
             "pin_rank": null,
             "pin_rev": 0,
             "manual_rank": null,
@@ -295,6 +298,7 @@
             "preparing_lang": "",
             "stop_declined": false,
             "queue_depth": 0,
+            "queue_held_depth": 0,
             "stopping": false,
             "pending_approval": false,
             "pending_approval_info": null,
@@ -359,6 +363,8 @@
               },
               "created_at": null
             },
+            "participants": [],
+            "participants_dropped": 0,
             "pin_rank": null,
             "pin_rev": 0,
             "manual_rank": null,

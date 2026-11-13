@@ -20,6 +20,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
 )
@@ -304,9 +305,10 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 # Switching that server off WHOLE (``disabled``) is a stronger rule and carries no
 # backend condition, because the form has no per-call spelling for any harness to
 # refuse by (``acp.session_mcp.session_mcp_disabled_servers``). It binds on BOTH paths
-# that compose a session's array -- ``AcpClient``'s, which opencode and claude take,
-# and ``AcpRuntime``'s create and resume paths, which codex and KAS take -- so the
-# operator's switch-off reaches a member session whichever one runs.
+# that compose a session's array -- ``AcpClient``'s, which claude, opencode, mimocode,
+# goose, deepseek and pi take, and ``AcpRuntime``'s create and resume paths, which
+# codex and KAS take -- so the operator's switch-off reaches a member session
+# whichever one runs.
 #
 # goose is a member, and it holds the same two things opencode does:
 #
@@ -364,8 +366,8 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 #     the harness's own command registry is READ BACK before the first prompt, so a
 #     session that cannot establish it is REFUSED rather than run.
 #
-# Like deepseek it has no mirror, so a narrowed dashboard tool withholds the whole
-# mount and the thread runs as plain chat. And a same-named server in pi's own
+# pi has no mirror, so a narrowed dashboard tool withholds the whole mount and the
+# thread runs as plain chat. And a same-named server in pi's own
 # ``mcp.json`` outranks the registration, so the gate extension refuses that name's
 # tools rather than let another command answer for session control.
 # deepseek is a member, and it holds the same two things goose does:
@@ -407,9 +409,9 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 #
 # WHERE the mount happens differs by backend, and opencode's is the client's.
 # ``AcpClient._append_member_dispatch_server`` serves the backends whose array the
-# CLIENT composes -- claude's, opencode's, goose's, deepseek's and pi's -- while codex and
-# KAS are served by
-# ``AcpRuntime``: their arrays come from ``AcpRuntime._mirrored_session_mcp`` and
+# CLIENT composes -- claude's, opencode's, mimocode's, goose's, deepseek's and pi's --
+# while codex and KAS are served by
+# ``AcpRuntime``: codex's array comes from ``AcpRuntime._mirrored_session_mcp`` and
 # ``create_session`` / ``load_session`` append the entry themselves, on a non-empty
 # ``member_session_key``. That key is where membership is read
 # (``providers/acp_runtime_start.py`` ``_member_session_key``), which is why adding a backend here
@@ -432,12 +434,18 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 # With the member entry on ``session/new`` and the ``member_dispatch=True`` projection, the
 # model called ``@kirocrew-dashboard/session_status`` with no permission request, and the
 # server answered it (``identity_unattested``, as the probe key names no live session).
+#
+# mimocode is a member on the client path's precondition, held for this harness: its
+# array is the one its mirror composes in ``AcpClient`` (a stdio element was mounted
+# and called on 0.1.15), its routing is enforced, and a narrowed server is narrowed
+# by a deny rule in the seed rather than withheld whole (``PerToolDeny.SETTINGS_FILE``).
 ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
@@ -510,12 +518,17 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset(
 # that key on ``ACP_BACKENDS_MEMBER_DISPATCH``. So this set decides whether a
 # member session that EXISTS gets a panel; whether one exists at all is that
 # gate's decision, and a backend must clear both.
+#
+# mimocode is a member on the two preconditions above, held for THIS harness as for
+# deepseek: its array is one this core composes (its mirror, in ``AcpClient``), and
+# its routing (``Routing.VERIFIED_SEEDED_SETTINGS``) is enforced.
 ACP_BACKENDS_MEMBER_PANEL = frozenset(
     {
         ACP_BACKEND_CLAUDE,
         ACP_BACKEND_KAS,
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,

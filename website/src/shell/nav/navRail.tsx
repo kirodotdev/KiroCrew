@@ -38,7 +38,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
-    appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
+    appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
@@ -317,13 +317,12 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
           </div>
         </div>
 
-        {/* Bottom-fixed: Agent Capabilities, MCP Servers, Settings, and the community row.
+        {/* Bottom-fixed: Agent Capabilities, Settings, and the community row.
             Pinned to the rail's bottom edge — the Apps frame above absorbs
             the scroll. */}
         {(() => {
           const s = NAV_ITEMS.find(n => n.id === 'settings')!
           const cap = NAV_ITEMS.find(n => n.id === 'capabilities')!
-          const mcp = NAV_ITEMS.find(n => n.id === 'mcp')!
           return (
             <div className="shrink-0 grid gap-0.5 px-2 pt-1 pb-2">
               {terminalEnabled && (
@@ -369,7 +368,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               {isMobile && (
                 <NavItem
                   path="#"
-                  label={slotOwners['quick-search'] ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
+                  label={quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
                   icon={<SearchIcon size={20} />}
                   active={false}
                   collapsed={effectiveCollapsed}
@@ -380,7 +379,6 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
                 />
               )}
               <div>{renderNavRow(cap)}</div>
-              <div>{renderNavRow(mcp)}</div>
               {/* Phone only: the account modal (balance, sign-in state) has no
                   other phone entry -- the readout capsule that opens it on the
                   desktop is not rendered on the phone. Shown on exactly the

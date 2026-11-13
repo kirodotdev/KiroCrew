@@ -21,11 +21,13 @@ from typing import Any
 import pytest
 from turn_harness import (
     APPROVED,
+    Do,
     Raise,
     ScriptedProvider,
     TurnContext,
     TurnRecord,
     TurnScript,
+    Wait,
     run_turn,
 )
 
@@ -385,6 +387,39 @@ class TestCanonicalTurnSequence:
         assert journal.index("session", "release") < journal.index("frame", "queue_pop")
         [popped] = journal.named("frame", "queue_pop")
         assert (popped["active_key"], popped["marker"], popped["lock_held"]) == ("", 0, False)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("left", "cancelled"),
+        [("queued", False), ("queued", True), ("steer", False)],
+        ids=["queued-finished", "queued-cancelled", "unconsumed-steer"],
+    )
+    async def test_turn_sequence_work_left_mid_turn_starts_once_the_turn_ends(
+        self, left: str, cancelled: bool
+    ) -> None:
+        # Finished or cancelled, the turn's end dispatches what it leaves behind: a
+        # queued message, or a steer the backend never consumed. So a teardown that
+        # must not relaunch clears both before it cancels.
+        def _leave(ctx: TurnContext) -> None:
+            if left == "steer":
+                ctx.slot._pending_steers.append("second")
+            else:
+                ctx.slot.queue_append("second", directive_user_origin=True)
+
+        def _cancel(ctx: TurnContext) -> None:
+            ctx.slot.task.cancel()
+
+        end = [Do(_cancel), Wait(1), _DONE] if cancelled else [_DONE]
+        record, journal = await _run(
+            TurnScript(events=[Do(_leave), Wait(5), _REPLY, *end], message="first")
+        )
+
+        [successor] = record.successors
+        assert successor.args[0] == "second"
+        # Not when it was queued, at virtual 0, but once the turn had ended.
+        assert successor.at == 5.0
+        assert [call.args for call in record.calls("stream")] == [("first",)]
+        assert journal.index("session", "release") < journal.index("frame", "queue_pop")
 
     @pytest.mark.asyncio
     async def test_turn_sequence_chunk_then_error_keeps_the_text_above_the_card(self) -> None:

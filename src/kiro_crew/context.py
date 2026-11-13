@@ -39,7 +39,13 @@ import threading
 import time  # noqa: F401 - kept bound on the facade
 import unicodedata
 from collections import OrderedDict, defaultdict, deque  # noqa: F401 - kept bound
-from collections.abc import Awaitable, Callable, Collection, Iterator  # noqa: F401 - kept bound
+from collections.abc import (  # noqa: F401 - kept bound
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+)
 from collections.abc import Set as AbstractSet  # noqa: F401 - kept bound on the facade
 from contextlib import contextmanager  # noqa: F401 - kept bound on the facade
 from dataclasses import dataclass  # noqa: F401 - kept bound on the facade
@@ -68,6 +74,7 @@ from kiro_crew.context_assembly import budget as _budgets  # noqa: F401 - loaded
 from kiro_crew.context_assembly import delivery_records as _delivery_records
 from kiro_crew.context_assembly import inclusion as _inclusion  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import markers as _markers  # noqa: F401 - loaded eagerly
+from kiro_crew.context_assembly import mcp_servers as _mcp_servers  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import member as _member  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import member_gates as _member_gates
 from kiro_crew.context_assembly import output_contract as _output_contract  # noqa: F401
@@ -1548,6 +1555,14 @@ class ContextBuilder:
         self.tab_notices_for_session: (
             Callable[[str], tuple[list[str], Callable[[bool], None]] | None] | None
         ) = None
+        # Installed by the gateway: the MCP servers a session cannot use right now,
+        # by state, for the turn's `[MCP SERVERS]` block (`context_assembly.mcp_servers`),
+        # and what each session was last told of them. In memory and bounded.
+        self.mcp_states_for_session: (
+            Callable[[str], Mapping[str, tuple[str, ...]] | None] | None
+        ) = None
+        self._mcp_states_told: OrderedDict[str, dict[str, tuple[str, ...]]] = OrderedDict()
+        self._mcp_states_told_lock = threading.Lock()
         # Lessons each session has already been shown, keyed by the fixed-size
         # digest of its session key: its session-start block plus every per-message
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory

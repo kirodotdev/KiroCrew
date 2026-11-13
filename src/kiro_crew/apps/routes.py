@@ -189,6 +189,7 @@ from kiro_crew.apps.teardown import forget_app_hooks, teardown_app_runtime
 from kiro_crew.apps.update_notify import (
     deliver_app_update_notes,
     prepare_app_update_notes,
+    resolve_app_update_notes,
 )
 from kiro_crew.apps.update_status import attach_update, attach_updates
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
@@ -397,7 +398,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_registry import (  # noqa: F401
         _announce_app_updates,
         _derive_registry_name,
+        _held_mcp_servers,
+        _reach_open_chats,
         _registry_fetch_failures,
+        _resolve_app_update_notes,
         _write_registries_config,
     )
     from kiro_crew.apps.routes_static import (  # noqa: F401

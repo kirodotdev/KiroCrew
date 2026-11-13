@@ -79,9 +79,13 @@ def pin_mandatory_mcps_env(env: dict[str, str], *, spawned_binary: str | None = 
     """Pin Tool Search exemptions to the operator's value or the engine's version.
 
     An ambient value wins verbatim, including an empty one; per-session overlays
-    never decide the list. Crew's servers defer only when the spawn runs the pinned
-    kiro-cli install (or its chat sibling) at >= 2.27.0. Any other executable, older or
-    unknown versions keep every Crew-owned server resident to avoid the
+    never decide the list. Crew's servers defer only when the file the spawn runs
+    is at >= 2.27.0 and is one of: the pinned kiro-cli install (or its chat
+    sibling), the operator's ``KIROCREW_KIRO_BIN``, or the install found only
+    through ``PATH`` once its sandboxed version read has answered
+    (``kiro_cli.mandatory_mcps_drop_allowed``). Any other executable, an older or
+    unknown version, and every spawn after a request was refused for a changed
+    tool list keep every Crew-owned server resident to avoid the
     thinking-signature "tools list differs" rejection that bricks a session.
     """
     if _apply_operator_mandatory_mcps(env):

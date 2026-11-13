@@ -145,11 +145,13 @@ def _may_force(identity: str) -> bool:
     return True
 
 
-async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
-    """``(credential, token_type)`` CPS is called with. Raises :class:`cps.CpsRefused`.
+async def _bearer(ref: str, rejected: str = "") -> tuple[str, str, str]:
+    """``(credential, token_type, profile_arn)`` CPS is called with. Raises :class:`cps.CpsRefused`.
 
     *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty (the
-    test credential and every other sign-in send no ``TokenType``).
+    test credential and every other sign-in send no ``TokenType``). *profile_arn*
+    is the profile the sign-in stored, else empty (the test credential, and a
+    sign-in with no profile of its own such as Builder ID).
 
     *rejected* is a sign-in CPS just answered 401. The vault is read again, and if it
     still holds that sign-in it is refreshed, at most once per cooldown. Inside the
@@ -162,7 +164,7 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
         from kiro_crew.relay_client.lease import LeaseCredentialError, read_lease_credential
 
         try:
-            return await _off_loop(read_lease_credential, ref), ""
+            return await _off_loop(read_lease_credential, ref), "", ""
         except LeaseCredentialError:
             raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer credential can't be read")
     from kiro_crew.auth.bridge import default_token_store
@@ -189,11 +191,12 @@ async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
     except Exception as exc:  # noqa: BLE001 - a transient refresh failure; type only, no message
         logger.info("relay viewer: sign-in refresh failed (%s)", type(exc).__name__)
         raise cps.CpsRefused(cps.UNREACHABLE, "your Kiro sign-in couldn't be refreshed")
-    return token.access_token, ("EXTERNAL_IDP" if token.auth_method == "external_idp" else "")
+    token_type = "EXTERNAL_IDP" if token.auth_method == "external_idp" else ""
+    return token.access_token, token_type, token.profile_arn or ""
 
 
-async def _with_sign_in(ref: str, call: Callable[[str, str], Awaitable[_T]]) -> _T:
-    """``call(bearer, token_type)``, sent again once when CPS answers it 401.
+async def _with_sign_in(ref: str, call: Callable[[str, str, str], Awaitable[_T]]) -> _T:
+    """``call(bearer, token_type, profile_arn)``, sent again once when CPS answers it 401.
 
     Only a 401 from a CPS call does this, once per request: the sign-in is read again
     (refreshed if CPS refused the stored one, see :func:`_bearer`) and *call* resent
@@ -202,17 +205,17 @@ async def _with_sign_in(ref: str, call: Callable[[str, str], Awaitable[_T]]) -> 
     """
     from kiro_crew.relay_viewer import cps
 
-    bearer, token_type = await _bearer(ref)
+    bearer, token_type, profile_arn = await _bearer(ref)
     try:
-        return await call(bearer, token_type)
+        return await call(bearer, token_type, profile_arn)
     except cps.CpsRefused as exc:
         if exc.status != 401 or ref:
             raise
         refused = exc
-    fresh, token_type = await _bearer(ref, rejected=bearer)
+    fresh, token_type, profile_arn = await _bearer(ref, rejected=bearer)
     if fresh == bearer:
         raise refused
-    return await call(fresh, token_type)
+    return await call(fresh, token_type, profile_arn)
 
 
 async def _sign_in_marker(ref: str) -> Optional[str]:
@@ -265,7 +268,7 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
     try:
         crews = await _with_sign_in(
             ref,
-            lambda bearer, token_type: cps.list_crew_endpoints(
+            lambda bearer, token_type, _profile_arn: cps.list_crew_endpoints(
                 cps_url, bearer, crew_domain=crew_domain, token_type=token_type
             ),
         )
@@ -342,7 +345,7 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     cps_url, ref, crew_domain = settings
 
     async def _list_then_mint(
-        bearer: str, token_type: str
+        bearer: str, token_type: str, profile_arn: str
     ) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken]:
         # Listed again on each call because the list is the only source of the
         # Crew's URL (and its domain check), so the URL is the one CPS gives now.
@@ -358,8 +361,12 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         )
         if crew is None:
             raise cps.CpsRefused(cps.CREW_ACCESS_NOT_GRANTED, "this Crew isn't in your list")
+        # CPS opens a personal Crew only for its profile. A team Crew's mint is unchanged.
+        profile = profile_arn if crew.crew_type == "PERSONAL" else ""
+        if crew.crew_type == "PERSONAL" and not profile:
+            logger.info("relay viewer: personal Crew, but the sign-in has no profile")
         grant = await cps.create_crew_access_token(
-            cps_url, bearer, endpoint_id, token_type=token_type
+            cps_url, bearer, endpoint_id, token_type=token_type, profile_arn=profile
         )
         return crew, grant
 

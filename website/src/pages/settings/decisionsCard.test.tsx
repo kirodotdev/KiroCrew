@@ -13,16 +13,18 @@
  *
  * A third read decides whether the card exists at all: `GET /api/dashboard/config`
  * reports `decisions_enabled`, the `capabilities.decisions` governance answer, and
- * a fleet that pinned the seam off gets no card — see the last block.
+ * a fleet that pinned the seam off gets the administrator's notice and no control (see
+ * the last block).
  *
  * The scope switches past the tool-argument one, and scope writes in flight, refused or
  * beside the main switch, are in decisionsCard.scopes.test.tsx; the fixtures both files
  * use are in src/test/decisionsCardTestUtils.tsx.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
+import { act, screen, cleanup, fireEvent, waitFor } from '@testing-library/react'
 
 import { api } from '../../api/client'
+import { namedCeiling } from '../../test/namedCeiling'
 import { PREVIEW_FLAG_PREFIX } from '../../utils/previewFlags'
 import {
   renderSection,
@@ -34,7 +36,18 @@ import {
   openPoint,
   toolArgsSwitch,
   stubGateway,
+  stubHostedProvider,
 } from '../../test/decisionsCardTestUtils'
+
+/**
+ * Ceiling for the hosted provider's API key field to draw, and for what it shows
+ * once drawn. The field is at the end of a lazy chain: DecisionsCard, the
+ * React.lazy DecisionsProviderPicker boundary, the provider read, the hosted
+ * entry mounting DecisionsHostedKeyField, and that field's own secrets read. On a
+ * loaded runner the chain outlasts the default one-second wait, so every
+ * credential wait names this ceiling (website/docs/testing.md).
+ */
+const HOSTED_KEY_DRAWS = namedCeiling('HOSTED_KEY_DRAWS', 5000)
 
 /** An older gateway has no consent route: the client rejects with a 404. */
 const notFound = () => Object.assign(new Error('Not Found'), { status: 404 })
@@ -228,7 +241,7 @@ describe('Decisions (Jev) preview card', () => {
     stubGateway(notFound(), { telemetry: {} })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to the decision model/i)).toBeInTheDocument()
     })
   })
 
@@ -239,7 +252,7 @@ describe('Decisions (Jev) preview card', () => {
     stubGateway({ enabled: true })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to the decision model/i)).toBeInTheDocument()
     })
     expect(screen.getByTitle(/the built-in rule decides instead/i)).toBeInTheDocument()
   })
@@ -254,7 +267,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/No decision model is chosen\. Pick one below/)).toBeInTheDocument()
     })
-    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
     expect(screen.queryByText(/^Sent to/)).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
@@ -273,12 +286,12 @@ describe('Decisions (Jev) preview card', () => {
     renderSection()
     // The refusal text is behind the lazy DecisionsProviderPicker boundary.
     await waitFor(() => {
-      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+      expect(screen.getByText(/Jev, hosted by TypeSafe is still saved in your settings, but your administrator does not allow it/)).toBeInTheDocument()
     }, { timeout: 5000 })
     expect(screen.queryByText(/No decision model is chosen/)).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
     expect(screen.queryByText(/^Sent to/)).toBeNull()
-    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
     expect(screen.queryByText('https://api.example/v1/systemone')).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
     fireEvent.click(decisionsSwitch())
@@ -295,12 +308,16 @@ describe('Decisions (Jev) preview card', () => {
       sagemaker_available: true,
     } as never)
     renderSection()
+    // The line saying the SageMaker endpoint is saved and refused, and the entry itself
+    // drawn refused.
     await waitFor(() => {
-      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+      expect(screen.getByText(/Your SageMaker endpoint is still saved in your settings, but your administrator does not allow it/)).toBeInTheDocument()
     }, { timeout: 5000 })
-    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.getByText(/Not allowed by your administrator/)).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Your SageMaker endpoint' })).toBeDisabled()
+    expect(screen.queryByText(/Jev, hosted by TypeSafe is still saved in your settings, but your administrator does not allow it/)).toBeNull()
     expect(screen.queryByText(/^Sent to/)).toBeNull()
-    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
     expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
@@ -316,11 +333,11 @@ describe('Decisions (Jev) preview card', () => {
     } as never)
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/Turned off by your organization's policy/)).toBeInTheDocument()
+      expect(screen.getByText(/Your SageMaker endpoint is still saved in your settings, but your administrator does not allow it/)).toBeInTheDocument()
     }, { timeout: 5000 })
-    expect(screen.queryByText(/policy blocks Jev/)).toBeNull()
+    expect(screen.queryByText(/Jev, hosted by TypeSafe is still saved in your settings, but your administrator does not allow it/)).toBeNull()
     expect(screen.queryByText(/^Sent to/)).toBeNull()
-    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
     expect(screen.queryByText('sagemaker://decision-model-a?region=us-west-2')).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
@@ -339,11 +356,11 @@ describe('Decisions (Jev) preview card', () => {
     renderSection()
     // The refusal text is behind the lazy DecisionsProviderPicker boundary.
     await waitFor(() => {
-      expect(screen.getByText(/policy blocks Jev/)).toBeInTheDocument()
+      expect(screen.getByText(/Jev, hosted by TypeSafe is still saved in your settings, but your administrator does not allow it/)).toBeInTheDocument()
     }, { timeout: 5000 })
     expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
     expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
-    expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+    expect(screen.getByText(/sent over the internet to the decision model/i)).toBeInTheDocument()
     fireEvent.click(decisionsSwitch())
     await waitFor(() => {
       expect(revoke.mock.calls[0][0]).toBe(false)
@@ -382,7 +399,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/sent to the model server at the address below, on this machine/i)).toBeInTheDocument()
     })
-    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
     expect(screen.queryByText(/no Jev API key is sent to it/i)).toBeNull()
 
     cleanup()
@@ -391,7 +408,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/sent to the model server at the address below, on this machine/i)).toBeInTheDocument()
     })
-    expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
     // A hand-written loopback address gets no key; the card says so, not only the log.
     expect(screen.getByText(/no Jev API key is sent to it/i)).toBeInTheDocument()
 
@@ -399,7 +416,7 @@ describe('Decisions (Jev) preview card', () => {
     read.mockResolvedValue(provider('custom', false))
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to the decision model/i)).toBeInTheDocument()
     })
   })
 
@@ -438,7 +455,7 @@ describe('Decisions (Jev) preview card', () => {
     })
   })
 
-  it('links to the Releases page when the gateway lists no points', async () => {
+  it('links to the About page, where updates live, when the gateway lists no points', async () => {
     // An older gateway projects no rows. The notice tells the reader to update, so
     // the place it names is a link there, not plain text.
     stubGateway(consentOf(true, { points: [] }))
@@ -446,8 +463,8 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/does not list what Jev decides yet/i)).toBeInTheDocument()
     })
-    const link = screen.getByRole('link', { name: 'Settings › Releases' })
-    expect(link.getAttribute('href')).toBe('/settings/releases')
+    const link = screen.getByRole('link', { name: 'Settings › About' })
+    expect(link.getAttribute('href')).toBe('/settings/about')
   })
 
   it('says where Auto (Jev) is chosen for the model.route point', async () => {
@@ -583,18 +600,15 @@ describe('Decisions (Jev) preview card', () => {
     // something to send, so a stray click cannot write an empty credential over a key.
     stubGateway(consentOf(true), { decisions: { bucket: 100 } })
     const save = vi.spyOn(api, 'secretsSave').mockResolvedValue({} as never)
+    stubHostedProvider()
     renderSection()
-    await waitFor(() => {
-      expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
-    })
-    fireEvent.click(screen.getByText('Shared settings', { exact: true }))
-    const field = await waitFor(() => screen.getByLabelText('Jev API key'))
+    const field = await waitFor(() => screen.getByLabelText('Jev API key'), HOSTED_KEY_DRAWS)
     expect(screen.getByRole('button', { name: 'Save key' })).toBeDisabled()
     fireEvent.change(field, { target: { value: 'sk-live-not-a-real-key' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save key' }))
     await waitFor(() => {
       expect(save).toHaveBeenCalledWith('TYPESAFE_API_KEY', 'sk-live-not-a-real-key')
-    })
+    }, HOSTED_KEY_DRAWS)
     expect(save).toHaveBeenCalledTimes(1)
   })
 
@@ -720,9 +734,9 @@ describe('Decisions (Jev) preview card', () => {
     // the rest of the card instead of shouting beside a switch that cannot move.
     // Same opacity as the disabled row: a muted colour alone still reads darker
     // than a row at 40%, which is the fade "just missing".
-    expect(screen.getByText(/sent over the internet to Jev/i).className).toContain('opacity-40')
+    expect(screen.getByText(/sent over the internet to the decision model/i).className).toContain('opacity-40')
     // And the notice says WHERE to act, not just that something must be updated.
-    expect(screen.getByText(/Settings › Releases/)).toBeInTheDocument()
+    expect(screen.getByText(/Settings › About/)).toBeInTheDocument()
   })
 
   it('offers the sampling share as a slider, and says what the current one means', async () => {
@@ -916,11 +930,8 @@ describe('Decisions (Jev) preview card', () => {
 
   describe('the credential never reads a failed read as "no key"', () => {
     const openShared = async () => {
+      stubHostedProvider()
       renderSection()
-      await waitFor(() => {
-        expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
-      })
-      fireEvent.click(screen.getByText('Shared settings', { exact: true }))
     }
 
     it('says the read failed instead of rendering a set key as unset', async () => {
@@ -936,8 +947,8 @@ describe('Decisions (Jev) preview card', () => {
 
       await openShared()
       await waitFor(() => {
-        expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument()
-      })
+        expect(screen.getByText(/could not load secrets/i)).toBeInTheDocument()
+      }, HOSTED_KEY_DRAWS)
       // And no credential write is on offer while the index is unknown.
       expect(screen.queryByRole('button', { name: 'Save key' })).toBeNull()
       expect(save).not.toHaveBeenCalled()
@@ -950,7 +961,7 @@ describe('Decisions (Jev) preview card', () => {
       await openShared()
       await waitFor(() => {
         expect(screen.getByRole('button', { name: 'Save key' })).toBeInTheDocument()
-      })
+      }, HOSTED_KEY_DRAWS)
     })
   })
 
@@ -967,18 +978,22 @@ describe('Decisions (Jev) preview card', () => {
     vi.spyOn(api, 'models').mockRejectedValue(new Error('no model list'))
     const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(false) as never)
 
+    // The vault index is read inside the hosted provider's entry, so that entry is open.
+    stubHostedProvider()
     renderSection()
     await waitFor(() => {
       expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
-    })
+    }, HOSTED_KEY_DRAWS)
     // The failure is still REPORTED -- this is not a fix that hides it.
-    expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument()
+    await waitFor(() => {
+      expect(screen.getByText(/could not load secrets/i)).toBeInTheDocument()
+    }, HOSTED_KEY_DRAWS)
     // And the one control that stops egress is still live.
     expect(decisionsSwitch()).not.toBeDisabled()
     fireEvent.click(decisionsSwitch())
     await waitFor(() => {
       expect(save).toHaveBeenCalled()
-    })
+    }, HOSTED_KEY_DRAWS)
     expect(save.mock.calls[0][0]).toBe(false)
   })
 
@@ -991,12 +1006,9 @@ describe('Decisions (Jev) preview card', () => {
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(consentOf(true))
     vi.spyOn(api, 'secretsList').mockResolvedValue({ names: ['TYPESAFE_API_KEY'] } as never)
+    stubHostedProvider()
     renderSection()
-    await waitFor(() => {
-      expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
-    })
-    fireEvent.click(screen.getByText('Shared settings', { exact: true }))
-    const replace = await waitFor(() => screen.getByRole('button', { name: 'Replace key' }))
+    const replace = await waitFor(() => screen.getByRole('button', { name: 'Replace key' }), HOSTED_KEY_DRAWS)
     expect(replace).toHaveTextContent('Replace key')
     expect(replace).not.toHaveAttribute('aria-label')
     expect(replace).not.toHaveAttribute('title')
@@ -1018,12 +1030,9 @@ describe('Decisions (Jev) preview card', () => {
     }
 
     const openShared = async () => {
+      stubHostedProvider()
       renderSection()
-      await waitFor(() => {
-        expect(screen.getByText('Shared settings', { exact: true })).toBeInTheDocument()
-      })
-      fireEvent.click(screen.getByText('Shared settings', { exact: true }))
-      return await waitFor(() => screen.getByRole('button', { name: 'Remove key' }))
+      return await waitFor(() => screen.getByRole('button', { name: 'Remove key' }), HOSTED_KEY_DRAWS)
     }
 
     it('writes nothing until the removal is confirmed', async () => {
@@ -1043,7 +1052,7 @@ describe('Decisions (Jev) preview card', () => {
 
       await waitFor(() => {
         expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
-      })
+      }, HOSTED_KEY_DRAWS)
       expect(del).not.toHaveBeenCalled()
       // No Undo affordance for a write that has not happened — and the confirm carries
       // its own word, so it can never be mistaken for the trash that opened it.
@@ -1055,11 +1064,11 @@ describe('Decisions (Jev) preview card', () => {
       const del = stubSetKey()
       const remove = await openShared()
       fireEvent.click(remove)
-      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }))
+      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }), HOSTED_KEY_DRAWS)
       fireEvent.click(keep)
       await waitFor(() => {
         expect(screen.queryByText(/cannot be undone/i)).toBeNull()
-      })
+      }, HOSTED_KEY_DRAWS)
       expect(del).not.toHaveBeenCalled()
     })
 
@@ -1071,23 +1080,23 @@ describe('Decisions (Jev) preview card', () => {
       const remove = await openShared()
       remove.focus()
       fireEvent.click(remove)
-      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }))
+      const keep = await waitFor(() => screen.getByRole('button', { name: 'Keep it' }), HOSTED_KEY_DRAWS)
       await waitFor(() => expect(keep).toHaveFocus())
       fireEvent.click(keep)
       await waitFor(() => {
         expect(screen.getByRole('button', { name: 'Remove key' })).toHaveFocus()
-      })
+      }, HOSTED_KEY_DRAWS)
     })
 
     it('deletes only from the confirm control', async () => {
       const del = stubSetKey()
       const remove = await openShared()
       fireEvent.click(remove)
-      const confirm = await waitFor(() => screen.getByRole('button', { name: 'Delete key' }))
+      const confirm = await waitFor(() => screen.getByRole('button', { name: 'Delete key' }), HOSTED_KEY_DRAWS)
       fireEvent.click(confirm)
       await waitFor(() => {
         expect(del).toHaveBeenCalledTimes(1)
-      })
+      }, HOSTED_KEY_DRAWS)
     })
 
     it('offers no Save while the question is open or the DELETE is in flight', async () => {
@@ -1102,22 +1111,23 @@ describe('Decisions (Jev) preview card', () => {
       fireEvent.click(remove)
       await waitFor(() => {
         expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument()
-      })
+      }, HOSTED_KEY_DRAWS)
       expect(screen.queryByRole('button', { name: 'Save key' })).toBeNull()
       fireEvent.click(screen.getByRole('button', { name: 'Delete key' }))
       await waitFor(() => {
         expect(screen.queryByRole('button', { name: 'Save key' })).toBeNull()
-      })
+      }, HOSTED_KEY_DRAWS)
       release()
     })
   })
 
   it('offers the credential as a vault entry, set or unset and never a value', async () => {
     stubGateway({ enabled: true })
+    stubHostedProvider()
     renderSection()
     await waitFor(() => {
       expect(screen.getByText('Jev API key')).toBeInTheDocument()
-    })
+    }, HOSTED_KEY_DRAWS)
     // The name the field writes is the ONE entry `provider.api_key` honours, which is
     // what keeps an agent-writable config safe to leave naming it.
     const body = document.body.textContent ?? ''
@@ -1338,24 +1348,162 @@ describe('Decisions (Jev) preview card', () => {
     })
   })
 
-  describe('capabilities.decisions governance gate', () => {
-    // The card is the door to a PAID external egress, so a managed fleet can
-    // withdraw the whole feature: `GET /api/dashboard/config` reports the ceiling's
-    // answer as `decisions_enabled` and the card is drawn only on a literal `true`.
-    // Fail closed on absence — an older gateway and a read still in flight both
-    // look the same from here, and neither is permission.
+  describe('a configured model the administrator does not allow', () => {
+    // A configured local preset the list refuses: the one configured model the card can
+    // name as refused. An address the owner wrote by hand is never governed by the list.
+    const LAYA_URL = 'http://127.0.0.1:8104/v1/systemone'
+    const PROXY = 'https://proxy.example/v1/systemone'
 
-    it('draws no card when governance withdrew the seam', async () => {
-      stubGateway({ enabled: false }, { decisions: { bucket: 100 } }, { decisions_enabled: false })
-      renderSection()
-      // A sibling card proves the section rendered, so an absent switch is the
-      // gate and not a failed render.
-      await waitFor(() => {
-        expect(screen.getByRole('switch', { name: /Webhooks/i })).toBeInTheDocument()
+    it('states the refusal first, before anything about sending', async () => {
+      stubGateway(consentOf(false, { configured_endpoint: LAYA_URL, endpoint: '', permits: false }))
+      stubHostedProvider({
+        active: 'laya',
+        configured_endpoint: LAYA_URL,
+        loopback: true,
+        provider_permitted: { jev: true, laya: false },
       })
+      renderSection()
+      const refusal = await screen.findByTestId('decisions-configured-refused', {}, HOSTED_KEY_DRAWS)
+      expect(refusal.textContent).toBe('Your administrator does not allow the decision model saved in your settings.')
+      // The address stays on screen, so the reader sees WHICH one is refused, and the
+      // refusal comes before it and before anything about sending.
+      const address = screen.getByText(LAYA_URL, { exact: true })
+      expect(address.closest('p')?.textContent).toMatch(/^Sent to/)
+      expect(
+        refusal.compareDocumentPosition(address.closest('p')!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+      expect(
+        refusal.compareDocumentPosition(document.getElementById('decisions-egress-note')!) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy()
+      // No consent stands, so nothing reads as if it were sent, and switching on is held.
+      expect(document.getElementById('decisions-egress-note')?.textContent).toBe('')
+      expect(screen.queryByText(/of your sessions/)).toBeNull()
+      expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    })
+
+    it('keeps a recorded consent revocable and its egress disclosed under the refusal', async () => {
+      // What the gateway answers: consent recorded for this address, nothing sent from
+      // the dashboard surface, and the refusal named as the reason.
+      stubGateway(consentOf(true, { configured_endpoint: LAYA_URL, endpoint: LAYA_URL, permits: false, withdrawn: true }))
+      stubHostedProvider({
+        active: 'laya',
+        configured_endpoint: LAYA_URL,
+        loopback: true,
+        provider_permitted: { jev: true, laya: false },
+      })
+      renderSection()
+      const refusal = await screen.findByTestId('decisions-configured-refused', {}, HOSTED_KEY_DRAWS)
+      // The "on" switch is said to be the recorded agreement, not the model running.
+      expect(refusal.textContent).toBe(
+        'Your administrator does not allow the decision model saved in your settings. Your agreement to send to it stays recorded until you turn this switch off.',
+      )
+      // No share line: nothing answers for any share of sessions here.
+      expect(screen.queryByText(/of your sessions/)).toBeNull()
+      expect(decisionsSwitch()).toHaveAttribute('aria-checked', 'true')
+      expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+      // Only the refusal: no "agreed to a different address, turn this off and on
+      // again", whose advice the refused enabling write would defeat.
+      expect(screen.queryByText(/agreed to send to a different address/)).toBeNull()
+      // A surface the ceiling permits still sends under the standing consent, so what
+      // leaves the machine is still said.
+      expect(document.getElementById('decisions-egress-note')?.textContent).toMatch(/on this machine/)
+    })
+
+    it('never refuses an address the owner wrote by hand, whatever the list says', async () => {
+      stubGateway(consentOf(true, { configured_endpoint: PROXY, endpoint: PROXY }))
+      stubHostedProvider({
+        active: 'custom',
+        configured_endpoint: PROXY,
+        hosted_permitted: false,
+        // The local row withdrawn too: still not a refusal of an address set by hand.
+        local_permitted: false,
+        provider_permitted: { jev: false, laya: false, sagemaker: false },
+      })
+      renderSection()
+      await screen.findByTestId('decisions-all-models-blocked', {}, HOSTED_KEY_DRAWS)
+      expect(screen.queryByTestId('decisions-configured-refused')).toBeNull()
+      // It is still sent to, and the card says so.
+      expect(screen.getByText(/sent over the internet/i)).toBeInTheDocument()
+      expect(screen.getByText(PROXY, { exact: true }).closest('p')?.textContent).toMatch(/^Sent to/)
+    })
+
+    it('does not ask for a pick when the administrator allows none of the listed models', async () => {
+      stubGateway(consentOf(false, { configured_endpoint: 'none', endpoint: '', permits: false }))
+      stubHostedProvider({
+        active: 'none',
+        configured_endpoint: 'none',
+        hosted_permitted: false,
+        provider_permitted: { jev: false, sagemaker: false },
+      })
+      renderSection()
+      const banner = await screen.findByTestId('decisions-all-models-blocked', {}, HOSTED_KEY_DRAWS)
+      // About the LISTED models only: it never claims nothing is sent.
+      expect(banner.textContent).toBe('Your administrator allows none of the listed decision models.')
+      expect(screen.queryByText(/Pick one below to turn this on/)).toBeNull()
+    })
+  })
+
+  describe('capabilities.decisions governance gate', () => {
+    // The card is the door to a PAID external egress, so an administrator can turn
+    // the whole feature off: `GET /api/dashboard/config` reports the ceiling's answer
+    // as `decisions_enabled`. A literal `false` draws a plain notice saying so and no
+    // control; the controls are drawn only on a literal `true`. Fail closed on
+    // absence: an older gateway and a read still in flight both look the same from
+    // here, and neither is permission.
+
+    it('says the administrator turned decision models off, and offers no control', async () => {
+      stubGateway({ enabled: true }, { decisions: { bucket: 100 } }, { decisions_enabled: false })
+      renderSection()
+      const notice = await screen.findByTestId('decisions-admin-disabled')
+      // A plain statement, named for the feature, and not a silently greyed switch.
+      expect(notice).toHaveAttribute('role', 'status')
+      expect(notice.textContent).toContain('Decisions (Jev)')
+      expect(notice.textContent).toContain(
+        "Your administrator's policy turns off decision models for this dashboard, so their settings are not shown here.",
+      )
+      // About this dashboard only: a policy can still permit Slack or another channel.
+      expect(notice.textContent).not.toMatch(/Nothing is sent|none runs|built-in rules/)
       expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
-      // Not merely hidden: nothing about the feature is on screen to act on.
-      expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+      expect(screen.queryByRole('radiogroup', { name: 'Decision model' })).toBeNull()
+      // Nothing about sending is on screen to act on, even with a recorded consent.
+      expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
+    })
+
+    it('keeps a typed key through a live withdrawal and gives it back when the policy lifts', async () => {
+      stubGateway(consentOf(true))
+      stubHostedProvider()
+      const { client } = renderSection()
+      const field = await screen.findByLabelText('Jev API key', {}, HOSTED_KEY_DRAWS)
+      fireEvent.change(field, { target: { value: 'sk-draft-not-saved' } })
+      // The administrator turns decision models off while the key is being typed.
+      vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: false } as never)
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ['dashboardConfig'] })
+      })
+      await screen.findByTestId('decisions-admin-disabled', {}, HOSTED_KEY_DRAWS)
+      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      // And back on: the same editor, the draft intact.
+      vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ['dashboardConfig'] })
+      })
+      await waitFor(() => expect(screen.queryByTestId('decisions-admin-disabled')).toBeNull(), HOSTED_KEY_DRAWS)
+      expect(screen.getByLabelText('Jev API key')).toHaveValue('sk-draft-not-saved')
+    })
+
+    it('shows a failed refresh of the policy, not the last denial as if it were current', async () => {
+      stubGateway({ enabled: true }, { decisions: { bucket: 100 } }, { decisions_enabled: false })
+      const { client } = renderSection()
+      await screen.findByTestId('decisions-admin-disabled')
+      vi.spyOn(api, 'dashboardConfig').mockRejectedValue(new Error('offline'))
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ['dashboardConfig'] })
+      })
+      await waitFor(() => expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument(), HOSTED_KEY_DRAWS)
+      expect(screen.queryByTestId('decisions-admin-disabled')).toBeNull()
+      // And it offers no write against a ceiling it could not read.
+      expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
     })
 
     it('draws no card when the field is absent, and never guesses from the keystone', async () => {

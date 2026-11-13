@@ -324,12 +324,21 @@ _unconsented_warned: set[str] = set()
 _capability_denied_warned = False
 
 
-def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
+def _capability_denied(
+    session_key: str | None, *, local: bool = False, provider: str | None = None
+) -> bool:
     """Whether the governance ceiling withdraws the seam. Filesystem IO.
 
     *local* adds ``capabilities.decisions_local`` to ``capabilities.decisions``:
     true when the configured provider is a local preset, so a fleet that permits
     the hosted endpoint can still withdraw a model on this machine. A hosted deny covers it.
+
+    *provider* is the configured decision model's allow-list id
+    (``capability.provider_id``), asked as ``providers:<id>`` with the rows, so a
+    model the list refuses sends nothing even though consent stands for it. A
+    hand-written endpoint has none, and only the rows are asked for it. The
+    recorded consent is left in place: it starts counting again if a later policy
+    allows the model, and never covers a model it was not given for.
 
     *session_key* is the turn's own identity (runtime state, not caller input like the
     ``X-Session-Key`` header), so a profile bound to THIS surface is consulted. With no
@@ -341,7 +350,9 @@ def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
     global _capability_denied_warned
     from kiro_crew.decisions.capability import DASHBOARD_SURFACE_KEY, is_decisions_denied
 
-    if not is_decisions_denied(session_key or DASHBOARD_SURFACE_KEY, local=local):
+    if not is_decisions_denied(
+        session_key or DASHBOARD_SURFACE_KEY, local=local, provider=provider
+    ):
         return False
     if not _capability_denied_warned:
         _capability_denied_warned = True
@@ -349,9 +360,9 @@ def _capability_denied(session_key: str | None, *, local: bool = False) -> bool:
             "decisions: the seam is withdrawn by governance (%s); nothing is sent "
             "even though consent is on",
             (
-                "capabilities.decisions or capabilities.decisions_local"
+                "capabilities.decisions, capabilities.decisions_local or its providers list"
                 if local
-                else "capabilities.decisions"
+                else "capabilities.decisions or its providers list"
             ),
         )
     return True
@@ -431,7 +442,11 @@ def _consented_for(
             return False
         if not _request_scopes_consented(scopes, state):
             return False
-        from kiro_crew.decisions.capability import is_local_preset, names_local_preset
+        from kiro_crew.decisions.capability import (
+            is_local_preset,
+            names_local_preset,
+            provider_id,
+        )
 
         model = configured_provider_model(config)
         local = is_local_preset(endpoint, model)
@@ -440,7 +455,12 @@ def _consented_for(
         # the port -- whatever listens there is not known to be ours.
         if not local and names_local_preset(endpoint, model):
             return False
-        return not _capability_denied(session_key, local=local)
+        # The configured model's own allow-list entry is asked with the rows, so a
+        # model the ceiling's ``providers`` list refuses is inert on every path that
+        # funnels through here, whichever writer named it in config.json.
+        return not _capability_denied(
+            session_key, local=local, provider=provider_id(endpoint, model)
+        )
     if _consent.is_enabled(state) and endpoint not in _unconsented_warned:
         _unconsented_warned.add(endpoint)
         logger.warning(

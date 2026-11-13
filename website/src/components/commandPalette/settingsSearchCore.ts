@@ -74,7 +74,7 @@ export interface SettingEntryScore {
  * The registry is CODEGEN'd from the static settings tree, so it lists every entry
  * the build ships regardless of whether the running gateway offers it. This one is
  * governed: `capabilities.decisions` can withdraw the feature, and
- * `FeaturePreviewsSection` then renders no card at all. A search result is a promise
+ * the card then draws only the administrator's notice, with none of its controls. A search result is a promise
  * that the page has the row, so an unfiltered corpus would land the user on a section
  * where nothing is there — which reads as a broken page rather than an absent feature.
  */
@@ -83,7 +83,7 @@ export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
 /**
  * Every registry id the Decisions (Jev) card owns, the main toggle included.
  *
- * The card is one governed unit: `capabilities.decisions` withdraws the WHOLE card,
+ * The card is one governed unit: `capabilities.decisions` withdraws every control on it,
  * so a search that knows the feature is denied must withhold the address field and
  * the credential row too. Withholding only the toggle left the rest reachable, and a
  * result row is a promise that the page has the control — landing a user on a
@@ -124,7 +124,7 @@ export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.webhooks',
   'developer.ultra-mode',
   'developer.explore',
-  'developer.github-sign-in-by-kiro-crew',
+  'developer.mcp-sign-in-by-kiro-crew',
   'developer.chat-on-a-crew',
   'developer.composable-layout',
   'developer.folder-conductor',

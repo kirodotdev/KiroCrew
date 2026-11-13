@@ -910,7 +910,8 @@ def _session_tools() -> tuple[Tool, ...]:
             description=(
                 "List the sessions YOU stood up and what each one is doing right "
                 "now — the roster a conductor patrols. Each row is `working` (a "
-                "turn is in flight, wait), `queued` (idle with messages waiting), "
+                "turn is in flight, wait), `queued` (idle with messages that will run "
+                "on their own), "
                 "`idle` (open and doing nothing — this is the one that needs a "
                 "decision), `closed` (the crew log recorded a DELIBERATE tab close "
                 "and the dashboard no longer holds it: a worker that FINISHED and "
@@ -1129,7 +1130,8 @@ def _session_tools() -> tuple[Tool, ...]:
             name="session_queue",
             description=(
                 "See and reorder the messages waiting in the queue of a session YOU manage "
-                "(one you created, or one handed to you with session_handoff). "
+                "(one you created, one handed to you with session_handoff, or, with "
+                "agent.session_manager_chain on, one managed by a session you manage). "
                 "session_send to a busy session queues the message (started: false); this is "
                 "how you see where it sits and reorder your entries by priority. A correction to "
                 "an earlier message should stay AFTER it, so the target reads it last. "

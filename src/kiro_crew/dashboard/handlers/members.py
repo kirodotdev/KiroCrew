@@ -154,3 +154,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.members import (  # noqa: F401
         MemberSlugError,
     )
+    from kiro_crew.shared_crew.participants import dropped as participants_dropped  # noqa: F401
+    from kiro_crew.shared_crew.participants import ordered as ordered_participants  # noqa: F401

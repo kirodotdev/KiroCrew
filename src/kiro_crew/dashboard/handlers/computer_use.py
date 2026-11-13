@@ -309,6 +309,11 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
             stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT_SECS)
+    except asyncio.CancelledError:
+        # A torn-down request must not leave the probe running with no owner.
+        if proc is not None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except (asyncio.TimeoutError, TimeoutError):
         # BOTH, deliberately. On Python 3.11+ these are the same class, but on 3.10
         # — which CI still gates on — ``asyncio.TimeoutError`` is a distinct class
@@ -561,6 +566,8 @@ def _write_state(patch: dict[str, Any]) -> None:
     populated-but-unparseable ceiling file — resetting an operator's allow-list to
     defaults because we could not parse it would be a silent security downgrade.
     """
+    # Before the read: a stale endorsed copy must not be published over an Apply.
+    loosening_provenance.refuse_save_if_pending(loosening_provenance.LEAF_COMPUTER_USE)
     state = _read_state_strict()
     state.update(patch)
     enable_state.save_state(state)

@@ -40,12 +40,11 @@ function dirDrop(dirPath: string, files: File[] = []): DataTransfer {
 const plainFile = (name = 'a.txt') => new File(['x'], name, { type: 'text/plain' })
 
 function render(setInput: (v: unknown) => void) {
-  const dispatch = vi.fn() as never
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const wrapper = ({ children }: { children: ReactNode }) =>
     createElement(QueryClientProvider, { client: queryClient }, children)
   return renderHook(() => useChatPaneUploads({
-    slotKey: 'slot', dispatch, slotKeyRef: ref('slot'), mountedRef: ref(true),
+    slotKey: 'slot', slotKeyRef: ref('slot'), mountedRef: ref(true),
     setInput: setInput as never, dashCfg: { upload_max_mb: 50 }, dashCfgError: undefined,
   }), { wrapper })
 }

@@ -102,7 +102,7 @@ param-by-param (name, kind, default) and for async-ness by
 
 | Attribute | Type | Semantics |
 |-----------|------|-----------|
-| `args` | `dict` | the run's arguments, from `workflow_run` / the HTTP body |
+| `args` | `dict` | the run's arguments, from `workflow_run` / the HTTP body. The script gets its own deep copy, so editing `ctx.args` as scratch state never changes the args stored on the run, its `run_started` event, or what a rerun starts from |
 | `now` | `str` | a **fixed run-start stamp** supplied by the caller |
 | `owner_dm` | `str` | the owner's Slack DM target, the intended argument to `send_slack` |
 | `budget` | `Budget` | token accounting (below) |
@@ -371,6 +371,15 @@ same terminal path; `parallel` and `pipeline` pass it on rather than resolving i
 > `remaining()` stays at `total`, so a script's `ctx.budget.remaining()`-based
 > early-stop never trips and no `budget_update` event is ever emitted. Wiring
 > per-call token cost into `charge()` is the missing half.
+>
+> Until that is decided, `workflows.budget_watch.BudgetWatch` measures and warns
+> only. After each live (not replayed) agent call it adds an estimate of the call's
+> tokens (characters of prompt and result / 4, at least 1, since the executors do
+> not hand per-call usage back), and the first time the estimate passes
+> `budget_total` it writes one `log` event, `budget_total N passed: about M tokens
+> used so far (estimated from prompt and result size); the run is not stopped`,
+> and a gateway warning. It never calls `charge()`, so `spent()`, `remaining()` and
+> whether a run stops are unchanged; stopping the run is the open question above.
 
 ### ports native to Kiro Crew
 
@@ -555,7 +564,7 @@ agent_finished, run_finished`.
 | `author` | author-in-run raised, or produced no valid script |
 | `validate` | static validation failed, or the script references a ctx primitive this host did not wire |
 | `ceiling` | wall-clock timeout, `BudgetExceeded`, or the per-run agent-call cap |
-| `exec` | the script itself raised |
+| `exec` | the script itself raised, a `BaseException` included (it is in the script's builtins); the background driver also marks the run `failed` on one, so a script's `BaseException` no longer leaves the run `running` with a Cancel that reports success on nothing. A cancel still ends the run `cancelled`; a process `KeyboardInterrupt` or `SystemExit` is recorded, then re-raised; a `GeneratorExit` (a coroutine being closed) is re-raised with nothing awaited |
 | `interrupted` | the script returned, but a `ctx.agent()` step's turn was stopped from outside (`WorkflowStepInterrupted`); `error` is that step's error |
 
 ### Persistence of the stream
@@ -825,7 +834,8 @@ entry is dropped. The built-in Workflows app's `/run` handler returns its result
 `RunHandle` holds `run_id`, `name`, `status`, the growing `events` list, `result`,
 `error`, `author`, `session_key`, `source`, `args`, `agent_results`,
 `agent_errors`, exact saved-definition provenance, optional `derived_from`
-ancestry, and the driving `task`. Statuses: `running`, `paused`, `finished`,
+ancestry, the launch limits `timeout_secs` and `budget_total` (stored, and read
+back as `None` from an older record that lacks them), and the driving `task`. Statuses: `running`, `paused`, `finished`,
 `failed`, `cancelled`; `running` and `paused` are active states.
 
 Two distinct serializations:
@@ -1413,7 +1423,8 @@ remains an exact saved invocation and cannot be promoted into a duplicate or
 appended as a revision. An
 edited rerun clears that saved-definition identity because its submitted source
 is no longer the exact saved revision, and keeps the former id and revision only
-as `derived_from` ancestry; any later rerun carries that ancestry forward.
+as `derived_from` ancestry; any later rerun carries that ancestry forward. A rerun also runs under the prior run's own `timeout_secs` and
+`budget_total`; a `timeout_secs` the caller passes still wins.
 
 TaskRunner applies the same rule to saved task plans. A user edit or automatic
 replan clears the run's exact definition id, slug, and revision before publishing

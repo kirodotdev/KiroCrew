@@ -285,6 +285,9 @@ async def test_a_tree_already_staged_is_not_built_again(monkeypatch) -> None:
     await orch._auto_apply_wheel_update("stable", "9.9.9")
 
     assert engine.call_count == 1
+    # The tree staged by the first call is still the one waiting for a restart.
+    note = update_restart_ready.current()
+    assert note is not None and note.version == "9.9.9"
 
 
 @pytest.mark.asyncio
@@ -376,6 +379,27 @@ def test_a_clear_for_one_reason_leaves_another_reasons_note() -> None:
     assert update_restart_ready.current() is not None
     assert update_restart_ready.clear() is True
     assert update_restart_ready.current() is None
+
+
+def test_a_vanished_bundle_does_not_replace_a_staged_note() -> None:
+    """The staged note names the version an update cycle checks before building
+    it again; a "bundle gone" note would drop that name, and the next healthy
+    sample would then clear the notice while the version still waits."""
+    update_restart_ready.mark(update_restart_ready.REASON_STAGED, version="9.9.9")
+
+    assert update_restart_ready.mark(update_restart_ready.REASON_ASSETS_GONE) is False
+    assert update_restart_ready.clear(update_restart_ready.REASON_ASSETS_GONE) is False
+    note = update_restart_ready.current()
+    assert note is not None
+    assert (note.reason, note.version) == (update_restart_ready.REASON_STAGED, "9.9.9")
+
+
+def test_a_staged_update_still_replaces_a_vanished_bundle_note() -> None:
+    update_restart_ready.mark(update_restart_ready.REASON_ASSETS_GONE)
+
+    assert update_restart_ready.mark(update_restart_ready.REASON_STAGED, version="9.9.9") is True
+    note = update_restart_ready.current()
+    assert note is not None and note.version == "9.9.9"
 
 
 def test_the_boot_no_longer_hands_the_watchdog_a_way_to_exit_the_gateway() -> None:

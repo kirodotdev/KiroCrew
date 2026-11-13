@@ -839,6 +839,9 @@ def test_lifetime_totals_are_declared_for_the_consumer_that_must_know():
 
 
 def test_collection_yields_every_instrument_with_the_expected_shape():
+    # The probe-failure counter is a process-lifetime module global; a probe that
+    # failed in an earlier test on this worker would otherwise publish here.
+    ig.reset_for_testing()
     with (
         patch.object(ig, "read_active_crons", return_value=3),
         patch.object(ig, "read_active_monitor_loops", return_value=1),

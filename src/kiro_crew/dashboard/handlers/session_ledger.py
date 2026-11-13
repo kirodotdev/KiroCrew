@@ -96,8 +96,12 @@ async def api_session_ledger_get(request: web.Request) -> web.Response:
         key,
         _session_unit(state, request.headers.get("X-Session-Key", "")),
     )
+    # The tail is the one copy of the events this read returns. The record keeps up
+    # to ``_MAX_EVENTS`` of them, and sending those too would repeat the tail and
+    # more than double what every resumed cycle reads.
+    record = {field: value for field, value in state_record.items() if field != "events"}
     events = state_record.get("events", [])[-session_ledger._MAX_EVENT_TAIL :]
-    return web.json_response({"state": state_record, "events": events})
+    return web.json_response({"state": record, "events": events})
 
 
 async def api_session_ledger_record(request: web.Request) -> web.Response:

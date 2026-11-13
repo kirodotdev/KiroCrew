@@ -34,6 +34,7 @@ from kiro_crew.dashboard.session_control_parts.target_authorization import (
     refuse_caller_identity,
     refuse_caller_surface,
 )
+from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.metrics.sessions import END_REASON_REMOVED
 from kiro_crew.metrics.turns import turn_outcome
 from kiro_crew.security import redact, redact_and_truncate
@@ -435,8 +436,9 @@ async def created_session_status(
     differently:
 
     * ``working`` — a turn is in flight. Wait.
-    * ``queued`` — idle, but messages are waiting to run. Also wait, but nothing is
-      happening yet, so a steer would land on nothing.
+    * ``queued`` — idle, but messages are waiting to run on their own (a card
+      restored after a restart waits for a person, so it does not count). Also
+      wait, but nothing is happening yet, so a steer would land on nothing.
     * ``idle`` — open and doing nothing. This is the one that needs a decision,
       unless the row's ``looping`` is true: the session's own bounded loop (a
       ``monitor_start`` waiting on CI) will wake it, so wait, as for ``working``.
@@ -663,6 +665,8 @@ async def created_session_status(
             # clause that has to be restated again on every change to the predicate.
             continue
         queue_depth = len(slot._queue)
+        # A restored card waits for a person, so a queue of only those is idle.
+        queue_ready = any(not is_held_queue_entry(item) for item in slot._queue)
         running = bool(slot.running)
         from kiro_crew import ledger_wake
         from kiro_crew.autonudge import get_instance as get_nudge
@@ -671,7 +675,7 @@ async def created_session_status(
         row = {
             "target": key,
             "title": _bounded_status_title(slot.display_title),
-            "status": "working" if running else ("queued" if queue_depth else "idle"),
+            "status": "working" if running else ("queued" if queue_ready else "idle"),
             "running": running,
             # Its own loop will wake it (``ledger_wake.worker_looping``): an
             # ``idle`` row with it is waiting on something outside, not stopped.

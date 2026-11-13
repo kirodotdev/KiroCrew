@@ -257,7 +257,7 @@ async function shot(page, name) {
   }
   // The recovery row shares this frame, and a UX reader took its clipped tail for a
   // button. Its first words have to be the limitation, not the switch-off.
-  const recovery = page.getByRole('option').filter({ hasText: 'turn full search back on' })
+  const recovery = page.getByRole('option').filter({ hasText: 'Open Settings to make the shortcut search them' })
   if ((await recovery.count()) > 0) {
     const text = ((await recovery.first().textContent()) || '').trim()
     if (!text.startsWith('Knowledge')) {
@@ -453,7 +453,7 @@ async function shot(page, name) {
 {
   const { context, page } = await openBar()
   await page.getByRole('combobox').fill('zzzz-no-corpus-here')
-  const hint = page.getByRole('option').filter({ hasText: 'turn full search back on' }).first()
+  const hint = page.getByRole('option').filter({ hasText: 'Open Settings to make the shortcut search them' }).first()
   await hint.waitFor({ state: 'visible', timeout: 10_000 })
 
   const text = ((await hint.textContent()) || '').trim()

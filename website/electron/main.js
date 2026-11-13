@@ -55,6 +55,7 @@ const { resolveLinuxInstall, readExternallyManaged, runStartupApply } = require(
 const { createStartupGatewayProbe } = require("./runtime/update/gateway-probe");
 const { reregisterBundleIfManaged } = require("./mac-launch-services");
 const { initNativeLogging } = require("./native-logging");
+const { watchSessionLock } = require("./session-lock");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
 const { applyAuthServerAllowlist } = require("./auth-allowlist");
@@ -71,8 +72,9 @@ const {
   shutdownCrewCompanion,
   suspendCrewCompanion,
   resumeCrewCompanion,
-  hostsDashboard,
 } = require("./crew-companion/index");
+const { hostsDashboard, openDashboardSession } = require("./dashboard-session");
+const { openExternalSafely } = require("./external-scheme");
 const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
 // An update install stops the gateway and quits the app. Close the Crew
@@ -734,6 +736,14 @@ app.whenReady().then(async () => {
     glog("power: could not watch for resume: " + (error && error.message));
   }
 
+  // A dictation left running when the person locks the screen keeps the
+  // microphone open in an empty room; the dashboard stops it on this message.
+  try {
+    watchSessionLock(electron.powerMonitor, () => electron.BaseWindow.getAllWindows(), glog);
+  } catch (error) {
+    glog("power: could not watch for screen lock: " + (error && error.message));
+  }
+
   // Chromium has opened `--log-file` by now, so this is the moment the live log's
   // mode can be asserted rather than assumed. The pre-create in
   // `initNativeLogging` only holds if Chromium opened the inode it created; if it
@@ -919,6 +929,11 @@ app.whenReady().then(async () => {
       cookieHeader: sessionCookieHeader,
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
+      displayMemoryPath: path.join(app.getPath("userData"), "app-window-displays.json"),
+      showDashboardSession: (slotKey) => openDashboardSession(
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey,
+      ),
+      openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
     });
     appWindowHost.start();
   } catch (error) {

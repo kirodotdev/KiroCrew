@@ -31,6 +31,7 @@ from kiro_crew import eventlog_hooks
 from kiro_crew import session as session_mod
 from kiro_crew import skill_usage
 from kiro_crew.slack import gateway as gw
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until
 
 
 @pytest.fixture
@@ -509,6 +510,121 @@ async def test_the_exit_path_releases_shared_crew_slices_a_timed_out_shutdown_sk
     # After the runtimes are reaped, before the hard exit.
     assert order == ["reap", "release"]
     no_exit._exit.assert_called_once_with(0)
+
+
+@pytest.mark.asyncio
+async def test_the_exit_path_stops_app_backends_a_timed_out_shutdown_never_reached(
+    monkeypatch, seams
+) -> None:
+    """The dashboard cleanup hook that stops the spawned app backends runs only once
+    the web server's in-flight requests drain, so an open log stream lets the
+    graceful deadline cut the shutdown before it. The exit path stops what is still
+    tracked before its hard exit, and leaves an adopted backend running."""
+    import kiro_crew.apps.backend as backend
+    from kiro_crew.apps import hooks_integration
+
+    no_exit = _graceful_exit_seams(monkeypatch)
+    order: list[str] = []
+    no_exit._exit.side_effect = lambda code: order.append("exit")
+    spawned = backend.AppProcess(app_name="spawned-app", proc=MagicMock(name="proc"))
+    adopted = backend.AppProcess(app_name="adopted-app", proc=None, port=4242, adopted_pids=[123])
+    monkeypatch.setattr(backend, "_processes", {"spawned-app": spawned, "adopted-app": adopted})
+
+    def _stop(name: str) -> bool:
+        order.append(f"stop {name}")
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_app_backend", _stop)
+    orch = _bare_orchestrator()
+    orch._shutdown = AsyncMock(side_effect=asyncio.TimeoutError())
+
+    await orch._shutdown_and_exit()
+
+    assert order == ["stop spawned-app", "exit"]
+
+
+@pytest.mark.asyncio
+async def test_the_exit_sweep_starts_every_stop_at_once_even_past_the_shared_pool(
+    monkeypatch,
+) -> None:
+    """A stop drops its records before it signals, then waits before escalating, so a
+    stop left queued behind other stops when the hard exit lands leaves a backend
+    nothing records. The exit sweep gives every backend its own worker: with one more
+    backend than the shared subprocess pool has workers, every stop is running at
+    the same moment."""
+    import kiro_crew.apps.backend as backend
+    from kiro_crew.apps import hooks_integration
+    from kiro_crew.executors import subprocess_executor
+
+    count = subprocess_executor()._max_workers + 1
+    names = [f"app-{i}" for i in range(count)]
+    monkeypatch.setattr(
+        backend,
+        "_processes",
+        {name: backend.AppProcess(app_name=name, proc=MagicMock(name=name)) for name in names},
+    )
+    all_running = threading.Barrier(count)
+    met: list[str] = []
+
+    def _stop(name: str) -> bool:
+        # Returns only once every stop is running at once. A stop that had to queue
+        # never arrives, so the sweep's own budget ends the wait and the barrier is
+        # broken below to free the workers.
+        try:
+            all_running.wait(timeout=FALLBACK_TIMEOUT_SECS)
+        except threading.BrokenBarrierError:
+            return False
+        met.append(name)
+        return True
+
+    monkeypatch.setattr(hooks_integration, "stop_app_backend", _stop)
+
+    try:
+        await hooks_integration.stop_spawned_backends_at_exit()
+    finally:
+        all_running.abort()
+
+    assert sorted(met) == sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_the_exit_sweep_waits_for_a_stop_the_cleanup_hook_left_running(
+    monkeypatch, caplog
+) -> None:
+    """The cleanup hook's sweep can reach its deadline with a stop still in its wait
+    before SIGKILL, and that stop already dropped the backend's records, so the
+    tracking table is empty at exit. The exit sweep still waits for it: the stop
+    finishes, and is logged, before the hard exit."""
+    import logging
+
+    from kiro_crew.apps import hooks_integration
+
+    started = threading.Event()
+    release = threading.Event()
+    tracked = [["slow-app"], []]
+
+    def _names() -> list[str]:
+        names = tracked.pop(0)
+        if not names:
+            release.set()  # the exit sweep has looked; only then may the stop end
+        return names
+
+    def _stop(name: str) -> bool:
+        started.set()
+        return release.wait(timeout=FALLBACK_TIMEOUT_SECS)
+
+    monkeypatch.setattr(hooks_integration, "spawned_backend_names", _names)
+    monkeypatch.setattr(hooks_integration, "stop_app_backend", _stop)
+    # A zero budget: the cleanup sweep returns at its deadline with the stop unfinished.
+    monkeypatch.setattr(hooks_integration, "_BACKEND_STOP_BUDGET_SECS", 0)
+    await hooks_integration._stop_spawned_backends()
+    await async_wait_until(started.is_set, describe=lambda: "the cleanup stop never started")
+    monkeypatch.setattr(hooks_integration, "_BACKEND_STOP_BUDGET_SECS", FALLBACK_TIMEOUT_SECS)
+
+    with caplog.at_level(logging.INFO, logger=hooks_integration.logger.name):
+        await hooks_integration.stop_spawned_backends_at_exit()
+
+    assert "Stopped app backend on gateway shutdown: slow-app" in caplog.messages
 
 
 async def _reached(barrier: asyncio.Event, task: asyncio.Task[Any]) -> None:

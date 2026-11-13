@@ -423,13 +423,24 @@ def test_the_import_leaves_an_enabled_app_on(tmp_path, app_home):
 @pytest.mark.parametrize(
     ("name", "record", "expected"),
     [
+        ("late-default-on", {"enabled": False, "source": "builtin"}, False),
+        (
+            "late-default-on",
+            {"enabled": False, "source": "builtin", "defaultOnBackfilled": True},
+            True,
+        ),
+        ("late-default-on", {"enabled": False, "source": "registry:x"}, True),
+        # A folded built-in still owed the promotion: its carry reads it as on.
         ("command-bar", {"enabled": False, "source": "builtin"}, False),
         ("command-bar", {"enabled": False, "source": "builtin", "defaultOnBackfilled": True}, True),
-        ("command-bar", {"enabled": False, "source": "registry:x"}, True),
         (APP, "not json", True),
     ],
 )
-def test_which_records_the_import_marks_disabled(tmp_path, name, record, expected):
+def test_which_records_the_import_marks_disabled(tmp_path, monkeypatch, name, record, expected):
+    import kiro_crew.apps.manager_builtins as manager_builtins
+
+    # A builtin still owed a default-on promotion; the shipped set is empty today.
+    monkeypatch.setattr(manager_builtins, "_DEFAULT_ON_BACKFILL", frozenset({"late-default-on"}))
     path = tmp_path / INSTALLED_META_FILENAME
     path.write_text(record if isinstance(record, str) else json.dumps(record), encoding="utf-8")
 

@@ -789,7 +789,8 @@ POSIX fleet too, where the Windows branches never execute.
 ## The RSS-recycle ceiling measures real trees on Windows
 
 `session.watchdog_rss_max_mb` (default `4096`) recycles a
-non-busy session whose process tree exceeds the ceiling. Its measurement is
+non-busy session whose process tree grows past the ceiling; a tree found
+already over it is held at its own size. Its measurement is
 `/proc`-based on POSIX. On Windows `get_session_rss_mb` delegates to
 `platform_compat.proc_rss_tree_mb_for_pid`; a `/proc` read there would measure
 every tree as 0 MiB, so the ceiling could never be reached.
@@ -972,15 +973,16 @@ supervision is a separate piece of work, proposed in
   (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
   118 even though the Chrome enterprise *policy* of the same name still works.
 
-  If instead the symptom is the agent's **`git`/`cr` commands** being killed
-  ("A process was blocked because malicious behavior was detected") while the
-  app window itself is fine, that is a different case: read the detection entry
-  in your security console to find the exact image path and detection id, then
-  ask whoever administers endpoint security to scope an exception to that pair.
-  The spawn mechanism described in
+  If instead the symptom is the agent's **commands** (`git`, `cr`, a build, a
+  test run) being blocked, or failing with `EPERM`, while the app window itself
+  is fine, that is a different case. On the default backend (KAS) the agent's
+  shell is started by the KAS engine's `node.exe`, not by Kiro Crew's Python, so
+  a rule against a script host starting PowerShell matches every shell call.
+  Read the detection entry in your security console for the exact image path and
+  detection id, then ask whoever administers endpoint security to scope an
+  exception to that pair.
   [endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md)
-  is macOS/Linux-specific, so use that guide's "durable fix" steps for scoping
-  the exception, not its explanation of the cause.
+  names which `node.exe` that is for each KAS route.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and

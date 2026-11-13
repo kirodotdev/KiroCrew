@@ -42,6 +42,7 @@ from kiro_crew.mcp_tools.control_parts.directive import (
     set_project,
     suggest_followup,
 )
+from kiro_crew.mcp_tools.control_parts.mcp_wait import mcp_server_wait
 from kiro_crew.mcp_tools.control_parts.monitor import (
     autonudge_stop,
     monitor_inspect,
@@ -630,6 +631,7 @@ def _format_ask_outcome(reply: dict) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "task_run": task_run,
     "wait": wait,
+    "mcp_server_wait": mcp_server_wait,
     "route_crew": route_crew,
     "select_crew": select_crew,
     "register_hook": register_hook,
@@ -656,10 +658,12 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
 #
 #   ``control_parts.schemas`` -- every control descriptor and the two config reads that shape one.
 #   ``control_parts.directive`` -- the directive emitter and the tools whose effect is one directive.
+#   ``control_parts.mcp_wait`` -- waiting for one of the session's MCP servers to finish starting.
 #   ``control_parts.monitor`` -- the monitoring-loop tools: arm, inspect, update and stop a loop.
 _OWNERS = (
     "kiro_crew.mcp_tools.control_parts.schemas",
     "kiro_crew.mcp_tools.control_parts.directive",
+    "kiro_crew.mcp_tools.control_parts.mcp_wait",
     "kiro_crew.mcp_tools.control_parts.monitor",
 )
 for _owner in _OWNERS:
@@ -675,6 +679,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_tools.control_parts.directive import (  # noqa: F401
         QUIET_END_AFTER_TEXT_REMINDER,
         _emit_directive,
+    )
+    from kiro_crew.mcp_tools.control_parts.mcp_wait import (  # noqa: F401
+        _MAX_UNANSWERED,
+        _POLL_SECS,
+        _POLL_TIMEOUT_SECS,
+        _SETTLED_TEXT,
+        _TIMED_OUT_TEXT,
+        _UNKNOWN_LEFT_OUT,
+        _UNKNOWN_NO_REPORTS,
+        _UNKNOWN_TEXT,
+        _UNREADABLE_TEXT,
+        _count,
+        _McpWaitStep,
+        _quoted,
     )
     from kiro_crew.mcp_tools.control_parts.monitor import (  # noqa: F401
         _arming_preflight_refusal,
@@ -694,6 +712,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still served here
     from kiro_crew import autonudge, session_directive  # noqa: F401
+    from kiro_crew.agent_sdk.mcp_problems import MCP_SERVER_WAIT_SECS  # noqa: F401
     from kiro_crew.autonudge_judge import ending_phrase, screen_phrase  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES  # noqa: F401
@@ -726,6 +745,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
     from kiro_crew.validation import (  # noqa: F401
         AUTONUDGE_STOP_SCHEMA,
         CHAT_TAG_SCHEMA,
+        MCP_SERVER_WAIT_SCHEMA,
         MONITOR_INSPECT_SCHEMA,
         MONITOR_START_SCHEMA,
         MONITOR_STOP_SCHEMA,

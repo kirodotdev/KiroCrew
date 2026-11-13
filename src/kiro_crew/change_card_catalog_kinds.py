@@ -255,6 +255,9 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         # A list, so no card reaches it (see ``skills.extra_paths``). Loopback
         # ``host:port`` entries only, for the Preview tab, which no agent drives.
         "dashboard.browser_local_origins",
+        # Which surface the quick-search shortcut opens; both show only what the
+        # dashboard already shows this person.
+        "dashboard.command_bar_enabled",
         "dashboard.crewmate_threads",
         "dashboard.dynamic_dashboard_cards",
         # A feature preview only decides whether the dashboard OFFERS an

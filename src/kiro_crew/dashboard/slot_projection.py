@@ -9,11 +9,14 @@ from typing import Any
 
 from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
+from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.dashboard.slot_row_memo import memo_redacted, memo_row_summary, summarize_rows
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
 from kiro_crew.shared_crew.attribution import public_attribution_of_slot
+from kiro_crew.shared_crew.participants import dropped as participants_dropped
+from kiro_crew.shared_crew.participants import ordered as ordered_participants
 
 
 def _admission_queued(slot_key: str) -> bool:
@@ -131,6 +134,10 @@ def live_trust_scope(slot: Any) -> str:
     if not scope:
         return ""
     if not yolo_policy_permits():
+        return ""
+    from kiro_crew.dashboard.approval_posture import remote_scope_denied
+
+    if remote_scope_denied(scope):
         return ""
     return scope if safety_override().scope_remaining_secs(scope) > 0 else ""
 
@@ -570,6 +577,9 @@ class SlotProjection:
             # the backend's answer cannot disagree.
             "stop_declined": stop_declined_armed(slot),
             "queue_depth": slot.queue_depth,
+            # Of those, the restored cards no drain starts on its own: they wait
+            # for the person, so "is work coming?" readers do not count them.
+            "queue_held_depth": sum(1 for item in slot._queue if is_held_queue_entry(item)),
             "stopping": slot._stopping,
             "pending_approval": pending_approval,
             "pending_approval_info": pending_approval_info,
@@ -655,4 +665,9 @@ class SlotProjection:
             # Shared Crew creator (``shared_crew.attribution``), public shape:
             # no issuer or subject. Legacy and unstamped slots read as Unknown.
             "attribution": public_attribution_of_slot(slot),
+            # Shared Crew participants (``shared_crew.participants``): the people
+            # who have written here, creator first, then most recent. Display only.
+            "participants": ordered_participants(slot),
+            # How many the list's cap dropped; the row's "+N" counts them too.
+            "participants_dropped": participants_dropped(slot),
         }

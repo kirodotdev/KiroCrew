@@ -65,7 +65,7 @@ describe('DeveloperPanel', () => {
   it('sends the old MCP Management page key to the Sharing view of the MCP Servers page', async () => {
     renderPanel('/settings/developer/mcp-pool')
     await waitFor(() =>
-      expect(screen.getByTestId('loc').textContent).toBe('/mcp?view=sharing'),
+      expect(screen.getByTestId('loc').textContent).toBe('/capabilities?tab=mcp-servers&view=sharing'),
     )
   })
 

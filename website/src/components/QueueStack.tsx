@@ -229,7 +229,8 @@ function reglueQuote(m: ChatMessage, edited: string, blocks: PasteBlock[] = spli
 function recordEditedPastes(m: ChatMessage, edited: string, wire: string, blocks: PasteBlock[]): PasteBlock[] {
   const { quote } = splitQueuedContent(m)
   const live = findTokenRanges(edited, blocks).sort((a, b) => a.start - b.start).map(r => r.block)
-  if (live.length) saveStoredPaste(wire.trim(), quote ? prependQuote(edited, quote) : edited, live)
+  const sendId = typeof m.meta?.sendId === 'string' ? m.meta.sendId : undefined
+  if (live.length) saveStoredPaste(wire.trim(), quote ? prependQuote(edited, quote) : edited, live, undefined, sendId)
   return live
 }
 
@@ -734,8 +735,10 @@ function QueueStackInner({ messages, onCancel, onInterrupt, onEdit, onEditOpen, 
               >
                 <span className="flex items-center gap-1.5 h-full">
                   <span className="shrink-0 text-[10px] font-mono opacity-50 w-4 text-center">{i + 1}</span>
+                  {/* A restored card waits for the person (nothing sends it on
+                      its own), so its hourglass stands still. */}
                   {isFrontCollapsed && (
-                    <span className="shrink-0 inline-flex animate-[hourglass-flip_3s_ease-in-out_infinite]">
+                    <span data-testid="queue-card-hourglass" className={`shrink-0 inline-flex${m.meta?.restored === true ? '' : ' animate-[hourglass-flip_3s_ease-in-out_infinite]'}`}>
                       <Hourglass size={13} />
                     </span>
                   )}

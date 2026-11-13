@@ -98,6 +98,18 @@ async def ingest_text(request: web.Request) -> web.Response:
         # SQLite cannot store a list or an object, so one would fail the ingest.
         if isinstance(namespace, (list, dict)):
             namespace = "default"
+        # JSON allows escaped lone surrogates; UTF-8, which the temp file is
+        # written as, does not.
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            return web.json_response(
+                {
+                    "error": "text contains characters that cannot be encoded",
+                    "code": "text_not_encodable",
+                },
+                status=400,
+            )
         # Write to temp file and ingest
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
         try:

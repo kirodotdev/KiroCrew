@@ -25,6 +25,7 @@ from kiro_crew.work_vocab import (
     WORK_MAX_DEPTH_DEFAULT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
+    coerce_ask,
     coerce_retired_bindings,
 )
 
@@ -106,7 +107,18 @@ ACCEPTANCE_KINDS: frozenset[str] = frozenset(ACCEPTANCE_READ_FIELDS)
 #: ``report`` is the only kind a worker produces; ``steer`` comes from a person's
 #: Crew Mode side panel and moves no field.
 EVENT_KINDS: frozenset[str] = frozenset(
-    {"create", "bind", "report", "decision", "verdict", "close", "steer", "retire", "destroy"}
+    {
+        "create",
+        "bind",
+        "report",
+        "decision",
+        "verdict",
+        "close",
+        "steer",
+        "retire",
+        "destroy",
+        "ask",
+    }
 )
 
 #: The conductor's disjoint operations. One action per call, because the field sets
@@ -365,7 +377,7 @@ class WorkItem:
     """One dispatched work item. Two writers, one per-item lock, disjoint fields.
 
     Conductor-owned: ``title``, ``acceptance``, ``state``, ``verdict``, ``decision``,
-    ``worker_session_key``, ``round``, ``fails``.
+    ``worker_session_key``, ``round``, ``fails``, ``ask``.
     Worker-owned: ``status``, ``reason``, ``wake_at``, ``summary``, ``artifacts``,
     ``pr``, ``last_report_at``.
     Server-owned: ``item_id``, ``created_at``, ``closed_at``, ``decided_at``,
@@ -419,6 +431,11 @@ class WorkItem:
     #: first ``pending`` verdict stamps it; any other verdict, or a new bar from
     #: ``accept``, clears it. See :func:`is_pending_overdue`.
     pending_since: str | None = None
+    #: What the item needs from the person, as the conductor wrote it when it relayed
+    #: the question (:func:`~kiro_crew.work_vocab.coerce_ask`), or ``None``. ``decide``
+    #: and ``close`` clear it. Serialized only when set, so an item that never asked
+    #: is stored exactly as before.
+    ask: dict[str, Any] | None = None
     schema: int = SCHEMA_VERSION
     #: When the crew log first held this item whole (its recorded create, or the
     #: baseline its first recorded mutation carried). Empty until then: the write
@@ -437,6 +454,8 @@ class WorkItem:
             out["wake_at"] = self.wake_at
         if self.retired_bindings:
             out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
+        if self.ask:
+            out["ask"] = dict(self.ask)
         return out
 
     def _base_dict(self) -> dict[str, Any]:
@@ -502,6 +521,7 @@ class WorkItem:
             closed_at=_as_opt_str(raw.get("closed_at")),
             decided_at=_as_opt_str(raw.get("decided_at")),
             pending_since=_as_opt_str(raw.get("pending_since")),
+            ask=coerce_ask(raw.get("ask")),
             recorded_at=_as_str(raw.get("recorded_at")),
             schema=_as_int(raw.get("schema"), SCHEMA_VERSION),
         )

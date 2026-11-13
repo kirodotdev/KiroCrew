@@ -21,6 +21,7 @@ from kiro_crew.shared_crew.admission import (
     OperationState,
     ReasonCode,
 )
+from kiro_crew.tracing import turns as trace_turns
 
 logger = logging.getLogger(__name__)
 
@@ -485,9 +486,18 @@ async def admitted_cron_dispatch(job: Any, dispatch: Coroutine[Any, Any, Any]) -
 
     if admitted_work():
         return await dispatch
+    started = False
+
+    async def handed_over() -> Any:
+        # Admitted work runs in a task of its own; the run's trace root stays its.
+        nonlocal started
+        started = True
+        trace_turns.adopt_root()
+        return await dispatch
+
     try:
         return await _gate.admit_and_run(
-            dispatch,
+            handed_over(),
             budget_key=_gate.recorded_principal(getattr(job, "created_by_principal", "")),
             session_key=f"cron:{job.id}",
             operation=OperationKind.CRON,
@@ -503,6 +513,9 @@ async def admitted_cron_dispatch(job: Any, dispatch: Coroutine[Any, Any, Any]) -
         job.last_error = (
             f"fair admission ended this run before it started ({ended.work.state.value})"
         )
+    finally:
+        if not started:
+            dispatch.close()
     logger.info("cron %s: %s", getattr(job, "id", "?"), job.last_error)
     return None
 

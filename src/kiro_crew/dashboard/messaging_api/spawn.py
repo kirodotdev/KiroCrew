@@ -554,6 +554,23 @@ async def api_spawn(request: web.Request) -> web.Response:
             if parent_execution is not None
             else ("", (), ())
         )
+        if parent_session.startswith("cron:"):
+            from dataclasses import replace
+
+            from kiro_crew.subagent import with_cron_dispatched_policy
+
+            parent_spawn_policy = await asyncio.to_thread(
+                with_cron_dispatched_policy,
+                parent_session,
+                parent_execution,
+                parent_spawn_policy,
+                parent_dirs,
+            )
+            dispatched = parent_spawn_policy[0]
+            if parent_execution is not None and dispatched != parent_execution.template_id:
+                # The child inherits the agent this fire runs, as the record path does;
+                # member, store and mode stay the scheduler's.
+                parent_execution = replace(parent_execution, template_id=dispatched)
         if parent_execution is None and parent_session and not agent:
             # A parent with no execution record yet (a channel conversation whose
             # first turn is not saved) hands its child its live selection, as

@@ -37,6 +37,10 @@ ENDPOINT = "https://collector.example.internal:4318/v1/metrics"
 def _patch_config(monkeypatch, **tel_kwargs):
     fake = KiroCrewConfig(telemetry=TelemetryConfig(**tel_kwargs))
     monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: fake))
+    # Treat these configs as an explicit opt-in to recording, which is what lets a
+    # configured export destination attach (``provider.outbound_consented``); the
+    # default alone never does, and these tests are about the readers.
+    monkeypatch.setattr("kiro_crew.metrics.provider.outbound_consented", lambda cfg: True)
     monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
 
 

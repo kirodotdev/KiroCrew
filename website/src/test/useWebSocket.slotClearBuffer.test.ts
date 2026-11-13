@@ -13,7 +13,9 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { store as globalStore } from '../store'
-import { setActiveSlot, clearSlotState } from '../store/chatSlice'
+import { setActiveSlot, clearSlotState, loadOlderMessages } from '../store/chatSlice'
+import { api } from '../api/client'
+import { landResume } from './resumeLanded'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -163,6 +165,26 @@ describe('useWebSocket slot_clear drops buffered chunks', () => {
 
     // slot-1 is the active slot; its buffered chunk must still land.
     expect(streamingText()).toBe('survivor')
+  })
+
+  it('an older page still loading when slot_clear lands does not bring the cleared rows back', async () => {
+    const { ws } = mount()
+    seedStore()
+    const row = (i: number) => ({ role: i % 2 ? 'assistant' : 'user', content: `row ${i}`, ts: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(), meta: { mid: `m${i}` } })
+    landResume(globalStore, { ok: true, key: 'slot-1', nextBefore: 100, messages: [100, 101].map(row), hasMore: true, total: 102 }, 'req-resume', { key: 'slot-1', title: 'slot-1' })
+    let release = () => {}
+    vi.mocked(api.chatSlotDetail).mockImplementationOnce((_slot, _limit, _before, signal) => new Promise((resolve, reject) => {
+      release = () => resolve({ messages: [98, 99].map(row), running: false, has_more: true, total: 102, next_before: 98, queue: [] } as never)
+      signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))
+    }))
+    const page = globalStore.dispatch(loadOlderMessages())
+
+    act(() => { ws.simulateMessage(slotClear('slot-1')) })
+    release()
+    await page
+
+    expect(globalStore.getState().chat.messages.some(m => m.content?.startsWith('row '))).toBe(false)
+    expect(globalStore.getState().chat.slotHasMore).toBe(false)
   })
 
   it('streaming resumes normally after a slot_clear', () => {

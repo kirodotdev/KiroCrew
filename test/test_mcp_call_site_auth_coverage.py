@@ -60,8 +60,8 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_mcp_call_site_auth_cov
 _SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 _CORE = _SRC / "mcp_core.py"
 
-# The helpers that carry X-Internal-Secret. Defined in mcp_core; called either
-# bare (imported) or qualified as ``mcp_core._get(...)``.
+# The helpers that carry X-Internal-Secret. Defined in mcp_core_parts/gateway.py and
+# served on mcp_core; called either bare (imported) or qualified as ``mcp_core._get(...)``.
 _TRANSPORT_HELPERS = frozenset({"_post", "_get", "_put", "_patch", "_delete"})
 
 # Stands in for a span of the path that is only known at runtime.
@@ -78,6 +78,7 @@ _SOURCES = (
     _SRC / "mcp_dashboard.py",
     _SRC / "mcp_shared.py",
     _SRC / "mcp_shared_policy.py",
+    _SRC / "mcp_listing_relay.py",
     _SRC / "mcp_work.py",
     _SRC / "mcp_crew_log.py",
     _SRC / "mcp_debug.py",
@@ -88,6 +89,7 @@ _SOURCES = (
     _SRC / "mcp_cron.py",
     *sorted(_SRC.glob("mcp_cron_*.py")),
     _SRC / "cli_commands_gateway_api.py",
+    _SRC / "cli_models.py",
     _SRC / "cli_server.py",
     _SRC / "cli_server_peer.py",
     _SRC / "cli_server_requests.py",
@@ -132,12 +134,13 @@ _KNOWN_UNRESOLVED = frozenset(
     {
         # ``_send(path)`` is the central helper every verb now delegates to; its
         # nested ``_once(base)`` builds the Request, so the site is attributed here.
-        "mcp_core.py:_send",
-        "mcp_core.py:_post",
-        "mcp_core.py:_get",
-        "mcp_core.py:_put",
-        "mcp_core.py:_patch",
-        "mcp_core.py:_delete",
+        # They live in the core server's gateway owner, ``mcp_core_parts/gateway.py``.
+        "gateway.py:_send",
+        "gateway.py:_post",
+        "gateway.py:_get",
+        "gateway.py:_put",
+        "gateway.py:_patch",
+        "gateway.py:_delete",
         "cron_script_context.py:_post",
         # The gateway liveness probe: its URL is assembled from a resolved port
         # via a helper, and the endpoint (/api/ready) carries no auth by

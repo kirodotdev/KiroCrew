@@ -508,6 +508,7 @@ async def _rss_tick(manager: Any, rss: int = 2514) -> None:
 
 
 @pytest.mark.usefixtures("_proc_route")
+@pytest.mark.usefixtures("rss_runtimes_read_under_ceiling")
 class TestRssRecycleHonoursHarnessWork:
     @pytest.mark.asyncio
     async def test_a_launch_inside_the_hold_keeps_the_session(self, caplog) -> None:

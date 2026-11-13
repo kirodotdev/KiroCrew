@@ -609,6 +609,28 @@ not signed):
 - **Q1 data.** Under `shadow` or `enforce` the default store counts its cosine
   merges and how many fall below 0.95. Its merge rule does not change.
 
+R6's rules, as built (`memory_dream.py`, `propose` only; R6 is not signed):
+
+- **Nothing applies.** The pass writes the store's `memory_meta` only: an
+  approval list (`memory_dream:proposals`, ids, kind, gate result, and the merged
+  sentence of an uncertain-band pair), run receipts and day counters under the
+  P6 caps. No row of `semantic_memory`, no revision and no record metadata
+  changes. So 7.7's `propose_conflict` review items, the Memory page filter, the
+  notification and 7.8's wake check wait for the stage that applies; until then
+  the owner reads the list with `kirocrew memory dream list`.
+- **Trigger and scope** follow 7.3 and 7.4. A person's turn is any turn the
+  gateway's restart census counts (a turn on any channel's session, a dashboard
+  slot task or a channel session task) or a queued message; a background or
+  worker turn also counts, which only makes runs rarer. One
+  `(updated_at, key)` watermark serves both the backlog and later runs. The
+  daily automatic run is counted per store.
+- **Candidates** follow 7.5 except transcript evidence (7.5.1), left to a later
+  pull request. Work state is found by key words for the classes kind routing
+  tags `state`, and numbered families compare `project.*` keys with every digit
+  run replaced.
+- **Gate** follows 7.6 for row-to-row proposals; the content-word check uses the
+  P4 tokens.
+
 ## 7. Advanced: Dreaming (Maintain)
 
 > **Higher risk.** Dreaming is the only stage that changes rows that already

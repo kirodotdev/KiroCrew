@@ -1435,7 +1435,7 @@ class TestInlineComments:
     """
 
     def test_the_steering_dialect_reads_past_an_inline_comment(self) -> None:
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = "---\ninclusion: manual # rationale\n---\nbody\n"
         assert parse_frontmatter(doc, STEERING_LOADER)["inclusion"] == "manual"
         assert yaml.safe_load(doc.split("---")[1])["inclusion"] == "manual"
@@ -1476,7 +1476,7 @@ class TestExplicitIndentBlockScalars:
 
     @pytest.mark.parametrize("header", ["|2", ">2-", "|2+", ">3", "|-2", "|+2", ">-2"])
     def test_a_comment_shaped_line_is_still_consumed(self, header: str) -> None:
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = f"---\ninclusion: {header}\n    manual\n    # note\nname: x\n---\nbody\n"
         out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
         block = out.split("---")[1]
@@ -1495,7 +1495,7 @@ class TestMultilineFieldsAreReplacedWhole:
     """
 
     def test_a_plain_multiline_value_is_replaced_whole(self) -> None:
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = "---\ninclusion:\n  manual\n---\n# T\nbody\n"
         assert yaml.safe_load(doc.split("---")[1]) == {"inclusion": "manual"}
         out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
@@ -1505,7 +1505,7 @@ class TestMultilineFieldsAreReplacedWhole:
         assert "manual" not in out.split("---")[1]
 
     def test_removing_a_multiline_value_takes_its_continuation(self) -> None:
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = "---\nname: x\ninclusion:\n  manual\n---\nbody\n"
         out = set_frontmatter_fields(doc, {"inclusion": None}, STEERING_LOADER)
         assert yaml.safe_load(out.split("---")[1]) == {"name": "x"}
@@ -1533,7 +1533,7 @@ class TestMultilineFieldsAreReplacedWhole:
         attached to a replaced key and the stored mode stopped matching the one
         the author picked.
         """
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = "---\ninclusion:\n  manual\n\n  more\nname: x\n---\nbody\n"
         assert yaml.safe_load(doc.split("---")[1])["inclusion"] == "manual\nmore"
         out = set_frontmatter_fields(doc, {"inclusion": "auto"}, STEERING_LOADER)
@@ -1581,7 +1581,7 @@ class TestWrittenValuesStayLoadableYaml:
 
     @pytest.mark.parametrize("value", ROUND_TRIP)
     def test_value_survives_yaml_and_our_own_reader(self, value: str) -> None:
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = set_frontmatter_fields(
             "---\ninclusion: always\n---\n\nbody\n",
             {"inclusion": "fileMatch", "fileMatchPattern": value},
@@ -1645,7 +1645,7 @@ class TestWrittenValuesStayLoadableYaml:
     def test_tab_and_non_ascii_still_round_trip(self, value: str) -> None:
         # TAB is the one control YAML allows, and the refusal above must not
         # widen into "anything unusual", which would reject ordinary globs.
-        yaml = pytest.importorskip("yaml")
+        import yaml
         doc = set_frontmatter_fields(
             "---\ninclusion: always\n---\n\nbody\n",
             {"fileMatchPattern": value},

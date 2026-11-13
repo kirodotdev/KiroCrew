@@ -68,6 +68,7 @@ from kiro_crew.config.memory_sections import (
     SkillsConfig,
     _coerce_embedding_provider,
     _read_auto_add_documents,
+    dream_mode_from,
     kind_routing_mode_from,
     lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
@@ -363,6 +364,7 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         rule_authority_order=rule_authority_order_mode_from(section.get("rule_authority_order")),
         member_lesson_dedup=member_lesson_dedup_mode_from(section.get("member_lesson_dedup")),
         relevance_rule=relevance_rule_mode_from(section.get("relevance_rule")),
+        dream=dream_mode_from(section.get("dream")),
         inject_memory=section.read("inject_memory", _safe_bool),
         inject_lessons=section.read("inject_lessons", _safe_bool),
         inject_lessons_per_turn=section.read("inject_lessons_per_turn", _safe_bool),
@@ -669,9 +671,20 @@ def _relay_viewer_targets(section: SectionReader) -> dict[str, str]:
     domain = str(section.get("relay_viewer_relay_domain") or "").strip()
     if domain.isascii():
         domain = domain.lower()
+    prefix = str(section.get("relay_viewer_oidc_scope_prefix") or "").strip()
+    if prefix:
+        from kiro_crew.auth.login.endpoints import OIDC_SCOPE_PREFIX_RE
+
+        if OIDC_SCOPE_PREFIX_RE.fullmatch(prefix) is None:
+            logger.warning(
+                "tunnel.relay_viewer_oidc_scope_prefix ignored: it must be lower-case "
+                "letters and underscores"
+            )
+            prefix = ""
     return {
         "relay_viewer_cps_url": url,
         "relay_viewer_credential": ref,
+        "relay_viewer_oidc_scope_prefix": prefix,
         "relay_viewer_relay_domain": domain,
     }
 

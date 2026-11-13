@@ -35,6 +35,7 @@ from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import session_mcp
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.harness import opencode as oc_harness
+from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp_backends import ACP_BACKEND_OPENCODE
 from kiro_crew.providers.mirrors import opencode as opencode_mod
 from kiro_crew.providers.mirrors.goose import goose_projection
@@ -272,6 +273,7 @@ class TestOpencodeReadBack:
     @pytest.fixture
     def client(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         c._session_harness_deny_rules = ("probe_secret",)
         return c
 
@@ -325,14 +327,14 @@ class TestOpencodeReadBack:
             client, monkeypatch, {"permission": {"*": "ask", "probe_secret": "deny"}}
         )
         assert issue == ("", "")
-        assert client._opencode_denies_unenforced == frozenset()
+        assert client._harness_read_back().denies_unenforced == frozenset()
 
     def test_an_outranked_deny_is_recorded_not_refused(self, client, monkeypatch):
         issue = self._read_back(
             client, monkeypatch, {"permission": {"probe_secret": "deny", "*": "ask"}}
         )
         assert issue == ("", "")
-        assert client._opencode_denies_unenforced == frozenset({"probe_secret"})
+        assert client._harness_read_back().denies_unenforced == frozenset({"probe_secret"})
 
     def test_an_outranked_deny_on_a_native_mount_refuses_the_session(self, client, monkeypatch):
         """opencode's own config mounts ``probe`` and names ``probe_secret``, so the
@@ -406,7 +408,7 @@ class TestOpencodeReadBack:
             {"permission": {"probe_secret": "deny", "*": "ask"}, "mcp": {"other": {}}},
         )
         assert issue == ("", "")
-        assert client._opencode_denies_unenforced == frozenset({"probe_secret"})
+        assert client._harness_read_back().denies_unenforced == frozenset({"probe_secret"})
 
     def test_an_operators_own_outranked_deny_is_still_refused(self, client, monkeypatch):
         issue, _remedy = self._read_back(
@@ -423,6 +425,7 @@ class TestOpencodeDeniesInForce:
     @pytest.fixture
     def client(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         c._session_harness_deny_rules = ("probe_secret",)
         return c
 
@@ -434,7 +437,7 @@ class TestOpencodeDeniesInForce:
             oc_harness.settle_opencode_denies(client, client._opencode_config_content)
             == frozenset()
         )
-        assert client._opencode_denies_in_force == {"probe_secret"}
+        assert client._harness_read_back().denies_in_force == {"probe_secret"}
 
     def test_a_seed_that_left_the_rule_out_loses_it(self, client):
         """The routing value is not a rule map, so no deny was written."""
@@ -442,13 +445,13 @@ class TestOpencodeDeniesInForce:
         assert oc_harness.settle_opencode_denies(client, client._opencode_config_content) == {
             "probe_secret"
         }
-        assert client._opencode_denies_in_force == frozenset()
+        assert client._harness_read_back().denies_in_force == frozenset()
 
     def test_an_outranked_rule_is_lost_too(self, client):
         client._opencode_config_content = json.dumps(
             {"permission": {"*": "ask", "probe_secret": "deny"}}
         )
-        client._opencode_denies_unenforced = frozenset({"probe_secret"})
+        client._harness_read_back().denies_unenforced = frozenset({"probe_secret"})
         assert oc_harness.settle_opencode_denies(client, client._opencode_config_content) == {
             "probe_secret"
         }
@@ -460,6 +463,7 @@ class TestOpencodeDeniesInForce:
             ["@narrowed"],
         )
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         assert "narrowed" in [e["name"] for e in c._resolve_session_mcp_servers()]
         c._opencode_config_content = json.dumps({"permission": "ask"})
         assert oc_harness.settle_opencode_denies(c, c._opencode_config_content) == {
@@ -471,19 +475,22 @@ class TestOpencodeDeniesInForce:
         """The read-back judged one projection; a later re-read narrowed a server
         opencode mounts natively. Withholding the array copy cannot reach it."""
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
-        c._opencode_native_mounts = frozenset({"second"})
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+        c._harness_read_back().native_mounts = frozenset({"second"})
         c._session_mcp_unhonoured = frozenset({"second"})
         with pytest.raises(oc_harness.AcpToolGateUnroutable, match="second"):
             oc_harness.refuse_native_mount_of_unhonoured(c)
 
     def test_a_re_projection_that_narrows_only_array_servers_starts(self, tmp_path):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
-        c._opencode_native_mounts = frozenset({"other"})
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+        c._harness_read_back().native_mounts = frozenset({"other"})
         c._session_mcp_unhonoured = frozenset({"second"})
         oc_harness.refuse_native_mount_of_unhonoured(c)
 
     def test_the_read_back_keeps_the_native_mounts(self, tmp_path, monkeypatch):
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         resolved = {"permission": {"*": "ask"}, "mcp": {"second": {}, "third": {}}}
         monkeypatch.setattr(
             oc_harness.subprocess_mod, "run", lambda *a, **k: _completed(json.dumps(resolved))
@@ -492,7 +499,7 @@ class TestOpencodeDeniesInForce:
             c, ACP_BACKEND_OPENCODE, ["opencode", "debug", "config"], '{"permission": "ask"}'
         )
         assert issue == ("", "")
-        assert c._opencode_native_mounts == {"second", "third"}
+        assert c._harness_read_back().native_mounts == {"second", "third"}
 
     def test_the_spawn_arm_rechecks_after_the_re_projection(self):
         import inspect
@@ -509,7 +516,7 @@ class TestOpencodeDeniesInForce:
 
         source = inspect.getsource(oc_harness)
         assert "lost = settle_opencode_denies(session, self._config_content)" in source
-        assert source.count("session._opencode_denies_in_force = ") == 1
+        assert source.count("read_back.denies_in_force = ") == 1
 
     def test_a_narrowed_server_and_the_control_plane_are_withheld(self, agents_dir):
         _write_spec(
@@ -553,10 +560,11 @@ class TestTheClientWiring:
             ["@narrowed"],
         )
         c = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_OPENCODE)
+        c._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         mounted = c._resolve_session_mcp_servers()
         assert "narrowed" in [e["name"] for e in mounted]
         assert c._session_harness_deny_rules == ("narrowed_danger",)
-        c._opencode_denies_in_force = frozenset()
+        c._harness_read_back().denies_in_force = frozenset()
         withheld = c._resolve_session_mcp_servers()
         assert "narrowed" not in [e["name"] for e in withheld]
         assert c._session_mcp_unhonoured == frozenset({"narrowed"})
@@ -864,6 +872,7 @@ def test_real_opencode_hides_a_denied_tool_and_keeps_its_sibling(agents_dir, tmp
         work = tmp_path / "work"
         work.mkdir()
         client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_OPENCODE, extra_env=isolated)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         servers = client._resolve_session_mcp_servers()
         assert [e["name"] for e in servers] == ["probe"]
         seed = oc_harness._opencode_routing_config(
@@ -872,7 +881,7 @@ def test_real_opencode_hides_a_denied_tool_and_keeps_its_sibling(agents_dir, tmp
         assert oc_harness._verify_opencode_routing(
             client, ACP_BACKEND_OPENCODE, [binary, "debug", "config"], seed
         ) == ("", "")
-        assert client._opencode_denies_unenforced == frozenset()
+        assert client._harness_read_back().denies_unenforced == frozenset()
 
         env = {**os.environ, **isolated, "OPENCODE_CONFIG_CONTENT": seed}
         asked: list[str] = []
@@ -913,6 +922,7 @@ def test_real_opencode_an_outranking_global_key_is_detected(agents_dir, tmp_path
     work = tmp_path / "work"
     work.mkdir()
     client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_OPENCODE, extra_env=isolated)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
     client._session_harness_deny_rules = ("probe_secret",)
     seed = oc_harness._opencode_routing_config(
         ACP_BACKEND_OPENCODE, client._session_harness_deny_rules
@@ -920,7 +930,7 @@ def test_real_opencode_an_outranking_global_key_is_detected(agents_dir, tmp_path
     assert oc_harness._verify_opencode_routing(
         client, ACP_BACKEND_OPENCODE, [binary, "debug", "config"], seed
     ) == ("", "")
-    assert client._opencode_denies_unenforced == frozenset({"probe_secret"})
+    assert client._harness_read_back().denies_unenforced == frozenset({"probe_secret"})
 
 
 @pytest.mark.real_adapter
@@ -949,6 +959,7 @@ def test_real_opencode_a_native_mount_with_an_outranked_deny_refuses(agents_dir,
         encoding="utf-8",
     )
     client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_OPENCODE, extra_env=isolated)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
     client._session_harness_deny_rules = ("probe_secret",)
     seed = oc_harness._opencode_routing_config(
         ACP_BACKEND_OPENCODE, client._session_harness_deny_rules
@@ -1004,6 +1015,7 @@ def test_real_opencode_the_seeded_deny_covers_a_native_mount(agents_dir, tmp_pat
             encoding="utf-8",
         )
         client = AcpClient(work_dir=work, acp_backend=ACP_BACKEND_OPENCODE, extra_env=isolated)
+        client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
         client._resolve_session_mcp_servers()
         seed = oc_harness._opencode_routing_config(
             ACP_BACKEND_OPENCODE, client._session_harness_deny_rules

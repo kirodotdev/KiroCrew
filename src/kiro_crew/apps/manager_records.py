@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
 from kiro_crew import member_records
-from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.execution import APP_NAME_RE
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manifest import AppManifest, Permissions
@@ -688,6 +688,10 @@ def _write_installed(
             credential_masks.remember_declaration(name)
         except OSError:
             logger.warning("could not record %s's credential masks", name, exc_info=True)
+        try:
+            agent_readonly_dirs.remember_declaration(name)
+        except OSError:
+            logger.warning("could not record %s's agent read-only dirs", name, exc_info=True)
         # REVOKE-ONLY: drop any host-exec grant whenever a write leaves the app
         # disabled, so no disable path (disable, widen-until-consent, update) can leave
         # a stale grant that still starts a pod. Deliberately never GRANTS here: this
@@ -791,7 +795,8 @@ def _disabled_before_upgrade(name: str, meta_path: Path) -> bool:
 
     True for a record reading ``enabled: false``, and for one that cannot be read
     (fail closed: the owner enables it again). A built-in still owed its default-on
-    promotion is left to ``backfill_default_on_builtins``, which turns it on.
+    promotion is left to ``backfill_default_on_builtins``, which turns it on, or, for
+    a folded one, to the carry that reads it as on.
     """
     try:
         raw = member_records._read_regular_no_follow(meta_path)
@@ -803,10 +808,14 @@ def _disabled_before_upgrade(name: str, meta_path: Path) -> bool:
     if _read_enabled(data):
         return False
     # Deferred: manager_builtins imports this module.
+    from kiro_crew.apps.builtins import _FOLDED_BUILTIN_SWITCHES
     from kiro_crew.apps.manager_builtins import _DEFAULT_ON_BACKFILL
 
+    # A folded built-in's record still owed the promotion is read as on when its
+    # switch is carried over (``manager_builtins.folded_switch_state``), so it is
+    # not recorded as the owner's disable here either.
     owed_promotion = (
-        name in _DEFAULT_ON_BACKFILL
+        (name in _DEFAULT_ON_BACKFILL or name in _FOLDED_BUILTIN_SWITCHES)
         and data.get("source") == "builtin"
         and data.get("defaultOnBackfilled") is not True
     )

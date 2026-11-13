@@ -15,7 +15,9 @@ from kiro_crew.apps import routes
 
 
 class _FakeRequest:
-    """Minimal stand-in: handle_registry reads nothing off the request."""
+    """Minimal stand-in: handle_registry reads only ``app`` (no ``state``) off the request."""
+
+    app: dict[str, Any] = {}
 
 
 async def _call() -> tuple[int, dict[str, Any]]:

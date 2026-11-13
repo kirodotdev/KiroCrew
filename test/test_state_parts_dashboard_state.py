@@ -266,6 +266,12 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "_yolo": ("property", False, False, "(self) -> 'bool'"),
     "ack_notification": ("function", True, False, "(self, ts: 'str') -> 'bool'"),
+    "acknowledge_notifications_where": (
+        "function",
+        True,
+        False,
+        "(self, matches: 'Callable[[dict[str, Any]], bool]') -> 'int'",
+    ),
     "add_fold_watch_listener": (
         "function",
         False,

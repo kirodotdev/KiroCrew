@@ -2,7 +2,7 @@ import { lazy, Suspense, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import { Navigate, useLocation } from 'react-router-dom'
-import { BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2, Puzzle } from 'lucide-react'
+import { BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2, Puzzle, Server } from 'lucide-react'
 import { api } from '../api/client'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -27,6 +27,10 @@ const AgentTemplatesTab = lazy(() => import('./overview/AgentTemplatesTab'))
 // same lazy boundary App.tsx gives its heavy pages (SessionsPage, MembersPage)
 // rather than in the App chunk that scripts/check-bundle-size.mjs budgets.
 const KnowledgePage = lazy(() => import('./KnowledgePage'))
+
+// MCP Servers: the server list, the sharing hero and its gateway queries are
+// their own chunk, fetched on the first visit to the tab.
+const McpPage = lazy(() => import('./McpPage'))
 
 
 export default function CapabilitiesPage() {
@@ -79,6 +83,9 @@ export default function CapabilitiesPage() {
       // themselves.
       { key: 'templates', label: t('pages.capabilitiesPage.templates_label'), icon: <FileCode2 size={16} />, description: t('pages.capabilitiesPage.templates_description'), group: groupAgent },
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent, badge: { count: pendingSkillCount, label: t('pages.capabilitiesPage.skills_awaiting_review', { count: pendingSkillCount }) } },
+      // MCP Servers sits beside Skills: both are what the agent can use.
+      // `view` (Sharing) is a drill-in, so a rail pick opens the Servers view.
+      { key: 'mcp-servers', label: t('nav.mcp_servers'), icon: <Server size={16} />, description: t('pages.capabilitiesPage.mcp_servers_description'), group: groupAgent, drillInParams: ['view'] },
       // Powers and Agent Plugins installed for Kiro, listed read-only: none is
       // loaded yet, and each row says why (agent-plugins spec §6).
       { key: 'powers', label: t('pages.capabilitiesPage.powers_label'), icon: <Puzzle size={16} />, description: t('pages.capabilitiesPage.powers_description'), group: groupAgent },
@@ -112,6 +119,7 @@ export default function CapabilitiesPage() {
             would replace the whole dashboard with the app-shell error screen. */}
         {tab === 'templates' && <ErrorBoundary><Suspense fallback={<ContentSkeleton rows={6} />}><AgentTemplatesTab /></Suspense></ErrorBoundary>}
         {tab === 'skills' && <SkillsTab />}
+        {tab === 'mcp-servers' && <ErrorBoundary><Suspense fallback={<ContentSkeleton rows={6} />}><McpPage embedded /></Suspense></ErrorBoundary>}
         {tab === 'powers' && <KiroPowersTab />}
         {/* ErrorBoundary preserves the crash isolation the /knowledge route
             used to provide: the page lazy-loads the Graph chunk, and a stale

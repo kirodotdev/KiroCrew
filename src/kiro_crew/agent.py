@@ -86,6 +86,7 @@ from kiro_crew.agent_parts.kirocrew_launcher import (
     _kirocrew_mcp_invocation,
     _launcher_works,
     _migrations_dir,
+    _refresh_windows_forwarder,
     _resolve_kirocrew_bin,
     _stale_mcp_purge_marker,
     _through_stable_link,
@@ -102,6 +103,7 @@ from kiro_crew.agent_parts.shared_home import (
     _existing_specs_are_mine,
     _rebuild_spec_install_admitted,
     _warn_declined_home_once,
+    _worktree_declined_spec_hint,
 )
 from kiro_crew.agent_parts.spec_build import (
     _BACKGROUND_CC_MODEL,
@@ -488,6 +490,8 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         knowledge_view_without_registered_injection,
         repair_guest_agent_spec,
         repair_knowledge_agent_spec,
+        repair_lite_agent_spec,
+        reset_after_spec_repair,
     )
     from kiro_crew.agent_materialization.shared_template_view import (  # noqa: F401
         govern_shared_template_injected_servers,
@@ -1093,6 +1097,8 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
         "repair_knowledge_agent_spec",
+        "repair_lite_agent_spec",
+        "reset_after_spec_repair",
         "knowledge_view_without_registered_injection",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",

@@ -148,6 +148,13 @@ jobs:
           fetch-depth: 2
           persist-credentials: false
 
+      # This lane's PR reads draw on the installation rate limit the whole
+      # fleet shares. The wrapper waits a spent limit out (bounded) instead of
+      # failing the lane closed until a hand re-run after the reset.
+      # Every model step below is read-only, so none can rewrite it on PATH.
+      - uses: ./.github/actions/gh-rate-limit
+        if: github.event.pull_request.head.repo.full_name == github.repository
+
       # The checkout is shallow, so a three-dot `base...HEAD` range has no
       # history to find its merge-base in. GitHub's compare API names the
       # merge-base; that one commit is fetched at depth 1, and the reviewer is
@@ -1196,7 +1203,8 @@ jobs:
             #     bump-only, feature-map-correctness, no-new-builtin-apps,
             #     recurring-defect-patterns, memory-store-seam,
             #     no-sync-store-call-from-a-coroutine,
-            #     persist-before-you-publish, a-ratchet-may-only-tighten,
+            #     persist-before-you-publish, no-implicit-state-machines,
+            #     a-ratchet-may-only-tighten,
             #     prefer-subtracting-a-duplicate-mechanism,
             #     a-refusal-is-not-a-commit,
             #     an-invariant-line-needs-a-mutation-pin, tests-are-deterministic,

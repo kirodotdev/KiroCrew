@@ -670,7 +670,7 @@ class TestBinaryDownloadIsServed:
 
     @pytest.mark.asyncio
     async def test_baseline_jpeg_downloads(self, tmp_path, mock_sel):
-        image = pytest.importorskip("PIL.Image")
+        import PIL.Image as image
         f = tmp_path / "shot.jpg"
         image.new("RGB", (64, 36), (120, 30, 200)).save(f, "JPEG")
         resp = await _download(f)
@@ -701,9 +701,9 @@ class TestBinaryScanReadsBothProjections:
         assert binary_content_is_flagged(self._nbsp_bearer())
 
     def test_baseline_jpeg_is_not_flagged(self):
-        from kiro_crew.platform import binary_content_is_flagged
+        import PIL.Image as image
 
-        image = pytest.importorskip("PIL.Image")
+        from kiro_crew.platform import binary_content_is_flagged
         buf = io.BytesIO()
         image.new("RGB", (64, 36), (120, 30, 200)).save(buf, "JPEG")
         assert not binary_content_is_flagged(buf.getvalue())

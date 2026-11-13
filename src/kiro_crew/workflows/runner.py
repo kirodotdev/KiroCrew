@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import inspect
 import json
@@ -43,6 +44,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
 
 from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
+from .budget_watch import BudgetWatch
 from .context import DEFAULT_MAX_AGENTS_PER_RUN, AgentCounter, Budget, build_safe_globals
 from .dsl import _call_stage, _maybe_await
 from .dsl import parallel as _parallel
@@ -525,6 +527,7 @@ class _RunContext:
         self._prefix_rerun = replay_before > 0
         self._root_scope = _CallScope(self, ())
         self._failed_task_logs = 0
+        self._budget_watch = BudgetWatch(budget.total, run_id=run_id)
         # call_index → why that call failed (bounded/redacted). Kept alongside
         # agent_results so "no result" is always accompanied by a reason.
         self.agent_errors: dict[int, str] = {}
@@ -660,7 +663,10 @@ class _RunContext:
                 # is the same injected agent_fn (so prod/stub both flow through).
                 async def _produce(p: str) -> str:
                     out = await self._agent_fn(p, opts)
-                    return out if isinstance(out, str) else json.dumps(out)
+                    text = out if isinstance(out, str) else json.dumps(out)
+                    # Each re-ask is its own model turn: meter the prompt it sent.
+                    self._note_spend(p, text)
+                    return text
 
                 async with _optional_slot(self._agent_slots):
                     result = await run_with_schema(_produce, prompt, schema)
@@ -690,6 +696,8 @@ class _RunContext:
         self.agent_results[call_index] = result
         if error:
             self.agent_errors[call_index] = error
+        if replay_index is None and schema is None:
+            self._note_spend(prompt, result)  # a schema call metered each turn above
         # Checkpoint: hand the settled call to the host NOW so a later ceiling /
         # cancel / crash cannot discard work already paid for. The host records it
         # in memory; it reaches DISK on the record's existing write cadence, not
@@ -781,6 +789,11 @@ class _RunContext:
     # that a pipeline over thousands of bad items cannot flood the event stream
     # and the checkpoints that re-serialize it.
     _FAILED_TASK_LOG_LIMIT = 20
+
+    def _note_spend(self, prompt: Any, result: Any) -> None:
+        warning = self._budget_watch.add(prompt, result)
+        if warning:
+            self._record(self._stream.log(self.now, message=warning))
 
     def _log_failed_task(self, where: str, index: int, exc: Exception) -> None:
         # The combinator resolves the task to None (A5); this event is the only
@@ -1291,7 +1304,10 @@ class WorkflowRunner:
         # 2. Build the run context + restricted exec namespace.
         ctx = _RunContext(
             run_id=run_id,
-            args=args,
+            # The script's own copy: it may edit ``ctx.args`` as scratch state, and
+            # the run record, its ``run_started`` event and a rerun keep the args
+            # the run was launched with.
+            args=copy.deepcopy(args),
             now=now,
             owner_dm=owner_dm,
             stream=stream,
@@ -1441,9 +1457,16 @@ class WorkflowRunner:
                 agent_errors=dict(ctx.agent_errors),
                 source=source,
             )
-        except Exception as exc:  # script raised — captured, not propagated
+        except BaseException as exc:  # script raised — captured, not propagated
+            # ``BaseException`` is in the script's builtins, so a script can raise
+            # one. A closing coroutine must not await, so it goes straight up; an
+            # interrupt or exit of this process is recorded first, then goes up.
+            if isinstance(exc, GeneratorExit):
+                raise
             await _pre_terminal()
             emit(stream.run_failed(now, error=repr(exc), where="exec"))
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             return RunResult(
                 run_id,
                 ok=False,
@@ -1680,4 +1703,6 @@ class WorkflowRunner:
             fallback_title=fallback_title,
             fallback_folder_id=fallback_folder_id,
             admission_closed=admission_closed,
+            timeout_secs=self._timeout_secs,
+            budget_total=budget_total,
         )

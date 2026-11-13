@@ -22,7 +22,7 @@ import re
 import sys
 from urllib.parse import quote, unquote
 
-from kiro_crew.platform_compat_trust import open_with_default_app
+from kiro_crew.platform_compat_trust import desktop_launcher_available, open_with_default_app
 
 SCHEME = "kirocrew"
 
@@ -79,6 +79,10 @@ def open_url(url: str, platform: str = sys.platform) -> tuple[bool, str]:
             return True, "os.startfile"
         except OSError as exc:  # no handler registered, or a refused launch
             return False, str(exc)
+    if not desktop_launcher_available():
+        # The shared launcher answers False here without trying, which is not
+        # "no app registered": an SSH or headless host has no desktop to open into.
+        return False, "no desktop session or URL opener on this host"
     if open_with_default_app(url, wait_for_exit=_LAUNCHER_WAIT_SECS):
         return True, "open_with_default_app"
     return False, f"no application is registered for {SCHEME}://"

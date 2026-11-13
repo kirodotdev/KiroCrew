@@ -283,11 +283,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   displayName: string
   /** The crew record's `avatar` field, verbatim, for the suggestions page's face. */
   avatar?: unknown
-  /** Put a reply the page offered into the chat box. Absent: the page's options do nothing. */
+  /** Put a reply into the chat box: a suggested prompt of the suggestions page, and
+   *  the page's own replies when `onActKeep` is absent. Absent: the options do nothing. */
   onAct?: (text: string) => void
-  /** Like `onAct`, but adds to the chat box instead of replacing an earlier
-   *  suggestion. Used when a refused send comes back after a newer reply was
-   *  already put there, so the newer one is kept. Absent: `onAct`. */
+  /** Add a reply the PAGE offered to the chat box, after any reply already there,
+   *  so a person can answer several cards in one message. Absent: `onAct`. */
   onActKeep?: (text: string) => void
   /** Send a reply the page offered into this crewmate's own thread. Resolves `'sent'`
    *  when the gateway confirmed it, `'off'` when the person turned one-click sends off,
@@ -346,9 +346,6 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // The text of the send in flight or last accepted: a repeat of it inside the
   // interval is a double click; a different text inside it falls back to `act`.
   const lastTextRef = useRef('')
-  // A different reply was put in the chat box while the send was in flight: a late
-  // refusal then ADDS its text (`onActKeep`) so it cannot replace that newer reply.
-  const filledInFlightRef = useRef(false)
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -490,19 +487,19 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       const win = frameRef.current?.contentWindow
       if (!win || event.source !== win) return
       const text = actText(event.data)
-      // Every fill while a send is in flight is noted, so that send's late refusal
-      // adds its text instead of replacing this newer one.
-      if (text && onActRef.current) {
-        if (sendingRef.current) filledInFlightRef.current = true
-        onActRef.current(text)
+      // Every reply the page offers ADDS to the chat box (`onActKeep`), so answers to
+      // two cards both stay; a host without it gets `onAct`.
+      const fill = (reply: string) => {
+        const keep = onActKeepRef.current
+        if (keep) keep(reply)
+        else onActRef.current?.(reply)
+      }
+      if (text && (onActKeepRef.current || onActRef.current)) {
+        fill(text)
         return
       }
       const reply = sendText(event.data)
       if (reply) {
-        const fill = () => {
-          if (sendingRef.current) filledInFlightRef.current = true
-          onActRef.current?.(reply)
-        }
         const send = onSendRef.current
         // The click must have happened INSIDE this page's frame. A recent activation
         // with the frame focused (`hasGesture`) is necessary but not sufficient: a
@@ -514,7 +511,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
         // that focuses itself after a click elsewhere does not pass. Without both the
         // reply falls back to filling the composer (`act`). No API reads as `act` too.
         const frame = frameRef.current
-        if (!send || !frame || !hasGesture(frame) || !tiedToFrame(frame)) { fill(); return }
+        if (!send || !frame || !hasGesture(frame) || !tiedToFrame(frame)) { fill(reply); return }
         // Inside the interval of an ACCEPTED send, or while one is in flight, nothing is
         // sent. The same text again is dropped: a person's double click is one reply.
         // A different text fills the composer, so a distinct choice is never lost.
@@ -522,21 +519,17 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
         // filled if refused too) instead of being lost.
         const now = Date.now()
         if (sendingRef.current || now - lastSendRef.current < SEND_MIN_INTERVAL_MS) {
-          if (reply !== lastTextRef.current) fill()
+          if (reply !== lastTextRef.current) fill(reply)
           return
         }
         sendingRef.current = true
         lastSendRef.current = now
         lastTextRef.current = reply
-        filledInFlightRef.current = false
-        // A refusal puts the reply back in the chat box. If a newer reply was put there
-        // while this one was in flight, ADD this one instead of replacing that one.
+        // A refusal puts the reply back in the chat box, added after any newer one.
         const refused = (failed: boolean) => {
           lastSendRef.current = 0
           setSendFailed(failed)
-          const keep = onActKeepRef.current
-          if (filledInFlightRef.current && keep) keep(reply)
-          else fill()
+          fill(reply)
         }
         // Indeterminate delivery: clear the interval so a deliberate retry is allowed,
         // show the uncertainty notice, and do NOT fill -- a resend could double-run it.

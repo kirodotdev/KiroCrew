@@ -245,7 +245,7 @@ async def _handle_sessions(self: WebexDispatcher, inbound: "WebexInbound") -> No
     try:
         rows = [
             row
-            for row in await asyncio.to_thread(self.conv_log.list_sessions)
+            for row in await asyncio.to_thread(self.conv_log.list_sessions_indexed)
             # The bucket itself (generation 0) or one of its generations. The
             # separator is required so a bucket cannot match a longer route
             # that merely starts with the same characters.

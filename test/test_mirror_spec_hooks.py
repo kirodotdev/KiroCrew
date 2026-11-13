@@ -608,7 +608,10 @@ def test_a_rewritten_server_from_opencodes_own_config_meets_its_exact_deny(tmp_p
     # spawn's read-back named. The fused "docs_server_lookup" splits back to the
     # exact name, so a deny written mcp__docs.server__lookup still blocks.
     client = _bare_client(ACP_BACKEND_OPENCODE)
-    client._opencode_config_mcp_servers = ("docs.server",)
+    from kiro_crew.acp.harness import process_adapter_for
+
+    client._process_adapter = process_adapter_for(ACP_BACKEND_OPENCODE)
+    client._harness_read_back().config_mcp_servers = ("docs.server",)
     event = _direct_permission_event(client, "docs_server_lookup")
     assert event is not None
     assert event.harness_tool_id.split("|")[0] == "opencode#@docs.server/lookup"

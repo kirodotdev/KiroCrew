@@ -731,9 +731,14 @@ class ConversationLog:
         return self._catalog_projection.agent_usage()
 
     def search_sessions(
-        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        keys: Container[str] | None = None,
+        snippets: bool = True,
     ) -> list[dict]:
-        return self._catalog_projection.search_sessions(query, limit, keys=keys)
+        return self._catalog_projection.search_sessions(query, limit, keys=keys, snippets=snippets)
 
     def warm_search(self) -> None:
         self._catalog_projection.warm_search()
@@ -1137,6 +1142,9 @@ class ConversationLog:
     record_consolidation_failure = _history_marker.record_consolidation_failure
     record_consolidation_environment_failure = (
         _history_marker.record_consolidation_environment_failure
+    )
+    clear_consolidation_environment_backoff = (
+        _history_marker.clear_consolidation_environment_backoff
     )
 
 

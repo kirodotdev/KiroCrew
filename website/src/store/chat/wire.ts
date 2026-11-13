@@ -6,7 +6,7 @@
 import { api } from '../../api/client'
 import type { ChatMessage, ToolPayloadCut } from '../../types'
 import { readMessageQuote, type MessageQuote } from '../../chat-core/composer/messageQuote'
-import { findTokenRanges, readStoredPaste, type PasteBlock } from '../../utils/pasteTokens'
+import { findTokenRanges, readStoredPasteForSend, type PasteBlock } from '../../utils/pasteTokens'
 import { readRelay, type RelaySender } from '../../pages/chat/sessionRelay'
 import type { KnowledgeEnvelopeMark } from '../../utils/knowledgeEnvelope'
 
@@ -150,7 +150,8 @@ export function queueEntrySendId(meta: unknown): { sendId?: string } {
 /** The paste blocks behind a queue entry's text, when THIS browser sent it.
  *  The entry holds the wire text, in which every `[ Paste #N ]` token is
  *  already expanded, and the gateway carries no blocks on it (it stores
- *  `meta.pastes` on no row). The sending tab recorded the send in the paste
+ *  `meta.pastes` on no row). Only the entry whose `sendId` saved the record
+ *  reads it, so an injected message with the same text does not. The sending tab recorded the send in the paste
  *  side table under that wire text (`saveStoredPaste`), which is the source
  *  the sent bubble re-collapses from on a reload (`mergePreservedPastes`), so
  *  the queue card and the bubble it becomes agree. Another browser, or an
@@ -158,9 +159,9 @@ export function queueEntrySendId(meta: unknown): { sendId?: string } {
  *  length gate ahead of the read: the text here is trimmed, and a paste that
  *  was collapsed at exactly the threshold with trailing whitespace lies under
  *  it once trimmed. */
-export function queueEntryPastes(content: string): { pastes?: PasteBlock[] } {
+export function queueEntryPastes(content: string, sendId: string | undefined): { pastes?: PasteBlock[] } {
   if (!content) return {}
-  const stored = readStoredPaste(content.trimEnd())
+  const stored = readStoredPasteForSend(content.trimEnd(), sendId)
   if (!stored || !Array.isArray(stored.pastes) || !stored.pastes.length) return {}
   // In TOKEN ORDER, read off the display text the record keeps: the order the
   // bodies stand in the wire, which is what lets the card fold them back to

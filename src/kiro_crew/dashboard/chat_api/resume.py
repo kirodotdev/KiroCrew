@@ -32,32 +32,29 @@ if TYPE_CHECKING:
         _attach_variants,
         _await_takeover_ordering_settled,
         _ChatSlot,
-        _collapse_wire_rows,
         _has_validated_effort_marker,
         _history_key_for,
         _live_child_instance,
+        _live_slot_for_resume,
+        _live_slot_resume_payload,
         _load_restore_cfg,
         _normalize_slot_key,
         _pinned_live_outcome,
         _prepare_messages,
-        _reconcile_slot_window,
         _redact_meta_for_role,
         _restore_model_fields,
         _restored_agent_name,
+        _resume_session_identity,
         _slot_closed_before,
         _sync_dashboard_slots,
         _unhide_folder,
         app_owns_transcript_meta,
         audit_app_slot_denial,
         carry_provenance,
-        channel_slot_name,
         close_in_flight,
         close_metadata_under_lock,
-        deny_app_slot_session_access,
         durable_row_count,
         effective_session_key,
-        is_channel_session_key,
-        load_window_off_loop,
         logger,
         members_mod,
         note_crew_log_class,
@@ -71,110 +68,9 @@ if TYPE_CHECKING:
         sel,
         slot_history_key,
         slot_transcript_key,
+        string_field_error,
         time,
-        transcripts_share_file,
     )
-
-
-def _resume_session_identity(state: DashboardState, history_key: str) -> str:
-    """The session a transcript runs under, spelled as a slot spells its own.
-
-    Counterpart to :func:`effective_session_key`, for the caller that holds a
-    history key and no slot. A channel-born transcript's session is the
-    channel's own, read from the session map because ``history._safe_key``
-    folds every ``:`` to ``_`` irreversibly — ``discord_a_b_c`` cannot be
-    unfolded by guessing, and a guess would name a session the channel never
-    reads. An unmapped channel key falls back to the dashboard spelling, the
-    same "leave it unbound" outcome the restore path takes.
-    """
-    if is_channel_session_key(history_key) and state.sessions:
-        real_key = state.sessions.channel_key_for_stem(channel_slot_name(history_key))
-        if isinstance(real_key, str) and is_channel_session_key(real_key):
-            return real_key
-    return _history_key_for(history_key)
-
-
-async def _live_slot_for_resume(
-    state, request_app: str, history_key: str, name: str, caller_label: str = ""
-) -> "ResumeOutcome | None":
-    """Answer a resume that a live slot already satisfies, else return None.
-
-    Returns the app-isolation 404 refusal when the caller's app does not own
-    the slot, the ``member_pin_mismatch`` 409 when a member thread's stored pin is
-    not dispatchable (``caller_label`` is what SEL records), otherwise the dedup
-    outcome carrying the EXISTING slot. Called on
-    BOTH sides of the threaded transcript read: that await lets a concurrent
-    resume publish the slot in between, and ``get_or_create_slot`` would then
-    hand it back having never applied this ownership gate for the second
-    caller's app.
-    """
-    canonical = _resume_session_identity(state, history_key)
-    existing = state._slots.get(name)
-    if not existing:
-        for slot in state._slots.values():
-            if effective_session_key(slot) == canonical or transcripts_share_file(
-                slot_history_key(slot), history_key
-            ):
-                existing = slot
-                break
-    if existing:
-        if (
-            deny_app_slot_session_access(request_app, existing, existing.key, "slot_resume")
-            is not None
-        ):
-            return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
-        if (
-            existing.mode == members_mod.DM_SLOT_MODE
-            and not members_mod.is_dispatchable_member_name(existing.agent)
-        ):
-            sel().log_api_access(
-                caller=caller_label,
-                operation="chat_resume",
-                outcome="denied",
-                source="member_pin",
-                resources=f"slot={existing.key}",
-                error="stored member pin is not dispatchable",
-            )
-            return ResumeOutcome(
-                refusal=ResumeRefusal(
-                    "this thread's crew name cannot be dispatched", "member_pin_mismatch", 409
-                )
-            )
-        return ResumeOutcome(slot=existing, already_live=True)
-    return None
-
-
-async def _live_slot_resume_payload(state, existing) -> dict:
-    """The resume endpoint's dedup body: the already-open slot's live window."""
-    # The live slot a resume resolves to can be a restored sidebar row, under a
-    # name the per-slot route's own lookup did not match (``dashboard:<key>``):
-    # its window loads here, with the read off the loop, before anything reads it.
-    await load_window_off_loop(existing)
-    await _reconcile_slot_window(state, existing)
-    window = _collapse_wire_rows(existing.messages)
-    total = len(window)
-    recent = window[-200:] if total > 200 else window
-    prepared = _prepare_messages(
-        recent,
-        existing.running,
-        live_child=_live_child_instance(state, existing),
-        workspace=existing.workspace,
-    )
-    next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
-    return {
-        "ok": True,
-        "key": existing.key,
-        "history_key": slot_history_key(existing),
-        "messages": prepared,
-        "queue": queue_view(existing._queue),
-        "total": total,
-        "has_more": next_before > 0,
-        "next_before": next_before,
-        "memory_mode": existing.memory_mode,
-        "mode": existing.mode,
-        "surface": existing.mode,
-        "folder_id": existing.folder_id,
-    }
 
 
 def _normalise_structured_content(value: object) -> str:
@@ -554,9 +450,9 @@ def _hydrate_slot_from_history(
                 _redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None
             ),
             mint_mid=mint_missing_mids,
+            note_participant=False,  # replayed history is not new writing
         )
-        # See the equivalent call in _rehydrate_slot_from_history: resume loads
-        # the window that the next save re-serializes.
+        # Resume loads the window the next save re-serializes (see _rehydrate_slot_from_history).
         carry_provenance(slot.messages[-1], m)
         remember_unknown_row_fields(slot, m)
         _attach_variants(slot, m)
@@ -618,13 +514,22 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
                 status=400,
             )
         expected_created_at = candidate
+    history_key = body.get("key", name)
+    if (
+        history_key is not None
+        and (key_error := string_field_error("key", history_key)) is not None
+    ):
+        return key_error
+    # A non-string title is ignored rather than refused: main took any value
+    # here, and only a string can be a slot's fallback title.
+    title = body.get("title", "")
     outcome = await resume_slot_from_history(
         state,
         name=name,
-        history_key=body.get("key", name),
+        history_key=history_key,
         request_app=request_app,
         caller_label=request.remote or "",
-        request_title=body.get("title", ""),
+        request_title=title if isinstance(title, str) else "",
         expected_created_at=expected_created_at,
     )
     if outcome.refusal is not None:

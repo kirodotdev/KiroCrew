@@ -243,6 +243,10 @@ export default [
       // measurement), no human-facing copy. Same parser-only boundary and same
       // false-negative class as widgetSrcdoc.ts above: keep it parser-only.
       'src/lib/widgetHeightReporter.ts',
+      // The fragment-scroll script injected beside the height reporter: ONE
+      // template literal of in-iframe JS (postMessage + scroll geometry), no
+      // human-facing copy. Same false-negative class: keep it parser-only.
+      'src/lib/widgetFragmentScroll.ts',
       'src/lib/mcpAppSrcdoc.ts',
       // Same parser-only boundary as the srcdoc builders above: this module
       // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
@@ -1140,7 +1144,7 @@ export default [
               // above give -- and the name is deliberately long and specific rather
               // than a generic `warnSkip`, so a future helper elsewhere cannot
               // inherit this by accident. TWO definitions exist today:
-              // `src/apps/command-bar/contributedCommands.ts`, which renders nothing,
+              // `src/components/commandBar/contributedCommands.ts`, which renders nothing,
               // and `src/apps/fileMenuContributions.tsx`, the same shim for a refused
               // `contributes.fileMenuItems` row. The second REUSES this name rather
               // than adding a second global exemption for a differently-named shim:
@@ -1582,7 +1586,7 @@ export default [
   // third suppression channel this config does not count, which is exactly what
   // centralizing suppression here exists to prevent.
   {
-    files: ['src/apps/command-bar/sessionFolder.ts'],
+    files: ['src/components/commandBar/sessionFolder.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

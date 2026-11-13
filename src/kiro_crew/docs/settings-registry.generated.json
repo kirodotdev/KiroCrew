@@ -9,6 +9,12 @@
       "description": "Downloads new versions in the background and installs them the next time you quit the app."
     },
     {
+      "id": "about.release-notes",
+      "label": "Release notes",
+      "tab": "about",
+      "route": "/settings/about?release=notes&highlight=about.release-notes"
+    },
+    {
       "id": "about.update-channel",
       "label": "Update channel",
       "tab": "about",
@@ -21,6 +27,13 @@
       "route": "/settings/about?highlight=key%3Aauto_update",
       "description": "Updates are downloaded automatically and take effect the next time you restart Kiro Crew. Nothing restarts by itself. When off, it stays on its current version.",
       "configKey": "auto_update"
+    },
+    {
+      "id": "about.version",
+      "label": "Version",
+      "tab": "about",
+      "route": "/settings/about?highlight=about.version",
+      "description": "Version, update channel, check for updates, and license"
     },
     {
       "id": "agent.kiro-sign-in",
@@ -1273,7 +1286,7 @@
       "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
-      "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+      "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
     },
     {
       "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
@@ -1354,14 +1367,6 @@
       "hint": "Lifts the chat that started a folder's other chats to the top of that folder: an accent bar down its left edge and a small conductor tag beside the agent name. This changes the order of the Sessions list, so the list stays as it is until you turn it on. The folder menu's chat item is always there."
     },
     {
-      "id": "developer.github-sign-in-by-kiro-crew",
-      "label": "GitHub sign-in by Kiro Crew",
-      "tab": "developer",
-      "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
-      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Settings > Connections.",
-      "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access."
-    },
-    {
       "id": "developer.jev-api-key",
       "label": "Jev API key",
       "tab": "developer",
@@ -1375,6 +1380,14 @@
       "route": "/settings/developer/feature-previews?highlight=developer.mark-out-of-date-dashboard-fields",
       "description": "Marks bot-written Dashboard fields that are out of date.",
       "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in."
+    },
+    {
+      "id": "developer.mcp-sign-in-by-kiro-crew",
+      "label": "MCP sign-in by Kiro Crew",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.mcp-sign-in-by-kiro-crew",
+      "description": "Lets chats use MCP servers that Kiro Crew signs in to, such as GitHub, Asana, Google and servers you add. Turn it on, then connect them in Settings > Connections.",
+      "hint": "Kiro Crew signs in to MCP servers itself and passes the sign-in to chats on a harness it supports, such as Kiro Agent, Claude or Codex. kiro-cli chats sign in as before. Disconnect a server on Connections to remove access."
     },
     {
       "id": "developer.model-for-the-small-model-judge",
@@ -1413,6 +1426,13 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
+    },
+    {
+      "id": "developer.secrets-vault-redesign",
+      "label": "Secrets vault redesign",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.secrets-vault-redesign",
+      "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes."
     },
     {
       "id": "developer.send-pending-approvals-to-chat-apps",
@@ -1697,6 +1717,14 @@
       "hint": "Show the top bar, the tab bar, the message box, the suggestion chips and the search fields as frosted glass over the content that scrolls under them. Off, they are solid cards."
     },
     {
+      "id": "display.use-command-bar",
+      "label": "Use Command Bar",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Adashboard.command_bar_enabled",
+      "description": "Cmd+K or Ctrl+K opens the Command Bar: type a command to jump to an app, a setting or a session. Off, the shortcut opens the search palette, which also searches knowledge, skills and prompts.",
+      "configKey": "dashboard.command_bar_enabled"
+    },
+    {
       "id": "display.zoom-level",
       "label": "Zoom Level",
       "tab": "display",
@@ -1910,10 +1938,10 @@
     },
     {
       "id": "security.config-pending",
-      "label": "Settings files changed outside {{productName}}",
+      "label": "Settings files changed outside Kiro Crew",
       "tab": "security",
       "route": "/settings/security/posture?highlight=security.config-pending",
-      "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
+      "description": "Review edits made to settings files outside Kiro Crew, then apply or discard them."
     },
     {
       "id": "security.trust-every-third-party-app",
@@ -1933,7 +1961,7 @@
       "label": "Your custom denies",
       "tab": "security",
       "route": "/settings/security/rules?highlight=security.your-custom-denies",
-      "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+      "description": "Add your own deny patterns (Python-compatible regex). These are enforced at Kiro Crew's PreToolUse gate alongside the built-in rules."
     },
     {
       "id": "session-environments.coder-url",

@@ -89,12 +89,13 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'PeopleCrew.tsx': 'the People share card, People list and the name-and-picture dialog; display-only edits and one-shot actions with their own routes, no setting and no control writes a config path',
   'PeopleModes.tsx': 'the per-mode pieces PeoplePanel mounts (invalid state, read-only Team Access, adapter notes); no setting and no control writes a config path',
   'PeopleAdvanced.tsx': 'the owner-only Advanced section of the People tab, which shows only under the Shared Crew preview; its controls write dashboard.shared_crew.* paths, but a search hit would deep-link to a tab that is hidden unless the preview is on, so they stay out of settings search',
+  'SecretUsage.tsx': "the Secrets item pane's read-only Used by card and the delete confirmation's in-use line; it lists where an item is used and holds no setting",
   'SharedAccessSetup.tsx': 'the People empty state shown while no shared-access path is configured; guidance and links to existing guides, no setting and no control writes a config path',
   'SsmInvite.tsx': 'the SSM tab of the People invite dialog and its row under Invites: a one-time link form with its own create and remove routes; no setting and no control writes a config path',
   'TailscaleInvites.tsx': 'the People invite dialog: a one-time invite form and the Tailscale credential connect field, both actions with their own Connect and Disconnect routes; no setting and no control writes a config path',
   'PostureDisclosure.tsx': "read-only disclosure rows for SecurityPanel's posture section (manual entry security.live-security-posture)",
   'RemoteControlCard.tsx': "the Remote Crew tab's personal Remote Control status and its one-click Turn off; it writes only an explicit off through its own route, holding no searchable setting",
-  'ReleasesPanel.tsx': 'read-only changelog viewer, zero persistent settings',
+  'AboutPanelUpdateChanges.tsx': "read-only list of the changes an available update brings, under About > Updates; zero controls",
   'RemoteCrewWindowsNotice.tsx': "the Remote Crew Set-up tab's Windows-gateway notice in place of the AWS checklist; text and a guide link, zero controls",
   'ReportProblemCard.tsx': 'feedback action card, no settings',
   'SettingsSearch.tsx': 'the settings search box itself — indexing it would be self-referential',
@@ -313,6 +314,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'settings search because the People tab is hidden unless the Shared Crew preview is on',
   },
   'SecretsPanel.tsx': {
+    counts: { Input: 6, textarea: 1 },
+    reason:
+      'add/edit form for one vault item (name, value, login fields, a website to add, note text) ' +
+      '— transient CRUD, not persistent knobs',
+  },
+  'SecretsPanelLegacy.tsx': {
     counts: { Input: 2 },
     reason: 'add-secret name/value form — transient CRUD, not persistent knobs',
   },
@@ -471,6 +478,12 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'notifications.sound-category-*',
   },
   'SecretsPanel.tsx': {
+    count: 1,
+    reason:
+      'the managed pane labels its SecretField with the slot copy (managedLabel), the anchor ' +
+      'the settingsManual secrets.* entries highlight; one pane per transient credential slot',
+  },
+  'SecretsPanelLegacy.tsx': {
     count: 1,
     reason:
       'managed SecretField labels are selected from a closed kind-to-copy map and the ' +

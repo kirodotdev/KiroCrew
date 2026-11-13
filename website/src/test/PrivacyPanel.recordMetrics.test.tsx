@@ -77,6 +77,21 @@ describe('PrivacyPanel metric-recording switch', () => {
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', true))
   })
 
+  it('says whether metrics are being recorded now, not only the default', async () => {
+    mount({ enabled: true })
+    expect(await screen.findByText('Usage and context records. Performance metrics are being recorded on this device now.')).toBeInTheDocument()
+    collectionStatus.mockResolvedValue(collection({ enabled: false }) as never)
+    await userEvent.click(await screen.findByRole('switch', { name: LABEL }))
+    expect(await screen.findByText('Usage and context records. Performance metrics are not being recorded on this device now.')).toBeInTheDocument()
+  })
+
+  it('says what DO_NOT_TRACK turns off above its shell lines', async () => {
+    mount()
+    expect(
+      await screen.findByText('Setting DO_NOT_TRACK=1 turns off performance metrics and the heartbeat.'),
+    ).toBeInTheDocument()
+  })
+
   it('turns collection back off, so enabling is not a one-way door', async () => {
     mount({ enabled: true })
     const sw = await screen.findByRole('switch', { name: LABEL })
@@ -177,6 +192,39 @@ describe('PrivacyPanel metric-recording switch', () => {
     mount({ enabled: true, otlp_configured: true })
     await screen.findByRole('switch', { name: LABEL })
     expect(await screen.findByText(/being sent off this machine/)).toBeInTheDocument()
+  })
+
+  it('describes recording as exporting while it is off on a host with a destination', async () => {
+    // Off, export_permitted reads false, but turning recording on in config.json
+    // (what the note says to do) writes the opt-in that starts export.
+    mount({ enabled: false, otlp_configured: true, export_permitted: false })
+    expect(await screen.findByText(/send them to the configured metrics collectors/)).toBeInTheDocument()
+    expect(screen.queryByText('Collect performance metrics on this machine.')).not.toBeInTheDocument()
+  })
+
+  it('re-reads recording after the heartbeat switch changes', async () => {
+    // With telemetry.enabled unwritten, the heartbeat switch decides recording
+    // too (the heartbeat-off load rule), so the recording row must refresh.
+    beaconStatus.mockResolvedValue({ ...BEACON_OFF } as never)
+    collectionStatus.mockResolvedValue(collection() as never)
+    patchConfig.mockResolvedValue({} as never)
+    renderWithProviders(<PrivacyPanel />)
+    const heartbeat = await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(collectionStatus).toHaveBeenCalled())
+    const before = collectionStatus.mock.calls.length
+    await userEvent.click(heartbeat)
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('telemetry.beacon_enabled', true))
+    await waitFor(() => expect(collectionStatus.mock.calls.length).toBeGreaterThan(before))
+  })
+
+  it('does not say metrics are sent while export waits for an explicit opt-in', async () => {
+    // Recording on by default with a destination configured: the provider attaches
+    // no export reader until telemetry.enabled: true is written.
+    mount({ enabled: true, otlp_configured: true, export_permitted: false })
+    await screen.findByRole('switch', { name: LABEL })
+    expect(await screen.findByText(/nothing is sent to them until telemetry.enabled: true/)).toBeInTheDocument()
+    expect(screen.queryByText(/being sent off this machine/)).not.toBeInTheDocument()
+    expect(screen.getByText('Collect performance metrics on this machine.')).toBeInTheDocument()
   })
 
   it('names every destination, marking one the build locked on', async () => {

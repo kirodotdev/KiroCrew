@@ -355,8 +355,49 @@ export interface ManagedSecret {
  *  reached none of the recovery `j` runs, so an expired session read a bare
  *  status code with no way to sign back in (#12240).
  */
+/** What a vault entry holds. `secret` is one value (every entry stored before
+ *  item types existed); `login` is a website credential; `note` is text. */
+export type SecretItemType = 'secret' | 'login' | 'note'
+
+/** The fields a typed write carries. Validation lives on the server
+ *  (`secrets/items.py`); a refusal comes back as a 400 with a `code`. Updating
+ *  an item of the same type, a password, `notes` or `text` left out
+ *  keeps its stored value. `notes` sent as `''` is cleared; a password or
+ *  `text` sent as `''` is refused, because both are required. */
+export type SecretItemFields =
+  | { value: string }
+  | { username?: string; password?: string; urls?: string[]; notes?: string }
+  | { text?: string }
+
+/** The typed body of `POST /api/secrets`. */
+export interface SecretItemBody {
+  type: SecretItemType
+  fields: SecretItemFields
+}
+
+/** The part of a login a listing may show. Never a password, seed or note. */
+export interface SecretLoginPublicFields {
+  username: string
+  urls: string[]
+}
+
+/** One stored entry as `GET /api/secrets` lists it. `fields` is present on a
+ *  login only; `corrupt` marks an entry whose ciphertext authenticated but whose
+ *  content is not the object its type promises. */
+export interface SecretListItem {
+  name: string
+  type: SecretItemType
+  revision: string
+  updated_at?: string
+  fields?: SecretLoginPublicFields | Record<string, never>
+  corrupt?: boolean
+}
+
 export interface SecretsListResponse {
   names: string[]
+  /** Every stored entry with its type; `names` is the same set, for callers
+   *  that predate item types. */
+  items?: SecretListItem[]
   managed: ManagedSecret[]
   /** Stored names the gateway currently ignores, with the reason. Absent when
    *  every stored name is live. */
@@ -365,6 +406,32 @@ export interface SecretsListResponse {
    *  are still authoritative, so this is a warning beside a good list rather
    *  than a failed request. */
   managed_error?: boolean
+}
+
+/** Which kind of place references a vault item (`secrets_usage.py`). */
+export type SecretUsageKind =
+  | 'mcp_server'
+  | 'env_file'
+  | 'cron_job'
+  | 'setting'
+  | 'connection'
+  | 'integration'
+  | 'approved_api'
+  | 'sprites_profile'
+
+/** One place that would read a vault item: its kind, its own name (server,
+ *  file, job or setting) and the key holding the reference. Never a value. */
+export interface SecretUsagePlace {
+  kind: SecretUsageKind
+  name: string
+  key: string
+}
+
+/** What `GET /api/secrets/usage` answers with. An item absent from `usage` has
+ *  no use found in the scanned places; a kind in `incomplete` could not be read. */
+export interface SecretsUsageResponse {
+  usage: Record<string, SecretUsagePlace[]>
+  incomplete: SecretUsageKind[]
 }
 
 /** One changed key in a settings file edited outside the dashboard. `before` /
@@ -476,7 +543,11 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      * and the server-side ephemeral gate always runs, matching every other method
      * here. */
     secretsList: () => get('/api/secrets').then(j) as Promise<SecretsListResponse>,
-    /** Store a vault secret under *name*, replacing any current value.
+    /** Where each stored item is referenced, by place name only. */
+    secretsUsage: () => get('/api/secrets/usage').then(j) as Promise<SecretsUsageResponse>,
+    /** Store a vault secret under *name*, replacing any current value. A string
+     *  stores a plain secret; a `SecretItemBody` stores a typed item (login,
+     *  note) and the server validates its fields.
      *
      *  On this transport rather than the Secrets panel's own `fetch`, which is what
      *  every sibling settings panel already does and what the panel gains by it:
@@ -485,7 +556,8 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  instead of the gateway's cryptographic reason. Raw `fetch` reaches none of
      *  that, so an expired session was shown a bare status code and offered only a
      *  retry that could not succeed (#12240). */
-    secretsSave: (name: string, value: string) => post('/api/secrets', { name, value }).then(j),
+    secretsSave: (name: string, value: string | SecretItemBody) =>
+      post('/api/secrets', typeof value === 'string' ? { name, value } : { name, ...value }).then(j),
     /** Remove a vault secret by name. Same transport reason as `secretsSave`. */
     secretsDelete: (name: string) => del('/api/secrets/' + encodeURIComponent(name)).then(j),
   }

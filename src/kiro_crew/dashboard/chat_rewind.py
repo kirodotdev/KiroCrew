@@ -44,6 +44,7 @@ from kiro_crew.dashboard.kiro_readiness import (
     rerun_signs_in_via_kiro_cli,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
+from kiro_crew.dashboard.slot_buffers import flush_restored_hold
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
     checkpoint_slot_replaced,
@@ -328,6 +329,26 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             )
             return slot_not_found()
 
+        # A hold a restart restored into this idle slot is owed to this turn, above
+        # its user row. Flushed on the LIVE slot, not the scratch copy below: the
+        # copy shares the hold and its note dicts, so a flush there would retire
+        # notes from the live hold for rows a refused rewind then throws away. A
+        # refused rewind leaves the notes delivered here, as the next seam would.
+        rewound_row = msgs[index]
+        pre_flush_rows = list(slot.messages)
+        pre_flush_ids = {id(row) for row in pre_flush_rows}
+        flush_restored_hold(slot, logger=logger)
+        restored_rows = [row for row in slot.messages if id(row) not in pre_flush_ids]
+        # The flush's append can trim the window's front, which moves the index
+        # and the archived count it is offset by.
+        index = next((i for i, row in enumerate(slot.messages) if row is rewound_row), -1)
+        disk_older = getattr(slot, "_disk_older_count", 0)
+        if index < 0:
+            return web.json_response(
+                {"error": "user message not found", "code": "user_message_not_found"},
+                status=400,
+            )
+
         # The transcript this rewind was authorized against. A concurrent
         # rebinding (a cron injection re-linking the slot) moves the slot to
         # another transcript while the boundaries below are pending; the
@@ -346,7 +367,8 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # while either durable boundary below is pending, so exposing a truncated
         # live window here could make a rejected edit permanent.
         prospective_slot = copy.copy(slot)
-        prospective_slot.messages = list(slot.messages[:index])
+        # The restored notes' rows follow the kept prefix, above the rewound row.
+        prospective_slot.messages = list(slot.messages[:index]) + restored_rows
         prospective_slot._queue = []
         prospective_slot._pending = list(slot._pending)
         prospective_slot._question_pending = dict(slot._question_pending)

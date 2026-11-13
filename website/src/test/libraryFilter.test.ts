@@ -19,10 +19,10 @@ import type { InstalledApp } from '../components/appstore/types'
 type LibraryEntry = Pick<InstalledApp, 'origin' | 'enabled' | 'manifest'> & { name: string }
 
 const overlayApp = (enabled: boolean): LibraryEntry => ({
-  name: 'command-bar',
+  name: 'launcher',
   enabled,
   origin: 'builtin',
-  manifest: { ui: { overlays: [{ id: 'command-bar', replaces: 'quick-search' }] } },
+  manifest: { ui: { overlays: [{ id: 'launcher', replaces: 'quick-search' }] } },
 } as LibraryEntry)
 
 const plainBuiltin = (enabled: boolean): LibraryEntry => ({

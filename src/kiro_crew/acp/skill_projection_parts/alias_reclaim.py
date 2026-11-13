@@ -65,7 +65,9 @@ from kiro_crew.acp.skill_projection_parts.view_ownership import (
     _view_home_tag,
 )
 from kiro_crew.acp.skill_projection_parts.view_sources import (
+    _VIEW_LEDGER_NAME,
     _admissible_source_agent,
+    _read_json_regular_file,
     _ViewLedgerWrites,
 )
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX, volatile_env_keys
@@ -792,6 +794,75 @@ def _prune_stale_managed_aliases(
     return reclaimed
 
 
+# Where builds before ``v0.10.0`` wrote the view ledger and the ownership
+# sidecars: INSIDE the agents directory. Nothing reads them there, and kiro-cli
+# loads every ``.json`` under the agents directory as an agent profile,
+# dot-prefixed subdirectories included, so a file left there is a subagent in
+# every session. The boot drain removes what Crew provably wrote.
+_LEGACY_METADATA_DIR_NAME = ".kirocrew-skill-projection-metadata"
+
+
+def _is_legacy_metadata_file(name: str, content: object) -> bool:
+    """Whether *name* with parsed *content* is a ledger or sidecar a pre-``v0.10.0`` build wrote.
+
+    The ledger maps view names to agent names and holds nothing else; a sidecar is
+    named by its view and carries the managed marker. Anything else stays.
+    """
+    if name == _VIEW_LEDGER_NAME:
+        return isinstance(content, dict) and all(
+            isinstance(alias, str)
+            and _LEGACY_ALIAS_NAME_RE.fullmatch(alias)
+            and isinstance(agent, str)
+            for alias, agent in content.items()
+        )
+    stem = name.removesuffix(".json")
+    return (
+        stem != name
+        and _LEGACY_ALIAS_NAME_RE.fullmatch(stem) is not None
+        and _managed_marker(content)
+    )
+
+
+def _remove_legacy_metadata_dir(directory: Path) -> int:
+    """Remove the legacy metadata files in *directory*, and the directory once empty.
+
+    Only a real directory is walked (never a link or junction), only regular files
+    whose name and content pass :func:`_is_legacy_metadata_file` are unlinked,
+    each identity-checked, and the walk is bounded by the prune's work limit.
+    Returns how many files it removed.
+    """
+    legacy = directory / _LEGACY_METADATA_DIR_NAME
+    info = pinned_fs.lstat_by_name(legacy)
+    if (
+        info is None
+        or platform_compat.is_link_or_junction(legacy)
+        or not stat.S_ISDIR(info.st_mode)
+    ):
+        return 0
+    removed = 0
+    with os.scandir(legacy) as entries:
+        for walked, entry in enumerate(entries):
+            if walked >= _PROJECTION_PRUNE_WORK_LIMIT:
+                break
+            path = legacy / entry.name
+            current = pinned_fs.lstat_by_name(path)
+            if current is None or not stat.S_ISREG(current.st_mode):
+                continue
+            if not _is_legacy_metadata_file(entry.name, _read_json_regular_file(path)):
+                continue
+            if _unlink_projection_lease_if_unchanged(
+                path, (current.st_dev, current.st_ino), what="legacy projection metadata"
+            ):
+                removed += 1
+    try:
+        os.rmdir(legacy)
+    except OSError:
+        pass  # a file Crew did not write is still there; it stays
+    if removed:
+        logger.info("skill projection: removed %d legacy metadata file(s) from %s", removed, legacy)
+    return removed
+
+
 def drain_stale_aliases() -> int:
     """Best-effort boot drain of unused aliases this data home owns; never raises.
 
@@ -800,7 +871,9 @@ def drain_stale_aliases() -> int:
     kiro-cli's subagent tool. This runs once at gateway boot and repeats that
     same prune, under the publication lock, until three batches in a row
     reclaim nothing or the batch limit is reached, so some unused aliases can
-    remain for later spawns. Returns how many aliases it removed.
+    remain for later spawns. It first removes the metadata a pre-``v0.10.0``
+    build left in the agents directory (:func:`_remove_legacy_metadata_dir`).
+    Returns how many aliases it removed.
     """
     try:
         directory = kiro_agents_dir()
@@ -810,6 +883,10 @@ def drain_stale_aliases() -> int:
         return 0
     if pinned_fs.lstat_by_name(directory) is None:
         return 0
+    try:
+        _remove_legacy_metadata_dir(directory)
+    except OSError:
+        logger.debug("skill projection: legacy metadata not removed", exc_info=True)
     total = 0
     sidecars = 0
     idle_batches = 0

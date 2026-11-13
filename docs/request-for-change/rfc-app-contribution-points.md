@@ -634,6 +634,11 @@ MCP gateway, so tool discovery, approval and audit stay in the core.
   allowed it.
 
 A separate RFC will specify this section in full before any of it is built.
+For the owner grant of third-party agent tools, that RFC is
+[rfc-app-agent-tools-third-party-grant.md](rfc-app-agent-tools-third-party-grant.md)
+(`accepted`). It specifies only the owner grant part. The `outputSchema`
+validation, the `effect` label and the schema drift rule of this section still
+need an RFC before they are built.
 
 ## 8. Roadmap
 

@@ -256,6 +256,9 @@ async def api_spawn_status(request: web.Request) -> web.Response:
             leaked = getattr(info, "leaked_tool_call", None)
             if isinstance(leaked, bool):
                 data["leaked_tool_call"] = leaked
+            unverified = getattr(info, "served_model_unverified", None)
+            if isinstance(unverified, bool):
+                data["served_model_unverified"] = unverified
         # Read full result from disk (info.result is truncated to 3000 chars)
         result = info.result
         if info.result_path and not is_sensitive_path(info.result_path):

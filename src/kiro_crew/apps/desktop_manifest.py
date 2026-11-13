@@ -1,7 +1,10 @@
 """The ``desktop`` block of ``app.json``: windows and shortcuts the desktop shell hosts.
 
 An app may ask the Electron shell for a small, closed set of window shapes and for
-global shortcuts. The shell, not the app, owns every window: it creates it with fixed
+global shortcuts. An overlay may span every display with one avatar the shell hands
+from display to display as the user drags it (``displays: "all"``), and a
+``background`` window is a page that is never shown, which an app uses to own work
+that must outlive any one display (a notification socket, a reminder poll). The shell, not the app, owns every window: it creates it with fixed
 web preferences, loads the host's own ``/popout/desktop/<app>/<id>`` route from the
 gateway, and that route mounts the app's ``entry`` ESM module the way ``AppHost``
 mounts a panel tab. No app code runs in the Electron main process.
@@ -29,16 +32,35 @@ _MAX_ENTRY_LEN = 200
 MAX_DESKTOP_WINDOWS = 4
 MAX_DESKTOP_SHORTCUTS = 4
 
-WINDOW_KINDS = ("overlay", "panel")
+WINDOW_KINDS = ("overlay", "panel", "background")
+#: Where an overlay is: the display under the cursor, or every display at once with
+#: the app's avatar on exactly one of them.
+OVERLAY_DISPLAYS = ("cursor", "all")
 PANEL_POSITIONS = ("bottom-right", "top-right", "center")
 PANEL_WIDTH_RANGE = (160, 1600)
 PANEL_HEIGHT_RANGE = (120, 1200)
 PANEL_DEFAULT_SIZE = (400, 560)
+#: The transparent margin inside a panel around the card it draws, left out when
+#: the panel is placed beside an anchor. Small enough to leave a card in the
+#: smallest panel.
+PANEL_GUTTER_RANGE = (0, 48)
 
 _WINDOW_KEYS = frozenset(
-    {"id", "entry", "kind", "openOnEnable", "width", "height", "position", "transparent"}
+    {
+        "id",
+        "entry",
+        "kind",
+        "openOnEnable",
+        "width",
+        "height",
+        "position",
+        "transparent",
+        "gutter",
+        "displays",
+    }
 )
-_PANEL_ONLY_KEYS = ("width", "height", "position", "transparent")
+_PANEL_ONLY_KEYS = ("width", "height", "position", "transparent", "gutter")
+_OVERLAY_ONLY_KEYS = ("displays",)
 _SHORTCUT_KEYS = frozenset({"id", "accelerator", "window"})
 _BLOCK_KEYS = frozenset({"windows", "shortcuts"})
 
@@ -126,17 +148,23 @@ class DesktopWindow:
     height: int = 0
     position: str = ""
     transparent: bool = False
+    gutter: int = 0
+    displays: str = OVERLAY_DISPLAYS[0]
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"id": self.id, "entry": self.entry, "kind": self.kind}
         if self.openOnEnable:
             d["openOnEnable"] = True
+        if self.kind == "overlay" and self.displays != OVERLAY_DISPLAYS[0]:
+            d["displays"] = self.displays
         if self.kind == "panel":
             d["width"] = self.width
             d["height"] = self.height
             d["position"] = self.position
             if self.transparent:
                 d["transparent"] = True
+            if self.gutter:
+                d["gutter"] = self.gutter
         return d
 
 
@@ -228,8 +256,30 @@ def _parse_windows(raw: Any, errors: list[str]) -> list[DesktopWindow]:
             present = [k for k in _PANEL_ONLY_KEYS if k in item]
             if present:
                 errors.append(f"{where}: {present} apply to a panel only")
+        if win.kind == "overlay":
+            _parse_overlay_fields(item, win, where, errors)
+        else:
+            present = [k for k in _OVERLAY_ONLY_KEYS if k in item]
+            if present:
+                errors.append(f"{where}: {present} apply to an overlay only")
         windows.append(win)
+    # One of each, because each is one piece of shell state per app: the display
+    # the avatar is on, and the page that outlives every display.
+    if sum(1 for w in windows if w.kind == "overlay" and w.displays == "all") > 1:
+        errors.append("desktop.windows: at most one overlay may span all displays")
+    if sum(1 for w in windows if w.kind == "background") > 1:
+        errors.append("desktop.windows: at most one background window")
     return windows
+
+
+def _parse_overlay_fields(
+    item: dict[str, Any], win: DesktopWindow, where: str, errors: list[str]
+) -> None:
+    displays = item.get("displays", OVERLAY_DISPLAYS[0])
+    if displays not in OVERLAY_DISPLAYS:
+        errors.append(f"{where}: displays must be one of {list(OVERLAY_DISPLAYS)}")
+        displays = OVERLAY_DISPLAYS[0]
+    win.displays = displays
 
 
 def _parse_panel_fields(
@@ -253,6 +303,12 @@ def _parse_panel_fields(
     if not isinstance(transparent, bool):
         errors.append(f"{where}: transparent must be a boolean")
     win.transparent = transparent is True
+    low, high = PANEL_GUTTER_RANGE
+    gutter = item.get("gutter", 0)
+    if isinstance(gutter, bool) or not isinstance(gutter, int) or not low <= gutter <= high:
+        errors.append(f"{where}: gutter must be an integer from {low} to {high}")
+        gutter = 0
+    win.gutter = gutter
 
 
 def _parse_shortcuts(raw: Any, window_ids: set[str], errors: list[str]) -> list[DesktopShortcut]:

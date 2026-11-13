@@ -582,6 +582,27 @@ class DiscordDispatcher:
                 self._routing_checks.pop(channel_id)
         if not permitted:
             return monitor_result
+        # A reply answering a bridged approval note is decided here and starts no
+        # turn; a re-entered drain was checked already, a stop is never an answer, and
+        # a message carrying a file is content for a turn, not an answer.
+        from kiro_crew.discord.bridge_reply import consume_bridged_reply
+
+        client = self.client
+        # The gateway wires the state on the session-resume controller; a
+        # register_channel_transport attachment comes first when there is one.
+        state = getattr(self, "dashboard_state", None) or getattr(
+            self._session_resume, "dashboard_state", None
+        )
+        if (
+            interpret_as_command
+            and cmd != "stop"
+            and await consume_bridged_reply(
+                state,
+                msg,
+                lambda note: client.send_message(channel_id, note),
+            )
+        ):
+            return monitor_result
         # `!compact` and `!stop` act on the resolved session, so after a binding was
         # destroyed they would compact or cancel the NATIVE DM session while the user
         # believes they drive the resumed one; deciding here makes that structural.

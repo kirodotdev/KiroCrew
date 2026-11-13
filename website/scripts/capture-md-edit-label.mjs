@@ -143,7 +143,24 @@ async function main() {
     return false
   }
 
-  await stubDashboardApi(page, { slots, extra })
+  // Seed the persisted panel stores (see the sibling harness for why each key
+  // exists; the rail stays closed here — the toggle under test lives in the
+  // viewer header, not the rail).
+  await stubDashboardApi(page, {
+    slots, extra,
+    localStorageEntries: {
+      'mc-theme': 'dark',
+      'mc-onboarded': '1',
+      'mc-active-slot-chat': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      ['mc-panel-tabs:' + SLOT]: JSON.stringify({ activeId: fileTab.id, tabs: [fileTab] }),
+      'mc-files-rail-open': '0',
+      'mc-side-panel-width': '760',
+      'kirocrew:comment-hint-dismissed': '1',
+      ['mc-git-panel-opened:' + SLOT + ':' + PROJECT]: '1',
+      'mc-chat-config': JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }),
+    },
+  })
   logPageProblems(page)
 
   const wrote = []
@@ -194,22 +211,6 @@ async function main() {
 
   const probe = (selector, locator, opts = {}) => ({ selector, locator, min: opts.min, attr: opts.attr })
 
-  // Seed the persisted panel stores and load the dashboard (see the sibling
-  // harness for why each key exists; the rail stays closed here — the toggle
-  // under test lives in the viewer header, not the rail).
-  await page.addInitScript(([slot, project, tabsJson]) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot-chat', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-panel-tabs:' + slot, tabsJson)
-    localStorage.setItem('mc-files-rail-open', '0')
-    localStorage.setItem('mc-side-panel-width', '760')
-    localStorage.setItem('kirocrew:comment-hint-dismissed', '1')
-    localStorage.setItem('mc-git-panel-opened:' + slot + ':' + project, '1')
-    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }))
-  }, [SLOT, PROJECT, JSON.stringify({ activeId: fileTab.id, tabs: [fileTab] })])
   await page.goto(base + '/?sid=' + encodeURIComponent(SLOT), { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2600)
 

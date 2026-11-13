@@ -22,6 +22,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -83,6 +84,7 @@ _SHARD_COUNTED_HARNESSES = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
@@ -433,9 +435,11 @@ def _coerce_int(value: Any) -> int:
     """Coerce ``value`` to ``int``, defaulting to 0 for non-numeric input.
 
     Keeps the emitted record JSON-serializable even if a caller passes a
-    non-numeric context value.
+    non-numeric context value, and keeps a row's infinite value (``json.loads``
+    reads ``Infinity`` and ``1e999`` as ``inf``, which ``int`` refuses with
+    ``OverflowError``) from failing the reader that holds it.
     """
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0

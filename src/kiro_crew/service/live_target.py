@@ -63,6 +63,16 @@ EXEC_MARKER = "KIROCREW_LIVE_EXECED"
 _FILENAME = "live_target.json"
 
 
+def _no_cwd_entries(search_path: str) -> str:
+    """*search_path* without any empty or ``.`` entry: both name the current directory."""
+    return os.pathsep.join(p for p in search_path.split(os.pathsep) if p not in ("", "."))
+
+
+#: The search path a process with no ``PATH`` uses (``os.defpath``), minus any
+#: current-directory entry: on Windows it starts with ``.``.
+_DEFAULT_PATH = _no_cwd_entries(os.defpath)
+
+
 class InvalidTarget(ValueError):
     """A pointer value cannot be used as a live target.
 
@@ -464,8 +474,11 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
         # The target's venv leads PATH. Without this, a bare ``kirocrew`` in a
         # subprocess (or an agent shell turn) resolves to the machine-wide
         # install, so the gateway would run the target while everything it
-        # spawns re-invoked the old build.
-        "PATH": os.pathsep.join([str(kcbin.parent), os.environ.get("PATH", "")]),
+        # spawns re-invoked the old build. With no inherited PATH the platform's
+        # default search path follows it, as a process with no PATH searches;
+        # an empty or "." entry is left out: either names the current directory,
+        # the target checkout after the chdir below.
+        "PATH": os.pathsep.join([str(kcbin.parent), os.environ.get("PATH") or _DEFAULT_PATH]),
     }
     _warn(log, f"live target set: executing {kcbin}")
     try:

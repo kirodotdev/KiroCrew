@@ -495,7 +495,7 @@ async def test_mp3_with_jpeg_cover_art_streams(tmp_path, mock_sel):
     """ID3 cover art is a JPEG, whose standard Huffman table reads as a bot token."""
     import io
 
-    image = pytest.importorskip("PIL.Image")
+    import PIL.Image as image
     art = io.BytesIO()
     image.new("RGB", (64, 36), (120, 30, 200)).save(art, "JPEG")
     f = tmp_path / "song.mp3"

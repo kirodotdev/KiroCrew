@@ -87,7 +87,7 @@ function Notice({ children }: { children: React.ReactNode }) {
 // counter beside it.
 function GenNote({ shown, total, compact }: { shown?: number; total?: number; compact?: boolean }) {
   if (shown == null || total == null || total <= shown) return null
-  const text = i18nT('pages.telemetryPanel.showing_partial_window', { shown, total })
+  const text = i18nT('pages.telemetryPanel.showing_partial_window', { shown: fmtNumber(shown), total: fmtNumber(total) })
   // A fixed-width cell cannot hold the sentence: rendered inline it wraps to a
   // nine-line sliver and pushes the row to ten times its height. The marker keeps
   // the caveat visible and discoverable while the sentence moves to the tooltip.
@@ -206,6 +206,15 @@ function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms
       {rows.map(r => {
         const cold = r.cold_p50_ms > 0 ? (r.cold_p50_ms / peak) * 100 : 0
         const warm = r.warm_p50_ms > 0 ? (r.warm_p50_ms / peak) * 100 : 0
+        // The same absence the empty column shows: the label says "—", not "0 ms",
+        // which would read as an instant start.
+        const point = i18nT('pages.telemetryPanel.daily_trend_point', {
+          date: r.date,
+          cold: fmtMs(r.cold_p50_ms > 0 ? r.cold_p50_ms : null),
+          warm: fmtMs(r.warm_p50_ms > 0 ? r.warm_p50_ms : null),
+          count: r.count,
+          n: fmtNumber(r.count),
+        })
         return (
           <div
             key={r.date}
@@ -213,20 +222,8 @@ function DailyTrend({ rows }: { rows: { date: string; count: number; cold_p50_ms
             // The numbers exist nowhere else, so the column has to carry them for
             // anyone not using a pointer.
             role="img"
-            aria-label={i18nT('pages.telemetryPanel.daily_trend_point', {
-              date: r.date,
-              cold: fmtMs(r.cold_p50_ms),
-              warm: fmtMs(r.warm_p50_ms),
-              count: r.count,
-              n: fmtNumber(r.count),
-            })}
-            title={i18nT('pages.telemetryPanel.daily_trend_point', {
-              date: r.date,
-              cold: fmtMs(r.cold_p50_ms),
-              warm: fmtMs(r.warm_p50_ms),
-              count: r.count,
-              n: fmtNumber(r.count),
-            })}
+            aria-label={point}
+            title={point}
           >
             <span className="block w-full rounded-t-sm" style={{ height: `${cold}%`, background: 'var(--accent)' }} />
             <span className="block w-full rounded-t-sm" style={{ height: `${warm}%`, background: 'var(--muted-strong)' }} />

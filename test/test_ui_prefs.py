@@ -203,6 +203,24 @@ def test_a_value_carrying_a_credential_is_not_served(_isolated_home):
     assert "AKIA" not in json.dumps(served)
 
 
+def test_a_put_of_a_secret_shaped_value_does_not_claim_it_was_kept(_isolated_home, caplog):
+    """GET never serves such a value, so the PUT's reply must not echo it either,
+    and it must not sit on disk to be dropped by the next unrelated PUT."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.ui_prefs"):
+        merged = merge_ui_prefs(
+            {
+                "mc-crews-view": "grid",
+                "kc:file-explorer:state:v2": '{"note":"AKIAIOSFODNN7EXAMPLE"}',
+            }
+        )
+    assert merged == {"mc-crews-view": "grid"}
+    assert load_ui_prefs() == merged
+    assert "AKIA" not in ui_prefs_path().read_text(encoding="utf-8")
+    assert any("kc:file-explorer:state:v2" in r.getMessage() for r in caplog.records)
+
+
 def test_a_value_carrying_an_exfiltration_url_is_not_served(_isolated_home):
     from kiro_crew.security import redact_exfiltration_urls
 

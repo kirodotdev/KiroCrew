@@ -3,7 +3,7 @@
 // Contract under test:
 // - a server on the share list whose launch the gateway refused is named, with
 //   the restart line and a link to the MCP Servers page's Sharing view, where it is approved.
-// - the link lands on /mcp?view=sharing, a surface served for anyone (no
+// - the link lands on Customize → MCP Servers, Sharing view, a surface served for anyone (no
 //   dependence on Developer Mode).
 // - the list comes from the gateway's `share_refused`, which matches a refusal
 //   recorded under a slash-named server's alias.
@@ -66,7 +66,7 @@ function mount(ui: React.ReactNode) {
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/" element={ui} />
-          <Route path="/mcp" element={<Where />} />
+          <Route path="/capabilities" element={<Where />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -98,7 +98,7 @@ describe('McpShareRefusedNotice', () => {
     const link = screen.getByRole('link', { name: 'Review in MCP Servers' })
     expect(link).toHaveAttribute('href', MCP_MANAGEMENT_PATH)
     fireEvent.click(link)
-    expect(await screen.findByTestId('where')).toHaveTextContent('/mcp?view=sharing')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/capabilities?tab=mcp-servers&view=sharing')
   })
 
   it('opens MCP Management in a new tab while the page holds staged edits', async () => {

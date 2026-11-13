@@ -84,7 +84,8 @@ def _png(tmp_path, name="shot.png"):
 
 
 def _other_png_bytes() -> bytes:
-    pil = pytest.importorskip("PIL.Image")
+    import PIL.Image as pil
+
     buf = io.BytesIO()
     pil.new("RGB", (3, 1), (10, 200, 30)).save(buf, format="PNG")
     return buf.getvalue()

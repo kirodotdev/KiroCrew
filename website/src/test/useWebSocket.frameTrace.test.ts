@@ -1029,6 +1029,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
     'query setQueryData ["chat-folders"]',
     'query invalidateQueries ["chat-folders"]',
     'query invalidateQueries ["dashboardConfig"]',
+    'query invalidateQueries ["decisionsProvider"]',
+    'query invalidateQueries ["decisionsConsent"]',
     'event mc:app:slots',
   ],
   "slots repeated frame only reconciles the queued depth": [

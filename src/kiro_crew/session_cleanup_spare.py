@@ -28,7 +28,9 @@ def rss_limit_for(cleanup: SessionCleanup, pid: int, rss: int | None = None) -> 
 
     Given the measured *rss*, a SHARED runtime over that ceiling is also closed to
     new chats (``RuntimeOwnership.close_to_joins``), so the recycles that follow
-    drain it instead of feeding it.
+    drain it instead of feeding it. A runtime the watchdog then holds instead of
+    recycling (``session_rss_rebound``) stays closed as well: it is over its
+    ceiling, and a new chat founds a process of its own.
 
     ``session.watchdog_rss_max_mb`` is a budget for ONE session's runtime. A shared
     chat runtime (``chat_runtime_sharing`` preview) serves several, and the figure
@@ -46,7 +48,8 @@ def rss_limit_for(cleanup: SessionCleanup, pid: int, rss: int | None = None) -> 
         # one lease: recycling a co-tenant releases a lease and frees nothing,
         # and that chat would rejoin the same process. Closed to joins, recycled
         # and returning chats found a new one, and this one dies with its last
-        # holder as the next ticks recycle the rest.
+        # holder as the next ticks recycle the rest. Under a hold nothing is
+        # recycled, and the process stays closed to new chats while it lives.
         RUNTIME_OWNERSHIP.close_to_joins(pid)
     return limit
 

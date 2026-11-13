@@ -64,6 +64,9 @@ async function main() {
     logPageProblems(page)
     await stubDashboardApi(page, {
       slots: [],
+      // Developer Mode OFF (absent after the stub's clear): the Developer page
+      // is not in the side rail.
+      localStorageEntries: { 'mc-theme-mode': theme, 'mc-onboarded': '1', 'mc-lang': 'en' },
       // `return json(...), true` -- the comma marks the request handled.
       extra: async (path, route) => {
         if (path === '/api/theme/boot') return json(route, { mode: theme, theme: '' }), true
@@ -80,14 +83,6 @@ async function main() {
         return false
       },
     })
-    await page.addInitScript(t => {
-      localStorage.setItem('mc-theme-mode', t)
-      localStorage.setItem('mc-onboarded', '1')
-      localStorage.setItem('mc-lang', 'en')
-      // Developer Mode OFF: the Developer page is not in the side rail.
-      localStorage.removeItem('mc-dev-mode')
-    }, theme)
-
     await page.goto(`${base}/capabilities?tab=mcp&view=mcp-servers`, { waitUntil: 'domcontentloaded' })
     const notice = page.getByTestId(scene === 'failed' ? 'mcp-share-status-error' : 'mcp-share-refused')
     await notice.waitFor({ state: 'visible', timeout: 15000 })

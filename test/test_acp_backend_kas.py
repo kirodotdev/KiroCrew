@@ -102,6 +102,7 @@ class TestBackendPredicates:
             provider.is_kas_backend,
             provider.is_codex_backend,
             provider.is_opencode_backend,
+            provider.is_mimocode_backend,
             provider.is_pi_backend,
             provider.is_goose_backend,
             provider.is_deepseek_backend,
@@ -408,6 +409,10 @@ class TestSaveKeepsAnAbsentChoiceAbsent:
 
     @pytest.fixture
     def home(self, tmp_path: Path):
+        # Imported before the loader is patched: a first import inside the patch
+        # binds the loader's mock, which patch then restores as the original.
+        import kiro_crew.cli_config  # noqa: F401
+
         d = tmp_path / "crew"
         d.mkdir()
         with (

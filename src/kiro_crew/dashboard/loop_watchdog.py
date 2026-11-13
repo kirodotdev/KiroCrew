@@ -31,9 +31,9 @@ things turn the silence that follows a wedge into an actionable artifact:
    schedules it on the absolute mach timebase, which does not advance during
    sleep.  So a laptop resume does not fire a deadline armed before the
    sleep; the heartbeat, on the same monotonic clock, missed no beat either.
-   Desktop launches use a 25s exit budget near Electron's independent
-   liveness window; managed services have no Electron probe, use a wider
-   budget, and receive the soft dump first.
+   Desktop launches use a 25s exit budget inside Electron's independent
+   liveness window (about a minute); managed services have no Electron
+   probe, use a wider budget, and receive the soft dump first.
 
    faulthandler's own ``dump_traceback_later`` timer cannot be that decider
    on every platform: it waits on an interpreter lock whose deadline clock is
@@ -92,8 +92,8 @@ re-arms the alarm, for at most :data:`PAGING_GRACE_MAX_SECS` beyond the exit
 budget, and says so once at WARNING.  A thread blocked in a syscall or
 holding the GIL in a C call takes no major faults, so those still exit on
 the normal budget.  A desktop budget (below ``stall_after``) defers
-nothing: the desktop app's own liveness probe ends a silent gateway within
-a minute regardless.
+nothing: the desktop app's own liveness probe ends a silent gateway about
+a minute in regardless.
 
 The class is deliberately split so the decision logic (:meth:`check`) is a
 pure, synchronous step that can be driven from tests with injected clocks
@@ -834,7 +834,7 @@ class LoopStallWatchdog:
 
         Nothing is deferred when ``exit_after`` is below ``stall_after``: that
         is the desktop budget, where the desktop app's own liveness probe
-        ends a silent gateway within a minute anyway, so a deferral would
+        ends a silent gateway about a minute in anyway, so a deferral would
         only trade the alarm's stack dump for that kill.
         """
         exit_after = self._exit_after

@@ -72,6 +72,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _managed_mcp_spec,
         _materialize_managed_refs,
         _may_auto_approve,
+        _mounted_mcp_servers,
         _own_mcp_servers,
         _placeholder_values,
         _preserve_user_agent_edits,
@@ -313,6 +314,12 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.history import (  # noqa: F401
         ConversationLog,
+    )
+    from kiro_crew.mcp_cleanup import (  # noqa: F401
+        mcp_entry_is_muted,
+    )
+    from kiro_crew.mcp_provenance import (  # noqa: F401
+        DERIVED_KEY,
     )
     from kiro_crew.mcp_utils import (  # noqa: F401
         without_mcp_refs,

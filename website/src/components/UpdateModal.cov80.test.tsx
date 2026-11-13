@@ -25,6 +25,9 @@ async function mount(initial?: UpdateState) {
   const rendered = renderWithProviders(<UpdateModal />)
   const push = async (next: UpdateState) => {
     await act(async () => { rendered.queryClient.setQueryData(['update-state'], next) })
+    // One more macrotask: the notification can land after the microtask above
+    // (seen when the file runs a single test, or after a test that polled).
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
   }
   if (initial) await push(initial)
   return { ...rendered, push }

@@ -245,6 +245,7 @@ def test_namespace_qualified_pin_is_sent_in_the_listed_spelling() -> None:
     handle.set_config_option.assert_awaited_once_with(  # type: ignore[attr-defined]
         "model", "claude-haiku-4.5"
     )
+    assert handle.served_model == "claude-haiku-4.5"
 
 
 def test_an_auto_only_select_does_not_withhold() -> None:
@@ -253,6 +254,7 @@ def test_an_auto_only_select_does_not_withhold() -> None:
     handle.set_config_option.assert_awaited_once_with(  # type: ignore[attr-defined]
         "model", "claude-haiku-4.5"
     )
+    assert (handle.model_pin_refused, handle.served_model) == ("", "claude-haiku-4.5")
 
 
 def test_a_response_without_a_select_keeps_the_earlier_list() -> None:
@@ -260,6 +262,8 @@ def test_a_response_without_a_select_keeps_the_earlier_list() -> None:
     handle.store_session_config({"sessionId": "sess-kas", "configOptions": []})
     asyncio.run(handle.set_model("claude-nonexistent-9"))
     handle.set_config_option.assert_not_awaited()  # type: ignore[attr-defined]
+    assert handle._kas_served_ids == ["auto", "claude-haiku-4.5"]
+    assert handle.model_pin_refused == "claude-nonexistent-9"
 
 
 def test_kiro_does_not_judge_pins_against_the_raw_select() -> None:

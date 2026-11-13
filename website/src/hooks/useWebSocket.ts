@@ -8,7 +8,7 @@ import { dispatchMcNotification, dispatchLiveNotification } from './notification
 import {
   fetchHistory, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, refreshSlot, retireSwappedRows, warmSlotCache, sseContextUsage, clearMessages, clearSlotCache, resolveElicitationRow, sseSubagentPending, setSubagentApprovalTarget, sseSubagentSpawn, sseSubagentQueued, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentSnapshot, subagentReplayDone, sseSubagentBatchUpdate, sseSubagentBatchChunks, sseToolResult, sseActivityEvent, sseSideResult, sseWorkflowEvent, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages, sseMcpAppRender, sseSideQueue, sideClose, sideClosedElsewhere, queueEntryAttachments, isTerminalWorkflowStatus,
   forgetSideSteerSubmittedText, noteSideQueueDroppedByClose, readSideSteerSubmittedText,
-  takeSideQueueEditForClose,
+  takeSideQueueEditForClose, abortActiveOlderFetch,
 } from '../store/chatSlice'
 import { store } from '../store'
 import { TAB_ID } from '../api/tabId'
@@ -557,8 +557,7 @@ export function useWebSocket() {
             break
           case 'refresh': {
             const kinds: string[] = Array.isArray(data.kinds) ? data.kinds.filter((k: unknown): k is string => typeof k === 'string') : []
-            dispatch(triggerRefresh())
-            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()))
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => dispatch(triggerRefresh()))
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break
           }
@@ -573,8 +572,11 @@ export function useWebSocket() {
             // next frame and resurrect discarded text into the just-cleared
             // pane. Keyed delete — other slots' in-flight buffers are theirs.
             buffers.dropSlotChunks(clearSlot)
-            if (clearSlot === store.getState().chat.activeSlot) dispatch(clearMessages())
-            else dispatch(clearSlotCache(clearSlot))
+            if (clearSlot === store.getState().chat.activeSlot) {
+              // An older page still loading would land the cleared rows back.
+              abortActiveOlderFetch()
+              dispatch(clearMessages())
+            } else dispatch(clearSlotCache(clearSlot))
             break
           }
           case 'slot_agent_switch': {

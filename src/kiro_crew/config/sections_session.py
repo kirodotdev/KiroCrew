@@ -245,7 +245,11 @@ class SessionConfig:
             "Recycle a session when its process tree resident memory exceeds "
             "this many MiB (default 4096). 0 disables; the internal background "
             "runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in "
-            "flight) are never recycled.",
+            "flight) are never recycled. A process above the limit when the watchdog "
+            "takes its size, at its second reading of it, is left running and recycled "
+            "only once it doubles: so with many MCP servers or a long first turn. Not so "
+            "for a process read under the limit more than about twelve minutes before, or for a "
+            "chat recycled in the last 24 hours.",
         ),
     )
     watchdog_end_leftovers_mid_turn: bool = field(

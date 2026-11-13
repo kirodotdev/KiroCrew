@@ -36,6 +36,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
     refused_durable_ids,
     warn_if_not_durable,
 )
+from kiro_crew.dashboard.steer_supersedes_approval import reject_approvals_superseded_by_steer
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1212,6 +1213,10 @@ async def steer_into_running_turn(
         # the sender it would show the raw provenance prefix until a reload.
         push_payload.setdefault("meta", {})["relay"] = dict(relay_meta)
     state.broadcast_ws("steer_push", push_payload)
+    if _state == STEER_STATE_WRITTEN and _shown_as_typed and owner_origin:
+        # Still held, so a card open now is the one it was typed over. Without
+        # this the steer waits behind the card until someone clicks it.
+        reject_approvals_superseded_by_steer(state, slot)
     return STEER_STEERED
 
 

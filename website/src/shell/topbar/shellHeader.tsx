@@ -159,8 +159,8 @@ function NotificationsBellButton() {
  */
 export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
-    connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
-    toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
+    connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, gatewayStatusAnnounce, relayRetrying, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
+    toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, quickSearchLauncher, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
@@ -360,13 +360,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             onClick={commandPalette.openPalette}
             {...uiLocation('shell.search')}
             className="glass-shadow glass-hover h-7 flex-1 min-w-0 px-3 text-muted hover:text-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            /* The trigger has to describe the surface it actually opens. While an app
-               owns the quick-search slot the gesture opens a launcher -- typing runs
+            /* The trigger has to describe the surface it actually opens. While the
+               Command Bar is on the gesture opens a launcher -- typing runs
                commands and does not search the corpora this label promises -- so
                naming "search for anything" there is the most visible mispromise in
                the product. */
             aria-label={
-              slotOwners['quick-search']
+              quickSearchLauncher
                 ? i18nT('app.open_command_bar')
                 : i18nT('app.search_sessions_files_and_commands')
             }
@@ -376,13 +376,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // the diff's own fix applied to two of three attributes. The owned branch
             // drops "(K)" because the chord is already printed in the visible label.
             title={
-              slotOwners['quick-search']
+              quickSearchLauncher
                 ? i18nT('app.open_command_bar')
                 : i18nT('app.search_everywhere_k')
             }
           >
             <span className="text-[13px] truncate min-w-0">
-              {slotOwners['quick-search']
+              {quickSearchLauncher
                 ? i18nT('app.k_run_a_command')
                 : i18nT('app.k_search_for_anything')}
             </span>
@@ -525,7 +525,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // The connection dot doubles as the capsule collapse toggle, so its
             // accessible name must name that action -- not just the gateway
             // state. title and aria-label share this composed value; the
-            // role="status" live region stays pure gatewayStatusMsg (a status
+            // role="status" live region stays pure gatewayStatusAnnounce (a status
             // region announces the connection cause, not the button's toggle
             // affordance, which would speak "click to collapse" on every
             // reconnect).
@@ -557,7 +557,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                     the first socket is still opening. Colour is only the
                     second cue, so a red/green colour-blind reader still sees
                     the state without hovering. */}
-                {offline
+                {/* A relay Crew window still retrying spins in the warn colour:
+                    it is reconnecting on its own, which is not an outage. */}
+                {relayRetrying
+                  ? <Loader2 aria-hidden="true" data-conn-state="reconnecting" size={12} strokeWidth={2.25} className="text-[var(--warn)] animate-spin motion-reduce:animate-none" />
+                  : offline
                   ? <Unplug aria-hidden="true" data-conn-state="offline" size={12} strokeWidth={2.25} className="text-danger transition-colors duration-300 animate-pulse [animation-iteration-count:3]! motion-reduce:animate-none" />
                   : gatewayConnecting
                     ? <Loader2 aria-hidden="true" data-conn-state="connecting" size={12} strokeWidth={2.25} className="text-muted animate-spin motion-reduce:animate-none" />
@@ -565,7 +569,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
-                <span role="status" className="sr-only">{gatewayStatusMsg}</span>
+                <span role="status" className="sr-only">{gatewayStatusAnnounce}</span>
               </button>
             )
             // Resource pressure indicator — always visible when tight/critical
@@ -624,7 +628,7 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
                 <Glass
                   variant="chip"
                   radius={TOPBAR_PILL_RADIUS}
-                  className={`tb-capsule glass-shadow flex items-center gap-2 h-7 px-2.5 ${offline ? 'glass-danger' : ''}`}
+                  className={`tb-capsule glass-shadow flex items-center gap-2 h-7 px-2.5 ${offline && !relayRetrying ? 'glass-danger' : ''}`}
                 >
                   {segments.flatMap((s, i) => (i === 0 ? [s] : [<span key={`sep-${i}`} className="w-px h-3.5 bg-border shrink-0" aria-hidden="true" />, s]))}
                 </Glass>
@@ -639,14 +643,23 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
               the collapse ladder makes room for it (shell-chrome.css). The
               same inline ErrorNotice as MetricsErrorNotice beside it, with
               `announce` off: the dot's `role="status"` span already announces
-              `gatewayStatusMsg`. Quiet while the session-expired banner speaks,
+              `gatewayStatusAnnounce`. Quiet while the session-expired banner speaks,
               and while the first socket is still opening. */}
-          {!isMobile && !connected && !gatewayConnecting && !authRequired && (
+          {/* A relay Crew window still retrying says so quietly: a warn dot and
+              one muted word, no error surface. The window's centre view
+              (RelayReconnectingView) explains it and is the live region. */}
+          {!isMobile && relayRetrying && (
+            <span data-testid="topbar-reconnecting" className="tb-offline-notice shrink-0 flex items-center gap-1.5 text-xs text-muted min-w-0">
+              <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-[var(--warn)] shrink-0" />
+              <span className="tb-offline-notice-msg truncate">{i18nT('app.relay_crew_connecting')}</span>
+            </span>
+          )}
+          {!isMobile && !connected && !gatewayConnecting && !authRequired && !relayRetrying && (
             <ErrorNotice
               variant="inline"
               announce={false}
               noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
-              message={gatewayStatusMsg}
+              message={gatewayStatusAnnounce}
               messageClassName="tb-offline-notice-msg"
               className="tb-offline-notice shrink-0"
               testId="topbar-offline-notice"
@@ -738,11 +751,11 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             `pointer-events-none`: the strip hangs over the top 24px of
             whatever <main> paints; a readout must not swallow the taps and
             scroll starts that land there while the socket is down. */}
-        {isMobile && !connected && !gatewayConnecting && !authRequired && (
+        {isMobile && !connected && !gatewayConnecting && !authRequired && !relayRetrying && (
           <ErrorNotice
             variant="inline"
             noHandoffReason="The gateway is offline, so a hand-off to the agent cannot be delivered."
-            message={gatewayStatusMsg}
+            message={gatewayStatusAnnounce}
             messageClassName="text-danger-text"
             className="absolute left-0 right-0 top-full z-[1] pointer-events-none justify-center h-6 font-medium bg-danger-subtle border-b border-danger/30"
             testId="mobile-offline-strip"

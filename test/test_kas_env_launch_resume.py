@@ -41,6 +41,22 @@ def _snapshots(home: Path) -> set[str]:
     return {p.name for p in leaf.iterdir()} if leaf.is_dir() else set()
 
 
+@pytest.fixture(autouse=True)
+def _short_mcp_waits(_floor_monkeypatch):
+    """The fakes never report an MCP server, so each load would wait out the full
+    no-report drain and the mounted-server wait. Neither is what these tests pin,
+    and both stay on the same path at a short budget."""
+    from kiro_crew.acp import runtime_session_load, session_handle
+
+    # Through the facade: the drain ceiling is bound in more than one owner.
+    _floor_monkeypatch.setattr(
+        session_handle, "_MCP_DRAIN_NO_REPORT_CEILING", 0.05  # flake-ok: unreported by design
+    )
+    _floor_monkeypatch.setattr(
+        runtime_session_load, "MOUNTED_MCP_WAIT_SECS", 0.05  # flake-ok: unreported by design
+    )
+
+
 @pytest.fixture
 def runtime(tmp_path, monkeypatch, home):
     """A KAS runtime whose every load re-projects the spec, as a real resume does."""

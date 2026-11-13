@@ -137,6 +137,9 @@ def _pinned_host(root: Path, monkeypatch: pytest.MonkeyPatch) -> _Host:
     monkeypatch.setattr(os, "getuid", lambda: _UID, raising=False)
     monkeypatch.setattr(os, "getgid", lambda: _GID, raising=False)
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: True)
+    # The shipped built-ins declare agent-read-only directories in their manifests; like
+    # the tables below, the declarations are pinned so a manifest edit leaves the goldens.
+    monkeypatch.setattr(sandbox, "_app_declared_readonly_leaves", lambda: ())
     # Pin a present per-user systemd manager so the golden's stand-in-root order is the
     # machine-independent one (the volatile /run/user/$UID leads where it is coherent);
     # test_sandbox_plan covers the no-manager order.

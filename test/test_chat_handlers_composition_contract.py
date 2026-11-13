@@ -542,6 +542,7 @@ _OWNER_MODULES = frozenset(
         "prompt_queue",
         "resume",
         "resume_identity",
+        "resume_live",
         "resume_window",
         "session_relaunch",
         "slot_approval",
@@ -643,17 +644,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         ("api_chat_slot_detail", "async function", "(request: 'web.Request') -> 'web.Response'"),
     ),
     "resume": (
-        (
-            "_resume_session_identity",
-            "function",
-            "(state: 'DashboardState', history_key: 'str') -> 'str'",
-        ),
-        (
-            "_live_slot_for_resume",
-            "async function",
-            "(state, request_app: 'str', history_key: 'str', name: 'str', caller_label: 'str' = '') -> \"'ResumeOutcome | None'\"",
-        ),
-        ("_live_slot_resume_payload", "async function", "(state, existing) -> 'dict'"),
         ("_normalise_structured_content", "function", "(value: 'object') -> 'str'"),
         (
             "_redact_history_rows",
@@ -677,6 +667,19 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async function",
             "(state: \"'DashboardState'\", *, name: 'str', history_key: 'str | None' = None, request_app: 'str' = '', caller_label: 'str' = '', request_title: 'str' = '', expected_created_at: 'str | None' = None, containment: \"'Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None'\" = None, final_check: \"'Callable[[_ChatSlot], ResumeRefusal | None] | None'\" = None, rebind_manager: 'bool' = True) -> 'ResumeOutcome'",
         ),
+    ),
+    "resume_live": (
+        (
+            "_resume_session_identity",
+            "function",
+            "(state: 'DashboardState', history_key: 'str') -> 'str'",
+        ),
+        (
+            "_live_slot_for_resume",
+            "async function",
+            "(state, request_app: 'str', history_key: 'str', name: 'str', caller_label: 'str' = '') -> \"'ResumeOutcome | None'\"",
+        ),
+        ("_live_slot_resume_payload", "async function", "(state, existing) -> 'dict'"),
     ),
     "resume_window": (
         (

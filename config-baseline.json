@@ -34,6 +34,7 @@
         "kas_persist_mcp_sign_in": true,
         "kas_repair_kiro_cli_extract": true,
         "kas_refuse_plain_http_mcp_headers": false,
+        "kas_fail_closed_web_fetch_blocked": false,
         "kas_bundle_url": "https://kas.crew.kiro.dev",
         "native_skill_projection": true,
         "default_agent": "",
@@ -107,6 +108,7 @@
         "chat_turn_timeout_secs": 14400,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
+        "deny_override": true,
         "session_control": true,
         "session_manager_chain": false,
         "peer_steer_loss_recovery": false,
@@ -483,6 +485,20 @@
       "tags": [],
       "label": "KAS: refuse MCP headers over plain http",
       "help": "When true, the 'kas' backend no longer relays an MCP server's headers to a plain http:// url on another host, so they are never sent unencrypted; the server does not run and the session notice names it. When false (the default), Kiro Crew's local bridge sends the headers to that url as before. Only a JSON true turns it on. Read when a session starts.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.kas_fail_closed_web_fetch_blocked",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "KAS: refuse all fetches on an unapplied blocked entry",
+      "help": "When true, on the 'kas' backend a toolsSettings.web_fetch.blocked entry KAS cannot apply (one naming a scheme or path, other regex syntax, or one too long) makes that agent refuse every web fetch until the entry is fixed, and the session notice says so. When false (the default), such an entry is named in the notice and refuses nothing. Only a JSON true turns it on. Read when a session starts.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -1068,7 +1084,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli applies it through the agent overlay; KAS receives it in the ACP initialize request, enabled only when the spawn agent's spec grants the tool_search loader. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any other executable, an older or unknown version keeps them resident. On Kiro Crew's own KAS engine bundle they always defer: that engine keeps its tools array fixed when a tool loads. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on any other ACP backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli applies it through the agent overlay; KAS receives it in the ACP initialize request, enabled only when the spawn agent's spec grants the tool_search loader. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0, or runs a KIROCREW_KIRO_BIN override or a kiro-cli found only on PATH that is itself >= 2.27.0 (and, when named kiro-cli on macOS or Linux, >= 3.0.0); a PATH install is checked inside the sandbox, which Windows lacks. Any other executable, an older or unknown version keeps them resident, and so does every spawn after a request is refused for a changed tool list, until restart. On Kiro Crew's own KAS engine bundle they always defer: that engine keeps its tools array fixed when a tool loads. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on any other ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -1737,6 +1753,20 @@
       "defaultValue": 600
     },
     {
+      "path": "agent.deny_override",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Deny Rule Override Card",
+      "help": "When a deny rule refuses the agent's shell command in a dashboard session you drive, show a card that lets you allow it once or for the session. Turn this off to refuse every such command at once, with no card and no wait for an answer; session overrides granted earlier stop applying while it is off and apply again if it is turned back on, until that session ends. Read on each request, so no restart is needed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "agent.session_control",
       "kind": "core",
       "type": "boolean",
@@ -2371,7 +2401,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Watchdog RSS Limit (MiB)",
-      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled.",
+      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled. A process above the limit when the watchdog takes its size, at its second reading of it, is left running and recycled only once it doubles: so with many MCP servers or a long first turn. Not so for a process read under the limit more than about twelve minutes before, or for a chat recycled in the last 24 hours.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
@@ -2750,6 +2780,7 @@
         "rule_authority_order": "off",
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
+        "dream": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3437,6 +3468,23 @@
         "off",
         "shadow",
         "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.dream",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dreaming",
+      "help": "Whether an offline pass looks over stored lessons and facts for copies, near-copies, work status and old untagged rules while no chat turn is running. 'off' (default) schedules and reads nothing. 'propose' runs at most once a day per store, 200 rows and 10 minutes at a time, and writes an approval list (kirocrew memory dream list); nothing in it is applied, and lessons you taught are never proposed for change.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "propose"
       ],
       "defaultValue": "off"
     },
@@ -4443,11 +4491,11 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "enabled": false,
+        "enabled": true,
         "local_dir": "",
         "export_interval_seconds": 60,
-        "retention_days": 0,
-        "max_total_mb": 0,
+        "retention_days": 30,
+        "max_total_mb": 100,
         "otlp_endpoint": "",
         "otlp_endpoints": [],
         "traces_enabled": false,
@@ -4467,10 +4515,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Enabled",
-      "help": "Main switch for Kiro Crew metrics telemetry. Off by default: metric call sites are no-ops and nothing is written. When on, a local-first JSONL sink under ~/.kiro/crew/metrics is enabled (no network egress).",
+      "help": "Main switch for local usage metrics. On by default: a local-first JSONL sink under ~/.kiro/crew/metrics records how long things take and how often features are used (no prompts, files or credentials), with no network egress. Turn it off here, in Settings > Privacy, with kirocrew telemetry disable, KIROCREW_TELEMETRY=0 or DO_NOT_TRACK=1. When off, metric call sites are no-ops and nothing is written.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "telemetry.local_dir",
@@ -4509,10 +4557,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Retention (days)",
-      "help": "Prune local JSONL metric shards older than this many days on each export cycle. 0 disables age-based pruning. Bounds on-disk telemetry growth.",
+      "help": "Prune local JSONL metric shards older than this many days on each export cycle. Default 30. 0 disables age-based pruning. Bounds on-disk telemetry growth.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 30
     },
     {
       "path": "telemetry.max_total_mb",
@@ -4523,10 +4571,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Max Total Size (MB)",
-      "help": "Opportunistic directory budget for local metric shards. Closed shards are pruned oldest-first; protected active writers can temporarily exceed the budget. 0 disables the size cap.",
+      "help": "Opportunistic directory budget for local metric shards. Closed shards are pruned oldest-first; protected active writers can temporarily exceed the budget. Default 100. 0 disables the size cap.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 0
+      "defaultValue": 100
     },
     {
       "path": "telemetry.otlp_endpoint",
@@ -4663,7 +4711,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Anonymous Usage Beacon",
-      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which distribution channels they came from. Sends EXACTLY five fields, at most once per day: a random installation id, app release (major.minor.patch only — build stamps are stripped), Python minor version, distribution channel, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, IP address, operating system, CPU architecture, release channel, or governance posture. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off; an enterprise policy can also pin it off via the capabilities.telemetry governance scope, which this switch cannot override. Independent of the 'enabled' switch above, which is local-only metrics collection and still never egresses.",
+      "help": "Anonymous daily heartbeat so maintainers can see how many copies are actively running, which versions are in use, and which distribution channels they came from. Sends EXACTLY five fields, at most once per day: a random installation id, app release (major.minor.patch only — build stamps are stripped), Python minor version, distribution channel, and a first-run bit. NEVER sends prompts, model output, file contents, paths, repo names, credentials, hostname, username, IP address, operating system, CPU architecture, release channel, or governance posture. Automatically suppressed in CI and for a non-default KIROCREW_HOME. Opt out with KIROCREW_TELEMETRY_DISABLED=1 or by turning this off; an enterprise policy can also pin it off via the capabilities.telemetry governance scope, which this switch cannot override. Independent of the 'enabled' switch above, which is local-only metrics collection and egresses only to a configured export destination after recording was turned on explicitly.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -9651,6 +9699,7 @@
         "language": "",
         "recent_tint_count": 0,
         "show_unread_dot": true,
+        "command_bar_enabled": true,
         "folder_sort": "custom",
         "session_sort": "date-desc",
         "update_nudge": {},
@@ -10218,6 +10267,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.secrets_vault",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: secrets_vault",
+      "help": "Turn on the 'secrets_vault' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.session_environments",
       "kind": "core",
       "type": "boolean",
@@ -10439,7 +10502,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Loop-stall Hard-exit Budget (secs)",
-      "help": "Seconds the gateway's event loop may go silent before it dumps all thread stacks and exits. Leave unset for the automatic default: 25 seconds for desktop/foreground launches and 90 seconds for a managed systemd/launchd service. An explicit value overrides both. Raise it on a host that does heavy subprocess work (long builds, test suites, many child reaps), which can wedge the loop briefly without being genuinely dead. Clamped to 10s..300s. The desktop app's liveness probe kills at roughly 20s independently, so a value above that only takes effect for a headless gateway — the desktop probe wins first and the stack dump is lost.",
+      "help": "Seconds the gateway's event loop may go silent before it dumps all thread stacks and exits. Leave unset for the automatic default: 25 seconds for desktop/foreground launches and 90 seconds for a managed systemd/launchd service. An explicit value overrides both. Raise it on a host that does heavy subprocess work (long builds, test suites, many child reaps), which can wedge the loop briefly without being genuinely dead. Clamped to 10s..300s. The desktop app's liveness probe kills after about a minute independently, so a value above that only takes effect for a headless gateway — the desktop probe wins first and the stack dump is lost.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,
@@ -11140,6 +11203,20 @@
       "defaultValue": true
     },
     {
+      "path": "dashboard.command_bar_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Command Bar Enabled",
+      "help": "Open the Command Bar launcher on the quick-search shortcut (Cmd+K or Ctrl+K). Off opens the search palette instead, which also searches knowledge, skills and prompts.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.folder_sort",
       "kind": "core",
       "type": "string",
@@ -11767,6 +11844,7 @@
         "relay_viewer_enabled": false,
         "relay_viewer_cps_url": "",
         "relay_viewer_credential": "",
+        "relay_viewer_oidc_scope_prefix": "",
         "relay_viewer_relay_domain": ""
       }
     },
@@ -11857,7 +11935,7 @@
       "sensitive": true,
       "tags": [],
       "label": "Relay Lease Credential",
-      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, or the absolute path of a file holding it. Never the credential itself; it is read for each call and never logged.",
+      "help": "Where the Crew reads its credential for the lease service: secret://NAME for a secret stored under Settings > Secrets, the absolute path of a file holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity Center or your organization's identity provider), refreshed automatically. Never the credential itself; it is read for each call and never logged.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -11872,7 +11950,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Relay Lease Token Type",
-      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center, Builder ID or Kiro sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Any other value keeps Remote Control from starting.",
+      "help": "The TokenType the Crew sends with its lease credential. Empty (the default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for a token from an outside identity provider, API_KEY for a team Crew's crew API key. Must be empty with kiro-sign-in, which sends the type its sign-in needs. Any other value keeps Remote Control from starting.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "",
@@ -11945,6 +12023,20 @@
       "tags": [],
       "label": "Relay Viewer Credential",
       "help": "For testing only: where the viewer reads a test credential to use instead of your Kiro sign-in, as secret://NAME for a secret stored under Settings > Secrets or the absolute path of a file holding it. Never the credential itself. Empty (the default) uses your Kiro sign-in. A value that is not a reference is ignored with a warning that does not repeat it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "tunnel.relay_viewer_oidc_scope_prefix",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Relay Viewer OIDC Scope Prefix",
+      "help": "For testing against a non-prod control plane only, like kiro-cli's api.oidc.scopePrefix: the prefix Builder ID and IAM Identity Center sign-ins request their scopes under, in place of the public one. Empty (the default) keeps the public scopes. Lower-case letters and underscores only; any other value is ignored with a warning. Applies to the next sign-in.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

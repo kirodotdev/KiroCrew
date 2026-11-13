@@ -8,7 +8,7 @@ import json
 from typing import TYPE_CHECKING, Literal
 
 from kiro_crew.dashboard.chat_utils import _tool_identity_fields, slack_mirror_is_paused
-from kiro_crew.dashboard.deny_override import override_decision
+from kiro_crew.dashboard.deny_override import deny_override_enabled, override_decision
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
@@ -820,8 +820,9 @@ async def _on_permission_prompt(
             deny_cause=_host_deny_cause,
             host_ended=bool(_host_cancelled or _host_stopped),
         )
-    if _override_offer is not None and outcome != "approved":
-        # Declined, timed out, or answered by anything but an override click: the
+    if _override_offer is not None and (outcome != "approved" or not deny_override_enabled()):
+        # Declined, timed out, answered by anything but an override click, or
+        # agent.deny_override turned off while the card was showing: the
         # call is refused as the policy refusal it was, never as a person's
         # "User denied", and it starts no batch cascade, as before the card.
         await _refuse_overridden_call(

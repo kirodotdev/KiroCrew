@@ -470,6 +470,25 @@ class TestTheFetchCommandDoesNotOverclaim:
         )
         assert declared.effective_refresh_interval() == 0
 
+    @pytest.mark.parametrize("status", [pd.REFRESH_REJECTED, pd.REFRESH_UNREACHABLE])
+    def test_a_failed_fetch_is_reported_on_stderr(self, capsys, monkeypatch, status):
+        """A config-management run that shows only stderr must see why it exited 1."""
+        from kiro_crew import cli_commands
+        from kiro_crew.platform import policy_distribution as dist_mod
+
+        monkeypatch.setattr(
+            dist_mod,
+            "refresh_now",
+            lambda *, force=False: pd.RefreshOutcome(status, detail="boom"),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_commands._policy_fetch(force=False)
+        assert exc.value.code == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "boom" in captured.err
+        assert "The ceiling already in effect is unchanged." in captured.err
+
 
 class TestTheEnvironmentChannelMayOwnTheAddress:
     """The ordinary two-channel split: whatever provisions the host owns the address (and

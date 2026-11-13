@@ -105,10 +105,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.llm_helpers_parts.background_turns import (  # noqa: F401
         _background_crew_log_owner,
         _cleanup_memory_consolidation_session,
+        _lite_resets_failed,
+        _lite_rewrite_tasks,
+        _lite_rewrites,
         _lite_spec_unconfirmed,
         _raise_if_unfinished,
         _record_background_crew_log,
         _refuse_while_memory_critical,
+        _rewrite_lite_spec,
         _start_fresh_conversation,
         background_turn,
         run_bg_oneliner,
@@ -312,3 +316,4 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.tool_gate_busy import (  # noqa: F401
         hook_gate_busy,
     )
+    from kiro_crew.tracing import surfaces as trace_surfaces  # noqa: F401

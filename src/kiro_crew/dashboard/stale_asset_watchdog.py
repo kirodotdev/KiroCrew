@@ -166,6 +166,9 @@ async def run_stale_asset_watchdog(
     gap, so the watchdog arms and reports it like any other vanish.
     """
     announced: str | None = None
+    # One CRITICAL line per gap, whether or not the restart note changed: a
+    # staged update's note is kept as it is, and the vanish still gets logged.
+    gone_logged = False
 
     def _owner() -> str | None:
         nonlocal announced
@@ -218,6 +221,7 @@ async def run_stale_asset_watchdog(
         if assets_present():
             # A healthy sample ends the gap: a later one is announced afresh.
             announced = None
+            gone_logged = False
             if update_restart_ready.clear(update_restart_ready.REASON_ASSETS_GONE):
                 logger.info("Stale-asset watchdog: assets are back; the restart notice is cleared.")
                 _changed()
@@ -242,13 +246,16 @@ async def run_stale_asset_watchdog(
         # confirm window.
         if _owner() is not None:
             continue
-        if update_restart_ready.mark(update_restart_ready.REASON_ASSETS_GONE):
+        changed = update_restart_ready.mark(update_restart_ready.REASON_ASSETS_GONE)
+        if not gone_logged:
+            gone_logged = True
             logger.critical(
                 "Dashboard static assets vanished: an update likely pruned the "
                 "running install. The gateway keeps serving; restart it to use the "
                 "new version.%s",
                 " Automatic restart is turned off." if auto_restart_disabled() else "",
             )
+        if changed:
             _changed()
     # Loop never entered: the event was already set when the watchdog armed.
     return False

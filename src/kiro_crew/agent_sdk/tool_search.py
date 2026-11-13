@@ -258,18 +258,39 @@ def kas_never_defer_ids(
     return sorted(ids)
 
 
+#: Waiting for one of the session's own MCP servers that is still starting. Every
+#: shipped agent's turn is told to call it when a request needs such a server
+#: (``context_assembly/mcp_servers.py``), and a load in front of it would spend a model round
+#: trip on a wait whose point is to spend none.
+_MCP_LOADING = ("kirocrew-core::mcp_server_wait",)
 #: Fanning work out to sub-agents, and the status read every fan-out makes.
 _SUB_AGENTS = (
     "kirocrew-core::spawn_run",
     "kirocrew-core::spawn_status",
     "kirocrew-core::spawn_sub_agents",
+    *_MCP_LOADING,
+)
+#: The default chat's most used own tools that are small enough to ride in every
+#: request: ranked by how many main-chat sessions called each at least once (a
+#: deferred tool costs one load round trip per session, so sessions, not calls, is
+#: what a listing saves), keeping each one whose definition fits, about 6 KB for the
+#: six. ``monitor_start``, ``send_message`` and ``monitor_update`` rank above some of
+#: these but are 4 to 10 KB each, so they stay deferred.
+_MAIN_CHAT_MOST_USED = (
+    "kirocrew-core::autonudge_stop",
+    "kirocrew-core::memory_recall",
+    "kirocrew-core::nothing_to_do",
+    "kirocrew-core::search_chat_history",
+    "kirocrew-core::skill_search",
+    "kirocrew-core::wait",
 )
 #: A dispatched worker's two calls: read its item, report on it.
-_WORK_ITEM = ("kirocrew-work::work_brief", "kirocrew-work::work_report")
+_WORK_ITEM = ("kirocrew-work::work_brief", "kirocrew-work::work_report", *_MCP_LOADING)
 #: Dispatching items to worker sessions, waiting on them, patrolling and closing them.
 _DISPATCH = (
     "kirocrew-core::monitor_start",
     "kirocrew-core::wait",
+    *_MCP_LOADING,
     "kirocrew-dashboard::session_close",
     "kirocrew-dashboard::session_create",
     "kirocrew-dashboard::session_read_message",
@@ -283,18 +304,20 @@ _DISPATCH = (
 _DISPATCH_UNDER_A_PARENT = (*_DISPATCH, "kirocrew-work::work_brief")
 
 #: Shipped agent name -> its job tools, as ``<server>::<tool>`` ids: the MCP tools
-#: that agent's own prompt makes its core procedure. THE declaration: a tool is
+#: that agent's own prompt makes its core procedure, and for the default chat also
+#: its most used small tools (``_MAIN_CHAT_MOST_USED``). THE declaration: a tool is
 #: kept out of deferral for an agent because it is in that agent's row here, and
 #: for no other reason. A row's tools ride in every request of that agent, so a
-#: tool joins one only when the prompt sends the agent there as procedure and the
-#: row still fits its schema-token budget; the budgets live beside the test that
+#: tool joins one only when the prompt sends the agent there as procedure, or its
+#: measured use puts it at the top for the default chat, and the row still fits its
+#: schema-token budget; the budgets live beside the test that
 #: enforces them (``test/test_job_tools.py``), because nothing at run time reads
 #: one. The key is the agent's name: a name with no row (an operator's own agent,
-#: an app's, a crew member's template) keeps today's deferral, and a spec saved
+#: an app's, a crew member's template) has no job tools, and a spec saved
 #: under a shipped name takes that name's row, for the tools it mounts.
 JOB_TOOLS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "kirocrew": _SUB_AGENTS,
+        "kirocrew": (*_SUB_AGENTS, *_MAIN_CHAT_MOST_USED),
         "kirocrew-worker": _WORK_ITEM,
         "kirocrew-mate-worker": _WORK_ITEM,
         "kirocrew-conductor": _DISPATCH_UNDER_A_PARENT,
@@ -336,9 +359,9 @@ def kas_client_meta_settings(
     """The ``_meta.kiro.settings`` object KAS should read Tool Search from.
 
     Empty when no toggle value was threaded in (``settings is None``): the
-    channel stays open and says nothing, exactly as before. Otherwise the
-    ``toolSearch`` entry is ALWAYS present with an explicit ``enabled`` -- true
-    only when the operator turned it on AND the agent's spec grants the loader.
+    channel stays open and says nothing. Otherwise the ``toolSearch`` entry is
+    ALWAYS present with an explicit ``enabled`` -- true only when the operator
+    turned it on AND the agent's spec grants the loader.
     An unset key would leave the decision to whatever the host defaults to.
 
     ``neverDefer`` carries *never_defer*, the caller's list of what stays direct,
@@ -347,8 +370,8 @@ def kas_client_meta_settings(
     (:func:`kas_never_defer_ids`), and the key is sent even when empty: without
     it every MCP tool of such a spec would be deferred with no way to load one.
     For a spec that grants the loader it is the agent's job tools
-    (:func:`job_tool_ids`), and an empty list sends no key, so an agent with no
-    declared job tools puts on the wire exactly what it did.
+    (:func:`job_tool_ids`), and an empty list sends no key, which leaves KAS's
+    own default in force.
     """
     if settings is None:
         return {}

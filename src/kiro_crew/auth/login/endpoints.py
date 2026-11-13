@@ -8,6 +8,7 @@ the portal via ``KIRO_AUTH_PORTAL_URL``, the social service via ``KIRO_AUTH_SERV
 from __future__ import annotations
 
 import os
+import re
 
 # Default hosts (kiro-cli consts.rs).
 _DEFAULT_PORTAL = "https://app.kiro.dev"
@@ -42,6 +43,25 @@ OIDC_SCOPES = (
     "codewhisperer:analysis",
     "codewhisperer:conversations",
 )
+# A scope prefix (``tunnel.relay_viewer_oidc_scope_prefix``, like kiro-cli's
+# ``api.oidc.scopePrefix``): lower-case letters and underscores, so it can never add
+# a scope or reach past the part before the colon.
+OIDC_SCOPE_PREFIX_RE = re.compile(r"[a-z][a-z_]{0,62}")
+
+
+def oidc_scopes(prefix: str = "") -> tuple[str, ...]:
+    """OIDC_SCOPES, or the same scopes under *prefix* when it is a valid one.
+
+    Empty or invalid answers OIDC_SCOPES, so a bad value can only keep the default.
+    """
+    if not prefix or OIDC_SCOPE_PREFIX_RE.fullmatch(prefix) is None:
+        return OIDC_SCOPES
+    return tuple(f"{prefix}:{s.partition(':')[2]}" for s in OIDC_SCOPES)
+
+
+# KasToken.extra key recording a registration's scopes when they are not OIDC_SCOPES,
+# so a later sign-in reuses that registration only for the same scopes.
+OIDC_SCOPES_EXTRA_KEY = "oidc_scopes"
 # client_name we register our own public OAuth client under (kiro-cli uses "Kiro CLI").
 OIDC_CLIENT_NAME = "Kiro Crew"
 

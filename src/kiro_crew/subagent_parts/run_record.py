@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.agent_sdk.drivers.acp_vocab import InFlightToolTracker
+from kiro_crew.agent_sdk.drivers.acp_vocab import InFlightToolTracker, is_unpinned_pick
 
 if TYPE_CHECKING:
     import asyncio
@@ -756,6 +756,11 @@ class SubagentInfo:
     # None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
+    # True while a dependency park's report is on the store's writer thread, the
+    # window before ``yield_slot`` sets ``_slot_released``. The pump's live-waiter
+    # snapshot (``taskq_sweep_pass``) counts it, so a wake that lands in that
+    # window goes through admission instead of moving the row to ``retry_wait``.
+    _dependency_parking: bool = False
     # One wake-up per caller waiting in ``wait_done``; a write of a true ``done``
     # calls each (``_DoneFlag``). Empty except during such a wait.
     _done_wakers: list[Callable[[], None]] = field(default_factory=list, repr=False, compare=False)
@@ -809,6 +814,13 @@ class SubagentInfo:
         and made no commit, whatever its text reports.
         """
         return self.tool_count == 0 and self.turns == 0
+
+    @property
+    def served_model_unverified(self) -> bool:
+        """Was this run pinned to a model while the backend never reported which one served it?"""
+        return (
+            not is_unpinned_pick(self.requested_model) and not (self.resolved_model or "").strip()
+        )
 
     @property
     def ending(self) -> SubagentEnding:

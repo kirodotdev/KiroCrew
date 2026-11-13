@@ -178,7 +178,13 @@ async def _cron_run_sequence(
     # Run-scoped: a sequence where one agent got a tool through has
     # done work, even if a later agent was blocked outright.
     _gate = _GateTally()
+    # Imported here: this module's functions run on the gateway's globals.
+    from kiro_crew.tracing import turns as trace_turns
+
     for step in steps:
+        # Each agent is its own turn of the run's trace, not an attempt of the
+        # previous one; outside the re-load loop, so a re-run stays an attempt.
+        trace_turns.next_turn()
         # One re-load per step when a live backend lost this step's
         # session: the step is re-run on a fresh runtime that
         # session/loads the same id. A second loss ends the fire.
@@ -767,6 +773,19 @@ async def _cron_run_single(
         # run still in flight during the update) or one written while the
         # job was stateless is caught on the next fire, and a failed
         # write is retried by it.
+        # A member's turn dispatches the agent its binding names, which a 1.0
+        # capture or a job-level agent can spell differently. The record under
+        # the key is what the spawn gate reads as this session's template, so
+        # it names the agent this fire runs; member, store and mode stay.
+        if (
+            cron_execution.selection_kind == "member"
+            and cron_execution.member_id
+            and _single_kagent
+            and _single_kagent != cron_execution.template_id
+        ):
+            from dataclasses import replace as _with_dispatched
+
+            cron_execution = _with_dispatched(cron_execution, template_id=_single_kagent)
         from kiro_crew.cron_service.identity import rebind_cron_session_template
 
         await asyncio.to_thread(rebind_cron_session_template, session_key, cron_execution, job.name)

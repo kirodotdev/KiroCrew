@@ -1082,7 +1082,7 @@ function createGatewaySupervisor({
 
   // How long the BOOT poll waits for one answer. The poll runs every
   // POLL_INTERVAL_MS, so a slow answer here only means "poll again" — unlike
-  // the post-handoff liveness probe, whose three misses force-kill the gateway
+  // the post-handoff liveness probe, whose run of misses force-kills the gateway
   // and which therefore carries its own, wider LIVENESS_PROBE_TIMEOUT_MS.
   const BOOT_PROBE_TIMEOUT_MS = 2000;
 

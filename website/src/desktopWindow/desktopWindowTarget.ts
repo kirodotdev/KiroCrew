@@ -32,20 +32,41 @@ export function desktopWindowTarget(pathname: string): DesktopWindowTarget | nul
   return { app, window }
 }
 
-/** What the shell's preload exposes; `level` rises when a call is added. */
+/** A box in the page's own pixels. */
+export interface DesktopWindowBox { x: number; y: number; width: number; height: number }
+
+/**
+ * What the shell's preload exposes; `level` rises when a call is added. The
+ * level 2 calls are optional here because a shell of an older version may load
+ * this page: an app checks `level` before it uses one.
+ */
 export interface DesktopWindowBridge {
   level: number
   app: string
   window: string
   kind: string
   ready(): void
-  close(): void
-  open(windowId: string): void
-  setHitRegions(regions: { x: number; y: number; width: number; height: number }[]): void
+  close(windowId?: string): void
+  open(windowId: string, options?: { anchor?: DesktopWindowBox }): void
+  setHitRegions(regions: DesktopWindowBox[]): void
   setFocusable(focusable: boolean): void
   onShortcut(cb: (id: string) => void): () => void
+  // Level 2: messages between the app's windows, and the spanning overlay.
+  closeAll?(): void
+  send?(windowId: string, message: unknown): void
+  broadcast?(message: unknown): void
+  onMessage?(cb: (fromWindowId: string, message: unknown) => void): () => void
+  onWindowChange?(cb: (windowId: string, open: boolean) => void): () => void
+  onPlaced?(cb: (placement: { side: 'left' | 'right' }) => void): () => void
+  onActive?(cb: (state: { active: boolean; x?: number; y?: number; dragging?: boolean }) => void): () => void
+  beginDrag?(drag: { offsetX: number; offsetY: number; width: number; height: number }): void
+  endDrag?(): void
+  onDrag?(cb: (phase: 'start' | 'move' | 'end', x?: number, y?: number) => void): () => void
+  showSession?(slotKey: string): Promise<boolean>
+  openExternal?(url: string): void
 }
 
+/** The level 1 calls every bridge has; the host route needs no newer one. */
 const CALLS = ['ready', 'close', 'open', 'setHitRegions', 'setFocusable', 'onShortcut'] as const
 
 /** The shell's bridge when it describes exactly *target*, else `null`. */

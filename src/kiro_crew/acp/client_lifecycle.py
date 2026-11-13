@@ -19,11 +19,11 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
 ``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
-``_oauth_emitted_servers``,
-``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
-``_opencode_native_mounts``, ``_pending_oauth_requests``,
+``_mimocode_governed_stop``,
+``_oauth_emitted_servers``, ``_pending_oauth_requests``,
 ``_permission_surface_share_validated``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``,
-``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
+``_pid``, ``_process``, ``_process_adapter``, ``_process_instance``,
+``_process_tree_confirmed_dead``,
 ``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
 ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
 ``_session_key``, ``_session_mcp_cache``, ``_session_mcp_snapshot``,
@@ -746,9 +746,9 @@ def _reset_state(self: AcpClient) -> None:
     self._claude_worker_builtin_tools = None
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
-    self._opencode_denies_in_force = None
-    self._opencode_denies_unenforced = frozenset()
-    self._opencode_native_mounts = frozenset()
+    # The adapter carries its launch's read-back, so dropping it drops that too.
+    self._process_adapter = None
+    self._mimocode_governed_stop = None
     # Save PID state before clearing it. A root is confirmed exited only
     # when its own Process reports a reaped return code; a missing or
     # unreadable PID is not enough to reclaim its working directory.
@@ -812,8 +812,12 @@ def _reset_state(self: AcpClient) -> None:
     # A retired session's report must not be read as the next one's. This
     # view exists to be evidence, and stale evidence is worse than none:
     # the replacement process re-initializes its servers from scratch and
-    # will report again.
+    # will report again. Its reader follows the new one.
+    # ``getattr``: a client built without ``__init__`` (tests) has none to retire.
+    retired = getattr(self, "_mcp_report", None)
     self._mcp_report = McpSessionReport()
+    if retired is not None:
+        retired.hand_over(self._mcp_report)
     #: Index into ``_mcp_notifications`` below which frames belong to a PRIOR
     #: session attempt and must not reach the report. See
     #: ``_begin_session_report``.

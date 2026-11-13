@@ -65,6 +65,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_session.py` | folding one session's log on the projection kernel (`SessionProjections`, `fold_session`) and its savepoint |
 | `crew_log/projection_unit_mark_cache.py` | an older unit's `_UnitMark`, reused while one `lstat` of its directory and of each segment still match |
 | `crew_log/projection_slot_memo.py` | a slot's folds kept warm: the memo, its locks, the revision counter, resume and persist |
+| `crew_log/projection_slot_share.py` | one walk of a slot's units for every cold or stale cell the prime has queued for that slot (`prime_slot_projections`) |
 | `crew_log/projection_readers.py` | reading a slot's and a tree's folds (`fold_slot_checkpoint`, `read_slot_projection`, `units_in_succession`, `read_tree_projection`) |
 | `crew_log/projection_session_memo.py` | a session's folds kept warm, and `read_projection` |
 
@@ -869,7 +870,10 @@ units it reads. Its budget is `delta + K`, where `delta` is what the read answer
 
 Inside a pass, every read adds to the pass, so a digest check during a session resume is
 counted against that session fold. `resolve` stops reading at the last cited seq, so it
-costs the span.
+costs the span. `get`, `page` and a `strict_seq=False` `iter_from` (`read_page`) on a
+unit of one segment bisect its bytes by seq first, so they cost about one 16 KiB span
+plus their answer; a unit of more segments, or a seek that cannot prove its window, reads
+from the top as before.
 
 `K` is 256, the same number as `checkpoint.MIN_ADVANCE_ENTRIES`, from the busy host's numbers: session
 savepoints there never lagged their unit by more than 255 entries (16,372 files), a
@@ -1292,6 +1296,19 @@ above; one registered after reads the now-warm cell. A failed prime is logged; t
 request retries once, and after two failures in a row the cell waits 60 s before another
 attempt. The eager worker's `_advance` takes the same path, so a cold cell never stalls
 the fold worker either, and `eager.drain` (the shutdown barrier) also waits for primes.
+
+When a prime starts, it also takes every other cell of the same slot that is queued
+behind it and folds them over one shared walk (`projection_slot_share.prime_slot_projections`):
+the cold cells read every unit once, and the cells resumed from a savepoint beside the
+newest unit read that unit's tail once, from the lowest savepoint. Each cell is then built by its
+own pass's steps, so its state, savepoint and watermark are the per-cell pass's. A
+cell whose lock another pass holds is left out (the lock is tried, never waited for). A
+cell that is warm, resumed beside an older unit, or alone in its group takes its own
+pass, and its lock is released before the walk. Every cell the walk holds is marked cold
+while held, so a `cold=False` read of it answers "not ready" at once. If the shared walk
+raises, nothing is installed and each cell folds alone. While the backfill child is
+usable (the gateway default), only the resumed cells share; the cold cells are left to
+the child, which still folds one cell per run.
 
 The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
 `slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps

@@ -436,6 +436,22 @@ def _policy(args: argparse.Namespace) -> None:
         if prof is None:
             print(f"No profile named {args.name!r} in ~/.kiro/crew/profiles/.", file=sys.stderr)
             raise SystemExit(1)
+        # A profile file that is unreadable, unparseable, or whose ``extends``
+        # parent is missing is substituted by the fallback profile (deny-all, or
+        # the looser one a policy declares under ``fallback``) and stored under
+        # the same stem, so ``get_store_profile`` returns a valid-looking profile.
+        # Without this warning the broken file reads as a deliberate, normal one. Enforcement is correct
+        # either way; the warning only lets the operator tell a lockdown they
+        # wrote from a file that failed to load.
+        from kiro_crew.platform.governance_profiles import fallback_profile_names
+
+        if args.name in fallback_profile_names():
+            print(
+                f"⚠️  profile {args.name!r} failed to load (unreadable, invalid, or a "
+                "missing/chained 'extends') and is running as the fallback profile "
+                "shown below. Fix the file in ~/.kiro/crew/profiles/.",
+                file=sys.stderr,
+            )
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
         print(f"📄 Profile {prof.name!r}  bind={bind}  extends={prof.extends or '—'}")
         if not prof.controls:
@@ -512,6 +528,12 @@ def _explain_batch(
         print(f"Cannot read the batch file: {reason}", file=sys.stderr)
         raise SystemExit(1) from None
     failed = False
+    # A UTF-8 BOM decodes to a leading U+FEFF; left on line 1 it makes that
+    # line's ``json.loads`` fail, so an editor that writes a BOM would turn the
+    # first request into an error record. Drop one leading BOM (never an
+    # interior one, which is real content inside a JSON string).
+    if text.startswith("\ufeff"):
+        text = text[1:]
     # Split on newlines only: splitlines() would also break a JSON string holding U+2028.
     for number, line in enumerate(text.split("\n"), 1):
         if not line.strip():
@@ -657,6 +679,8 @@ def _policy_fetch(*, force: bool) -> None:
     # "was refused", not "refused": the policy is the object of the refusal, not the
     # thing doing it.
     label = "was refused" if outcome.status == REFRESH_REJECTED else "could not be reached"
-    print(f"❌ The central policy {label}: {outcome.detail}")
-    print("   The ceiling already in effect is unchanged.")
+    # On stderr, as `policy source` and `policy validate` report their failures, so a
+    # config-management run that surfaces only stderr sees why the command exited 1.
+    print(f"❌ The central policy {label}: {outcome.detail}", file=sys.stderr)
+    print("   The ceiling already in effect is unchanged.", file=sys.stderr)
     raise SystemExit(1)

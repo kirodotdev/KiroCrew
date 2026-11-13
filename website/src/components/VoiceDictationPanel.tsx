@@ -4,6 +4,7 @@ import Strands, { strandsSupported } from './Strands'
 import { useReducedMotion } from '../hooks/useReducedMotion'
 import type { AudioSample } from '../hooks/mic'
 import MicSourceMenu from './MicSourceMenu'
+import RecordingElapsed from './RecordingElapsed'
 import { downloadLabel } from '../lib/sttProviders'
 import type { SttModelProgress } from '../lib/sttProviders'
 import { i18nT } from '../i18n/t'
@@ -175,6 +176,12 @@ interface Props {
   submitOnRelease?: boolean
   /** What the speech model this session waits on is doing: fetching, or loading. */
   download?: SttModelProgress | null
+  /**
+   * Capture has ended and the panel is still up for the streaming drain. The
+   * elapsed reading holds: the microphone is closed, so a clock that kept
+   * running would count time that is not being recorded.
+   */
+  captureEnded?: boolean
 }
 
 /**
@@ -184,7 +191,7 @@ interface Props {
  * backend is solid, the in-flight partial hypothesis is muted. Both come from
  * the composer's own value, so what is shown here is exactly what will be sent.
  */
-export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven, submitOnRelease, download }: Props) {
+export default function VoiceDictationPanel({ sampleRef, value, partial, deviceLabel, deviceId, onSelectDevice, deviceSwitchIsLive, streaming, gestureDriven, submitOnRelease, download, captureEnded }: Props) {
   // Split committed vs partial without coupling to STT internals: the partial
   // is appended to the composer value, so it is the suffix — but only trust
   // that when it actually matches (the user may have typed since).
@@ -220,6 +227,10 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
             <span className="relative inline-flex h-2 w-2 rounded-full bg-danger" />
           </span>
           <span aria-live="polite">{i18nT('components.voiceDictationPanel.listening')}</span>
+          {/* Outside the live region beside it, and the same shadow floor as
+              the hint: the reading sits over the shader like the rest of this
+              row. */}
+          <RecordingElapsed frozen={captureEnded} className="font-mono text-[11px] [text-shadow:0_1px_12px_var(--bg),0_0_3px_var(--bg)]" />
           {/* The overlay is `pointer-events-none` so the shader stays visible and
               un-clickable; the picker is the one interactive child, so it opts
               itself back in. Still gated on a known label, preserving this

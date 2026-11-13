@@ -101,11 +101,16 @@ class _World:
             conversation_log=self.log,
         )
 
-    async def read(self) -> dict[str, dict[str, Any]]:
+    async def respond(self, headers: dict[str, str] | None = None) -> web.Response:
         app = web.Application()
         app["state"] = self._state()
-        req = make_mocked_request("GET", "/x", app=app, match_info={"slot": "root"})
-        resp = await crew_workers.api_crew_workers(req)
+        req = make_mocked_request(
+            "GET", "/x", headers=headers, app=app, match_info={"slot": "root"}
+        )
+        return await crew_workers.api_crew_workers(req)
+
+    async def read(self) -> dict[str, dict[str, Any]]:
+        resp = await self.respond()
         assert resp.status == 200, resp.text
         return {w["key"]: w for w in json.loads(resp.text)["workers"]}
 
@@ -284,3 +289,63 @@ async def test_a_store_that_left_the_crew_is_not_kept(world: _World) -> None:
     out = await world.read()
     assert "c2" not in out
     assert "c2" not in entry.boards and "c2" not in entry.titles
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_poll_is_a_304_and_any_shown_change_is_not(world: _World) -> None:
+    first = await world.respond()
+    tag = first.headers["ETag"]
+    assert first.headers["Cache-Control"] == "private, no-cache"
+    assert first.headers["Vary"] == "Accept-Encoding"
+    same = await world.respond({"If-None-Match": tag})
+    assert same.status == 304 and same.body is None and same.headers["ETag"] == tag
+    assert same.headers["Vary"] == "Accept-Encoding"
+    for field, value in (("title", "Renamed"), ("running", True)):
+        world.rows[1][field] = value
+        changed = await world.respond({"If-None-Match": tag})
+        assert changed.status == 200 and changed.headers["ETag"] != tag
+        tag = changed.headers["ETag"]
+    world.log.titles["c1"] = "Closed one, renamed"
+    world.tree.set({"root": None, "w1": "root", "c1": "root", "c2": "c1", "c3": "w1"})
+    assert (await world.respond({"If-None-Match": tag})).status == 200
+
+
+@pytest.mark.asyncio
+async def test_a_3000_closed_worker_list_is_gzipped_only_when_asked(world: _World) -> None:
+    import gzip
+
+    edges: dict[str, str | None] = {"root": None, "w1": "root"}
+    edges.update({f"c{i}": "root" for i in range(3000)})
+    world.tree.set(edges)
+    world.log.titles.update({f"c{i}": f"Closed worker number {i}" for i in range(3000)})
+    plain = await world.respond()
+    assert plain.status == 200 and "Content-Encoding" not in plain.headers
+    zipped = await world.respond({"Accept-Encoding": "gzip, br"})
+    assert zipped.headers["Content-Encoding"] == "gzip"
+    assert zipped.headers["ETag"] == plain.headers["ETag"]
+    assert len(zipped.body) < 100_000 < len(plain.body)
+    assert json.loads(gzip.decompress(zipped.body)) == json.loads(plain.body)
+    refused = await world.respond({"Accept-Encoding": "gzip;q=0"})
+    assert "Content-Encoding" not in refused.headers
+
+
+@pytest.mark.parametrize(
+    ("accept", "gzipped"),
+    [
+        ("*;q=1, gzip;q=0", False),
+        ("gzip;q=0, *;q=1", False),
+        ("*", True),
+        ("gzip;q=0.5", True),
+        ("identity", False),
+        ("gzip;q=0.000", False),
+        ("gzip;q=abc", False),
+        ("gzip;q=", False),
+        ("x-gzip", True),
+        ("", False),
+    ],
+)
+def test_accept_encoding_gzip_follows_the_explicit_weight(accept: str, gzipped: bool) -> None:
+    from kiro_crew.dashboard.conditional_get import _accepts_gzip
+
+    req = make_mocked_request("GET", "/x", headers={"Accept-Encoding": accept})
+    assert _accepts_gzip(req) is gzipped

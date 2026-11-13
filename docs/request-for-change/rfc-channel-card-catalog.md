@@ -1,10 +1,10 @@
 ---
 title: Channel card catalog — one validated, redacted card spec rendered to Slack, Teams, Discord and plain text
-status: draft
+status: in-progress
 author: kseam
 created: 2026-11-10
-last-audited: 2026-11-10
-audited-at: b58eef1f9c
+last-audited: 2026-11-12
+audited-at: 9e9de7bfc9
 doc-pr:
 implementation-prs: []
 tracking-issues: []
@@ -14,9 +14,11 @@ superseded-by: []
 
 # RFC: Channel card catalog
 
-- Status: draft. Nothing is built, and this document changes no code. Every
-  claim about the code below was checked against main at `b58eef1f9c`, or
-  against the open pull request it names, at that PR's head on 2026-11-10.
+- Status: in-progress. Phase 1 is built in the open pull request that carries
+  it, not on main. Every claim about the code below was checked against main
+  at `b58eef1f9c`, or against the open pull request it names, at that PR's
+  head on 2026-11-10. The Phase 1 decisions under "Migration plan" were
+  checked against main at `9e9de7bfc9` on 2026-11-12.
 - Author: kseam
 - Review: the direction is signed for Phases 1 and 2. Phase 3 onward is
   decided after Phase 1 lands. Two conditions are written in: a card that posts
@@ -326,11 +328,15 @@ The fits:
 - `Fit.SPLIT`, for section text only: split losslessly across consecutive
   sections. The cut reuses `format._lossless_blocks`, so the sections join
   back to exactly the original text.
-- `Fit.MARKED`: cut at a word boundary and append a visible marker (today's
-  `_TRUNCATION_MARKER`).
+- `Fit.MARKED`: cut and append a visible marker (today's
+  `_TRUNCATION_MARKER`), as the approval card cuts; see Phase 1.
 - `Fit.CUT(n)`: today's plain cut at `n` characters, kept byte for byte, for
   a builder that cuts that way now (`wrap_up_blocks`' 2,800, the 75- and
   80-character labels).
+- `Fit.KEEP`: the value goes out unchanged and the platform answers an
+  over-cap value as it answers the hand-built payload. For routing data a
+  migrated builder cannot cut (an action id, a block id, a button value); see
+  Phase 1.
 
 **A migrated builder declares the fit it has today**, so a card that posts
 today still posts and renders the same over a cap. Refusal on a migrated card
@@ -404,20 +410,77 @@ approve"). The same redaction pass runs.
 Each phase is one PR and can be abandoned on its own. "Golden" means a JSON
 fixture captured from main before the move, asserted equal after it.
 
-**Phase 1: package, Slack and text renderers, Stop/working cards.**
-`messaging/cards/` with `spec`, `render`, `limits`, `links`, `send`; the Slack
-and text renderers; `slack/blocks.py` `build_stopping_blocks`,
-`build_stopped_blocks`, `build_stop_failed_blocks` and `build_working_blocks`
-built from specs. These cards hold no model-authored text and at most two
-buttons (the resolved Stop cards have none; the working card has Stop, plus
-"Link to Dashboard" when `include_dashboard_link` is set). No flag. Exit:
-goldens for all four builders, both working-card variants included, pass
-unchanged; the
-renderer test suite below passes; no caller of those four functions changes.
+**Phase 1: package, Slack renderer, Stop/working cards.**
+`messaging/cards/` with `spec`, `render` and `limits`; the Slack renderer;
+`slack/blocks.py` `build_stopping_blocks`, `build_stopped_blocks`,
+`build_stop_failed_blocks` and `build_working_blocks` built from specs. These
+cards hold no model-authored text and at most two buttons (the resolved Stop
+cards have none; the working card has Stop, plus "Link to Dashboard" when
+`include_dashboard_link` is set). No flag. Exit: goldens for all four
+builders, both working-card variants included, pass unchanged; the renderer
+test suite below passes for what Phase 1 ships; no caller of those four
+functions changes.
+
+Phase 1 ships only what its four cards use, so every spec type, fit and render
+step in it is reached by one of them. Its spec is `Card`, `Section`, `Context`,
+`Text` (markdown), `Actions` and `Button` (default or danger), with the fits
+`Fit.REFUSE` and `Fit.KEEP`. It has one platform, Slack. Render runs structure,
+redaction and mention defuse, limits, and a last check on every emitted string
+(below). A first draft of this phase also carried `send`, `links`, a plain-text renderer, the
+split-secret step and the other elements and fits. The First Principles review
+blocked it because none of those had a caller (2026-11-12). Each one now lands
+with the first card that uses it:
+
+- `send` (`post_card`, `edit_card`) and its commit-point tests: Phase 2, which
+  posts and edits the wrap-up.
+- The plain-text renderer and `Rendered.text`: Phase 2, with `send`, which
+  needs the notification fallback (`Fit.CUT(200)`).
+- The split-secret step and its off-by-default setting: Phase 2, the first
+  card with variable text.
+- `Fit.CUT`: Phase 2 (the 2,800 summary and the 200 fallback). `Fit.MARKED`:
+  Phase 3 (the OPTIONS labels). `Fit.SPLIT`: the first card that splits.
+- `Confirm`: Phase 2 (the Archive button). The `code` text style: Phase 4 (an
+  approval card's tool input). `Fields`, `Table`, `Divider`, `Card.title`, the
+  `plain` style and the `primary` button style: the first card that uses each.
+- `links` and the `Link` run: the first card that carries a link.
+
+Decided while building Phase 1 (2026-11-12):
+
+- **Goldens compare content, not key order.** A builder's payload equals its
+  golden as a dict and byte for byte as sorted-key JSON. Inside a button the
+  key order can differ from the hand-built dict (the Kill Now, Stop and "Link
+  to Dashboard" buttons each listed their keys in a different order, and one
+  spec cannot reproduce all three). Slack reads a JSON object by key, so the
+  order changes nothing it shows or routes, and nothing in `src/` hashes or
+  string-compares these payloads.
+- **`Fit.KEEP` for routing data.** A builder must never raise where it
+  returned blocks. The cards' text is constant and far under every cap. Their
+  one variable input, the session key, has no length bound in code, and it
+  sits in an action id, a block id and a button value. Those fields declare
+  `Fit.KEEP`: an over-cap value goes out unchanged, as the hand-built payload
+  sent it, and the issue is logged.
+- **What ships is what is checked.** A `Text`'s runs are joined and redacted
+  as one string, because they read as one. After escaping and the bold
+  translation, every string placed in the payload is checked once more in the
+  form it ships, and the card is refused if redaction would still change it.
+  A string that shows nothing once redacted is refused.
+- **A neutral package.** `messaging` imports nothing from a channel package
+  (`test_messaging_import_purity.py`). The Slack escape is therefore a local
+  copy, pinned to `escape_mrkdwn` by a test. The `blocks_request_remote_media`
+  backstop is the Slack client seam that every send already passes, and the
+  no-media test runs that check over the renderer's output.
+- **No posture row yet.** `render.py` redacts only through `display_safe_for`,
+  which the redaction-sink registry's call check does not count as a redactor
+  call (`messaging/inbound_spool.py`, which also redacts only through it, has
+  no row either). The "Channel cards" row lands with the first phase whose
+  render path calls a redactor directly.
 
 **Phase 2: code-channel wrap-up.** `wrap_up_blocks` and `_retired_blocks`
 become a spec and a `replace`. The summary keeps today's cut, declared as
-`Fit.CUT(2800)`, and the notification fallback keeps `Fit.CUT(200)`. Exit:
+`Fit.CUT(2800)`, and the notification fallback keeps `Fit.CUT(200)`. This
+phase adds `send`, the plain-text renderer, `Confirm` and `Fit.CUT`. The
+summary is model text, so it also adds the split-secret step and the
+off-by-default setting that turns it on for gateway-built cards. Exit:
 goldens are unchanged for every summary, including ones over the 2,800 cap.
 The Archive confirm keeps its exact text. The commit-point test covers
 `post_card` and `edit_card`.
@@ -462,10 +525,12 @@ those cards are no longer answerable.
 
 ## Security considerations
 
-- **Posture rows.** Phase 1 adds one row to `_DELIVERY_SINKS` in
+- **Posture rows.** The first phase whose render path calls a redactor
+  directly adds one row to `_DELIVERY_SINKS` in
   `security_posture_sinks_delivery.py`, "Channel cards"
   (`messaging/cards/render.py`), because the renderer becomes an egress
-  redaction site. That file is watched by Sensitive Change Review. Later
+  redaction site. Phase 1 redacts only through `display_safe_for`, which the
+  registry's call check does not count, so it adds none (see Phase 1). That file is watched by Sensitive Change Review. Later
   phases edit only the wording of the rows whose redaction call moves into the
   renderer ("Slack code-channel posts", the `slack/blocks.py` and
   `slack/format.py` rows, "Teams rendered message text"). No row is removed,
@@ -493,8 +558,11 @@ those cards are no longer answerable.
 - **Redaction property test.** For every renderer and a corpus of fixtures
   (credentials, a credential split across two fields, `<!channel>`,
   `@everyone`, nested character references, backtick runs), every display
-  string in the output is a fixed point of `display_safe_for` for that
-  platform. For agent cards, and for every card with the wider-screen setting
+  string in the output is settled. `display_safe_for` adds a zero-width space
+  after every `@` each time it runs, so it is not idempotent, and the check
+  has two parts. The redaction half (`display_safe_for` with no mention
+  grammar) leaves the string Slack shows unchanged, and no live mention
+  remains. For agent cards, and for every card with the wider-screen setting
   on, the split-secret screen finds nothing; with the setting off, a
   gateway-built card renders as it does on main.
 - **Limit tests.** For each limit, a `Fit.REFUSE` field at the cap renders and

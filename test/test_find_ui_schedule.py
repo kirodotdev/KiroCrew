@@ -129,9 +129,9 @@ _EXPECTED: dict[str, tuple[list[str], list[str], str, list[str], str | None]] = 
         None,
     ),
     "mcp.probe": (
-        ["MCP Servers", "Servers", "Probe MCP servers"],
-        ["MCP 服务器", "服务器", "探测 MCP 服务器"],
-        "/mcp",
+        ["Customize", "MCP Servers", "Servers", "Probe MCP servers"],
+        ["自定义", "MCP 服务器", "服务器", "探测 MCP 服务器"],
+        "/capabilities?tab=mcp-servers",
         [],
         None,
     ),

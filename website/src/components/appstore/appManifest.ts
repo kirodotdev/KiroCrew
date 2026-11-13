@@ -154,14 +154,6 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.codeReviewSage.manifest.use_case_1'],
     configuration: ['apps.codeReviewSage.manifest.configuration_1'],
   },
-  // Overlay-only: no `pageLabel`, because this app contributes no page.
-  'command-bar': {
-    displayName: 'apps.commandBar.manifest.display_name',
-    description: 'apps.commandBar.manifest.description',
-    highlights: [],
-    useCases: ['apps.commandBar.manifest.use_case_1'],
-    configuration: ['apps.commandBar.manifest.configuration_1'],
-  },
   'crew-companion': {
     displayName: 'apps.crewCompanion.manifest.display_name',
     description: 'apps.crewCompanion.manifest.description',

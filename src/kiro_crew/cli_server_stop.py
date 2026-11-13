@@ -799,9 +799,14 @@ def _stop(cli_port: int | None = None, *, expect_pid: int | None = None) -> None
             source="cli",
             resources=f"pids={denied} port={port}",
         )
-        print(
-            f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — try: sudo kirocrew stop"
+        # Windows has no sudo: taskkill is denied across an elevation
+        # boundary, so the remedy is an elevated terminal.
+        remedy = (
+            "run it again from an Administrator terminal"
+            if platform_compat.IS_WINDOWS
+            else "try: sudo kirocrew stop"
         )
+        print(f"❌ No permission to stop pid {', '.join(str(p) for p in denied)} — {remedy}")
         sys.exit(1)
     if not sent:
         sel().log_api_access(
@@ -820,6 +825,17 @@ def _manual_stop_command(pid: int) -> str:
     if platform_compat.IS_WINDOWS:
         return f"taskkill /PID {pid} /T"
     return f"kill -TERM {pid}"
+
+
+def _force_stop_command(pids: list[int], *, posix_sep: str = " ") -> str:
+    """The command an operator runs to force-kill *pids* on this platform.
+
+    POSIX keeps each caller's existing ``kill -9`` text, pid separator
+    included, so only the Windows wording differs.
+    """
+    if platform_compat.IS_WINDOWS:
+        return "taskkill " + " ".join(f"/PID {pid}" for pid in pids) + " /T /F"
+    return "kill -9 " + posix_sep.join(str(pid) for pid in pids)
 
 
 def _refuse_if_lock_held(operation: str, port: int) -> None:

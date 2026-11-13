@@ -20,6 +20,7 @@ from kiro_crew.crew_log.entry_types import (
     GOAL_ENTRY_TYPE,
     GOAL_FOLD_NAME,
     MISTAKES_FOLD_NAME,
+    OBJECTS_FOLD_NAME,
     PANEL_ENTRY_TYPE,
     PANEL_FOLD_NAME,
     RADAR_ENTRY_TYPE,
@@ -84,6 +85,14 @@ from kiro_crew.crew_log.projection_ledger import (
     _ledger_render,
     _ledger_start,
     _ledger_step,
+)
+from kiro_crew.crew_log.projection_objects import (
+    OBJECT_ENTRY_TYPE,
+    _objects_copy,
+    _objects_render,
+    _objects_rows,
+    _objects_start,
+    _objects_step,
 )
 from kiro_crew.crew_log.projection_otel_session_tree import (
     OTEL_SESSION_TREE_FOLD_NAME,
@@ -824,6 +833,18 @@ _FOLDS: Final[dict[str, _Fold]] = {
         copy_state=_custom_copy,
         count_rows=_custom_rows,
         state_version=_FOLD_STATE_VERSION_BASE + 1,
+    ),
+    # What code read about objects outside the session (a pull request's state), the
+    # newest per subject and producer. Only ``object/observed`` moves it, and every
+    # producer of that type is gateway code, so the Board can draw it as a fact.
+    OBJECTS_FOLD_NAME: _Fold(
+        OBJECTS_FOLD_NAME,
+        _objects_start,
+        _objects_step,
+        _objects_render,
+        affects=frozenset({OBJECT_ENTRY_TYPE}),
+        copy_state=_objects_copy,
+        count_rows=_objects_rows,
     ),
     # The worker sessions a crewmate created, from the crewmate's OWN log: who it made
     # and when, under the cap. What each worker is doing is ``worker``, merged in at

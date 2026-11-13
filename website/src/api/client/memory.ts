@@ -39,6 +39,23 @@ const memoryStoreQuery = (store?: string, sep: '?' | '&' = '?'): string => {
   return sep === '?' ? `?store=${value}` : `&store=${value}`
 }
 
+/** What one `GET /api/sel/recurring-failures` row carries
+ *  (`failure_recurrence.Recurrence`): never a session key or command text. */
+export interface RecurringFailure {
+  signature: string
+  tool_kind: string
+  /** The MCP tool name, or the class error (`turn_limit`); `''` when neither applies. */
+  tool: string
+  rule_id: string
+  /** The error with paths, ids and numbers collapsed. */
+  error: string
+  hits: number
+  sessions: number
+  days: number
+  previous_hits: number
+  trend: 'new' | 'growing' | 'steady'
+}
+
 /** What one `GET /api/memory/carve` read asks for. */
 export interface MemoryCarveQuery {
   store?: string
@@ -222,6 +239,10 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
         winner?: string
         winner_repo_scope?: string | null
       }>,
+    // Owner only, and under /api/sel/ rather than /api/lessons: the rows come
+    // from the security event log (sel.md).
+    recurringFailures: () =>
+      fetch('/api/sel/recurring-failures').then(j) as Promise<{ failures: RecurringFailure[]; window_days: number }>,
   }
 
   const knowledge = {

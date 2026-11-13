@@ -9,11 +9,12 @@
 // - the card names version and requester, and says when the feed's version
 //   differs from the one requested
 // - Install with nothing staged calls download; with a stage present it calls
-//   install; a download the card started finishes with install, once
+//   install; a download the card started finishes with install, once, even
+//   after the user leaves About
 // - Decline reaches the gateway and never touches the desktop bridge
 // - a managed-venv arm does NOT summon the card (that lane prints a command)
 // - a shell with no desktop bridge renders nothing
-import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react'
 import { defaultScheduler, notifyManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -22,6 +23,7 @@ import { store } from '../store'
 import { sseStatus } from '../store/dashboardSlice'
 import { AboutPanel, AgentUpdateRequestCard, AGENT_REQUEST_POLL_MS } from '../pages/settings/AboutPanel'
 import { api } from '../api/client'
+import { agentInstallDispatchQuery, useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 
 const BLANK_STATUS = {
   uptime: '1m', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
@@ -44,16 +46,26 @@ function desktopBridge(info: object = {}) {
   }
 }
 
-function renderPanel(client: QueryClient) {
-  return render(
+/** The panel inside the app-wide host that finishes its armed click (shell/appShell.tsx). */
+function Shell({ onAbout }: { onAbout: boolean }) {
+  useAgentInstallLatch()
+  return onAbout ? <AboutPanel /> : null
+}
+
+function tree(client: QueryClient, onAbout = true) {
+  return (
     <Provider store={store}>
       <QueryClientProvider client={client}>
         <MemoryRouter initialEntries={['/settings/about']}>
-          <AboutPanel />
+          <Shell onAbout={onAbout} />
         </MemoryRouter>
       </QueryClientProvider>
-    </Provider>,
+    </Provider>
   )
+}
+
+function renderPanel(client: QueryClient) {
+  return render(tree(client))
 }
 
 describe('AgentUpdateRequestCard', () => {
@@ -163,8 +175,8 @@ describe('AboutPanel with a pending agent request', () => {
     vi.spyOn(api, 'armStatus').mockResolvedValue(status as never)
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     if (updateState) client.setQueryData(['update-state'], updateState)
-    renderPanel(client)
-    return { bridge, client }
+    const view = renderPanel(client)
+    return { bridge, client, view }
   }
 
   it('shows the card for a packaged-lane request', async () => {
@@ -318,6 +330,35 @@ describe('AboutPanel with a pending agent request', () => {
     })
   }
 
+  const DOWNLOAD_FAILED = { state: 'error', phase: 'download', code: 'network', message: 'connection reset', version: '0.6.0' }
+
+  it('a Retry click made from a failed download still installs the download it starts', async () => {
+    // A failed download keeps the card, and while a request is live its Install
+    // is the only Retry: the failure the click was made FROM does not end it.
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client } = setup(REQUEST, DOWNLOAD_FAILED)
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+    await act(async () => { await bridge.download.mock.results[0].value })
+    expect(screen.getByTestId('agent-update-request-install')).toBeDisabled()
+    await pushUpdateState(client, { state: 'downloading', version: '0.6.0' })
+    await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+    expect(bridge.install).toHaveBeenCalledTimes(1)
+  })
+
+  it('a download the click started that then fails releases the click', async () => {
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client } = setup(REQUEST, { state: 'found', version: '0.6.0' })
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+    await pushUpdateState(client, { state: 'downloading', version: '0.6.0' })
+    await pushUpdateState(client, DOWNLOAD_FAILED)
+    expect(screen.getByTestId('agent-update-request-install')).not.toBeDisabled()
+    expect(screen.getByTestId('agent-update-request-decline')).not.toBeDisabled()
+    await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+    expect(bridge.install).not.toHaveBeenCalled()
+  })
+
   /**
    * Click Install with nothing found, let the click's IPC answer, and push the
    * check the main process runs for it first.
@@ -442,5 +483,63 @@ describe('AboutPanel with a pending agent request', () => {
     expect(install.textContent).toContain('0.7.0')
     expect(install).not.toBeDisabled()
     expect(bridge.install).toHaveBeenCalledTimes(1)
+  })
+
+  it('a download the card started still installs, once, after the user leaves About', async () => {
+    // The panel mounts only on the About tab; the click it armed is the app's,
+    // so switching tabs mid-download must not drop the install or leave the
+    // request armed on the gateway.
+    const spy = vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client, view } = setup(REQUEST)
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+    await pushUpdateState(client, { state: 'downloading', version: '0.6.0' })
+    view.rerender(tree(client, false))
+    expect(screen.queryByTestId('agent-update-request')).toBeNull()
+    await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+    expect(bridge.install).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(spy).toHaveBeenCalledWith('r1')
+  })
+
+  it('the install a landed download dispatches shows on the panel: in flight, then refused', async () => {
+    // The app-wide latch dispatches through its own install mutation; the panel
+    // shows it as its own, so the request's actions wait on it and a refusal is said.
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client } = setup(REQUEST)
+    let refuse: (e: Error) => void = () => {}
+    bridge.install.mockImplementation(() => new Promise((_, reject) => { refuse = reject }))
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+    await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+    expect(bridge.install).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.getByTestId('agent-update-request-install')).toBeDisabled())
+    await act(async () => { refuse(new Error('arm record unwritable')) })
+    expect(await screen.findByTestId('update-install-request-error')).toBeTruthy()
+  })
+
+  it('an install refused while About is closed still shows on return, however long away', async () => {
+    // Only the panel observes the dispatch entry, and the shell writes it once per
+    // change: collected while the tab is closed, the refusal would be lost.
+    vi.spyOn(api, 'dismissUpdateArm').mockResolvedValue({ ok: true, armed: false, dismissed: true })
+    const { bridge, client, view } = setup(REQUEST)
+    let refuse: (e: Error) => void = () => {}
+    bridge.install.mockImplementation(() => new Promise((_, reject) => { refuse = reject }))
+    fireEvent.click(await screen.findByTestId('agent-update-request-install'))
+    await waitFor(() => expect(bridge.download).toHaveBeenCalledTimes(1))
+    await pushUpdateState(client, { state: 'downloading', version: '0.6.0' })
+    // Faked before leaving, so the collection timer the unmount schedules runs on it.
+    onTestFinished(() => { vi.useRealTimers() })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    view.rerender(tree(client, false))
+    await pushUpdateState(client, { state: 'downloaded', version: '0.6.0' })
+    expect(bridge.install).toHaveBeenCalledTimes(1)
+    await act(async () => { refuse(new Error('arm record unwritable')) })
+    expect(client.getQueryData(agentInstallDispatchQuery.queryKey)).toMatchObject({ failed: true })
+    // Past React Query's default 5-minute gcTime.
+    await act(async () => { vi.advanceTimersByTime(5 * 60_000 + 1) })
+    vi.useRealTimers()
+    view.rerender(tree(client, true))
+    expect(await screen.findByTestId('update-install-request-error')).toBeTruthy()
   })
 })

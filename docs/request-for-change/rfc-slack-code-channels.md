@@ -3,10 +3,10 @@ title: Slack Code — agent sessions and code channels for Kiro Crew
 status: in-progress
 author: kseam
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: c1302956a1
+last-audited: 2026-11-12
+audited-at: 6ded84fc02
 doc-pr:
-implementation-prs: []
+implementation-prs: [21425, 21410, 22001]
 tracking-issues: [15175]
 supersedes: []
 superseded-by: []
@@ -19,9 +19,20 @@ superseded-by: []
   Agent sessions switch and its runtime, first opened as
   [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) is in the pull
   request that carries this document. Phase 2 (code channels: their switch, their
-  defaults and their runtime) stacks on it, starting with
-  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410). Every switch
+  defaults and their runtime) shipped in
+  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410), with helper-agent
+  dispatch and restart resume in
+  [#22001](https://github.com/kirodotdev/KiroCrew/pull/22001). Every switch
   defaults off, so no default changes.
+- Amended 2026-11-12: Stop in a code channel also stops the channel's helper
+  agents (§3, "Stop"). The owner left this call to the Slack Code team lead, who
+  decided it; it takes effect when the owner merges this amendment. Nothing is
+  built yet: on main `6ded84fc02`, `_stop_bound` in
+  `slack/code_channels/routing.py` stops only the channel's own session; when that
+  session is idle, `!stop` answers "Nothing running." and Slack's Stop button says
+  nothing, whatever its helper agents are doing. The code follows in its own pull
+  request, after
+  [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993).
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
@@ -408,6 +419,30 @@ crewmates' private copies.
     the notice says the resumed work acts without asking first.
   * **Switch.** Restart resume is part of code channels and runs only while they
     are on; it has no switch of its own.
+* **Stop** (amended 2026-11-12). Slack's Stop and `!stop` in a code channel stop
+  the channel's own session and its helper agents. Stop is the person's brake: a
+  Stop that leaves agents editing code is wrong.
+  * **What it stops.** The running turn of the channel's session, the running
+    turn of every helper agent that the gateway's own records tie to that session
+    (the code-channel store records each helper agent the session starts, when it
+    starts it), and the sub-agents those turns started. It never undoes anything an
+    agent wrote: files, commits, pushes, messages and work-ledger entries stay as
+    they are.
+  * **Who may press it.** Unchanged: only Kiro Crew's owner, in a channel whose
+    origin conversation still admits the bot, from an admitted workspace. Anyone
+    else is refused and audited, and nothing is stopped.
+  * **What the channel says.** How many it stopped (none, when nothing was
+    running), and that nothing starts again until someone sends a message here.
+  * **What happens next.** Nothing starts again on its own. The channel's session
+    starts no turn by itself (no patrol or timer wake, no wake from a helper
+    agent's report, no scheduled job) until a person sends it a message, in Slack
+    or in the dashboard. A stopped helper agent stays stopped, and work queued for
+    it before the Stop waits, until a person sends it a message or the channel's
+    session, working on a person's message, starts it again; a message to one
+    helper agent releases only that one. Whether a message is a person's is read
+    from the gateway's own record of who sent it, never from its text. Restart
+    resume does not resume a turn a Stop ended, including one still ending when
+    the gateway restarted.
 
 ### 4. Approval modes in code channels
 

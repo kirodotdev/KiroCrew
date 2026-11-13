@@ -277,3 +277,36 @@ class TestQueueReorderEndpoint:
 
         # Original order preserved
         assert [q["id"] for q in slot._queue] == [id1, id2]
+
+    @pytest.mark.asyncio
+    async def test_a_repeated_id_keeps_one_entry_at_its_first_place(self):
+        """``[b, a, b]`` reads as ``[b, a]``: kept twice, ``b`` would run as two turns."""
+        state = _make_state()
+        slot = state.get_or_create_slot("chat-1")
+        id1 = slot.queue_append("a")
+        id2 = slot.queue_append("b")
+        slot.append("queued", "a", json.dumps({"queue_id": id1}))
+        slot.append("queued", "b", json.dumps({"queue_id": id2}))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.put(
+                "/api/chat/slots/chat-1/queue/order", json={"order": [id2, id1, id2]}
+            )
+            assert resp.status == 200
+
+        assert [q["id"] for q in slot._queue] == [id2, id1]
+        queued = [m for m in slot.messages if m.get("role") == "queued"]
+        assert [json.loads(m["cls"])["queue_id"] for m in queued] == [id2, id1]
+
+
+def test_the_row_reseat_keeps_one_row_per_repeated_id():
+    """The shared re-seat holds the same rule for any caller, not just this route."""
+    from kiro_crew.dashboard.chat_utils_injected_rows import _reorder_queued_rows
+
+    rows = [
+        {"role": "user", "content": "hi"},
+        {"role": "queued", "content": "a", "cls": json.dumps({"queue_id": "qa"})},
+        {"role": "queued", "content": "b", "cls": json.dumps({"queue_id": "qb"})},
+    ]
+    _reorder_queued_rows(rows, ["qb", "qa", "qb"])
+    assert [r["content"] for r in rows] == ["hi", "b", "a"]

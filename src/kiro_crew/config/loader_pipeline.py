@@ -610,18 +610,20 @@ def read_config_document() -> ConfigDocument:
     # build_config agrees by construction.
     if isinstance(data.get("resource_limits"), dict):
         data["resource_limits"] = asdict(ResourceLimitsConfig.from_raw(data["resource_limits"]))
-    # Same fail-closed-before-validation reason for the six agent
+    # Same fail-closed-before-validation reason for the seven agent
     # switches whose safe direction is FALSE.
     # `agent.session_control` is the operator's single withdrawal of
     # cross-session control, `agent.member_dispatch` gates whether
     # a crew member bypasses that withdrawal, `agent.crew_panel`
-    # gates the member's own webview, and `agent.kas_persist_mcp_sign_in`
+    # gates the member's own webview, `agent.kas_persist_mcp_sign_in`
     # decides whether Crew stores remote MCP OAuth tokens,
     # `agent.conductor_own_child_verbs` lets a conductor send to its own
-    # children unprompted, and `agent.kas_repair_kiro_cli_extract` lets Crew
-    # move kiro-cli's broken KAS extract aside. Schema validation pops a
+    # children unprompted, `agent.kas_repair_kiro_cli_extract` lets Crew
+    # move kiro-cli's broken KAS extract aside, and `agent.deny_override`
+    # decides whether a deny-rules refusal can be overridden on a card.
+    # Schema validation pops a
     # present-but-malformed value and the missing-field default is TRUE
-    # for all six, so a quoted `"false"` -- a routine operator quoting
+    # for all seven, so a quoted `"false"` -- a routine operator quoting
     # mistake -- would silently ride that default back to the
     # capability staying enabled. Coerce a present non-bool to False
     # HERE, so validation sees a valid bool and keeps it; a genuinely
@@ -644,6 +646,7 @@ def read_config_document() -> ConfigDocument:
             "kas_persist_mcp_sign_in",
             "conductor_own_child_verbs",
             "kas_repair_kiro_cli_extract",
+            "deny_override",
         ):
             if _fail_closed_key in _agent_section and not isinstance(
                 _agent_section[_fail_closed_key], bool
@@ -656,6 +659,30 @@ def read_config_document() -> ConfigDocument:
                     type(_agent_section[_fail_closed_key]).__name__,
                 )
                 _agent_section[_fail_closed_key] = False
+    # ``telemetry.enabled`` defaults to TRUE (local recording on), so the same
+    # fail-closed rule applies: a present ``enabled`` that is not a bool, or a
+    # ``telemetry`` that is not an object (an overlay's ``null`` replacing the base
+    # section), reads as false before validation could drop it and leave the on
+    # default. An absent key still takes the default.
+    _telemetry_section = data.get("telemetry")
+    if "telemetry" in data and not isinstance(_telemetry_section, dict):
+        logger.warning(
+            "telemetry is %s, not an object; reading telemetry.enabled as false "
+            "(local recording is OFF).",
+            type(_telemetry_section).__name__,
+        )
+        data["telemetry"] = {"enabled": False}
+    elif (
+        isinstance(_telemetry_section, dict)
+        and "enabled" in _telemetry_section
+        and not isinstance(_telemetry_section["enabled"], bool)
+    ):
+        logger.warning(
+            "telemetry.enabled is %s, not a boolean; reading it as false (local "
+            "recording is OFF). Write true or false without quotes to choose.",
+            type(_telemetry_section["enabled"]).__name__,
+        )
+        _telemetry_section["enabled"] = False
     # Keep a genuinely absent default backward-compatible with older
     # configs, but normalize a PRESENT malformed value before advisory
     # schema validation can delete it and turn corruption into the

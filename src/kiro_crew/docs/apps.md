@@ -2,15 +2,14 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-four apps ship inside the Kiro Crew package — Meetings,
-Papyrus, Mochi, Dev Fleet, Notes and the rest — and almost all of them are **off
+backend process. Twenty-three apps ship inside the Kiro Crew package (Meetings,
+Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
 
 If you just want to look around: **sidebar → Apps**. Everything shipped is already
 on disk, so a shipped app needs **Enable**, not Install. An app with a page of its
-own takes a sidebar entry the moment it is enabled; Command Bar has no page and
-replaces the quick-search overlay instead.
+own takes a sidebar entry the moment it is enabled.
 
 ## The App Store
 
@@ -43,8 +42,9 @@ registry, or install a local directory from a path.
 - **Pin** and **Unpin**, in a Library tile's ⋯ menu, control whether an enabled app
   shows in the sidebar; the tile's caption says which. They do not disable anything.
 
-Two shipped apps are on from a fresh install: **Command Bar** and **Task Runner**.
-Everything else waits for you.
+One shipped app is on from a fresh install: **Task Runner**. Everything else waits
+for you. The Command Bar that `Cmd+K` / `Ctrl+K` opens is part of the dashboard, not
+an app: turn it off or back on in **Settings → Display → View**.
 
 ## What ships
 
@@ -88,7 +88,6 @@ Each line below is drawn from the app's own manifest description.
 |---|---|
 | **Files** (`file-explorer`) | Browse and read files on the machine running Kiro Crew, in tabs, with git status and folder search. Read-only by design. |
 | **AWS Control** (`aws-control`) | Your cloud accounts in plain language, plus an S3-backed cloud drive with time-boxed share links. |
-| **Command Bar** (`command-bar`) | Replaces quick-search (`Cmd+K` / `Ctrl+K`) with a launcher: type a command, not a query. |
 
 ### Company while you work
 
@@ -108,9 +107,7 @@ them through the features that use them, or enable them from the CLI.
 
 A shipped app's page is at the route its manifest declares — Mochi's is `/mochi` —
 and an app you installed yourself is hosted at `/apps/:name`. Either way the sidebar
-entry is created for you; you do not need to know the route. Command Bar is the one
-shipped app with no page of its own: it takes over quick-search rather than adding a
-destination.
+entry is created for you; you do not need to know the route.
 
 ## Agents, skills and MCP tools an app brings
 

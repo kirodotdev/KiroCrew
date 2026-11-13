@@ -63,6 +63,16 @@ if TYPE_CHECKING:
     from kiro_crew.apps.git_install import FetchedApp
 
 
+# What a refused lifecycle verb tells the operator to use instead: the control on
+# the dashboard that does the same thing, named for that verb.
+_DASHBOARD_REMEDY_BY_ACTION = {
+    "enable": "Toggle the app in the dashboard instead.",
+    "disable": "Toggle the app in the dashboard instead.",
+    "update": "Press Update (or Sync) on the app's page in the dashboard instead.",
+    "uninstall": "Press Uninstall on the app's page in the dashboard instead.",
+}
+
+
 def _run_app_action_through_gateway(
     action: str, app_name: str, *, payload: dict[str, object] | None = None
 ) -> bool:
@@ -71,7 +81,7 @@ def _run_app_action_through_gateway(
         action,
         app_name,
         lambda: app_lifecycle_client.toggle_app(app_name, action, payload=payload),
-        hint="Toggle the app in the dashboard instead.",
+        hint=_DASHBOARD_REMEDY_BY_ACTION[action],
     )
 
 
@@ -909,6 +919,13 @@ def _handle_app(args: argparse.Namespace) -> None:
             # (traversal in the name, a symlink in the tree). Match the clean
             # error contract of the sibling app actions, not a raw traceback.
             print(f"❌ {exc}", file=sys.stderr)
+            sys.exit(1)
+        except OSError as exc:
+            # A --dir that is a file, or one this user cannot write to.
+            print(
+                f"❌ cannot write {exc.filename or output / args.name}: {exc.strerror or exc}",
+                file=sys.stderr,
+            )
             sys.exit(1)
         print(f"✅ Scaffolded app: {app_dir}")
         print("   Edit app.json, add agents and skills, then:")

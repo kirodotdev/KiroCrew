@@ -52,6 +52,7 @@ const SLOTS: ChatSlot[] = [
   { key: 'ask', title: 'Release notes', messages: 5, running: true, needs_input: true },
   { key: 'worker', title: 'Crew worker', messages: 6, running: true, pending_approval: true, crew_root: 'conductor-1' },
   { key: 'choice', title: 'Pick a plan', messages: 4, running: false, has_options: true, options: ['Upgrade both', 'Pin until next week'], last_message: 'Upgrade both now, or pin until next week?' },
+  { key: 'deploy', title: 'Ship it', messages: 4, running: false, has_options: true, options: ['@deploy', 'Approve $40 spend'], last_message: 'Deploy now?' },
 ] as ChatSlot[]
 
 let fine = true
@@ -102,6 +103,8 @@ beforeEach(() => {
     key: slot, running: true, total: 2, has_more: false, next_before: 0,
     messages: slot === 'choice'
       ? [{ role: 'assistant', content: 'Two packages have major updates. Upgrade both now, or pin until next week?', cls: '' } as ChatMessage]
+      : slot === 'deploy'
+      ? [{ role: 'assistant', content: 'The build is green. Deploy now?', cls: '' } as ChatMessage]
       : slot === 'blocked'
       ? [permission({ approval_id: 'req-9', mid: 'mid-9', deny_override_rule: 'rm-rf' })]
       : [permission()],
@@ -144,6 +147,16 @@ describe('NeedsMeHoverCard', () => {
     expect(row.textContent).toContain('Upgrade both')
     expect(row.textContent).toContain('Pin until next week')
     expect(screen.getByTestId('needs-me-recap').textContent).toBe('No recap yet.')
+  })
+
+  it('still shows the reply when every option is command-shaped, listed as text', async () => {
+    mount()
+    hover('deploy')
+    const ask = await screen.findByText('The build is green. Deploy now?')
+    const row = ask.closest('[data-kind="reply"]')!
+    expect(row.textContent).toContain('@deploy')
+    expect(row.textContent).toContain('Approve $40 spend')
+    expect(row.querySelector('button')).toBeNull()
   })
 
   it('shows a notice when the approvals cannot be loaded', async () => {

@@ -23,7 +23,9 @@ marker, so the compare works on bare values.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import zlib
 from collections.abc import Mapping
 
 from aiohttp import web
@@ -31,6 +33,7 @@ from aiohttp import web
 __all__ = [
     "bare_etag_value",
     "conditional_response",
+    "conditional_json_response",
     "is_not_modified",
     "strong_content_etag",
     "weak_content_etag",
@@ -133,3 +136,63 @@ def conditional_response(
     if is_not_modified(request, etag):
         return web.Response(status=304, headers=headers)
     return web.Response(body=body, content_type=content_type, charset=charset, headers=headers)
+
+
+#: A JSON answer smaller than this is sent as is: the gzip header and the worker-thread
+#: hop cost more than the bytes saved.
+GZIP_MIN_BYTES = 4096
+
+
+def _accepts_gzip(request: web.Request) -> bool:
+    """RFC 9110 section 12.5.3: an explicit gzip entry beats ``*``; accept only when q > 0."""
+    explicit: float | None = None
+    star: float | None = None
+    for part in request.headers.get("Accept-Encoding", "").split(","):
+        name, _, params = part.partition(";")
+        name = name.strip().lower()
+        if name not in ("gzip", "x-gzip", "*"):
+            continue
+        q = 1.0
+        for param in params.split(";"):
+            key, _, value = param.partition("=")
+            if key.strip().lower() == "q":
+                try:
+                    q = float(value.strip())
+                except ValueError:
+                    q = 0.0  # a malformed weight is not an offer
+        if name == "*":
+            star = q
+        else:
+            explicit = q if explicit is None else max(explicit, q)
+    weight = explicit if explicit is not None else star
+    return weight is not None and weight > 0
+
+
+def _gzip_bytes(body: bytes) -> bytes:
+    # Level 1: the cheapest level still shrinks repetitive JSON several-fold. zlib
+    # releases the GIL while it compresses, so the call runs in a worker thread.
+    comp = zlib.compressobj(1, zlib.DEFLATED, 31)
+    return comp.compress(body) + comp.flush()
+
+
+async def conditional_json_response(request: web.Request, body: bytes) -> web.Response:
+    """A JSON answer with a content ``ETag``, a 304 when unchanged, gzip when large.
+
+    The tag is a digest of the uncompressed body, so any change to any field the
+    client reads changes it and a 304 can never hide a real change. It is weak
+    because the 200 may be gzip or identity. ``Cache-Control: private, no-cache``
+    lets only the one browser keep it, and only after revalidating. Every answer,
+    304 included, carries ``Vary: Accept-Encoding``. The caller checks access
+    BEFORE calling this, so a 304 is never an access shortcut.
+    """
+    headers = {
+        "ETag": weak_content_etag(body),
+        "Cache-Control": "private, no-cache",
+        "Vary": "Accept-Encoding",
+    }
+    if is_not_modified(request, headers["ETag"]):
+        return web.Response(status=304, headers=headers)
+    if len(body) >= GZIP_MIN_BYTES and _accepts_gzip(request):
+        body = await asyncio.to_thread(_gzip_bytes, body)
+        headers["Content-Encoding"] = "gzip"
+    return web.Response(body=body, content_type="application/json", headers=headers)

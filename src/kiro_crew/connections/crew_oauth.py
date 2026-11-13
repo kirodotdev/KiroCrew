@@ -106,6 +106,20 @@ SIGN_IN_TTL_SECS = 600.0
 _HTTP_TIMEOUT_SECS = 20.0
 #: Refresh errors that mean the stored refresh token is dead (after one re-read).
 _DEAD_GRANT_ERRORS = frozenset({"bad_refresh_token", "invalid_grant", "unauthorized_client"})
+#: The ``error`` values of an authorization error response (RFC 6749 §4.1.2.1),
+#: each with the code a refused sign-in records. Closed on purpose: the vendor
+#: writes ``error``, so any other value, or none, records :data:`CALLBACK_REFUSED`
+#: and no callback text reaches the row, a log line, the audit or the page.
+CALLBACK_ERROR_CODES: dict[str, str] = {
+    "access_denied": "callback_access_denied",
+    "invalid_request": "callback_invalid_request",
+    "unauthorized_client": "callback_unauthorized_client",
+    "unsupported_response_type": "callback_unsupported_response_type",
+    "invalid_scope": "callback_invalid_scope",
+    "server_error": "callback_server_error",
+    "temporarily_unavailable": "callback_temporarily_unavailable",
+}
+CALLBACK_REFUSED = "callback_refused"
 
 _refresh_locks: dict[str, asyncio.Lock] = {}
 _startup_locks: dict[str, asyncio.Lock] = {}
@@ -217,17 +231,22 @@ def custody_on(slug: str) -> bool:
 
 
 def _is_registry_url(url: Any) -> bool:
-    """Whether *url* is a registry provider's MCP endpoint. Blocking.
+    """Whether *url* is the MCP endpoint of a card Crew signs in to. Blocking.
 
-    Such an entry belongs to that provider's card (its client, port and vault
-    key), whatever name it was added under: the owner-server path never claims it.
+    Such an entry belongs to that card (its client, port and vault key),
+    whatever name it was added under: the owner-server path never claims it. A
+    registry provider outside :data:`SUPPORTED_SLUGS` has no Crew sign-in on its
+    card, so its url takes the owner-server path like any other.
     """
     from kiro_crew.connections.registry import get_all_registry_providers
 
     if not isinstance(url, str):
         return False
     wanted = url.rstrip("/")
-    return any(str(p["mcp_url"]).rstrip("/") == wanted for p in get_all_registry_providers())
+    return any(
+        p["slug"] in SUPPORTED_SLUGS and str(p["mcp_url"]).rstrip("/") == wanted
+        for p in get_all_registry_providers()
+    )
 
 
 def signs_in_custom(entry: Any) -> bool:
@@ -571,6 +590,13 @@ async def _post_token(slug: str, form: dict[str, str]) -> dict[str, Any]:
     return doc
 
 
+def callback_refusal(error: Any) -> str:
+    """The code a callback without a usable ``code`` records (:data:`CALLBACK_ERROR_CODES`)."""
+    if not isinstance(error, str):
+        return CALLBACK_REFUSED
+    return CALLBACK_ERROR_CODES.get(error, CALLBACK_REFUSED)
+
+
 def authorize_url(slug: str, client_id: str, redirect: str, state: str, challenge: str) -> str:
     from kiro_crew.connections.registry import get_provider
 
@@ -709,8 +735,11 @@ class SignIn:
                 # RFC 9207 mix-up defence: the answer came from another server.
                 self._done.set_exception(CrewOAuthError("issuer_mismatch"))
                 return web.Response(status=400, text="This sign-in answer is not trusted.")
-        if not code:
-            self._done.set_exception(CrewOAuthError("consent_declined"))
+        if not code or "error" in request.query:
+            # An error response is a refusal even beside a code. access_denied
+            # is either the user declining or an organization policy blocking the
+            # client, so the code never claims which.
+            self._done.set_exception(CrewOAuthError(callback_refusal(request.query.get("error"))))
             return web.Response(text="Sign-in was not completed. You can close this tab.")
         self._done.set_result(code)
         return web.Response(text="Signed in. You can close this tab and return to Kiro Crew.")
@@ -1047,6 +1076,30 @@ def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
         logger.debug("crew oauth audit failed", exc_info=True)
 
 
+def _vetted_link(url: str, plan: Any) -> str:
+    """*url* as the credential gate reads it: without Crew's own registered ``client_id``.
+
+    A DCR ``client_id`` is the vendor's public name for Crew's client, read from
+    the vendor's registration answer, and a mixed-case 40-character one has the
+    shape the bare-secret scan refuses. That one pair leaves the gate's view only
+    when *plan* is Crew's registration and the link holds exactly one ``client_id``
+    equal to it. Another value, a second ``client_id``, an owner-supplied id and
+    every other parameter are scanned as they are.
+    """
+    if plan is None or not plan.registered or not plan.client.client_id:
+        return url
+    base, sep, query = url.partition("?")
+    pairs = query.split("&")
+    hits = [i for i, pair in enumerate(pairs) if pair.partition("=")[0] == "client_id"]
+    if len(hits) != 1:
+        return url
+    _, eq, value = pairs[hits[0]].partition("=")
+    if not eq or urllib.parse.unquote_plus(value) != plan.client.client_id:
+        return url
+    del pairs[hits[0]]
+    return base + sep + "&".join(pairs)
+
+
 async def start_mint_row(
     slug: str, project_dirs: Any = None, custom: Any = None, on_granted: Any = None
 ) -> str:
@@ -1111,7 +1164,7 @@ async def _start_mint_row(
             # The query-free url discovery used, never the configured one.
             mcp_url=sign_in._dcr.client.resource,
         )
-    if await asyncio.to_thread(oauth_url_contains_credential, vetted):
+    if await asyncio.to_thread(oauth_url_contains_credential, _vetted_link(vetted, sign_in._dcr)):
         await sign_in.shutdown()
         await _set_row(row, token, {"state": "failed", "reason": "mint_url_rejected"})
         return token

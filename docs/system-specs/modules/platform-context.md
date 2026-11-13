@@ -781,8 +781,9 @@ Wired sites:
   cannot disable or weaken the outer sandbox. A transient adapter error falls
   back to the original executable (outer sandbox still applies); a
   `PlatformCompositionError` propagates fail-closed.
-  `kiro_cli.mandatory_mcps_drop_allowed` resolves both the spawned path and the
-  pinned install through the same seam before its checks, so the Tool Search
+  `kiro_cli.mandatory_mcps_drop_allowed` resolves the spawned path and the
+  install it is compared with (the pin, or the `PATH`-only install) through the
+  same seam before its checks, so the Tool Search
   deferral gate judges the executable that will run, not the launcher.
 - `hooks.py` — the deny check routes through `current_context().security.is_denied`;
   the kiro-hooks egress (`dashboard/handlers/hooks_scripts.py`) scrubs command/matcher
@@ -1119,7 +1120,9 @@ Wired sites:
   `relay_client/lease.py::LeaseHostTokenSource`: it calls `RenewCrewLease` on the
   answer's schedule with the credential `tunnel.relay_lease_credential` points at
   (`secret://NAME` or a file, never the value), and hands each new host token to
-  the client. Each call's `connectedCount` is `RelayClient.connected_people()`:
+  the client. With `kiro-sign-in` instead, a personal Crew leases with the Crew's
+  own Kiro sign-in (`relay_client/lease_signin.py::read_lease_sign_in`), refreshed
+  as needed, and sends that sign-in's `profileArn`. Each call's `connectedCount` is `RelayClient.connected_people()`:
   the distinct relayed callers with a WebSocket open on a serving connection, so
   one person on two tabs counts once. It is display-only, so a count that cannot
   be read is sent as 0 and never fails the renewal. When the relay stops, it

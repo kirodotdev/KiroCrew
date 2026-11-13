@@ -984,6 +984,13 @@ async def resolve_skill_review_notifications(
     return await _notifications_for(self).resolve_skill_reviews(self, slug, consumed_at)
 
 
+async def acknowledge_notifications_where(
+    self: DashboardState, matches: Callable[[dict[str, Any]], bool]
+) -> int:
+    """Acknowledge every unread note *matches* accepts; the count acknowledged."""
+    return await _notifications_for(self).acknowledge_where(self, matches)
+
+
 async def clear_notifications(self: DashboardState) -> None:
     """Clear memory and clients before awaiting the durable rewrite."""
     await _notifications_for(self).clear(self)

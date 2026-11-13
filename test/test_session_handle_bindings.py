@@ -55,7 +55,7 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "b84baaa24675", "session_handle_class"),
+    "__init__": ("function", False, "a01004fc4c51", "session_handle_class"),
     "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
     "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "session_handle_model_selection"),

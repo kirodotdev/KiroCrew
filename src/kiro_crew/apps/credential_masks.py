@@ -48,6 +48,12 @@ drops that app's masks from the next spawn, as it could rewrite the app's code. 
 mask stops an agent that reads files; it does not make an installed app's tree
 tamper-proof. Sealing the tree is the operator's decision, not this seam's.
 
+**One engine, two declarations.** ``agentReadOnlyDirs``
+(:mod:`kiro_crew.apps.agent_readonly_dirs`) is read by the same functions with its own
+:class:`DeclarationKind`: the same grammar, the same name-from-location rule, the same
+sources, cache and retained record (under its own suffix). Every function below takes
+``kind`` and defaults to :data:`CREDENTIAL_MASKS`.
+
 Process state only (a cache of parsed manifests); no per-caller data.
 """
 
@@ -60,6 +66,7 @@ import re
 import stat
 import threading
 from pathlib import Path
+from typing import NamedTuple
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
@@ -90,12 +97,24 @@ RECORD_SUFFIX = "-credential-masks.json"
 _MAX_MANIFEST_BYTES = 1024 * 1024
 
 _APP_NAME_RE = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_RECORD_NAME_RE = re.compile(r"\.([a-z0-9]+(?:-[a-z0-9]+)*)" + re.escape(RECORD_SUFFIX))
 _FORBIDDEN_CHARS_RE = re.compile(r"[\x00-\x1f\x7f\\:\ud800-\udfff]")
 
+
+class DeclarationKind(NamedTuple):
+    """One manifest declaration this engine reads: its ``app.json`` key and record suffix."""
+
+    #: The ``app.json`` key.
+    key: str
+    #: The retained record beside the app directory is ``.<name>`` plus this.
+    record_suffix: str
+
+
+#: The ``credentialMasks`` declaration.
+CREDENTIAL_MASKS = DeclarationKind(MANIFEST_KEY, RECORD_SUFFIX)
+
 _lock = threading.Lock()
-#: ``manifest path -> ((dev, ino, size, mtime_ns), entries)``.
-_cache: dict[str, tuple[tuple[int, int, int, int], tuple[str, ...]]] = {}
+#: ``(manifest key, manifest path) -> ((dev, ino, size, mtime_ns), entries)``.
+_cache: dict[tuple[str, str], tuple[tuple[int, int, int, int], tuple[str, ...]]] = {}
 
 
 def entry_error(entry: object) -> str | None:
@@ -121,19 +140,19 @@ def entry_error(entry: object) -> str | None:
     return None
 
 
-def declaration_errors(value: object) -> list[str]:
-    """Validation errors for a manifest's ``credentialMasks`` value (``None`` is fine)."""
+def declaration_errors(value: object, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> list[str]:
+    """Validation errors for a manifest's *kind* value (``None`` is fine)."""
     if value is None:
         return []
     if not isinstance(value, list):
-        return [f"{MANIFEST_KEY} must be a list of paths"]
+        return [f"{kind.key} must be a list of paths"]
     errors: list[str] = []
     if len(value) > MAX_ENTRIES:
-        errors.append(f"{MANIFEST_KEY} must have at most {MAX_ENTRIES} entries")
+        errors.append(f"{kind.key} must have at most {MAX_ENTRIES} entries")
     for index, entry in enumerate(value):
         reason = entry_error(entry)
         if reason is not None:
-            errors.append(f"{MANIFEST_KEY}[{index}] {reason}")
+            errors.append(f"{kind.key}[{index}] {reason}")
     return errors
 
 
@@ -157,9 +176,17 @@ def staged_crew_leaf(app: str, entry: str) -> str:
     return f"{APPS_LEAF}/.{app}{STAGED_DATA_SUFFIX}/{entry}"
 
 
-def record_path(app: str) -> Path:
-    """Where *app*'s retained declaration lives: ``apps/.<app>-credential-masks.json``."""
-    return config_dir() / APPS_LEAF / f".{app}{RECORD_SUFFIX}"
+def record_path(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> Path:
+    """Where *app*'s retained declaration lives: ``apps/.<app><record suffix>``."""
+    return config_dir() / APPS_LEAF / f".{app}{kind.record_suffix}"
+
+
+def _record_app_name(filename: str, kind: DeclarationKind) -> str | None:
+    """The app a retained *kind* record named *filename* is for, or ``None``."""
+    if not (filename.startswith(".") and filename.endswith(kind.record_suffix)):
+        return None
+    name = filename[1 : -len(kind.record_suffix)]
+    return name if _APP_NAME_RE.fullmatch(name) else None
 
 
 def _load_json(path: Path) -> object:
@@ -171,11 +198,13 @@ def _load_json(path: Path) -> object:
         return None
 
 
-def _clean_declaration(path: Path, expected_name: str) -> tuple[str, ...] | None:
+def _clean_declaration(
+    path: Path, expected_name: str, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[str, ...] | None:
     """*path*'s declared entries when the whole manifest reads cleanly, else ``None``.
 
     Cleanly means a regular file within the size cap, parsed as a JSON object whose
-    ``name`` is *expected_name* and whose ``credentialMasks`` passes validation. Unlike
+    ``name`` is *expected_name* and whose *kind* value passes validation. Unlike
     :func:`_read_entries`, a failure is ``None`` rather than ``()``, so the caller can tell
     "declares nothing" from "could not be read".
     """
@@ -188,19 +217,21 @@ def _clean_declaration(path: Path, expected_name: str) -> tuple[str, ...] | None
     data = _load_json(path)
     if not isinstance(data, dict) or data.get("name") != expected_name:
         return None
-    declared = data.get(MANIFEST_KEY)
-    if declaration_errors(declared):
+    declared = data.get(kind.key)
+    if declaration_errors(declared, kind=kind):
         return None
     return valid_entries(declared)
 
 
-def _read_entries(path: Path, expected_name: str) -> tuple[str, ...]:
+def _read_entries(
+    path: Path, expected_name: str, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[str, ...]:
     """*path*'s admissible entries when its ``name`` is *expected_name*, else ``()``.
 
     Cached on the file's identity, so a spawn re-parses only a manifest that changed.
     Never raises: a manifest this cannot read declares nothing.
     """
-    key = str(path)
+    key = (kind.key, str(path))
     try:
         info = os.stat(path)
     except OSError:
@@ -217,14 +248,14 @@ def _read_entries(path: Path, expected_name: str) -> tuple[str, ...]:
     entries: tuple[str, ...] = ()
     data = _load_json(path)
     if isinstance(data, dict) and data.get("name") == expected_name:
-        declared = data.get(MANIFEST_KEY)
-        errors = declaration_errors(declared)
+        declared = data.get(kind.key)
+        errors = declaration_errors(declared, kind=kind)
         if errors:
             logger.warning(
                 "app %s: ignoring invalid %s entries in %s: %s",
                 expected_name,
-                MANIFEST_KEY,
-                key,
+                kind.key,
+                path,
                 "; ".join(errors),
             )
         entries = valid_entries(declared)
@@ -247,11 +278,11 @@ def _builtin_manifests() -> list[tuple[str, Path]]:
     ]
 
 
-def _installed_manifests() -> list[tuple[str, Path]]:
+def _installed_manifests(kind: DeclarationKind = CREDENTIAL_MASKS) -> list[tuple[str, Path]]:
     """``(installed name, file)`` for every app directory and retained record in the live home.
 
-    An app directory contributes its ``app.json``; a retained record
-    (``.<name>-credential-masks.json``) contributes itself, under the name it is for.
+    An app directory contributes its ``app.json``; a retained *kind* record
+    (``.<name><record suffix>``) contributes itself, under the name it is for.
     """
     try:
         apps = config_dir() / APPS_LEAF
@@ -260,22 +291,22 @@ def _installed_manifests() -> list[tuple[str, Path]]:
         for entry in os.scandir(apps):
             if entry.is_dir():
                 names.append(entry.name)
-            elif (match := _RECORD_NAME_RE.fullmatch(entry.name)) is not None:
-                records.append((match.group(1), apps / entry.name))
+            elif (record_app := _record_app_name(entry.name, kind)) is not None:
+                records.append((record_app, apps / entry.name))
     except FileNotFoundError:
         return []
     except Exception:
         # A data home this cannot list declares nothing here; the sandbox's own pass over
         # the same home refuses the spawn when the home itself cannot be resolved.
-        logger.warning(
-            "could not list the installed apps for their credential masks", exc_info=True
-        )
+        logger.warning("could not list the installed apps for their %s", kind.key, exc_info=True)
         return []
     manifests = [(name, apps / name / "app.json") for name in names if _APP_NAME_RE.fullmatch(name)]
     return sorted([*manifests, *records])
 
 
-def declared_masks(*, builtin: bool = True, installed: bool = True) -> dict[str, tuple[str, ...]]:
+def declared_masks(
+    *, builtin: bool = True, installed: bool = True, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> dict[str, tuple[str, ...]]:
     """Every app's declared entries on this host, ``{app name: entries}``.
 
     Only apps that declare at least one entry appear. A built-in and an installed tree
@@ -284,19 +315,21 @@ def declared_masks(*, builtin: bool = True, installed: bool = True) -> dict[str,
     """
     sources = [
         *(_builtin_manifests() if builtin else ()),
-        *(_installed_manifests() if installed else ()),
+        *(_installed_manifests(kind) if installed else ()),
     ]
     out: dict[str, dict[str, None]] = {}
     for name, path in sources:
         if not _APP_NAME_RE.fullmatch(name):
             continue
-        entries = _read_entries(path, name)
+        entries = _read_entries(path, name, kind)
         if entries:
             out.setdefault(name, {}).update(dict.fromkeys(entries))
     return {name: tuple(entries) for name, entries in sorted(out.items())}
 
 
-def declared_crew_leaves(*, installed: bool = True) -> tuple[str, ...]:
+def declared_crew_leaves(
+    *, installed: bool = True, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[str, ...]:
     """Every declared mask as a crew-home-relative leaf, sorted and deduplicated.
 
     Each entry at both places its app's data can be: ``data/`` and the lifecycle's
@@ -313,7 +346,7 @@ def declared_crew_leaves(*, installed: bool = True) -> tuple[str, ...]:
         sorted(
             {
                 leaf
-                for app, entries in declared_masks(installed=installed).items()
+                for app, entries in declared_masks(installed=installed, kind=kind).items()
                 for entry in entries
                 for leaf in (crew_leaf(app, entry), staged_crew_leaf(app, entry))
             }
@@ -321,17 +354,19 @@ def declared_crew_leaves(*, installed: bool = True) -> tuple[str, ...]:
     )
 
 
-def declared_crew_leaves_for(app: str, *, builtin: bool) -> tuple[str, ...]:
+def declared_crew_leaves_for(
+    app: str, *, builtin: bool, kind: DeclarationKind = CREDENTIAL_MASKS
+) -> tuple[str, ...]:
     """*app*'s declared masks as crew-home-relative leaves, from ONE manifest source.
 
     *builtin* reads the shipped package's manifest, otherwise the installed tree's: the
     caller names the code it runs, so a backend gets back what its own manifest declared.
     """
-    masks = declared_masks(builtin=builtin, installed=not builtin)
+    masks = declared_masks(builtin=builtin, installed=not builtin, kind=kind)
     return tuple(crew_leaf(app, entry) for entry in masks.get(app, ()))
 
 
-def remember_declaration(app: str) -> None:
+def remember_declaration(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> None:
     """Make *app*'s retained record match its installed ``app.json``.
 
     Called by the gateway whenever it records the installed app and before an update or
@@ -348,18 +383,18 @@ def remember_declaration(app: str) -> None:
     manifest = config_dir() / APPS_LEAF / app / "app.json"
     if not manifest.is_file():
         return
-    entries = _clean_declaration(manifest, app)
+    entries = _clean_declaration(manifest, app, kind)
     if entries is None:
         logger.warning(
             "app %s: keeping its retained %s record as it is, because %s does not read " "cleanly",
             app,
-            MANIFEST_KEY,
+            kind.key,
             manifest,
         )
         return
-    record = record_path(app)
+    record = record_path(app, kind=kind)
     if entries:
-        body = json.dumps({"name": app, MANIFEST_KEY: list(entries)}, indent=2) + "\n"
+        body = json.dumps({"name": app, kind.key: list(entries)}, indent=2) + "\n"
         atomic_write(record, body, restrict_to_owner=True)
     else:
         record.unlink(missing_ok=True)

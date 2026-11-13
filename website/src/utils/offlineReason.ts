@@ -10,6 +10,15 @@ export function isRelayCrewWindow(ua: string = typeof navigator === 'undefined' 
   return ua.split(' ').includes('kiroCrewRelayWindow')
 }
 
+/** True when a relay Crew window's dropped connection is still being retried:
+ *  the relay neither refused it nor ended the session. The desktop app decides
+ *  when retrying stops (its "currently unavailable" notice then replaces this
+ *  page), so until then the page shows a calm reconnecting view, not an error.
+ *  The caller adds the transport state: offline, and past the first connect. */
+export function isRelayRetrying(cause: OfflineCause | null, relayCrewWindow: boolean = isRelayCrewWindow()): boolean {
+  return relayCrewWindow && cause !== 'refused' && cause !== 'session_ended'
+}
+
 /** The offline wording: the Kiro relay's reason when it gave one (a Crew opened
  *  through Kiro Mobile or the desktop app), otherwise the generic reconnecting.
  *  In a relay Crew window the generic case is the same word the desktop's Crew

@@ -184,12 +184,9 @@ async function shootNotebook(browser, base, theme) {
   await stubDashboardApi(page, {
     theme,
     extra: mdnbApiStub({ notes: mdnbNotesList(NOTE_PATH, NOTE_TITLE), doc: mdnbNoteDoc(NOTE_PATH, NOTE_CONTENT) }),
+    localStorageEntries: { 'mdnb-active-vault': MDNB_VAULT_ID },
   })
   logPageProblems(page)
-  await page.addInitScript(id => {
-    localStorage.setItem('mdnb-active-vault', id)
-    localStorage.removeItem('mdnb-full-width')
-  }, MDNB_VAULT_ID)
   await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
   await page.getByText(NOTE_TITLE).first().waitFor({ timeout: 15000 })
   await page.getByText(NOTE_TITLE).first().click()

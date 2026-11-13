@@ -1157,9 +1157,10 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Credential",
             "Where the Crew reads its credential for the lease service: secret://NAME "
-            "for a secret stored under Settings > Secrets, or the absolute path of a "
-            "file holding it. Never the credential itself; it is read for each call "
-            "and never logged.",
+            "for a secret stored under Settings > Secrets, the absolute path of a file "
+            "holding it, or kiro-sign-in to use the Crew's own Kiro sign-in (IAM Identity "
+            "Center or your organization's identity provider), refreshed automatically. "
+            "Never the credential itself; it is read for each call and never logged.",
             restart=True,
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,
@@ -1170,10 +1171,10 @@ class TunnelConfig:
         metadata=_meta(
             "Relay Lease Token Type",
             "The TokenType the Crew sends with its lease credential. Empty (the "
-            "default) sends none, for an IAM Identity Center, Builder ID or Kiro "
-            "sign-in. EXTERNAL_IDP for a token from an outside identity provider, "
-            "API_KEY for a team Crew's crew API key. Any other value keeps Remote "
-            "Control from starting.",
+            "default) sends none, for an IAM Identity Center sign-in. EXTERNAL_IDP for "
+            "a token from an outside identity provider, API_KEY for a team Crew's crew "
+            "API key. Must be empty with kiro-sign-in, which sends the type its sign-in "
+            "needs. Any other value keeps Remote Control from starting.",
             restart=True,
         ),
     )
@@ -1219,6 +1220,18 @@ class TunnelConfig:
             "reference is ignored with a warning that does not repeat it.",
             # Masked like a secret, in case the credential itself is pasted in.
             sensitive=True,
+        ),
+    )
+    relay_viewer_oidc_scope_prefix: str = field(
+        default="",
+        metadata=_meta(
+            "Relay Viewer OIDC Scope Prefix",
+            "For testing against a non-prod control plane only, like kiro-cli's "
+            "api.oidc.scopePrefix: the prefix Builder ID and IAM Identity Center "
+            "sign-ins request their scopes under, in place of the public one. Empty "
+            "(the default) keeps the public scopes. Lower-case letters and "
+            "underscores only; any other value is ignored with a warning. Applies to "
+            "the next sign-in.",
         ),
     )
     relay_viewer_relay_domain: str = field(

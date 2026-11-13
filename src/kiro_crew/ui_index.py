@@ -381,11 +381,11 @@ def _size(obj: dict[str, Any]) -> int:
 
 
 #: The packaged built-in apps, whose display names a question may carry
-#: ("uninstall Command Bar"): the name is the item to act on, not words to
-#: search the dashboard for (Command Bar is also the top bar's search box).
+#: ("uninstall Papyrus"): the name is the item to act on, not words to
+#: search the dashboard for.
 _BUILTIN_APPS_DIR = Path(__file__).resolve().parent / "apps" / "builtins"
 #: What a person does to one app; only beside one of these is an app's name
-#: taken out of the search, so "open Command Bar" still searches for it.
+#: taken out of the search, so "open Papyrus" still searches for it.
 _APP_ACTION_RE = re.compile(
     r"\b(?:uninstall|remove|delete|disable|enable|install|update|reinstall)\b"
     r"|卸载|删除|移除|停用|禁用|启用|安装|更新|删掉",
@@ -425,7 +425,7 @@ def _named_app(query: str) -> tuple[str, str] | None:
             continue
         rest = " ".join((query[: m.start()] + " " + query[m.end() :]).split())
         rest = re.sub(r"\b(?:the|app|application)\b|应用", " ", rest, flags=re.IGNORECASE)
-        # A Chinese question points at the app it names ("Command Bar 这个应用"):
+        # A Chinese question points at the app it names ("Papyrus 这个应用"):
         # the demonstrative and the sentence punctuation are not search words.
         rest = re.sub(r"这个|那个|这款|那款|[？?！!。，,]", " ", rest)
         rest = " ".join(rest.split())
@@ -747,11 +747,15 @@ AREAS: dict[str, _Area] = {
     "connections": _Area(
         "connections: the Connections cards and their OAuth apps, MCP servers, messaging channels (Slack, Telegram, ...)",
         title="settings.tab.connections",
-        anchors=("settings.tab.connections", "page.mcp", "settings.tab.channels"),
+        anchors=(
+            "settings.tab.connections",
+            "tab.capabilities.mcp-servers",
+            "settings.tab.channels",
+        ),
         related=("settings",),
     ),
     "customize": _Area(
-        "the Customize page: Bots, skills, hooks, knowledge, prompts, steering, workflows",
+        "the Customize page: Bots, skills, MCP servers, hooks, knowledge, prompts, steering, workflows",
         title="page.capabilities",
         anchors=("page.capabilities",),
         related=("settings",),

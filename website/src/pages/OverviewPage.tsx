@@ -27,7 +27,7 @@ import { reportForError } from '../utils/errorReport'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
-import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber } from '../i18n/format'
+import { compactPluralCount, fmtCompact, fmtDuration, fmtNumber, fmtPercent } from '../i18n/format'
 import { formatCost } from '../utils/formatCost'
 
 // The record editor and recovery tools are needed only inside this drill-in.
@@ -143,7 +143,7 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
                   <div className="flex-1 h-1.5 rounded-full bg-bg-elevated overflow-hidden max-w-[220px]">
                     <div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, Math.max(0, b.percentUsed))}%` }} />
                   </div>
-                  <span>{Math.round(b.percentUsed)}%</span>
+                  <span>{fmtPercent(b.percentUsed / 100, { maximumFractionDigits: 0 })}</span>
                 </>
               )}
             </div>

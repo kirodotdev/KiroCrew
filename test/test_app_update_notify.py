@@ -400,3 +400,188 @@ class TestRegistryRoute:
         monkeypatch.setattr(routes, "list_catalog_apps", _catalog)
         response = await routes.handle_registry(self._request(Hostile()))
         assert response.status == 200
+
+
+class TestANoteIsMarkedReadOnceTheUpdateIsInstalled:
+    """The listing that raised a note retires it once the app has that version.
+
+    A real ``DashboardState`` throughout, so the note is matched in the shape the
+    bus actually stores (``meta`` merged into the row), not a shape a fake made up.
+    """
+
+    @pytest.fixture(name="state")
+    def state_fixture(self, monkeypatch, tmp_path, ledger):
+        from unittest.mock import MagicMock
+
+        from kiro_crew.dashboard.state import DashboardState
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = DashboardState(
+            sessions=MagicMock(count=0), crons=MagicMock(), lessons=MagicMock(), start_time=0.0
+        )
+        state.sent = []
+        state.broadcast_ws = lambda msg_type, data: state.sent.append((msg_type, data))
+        _seed(ledger, {})
+        return state
+
+    @staticmethod
+    def _deliver(state: Any, *rows: dict[str, Any]) -> None:
+        notes = update_notify.prepare_app_update_notes(list(rows))
+        assert notes, "the fixture rows announce nothing"
+        update_notify.deliver_app_update_notes(state, notes)
+
+    @staticmethod
+    def _unread(state: Any) -> list[str]:
+        return [n["title"] for n in state._notification_log if not n.get("acked")]
+
+    @pytest.mark.asyncio
+    async def test_the_installed_announced_version_marks_its_note_read(self, state):
+        self._deliver(state, row("demo", version="1.2.0", installed_version="1.0.0"))
+        assert self._unread(state) == ["demo 1.2.0 available"]
+        ts = state._notification_log[0]["ts"]
+
+        installed = row("demo", version="1.2.0", installed_version="1.2.0", update_available=False)
+        assert await update_notify.resolve_app_update_notes(state, [installed]) == 1
+
+        assert self._unread(state) == []
+        assert ("notification_ack", {"ts": ts}) in state.sent
+        # Read, not removed: the feed still holds it.
+        assert [n["title"] for n in state._notification_log] == ["demo 1.2.0 available"]
+
+    @pytest.mark.asyncio
+    async def test_a_version_past_the_announced_one_marks_it_read_too(self, state):
+        self._deliver(state, row("demo", version="1.2.0", installed_version="1.0.0"))
+        assert (
+            await update_notify.resolve_app_update_notes(
+                state, [row("demo", version="1.3.0", installed_version="1.3.0")]
+            )
+            == 1
+        )
+        assert self._unread(state) == []
+
+    @pytest.mark.asyncio
+    async def test_an_install_still_behind_leaves_the_note_unread(self, state):
+        self._deliver(state, row("demo", version="1.2.0", installed_version="1.0.0"))
+        assert (
+            await update_notify.resolve_app_update_notes(
+                state, [row("demo", version="1.2.0", installed_version="1.1.0")]
+            )
+            == 0
+        )
+        assert self._unread(state) == ["demo 1.2.0 available"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("announced", "installed", "retired"),
+        [
+            ("2.0.0-beta.2", "2.0.0-beta.1", False),
+            ("2.0.0-beta.1", "2.0.0-beta.2", False),
+            ("2.0.0-beta.2", "2.0.0-beta.2", True),
+            ("2.0.0-beta.2", "2.0.0", True),
+        ],
+    )
+    async def test_an_unordered_prerelease_is_not_caught_up(
+        self, state, announced, installed, retired
+    ):
+        """Two pre-releases of one release are not ordered, so neither proves the other."""
+        self._deliver(state, row("demo", version=announced, installed_version="1.0.0"))
+        resolved = await update_notify.resolve_app_update_notes(
+            state, [row("demo", version=announced, installed_version=installed)]
+        )
+        assert resolved == (1 if retired else 0)
+        assert self._unread(state) == ([] if retired else [f"demo {announced} available"])
+
+    @pytest.mark.asyncio
+    async def test_only_the_updated_apps_note_is_marked_read(self, state):
+        self._deliver(state, row("demo", version="1.2.0"), row("other", version="2.0.0"))
+        await update_notify.resolve_app_update_notes(
+            state,
+            [
+                row("demo", version="1.2.0", installed_version="1.2.0"),
+                row("other", version="2.0.0", installed_version="1.0.0"),
+            ],
+        )
+        assert self._unread(state) == ["other 2.0.0 available"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_installed_version_is_no_evidence(self, state):
+        """An externally detected app reports ``unknown``; nothing says it caught up."""
+        self._deliver(state, row("demo", version="1.2.0"))
+        assert (
+            await update_notify.resolve_app_update_notes(
+                state, [row("demo", installed_version="unknown")]
+            )
+            == 0
+        )
+        assert self._unread(state) == ["demo 1.2.0 available"]
+
+    @pytest.mark.asyncio
+    async def test_the_setup_script_failure_note_stays_unread(self, state):
+        """Same channel, but an update is what produced it, so an update cannot retire it."""
+        from kiro_crew.apps.routes_lifecycle import _note_on_enable_failed_after_update
+
+        app = web.Application()
+        app["state"] = state
+        request = make_mocked_request("POST", "/api/apps/demo/update", app=app)
+        _note_on_enable_failed_after_update(request, "demo", "npm exited 1")
+        assert (
+            await update_notify.resolve_app_update_notes(
+                state, [row("demo", version="1.2.0", installed_version="1.2.0")]
+            )
+            == 0
+        )
+        assert self._unread(state) == ["demo updated, but its setup script failed"]
+
+    @pytest.mark.asyncio
+    async def test_a_note_from_any_other_source_is_never_touched(self, state):
+        state._notification_log.append(
+            {
+                "kind": "update",
+                "source": "app:demo",
+                "channel": update_notify.NOTE_CHANNEL,
+                "title": "demo 1.2.0 available",
+                "ts": "2026-01-01T00:00:00+00:00",
+                "app": "demo",
+                "latestVersion": "1.2.0",
+            }
+        )
+        assert (
+            await update_notify.resolve_app_update_notes(
+                state, [row("demo", version="1.2.0", installed_version="1.2.0")]
+            )
+            == 0
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_state_that_cannot_ack_never_raises(self):
+        assert await update_notify.resolve_app_update_notes(object(), [row()]) == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("catalog_reachable", [True, False])
+    async def test_the_registry_listing_marks_it_read(self, state, monkeypatch, catalog_reachable):
+        """Whichever surface ran the update, the next listing sees it installed.
+
+        The seed fallback counts too: the installed version it reads is the local
+        install record's, not the row source's.
+        """
+        from kiro_crew.apps import routes
+
+        self._deliver(state, row("demo", version="1.2.0", installed_version="1.0.0"))
+        installed = [
+            row("demo", version="1.2.0", installed_version="1.2.0", update_available=False)
+        ]
+
+        async def _catalog():
+            return installed if catalog_reachable else []
+
+        async def _seed_rows():
+            return installed
+
+        monkeypatch.setattr(routes, "load_category_order", lambda: [])
+        monkeypatch.setattr(routes, "load_sections", lambda: [])
+        monkeypatch.setattr(routes, "get_server_platform", lambda: {})
+        monkeypatch.setattr(routes, "list_catalog_apps", _catalog)
+        monkeypatch.setattr(routes, "list_registry", _seed_rows)
+        response = await routes.handle_registry(TestRegistryRoute._request(state))
+        assert response.status == 200
+        assert self._unread(state) == []

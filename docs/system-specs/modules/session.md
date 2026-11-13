@@ -8,7 +8,12 @@ breaker, per-session semaphore, and persistent background session.
 
 Chat sessions are served from the warm pool when eligible (default pool
 agent, default cwd, no resume mapping); otherwise they cold-start on first
-message via `get_or_create()`.
+message via `get_or_create()`. A claim discards a pooled process it cannot hand
+over (`_drain_and_claim`): one that authenticated as the previous account, one
+past its TTL, a dead one, and one started before a request was refused for a
+changed tools list (`kiro_cli.spawned_before_tools_list_refusal`), because that
+process read its Tool Search never-defer list before the refusal was known and
+may still defer Kiro Crew's own tools ([mcp](../../architecture/mcp.md#what-belongs-in-kirocrew-core-and-what-does-not)).
 
 Successful native ACP resume suppresses replay from both disk and the
 dashboard's live slot window. The runner honors the actual provider client's
@@ -203,221 +208,70 @@ brief is one fixed line ("Nothing new since HH:MM.", with the date when it is
 not today), posted as a plain message without a card or status chip, and no
 model call is made. The line claims nothing about what waits:
 a question asked in prose before the owner left is the message right above it.
-Otherwise the slot's `preparing` flag shows in the chat's working indicator
-while the gateway reads its inputs and writes the brief (the wake turn below,
-else one tool-free background model call); the finished message posts while the
-flag is still up, so it replaces the indicator in place. The flag carries a
-caption the gateway builds (`warm_task_brief_checking.py`) from the inputs the
-brief already holds: the non-zero counts of pull requests it read on GitHub (a
-failed read is not counted), the brief's work items (open ones, plus any that closed
-while the owner was away) and running worker chats, then the goal, redacted and
-cut to 60 characters ("Checking 2 PRs on GitHub, 3 tasks for “…”."), or the goal
-alone when every count is zero. The slots frame sends it as `preparing_text`
-with the language it is written in, `preparing_lang`; a client shows it only
-when that is its UI language, and its own translated "Preparing your catch-up…"
-otherwise. The claim and every staleness
-check use the first read's fingerprint; what the brief says comes from the
-re-read made once the claim is on disk, so a worker report that lands in
-between is not missed. Just before posting, the gateway re-reads the "Waiting on
-you" list and the ledger digest; if either differs from what the prompt used
-(a card answered or a ledger write during the model call), the result is
-dropped and generated once more from the new state, and a second change
-posts nothing that visit.
+Otherwise the gateway writes the welcome itself (`warm_task_brief_welcome.py`,
+RFC section 3.11); no model writes any of it and no background model call is
+made. Before the first GitHub read the slot's `preparing` flag goes up, so a
+pending reply bubble shows the caption in the place the welcome lands, in both
+the Ultra Mode chat and the Bot pane (`PreparingReplyBubble`); the finished
+message posts while the flag is still up and replaces it in place. The caption
+is built (`warm_task_brief_checking.py`) from what the welcome is about to read:
+the non-zero counts of pull requests it will read on GitHub, its work items
+(open ones, plus any that closed while the owner was away) and running worker
+chats, then the goal, redacted and cut to 60 characters ("Checking 2 PRs on
+GitHub, 3 tasks for “…”."), or the goal alone when every count is zero. The
+slots frame sends it as `preparing_text` with the language it is written in,
+`preparing_lang`; a client shows it only when that is its UI language, and its
+own translated "Preparing your catch-up…" otherwise. The claim and every
+staleness check use the first read's fingerprint; what the welcome says comes
+from the re-read made once the claim is on disk. After the GitHub reads the
+gateway reads again and renders that read with the same clock; when the text
+differs (a ledger write, an answered card, a worker's turn ending) it reads and
+renders again, at most three renders, then posts the newest.
 
-The model reads one JSON snapshot assembled by `warm_task_brief_inputs.py`.
-Each section has its own character budget and keeps whole entries, most
-important first; the serialized document is never cut. In order:
-`waiting_on_you` (the "Waiting on you" list itself, `member_waiting.waiting_items`,
-read on the loop after the change-card store is warmed off it: the newest
-reply's `[OPTIONS: ...]` choices, question cards and change cards, each with
-its options and time; the list's own rules retire an answered ask, so an older
-ask is never brought back);
-`changes_since_away` (item reports, decisions and closes after the away
-anchor, and session-ledger events after it, each with its source (worker
-report, conductor decision, work ledger or session ledger) and `HH:MM`
-time; a PR's live state is not listed here, since the read cannot tell when
-it merged, and is a checked fact);
-`checked_facts` (what the gateway itself read, numbered `f1`, `f2`, ...:
-each pull request the live read covered, one whose read failed stating
-only "not checked since HH:MM", then every work item in `open_items`, from
-the task list; `warm_task_brief_facts.py`); `transcript_since_owner` (the
-owner's last genuine message and every turn since, whole; over budget the
-oldest drop first); `open_items` (open items, and terminal ones that changed
-while the owner was away, questions and blocked first); `goal` (conductor
-goal, else session-ledger goal, else the owner's newest message);
-`goal_progress`; and `owner_recent_messages` (the owner's last three genuine
-messages, which pick the reply language and the script of the fixed lines).
+**Live reads.** The gateway reads from GitHub only each open item's own ledger
+PR: the open asks' items first, then every other open item, at most five
+(`MAX_LIVE_PRS`). A PR URL in an item's text is never read, since the welcome
+shows PR state only on that item's own line. A bare
+`#N` is never resolved to a repository, so it is not read. Each answer is cached
+in process for 15 minutes, and one welcome spends at most 10 seconds on live
+reads (`LIVE_READ_TOTAL_SECS`); a PR still being read at the limit is
+`checked: false` with `not_checked_since`. Each good read is also recorded once
+as `object/observed` (producer `warm_brief`) in the thread's own crew log unit,
+which the `objects` slot fold keeps for the Ultra Mode Board (`pr_facts`).
 
-The live read covers the pull requests the open work items hold, at most
-five, through the structured monitor's GitHub probe (`GitHubPullRequestProvider`).
-A PR's repository comes only from ledger data or a full PR URL: each open
-question or blocked item's own PR (its `pr`, or its acceptance's `pr`, in its
-acceptance's `repo`), then every `https://github.com/<owner>/<repo>/pull/<n>`
-URL in the pending ask's text and choices and in those items' text, then each
-other open item's own PR. A bare
-`#N` or a written `owner/repo#N` is never resolved to a repository, so it is
-not read. PR links in the card and buttons for the pending choices come in
-follow-up changes. Each answer
-is cached in process for 15 minutes. One welcome spends at most 10 seconds in
-total on live reads, both attempts included (`LIVE_READ_TOTAL_SECS`); at the
-limit the welcome goes out with the cached reads, and every PR still being read
-is `checked: false`. Every entry carries `read_at`, or
-`checked: false` with `not_checked_since` (the last good read, or `never`).
-The model returns its catch-up lines as `lines` (at most 12), each
-`{text, kind, facts}` with `kind` one of `pr`, `task`, `file`, `deploy`,
-`ticket`, `none`. Before the grounding scans the gateway keeps a line only
-when every id in `facts` is a key of the fact table, a `pr` or `task` line
-lists a fact of its own kind (a `none` line needs none); only a wake check
-is a `file`, `deploy` or `ticket` fact; no text is scanned for this. `body`
-is asked for pictures only; the gateway enforces no picture count.
-Known limit: a `none` line naming a task or file is not caught; a pull
-request in one still fails the `#N` grounding check. Words in `body` are not citation-checked
-either; the grounding checks still read them. Kept lines are stored
-in `meta.brief.lines`. The card lists the facts under "Checked just now"
-(`meta.brief.checked`: `id`, `kind`, `label`, `values` (machine values),
-`source` (`github` or `tasks`), `read_at`), translated by the card, each led by a superscript mark; each line draws the
-marks of its own `facts`. The secret scan reads these strings, and a
-grounding miss drops them. The result row stores `facts_digest` (the ledger digest, what
-waited and each live read, without read times); when the newest delivered
-brief's digest equals the new one and the thread said nothing since the away
-anchor, the return sends nothing and calls no model. A PR whose read failed
-is written as "not checked since HH:MM", citing its fact.
+**The four parts.** The welcome is short, plain markdown in the owner's
+language (the script of their last three genuine messages):
 
-**Wake turn** (`warm_task_brief_wake.py`, RFC section 3.8 as amended
-2026-11-05). On the first write of a return, before the one-call brief, the
-gateway runs one turn of the thread's crewmate in a fresh session
-(`thread:<slot>:warm-wake`, a dashboard surface for governance and the
-audit log, destroyed after) through
-`DashboardState.run_background_turn`, under `ToolApprovalPolicy.READ_ONLY`
-(the Reads mode's classifier with reject as the fallback, so no approval card
-and no write: it closes no task and writes no ledger) and the read-only spec
-of a thread reply (`publish_readonly_spec`, or `side_read_only`). The prompt
-is the one-call prompt with its tool ban replaced: the turn may read files,
-deployments and tickets, its calls are numbered `t1`, `t2`, ... in call
-order, and it returns the same JSON plus `checks`, each
-`{id: c1..c8, kind: file|deploy|ticket, label, result, tool_calls}`. A check
-stays only when every call it cites completed in this turn; it takes the next
-`fN`, `source: wake`, and `evidence` (the cited calls' tool-call ids, the
-only proof stored), and lines citing its `cN` are renamed to it. Limits:
-`WARM_TASK_BRIEF_WAKE_TIMEOUT_SECS = 180`, `WARM_TASK_BRIEF_WAKE_MAX_TOOL_CALLS = 15` (`max_turns`),
-`WARM_TASK_BRIEF_WAKE_MAX_PER_THREAD_PER_DAY = 6` per chat per local day (in memory: a gateway restart
-resets the count). It runs only when the crewmate's own chat runs on the
-default harness the wake session starts on (no pin or member route
-elsewhere). The one-call brief runs instead, once, on a timeout, a failed
-or brief-less turn, the cap, or a harness that does not qualify. A typed
-owner row, a reset or a close during the wake stops it
-(`cancel_warm_task_brief`) and abandons the brief: no one-call brief is made,
-since none could post. Nothing is retried, and a retry after a changed snapshot
-never wakes.
+1. **Goal**: the conductor's ledger goal, else the session ledger's goal, else
+   the owner's newest genuine message.
+2. **Needs you**: each open item the Board's own `awaits_person` test says waits
+   on the owner, with its state, its PR state when read live, and "checked
+   HH:MM"; under it the item's `ask` record (`work_ask_record`:
+   why, each option with what it leads to, the pick with its reason), or one
+   plain line saying the reason and options were not written yet. Question cards
+   and change cards follow with their option labels and a line saying why and
+   what each leads to were not written; a reply's open `[OPTIONS:]` line is
+   listed with "The choices are in the buttons below", unless an item's record
+   already explains those labels. With nothing waiting it is one line, "Nothing
+   needs you right now."
+3. **Being done now**: one line per open item that has a worker or a report: its
+   ledger status word, its PR state only when this welcome read it, and
+   "checked HH:MM".
+4. **Comes after**: open items not started yet, each labelled "plan".
 
-The prompt asks for parts in order: the goal, what changed since the owner
-left (each fact with source and time), numbered asks (what, why only the
-owner, every option with its consequence, the recommendation and why), problems
-that do not need the owner, and what runs next. It returns one JSON object:
-`status` (`on_track`, `needs_you`, `blocked` or `done`; anything else reads as
-`needs_you` when an ask or waiting item exists, else `on_track`, and
-`on_track` or `done` beside one reads as `needs_you`), `headline` (at most
-240 characters), `asked` (the owner's request restated in one line, 160
-characters; the payload's `owner_request` is its source, and the gateway's
-quote fills it only when there is no `body`), `asks` (at most four, each
-`what`, `why`, `source`, `options` of `label` and `consequence`,
-`recommended` and `recommended_why`; texts 200 characters, a consequence
-160) and a markdown `body` (kept as source, defanged, trailing whitespace
-dropped, 6,000 characters, 160 lines; the model's output budget is 72 KiB).
-An ask's option labels come only from the `waiting_on_you` entry its
-`source` names, at most six: a renamed, added or dropped label keeps the
-source labels and drops the consequences and recommendation, an ask with no
-valid `source` keeps no options, and a recommendation outside the labels is
-dropped. Asks replace the older `needs_you` list (four items of 200), which
-is still read when a reply has no `asks`. In `content`, the asks pass
-through the same inert-body transform as the body. Markdown images
-and `<img>` tags outside a widget or code fence draw as their alt text only
-(a widget frame allows no remote image). The secret and grounding
-scans run last, after every transform, on the exact strings the row would
-post: the secret scan on its whole `content` and each `meta.brief` field,
-the PR, SHA and time scans on the model-written strings only (each
-`meta.brief` field and the body as `content` carries it; the gateway's own
-waiting cards are not model text). Any grounding miss drops every model
-field, never masks or edits one; the checked-fact line rule runs before the scans. Every scanner reads the same three views
-of its text, built by one function: the canonical form (HTML entities
-decoded until stable, then NFKC) as written, with tags, comments and link
-syntax removed until none is left so the halves around them join, and that joined form with
-emphasis and code marks also removed; colour declaration values are removed
-in every view. A miss is a secret in any view, or a pull request outside
-the verified set (a live read, the snapshot or the owner's request, read by
-`inputs.pr_numbers`).
-Before posting, the gateway runs the RFC's section 3.9.6 output check over
-every model field, the whole body included: every commit SHA must appear in
-the snapshot, and every HH:MM must appear in the snapshot or be the prompt's
-"as of" time. An unbacked SHA or time alone keeps the brief: each one gets
-the `_UNVERIFIED_TEXT` tag for the owner's language right after it in every
-model field, and the secret, PR and SHA/time scans run again on the tagged
-strings; a wake check's `label` and `result` are tagged like model fields.
-A value the tag cannot sit beside is still a miss: one without whitespace
-before it and whitespace or sentence punctuation after it (split by markup,
-in inline code or a link, or inside `17:05:30`), any value in a body that
-holds a fenced block or a widget, or one whose tagged field would pass what
-the card keeps (240 UTF-16 units a field, 6,000 characters the body). On any other
-miss every model field is dropped and the card posts with the gateway's
-waiting cards and the fixed failure line as its headline. Both paths store
-`grounding_miss` on the row. The body may carry one
-picture the model chooses when it helps the owner act: a mermaid block, a
-markdown table or an `<mcwidget>`, with no fixed template; the prompt forbids a
-bare "N of M done" line, links and images. A separate `widget` field the model
-returns is ignored. Older fields (`asked`,
-`remaining`, `done`, `next`, `extra`) still parse; `headline` is required and
-an older `now` or `{"message"}` reply is read as it. The gateway lists
-`waiting` itself: every open work item whose status is `blocked` or `question`
-with reason `approval` or `needs_human`, as `{title, ask}` (title and summary,
-cleaned like a model field), in ledger order, at most 50, with `waiting_total`
-counting them all; the prompt tells the model not to repeat them in
-`needs_you`, and a `done` or `on_track` status beside anything waiting reads as
-`needs_you`. The brief stores no progress count; `goal_progress` in the
-prompt is the gateway's own `{accepted, total}` over the current goal's work
-items after a `new_goal` write (the newest `goal_items_used`), null when the
-board never recorded a goal or the goal's items cannot be told apart, and the
-model reads it only as a fact. Each text field is
-redacted before and after whitespace is collapsed and `**` dropped, then
-control markers (`[OPTIONS:`, `[STEERING`, `<!--`, any bracket form) are
-defanged, then the field is capped.
-
-The gateway post-checks the result: any pull-request number (a PR URL,
-`owner/repo#N`, or a bare `#N` or `PR#N`, matched with ASCII boundaries, so a
-CJK letter next to the number is a boundary; a number followed by a letter, as
-in the colour `#007bff`, or cut by a field cap's closing `…` names no PR) in a
-model-written field that neither the prompt's input nor the original
-request named fails the result, and the
-fixed failure line posts instead.
-The result is one Bot message: `meta.brief` holds the fields and `content`
-holds the same brief as labelled plain text; there the body's widget becomes a `[widget]` mention, links keep only their text and bare addresses become code, because a reply thread's parent and history draw `content` under the chat profile. The transcript draws `meta.brief`
-as a card (`WarmBriefCard`) in the order status and headline, the waiting
-cards (`WarmBriefWaiting`), body, What you asked, Done, Next, then the `extra`
-sections. Every field but `body` is a plain text node. The waiting cards are
-fixed code fed by gateway data: the `waiting` items, then the model's
-`needs_you`, as wrapping text cards with theme colours and no motion; the
-first three show and the rest fold behind one "N more" toggle that also counts
-items past the gateway's list. The card draws no progress picture or count,
-and a `progress` an older stored brief carries is ignored. The body is drawn
-by the same `MarkdownRenderer` an ordinary assistant reply uses, so a mermaid
-block renders as a diagram, a table as a table, and an `<mcwidget>` as a live
-widget: the same `WidgetFrame`, sandbox, message time and session key as one in
-an ordinary assistant reply, under the `welcome` frame profile
-(`components/widgetFrameProfile.ts`). It keeps page scripts and clicks, but
-its CSP names no CDN script origin (connect, image and font sources are local
-only, as for every widget), it has no link bridge and no bare-link rewrite,
-and the host ignores its `mc-widget-action`, so it never pre-fills the
-composer. It has no star, because an artifact page would draw it under the
-chat profile. Links in the body draw as plain text. Below the body the card draws the gateway's link row (RFC section 3.9.3), as the chat's own PR pills (the bare URLs go through the same `MarkdownRenderer`, with link previews off): one `owner/repo#N` link per pull request the brief read live, its URL built from that read's own repo and stored in `meta.brief.links`; `content` carries the row as its labels, the section 3.9.6 secret check reads the text with the row, and the model's text is never rewritten. The chat profile is
-unchanged. A page script can still navigate its own frame, which the sandbox
-and CSP cannot forbid. A cap that would cut inside a widget or code fence
-drops that block whole, and the prompt names both caps. A brief stored with a separate `widget` field keeps
-that HTML, drawn last in the same frame; an older `now` brief with no status
-keeps its plain Needs you list. A row without a
-valid `meta.brief` keeps the ordinary bubble. The card is the body of the
-ordinary assistant bubble, so the row keeps its timestamp and row actions, and
-Copy takes the plain-text `content`; chat search reads the card's own visible
-text, with the body's `<mcwidget>` HTML left out as for any assistant reply. Only an assistant row draws it: any other role carrying the same
-`meta.kind` draws as its own role. These generated rows are excluded from the
+Every ledger string is redacted whole before any cut (`redact_whole`, every scan
+view), then collapsed, its control markers defanged, its links and addresses
+made inert and its HTML escaped. A secret the scan of the exact posted text still
+finds posts the quiet line instead. The row carries no `meta.brief`, so it draws
+as an ordinary Bot message; the gateway appends main's copied `[OPTIONS:]` line,
+which stays the click path. The result row stores `facts_digest`: a hash of the
+welcome rendered again from the same reads with every read time emptied and a
+fixed clock, so every input the renderer reads counts and time passing alone
+does not. When it equals the
+newest delivered welcome's and the thread said nothing since the away anchor,
+the quiet line posts instead of the full welcome. Stored briefs from older builds
+keep drawing as their card (`WarmBriefCard`). No user-facing word says
+"conductor" (docs/decisions 2026-10-30). These generated rows are excluded from the
 task fingerprint. A new user turn, slot replacement, reset, close, and a
 finished task drop a stale result unposted. The owner leaving drops the brief
 only before the indicator shows; after that, the result still posts as
@@ -997,7 +851,12 @@ background work. It is:
   leaves no `_bg` session. When the refusal carries the `kiro_cli_missing` tag
   (no Kiro CLI installed, the normal state right after a fresh install, which the
   dashboard's Set up Kiro page handles) it is one warning line with the
-  refusal's message; any other failure is logged with its traceback
+  refusal's message; any other failure is logged with its traceback. An
+  `_ensure_background` start is shut down instead of registered when `_bg`'s
+  ownership generation moves after it takes its start permit (every reset of
+  `_bg` moves it, even with nothing registered yet), so a reset leaves no older
+  provider from that start for a later claimant; its caller finds no `_bg`
+  registered, as after a failed start.
 - **Never expired** by idle cleanup (`_expire_idle` skips it)
 - **Serialized** by the per-session semaphore (one background task at a time)
   — applies to the **non-kiro** `_bg` path only; see "Multiplexed _bg runtime"
@@ -1069,6 +928,12 @@ turn semaphore, so without this recycle one-liner traffic (titles, nav labels,
 folder icons, summaries) would grow the shared conversation unboundedly, with
 no context criterion ever evaluated. A runtime handle's session is
 ephemeral and carries no marker, so it is not followed by a recycle.
+A `background_turn(fresh_conversation=True)` on `_bg` (the skill dedupe and merge
+judges) replaces this recycle only when the provider swaps conversations in place
+(`swaps_conversation_in_place`). On a backend outside `_bg_runtime_backends()`,
+`_bg` is the entry those `_ProviderBgSession` handles wait on, and
+`_start_fresh_conversation`'s reset fallback would pop it under them, so a `_bg`
+that cannot swap in place recycles here as before.
 
 ### Multiplexed _bg runtime
 
@@ -2089,14 +1954,14 @@ against sweep completeness, and are torn down at `close_all`.
   - **Restart**: nothing is persisted. A restored session has no timer until its first turn ends, so its idle clock runs from after the restore.
 - **Crossing the threshold mid-turn** (`SessionManager.compaction_due_after_turn`, `chat_turn.recovery._notice_compaction_after_turn`): compaction still runs only after a turn ends. A dashboard turn whose reading crosses the effective threshold while it is still working gets, ONCE per turn, at the first tool-result boundary where every tool row above is done and no text segment is pending, one `kind="compaction"` row marked `meta.notice="compact_after_turn"` ("Context at N% (limit M%) — will compact after this turn", rendered by `CompactionCard` from the catalog as a calm info row with a clock glyph). It is a display row only: the model is not told anything and the turn runs on unchanged. `compaction_due_after_turn` reads the gate's own side-effect-free rungs (`CompactionCoordinator._gate_rung`, which `_compaction_gate_decision` delegates to after settling a pending verdict) and changes nothing; it is False while a pending verdict waits (its settlement can arm a cooldown) and on the recycle arm (a restart, not a compaction), so Claude-Code backends, harness-managed backends at the global threshold, uncompactable backends, an unconfirmed reading, a compaction in flight and an active cooldown get no row. Slash-command turns are skipped. The threshold and the end-of-turn trigger are unchanged.
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a member of
-  `ACP_BACKENDS_COMPACT` — kiro-cli, claude, codex, opencode, goose, pi and copilot, plus KAS,
+  `ACP_BACKENDS_COMPACT` — kiro-cli, claude, codex, opencode, mimocode, goose, pi and copilot, plus KAS,
   whose harness-managed case is the first bullet below. They divide by WHERE
   the
   done signal lands, which is `ACP_BACKENDS_INLINE_COMPACTION`: kiro-cli sends a
   `/compact` **prompt** (`session/prompt` + `_kiro.dev/compaction/status` watch —
   never the string form of `_kiro.dev/commands/execute`, which kiro-cli 2.14.0
   exits rc=0 on) and its result arrives afterwards, while claude, codex, opencode,
-  goose, pi and copilot finish the whole compaction inside the prompt turn. claude and opencode emit no
+  mimocode, goose, pi and copilot finish the whole compaction inside the prompt turn. claude, opencode and mimocode emit no
   status at all, goose emits only a `Compaction complete` chunk, pi only a `Compaction completed` chunk and copilot only a `Compacted conversation history` chunk; codex reports the compaction as a `tool_call` pair, marked
   `_meta.contextCompaction` on 1.11.0 and unmarked on 2.2.2 (both translated by
   `_dispatch.parse_codex_compaction_update`; the unmarked shape only for
@@ -2667,7 +2532,8 @@ against sweep completeness, and are torn down at `close_all`.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
   `session.watchdog_rss_max_mb`, default 4096 via
   `DEFAULT_WATCHDOG_RSS_MAX_MB`; 0 disables): recycles non-busy
-  sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips
+  sessions whose `/proc` process-tree RSS (MiB) grows past the ceiling (a
+  runtime found already over it is held, see "footprint" below). Skips
   persistent (`_PERSISTENT_KEYS`) and `channel:`-prefixed keys — the same
   protected set as the idle sweep — and any session whose turn is in flight.
   A parent with attached sub-agent work — running or queued children, or a
@@ -2718,14 +2584,64 @@ against sweep completeness, and are torn down at `close_all`.
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
   and at most one SUCCESSFUL reset happens per runtime pid per tick: the pid joins
   `recycled_pids` only after `reset` returns True, so a declined co-tenant does not
-  spend the budget. Each successful recycle is remembered per key for
-  `RSS_REBOUND_WINDOW_SECS` (24h) with the count of rebounds that led to it
-  (`session_rss_rebound`, which judges every crossing). A later ceiling crossing
-  by that key inside the window is a rebound, a sign that
-  `session.watchdog_rss_max_mb` sits below the workload's steady footprint: the
-  recycled session restores its whole conversation with `session/load`, so a
-  history that alone is over the ceiling puts every fresh process straight back
-  over it. The first crossing after each recycle logs one `RSS recycle rebound`
+  spend the budget. Every reading of an idle session goes to
+  `session_rss_rebound.judge_rss_reading`, which keeps one **footprint** per
+  runtime pid (`CleanupState.rss_footprints`, dropped by `prune_rss_records`
+  once no session names the pid). The tick that first reads a runtime only
+  notes it and never recycles; the next tick that reads it takes the footprint,
+  because the first can catch the MCP servers still starting. Local MCP servers
+  set a fresh process's size (measured on Windows: about 610 MB plus 108 MB per
+  local server, so 7.0 GB at 57 and 10.6 GB at 93), and a recycle of such a
+  process only buys the same process again after a cold start. A footprint over
+  the ceiling therefore HOLDS the runtime: one `RSS footprint ... settled above`
+  WARNING, no recycle and no chat notice, until its tree passes
+  `RSS_REBOUND_HOLD_GROWTH_FACTOR` (2x) that footprint, after which the ceiling
+  applies to it again, also if a guard declines that recycle. A footprint under
+  the ceiling is recorded as 0, and every later crossing by that runtime is
+  growth. A reading of 0 is an unreadable tree and settles nothing; sessions
+  sharing one runtime move its footprint once per tick. The footprint is for a
+  chat the watchdog has not recycled: while a key has a recycle record
+  (`CleanupState.rss_recycled`, below) its runtime takes no footprint and every
+  crossing goes to `judge_rss_crossing`, so the fresh process of a recycled
+  session that is back over the ceiling is a rebound, not a silent hold. A held
+  runtime that passes twice its footprint is therefore recycled once, and that
+  chat is on the rebound path until its record ends. A runtime first read under
+  a record is stored as settled at 0, so when the record ends the ceiling
+  applies to it as it did before footprints existed. The footprint is a start-up
+  figure: a first reading under the ceiling counts as start-up only for
+  `RSS_FOOTPRINT_SETTLE_TICKS` (2.5) times `MAX_TICK_INTERVAL_SECS`, which the
+  tick passes to `judge_rss_reading`: 750 s. One busy tick is allowed, two are
+  not. The window is two ticks and a half, not two, because a tick starts one
+  interval after the last one ended, so readings come 302 s apart at the 300 s
+  interval (measured on Linux): two ticks are 604 s, three are 906 s, and a
+  600 s window would recycle the chat that was busy at one tick. The window is
+  counted in the longest tick, the default; at a shorter tick
+  (`session.timeout_secs` under 1800) more readings fit into the same 750 s.
+  Read over the ceiling later than that, the runtime was read under it, settles
+  at 0 and is recycled on that reading. The hold's WARNING says which case it
+  is: `settled above <ceiling>MB without having been read under it` for a first
+  reading over the ceiling, `settled above <ceiling>MB <n>s after a first
+  reading of <m>MB, which counts as its start-up` for one under it. Two limits
+  follow from reading idle sessions on a 300 s tick: a process that leaks past
+  the ceiling between two readings inside that window is held at the second and
+  stopped at twice it, and one whose FIRST idle reading is already over the ceiling,
+  because its first turn was long, is held at its second reading however late
+  that comes. A reading while the session is busy cannot replace them: a
+  many-server chat climbs to its size during its first turn and for a while
+  after it (measured on Windows: a first reply takes 15 to 25 s at 57 to 93
+  local servers, and two chats with 93 were read at 5.8 and 6.4 GB, 36 and 48 s
+  after their first reply, on the way to 10.6 GB), so a busy reading lands on
+  that climb, would record a chat that is large by design as read under the
+  ceiling, and its first idle reading would recycle it. No reading tells that
+  chat from one its first turn made large; both are stopped at twice the size
+  taken. The warm-pool spare and the busy-session report compare
+  against the plain ceiling. Growth goes to `judge_rss_crossing`: each
+  successful recycle is remembered per key for
+  `RSS_REBOUND_WINDOW_SECS` (24h) with the count of rebounds that led to it. A
+  later crossing by that key inside the window is a rebound: the session's
+  history or its work takes each fresh process back over the ceiling. So the
+  three-recycle hold and its notice are reached by a runtime that was read
+  under the ceiling twice, or by a chat with a live recycle record. The first crossing after each recycle logs one `RSS recycle rebound`
   WARNING with the ceiling, the current and pre-recycle RSS and the elapsed
   time, and a rebound recycle's notice reason names `session.watchdog_rss_max_mb`
   and its value. A crossing updates the record and never drops it, so one a
@@ -2820,7 +2736,7 @@ against sweep completeness, and are torn down at `close_all`.
 | Method | Purpose |
 |--------|---------|
 | `start_pool(blocking=True)` | Pre-spawn warm sessions, and the background session on backends without a shared runtime; on a shared-runtime backend (`kiro`) the background session is created by `get_or_create` on its first turn. It is always created as the background agent (`kirocrew-lite`), whatever agent the first caller names, and concurrent first users share one cold start. `blocking=False` for non-blocking mode. |
-| `get_or_create(key, agent=None, channel_id=None, approval_policy="", model=None, cwd=None, extra_env=None, speculative=False, speculative_resume=False, wait_if_busy=True, start_priority=BACKGROUND, **factory_kwargs)` | Returns `(LLMProvider, is_new, resumed)`. `start_priority` orders a cold start in the start queues; only a caller a person is waiting on passes FOREGROUND ([acp-client](acp-client.md) § Session-start gate). Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Before that decision, a `cwd` inside a directory bound in `aws.project_profiles` sets `AWS_PROFILE` and `AWS_DEFAULT_PROFILE` in `extra_env` unless the caller already set `AWS_PROFILE` / `AWS_DEFAULT_PROFILE`, so such a session takes `bypass_env`; an empty map or an unbound `cwd` hands the caller's `extra_env` through unchanged ([config](config.md) § Project AWS profiles). A caller that names no `model` gets the session layer's own default-model ladder, `session._session_model`, which answers through `config.loader.resolve_effective_model` (the resolver the model chip reads) from the manager's watcher-refreshed `_cfg`, never a fresh load: the crew's pin, then its template's pin (the named template when there is no crew; `kirocrew` tracks the global), then `apps.<name>.model` for an `app_name=` the caller passes (taken out of the factory kwargs), then `agent.model`, then the installed agent file; `""` and `"auto"` inherit at every tier. Each tier is scoped to the backend the factory will select for this key (`members.select_provider_backend`: a `backend_override`, the member-DM route, else the configured one). It runs off the event loop; every tier deferring, or a resolver error (logged), passes `model=None` and leaves the factory's own fallback to choose, so the ladder never fails a cold start. The value is the allocation's `requested_model` stamp. `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. A load the provider would replace with a fresh session plus replay (Tool Search on, kiro backend, direct dashboard key — `resume_takes_tool_search_replay`, providers.md → Native-resume compatibility) never reaches this call speculatively: `chat_turn.eager_spawn._eager_spawn` reads that predicate first and leaves the slot to its first turn, because such a load can only come back `resumed=False` and be refused after a full spawn. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. While a speculative allocation for the key is still starting (`SessionRegistryState.speculative_starts`), a real claim that finds no live session waits for it and claims what it registered instead of cold-starting a second process, and cold-starts as it would have when that start registered nothing. A FOREGROUND claim does not wait on a BACKGROUND start, which waits in every start queue at its own priority. A BACKGROUND resume prefetch (`speculative_resume=True`) past its spawn door (its reservation token, the announcement's last field, is in `spawning_reservations`) is joined all the same: it holds its cold-start permit and is starting the process that takes the saved session's per-session lock, so a second start could only wait that lock out and fall back to a fresh session plus history replay. One still short of the door (queued for its permit behind background starts, say) has no process and no lock yet, so the claim does not wait for it: it records the prefetch's token in `superseded_speculative_starts` and cold-starts at its own priority, and the prefetch stands down at its spawn door with `SpeculativeResumeRefused` instead of starting a second process for the saved session (`test_session_get_or_create.py::TestRealClaimJoinsAnInFlightEagerStart`, `test_session_resume_prefetch_join.py`). A resume prefetch left with nothing to restore is refused the same way before it spends a start, because its fresh start would be refused once it ended and a claim joined to it would wait that out: when the `SessionMap.get` lookup pruned the entry its hint named, before it claims a warm-pool process; when the memory mode or a provider switch cleared the saved session, or its harness takes no fork, at its spawn door. |
+| `get_or_create(key, agent=None, channel_id=None, approval_policy="", model=None, cwd=None, extra_env=None, speculative=False, speculative_resume=False, wait_if_busy=True, start_priority=BACKGROUND, focus_resume=False, **factory_kwargs)` | Returns `(LLMProvider, is_new, resumed)`. `start_priority` orders a cold start in the start queues; only a caller a person is waiting on passes FOREGROUND ([acp-client](acp-client.md) § Session-start gate). `focus_resume` marks the dashboard owner's return to a saved chat (set only by `ws._handle_slot_focused`): it changes no queue and is copied to `provider.focus_resume` beside `start_priority`, where the re-open reads it as a start a person is about to wait on ([acp-client](acp-client.md) § Which servers the first prompt waits for). Uses warm pool for new sessions (default agent only). Sessions with a resume mapping skip warm pool (cold start needed for `session/load`). A `reasoning_effort_override` is applied post-claim via `provider.change_effort` (updating `_effort_per_model` and the `cli.json` overlay write) rather than bypassing the warm pool, recovering pool-hit startup latency. Every decision is counted via `_record_pool_decision` (`kirocrew.session.pool.decision`) with the single disqualifying reason, so the pool's hit rate and the frequency of the `bypass_resume` case are observable. Before that decision, a `cwd` inside a directory bound in `aws.project_profiles` sets `AWS_PROFILE` and `AWS_DEFAULT_PROFILE` in `extra_env` unless the caller already set `AWS_PROFILE` / `AWS_DEFAULT_PROFILE`, so such a session takes `bypass_env`; an empty map or an unbound `cwd` hands the caller's `extra_env` through unchanged ([config](config.md) § Project AWS profiles). A caller that names no `model` gets the session layer's own default-model ladder, `session._session_model`, which answers through `config.loader.resolve_effective_model` (the resolver the model chip reads) from the manager's watcher-refreshed `_cfg`, never a fresh load: the crew's pin, then its template's pin (the named template when there is no crew; `kirocrew` tracks the global), then `apps.<name>.model` for an `app_name=` the caller passes (taken out of the factory kwargs), then `agent.model`, then the installed agent file; `""` and `"auto"` inherit at every tier. Each tier is scoped to the backend the factory will select for this key (`members.select_provider_backend`: a `backend_override`, the member-DM route, else the configured one). It runs off the event loop; every tier deferring, or a resolver error (logged), passes `model=None` and leaves the factory's own fallback to choose, so the ladder never fails a cold start. The value is the allocation's `requested_model` stamp. `approval_policy` is persisted on the new `_Session` — callers (e.g. subagent) pass parent policy so the session inherits it. `speculative=True` (eager spawn) pre-creates ahead of a real first turn: the one-shot `_Session.first_turn` observation — a single three-member `FirstTurnState` enum (`NOTHING_ARMED` / `FRESH` / `RESUMED`), so a resume marker on an already-claimed session is unrepresentable rather than forbidden by convention — is registered ARMED (`FRESH`) and never consumed by speculative callers, and a resumable key raises `SpeculativeResumeRefused` — unless `speculative_resume=True` (resume prefetch) opts in, in which case the speculative creator performs the `session/load` and registers the observation as `RESUMED` when the load restored the transcript. A load the provider would replace with a fresh session plus replay (Tool Search on, kiro backend, direct dashboard key — `resume_takes_tool_search_replay`, providers.md → Native-resume compatibility) never reaches this call speculatively: `chat_turn.eager_spawn._eager_spawn` reads that predicate first and leaves the slot to its first turn, because such a load can only come back `resumed=False` and be refused after a full spawn. The observation is consumed in one read-then-clear by the first real claimant under the per-session semaphore (fast path and won-race path alike), with the returned booleans derived from it at the return boundary — so that turn observes `(is_new=True, resumed=True)` exactly as if it had resumed itself, preserving its history-injection decision. While a speculative allocation for the key is still starting (`SessionRegistryState.speculative_starts`), a real claim that finds no live session waits for it and claims what it registered instead of cold-starting a second process, and cold-starts as it would have when that start registered nothing. A FOREGROUND claim does not wait on a BACKGROUND start, which waits in every start queue at its own priority. A BACKGROUND resume prefetch (`speculative_resume=True`) past its spawn door (its reservation token, the announcement's last field, is in `spawning_reservations`) is joined all the same: it holds its cold-start permit and is starting the process that takes the saved session's per-session lock, so a second start could only wait that lock out and fall back to a fresh session plus history replay. One still short of the door (queued for its permit behind background starts, say) has no process and no lock yet, so the claim does not wait for it: it records the prefetch's token in `superseded_speculative_starts` and cold-starts at its own priority, and the prefetch stands down at its spawn door with `SpeculativeResumeRefused` instead of starting a second process for the saved session (`test_session_get_or_create.py::TestRealClaimJoinsAnInFlightEagerStart`, `test_session_resume_prefetch_join.py`). A resume prefetch left with nothing to restore is refused the same way before it spends a start, because its fresh start would be refused once it ended and a claim joined to it would wait that out: when the `SessionMap.get` lookup pruned the entry its hint named, before it claims a warm-pool process; when the memory mode or a provider switch cleared the saved session, or its harness takes no fork, at its spawn door. A cold start that names an agent records it for the time it is in flight (`SessionRegistryState.starting_agents`: the key, the start's reservation token and the agent the session will register as), written only by that start once its agent is fixed and removed when the session is registered and at every exit of the start, a failure and a cancellation included. `SessionManager.starting_agent(key)` answers it only while the start still holds that reservation, and `""` otherwise. Its one reader is the tool-listing request a starting session's own MCP servers make before the session is registered ([mcp](../../architecture/mcp.md), "A session that is still starting"); `get_agent` and every other reader of a session's agent are unchanged (`test_session_starting_agent.py`). |
 | `check_context_usage(key, provider)` | Returns %. Triggers compaction at configured threshold (default 70%), warns one `CONTEXT_WARN_MARGIN_PCT` below it. |
 | `compact_if_needed(key)` | Awaitable twin of the `check_context_usage` trigger for callers that must not start their next turn while a compaction is pending (the task runner's between-steps check, #4686). Same gates in the same order — both entry points consume the shared `_compaction_gate_decision` ladder, the single owner of the gate order (its docstring documents each rung) — then AWAITS `_compact_session`. Returns the outcome: `"absent"`, `"reset"` (the settled verdict on the prior attempt was ineffective-and-still-critical and the promoted escalation reset the session here, awaited), `"cc_managed"` (checked before the threshold, mirroring `check_context_usage`), `"below_threshold"`, `"compact_unsupported"` (the provider names a backend outside `ACP_BACKENDS_COMPACT`, so no `/compact` is dispatched and no semaphore is taken — checked AFTER the threshold so a declined backend keeps its per-turn usage log, #7812), `"unconfirmed"`, `"in_progress"`, `"cooldown"`, `"ok"`, `"busy"`, `"recycled"`, `"failed"`. A `"busy"` decline means a turn holds the semaphore — the caller leaves the session alone and retries later, never falls back to a direct `provider.compact()`. |
 | `record_success(key)` / `record_failure(key)` | Circuit breaker tracking. |
@@ -3721,19 +3637,24 @@ state a close compensates is not all scoped the same way.
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
   invariant silently does not hold across versions. A hold restored into an idle
-  slot, because a restart cut the turn that held it, is flushed by the next
-  directly started turn (`_api_chat_send` and the OpenAI-compatible route call
-  `slot_buffers.flush_restored_hold`) above that turn's user row: neither the
-  queue drain nor the cycle end runs before such a turn.) Regenerate, Edit & Resend,
-  rewind, a linked channel thread and a Spec Builder turn deliver such a hold only
-  at their cycle end (#32240). An immediate note on such an idle slot flushes the
+  slot, because a restart cut the turn that held it, is flushed by the next turn
+  a person starts (`slot_buffers.flush_restored_hold`) above that turn's user
+  row: neither the queue drain nor the cycle end runs before such a turn.) The
+  callers are `_api_chat_send`, the OpenAI-compatible route, a linked channel
+  thread (`route_linked_thread`), a Spec Builder turn that writes its own row
+  (`_dispatch_turn`), Edit & Resend and rewind. The last two flush on the live
+  slot before they build their scratch copy, which shares the hold, and carry the
+  note rows into the copy above the edited row; a refused edit leaves the notes
+  delivered. Regenerate writes no row, so it flushes after it records the reply
+  it replaces, and the notes stay above the new reply when the swap retires the
+  old one. An immediate note on such an idle slot flushes the
   hold first (`deliver_note` calls `_flush_held_notes_if_idle` before its own row,
   and the `/note` route loads a restored sidebar row's window before it
   re-authorizes, so that flush is not skipped), so the older, already-acknowledged
   note keeps its place in the transcript and its context is queued ahead of the
   newer one. `test_held_note_turn_starts.py` scans every turn start
   in the package and fails on one that neither flushes the hold above its own row
-  nor is named with the reason it does not. A close flushes the hold before
+  (above its launch, when it writes none) nor is named with the reason it does not. A close flushes the hold before
   its archive save, so each held note's visible row reaches the transcript a History
   resume reads; before the flush a note the DELETE had answered 200 for left no row
   there, only its hold entry. A note with no context half is
@@ -4853,6 +4774,14 @@ so absence clears it.
   category, because one card shows its Send now button without opening the stack.
   A crewmate's chat (no cards, only bubbles) and the crew window (read-only
   cards) keep the plain Resume hint, since neither lets the user send a card.
+  A waiting card is not work coming: the slot frame's `queue_held_depth` counts
+  the restored cards that wait for a person (`is_held_queue_entry`: not chosen
+  with "run this next", and not a parked send the startup drain accepted while
+  that drain's attempt lasts; once it ends every card still queued is held, a
+  later accepted card it starts by id after the running turn included), the
+  sidebar row, board lane and command center count only
+  `queue_depth - queue_held_depth` (`readyQueueDepth`), and a restored card's
+  hourglass stands still, chosen or not.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a
@@ -5612,19 +5541,25 @@ them to `kiro_pids.txt` as `child_pid:parent_pid[:start-id]` entries —
 `AcpRuntime` rewrites its root's whole block with `_replace_child_pids` (see
 below); the third field is the
 child's process-start identity (`_pid_start_token`, colon-free, in-process
-and non-blocking on every platform), omitted only when unreadable at track
-time.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
+and non-blocking on every platform) as the snapshot captured it, never read
+again at write time (`_recorded_start_token`), and omitted when the snapshot
+could not read it.  `AcpClient` snapshots in `ensure_ready()`.  `AcpRuntime` snapshots in
 `_snapshot_descendants()`, called repeatedly for a reason the one-shot client
 scan does not face: the runtime's registered PID is the sandbox launcher, and
 the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
 so the scan runs when the initialize handshake proves the agent came up (and
 once more, off the spawn's own path, when that scan saw no descendant) and
-then at the end of every `_finish_create_session()` and `load_session()`,
+then after every `_finish_create_session()` and `load_session()`,
 because each session start — fresh or resumed — forks another agent process
-and re-initializes MCP servers the earlier scan could not have seen. The same
+and re-initializes MCP servers the earlier scan could not have seen. None of
+those starts waits for its pass: each runs as a task beside the start
+(`_record_tree_in_background`), and every kill waits for the passes still
+running before it signals or takes a handle (`wait_tree_recorded`, see
+[acp-client](acp-client.md) § The runtime tracks its descendants). The same
 guarded pass also runs at the END of every prompt turn, through
 `process_identity.record_live_children_after_turn()` in both providers' stream
-`finally`, so a child a turn forks is recorded while the leader is verified
+`finally` (on the kiro-backend shared runtime it starts the pass as a task, so
+the turn's end does not wait for it), so a child a turn forks is recorded while the leader is verified
 alive and is on the handle a later teardown takes even when the leader exits on
 its own before teardown, together with the leader's group id verified at that
 same point (see [acp-client](acp-client.md) § Pre-teardown tree

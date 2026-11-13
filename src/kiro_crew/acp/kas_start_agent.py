@@ -20,8 +20,24 @@ own agent, and that switch is what declares the agent's block, behind Kiro
 Crew's servers in the same queue. No prompt ever runs in the start agent: a
 failed ``set_mode`` ends the session (``create_session``).
 
-``session/load`` is not changed: a resumed session starts in the mode the
-engine stored for it, which is the session's own agent.
+``session/load`` cannot name a mode: the engine resumes a session in the mode it
+stored for it, which is the session's own agent, so that agent's servers queue
+first again. It does take the definition re-sent with the load over the one it
+kept, though. A re-open a person is waiting on
+(``mcp_start_wait.person_waits``) therefore first loads the session with
+:func:`parking_load`, in which the own agent declares no server and the session
+sends none, so nothing starts; switches it to the start agent, which makes that
+the stored mode; and frees it again (``runtime_session_load._park_in_start_agent``).
+The load that follows then runs as a new session's start does: the engine
+resumes in the start agent and queues the array alone, and ``set_mode`` queues
+the agent's servers behind it. That ``set_mode`` also puts the session's own
+agent back as the stored mode.
+
+Every ``session/load`` registers the start agent (:func:`with_start_agent`, the
+same refusals), so a session whose re-open was cut off between those two steps
+still comes back in an agent the engine knows; it would start in the engine's
+own ``vibe`` mode otherwise. ``load_session`` switches such a session to its
+own agent whoever resumes it.
 """
 
 from __future__ import annotations
@@ -87,3 +103,35 @@ def with_start_agent(batch: list[Any]) -> list[Any] | None:
     if any(isinstance(entry, dict) and entry.get("id") == START_AGENT_ID for entry in batch):
         return None
     return [*batch, _start_agent()]
+
+
+def parking_load(params: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``session/load`` that brings a stored session back with nothing to start.
+
+    *params* is the load as it will be sent, its batch already carrying the
+    start agent (:func:`with_start_agent`). The answer differs in two places:
+    the session's own agent, the batch's first entry, declares no server and
+    reads no ``mcp.json``, and the session-level array is empty. ``None`` when
+    the batch does not end in the start agent this module appends, since there
+    is then nothing to park the session in: an entry that only carries the id
+    (a sub-agent target the user named that way) declares what its author gave
+    it, servers included. The caller's dicts are not mutated.
+    """
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    kiro = meta.get("kiro")
+    if not isinstance(kiro, dict):
+        return None
+    batch = kiro.get("customAgents")
+    if not isinstance(batch, list) or len(batch) < 2 or not isinstance(batch[0], dict):
+        return None
+    if batch[-1] != _start_agent():
+        return None
+    own = {key: value for key, value in batch[0].items() if key != "mcpServers"}
+    own["includeMcpJson"] = False
+    return {
+        **params,
+        "mcpServers": [],
+        "_meta": {**meta, "kiro": {**kiro, "customAgents": [own, *batch[1:]]}},
+    }

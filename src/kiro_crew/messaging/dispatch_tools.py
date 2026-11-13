@@ -248,10 +248,6 @@ _guest_spec_repairs_finished = 0
 #: Repairs in flight, held so a cancelled turn cannot drop one before it finishes.
 _guest_spec_repair_tasks: set[asyncio.Task[None]] = set()
 
-#: How long a repair waits for one guest session's reset. Every guest turn is refused
-#: until the repair finishes, so one hung teardown must not hold them all.
-_GUEST_RESET_TIMEOUT_SECS = 30.0
-
 #: Session key -> the provider a guest reset (a repair's or a refusal's) has not yet
 #: taken out of the registry. It may still mount the injected server, so the file it
 #: would be confirmed by does not vouch for it; only a reset that returns forgets it.
@@ -272,27 +268,20 @@ async def _restore_guest_spec(sessions: Any) -> None:
     restarted by one loads the template.
     """
     global _guest_spec_repairs_finished
-    from kiro_crew.agent import repair_guest_agent_spec
+    from kiro_crew.agent import repair_guest_agent_spec, reset_after_spec_repair
 
     try:
         if not await asyncio.to_thread(repair_guest_agent_spec):
             return
-        for key in sessions.session_keys():
-            if sessions.get_agent(key) != TOOLLESS_TURN_AGENT:
-                continue
-            provider = sessions.get_provider(key)
-            if provider is not None:
-                _guest_resets_failed[key] = provider
-            try:
-                await asyncio.wait_for(sessions.reset(key), _GUEST_RESET_TIMEOUT_SECS)
-            except Exception:
-                logger.warning(
-                    "could not reset guest session %s after a guest spec repair",
-                    key,
-                    exc_info=True,
-                )
-            else:
-                _guest_resets_failed.pop(key, None)
+        await reset_after_spec_repair(
+            sessions,
+            [
+                key
+                for key in sessions.session_keys()
+                if sessions.get_agent(key) == TOOLLESS_TURN_AGENT
+            ],
+            _guest_resets_failed,
+        )
     finally:
         _guest_spec_repairs_finished += 1
 

@@ -35,6 +35,7 @@ import ast
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 import kiro_crew.dashboard as dashboard_pkg
 
@@ -158,8 +159,12 @@ def _app_derived_queue_calls() -> list[tuple[str, int, str]]:
       few lines above the call is recognised without admitting the rest of the body.
     """
     found = []
-    for path in _dashboard_sources():
-        text = path.read_text(encoding="utf-8")
+    root = Path(dashboard_pkg.__file__).resolve().parent
+    # Only a file that spells a queue call can hold one, and the parent map below is
+    # built per parsed file, so the rest of the package is never parsed.
+    for path, text in source_corpus.iter_candidate_sources(require_any=_QUEUE_CALLS):
+        if not path.is_relative_to(root):
+            continue
         tree = ast.parse(text)
         parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
         for node in ast.walk(tree):

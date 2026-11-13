@@ -37,7 +37,7 @@ over and what changes.
 | [Task Runner](task-runner.md) | Autonomous multi-step execution from spec files: hand it a task, walk away |
 | [Research Lab](research-lab.md) | Autonomous multi-cycle research campaigns with scoping, adaptive agent execution, and exportable reports |
 | [Issue Radar Pipeline](issue-radar-pipeline.md) | Which step of automated triage every issue is sitting in, how long it has been there, and what each agent session cost |
-| [Apps](apps.md) | Twenty-four apps ship in the package — enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
+| [Apps](apps.md) | Twenty-three apps ship in the package: enable one from the App Store and it can bring its own pages, agents, skills, and MCP tools |
 | [Connections](connections.md) | MCP servers and OAuth'd services on one page: the 38-provider catalogue, adding your own stdio or remote server, what a health badge means, and why a tool's name may differ |
 | [Dashboard](dashboard.md) | React web UI with multi-session chat, memory management, and live system metrics |
 | [Agent Questions](agent-questions.md) | Let an agent pause mid-turn and ask you a clickable multiple-choice question |
@@ -100,8 +100,7 @@ documented by their own in-panel help.
 | Connections | Provider cards, each with its OAuth app when the provider needs a registered client; MCP servers have their own MCP Servers page | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
 | Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
-| Releases | Release notes for each version | — |
-| About | Version, update channel, check for updates, and license | [Getting Started](getting-started.md) |
+| About | Version, update channel, check for updates, release notes, and license | [Getting Started](getting-started.md) |
 
 ## Chat Channels
 

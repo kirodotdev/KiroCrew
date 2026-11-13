@@ -18,11 +18,13 @@ const McpManagement = lazy(() => import('./settings/McpManagement').then(m => ({
 const VIEW_PARAM = 'view'
 
 /**
- * The MCP Servers page: the sharing hero and the approval card on top, then
+ * Customize → MCP Servers: the sharing hero and the approval card on top, then
  * the Servers view (the server list) and the Sharing view (each server's Share
- * switch, npm pre-install and the assessment).
+ * switch, npm pre-install and the assessment). `embedded` drops the page
+ * header, since the Customize panel draws the tab's title, and the panel's
+ * pane does the scrolling.
  */
-export default function McpPage() {
+export default function McpPage({ embedded }: { embedded?: boolean } = {}) {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
@@ -35,22 +37,23 @@ export default function McpPage() {
     return updated
   }, { replace: true })
 
+  // Apply & Restart lives here because this is where MCP server changes are
+  // made: a newly enabled server reaches a chat that is already running only
+  // after its session is relaunched. The muted line says what restarts and
+  // what is kept BEFORE the click.
+  const restart = (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:justify-end">
+      <span className="min-w-0 max-w-[34rem] text-[11.5px] leading-snug text-muted">{t('components.restartButton.beside_hint')}</span>
+      <RestartButton />
+    </div>
+  )
+
   return (
     <>
-      <PageHeader
-        title={t('pages.mcpPage.title')}
-        // Apply & Restart lives here because this is where MCP server changes
-        // are made: a newly enabled server reaches a chat that is already
-        // running only after its session is relaunched. The muted line says
-        // what restarts and what is kept BEFORE the click.
-        actions={(
-          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 sm:justify-end">
-            <span className="min-w-0 max-w-[34rem] text-[11.5px] leading-snug text-muted">{t('components.restartButton.beside_hint')}</span>
-            <RestartButton />
-          </div>
-        )}
-      />
-      <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+      {embedded
+        ? <div className="mb-4">{restart}</div>
+        : <PageHeader title={t('pages.mcpPage.title')} actions={restart} />}
+      <div className={embedded ? 'min-w-0' : 'px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0'}>
         {/* The provider lets MCP sharing withhold its "Ask the agent" hand-off
             while the server list holds unapplied edits a /chat navigation
             would drop. */}

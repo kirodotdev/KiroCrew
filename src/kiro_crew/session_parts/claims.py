@@ -356,12 +356,17 @@ async def get_or_create(
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     identity_checked: bool = False,
+    focus_resume: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Claim or allocate a session and return its held lease.
 
     ``start_priority`` orders a cold start in the start queues; a caller passes
     FOREGROUND only where a person waits on it (rule: ``kiro_crew.start_priority``).
+
+    ``focus_resume`` marks the dashboard owner's return to a saved chat: the start
+    keeps its BACKGROUND place in the queues and is handed to the provider as one
+    a person is about to wait on (rule: ``acp.mcp_start_wait.person_waits``).
 
     ``identity_checked`` says the caller ran the Kiro account check itself just
     before this call; every other acquire runs it here first
@@ -396,6 +401,7 @@ async def get_or_create(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             **extra_factory_kwargs,
         )
 
@@ -869,6 +875,11 @@ def approval_revocation(self: SessionManager, key: str) -> int:
 def get_agent(self: SessionManager, key: str) -> str:
     """Return a folded session agent name."""
     return self._allocation_boundary().get_agent(key)
+
+
+def starting_agent(self: SessionManager, key: str) -> str:
+    """The agent a cold start in flight will register *key* as, or ``""``."""
+    return self._allocation_boundary().starting_agent(key)
 
 
 def get_agent_selection(self: SessionManager, key: str) -> tuple[str, str]:

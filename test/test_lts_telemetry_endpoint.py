@@ -267,8 +267,9 @@ def test_a_collector_added_during_a_build_is_picked_up_on_the_recheck(
 
     from kiro_crew.config.loader import KiroCrewConfig
 
-    # The suite pins collection off by env; this test needs it on.
-    monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
+    # The suite pins collection off by env; this test needs it on, as the
+    # user's explicit opt-in that export to the policy collector requires.
+    monkeypatch.setenv("KIROCREW_TELEMETRY", "1")
     ctx = _install(monkeypatch, _policy(enabled=True))
     cfg = KiroCrewConfig(
         telemetry=TelemetryConfig(
@@ -307,7 +308,8 @@ def test_a_policy_that_starts_permitting_the_host_gets_a_reader_on_the_recheck(
 
     from kiro_crew.config.loader import KiroCrewConfig
 
-    monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
+    # The user's explicit opt-in that export to the policy collector requires.
+    monkeypatch.setenv("KIROCREW_TELEMETRY", "1")
     deny = {"otlp_hosts": {"mode": "allow", "allow": ["other.corp.example"]}}
     ctx = _install(monkeypatch, _policy(enabled=True, otlp_endpoint=ADMIN, scopes=deny))
     cfg = KiroCrewConfig(
@@ -328,5 +330,33 @@ def test_a_policy_that_starts_permitting_the_host_gets_a_reader_on_the_recheck(
             ctx.governance = parse_policy(_policy(enabled=True, otlp_endpoint=ADMIN))
             metrics_provider._consent_worker(metrics_provider._build_generation)
             assert built == [ADMIN]
+    finally:
+        metrics_provider.reset_for_testing()
+
+
+def test_the_recording_default_alone_never_exports_to_the_policy_collector(
+    enterprise, fake_sel, monkeypatch, tmp_path
+) -> None:
+    """Recording on by default is not an opt-in: the policy collector gets no reader."""
+    from unittest.mock import patch
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    monkeypatch.delenv("KIROCREW_TELEMETRY", raising=False)
+    _install(monkeypatch, _policy(enabled=True, otlp_endpoint=ADMIN))
+    cfg = KiroCrewConfig(
+        telemetry=TelemetryConfig(local_dir=str(tmp_path), export_interval_seconds=3600)
+    )
+    assert cfg.telemetry.enabled is True
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
+    built: list = []
+    monkeypatch.setattr(
+        metrics_provider, "_build_otlp_reader", lambda d, c: built.append(d.endpoint) or None
+    )
+    metrics_provider.reset_for_testing()
+    try:
+        with patch.object(metrics_provider, "_default_metrics_dir", return_value=tmp_path):
+            assert metrics_provider.get_recorder() is not None
+            assert built == []
     finally:
         metrics_provider.reset_for_testing()

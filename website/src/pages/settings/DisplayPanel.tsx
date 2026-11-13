@@ -242,6 +242,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     dashboard?: {
       recent_tint_count?: number
       show_unread_dot?: boolean
+      command_bar_enabled?: boolean
       milestones_enabled?: boolean
       terminal?: { shell?: string; completion?: { enabled?: boolean }; reuse_current?: boolean; external_app?: string }
       remote_editor?: { editor?: string; host?: string }
@@ -294,6 +295,21 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
     applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.show_unread_dot', value),
     onFailure: () => setUnreadDotError(i18nT('pages.settings.displayPanel.show_unread_dot_save_failed')),
     onSupersede: () => setUnreadDotError(null),
+  }))
+
+  // What the quick-search shortcut opens (dashboard.command_bar_enabled): the
+  // Command Bar launcher, or with it off the search palette. On by default; only a
+  // literal `false` is off, the same rule the shell reads.
+  const shownCommandBar = overlay.shown('dashboard.command_bar_enabled', mcQ.data?.dashboard?.command_bar_enabled !== false)
+  const [commandBarError, setCommandBarError] = useState<string | null>(null)
+  const commandBarMut = useMutation(overlay.mutationOpts<boolean>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: boolean) => api.patchConfig('dashboard.command_bar_enabled', value),
+    path: () => 'dashboard.command_bar_enabled',
+    displayValue: v => v,
+    applyToCache: (cached, value) => setConfigPathValue(cached as KirocrewCfg, 'dashboard.command_bar_enabled', value),
+    onFailure: () => setCommandBarError(i18nT('pages.settings.displayPanel.command_bar_save_failed')),
+    onSupersede: () => setCommandBarError(null),
   }))
 
   // Explore (RFC "Milestones for New-User Feature Discovery" 4.9): the main
@@ -774,6 +790,19 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             checked={topbarSearch}
             onChange={setTopbarSearch}
           />
+          {/* Saved in config.json, unlike the switch above: it decides which surface
+              the shortcut opens for this crew, on every browser. */}
+          <SettingsToggle
+            configKey="dashboard.command_bar_enabled"
+            label={i18nT('pages.settings.displayPanel.command_bar')}
+            description={i18nT('pages.settings.displayPanel.command_bar_desc')}
+            checked={shownCommandBar}
+            onChange={v => commandBarMut.mutate(v)}
+            disabled={commandBarMut.isPending || !mcQ.isSuccess}
+          />
+          {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
+              on this panel that navigation would discard. */}
+          <ErrorNotice message={commandBarError} variant="inline" />
           {milestonesSupported && (
           <SettingsToggle
             configKey="dashboard.milestones_enabled"

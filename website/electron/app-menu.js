@@ -14,6 +14,8 @@
 // and the click wiring are unit-testable without a display server.
 // Menu.buildFromTemplate stays in main.js.
 
+const { applyWindowControl } = require("./linux-frame");
+
 function buildMenuTemplate(deps) {
   const {
     isMac,
@@ -182,7 +184,13 @@ function buildMenuTemplate(deps) {
       : {
           id: "window-menu",
           label: "Window",
-          submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "close", accelerator: "Ctrl+Shift+W" }],
+          // Electron's `zoom` role acts only on macOS (AppKit's performZoom:), so
+          // off macOS Zoom is spelled out as the maximize toggle it stands for.
+          submenu: [
+            { role: "minimize" },
+            { label: "Zoom", click: (_item, win) => applyWindowControl(win, "maximize-toggle") },
+            { role: "close", accelerator: "Ctrl+Shift+W" },
+          ],
         },
     // Windows/Linux home for About (Help > About <app>).
     ...(isMac ? [] : [{ id: "help-menu", label: "Help", submenu: [aboutItem] }]),

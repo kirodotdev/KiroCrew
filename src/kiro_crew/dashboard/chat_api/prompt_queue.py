@@ -208,6 +208,9 @@ async def api_chat_slot_queue_reorder(request: web.Request) -> web.Response:
     order = body.get("order")
     if not isinstance(order, list) or not all(isinstance(x, str) for x in order):
         return web.json_response({"error": "order must be a list of queue id strings"}, status=400)
+    # A repeated id names one entry once, at its first place: kept twice, the
+    # same prompt would run as two turns.
+    order = list(dict.fromkeys(order))
     # Build lookup of current queue items by id
     by_id = {item["id"]: item for item in slot._queue}
     # Validate all ids exist

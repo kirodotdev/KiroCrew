@@ -84,6 +84,34 @@ def test_a_panel_gets_its_defaults_spelled_out() -> None:
     ]
 
 
+def test_a_spanning_overlay_a_background_window_and_a_gutter_round_trip() -> None:
+    desktop = {
+        "windows": [
+            {"id": "pet", "entry": "pet.mjs", "kind": "overlay", "displays": "all"},
+            {"id": "brain", "entry": "brain.mjs", "kind": "background", "openOnEnable": True},
+            {
+                "id": "panel",
+                "entry": "panel.mjs",
+                "kind": "panel",
+                "width": 384,
+                "height": 404,
+                "position": "bottom-right",
+                "transparent": True,
+                "gutter": 32,
+            },
+        ]
+    }
+    m = _manifest(desktop)
+    assert m.validate() == []
+    assert m.to_dict()["desktop"] == desktop
+    assert json.loads(m.signing_payload())["desktop"] == desktop
+    # The defaults are left out, so a manifest that predates them signs the same.
+    plain = _manifest({"windows": [{"id": "w", "entry": "w.mjs", "kind": "overlay"}]})
+    assert plain.to_dict()["desktop"] == {
+        "windows": [{"id": "w", "entry": "w.mjs", "kind": "overlay"}]
+    }
+
+
 def test_an_absent_block_changes_nothing() -> None:
     m = AppManifest.from_dict(dict(_BASE))
     assert m.desktop == DesktopConfig()
@@ -110,13 +138,53 @@ def test_a_builtin_keeps_its_block_through_discovery() -> None:
         ({}, "desktop.windows must be a non-empty list"),
         ({"windows": [], "shortcuts": []}, "non-empty list"),
         ({**_with_window(), "menus": []}, "unknown keys ['menus']"),
-        (_with_window(kind="background"), "kind must be one of"),
+        (_with_window(kind="toast"), "kind must be one of"),
         (_with_window(id="Pet"), "id must match"),
         (_with_window(entry="../escape.mjs"), "entry must be a relative"),
         (_with_window(entry="/abs.mjs"), "entry must be a relative"),
         (_with_window(entry="page.html"), "entry must be a relative"),
         (_with_window(entry="a\\b.mjs"), "entry must be a relative"),
         (_with_window(width=300), "apply to a panel only"),
+        (_with_window(gutter=8), "apply to a panel only"),
+        (_with_window(displays="everywhere"), "displays must be one of"),
+        (
+            {"windows": [{"id": "p", "entry": "p.js", "kind": "panel", "displays": "all"}]},
+            "apply to an overlay only",
+        ),
+        (
+            {"windows": [{"id": "b", "entry": "b.js", "kind": "background", "width": 400}]},
+            "apply to a panel only",
+        ),
+        (
+            {"windows": [{"id": "b", "entry": "b.js", "kind": "background", "displays": "all"}]},
+            "apply to an overlay only",
+        ),
+        (
+            {"windows": [{"id": "p", "entry": "p.js", "kind": "panel", "gutter": 49}]},
+            "gutter must be an integer",
+        ),
+        (
+            {"windows": [{"id": "p", "entry": "p.js", "kind": "panel", "gutter": True}]},
+            "gutter must be an integer",
+        ),
+        (
+            {
+                "windows": [
+                    {"id": "a", "entry": "a.js", "kind": "overlay", "displays": "all"},
+                    {"id": "b", "entry": "b.js", "kind": "overlay", "displays": "all"},
+                ]
+            },
+            "at most one overlay may span all displays",
+        ),
+        (
+            {
+                "windows": [
+                    {"id": "a", "entry": "a.js", "kind": "background"},
+                    {"id": "b", "entry": "b.js", "kind": "background"},
+                ]
+            },
+            "at most one background window",
+        ),
         (_with_window(alwaysOnTop=False), "unknown keys ['alwaysOnTop']"),
         (_with_window(openOnEnable="yes"), "openOnEnable must be a boolean"),
         (

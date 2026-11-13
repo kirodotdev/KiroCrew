@@ -90,6 +90,7 @@ leaving it on disk for a collector that does not exist.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import logging
 import time
@@ -764,13 +765,15 @@ def prefix_witness(handle: CrewLog, seq: int) -> PrefixWitness | None:
 
     ``None`` when the boundary does not resolve or the walk falls short of it, which
     costs a savepoint rather than recording one nothing can check.
+
+    One walk finds the boundary and hashes the records up to it, the same bytes
+    :func:`prefix_unchanged` hashes again.
     """
-    records = handle.raw_records_through(seq)
+    hasher = hashlib.sha256()
+    records = handle.raw_records_through(seq, hasher=hasher)
     if records is None:
         return None
-    sha, hashed = handle.raw_prefix_digest(records)
-    if hashed != records:
-        return None
+    sha = hasher.hexdigest()
     return with_extent(handle, PrefixWitness(seq=seq, records=records, sha=sha))
 
 

@@ -86,7 +86,15 @@ from kiro_crew.work_ledger_store import (
     read_conductor,
     read_work_item,
 )
-from kiro_crew.work_vocab import WORK_REASON_STATUSES, worker_statuses
+from kiro_crew.work_vocab import (
+    WORK_ASK_LABEL_CHARS,
+    WORK_ASK_MAX_OPTIONS,
+    WORK_ASK_OUTCOME_CHARS,
+    WORK_ASK_WHAT_CHARS,
+    WORK_ASK_WHY_CHARS,
+    WORK_REASON_STATUSES,
+    worker_statuses,
+)
 
 # Bindings: one file per worker, replaced whole only by ``bind`` under the worker's
 # binding lock, so two conductors cannot both believe they bound it.
@@ -666,6 +674,8 @@ def _write_item_action(
             assert checked_decision is not None
             item.decision = checked_decision
             item.decided_at = _now_iso()
+            # A decision answers the question the ask record explained.
+            item.ask = None
             event = _commit_item_locked(slot_key, item, "decision", checked_decision)
         elif action == "verdict":
             assert checked_verdict is not None
@@ -692,6 +702,7 @@ def _write_item_action(
             if checked_decision is not None:
                 item.decision = checked_decision
             item.closed_at = _now_iso()
+            item.ask = None
             event = _commit_item_locked(slot_key, item, "close", checked_decision or checked_state)
         return {"conductor": record, "item": item, "event": event}
 
@@ -884,5 +895,100 @@ def apply_acceptance_update(
         item.pending_since = None
         event = _commit_item_locked(
             slot_key, item, "decision", "acceptance promoted by the conductor"
+        )
+        return {"item": item, "event": event}
+
+
+def _require_ask_options(options: Any) -> list[dict[str, str]]:
+    """The ``ask`` options: at most six ``{label, outcome}``, each label unique."""
+    if options is None:
+        return []
+    if not isinstance(options, list) or len(options) > WORK_ASK_MAX_OPTIONS:
+        raise WorkLedgerError(
+            f"options must be a list of at most {WORK_ASK_MAX_OPTIONS} {{label, outcome}}",
+            code=CODE_INVALID_VALUE,
+            field="options",
+        )
+    checked: list[dict[str, str]] = []
+    for option in options:
+        if not isinstance(option, dict):
+            raise WorkLedgerError(
+                "each option is an object {label, outcome}",
+                code=CODE_INVALID_VALUE,
+                field="options",
+            )
+        label = _require_text(option.get("label"), WORK_ASK_LABEL_CHARS, "options.label")
+        if not label.strip():
+            raise WorkLedgerError(
+                "each option needs a label", code=CODE_INVALID_VALUE, field="options"
+            )
+        outcome = _require_text(
+            option.get("outcome"), WORK_ASK_OUTCOME_CHARS, "options.outcome", required=False
+        )
+        if any(seen["label"] == label for seen in checked):
+            raise WorkLedgerError(
+                f"option label {label!r} appears twice", code=CODE_INVALID_VALUE, field="options"
+            )
+        checked.append({"label": label, "outcome": outcome})
+    return checked
+
+
+def apply_ask_record(
+    slot_key: str,
+    item_id: str,
+    *,
+    what: Any,
+    why: Any = None,
+    options: Any = None,
+    pick: Any = None,
+    pick_why: Any = None,
+) -> dict[str, Any]:
+    """Replace ONE open item's ``ask`` record, appending an ``ask`` event.
+
+    The write behind the ``ask`` tool action: when the conductor relays a question
+    to the person, it records what the item needs, why, each option with what it
+    leads to, and its pick with the reason. ``written_at`` is the store's stamp,
+    never the caller's. ``decide`` and ``close`` clear the record.
+
+    The event kind is ``ask``, not ``decision``: a decision event answers the
+    item's last report (``answered_since_report``), and recording why a question
+    waits must not read as its answer.
+    """
+    checked_id = _require_item_id(item_id)
+    checked_what = _require_text(what, WORK_ASK_WHAT_CHARS, "what")
+    if not checked_what.strip():
+        raise WorkLedgerError("what is required", code=CODE_INVALID_VALUE, field="what")
+    checked_why = _require_text(why, WORK_ASK_WHY_CHARS, "why", required=False)
+    checked_options = _require_ask_options(options)
+    checked_pick = _require_text(pick, WORK_ASK_LABEL_CHARS, "pick", required=False)
+    if checked_pick and checked_pick not in {o["label"] for o in checked_options}:
+        raise WorkLedgerError(
+            "pick must be one of the option labels", code=CODE_INVALID_VALUE, field="pick"
+        )
+    checked_pick_why = _require_text(pick_why, WORK_ASK_OUTCOME_CHARS, "pick_why", required=False)
+    if checked_pick_why and not checked_pick:
+        raise WorkLedgerError("pick_why needs a pick", code=CODE_INVALID_VALUE, field="pick_why")
+
+    with item_lock(slot_key, checked_id, create=False):
+        item = read_work_item(slot_key, checked_id)
+        if item is None:
+            raise WorkLedgerError(
+                f"unknown item {checked_id!r}", code=CODE_UNKNOWN_ITEM, field="item_id"
+            )
+        if item.is_terminal:
+            raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
+        item.ask = {
+            "what": checked_what,
+            "why": checked_why,
+            "options": checked_options,
+            "pick": checked_pick,
+            "pick_why": checked_pick_why,
+            "written_at": _now_iso(),
+        }
+        _require_record_fits(item.to_dict())
+        # A nonce salt: two same-`what` asks in one second must stay two events, or
+        # the dedupe drops the newer one and a report between them reads as newest.
+        event = _commit_item_locked(
+            slot_key, item, "ask", checked_what, id_salt="\0" + secrets.token_hex(8)
         )
         return {"item": item, "event": event}

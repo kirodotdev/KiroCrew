@@ -14,6 +14,16 @@ from kiro_crew.config.loader import KiroCrewConfig, _invalidate_config_cache
 from kiro_crew.dashboard.handlers import core as core_mod
 
 
+@pytest.fixture(autouse=True)
+def _recording_on(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Read recording as on, so the payload reports the stored notice version.
+
+    With recording off the version reads as current (an opted-out user is not
+    re-asked). The suite's env pin stays, so no real recorder starts here.
+    """
+    _floor_monkeypatch.setattr(core_mod._metrics_provider, "_consent_enabled", lambda cfg: True)
+
+
 def _make_cfg(
     theme_mode: str = "",
     theme_color: str = "",

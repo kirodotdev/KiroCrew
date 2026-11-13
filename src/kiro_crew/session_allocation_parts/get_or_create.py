@@ -21,7 +21,9 @@ Instance fields read: ``_closing``, ``_deps``, ``_lock``, ``_owner``, ``_start_s
 
 Through ``state`` it also changes the ending fence's and the capability records in place
 (``spawning_reservations``, ``invalidated_reservations``, ``refused_spawns``,
-``capability_failures``) and reads ``ending_keys``. It also adds and removes an eager
+``capability_failures``), writes the agent of a cold start in flight (``starting_agents``,
+removed through ``forget_starting_agent`` at registration and at every exit of the start)
+and reads ``ending_keys``. It also adds and removes an eager
 start's announcement (``speculative_starts``), which a real claim joins when it is of
 no higher start priority, and whatever its priority when the start is a resume prefetch
 past its spawn door. A person's claim that finds a resume prefetch short of that door
@@ -432,6 +434,7 @@ async def get_or_create(
     wait_if_busy: bool = True,
     _won_race_retries: int = 0,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    focus_resume: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Reserve logical ownership for the complete claim/allocation call, held while the key is being ended."""
@@ -496,9 +499,13 @@ async def get_or_create(
                     _won_race_retries=_won_race_retries,
                     _reservation=token,
                     start_priority=start_priority,
+                    focus_resume=focus_resume,
                     **extra_factory_kwargs,
                 )
             finally:
+                # Every exit -- registered, refused, failed, cancelled -- drops
+                # the agent this start recorded for its own servers' listing.
+                self.forget_starting_agent(reserved_key, token)
                 # Every exit -- registered, refused, failed, cancelled -- ends
                 # the announcement, so a joined claim never waits on a start
                 # that is over. A failed start leaves no session, and the
@@ -563,6 +570,7 @@ async def _get_or_create_impl(
     _won_race_retries: int = 0,
     _reservation: object | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    focus_resume: bool = False,
     **extra_factory_kwargs: Any,
 ) -> tuple[LLMProvider, bool, bool]:
     """Claim a live session or cold-start one, returning its held lease.
@@ -729,6 +737,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
@@ -781,6 +790,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,
@@ -841,6 +851,10 @@ async def _get_or_create_impl(
         effective_cwd = None
     claim_crew = extra_factory_kwargs.get("crew_agent")
     session_agent = agent
+    if session_agent and _reservation is not None:
+        # What ``get_agent`` will answer once this start registers its session, for
+        # the one reader that asks before then (``starting_agent``).
+        self.state.starting_agents[key] = (_reservation, session_agent)
     preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
     if preparation.revision:
         # The factory may retain the pre-reconciliation config snapshot.
@@ -1231,6 +1245,7 @@ async def _get_or_create_impl(
         # Ordered by start priority (rule: ``kiro_crew.start_priority``); the
         # provider's own spawn and session/new queues read the same answer.
         provider.start_priority = start_priority
+        provider.focus_resume = focus_resume
         async with self._held_start_permit(
             key,
             start_priority,
@@ -1482,6 +1497,8 @@ async def _get_or_create_impl(
                     owner._session_map.clear_sid(key)
                 self._install_work_dir_claim_probe(key, provider)
                 self._sessions[key] = session
+                if _reservation is not None:
+                    self.forget_starting_agent(key, _reservation)
                 self.advance_ownership_generation(key)
                 # Registered: from here a live session is using this runtime,
                 # so record the claim the kill gate reads. Paired with the
@@ -1628,6 +1645,7 @@ async def _get_or_create_impl(
             wait_if_busy=wait_if_busy,
             _won_race_retries=_won_race_retries + 1,
             start_priority=start_priority,
+            focus_resume=focus_resume,
             app_name=app_name,
             app_launch_agent=app_launch_agent,
             owning_app=owning_app,

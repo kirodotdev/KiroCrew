@@ -56,6 +56,11 @@ def mark(reason: str, *, version: str = "", mandatory: bool = False) -> bool:
             mandatory,
         ):
             return False
+        if old is not None and old.reason == REASON_STAGED and reason == REASON_ASSETS_GONE:
+            # The staged note already asks for the restart that brings the
+            # bundle back, and it names the version a later update cycle
+            # checks before building that version again.
+            return False
         _current = note
     logger.info(
         "Update ready, restart to use it: reason=%s version=%s mandatory=%s",
