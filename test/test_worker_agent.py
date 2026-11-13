@@ -1017,9 +1017,9 @@ def test_a_mirrored_server_auto_approve_is_stripped(tmp_path, monkeypatch):
 
 
 def test_every_read_and_the_write_sit_in_one_critical_section(tmp_path, monkeypatch):
-    """Both reads and the write are ONE unit. ``agents_spec_lock`` is what every other
-    template-spec read-modify-writer in this module holds, so a dashboard edit cannot
-    land between the worker read and the worker write. The DEFAULT read belongs inside
+    """Both reads and the write are ONE unit. ``agents_spec_lock`` is the lock the
+    dashboard PATCH and the fork refresh hold, so a dashboard edit cannot land between
+    the worker read and the worker write. The DEFAULT read belongs inside
     the same section too: a mirror snapshot taken before it would already be stale by
     the write, which is how a deregistered server's grant stays auto-approved."""
     import contextlib
@@ -1293,9 +1293,11 @@ def test_the_default_specs_own_writer_lock_is_held_too(tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "agents_spec_lock", _recording_agents_lock)
     agent._install_worker_agent()
 
-    # Order is load-bearing, not incidental: nothing else in the tree nests these two,
-    # so this installer establishes it — the file it WRITES outermost, the file it
-    # READS innermost — and a future nester matches it or risks a deadlock.
+    # Order is load-bearing, not incidental: ``agents_spec_lock`` outermost (the file
+    # this installer WRITES), ``_mcp_lock`` innermost (the file it READS). That is the
+    # order ``_install_heartbeat_agent``, ``_refilter_kept_mirrors`` and
+    # ``rebuild_agent_config`` also take, and a future nester matches it or risks a
+    # deadlock.
     assert taken == ["agents", "mcp"], taken
 
     # The public re-derive seam takes the same two in the same order, which is why it
