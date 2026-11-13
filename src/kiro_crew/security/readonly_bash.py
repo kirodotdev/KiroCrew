@@ -1618,3 +1618,37 @@ def writes_through_redirect(cmd: str) -> bool:
     or not, since telling a quoted ``>`` apart needs bash's full quoting rules.
     """
     return ">" in _DEVNULL_REDIR_RE.sub(" ", cmd)
+
+
+def may_write_through_git_flag(cmd: str) -> bool:
+    """Whether a git ``diff``/``show``/``log``/``blame`` segment of ``cmd`` visibly
+    supplies its file-writing flag (``--output``), before any ``--``.
+
+    Each line is split into shell words with the control operators (``&&``, ``|``,
+    ``;``) as their own tokens, so another program's ``--output`` is never read as
+    git's. A line whose quoting will not parse is skipped: the read check refuses it.
+    shortcut: a flag built at run time (an expansion, a glob, ``xargs``) is not seen;
+    refusing every no-approver git command closes that, and is a separate decision.
+    """
+    for line in cmd.splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        try:
+            tokens = list(lexer)
+        except ValueError:
+            continue
+        for at, tok in enumerate(tokens):
+            if not _is_git(tok):
+                continue
+            rest = tokens[at + 1 :]
+            while rest and rest[0].startswith("-"):
+                rest = rest[2:] if rest[0] in ("-C", "-c") else rest[1:]
+            flags = _WRITE_FLAGS.get(f"git {rest[0].lower()}", ()) if rest else ()
+            args = []
+            for word in rest[1:]:
+                if word == "--" or word[:1] in ("&", "|", ";", "(", ")"):
+                    break
+                args.append(word)
+            if flags and _matched_flag(args, flags):
+                return True
+    return False

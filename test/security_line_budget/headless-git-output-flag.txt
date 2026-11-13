@@ -1,0 +1,2 @@
++34
+readonly_bash.may_write_through_git_flag: the no-approver git refusal in tool_approval also refuses a git diff/show/log/blame segment that visibly supplies its --output write flag, read per line and per shell segment so another program's --output and unparseable text keep their default.
