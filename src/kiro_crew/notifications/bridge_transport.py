@@ -42,7 +42,7 @@ TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex", "feishu")
 #: The transports whose owner may answer a bridged approval by replying ``approve``
 #: or ``deny`` to it (RFC bridge actions, B4d, B4g). Each needs an inbound reader that
 #: knows which message a reply quotes; the others stay read-only until they get one.
-REPLY_TRANSPORTS: tuple[str, ...] = ("discord", "telegram")
+REPLY_TRANSPORTS: tuple[str, ...] = ("discord", "telegram", "webex")
 
 #: The marker a critical note's first line carries.
 _CRITICAL_MARKER = "🚨"
@@ -75,9 +75,11 @@ def reply_owner(state: Any, transport: str) -> str:
 #: the transport's per-message cap with room for the delivery leg's display pass, so
 #: the note is one message and a reply to it can only quote the message that carries
 #: the prompt. Telegram's counts the rendered HTML; Discord sends markdown as written
-#: and the delivery leg chunks it at 1900.
+#: and the delivery leg chunks it at 1900; Webex caps a message in UTF-8 bytes
+#: (``webex.client.WEBEX_MAX_TEXT``, 7000), so its budget is bytes too.
 _ONE_MESSAGE = 3500
 _ONE_DISCORD_MESSAGE = 1800
+_ONE_WEBEX_MESSAGE_BYTES = 6000
 
 #: The fewest characters of a cut detail still shown with a prompt: below it, what
 #: an Approve would run is not readable enough to consent to, so no prompt is sent.
@@ -87,14 +89,21 @@ _MIN_SHOWN = 100
 def _fits_one_message(transport: str, text: str) -> bool:
     """Whether *text* is one message on reply transport *transport*, as sent. MAY BLOCK.
 
-    Discord's is measured after the delivery leg's display pass
-    (``messaging.renderer.display_safe_for``), whose mention defang lengthens it.
+    Discord's and Webex's are measured after the delivery leg's display pass
+    (``messaging.renderer.display_safe_for``), which can lengthen it (Discord's
+    mention defang); Webex's in UTF-8 bytes, its cap's unit.
     """
     if transport == "discord":
         from kiro_crew.discord.transport import DISCORD_CAPABILITIES
         from kiro_crew.messaging.renderer import display_safe_for
 
         return len(display_safe_for(text, DISCORD_CAPABILITIES)) <= _ONE_DISCORD_MESSAGE
+    if transport == "webex":
+        from kiro_crew.messaging.renderer import display_safe_for
+        from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+
+        shown = display_safe_for(text, WEBEX_CAPABILITIES)
+        return len(shown.encode("utf-8")) <= _ONE_WEBEX_MESSAGE_BYTES
     # Lazy: the Telegram renderer is not needed until a note is bound.
     from kiro_crew.telegram.renderer import md_to_telegram_html_safe
 
