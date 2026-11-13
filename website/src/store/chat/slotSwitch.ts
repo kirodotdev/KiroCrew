@@ -899,9 +899,10 @@ export function addSlotSwitchCases(builder: ActionReducerMapBuilder<ChatState>):
         }
         return
       }
+      // The run mirrors stay as they are: they describe the selected chat's
+      // run, which `pending` seeded and live frames keep current, so a turn
+      // still running there keeps its Stop.
       state.messages = []
-      state.slotRunning = false
-      state.slotStopping = false
       setPagingCursor(state, false, 0)
       state.slotLoading = false
     })
