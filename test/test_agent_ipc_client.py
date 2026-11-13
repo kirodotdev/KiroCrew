@@ -107,6 +107,39 @@ def test_a_broker_stub_for_kirocrew_core_gets_no_pickup(bound, args):
     assert not bound._pickups
 
 
+def test_an_enforced_harness_gets_a_pickup_on_the_cron_server_too(bound):
+    """Every cron tool call with a resolvable identity is dispatched through
+    mcp_core's request helper, so its direct launch needs the same pickup
+    kirocrew-core gets."""
+    runtime = _Runtime()
+    cron = {
+        "name": "kirocrew-cron",
+        "command": sys.executable,
+        "args": ["mcp-cron"],
+        "env": [],
+    }
+    (out,) = _issue([cron], runtime=runtime)
+    env = _env(out)
+    assert len(env[PICKUP_ENV]) == 64
+    assert env[GATEWAY_PID_ENV] == str(os.getpid())
+    entry = next(iter(bound._pickups.values()))
+    assert entry.session_token == "tok" and entry.server == "kirocrew-cron"
+
+
+def test_a_broker_stub_for_the_cron_gets_no_pickup(bound):
+    # The same rule as kirocrew-core: a stub never takes the pickup out of its
+    # environment, so it must not carry one.
+    stub = {
+        "name": "kirocrew-cron",
+        "command": sys.executable,
+        "args": ["-m", STUB_MODULE, "--server", "kirocrew-cron"],
+        "env": [],
+    }
+    (out,) = _issue([stub])
+    assert PICKUP_ENV not in _env(out) and GATEWAY_PID_ENV not in _env(out)
+    assert not bound._pickups
+
+
 @pytest.mark.parametrize("backend", ["kiro", "kas", "claude"])
 def test_a_harness_that_reads_the_secret_keeps_its_array_unchanged(bound, backend):
     array = _array()
@@ -330,6 +363,37 @@ def test_the_session_comes_from_the_gateway_when_the_mapping_is_masked(monkeypat
     assert session_token_sig.session_key_from_env_token() == "chat-mapped"
     monkeypatch.delenv(STUB_SESSION_TOKEN_ENV)
     assert session_token_sig.session_key_from_env_token() == ""
+
+
+def test_the_cron_server_redeems_a_pickup_at_startup(monkeypatch):
+    """The cron serve entry redeems its pickup before the first request, on the
+    gateway port every gateway-dispatched cron tool reaches through mcp_core."""
+    from kiro_crew import mcp_cron
+    from kiro_crew.mcp_core_parts import gateway as _gateway_part
+
+    called: list = []
+    monkeypatch.setattr(
+        agent_ipc_client, "redeem_at_startup", lambda port_fn: called.append(port_fn)
+    )
+    monkeypatch.setattr(mcp_cron, "run_mcp_stdio_loop", lambda *a, **k: None)
+    mcp_cron.run_mcp_server()
+    assert called == [_gateway_part._api_port]
+
+
+def test_every_server_the_allowlist_names_redeems_at_startup():
+    """A pickup that is issued but never redeemed fails every request, so the
+    allowlist may not name a server whose serve entry does not redeem."""
+    import importlib
+    import inspect
+
+    from kiro_crew import mcp_discovery
+
+    for name in sorted(ipc_pickup.PICKUP_SERVERS):
+        module = importlib.import_module(mcp_discovery._MANAGED_SERVER_TOOL_MODULES[name])
+        entries = [n for n in ("run_mcp_server", "run_mcp_core_server") if hasattr(module, n)]
+        assert len(entries) == 1, (name, entries)
+        source = inspect.getsource(getattr(module, entries[0]))
+        assert "redeem_at_startup(" in source, name
 
 
 def test_no_capability_means_no_session_query(monkeypatch):

@@ -30,8 +30,8 @@ from kiro_crew.providers.mirrors.identity import with_env
 
 logger = logging.getLogger(__name__)
 
-#: The Kiro Crew server that redeems a pickup at startup (``agent_ipc_client``).
-PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core"})
+#: The Kiro Crew servers that redeem a pickup at startup (``agent_ipc_client``).
+PICKUP_SERVERS: frozenset[str] = frozenset({"kirocrew-core", "kirocrew-cron"})
 
 
 def _launches_server_directly(element: dict[str, Any]) -> bool:
