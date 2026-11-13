@@ -6884,6 +6884,7 @@
       "generating": "생성 중…",
       "unwrap": "줄 바꿈 해제",
       "wrap": "줄 바꿈",
+      "wrap_not_saved": "이 브라우저에 줄 바꿈 설정을 저장할 수 없습니다. 새로고침할 때까지 적용됩니다.",
       "code_label": "코드",
       "code_region": "{{lang}} 코드"
     },

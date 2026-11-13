@@ -7256,6 +7256,7 @@
       "generating": "generazione…",
       "unwrap": "Non mandare a capo",
       "wrap": "Manda a capo",
+      "wrap_not_saved": "Impossibile salvare la scelta di a capo automatico in questo browser. Vale fino al ricaricamento.",
       "code_label": "codice",
       "code_region": "Codice {{lang}}"
     },

@@ -7256,6 +7256,7 @@
       "generating": "generando…",
       "unwrap": "Desactivar ajuste de líneas",
       "wrap": "Ajustar líneas",
+      "wrap_not_saved": "No se pudo guardar la opción de ajuste de línea en este navegador. Se aplica hasta que recargues.",
       "code_label": "código",
       "code_region": "Código {{lang}}"
     },

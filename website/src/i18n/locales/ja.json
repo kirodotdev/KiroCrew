@@ -6884,6 +6884,7 @@
       "generating": "生成中…",
       "unwrap": "折り返し解除",
       "wrap": "折り返し",
+      "wrap_not_saved": "このブラウザーに行の折り返しの設定を保存できませんでした。再読み込みするまで有効です。",
       "code_label": "コード",
       "code_region": "{{lang}} コード"
     },
