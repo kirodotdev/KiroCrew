@@ -193,23 +193,33 @@ def _module_name(rel: Path) -> str:
 
 
 class _Module:
-    def __init__(self, rel: str, text: str | None) -> None:
-        path = Path(rel)
-        self.name = _module_name(path)
+    def __init__(self, rel: str, text: str | None, path: Path | None = None) -> None:
+        self.name = _module_name(Path(rel))
         self.rel = rel
         self.text = text
-        self.package = self.name if path.name == "__init__.py" else self.name.rpartition(".")[0]
+        self.path = path
+        is_package = Path(rel).name == "__init__.py"
+        self.package = self.name if is_package else self.name.rpartition(".")[0]
         self.tree: ast.Module | None = None
         self.functions: list[_Function] = []
         self.readers: set[str] = set()
 
-    def parse(self) -> None:
-        if self.tree is None and self.text is not None:
-            self.tree = ast.parse(self.text, filename=self.rel)
+    def source(self) -> str | None:
+        """The planted text, or the file read again: ``src/``'s texts are not all held at once."""
+        return self.text if self.path is None else self.path.read_text(encoding="utf-8")
+
+    def parse(self, text: str) -> None:
+        if self.tree is None:
+            self.tree = ast.parse(text, filename=self.rel)
             self.functions = _index(self.tree)
             self.readers = {
                 fn.qual.rpartition(".")[2] for fn in self.functions if is_lenient_reader(fn)
             }
+
+    def release(self) -> None:
+        """Drop the syntax tree and keep ``readers``: every module's tree does not fit a worker."""
+        self.tree = None
+        self.functions = []
 
 
 def _imports(module: _Module, modules: dict[str, _Module]) -> tuple[dict[str, str], set[str]]:
@@ -302,43 +312,53 @@ def rewrites_from_lenient_reads(modules: dict[str, _Module]) -> dict[str, list[i
 
     Two passes: modules that can define a reader are parsed first, then only the
     modules that both call a writer and name one of the readers found.
+    Each module's text and tree are dropped once used, so the scan holds one module
+    at a time, not all of ``src/``.
     """
     for module in modules.values():
-        text = module.text
+        text = module.source()
         if text is not None and _HANDLER_GATE.search(text) and _EMPTY_GATE.search(text):
-            module.parse()
+            module.parse(text)
+            module.release()
     names = sorted({name for module in modules.values() for name in module.readers})
     if not names:
         return {}
     mentions = re.compile(r"\b(?:" + "|".join(map(re.escape, names)) + r")\b")
     found: dict[str, list[int]] = {}
     for module in modules.values():
-        text = module.text
+        text = module.source()
         if text is None or not _WRITER_GATE.search(text) or not mentions.search(text):
             continue
-        module.parse()
+        module.parse(text)
         found.update(_scan_module(module, modules))
+        module.release()
     return {key: sorted(lines) for key, lines in found.items()}
 
 
 def load_modules(root: Path, sources: dict[str, str] | None = None) -> dict[str, _Module]:
-    """``root``'s project modules, or the planted ``{rel path: source}`` map. Parsed lazily."""
-    if sources is None:
-        sources = {}
+    """``root``'s project modules, or the planted ``{rel path: source}`` map. Read lazily."""
+    if sources is not None:
+        modules = [_Module(rel, text) for rel, text in sources.items()]
+    else:
+        modules = []
         for path in sorted(root.rglob("*.py")):
             rel = path.relative_to(root)
             if "__pycache__" in rel.parts or "tests" in rel.parts:
                 continue
-            sources[rel.as_posix()] = path.read_text(encoding="utf-8")
-    modules = [_Module(rel, text) for rel, text in sources.items()]
+            modules.append(_Module(rel.as_posix(), None, path))
     return {module.name: module for module in modules}
 
 
 @functools.cache
-def _src_scan() -> tuple[dict[str, _Module], dict[str, list[int]]]:
-    """``src/`` is read once per worker for every tree-wide test."""
+def _src_scan() -> tuple[dict[str, frozenset[str]], dict[str, list[int]]]:
+    """``src/``'s lenient readers per module and its flagged rewrites, read once per worker.
+
+    Only these small results are cached: a worker keeps a cached value for the rest
+    of its run.
+    """
     modules = load_modules(_SRC)
-    return modules, rewrites_from_lenient_reads(modules)
+    found = rewrites_from_lenient_reads(modules)
+    return {name: frozenset(module.readers) for name, module in modules.items()}, found
 
 
 def test_no_new_rewrite_starts_from_a_lenient_read() -> None:
@@ -363,13 +383,13 @@ def test_every_known_site_still_matches() -> None:
 
 
 def test_the_scan_still_sees_the_real_lenient_readers() -> None:
-    modules, _ = _src_scan()
+    readers, _ = _src_scan()
     for module, reader in (
         ("kiro_crew.apps.builtins.ops_mission_control.backend.ledger", "read_entries"),
         ("kiro_crew.aws_consent", "_read_all"),
         ("kiro_crew.mate_tool_access", "_read"),
     ):
-        assert reader in modules[module].readers, f"the scan no longer sees {module}.{reader}"
+        assert reader in readers[module], f"the scan no longer sees {module}.{reader}"
     for module, reader in (
         ("kiro_crew.apps.builtins.ops_mission_control.backend.ledger", "read_entries_for_update"),
         (
@@ -377,7 +397,7 @@ def test_the_scan_still_sees_the_real_lenient_readers() -> None:
             "_read_state_for_update",
         ),
     ):
-        assert reader not in modules[module].readers, f"{module}.{reader} is strict"
+        assert reader not in readers[module], f"{module}.{reader} is strict"
 
 
 _LENIENT = """
@@ -417,6 +437,17 @@ def test_a_bound_result_passed_to_a_writer_is_flagged() -> None:
     found = _planted(body)
     assert list(found) == ["pkg/store.py::put"]
     assert len(found["pkg/store.py::put"]) == 1
+
+
+def test_the_scan_keeps_no_syntax_tree_once_done() -> None:
+    sources = {
+        "pkg/__init__.py": "",
+        "pkg/store.py": _LENIENT + "def put():\n    _write(_read())\n",
+    }
+    modules = load_modules(_SRC, sources)
+    assert list(rewrites_from_lenient_reads(modules)) == ["pkg/store.py::put"]
+    assert modules["pkg.store"].readers == {"_read", "_read_list"}
+    assert all(module.tree is None and not module.functions for module in modules.values())
 
 
 def test_a_direct_and_a_derived_argument_are_flagged() -> None:
