@@ -8142,6 +8142,8 @@
       "waiting_for_you_to_approve": "En attente de ton approbation…",
       "continue_with_builder_id": "Continuer avec AWS Builder ID",
       "continue_with_company_sso": "Continuer avec le SSO de ton entreprise",
+      "builder_id_hint": "Une connexion personnelle et gratuite pour les développeurs. Tu n'as pas besoin de compte AWS.",
+      "company_sso_hint": "Pour les comptes professionnels sur AWS IAM Identity Center. Il te faut l'URL du portail d'accès fournie par ton entreprise, même si elle te connecte via Okta ou Microsoft Entra.",
       "sso_start_url_label": "URL de connexion de ton entreprise",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Colle l'URL du portail d'accès AWS fournie par ton entreprise.",

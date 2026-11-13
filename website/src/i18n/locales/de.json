@@ -7933,6 +7933,8 @@
       "waiting_for_you_to_approve": "Warten auf deine Bestätigung…",
       "continue_with_builder_id": "Mit AWS Builder ID fortfahren",
       "continue_with_company_sso": "Mit Firmen-SSO fortfahren",
+      "builder_id_hint": "Eine kostenlose persönliche Anmeldung für Entwickler. Du brauchst kein AWS-Konto.",
+      "company_sso_hint": "Für Arbeitskonten in AWS IAM Identity Center. Du brauchst die Zugangsportal-URL deiner Firma, auch wenn sie dich über Okta oder Microsoft Entra anmeldet.",
       "sso_start_url_label": "Anmelde-URL deiner Firma",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "Füge die AWS-Zugangsportal-URL ein, die deine Firma dir gegeben hat.",

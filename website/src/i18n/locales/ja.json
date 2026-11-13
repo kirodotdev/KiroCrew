@@ -7724,6 +7724,8 @@
       "waiting_for_you_to_approve": "承認をお待ちしています…",
       "continue_with_builder_id": "AWS Builder ID で続行",
       "continue_with_company_sso": "会社の SSO で続行",
+      "builder_id_hint": "開発者向けの無料の個人用サインインです。AWS アカウントは不要です。",
+      "company_sso_hint": "AWS IAM Identity Center の仕事用アカウント向けです。Okta や Microsoft Entra 経由でサインインする場合も、会社から提供されたアクセスポータルの URL が必要です。",
       "sso_start_url_label": "会社のサインイン URL",
       "sso_start_url_placeholder": "https://your-company.awsapps.com/start",
       "sso_helper": "会社から提供された AWS アクセスポータルの URL を貼り付けてください。",
