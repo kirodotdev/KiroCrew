@@ -2061,7 +2061,11 @@ first `DOCK_MATES_LIMIT` (3, in `website/src/lib/dockMates.ts`) behind the same
 is draggable, so a Bot starred late (sorted to the bottom) can be dragged into
 the top three. As with the Apps list's active app, the open Bot's row stays on
 screen while the group is folded, as a row that cannot be dragged or dropped
-on. The group sits between the rail's primary rows and its Apps header and
+on. On the expanded rail the group's header is a disclosure that puts every
+Bot row and the "N more" row away and keeps the header, persisted in
+`mc-dock-mates-section-open` (absent reads as open); the icon rail draws no
+header, so its rows ignore that key and only the fold applies, and the phone
+rail's tiles ignore it. The group sits between the rail's primary rows and its Apps header and
 does not scroll on its own: everything above the rail's bottom block (Agent
 Capabilities, Settings, the community row) is ONE scroll region, so the menu
 row, the primary rows, this group and the Apps list scroll together and the
@@ -2097,7 +2101,8 @@ waiting on the person puts no dot on the row either.
 person to every device; `PUT` refuses a non-integer or a value outside
 0..`STAR_ORDER_MAX` with `invalid_star_order`, and clears it whenever the crew
 is not starred, so a re-star lands at the bottom. While a docked Bot's chat is
-open its dock row is the lit one, not the Bots page row.
+open its dock row is the lit one, not the Bots page row; while the group is put
+away, the Bots page row is the lit one.
 On the expanded desktop rail each docked Bot's row carries a "..." menu
 (`website/src/shell/nav/mateRowMenu.tsx`), the twin of an installed app's rail
 row menu, with exactly two items
