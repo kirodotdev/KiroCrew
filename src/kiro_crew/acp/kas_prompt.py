@@ -26,22 +26,33 @@ def spec_prompt(spec: dict[str, Any]) -> Any:
     return spec.get("systemPrompt") if raw is None else raw
 
 
-def prompt_file_path(ref: str, agents_dir: Path) -> Path:
-    """The resolved file a ``file://`` *ref* names, a relative one anchored to *agents_dir*.
+def expand_prompt_ref(ref: str) -> Path:
+    """The ``file://`` *ref* with ``$VAR`` / ``${VAR}`` and ``~`` expanded, not resolved.
 
-    ``$VAR`` / ``${VAR}`` and ``~`` are expanded first, as kiro-cli's v2 engine
-    expands them (``file://$HOME/p.md``); an unset variable is left as written, so
-    the path does not exist. Only a *ref* that is not already absolute is expanded:
-    an absolute one is used as written, so a checked path handed on by the
-    project-checkout rule (``acp.harness.kas.resolve_projected_spec``) cannot be
-    changed by the gateway's environment after it was checked.
+    Expanded as kiro-cli's v2 engine expands them (``file://$HOME/p.md``); an
+    unset variable is left as written, so the path does not exist. Only a *ref*
+    that is not already absolute is expanded: an absolute one is used as written,
+    so a checked path handed on by the project-checkout rule
+    (``acp.harness.kas.resolve_projected_spec``) cannot be changed by the
+    gateway's environment after it was checked. The result may still be relative.
 
-    Raises ``OSError`` or ``RuntimeError`` when the path cannot be expanded
-    (``~nosuchuser``) or resolved (a symlink loop).
+    Raises ``RuntimeError`` when ``~nosuchuser`` cannot be expanded.
     """
     candidate = Path(ref)
     if not candidate.is_absolute():
         candidate = Path(os.path.expandvars(ref)).expanduser()
+    return candidate
+
+
+def prompt_file_path(ref: str, agents_dir: Path) -> Path:
+    """The resolved file a ``file://`` *ref* names, a relative one anchored to *agents_dir*.
+
+    *ref* is expanded by :func:`expand_prompt_ref` first.
+
+    Raises ``OSError`` or ``RuntimeError`` when the path cannot be expanded
+    (``~nosuchuser``) or resolved (a symlink loop).
+    """
+    candidate = expand_prompt_ref(ref)
     return (candidate if candidate.is_absolute() else agents_dir / candidate).resolve()
 
 
