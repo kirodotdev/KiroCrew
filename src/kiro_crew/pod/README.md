@@ -415,7 +415,10 @@ the boot prints its error and serves anyway.
   and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*`, `FEISHU_*` and non-AWS
   `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
   seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.
-  Pod HOME is `0700`; `config.json` is `0600`.
+  Pod HOME is `0700`; `config.json` is `0600`. Where the config content check
+  applies, the seed and restart step endorses the floored config in the pod's own
+  data home, so a restart is not shown as an outside edit; a raw edit made in the
+  pod home is left on disk, pending, and the copy the pod loads carries the floor.
 
 ## Platform
 
