@@ -1002,16 +1002,17 @@ def resolve_mcp_servers(
             # that was defined but couldn't be resolved.
             #
             # Deliberately NOT added to _unresolved_this_pass: there is nothing
-            # here for a later pass to resolve, so the ref reconcile below treats
-            # this as a real absence and drops the refs. Keeping them would leave
-            # an allowedTools grant sitting on a name that any later server can
-            # be bound to, and that list never reaches the PreToolUse gate.
+            # here for a later pass to resolve, so the dangling-ref reconcile in
+            # default_spec_commit.write_default_spec treats this as a real absence
+            # and drops the refs. Keeping them would leave an allowedTools grant
+            # sitting on a name that any later server can be bound to, and that
+            # list never reaches the PreToolUse gate.
             agent_mod.logger.warning("Dropping MCP server %r: no command", name)
         else:
             # A command WAS declared and did not resolve here, which a later pass
-            # can reverse once the binary is installed -- so the ref reconcile
-            # below keeps this server's refs (see prune_dangling_tool_refs for why
-            # a per-tool grant cannot be re-derived).
+            # can reverse once the binary is installed -- so that reconcile keeps
+            # this server's refs, through ResolvedServers.narrowed_away (see
+            # prune_dangling_tool_refs for why a per-tool grant cannot be re-derived).
             _unresolved_this_pass.add(name)
             _unresolved_commands[name] = str(spec.get("command", ""))
             # The searched directories go in the WARNING so a default-level reader
@@ -1144,7 +1145,7 @@ def sync_shared_server_refs(
     # generated agent config is simultaneously the mount decision and the only
     # home for agent-only configuration, so dropping an entry destroys whatever
     # lives only there and stamping ``disabled`` makes ``list_servers`` delete the
-    # server's own row. See the follow-up issue linked from
+    # server's own row. See "6. Deferred unmount" in
     # docs/system-specs/modules/mcp-probe-quarantine.md.
     for name, spec in _shared_source_entries:
         if not isinstance(spec, dict) or name in managed_names:

@@ -575,6 +575,7 @@ COMPACTION_SEEN = {
     "copilot": False,
     "strands": False,
     "deepseek": False,
+    "mimocode": False,
 }
 
 

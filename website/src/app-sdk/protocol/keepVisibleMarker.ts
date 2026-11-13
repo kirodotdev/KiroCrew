@@ -33,10 +33,47 @@
 // asserted by BOTH test suites, so a bound edited on one side goes red on the other.
 // STACKED SIBLINGS: the marker line may be followed by other recognized
 // control-tag lines (`deliver:`, `plan_task_id:` — the backend grammar's
-// families) without voiding the exemption; the whole trailing tag block
+// families — or `option-action:`, via isStringTagLine) without voiding the exemption; the whole trailing tag block
 // matches, so copy/search strip all of it and the exemption still fires.
 const KEEP_VISIBLE_MARKER_RE =
   /(?:^|\n)[ \t]{0,3}<!--\s{0,16}keep-visible\s{0,16}-->[ \t]{0,16}(?:\n[ \t]{0,3}<!--\s{0,16}(?:deliver|plan_task_id):[^>\n]{0,256}-->[ \t]{0,16})*\s{0,16}$/gi
+
+const STRING_TAG_FAMILIES = new Set(['option-action'])
+// The fallback peel also takes the regex's own sibling families, so a mixed tail stays one block.
+const PEEL_FAMILIES = new Set([...STRING_TAG_FAMILIES, 'deliver', 'plan_task_id'])
+const STRING_TAG_MAX_LINES = 8
+
+/** Mirrors constants._is_string_tag_line: indent ≤3, ≤16 blanks before the
+ *  family name, ≤256 characters after its colon, no `>`, trailing blanks ≤16,
+ *  family name compared case-insensitively. */
+function isStringTagLine(line: string): boolean {
+  let lead = 0
+  while (lead < line.length && (line[lead] === ' ' || line[lead] === '\t')) lead++
+  let stop = line.length
+  while (stop > lead && (line[stop - 1] === ' ' || line[stop - 1] === '\t')) stop--
+  if (lead > 3 || line.length - stop > 16) return false
+  const s = line.slice(lead, stop)
+  if (s.length < 7 || !s.startsWith('<!--') || !s.endsWith('-->')) return false
+  const body = s.slice(4, -3)
+  const inner = body.trimStart()
+  if (body.includes('>') || body.length - inner.length > 16) return false
+  const colon = inner.indexOf(':')
+  return (
+    colon !== -1 &&
+    PEEL_FAMILIES.has(inner.slice(0, colon).toLowerCase()) &&
+    inner.length - colon - 1 <= 256
+  )
+}
+
+/** Mirrors constants._string_tag_line_start: where a complete string-checked
+ *  tag line ending `text` starts (at its leading newline), else null. */
+function stringTagLineStart(text: string, atEnd: boolean): number | null {
+  const end = atEnd ? text.trimEnd().length : text.length
+  if (text.length - end > 32) return null
+  const ls = text.lastIndexOf('\n', end - 1) + 1
+  if (!isStringTagLine(text.slice(ls, end))) return null
+  return Math.max(ls - 1, 0)
+}
 
 // Fence-delimiter lines (CommonMark: 3+ backticks or tildes, ≤3 leading
 // spaces) for the open-fence parity guard.
@@ -93,9 +130,23 @@ function inOpenFence(text: string, idx: number): boolean {
  *  direct use of the shared g-flagged RE is `String#replace` (resets
  *  lastIndex); the offset callback carries the fence check. */
 export function stripKeepVisibleMarker(text: string): string {
-  return text.replace(KEEP_VISIBLE_MARKER_RE, (match, offset: number) =>
-    inOpenFence(text, offset) ? match : '',
-  )
+  const strip = (t: string) =>
+    t.replace(KEEP_VISIBLE_MARKER_RE, (match, offset: number) =>
+      inOpenFence(t, offset) ? match : '',
+    )
+  const direct = strip(text)
+  if (direct !== text) return direct
+  // Peel trailing option-action lines, then the marker block must end what is left.
+  let head = text
+  for (let i = 0; i < STRING_TAG_MAX_LINES; i++) {
+    const start = stringTagLineStart(head, i === 0)
+    if (start === null || inOpenFence(head, start)) return text
+    head = head.slice(0, start)
+    if (head.endsWith('\n')) return text
+    const stripped = strip(head)
+    if (stripped !== head) return stripped
+  }
+  return text
 }
 
 /** True when *text* carries a LIVE keep-visible marker (tail-anchored and

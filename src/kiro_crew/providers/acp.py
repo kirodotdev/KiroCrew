@@ -529,6 +529,16 @@ class AcpProvider(LLMProvider):
         return untested_version_issue(backend, self.agent_version)
 
     @property
+    def known_limitation_notice(self) -> str:
+        """The notice for a known problem this session's adapter release has and a
+        newer one fixes (``KNOWN_LIMITATIONS``), else ``""``. Read from the session's
+        ``session/new`` options, the ones its permission write reads."""
+        from kiro_crew.agent_sdk.backends import known_limitation_issue
+
+        backend = str(getattr(self._client, "backend", "") or "")
+        return known_limitation_issue(backend, getattr(self._client, "acp_config_options", None))
+
+    @property
     def agent_prompt_upgrade_notice(self) -> str:
         """The upgrade notice when the KAS this session runs drops its agent's prompt,
         else ``""``. Recorded when the session registered its ``customAgents``."""

@@ -1179,3 +1179,144 @@ class TestLinuxStatusNamesALoadedStartLimitOtherThanTheUnits:
 
         assert len(notes) == 1, notes
         assert notes[0].startswith(f"{_UNIT} (system scope): the loaded unit caps restarts")
+
+
+class TestLinuxStatusWarnsOnALoadedRestartOtherThanAlways:
+    """``service status`` asks each scope's manager for the LOADED ``Restart=`` of
+    our unit and, when it is not ``always``, prints one advisory line with the
+    remedy. A unit written before ``Restart=always`` landed carries
+    ``on-failure``, which never relaunches a gateway that exits 0."""
+
+    @pytest.fixture(autouse=True)
+    def _not_root(self, _floor_monkeypatch, tmp_path):
+        from kiro_crew.service import linux as svc_linux
+
+        _floor_monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        _floor_monkeypatch.setenv("USER", "tester")
+        _floor_monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "system" / _UNIT)
+        user_unit = tmp_path / ".config" / "systemd" / "user" / _UNIT
+        _floor_monkeypatch.setattr(svc_linux, "user_unit_file_path", lambda: user_unit)
+
+    @staticmethod
+    def _with_restart(run, *, system=None, user=None, system_drop_ins="", user_drop_ins=""):
+        """Wrap a ``_fake_systemctl`` so the ``Restart`` and ``DropInPaths``
+        queries answer per scope (``None``: no property line)."""
+
+        def wrapped(argv, *a, **k):
+            tokens = list(argv)
+            if "show" in tokens and "Restart" in tokens:
+                wrapped.calls.append(tokens)
+                value = user if "--user" in tokens else system
+                body = "" if value is None else f"Restart={value}\n"
+                return subprocess.CompletedProcess(tokens, 0, body, "")
+            if "show" in tokens and "DropInPaths" in tokens:
+                wrapped.calls.append(tokens)
+                value = user_drop_ins if "--user" in tokens else system_drop_ins
+                body = "" if value is None else f"DropInPaths={value}\n"
+                return subprocess.CompletedProcess(tokens, 0, body, "")
+            result = run(argv, *a, **k)
+            wrapped.calls.append(tokens)
+            return result
+
+        wrapped.calls = []
+        return wrapped
+
+    @staticmethod
+    def _status(run):
+        from kiro_crew.service import linux as svc_linux
+
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            return svc_linux.status()
+
+    @pytest.mark.parametrize("value", ["on-failure", "on-success"])
+    def test_a_system_unit_not_on_always_names_the_reinstall_and_the_drop_in(self, value):
+        run = self._with_restart(_fake_systemctl(system=_RUNNING, user=None), system=value)
+        lines = self._status(run).splitlines()
+
+        idx = next(i for i, line in enumerate(lines) if f"`Restart={value}`" in line)
+        assert "does not relaunch the gateway after every exit" in lines[idx], lines
+        assert "`sudo kirocrew service install`" in lines[idx], lines
+        assert f"/etc/systemd/system/{_UNIT}.d/" in lines[idx], lines
+        assert "`Restart=always`" in lines[idx], lines
+        assert lines[idx - 1].startswith("system scope: active (running)"), lines
+        assert all("sudo" not in c for c in run.calls), run.calls
+
+    def test_an_overriding_system_drop_in_is_the_first_remedy(self):
+        drop_in = f"/etc/systemd/system/{_UNIT}.d/override.conf"
+        run = self._with_restart(
+            _fake_systemctl(system=_RUNNING, user=None),
+            system="on-failure",
+            system_drop_ins=drop_in,
+        )
+        warned = [line for line in self._status(run).splitlines() if "does not relaunch" in line]
+
+        assert len(warned) == 1, warned
+        assert drop_in in warned[0]
+        assert warned[0].index("`sudo systemctl daemon-reload`") < warned[0].index(
+            "`sudo kirocrew service install`"
+        )
+
+    @pytest.mark.parametrize("value", ["always", None], ids=["always", "no-property-line"])
+    def test_always_or_no_answer_reads_clean(self, value):
+        run = self._with_restart(_fake_systemctl(system=_RUNNING, user=None), system=value)
+        assert "does not relaunch" not in self._status(run)
+
+    def test_no_unit_in_either_scope_never_asks(self):
+        run = self._with_restart(_fake_systemctl(system=None, user=None), system="on-failure")
+        assert "does not relaunch" not in self._status(run)
+        assert not any("Restart" in c for c in run.calls), run.calls
+
+    def test_a_user_unit_gets_a_no_sudo_remedy_naming_its_file(self, tmp_path):
+        fragment = str(tmp_path / "u" / _UNIT)
+        run = self._with_restart(
+            _fake_systemctl(system=None, user=_RUNNING, user_fragment=fragment),
+            user="on-failure",
+        )
+        warned = [line for line in self._status(run).splitlines() if "does not relaunch" in line]
+
+        assert len(warned) == 1, warned
+        assert fragment in warned[0]
+        assert "`systemctl --user daemon-reload`" in warned[0]
+        assert "sudo" not in warned[0]
+
+    def test_an_overriding_user_drop_in_is_the_first_remedy(self, tmp_path):
+        fragment = str(tmp_path / "u" / _UNIT)
+        drop_in = str(tmp_path / "u" / f"{_UNIT}.d" / "override.conf")
+        run = self._with_restart(
+            _fake_systemctl(system=None, user=_RUNNING, user_fragment=fragment),
+            user="on-failure",
+            user_drop_ins=drop_in,
+        )
+        warned = [line for line in self._status(run).splitlines() if "does not relaunch" in line]
+
+        assert len(warned) == 1, warned
+        assert drop_in in warned[0]
+        fallback = f"otherwise add `Restart=always` under [Service] in {fragment}"
+        assert fallback in warned[0]
+        assert warned[0].index("`systemctl --user daemon-reload`") < warned[0].index(fallback)
+        assert "sudo" not in warned[0]
+
+    def test_doctor_gets_it_as_an_advisory_note_not_a_lag_note(self):
+        from kiro_crew.service import linux as svc_linux
+
+        run = self._with_restart(_fake_systemctl(system=_RUNNING, user=None), system="on-failure")
+        with patch("kiro_crew.service.linux.subprocess.run", side_effect=run):
+            advisory = svc_linux.restart_policy_notes()
+            lag = svc_linux.stale_unit_notes()
+
+        assert len(advisory) == 1, advisory
+        assert advisory[0].startswith(f"{_UNIT} (system scope): the loaded unit has `Restart=")
+        assert not any("Restart=on-failure" in note for note in lag), lag
+
+    @pytest.mark.parametrize("platform", ["LAUNCHD", "UNSUPPORTED"])
+    def test_the_controller_is_silent_off_systemd(self, monkeypatch, platform):
+        from kiro_crew.service import controller
+        from kiro_crew.service.common import Platform
+
+        monkeypatch.setattr(controller, "current_platform", lambda: Platform[platform])
+        monkeypatch.setattr(
+            controller.linux,
+            "restart_policy_notes",
+            lambda: pytest.fail("asked systemd off systemd"),
+        )
+        assert controller.restart_policy_notes() == []

@@ -939,7 +939,26 @@ export function RemoteCrewPanel() {
     ...loginTargetBody,
   }
   const builtinLaunchKey = launchGuardKey(builtinLaunchBody)
-  const alreadyLaunched = launchedKey === builtinLaunchKey
+  // The launch these settings went out with failed. Its line never reads as a
+  // success, whatever step it stopped at.
+  const launchFailed = launchedKey === builtinLaunchKey
+    && !!activeJob && activeJob.id === activeLaunchId && activeJob.status === 'failed'
+  // Only a failure before provisioning started is known to have created nothing,
+  // so only then is the same-settings guard lifted and Launch itself the retry.
+  // From provisioning on, a stack may still exist: a refused sign-in or a later
+  // step leaves a registered crew, and a failed provision is rolled back on a
+  // best-effort basis the job does not report as a field. There the guard stays,
+  // so repeating the settings takes the explicit "Launch another crew".
+  const launchFailedBeforeProvision = launchFailed && !activeJob.instance_id && !isRegistered(activeJob)
+    && activeJob.steps.some(st => st.key === 'provision' && (st.state === 'pending' || st.state === 'skipped'))
+  // The job is a snapshot: a crew it registered can be deleted afterwards, and
+  // an instance that never registered has no row. So "listed in Your crews" is
+  // said only while the live list holds that instance; otherwise the line stays
+  // neutral and sends the reader to check. The job carries the EC2 id, which a
+  // crew row holds as its SSM target; the row's own id is derived from its name.
+  const launchFailedCrewListed = launchFailed && isRegistered(activeJob)
+    && !!activeJob.instance_id && instances.some(i => i.ssm_target === activeJob.instance_id)
+  const alreadyLaunched = launchedKey === builtinLaunchKey && !launchFailedBeforeProvision
   // The gateway refuses a launch while any crew setup is still running
   // (`launch_already_running`), so neither launch button is offered until it ends.
   const setupRunning = !!activeJob && !isTerminal(activeJob)
@@ -1667,6 +1686,19 @@ export function RemoteCrewPanel() {
               {alreadyLaunched && !launchMutation.isPending && !setupRunning && (
                 <Btn onClick={launchBuiltin} disabled={!launchReady}>{i18nT('pages.settings.remoteCrewPanel.launch_another')}</Btn>
               )}
+              {launchFailed && !launchMutation.isPending ? (
+                /* No hand-off: the subnet and sign-in choice this retry will send
+                   live only in this form's state (the store copy was dropped when
+                   the gateway accepted the launch), so navigating away loses them. */
+                <ErrorNotice
+                  variant="inline"
+                  message={launchFailedBeforeProvision
+                    ? i18nT('pages.settings.remoteCrewPanel.launch_failed_retry')
+                    : launchFailedCrewListed
+                      ? i18nT('pages.settings.remoteCrewPanel.launch_failed_crew_listed')
+                      : i18nT('pages.settings.remoteCrewPanel.launch_failed_check_crews')}
+                />
+              ) : (
               <span className="text-[12px] text-muted">
                 {setupRunning && !launchMutation.isPending
                   ? i18nT('pages.settings.remoteCrewPanel.launch_wait_for_setup')
@@ -1686,6 +1718,7 @@ export function RemoteCrewPanel() {
                           ? i18nT('pages.settings.remoteCrewPanel.finish_prereq_named', { check: blockingCheck })
                           : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
               </span>
+              )}
             </div>
           </Card>
           </>

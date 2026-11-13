@@ -739,7 +739,12 @@ export function MembersPageThreadColumn({
                 {/* Same shape as the post-create roster notice: the plain retry
                     under the sentence, the hand-off link beside it as the second
                     option, never the only one. */}
-                <Btn onClick={() => void rosterQuery.refetch()} data-testid="member-column-load-retry">
+                <Btn
+                  onClick={() => { if (!rosterQuery.isFetching) void rosterQuery.refetch() }}
+                  aria-disabled={rosterQuery.isFetching || undefined}
+                  className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                  data-testid="member-column-load-retry"
+                >
                   {t('pages.membersPage.roster_load_retry')}
                 </Btn>
               </div>

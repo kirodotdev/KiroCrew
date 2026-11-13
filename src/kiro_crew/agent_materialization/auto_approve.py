@@ -215,7 +215,12 @@ def _state_seed_rule(config: dict[str, Any]) -> None:
         return
     if agent_specs.creates_without_send(agent_specs.spec_grants(config, audit=False)):
         # The charter's own bytes stay as written; only the blank line is completed.
-        gap = "" if prompt.endswith("\n\n") else "\n" if prompt.endswith("\n") else "\n\n"
+        if prompt.endswith("\n\n"):
+            gap = ""
+        elif prompt.endswith("\n"):
+            gap = "\n"
+        else:
+            gap = "\n\n"
         config["prompt"] = f"{prompt}{gap}{SEED_AFTER_CREATE_RULE}\n"
 
 

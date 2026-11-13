@@ -32,6 +32,7 @@ from kiro_crew.dashboard.kiro_readiness import (
     rerun_signs_in_via_kiro_cli,
 )
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
+from kiro_crew.dashboard.slot_buffers import flush_restored_hold
 from kiro_crew.dashboard.slot_ownership import (
     checkpoint_slot_replaced,
     deny_app_slot_session_access,
@@ -304,6 +305,12 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         # A gateway prompt is the gateway's text: it re-runs as the synthetic payload
         # it first ran as, never as words the person typed.
         _gateway_prompt = _is_gateway_prompt_row(msgs[u_idx])
+        # A hold a restart restored into this idle slot is owed to this turn.
+        # Regenerate writes no row of its own, so the notes land after the reply it
+        # replaces, above the new one, and stay when the swap retires that reply:
+        # ``replacing`` was captured above, before these rows existed.
+        request_row = msgs[u_idx]
+        flush_restored_hold(slot, logger=logger)
         task = asyncio.create_task(
             _run_chat(
                 state,
@@ -326,7 +333,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 # previous reply now stays in the window, so a later steer,
                 # inject or subagent row can sit after the request, and a cold
                 # start would replay the request as an unanswered turn.
-                _current_message=msgs[u_idx],
+                _current_message=request_row,
                 **_regen_kwargs,
             )
         )
@@ -663,6 +670,25 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
                 {"error": "index or ts required", "code": "index_or_ts_required"}, status=400
             )
 
+        # A hold a restart restored into this idle slot is owed to this turn, above
+        # its user row. Flushed on the LIVE slot, not the scratch copy below: the
+        # copy shares the hold and its note dicts, so a flush there would retire
+        # notes from the live hold for rows a refused edit then throws away. A
+        # refused edit leaves the notes delivered here, as the next seam would.
+        edited_row = msgs[index]
+        pre_flush_rows = list(slot.messages)
+        pre_flush_ids = {id(row) for row in pre_flush_rows}
+        flush_restored_hold(slot, logger=logger)
+        restored_rows = [row for row in slot.messages if id(row) not in pre_flush_ids]
+        # The flush's append can trim the window's front, which moves the index.
+        edited_at = next((i for i, row in enumerate(slot.messages) if row is edited_row), -1)
+        if edited_at < 0:
+            return web.json_response(
+                {"error": "user message not found", "code": "user_message_not_found"},
+                status=400,
+            )
+        index = edited_at
+
         # Capture routing state BEFORE any live mutation, exactly like rewind:
         # the truncation is a real conversation boundary, so the native ACP
         # conversation must be discarded and the truncated history durably saved
@@ -689,7 +715,8 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # reach it -- the sole question left is whether an app drives the edit.
         _bc = queued_text_for_display(content, user_origin=not bool(request_app))
         prospective_slot = copy.copy(slot)
-        prospective_slot.messages = list(slot.messages[:index])
+        # The restored notes' rows follow the kept prefix, above the edited row.
+        prospective_slot.messages = list(slot.messages[:index]) + restored_rows
         # ``copy.copy`` is SHALLOW, so every mutable attribute still IS the live
         # slot's object. Reassigning ``messages`` alone is not enough, because
         # ``_ChatSlot.append`` below writes through four more of them: it

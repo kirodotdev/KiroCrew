@@ -589,7 +589,7 @@ export function FeaturePreviewsSection() {
             </div>
           </div>
         )}
-        {/* Crew-owned GitHub sign-in (`dashboard.feature_previews.crew_oauth`): a
+        {/* Crew-owned MCP sign-in (`dashboard.feature_previews.crew_oauth`): a
             gateway switch, read per call by `connections/crew_oauth.py`, and the
             only one (the old `connections.crew_oauth` is ignored). */}
         {!previewsOff && (

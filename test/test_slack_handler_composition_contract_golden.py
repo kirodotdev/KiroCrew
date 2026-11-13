@@ -408,6 +408,7 @@ class _Slot:
         self.running = running
         self.linked_session_key = ""
         self._trust = False
+        self._deferred_notes: list = []
         self.messages: list = []
         self.queued: list = []
 
