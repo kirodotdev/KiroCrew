@@ -88,6 +88,7 @@ from kiro_crew.config.sections import (
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     IMPORT_CHUNK_BUDGET_MAX,
     SWEEP_CHUNK_BUDGET_MAX,
+    THRESHOLD_PCT_MIN,
     CodeChannelDefaultsConfig,
     DiscordConfig,
     FeishuConfig,
@@ -171,13 +172,26 @@ def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     )
 
 
+def _idle_reset_minutes(raw: object, default: int) -> int:
+    """``messaging.idle_reset_minutes`` floored at 0 (off), as ``MessagingConfig`` holds it."""
+    return max(0, _coerce_int(raw, default))
+
+
+def _daily_reset_hour(raw: object, default: int) -> int:
+    """``messaging.daily_reset_hour``: an hour of the day, anything else -1 (off)."""
+    hour = _coerce_int(raw, default)
+    return hour if 0 <= hour <= 23 else -1
+
+
 def _build_messaging_config(messaging_data: dict) -> MessagingConfig:
     section = SectionReader(MessagingConfig, messaging_data)
     return MessagingConfig(
         use_transport=bool(section.get("use_transport")),
         dm_scope=str(section.get("dm_scope")),
-        idle_reset_minutes=section.read("idle_reset_minutes", _coerce_int),
-        daily_reset_hour=section.read("daily_reset_hour", _coerce_int),
+        idle_reset_minutes=section.read(
+            "idle_reset_minutes", _idle_reset_minutes, unclamped=_coerce_int
+        ),
+        daily_reset_hour=section.read("daily_reset_hour", _daily_reset_hour, unclamped=_coerce_int),
         queue_mode=str(section.get("queue_mode")),
     )
 
@@ -814,6 +828,17 @@ def _code_channel_approval_mode(raw: object) -> str | None:
     return None
 
 
+def _threshold_pair(section: SectionReader) -> tuple[int, int]:
+    """A channel's ``(soft, hard)`` context thresholds, each change reported by ``read``.
+
+    The soft read is bounded by the hard value, which is what the DTO's
+    ``_normalize_threshold_pair`` would pull it down to, so a soft above hard warns.
+    """
+    hard = section.read("hard_threshold_pct", _threshold_pct, unclamped=_safe_int)
+    soft = section.read("soft_threshold_pct", _safe_int, THRESHOLD_PCT_MIN, hard)
+    return soft, hard
+
+
 def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
     section = SectionReader(TelegramConfig, telegram_data)
     return TelegramConfig(
@@ -821,7 +846,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
         enabled=bool(section.get("enabled")),
         bot_token=str(section.get("bot_token")),
         allowed_user_ids=_coerce_int_ids(section.get("allowed_user_ids")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
+        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         show_thinking=bool(section.get("show_thinking")),
         allow_forum=bool(section.get("allow_forum")),
         voice_replies=bool(section.get("voice_replies")),
@@ -842,6 +867,7 @@ def _build_telegram_config(telegram_data: dict) -> TelegramConfig:
 
 def _build_weixin_config(weixin_data: dict) -> WeixinConfig:
     section = SectionReader(WeixinConfig, weixin_data)
+    soft, hard = _threshold_pair(section)
     return WeixinConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
@@ -850,13 +876,14 @@ def _build_weixin_config(weixin_data: dict) -> WeixinConfig:
         base_url=str(section.get("base_url") or section.default("base_url")),
         dm_policy=str(section.get("dm_policy") or section.default("dm_policy")),
         allowed_user_ids=_coerce_opaque_str_ids(section.get("allowed_user_ids")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
-        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
     )
 
 
 def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
     section = SectionReader(WhatsAppConfig, whatsapp_data)
+    soft, hard = _threshold_pair(section)
     return WhatsAppConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
@@ -864,8 +891,8 @@ def _build_whatsapp_config(whatsapp_data: dict) -> WhatsAppConfig:
         allowed_wa_ids=_coerce_str_ids(section.get("allowed_wa_ids")),
         groups=_coerce_whatsapp_groups(section.get("groups")),
         db_path=str(section.get("db_path")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
-        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
         # _safe_bool, not bool(): a hand-edited "false" must not turn on a billed service.
         auto_reply_to_voice=section.read("auto_reply_to_voice", _safe_bool),
     )
@@ -884,7 +911,7 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
         allowed_thread_ids=_coerce_str_ids(section.get("allowed_thread_ids")),
         allowed_channel_ids=_coerce_str_ids(section.get("allowed_channel_ids")),
         auto_thread=bool(section.get("auto_thread")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
+        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct, unclamped=_safe_int),
         reactions_enabled=bool(section.get("reactions_enabled")),
         show_thinking=bool(section.get("show_thinking")),
     )
@@ -892,6 +919,7 @@ def _build_discord_config(discord_data: dict) -> DiscordConfig:
 
 def _build_webex_config(webex_data: dict) -> WebexConfig:
     section = SectionReader(WebexConfig, webex_data)
+    soft, hard = _threshold_pair(section)
     return WebexConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
@@ -913,13 +941,14 @@ def _build_webex_config(webex_data: dict) -> WebexConfig:
         ],
         reply_in_thread=bool(section.get("reply_in_thread")),
         wdm_base=str(section.get("wdm_base") or section.default("wdm_base")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
-        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
     )
 
 
 def _build_imessage_config(imessage_data: dict) -> IMessageConfig:
     section = SectionReader(IMessageConfig, imessage_data)
+    soft, hard = _threshold_pair(section)
     return IMessageConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
@@ -928,13 +957,14 @@ def _build_imessage_config(imessage_data: dict) -> IMessageConfig:
             h for h in _safe_list(section.get("allowed_handles")) if isinstance(h, str) and h
         ],
         service=str(section.get("service") or section.default("service")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
-        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
     )
 
 
 def _build_teams_config(teams_data: dict) -> TeamsConfig:
     section = SectionReader(TeamsConfig, teams_data)
+    soft, hard = _threshold_pair(section)
     return TeamsConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
         enabled=bool(section.get("enabled")),
@@ -949,13 +979,14 @@ def _build_teams_config(teams_data: dict) -> TeamsConfig:
             if isinstance(section.get("allowed_emails"), list)
             else section.default("allowed_emails")
         ),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
-        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
     )
 
 
 def _build_wecom_config(wecom_data: dict) -> WeComConfig:
     section = SectionReader(WeComConfig, wecom_data)
+    soft, hard = _threshold_pair(section)
     return WeComConfig(
         session_folder=_coerce_session_folder(section.get("session_folder")),
         # _safe_bool, not bool(): `bool("false")` is True, so a JSON string
@@ -970,13 +1001,14 @@ def _build_wecom_config(wecom_data: dict) -> WeComConfig:
         ],
         allow_all_users=section.read("allow_all_users", _safe_bool),
         ws_url=str(section.get("ws_url")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _threshold_pct),
-        hard_threshold_pct=section.read("hard_threshold_pct", _threshold_pct),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
     )
 
 
 def _build_feishu_config(feishu_data: dict) -> FeishuConfig:
     section = SectionReader(FeishuConfig, feishu_data)
+    soft, hard = _threshold_pair(section)
     return FeishuConfig(
         enabled=section.read("enabled", _safe_bool),
         allowed_open_ids=_coerce_opaque_str_ids(section.get("allowed_open_ids")),
@@ -986,8 +1018,8 @@ def _build_feishu_config(feishu_data: dict) -> FeishuConfig:
         # to the parse (and dedupe + strip the opaque ou_/oc_ ids).
         allow_group=section.read("allow_group", _safe_bool),
         allowed_group_ids=_coerce_opaque_str_ids(section.get("allowed_group_ids")),
-        soft_threshold_pct=section.read("soft_threshold_pct", _safe_int),
-        hard_threshold_pct=section.read("hard_threshold_pct", _safe_int),
+        soft_threshold_pct=soft,
+        hard_threshold_pct=hard,
         session_folder=_coerce_session_folder(section.get("session_folder")),
     )
 

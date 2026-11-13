@@ -474,24 +474,31 @@ def _clamp_security_bounds(data: dict) -> None:
             )
 
 
-def _session_start_concurrency(raw: object, ceiling: int = 64) -> int | str:
-    """A start width: ``"auto"`` or an int clamped to ``1..ceiling``.
+def _session_start_concurrency(
+    raw: object, default: int | str, lo: int | None = None, hi: int | None = None
+) -> int | str:
+    """A start width: ``"auto"`` or an int clamped to ``lo..hi``.
 
-    ``agent.session_start_concurrency`` uses the default ceiling of 64;
-    ``agent.cold_start_concurrency`` and ``agent.runtime_spawn_concurrency`` pass
-    32. Anything that is neither (missing, a bool, a non-integral float, a
-    non-numeric string) falls back to the ``"auto"`` default, as a junk value of
-    any other int knob falls back to its default.
+    A ``SectionReader.read`` coercer, so its bounds are the read's and a stored value
+    they change is logged: ``agent.session_start_concurrency`` reads with ``1, 64``,
+    ``agent.cold_start_concurrency`` and ``agent.runtime_spawn_concurrency`` with
+    ``1, 32``. Anything that is neither (a bool, a non-integral float, a non-numeric
+    string) falls back to *default*, the field's ``"auto"``, as a junk value of any
+    other int knob falls back to its default.
     """
-    if _session_start_is_auto(raw) or isinstance(raw, bool):
+    if _session_start_is_auto(raw):
         return _SESSION_START_AUTO
-    if isinstance(raw, float) and not raw.is_integer():
-        return _SESSION_START_AUTO
+    if isinstance(raw, bool) or (isinstance(raw, float) and not raw.is_integer()):
+        return default
     try:
         value = int(raw)  # type: ignore[call-overload]
     except (TypeError, ValueError, OverflowError):
-        return _SESSION_START_AUTO
-    return max(1, min(ceiling, value))
+        return default
+    if lo is not None:
+        value = max(lo, value)
+    if hi is not None:
+        value = min(hi, value)
+    return value
 
 
 def _read_backend_choice(
@@ -974,8 +981,8 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         # Session-start gate (acp/runtime_start.py SessionStartGate).
         # "auto" (default) is sized from the host once per process by
         # session_start_sizing; an explicit integer keeps the 1..64 clamp.
-        session_start_concurrency=_session_start_concurrency(
-            agent_data.get("session_start_concurrency", "auto")
+        session_start_concurrency=section.read(
+            "session_start_concurrency", _session_start_concurrency, 1, 64
         ),
         # Env defaults for spawned kiro-cli children (acp/child_env_defaults.py).
         # Through the module alias: the loader's import list is a frozen snapshot.
@@ -984,11 +991,11 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         env=_sections.coerce_agent_env(section.get("env")),
         # Cold-start queues (session_allocation _start_sem, acp/runtime_start
         # spawn admission); resolved by cold_start_sizing.
-        cold_start_concurrency=_session_start_concurrency(
-            agent_data.get("cold_start_concurrency"), ceiling=32
+        cold_start_concurrency=section.read(
+            "cold_start_concurrency", _session_start_concurrency, 1, 32
         ),
-        runtime_spawn_concurrency=_session_start_concurrency(
-            agent_data.get("runtime_spawn_concurrency"), ceiling=32
+        runtime_spawn_concurrency=section.read(
+            "runtime_spawn_concurrency", _session_start_concurrency, 1, 32
         ),
         # Adaptive controller (adaptive/policy.py params_from_config).
         adaptive_concurrency=section.read("adaptive_concurrency", _safe_bool),

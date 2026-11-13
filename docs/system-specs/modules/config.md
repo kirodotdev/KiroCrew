@@ -1894,11 +1894,13 @@ one `_crew_autocompact_pct` reads with (each keeps `0` as "use the default"), an
 one for `knowledge.extraction_pool_size`. `_clamp_security_bounds` reports the fields
 it lists before the builders run, so those reach their builders in range, and
 `_load_background_hold_secs` logs its own clamp.
-Still clamped outside `read` and not reported: the channel
-`soft_threshold_pct`/`hard_threshold_pct` pair, a WhatsApp group's `cooldown_s`,
-`messaging.idle_reset_minutes` and `daily_reset_hour`, and the `agent` start widths
-(`session_start_concurrency` and its two siblings). A `default_factory` field gives a
-fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
+A channel's `soft_threshold_pct`/`hard_threshold_pct` report through `read` as well,
+the soft read bounded by the hard value (`_threshold_pair`); the `agent` start widths
+(`session_start_concurrency` and its two siblings) through `read`'s bounds; and
+`messaging.idle_reset_minutes` and `daily_reset_hour` through `unclamped=`. A WhatsApp
+group's `cooldown_s` is a list entry, not a key, so `_coerce_whatsapp_groups` calls the
+same report, `_report_clamp`, keyed by the entry's index (`groups[0].cooldown_s`). A `default_factory` field gives
+a fresh value on each read, and a key with no field raises `KeyError`. A DTO's own
 `__post_init__`, `from_raw` or `from_dict`, and a reader a builder calls (the MCP
 stub-override reader `_resolve_stub_overrides`, `_tailscale_config_from`,
 `_read_skip_permissions`, the STT validators and the like), read a fallback that

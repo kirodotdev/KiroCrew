@@ -325,7 +325,10 @@ _OWNER_CONFIG_IMPORTS = {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_defaults",
     },
-    "kiro_crew.config.sections_channels": {"kiro_crew.config.fields"},
+    "kiro_crew.config.sections_channels": {
+        "kiro_crew.config.fields",
+        "kiro_crew.config.sections_defaults",
+    },
     "kiro_crew.config.sections_telegram": {
         "kiro_crew.config.fields",
         "kiro_crew.config.sections_channels",
