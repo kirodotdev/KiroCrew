@@ -28,6 +28,7 @@ import ErrorNotice from '../components/ErrorNotice'
 import InstalledAppSurface from '../components/InstalledAppSurface'
 import { Btn, ContentSkeleton } from '../components/ui'
 import { useInstalledAppsWhen } from '../hooks/panelTabRegistry'
+import { useAppInstalledElsewhere } from '../hooks/useAppInstalledElsewhere'
 import { i18nT } from '../i18n/t'
 
 /**
@@ -198,6 +199,9 @@ export default function BuiltinAppRoute() {
   const { released, error: releasedLookupError } = useReleasedWithNoRecord(
     recordless && entry ? entry.appId : null,
   )
+  // The not-installed state below has the shell re-read its list when the app is
+  // installed again, and the record that list then names replaces this state.
+  useAppInstalledElsewhere(released && entry ? entry.appId : null)
   if (adopted) {
     return (
       <ErrorBoundary key={`${path}#adopted`}>
