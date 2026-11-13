@@ -320,6 +320,19 @@ them; anything empty falls through:
 The page previews what a new code channel will run with. A folder or agent deleted after
 you saved it is flagged on the page and skipped; the other defaults still apply.
 
+**What the agent in a code channel can do.** While **Code channels** is on, the agent bound
+to a code channel gets these tools. Each one acts on that agent's own channel only; none
+can name, create or archive a channel.
+
+| Tool | What it does |
+|---|---|
+| `code_channel_rename` | Renames the channel and its session (1-200 characters). |
+| `code_channel_set_status` | Sets the session status: `processing`, `active` or `suspended`. `suspended` means the agent asked the people in the channel something and waits for the answer; it stays after the turn ends, and the next turn clears it. |
+| `code_channel_set_view` | Adds or updates a view tab: a self-contained `html` page (up to 1 MB, nothing external loads) or a display-only `block_kit` surface (up to 50 blocks, no buttons or inputs). The same `view_key` updates the same tab; a channel holds up to five tabs. |
+| `code_channel_publish_plan_canvas` | Creates or replaces the channel's plan canvas from markdown and shows it as the **Plan** tab. Members can comment on it. |
+| `code_channel_set_context_bar` | Sets the agent's own items on the context bar, after the repo, branch, PR and CI items Kiro Crew keeps there (five items in all; the keys `repo`, `folder`, `branch`, `pr` and `ci` are taken). Each item has a key, a label, an optional icon and an optional `https` link. An empty list clears them. |
+| `code_channel_wrap_up` | Posts the wrap-up: the agent's summary (up to 2800 characters), the facts Kiro Crew knows (branch, PR, CI, changes) and an **Archive channel** button. `/wrap-up` asks for it. Only a person can press the button. |
+
 **Updating an existing Slack app.** A switch changes the manifest (scopes, events and
 feature blocks), and Slack grants scopes only when the app is (re)installed. The
 **Update your Slack app** panel lists what each switch adds, compares it with the scopes
