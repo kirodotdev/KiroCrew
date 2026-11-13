@@ -856,6 +856,18 @@ async def add_source(request: web.Request) -> web.Response:
         from kiro_crew.platform import redact_via_context
 
         stored_name = redact_via_context(stored_name)[:bedrock_name_cap]
+    # JSON allows escaped lone surrogates; UTF-8, which SQLite binds the name
+    # as, does not. Every path below that answers 2xx inserts it.
+    try:
+        stored_name.encode("utf-8")
+    except UnicodeEncodeError:
+        return web.json_response(
+            {
+                "error": "name contains characters that cannot be encoded",
+                "code": "text_not_encodable",
+            },
+            status=400,
+        )
 
     # Folder sources: discovery walk + pending_confirmation (no auto-scan)
     if source_type in ("local_folder", "obsidian_vault"):
