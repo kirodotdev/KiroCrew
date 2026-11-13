@@ -4313,7 +4313,13 @@ parts:
   alias) while the file is absent and the Bot owner record names it for
   this data home (`mate_config.crewmate_file_on_record`, written with every Bot file and never pruned;
   `_claimed_crewmate_file`). A self-named binding to an installed, workspace or
-  built-in agent was never on that record and keeps the member route. Read from
+  built-in agent was never on that record and keeps the member route. So does a
+  Bot whose name a user-level spec in `~/.kiro/agents/` also declares, file
+  present or not: its chats run on that spec (`member_chat_agent`), so its
+  scheduled turn runs there too instead of on a worker that refuses the
+  shadowed file. Only a spec that parses and declares that name counts: a
+  same-stem file naming another agent, or one that does not parse, leaves the
+  turn on the worker, which refuses it. Read from
   the gateway's live config, and
   `cron_fire._resolve_cron_agent` dispatches the worker in the Bot's
   workspace with no crew alias, as a hand-off opens it. The job keeps its

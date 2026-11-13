@@ -278,6 +278,7 @@ from kiro_crew.subagent_parts.agent_policy import (  # noqa: F401
     parent_template_spawn_policy,
     set_parent_project_resolver,
     validate_cwd,
+    with_cron_dispatched_policy,
 )
 from kiro_crew.subagent_parts.delivery import (  # noqa: F401
     _TEARDOWN_GATE_TTL_SECS,

@@ -448,6 +448,40 @@ def parent_template_allowlists(
     return parent_template_spawn_policy(parent_session_key, template, accepted_dirs)[1]
 
 
+def with_cron_dispatched_policy(
+    parent_session_key: str, capture: Any, policy: ParentSpawnPolicy, accepted_dirs: object = ()
+) -> ParentSpawnPolicy:
+    """*policy* narrowed by the template a cron fire dispatched, when that differs.
+
+    ``/api/spawn`` reads a cron parent's scheduler capture, whose template a 1.0
+    capture or a job-level agent can spell differently from the agent a member's
+    fire runs; the fire writes that agent into the session record (``cron_turn``).
+    Both declarations apply, so this only ever adds a restriction. Only a member
+    record on *capture*'s member, store, mode and app is the one the fire wrote;
+    any other record (a Bot's worker) leaves *policy* as it is. An unreadable
+    record leaves the dispatched agent's declaration unknown, which refuses.
+    """
+    if capture is None or not parent_session_key.startswith("cron:"):
+        return policy
+    try:
+        record = read_session_execution(parent_session_key)
+    except Exception:  # noqa: BLE001 - every failure class is "unknown", never "none"
+        return policy[0], None, ()
+    same_run = ("member_id", "store", "memory_mode", "app")
+    if (
+        record is None
+        or record.selection_kind != "member"
+        or record.template_id == capture.template_id
+        or any(getattr(record, f) != getattr(capture, f) for f in same_run)
+    ):
+        return policy
+    dispatched = record.template_id
+    extra = parent_template_spawn_policy(parent_session_key, dispatched, accepted_dirs)
+    if policy[1] is None or extra[1] is None:
+        return dispatched, None, (*policy[2], *extra[2])
+    return dispatched, policy[1] + extra[1], ()
+
+
 def parent_template_spawn_policy(
     parent_session_key: str, template: str, accepted_dirs: object = ()
 ) -> ParentSpawnPolicy:
