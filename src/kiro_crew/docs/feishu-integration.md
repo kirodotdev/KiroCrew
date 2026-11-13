@@ -43,8 +43,9 @@ Lark).
    `im:message.group_at_msg.include_bot:readonly` (receive group messages that
    @-mention the bot). The broader `im:message` grant does not replace the
    explicit p2p event scope in the current Feishu console. To receive the
-   images an answer refers to, also add `im:resource` (or
-   `im:resource:upload`); without it you get the image's path instead.
+   images an answer refers to and the files `file_send` sends, also add
+   `im:resource` (or `im:resource:upload`); without it you get the image's
+   path instead, and `file_send` says the upload was refused.
 4. **Use long connection** — under *Events & Callbacks*, choose
    **Long connection** (not a request URL), then subscribe to
    `im.message.receive_v1`.
@@ -233,6 +234,23 @@ only images sends only the images.
   image that fails to upload (for example, the app lacks `im:resource`) is
   named by its path in a follow-up message.
 - If the answer text cannot be sent, no image is sent either.
+
+## Files the agent sends
+
+When the agent sends a file with `file_send` in a conversation linked to a
+direct message, the file arrives in that chat. The file is also in the
+dashboard.
+
+- A PNG, JPEG, GIF, WebP or BMP image up to 10 MB arrives as an image message.
+  Any other file `file_send` accepts (text, PDF, audio or video) arrives as a
+  file message under its own name, up to 30 MB. A larger image is sent as a
+  file.
+- A description you give the file follows it as a text message.
+- Files go to direct messages only, to a person on the allow-list. A group
+  chat gets no file.
+- An incognito or temporary conversation never sends the file to Feishu.
+- When Feishu refuses the upload (for example, the app lacks `im:resource`),
+  the `file_send` result says why, and the file stays in the dashboard.
 
 ## Limits
 

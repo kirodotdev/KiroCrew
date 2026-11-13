@@ -16,7 +16,7 @@ platform could support it.
 | Edits a message it already sent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | Adds emoji reactions | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Accepts a file you send | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| Sends a file back to you | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
+| Sends a file back to you | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ✅ |
 | Sends an image the reply references | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | Native widget (card, inline keyboard) | ✅ | ❌ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Threads a conversation | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -38,11 +38,13 @@ An ASCII-only reply on those channels fits far more than the character figure
 suggests.
 
 **Sends a file back to you** is what you receive from `file_send`. Slack has its
-own upload leg; Telegram, Discord and WeCom deliver through their `send_document`.
+own upload leg; Telegram, Discord, WeCom and Feishu deliver through their
+`send_document`.
 On every other channel `file_send` does not post into that chat: the file reaches
 the dashboard card and, when Slack is connected, the Slack leg too (the session's
 linked Slack thread, else your Slack DM with the bot). On WeCom the file arrives
-as native media.
+as native media. On Feishu `file_send` in a direct message sends an image as an
+image message and any other file as a file message; a group chat gets no file.
 
 **Sends an image the reply references** is the inline path: when a reply names a
 local image, the renderer uploads it and sends the picture instead of printing the
