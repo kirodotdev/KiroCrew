@@ -27,6 +27,9 @@ import ErrorNotice from '../../components/ErrorNotice'
 import type { ErrorReport } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
+import { fmtElapsed } from '../../i18n/format'
+import { useSecondClock } from '../../hooks/useSecondClock'
+import { BUILTIN_PROVISIONER_ID } from '../../utils/remoteCrew'
 import {
   isTerminal, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, type SizeTier,
   tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice,
@@ -474,6 +477,32 @@ function CancelLaunchBtn({ job, onCancel, cancelling, className }: {
   )
 }
 
+/** The built-in lane's "Ready in about 6 minutes" estimate, in seconds. */
+const BUILTIN_ESTIMATE_S = 6 * 60
+
+/** Whether `step` is the running provision step, the one long wait of a launch. */
+function isRunningProvision(step: LaunchJob['steps'][number] | undefined): boolean {
+  return step?.key === 'provision' && step.state === 'active'
+}
+
+/** "4m 12s so far" while the provision step runs, measured from Launch
+ *  (`created_at`). Past the 6-minute estimate a built-in job says so; another
+ *  provisioner made no such estimate, so it keeps the plain line. */
+function ProvisionElapsed({ job, className }: { job: LaunchJob; className: string }) {
+  const startMs = job.created_at * 1000
+  // Clamped: a gateway clock ahead of this browser's must not read as negative time.
+  const seconds = useSecondClock(nowMs => Math.max(0, Math.floor((nowMs - startMs) / 1000)))
+  const elapsed = fmtElapsed(seconds * 1000, { wholeSeconds: true })
+  const builtin = (job.provider_id ?? BUILTIN_PROVISIONER_ID) === BUILTIN_PROVISIONER_ID
+  return (
+    <div className={className} data-testid="provision-elapsed">
+      {builtin && seconds > BUILTIN_ESTIMATE_S
+        ? i18nT('pages.settings.remoteCrewPanel.provision_past_estimate', { elapsed })
+        : i18nT('pages.settings.remoteCrewPanel.provision_elapsed', { elapsed })}
+    </div>
+  )
+}
+
 export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; onCancel: (id: string) => void; cancelling: boolean }) {
   const total = job.steps.length || 4
   const current = Math.min(total, job.steps.filter(s => s.state === 'done').length + 1)
@@ -505,6 +534,7 @@ export function SettingUpRow({ job, onCancel, cancelling }: { job: LaunchJob; on
               {i18nT('pages.settings.remoteCrewPanel.step_progress', { current, total })}
               {active?.label ? ` — ${active.label}` : ''}
             </div>
+            {isRunningProvision(active) && <ProvisionElapsed job={job} className="text-[11px] text-muted mt-0.5" />}
             <div className="text-[11px] text-muted mt-0.5">{i18nT('pages.settings.remoteCrewPanel.keeps_running')}</div>
           </div>
         </div>
@@ -759,6 +789,7 @@ export function LaunchProgressCard({
                   `detail`), and `job.error` renders through the ErrorNotice below.
                   Painting it red here too would show one failure twice. */}
               {step.detail ? <div className="text-[12px] text-muted mt-0.5 whitespace-pre-wrap">{step.detail}</div> : null}
+              {isRunningProvision(step) && <ProvisionElapsed job={job} className="text-[12px] text-muted mt-0.5" />}
             </div>
           </li>
         ))}

@@ -21657,6 +21657,8 @@
         "pricing_calculator": "Apri AWS Pricing Calculator",
         "profile_name_only": "{{productName}} salva solo il nome del profilo — mai le tue chiavi o i tuoi token.",
         "provisioner_choose": "Dove deve essere eseguita la nuova crew?",
+        "provision_elapsed": "{{elapsed}} finora",
+        "provision_past_estimate": "Oltre la stima di 6 minuti, {{elapsed}} finora",
         "provisioner_none_drawable": "Questo gateway non offre alcun modo di creare una crew che questa dashboard possa mostrare. Aggiorna la dashboard o chiedi all'amministratore quale provisioner usare.",
         "provisioner_stale_choice": "Il tipo di istanza usato in precedenza non è più offerto da questo gateway; è stato selezionato {{label}} al suo posto.",
         "provisioners_unavailable": "Impossibile leggere quali modi di creare una crew offre questo gateway. Viene mostrato il launcher AWS integrato.",

@@ -21657,6 +21657,8 @@
         "pricing_calculator": "Ouvrir AWS Pricing Calculator",
         "profile_name_only": "{{productName}} n’enregistre que le nom du profil — jamais tes clés ni tes jetons.",
         "provisioner_choose": "Où la nouvelle crew doit-elle s’exécuter ?",
+        "provision_elapsed": "{{elapsed}} jusqu’ici",
+        "provision_past_estimate": "Estimation de 6 minutes dépassée, {{elapsed}} jusqu’ici",
         "provisioner_none_drawable": "Cette passerelle ne propose aucun moyen de créer une crew que ce tableau de bord puisse afficher. Mettez à jour le tableau de bord ou demandez à votre administrateur quel provisionneur utiliser.",
         "provisioner_stale_choice": "Le type d'instance utilisé précédemment n'est plus proposé par cette passerelle ; {{label}} a été sélectionné à la place.",
         "provisioners_unavailable": "Impossible de lire les moyens de création de crew proposés par cette passerelle. Le lanceur AWS intégré est affiché.",

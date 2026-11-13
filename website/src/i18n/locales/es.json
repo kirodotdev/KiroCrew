@@ -21657,6 +21657,8 @@
         "pricing_calculator": "Abrir la Calculadora de precios de AWS",
         "profile_name_only": "{{productName}} guarda solo el nombre del perfil — nunca tus claves ni tokens.",
         "provisioner_choose": "¿Dónde debe ejecutarse el nuevo crew?",
+        "provision_elapsed": "{{elapsed}} hasta ahora",
+        "provision_past_estimate": "Se superó la estimación de 6 minutos, {{elapsed}} hasta ahora",
         "provisioner_none_drawable": "Esta puerta de enlace no ofrece ninguna forma de crear un crew que este panel pueda mostrar. Actualiza el panel o pregunta a tu administrador qué aprovisionador usar.",
         "provisioner_stale_choice": "El tipo de instancia que usaste antes ya no lo ofrece esta puerta de enlace; se ha elegido {{label}} en su lugar.",
         "provisioners_unavailable": "No se pudo leer qué formas de crear un crew ofrece esta puerta de enlace. Se muestra el lanzador de AWS integrado.",

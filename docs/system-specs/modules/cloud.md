@@ -180,6 +180,22 @@ line; the dashboard launch job shows it as the provision step's detail
 keyword, so downstream provisioners are unchanged) until the step finishes. The
 default-VPC path and `--subnet` say nothing new.
 
+Below that sentence, on its own line, the provision step's detail names its
+sub-step. `RealLaunchEngine.provision(on_progress=...)` reports "Creating the
+instance…" at once, then reads `ec2.list_stack_events` every ~12 s on a daemon
+thread while `ec2.deploy` blocks, and reports "Installing Kiro Crew on the
+instance…" once an `Instance` event reads `CREATE_COMPLETE` (stack events
+cannot separate the install from the crew starting, so there is no third
+sub-step). `run_launch` passes `on_progress` the same way, only to an engine
+whose `provision` takes it. The poll is best-effort: a failed read is ignored,
+`provision` stops it on return or raise without waiting for a read in flight,
+and a report after that is dropped, so it never overwrites the instance id,
+failure text or rollback text `run_launch` writes next. The dashboard adds,
+under the running provision step on the launch card and under the "Setting up"
+row's step line, the time since Launch (`created_at`, on the shared 1 Hz
+clock); past 6 minutes a built-in (`aws_ec2`) job reads "Past the 6-minute
+estimate, … so far" instead.
+
 `launch --subnet <subnet-id>` (and the optional Subnet ID field in Settings ›
 Remote Crew › Set up a new one, which reaches the same `ec2.deploy(subnet_id=...)`
 through `launch_engine`) bypasses discovery entirely —
