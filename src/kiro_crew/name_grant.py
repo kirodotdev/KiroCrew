@@ -535,6 +535,24 @@ def _within(path: str, roots: tuple[str, ...] | None) -> bool:
     return any(sandbox_plan.path_within(real, root) for root in roots)
 
 
+def _home_expansion(name: str) -> str | None:
+    """The absolute path a POSIX shell expands the leading ``~/`` of *name* to.
+
+    ``None`` when the gateway cannot know the agent shell's HOME, which callers
+    treat as a refusal. In a pod a kiro-cli child's HOME is remapped to
+    ``KIROCREW_OS_HOME`` (``acp.client_spawn_env._apply_pod_home_remap``), and
+    only for some backends, so the gateway's own HOME would vouch for a file the
+    child's shell does not run. Elsewhere the child inherits the gateway's HOME,
+    and a HOME assignment inside the command line itself is refused by
+    ``_EXEC_ENV_VARS``.
+    """
+
+    if os.environ.get("KIROCREW_POD") == "1" and os.environ.get("KIROCREW_OS_HOME"):
+        return None
+    expanded = os.path.expanduser(name)
+    return expanded if os.path.isabs(expanded) else None
+
+
 def program_names(command: str) -> list[str] | None:
     """Program tokens of *command*, or ``None`` when it cannot be tokenized.
 
@@ -608,9 +626,11 @@ def _walk_program_names(command: str) -> list[str]:
 def _program_names_line(command: str) -> list[str]:
     """:func:`program_names` for a single line; raises :class:`_Unmodelled`."""
 
+    windows = platform_compat.IS_WINDOWS
+    if not windows:
+        command = _mark_home_tildes(command)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
-    windows = platform_compat.IS_WINDOWS
     if windows and any(delim in command for delim in _WINDOWS_COMMENT_DELIMITERS):
         # A block comment has to be caught BEFORE tokenizing: `shlex` destroys
         # the delimiters, handing back `<` and `>` as redirect operators that
@@ -744,9 +764,70 @@ def _program_names_line(command: str) -> list[str]:
             if not _ASSIGN_NAME_RE.fullmatch(head):
                 raise _Unmodelled(f"the assignment-like word {_shown(token)}")
             continue
+        if not windows and token.startswith(_HOME_MARK):
+            # An unquoted `~/` at the start of the word: the one spelling bash
+            # expands against HOME. Hand it on as `~/` for the path rules.
+            token = "~" + token[len(_HOME_MARK) :]
+        elif not windows and token.startswith("~/"):
+            # `'~/x'`, `\~/x`, `"~/x"` and `~"/x"` all tokenize to `~/x`, yet bash
+            # expands none of them: each runs `<cwd>/~/x`, a file the agent can
+            # plant. Judging it as HOME's file would vouch for the wrong one.
+            raise _Unmodelled(f"the quoted or escaped '~' in {_shown(token)}")
         names.append(token)
         expect_program = False
     return names
+
+
+#: Stands in for an unquoted word-initial `~` while the line is tokenized, so the
+#: walk can tell the `~/` bash expands from a quoted or escaped one, which
+#: `shlex` returns as the same text. A private-use code point no command needs; a
+#: line that already carries it is refused rather than misread.
+_HOME_MARK = "\ue000"
+
+#: Characters after which a `~` starts a new shell word.
+_WORD_BREAKS = frozenset(" \t;&|()<>")
+
+
+def _mark_home_tildes(line: str) -> str:
+    """*line* with each unquoted, unescaped, word-initial ``~/`` marked.
+
+    Follows bash's quoting: nothing is special inside single quotes, a backslash
+    escapes the next character outside them, and a double-quoted ``~`` is not
+    expanded. Only a ``~`` that begins a word and is followed by ``/`` is
+    marked; ``~+``, ``~-``, ``~user`` and a bare ``~`` are left as they are.
+    """
+
+    if _HOME_MARK in line:
+        raise _Unmodelled("a reserved character in the command")
+    out: list[str] = []
+    quote = ""
+    escaped = False
+    previous = " "
+    for index, ch in enumerate(line):
+        if escaped:
+            # An escaped character is literal word text, never a word break:
+            # in `\ ~/x` the `~` is mid-word and bash leaves it alone.
+            escaped = False
+            out.append(ch)
+            previous = "\\"
+            continue
+        elif quote == "'":
+            if ch == "'":
+                quote = ""
+        elif ch == "\\":
+            escaped = True
+        elif quote == '"':
+            if ch == '"':
+                quote = ""
+        elif ch in ("'", '"'):
+            quote = ch
+        elif ch == "~" and previous in _WORD_BREAKS and line[index + 1 : index + 2] == "/":
+            out.append(_HOME_MARK)
+            previous = ch
+            continue
+        out.append(ch)
+        previous = ch
+    return "".join(out)
 
 
 def _pin_refusal(name: str, found: str, real: str, witness: bool) -> Refusal | None:
@@ -875,6 +956,19 @@ def _program_refusal(
         or (windows and ":" in name)
     )
     if path_form:
+        if not windows and name.startswith("~/"):
+            # `~/` is not relative: the shell replaces it with HOME before it
+            # runs anything, whatever the working directory. Judge the path it
+            # expands to, under every rule an absolute spelling meets below.
+            # (`~+`, `~-` and `~user` stay relative: the first two ARE working
+            # directories, and another user's home is not this check's to read.)
+            expanded = _home_expansion(name)
+            if expanded is None:
+                return Refusal(
+                    EXPANDED,
+                    f"{name} is expanded against a HOME this check cannot see",
+                )
+            name = expanded
         if not _is_absolute(name):
             # A relative program is resolved against the command's working
             # directory, which the approval never saw, so no name-based grant
