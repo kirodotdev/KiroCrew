@@ -577,7 +577,7 @@ def _doctor_agent_auth() -> None:
         signs_in_separately,
     )
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_HOST_AUTH_CALLBACK
-    from kiro_crew.agent_sdk.host_auth import sign_in_remedy, signed_out_message
+    from kiro_crew.agent_sdk.host_auth import for_terminal, sign_in_remedy, signed_out_message
     from kiro_crew.kiro_cli_bundle import spawn_login_command
 
     # Read through the facade, as every family does: a second binding here would
@@ -712,7 +712,7 @@ def _doctor_agent_auth() -> None:
                 state = "could not check" if host_signed_in is None else "not signed in"
                 glyph = "⚠  " if host_signed_in is None else "⏹ "
                 print(f"  {label.ljust(13)}{glyph}{source}; {state} (KAS through kiro-cli's relay)")
-                render._print_wrapped(remedy)
+                render._print_wrapped(for_terminal(remedy))
             if vault_detail:
                 render._print_wrapped(f"crew vault: {vault_detail}")
             continue
