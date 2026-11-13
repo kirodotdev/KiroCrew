@@ -77,8 +77,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import sandbox_launch_mark
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew import pinned_fs, sandbox_launch_mark
+from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.config.paths import config_dir, peek_data_home
 from kiro_crew.user_json import strict_json_equal
 
@@ -396,6 +396,86 @@ def endorsing(
 
             _invalidate_config_cache()
         raise
+
+
+def _open_dir_at(parent_fd: int, name: str, *, create: bool) -> int:
+    if create:
+        return pinned_fs.create_and_open_dir_at(
+            parent_fd, name, what="endorsed copy directory", refusal=OSError
+        )
+    return os.open(name, pinned_fs.dir_flags(), dir_fd=parent_fd)
+
+
+def _endorsed_dir_at(home_fd: int, *, create: bool) -> int:
+    record_fd = _open_dir_at(home_fd, RECORD_DIR_LEAF, create=create)
+    try:
+        return _open_dir_at(record_fd, ENDORSED_SUBDIR, create=create)
+    finally:
+        os.close(record_fd)
+
+
+def _copy_at(dir_fd: int, leaf: str) -> bytes | None:
+    """The copy *leaf* under *dir_fd*, ``None`` when absent; a non-regular file raises."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(leaf, flags, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", leaf)
+        return handle.read()
+
+
+def endorsed_copy_at(home_fd: int, leaf: str) -> bytes | None:
+    """The endorsed copy of *leaf* in ANOTHER data home held by *home_fd* (POSIX).
+
+    For a writer whose own data home is not the one it writes (a pod's seed and restart
+    step runs in the operator's process). Every level is opened no-follow relative to
+    the held descriptor, so no name under that home can redirect the read. ``None`` when
+    the directory or the copy does not exist.
+    """
+    try:
+        dir_fd = _endorsed_dir_at(home_fd, create=False)
+    except FileNotFoundError:
+        return None
+    try:
+        return _copy_at(dir_fd, leaf)
+    finally:
+        os.close(dir_fd)
+
+
+@contextlib.contextmanager
+def endorsing_at(home_fd: int, leaf: str, content: str) -> Iterator[None]:
+    """:func:`endorsing` for ANOTHER data home held by *home_fd* (POSIX).
+
+    Writes *content* as that home's endorsed copy of *leaf* before the ``with`` body
+    publishes it, and puts the previous copy back (or removes the new one) when the body
+    raises. It does not refuse a pending leaf: :func:`refuse_save_if_pending` reads this
+    process's own data home, so the caller decides whether to publish.
+    """
+    dir_fd = _endorsed_dir_at(home_fd, create=True)
+    try:
+        prior = _copy_at(dir_fd, leaf)
+        atomic_write_at(dir_fd, leaf, content, fsync=True, mode=_FILE_MODE)
+        try:
+            yield
+        except BaseException:
+            try:
+                if prior is None:
+                    os.unlink(leaf, dir_fd=dir_fd)
+                else:
+                    atomic_write_at(dir_fd, leaf, prior, fsync=True, mode=_FILE_MODE)
+            except OSError:
+                logger.warning(
+                    "loosening provenance: could not restore the endorsed copy for %s "
+                    "after a failed write",
+                    leaf,
+                    exc_info=True,
+                )
+            raise
+    finally:
+        os.close(dir_fd)
 
 
 def endorsed_bytes(leaf: str) -> bytes | None:

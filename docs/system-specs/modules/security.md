@@ -363,9 +363,10 @@ save of THAT file is refused before anything is written (`refuse_save_if_pending
 `file_pending_review`), so the outside change is neither endorsed nor silently overwritten;
 only the owner's Apply or Discard writes it. Every legitimate writer publishes through `atomic_write`
 and endorses (the dashboard config API, `kirocrew config set` / `defaults`, boot migrations, the
-computer-use and denied-command savers); `kirocrew config edit` runs `$EDITOR` on the file itself
-and `kirocrew pod` rewrites a pod's file in another data home, so where a copy exists their result
-is pending like any outside edit; the direct in-sandbox `open()` the detach enables does not. Each
+computer-use and denied-command savers, and `kirocrew pod`'s rewrite of a pod's `config.json`,
+which endorses in the pod's own data home); `kirocrew config edit` runs `$EDITOR` on the file
+itself, so where a copy exists its result is pending like any outside edit; the direct in-sandbox
+`open()` the detach enables does not. Each
 writer encodes once (`atomic_write.text_bytes`, CRLF on Windows) and hands `atomic_write` the
 same bytes it endorses, so the copy equals the file on every platform. A snapshot restore or
 import Replace (`snapshot_restore._backup_and_copy`, and a merge that restores a missing

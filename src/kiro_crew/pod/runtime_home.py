@@ -26,7 +26,9 @@ from kiro_crew import pinned_fs
 from kiro_crew import seed as seed_mod
 from kiro_crew import user_json
 from kiro_crew.atomic_write import atomic_write_at
-from kiro_crew.bounded_read import bounded_read
+from kiro_crew.bounded_read import bounded_read_fd
+from kiro_crew.config import loosening_provenance
+from kiro_crew.config.loosening_provenance import LEAF_CONFIG
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.platform_compat import is_link_or_junction, open_file_no_reparse, pin_directory
 from kiro_crew.pod import home_liveness, launchd, runtime
@@ -90,34 +92,48 @@ def _open_seed_regular_file(home_fd: int, name: str) -> int:
 
 
 def _prepare_seeded_home_fd(home_fd: int) -> None:
-    """Finish pod-owned setup without reopening the seeded home by name."""
+    """Finish pod-owned setup without reopening the seeded home by name.
+
+    Where enforcing, the floored config is endorsed in the POD's data home; a raw edit
+    the copy does not match stays on disk (pending) and the copy carries the floor.
+    """
+    enforcing = loosening_provenance.enforcement_active()
+    endorsed = loosening_provenance.endorsed_copy_at(home_fd, LEAF_CONFIG) if enforcing else None
+    disk: bytes | None = None
     try:
-        fd = _open_seed_regular_file(home_fd, "config.json")
+        fd = _open_seed_regular_file(home_fd, LEAF_CONFIG)
     except FileNotFoundError:
-        data: dict = {}
+        pass
     except OSError as exc:
         raise PodError(f"could not open seeded config.json: {exc}") from exc
     else:
         try:
-            with os.fdopen(fd, "r", encoding="utf-8", errors="strict") as handle:
-                fd = -1
-                text = bounded_read(handle, 1024 * 1024 + 1)
-        except (OSError, UnicodeError) as exc:
+            disk = bounded_read_fd(fd, 1024 * 1024 + 1)
+        except OSError as exc:
             raise PodError(f"could not read seeded config.json: {exc}") from exc
         finally:
-            if fd >= 0:
-                os.close(fd)
-        if len(text) > 1024 * 1024:
+            os.close(fd)
+    raw = disk if endorsed is None else endorsed
+    data: dict = {}
+    if raw is not None:
+        if len(raw) > 1024 * 1024:
             raise PodError("seeded config.json exceeds the 1 MiB pod setup limit")
         try:
-            data = json.loads(user_json.strip_utf8_bom(text))
+            data = json.loads(user_json.strip_utf8_bom(raw.decode("utf-8", errors="strict")))
+        except UnicodeError as exc:
+            raise PodError(f"could not read seeded config.json: {exc}") from exc
         except ValueError as exc:
             raise PodError(f"seeded config.json is not valid JSON: {exc}") from exc
         if not isinstance(data, dict):
             raise PodError("seeded config.json must contain a JSON object")
 
     runtime._apply_seed_config_floor(data)
-    atomic_write_at(home_fd, "config.json", json.dumps(data, indent=2), fsync=True, mode=0o600)
+    out = json.dumps(data, indent=2)
+    with contextlib.ExitStack() as stack:
+        if enforcing:
+            stack.enter_context(loosening_provenance.endorsing_at(home_fd, LEAF_CONFIG, out))
+        if endorsed is None or disk == endorsed:
+            atomic_write_at(home_fd, LEAF_CONFIG, out, fsync=True, mode=0o600)
 
     # Creating ``workspace`` and opening it are two syscalls, and a removal landing
     # between them is an interleaving no ordering closes; tolerating only the

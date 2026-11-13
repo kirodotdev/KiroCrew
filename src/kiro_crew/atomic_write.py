@@ -1708,7 +1708,7 @@ def discard_replacement(staged: str) -> None:
 def atomic_write_at(
     dir_fd: int,
     name: str,
-    content: str,
+    content: str | bytes,
     *,
     fsync: bool = False,
     mode: int | None = None,
