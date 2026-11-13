@@ -23919,6 +23919,8 @@
     "cancel_failed": "Falha ao cancelar.",
     "filter_all": "Todas as sessões",
     "page_previous": "Voltar",
+    "participants": "Pessoas que escreveram aqui: {{n}}",
+    "participants_more": "Outras pessoas que escreveram aqui: {{n}}",
     "people_unnamed_platform_body": "Colegas na lista de permitidos do Tailscale podem usar este Crew pelo Tailscale Serve, mas este sistema operacional não consegue provar quem é cada um, então o trabalho deles aparece como Sem atribuição. Compartilhe o link direto do Tailscale para ver os nomes. Quem não está na lista é recusado.",
     "sent_by_an_app": "Enviado por um app",
     "setup_kiro_login_body": "Os colegas entram com o login do Kiro da organização.",

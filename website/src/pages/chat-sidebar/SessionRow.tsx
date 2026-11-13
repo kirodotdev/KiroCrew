@@ -1644,7 +1644,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 <span key={agentName || 'empty'} title={agentDisplay || undefined} data-testid="session-row-agent" className={`truncate ${s.code_channel ? CODE_CHANNEL_AGENT_FIT : 'shrink-0'} ${resolvedSlotTags.length > 0 || agentDiverged ? 'max-w-[50%]' : ''}`}>{agentDisplay || '\u00A0'}</span>
               )}
               {/* Shared Crew creator: inline after the agent name, never a new line. */}
-              <SessionCreatorByline attribution={s.attribution} />
+              <SessionCreatorByline attribution={s.attribution} participants={s.participants} participantsDropped={s.participants_dropped} />
               {/* WHY this card is sitting above its folder's other rows, in a
                 *  word, beside the agent name that is the card's own first line.
                 *  The accent bar down its left edge groups the card with the

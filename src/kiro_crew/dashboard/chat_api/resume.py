@@ -450,9 +450,9 @@ def _hydrate_slot_from_history(
                 _redact_meta_for_role(role, m["meta"]) if isinstance(m.get("meta"), dict) else None
             ),
             mint_mid=mint_missing_mids,
+            note_participant=False,  # replayed history is not new writing
         )
-        # See the equivalent call in _rehydrate_slot_from_history: resume loads
-        # the window that the next save re-serializes.
+        # Resume loads the window the next save re-serializes (see _rehydrate_slot_from_history).
         carry_provenance(slot.messages[-1], m)
         remember_unknown_row_fields(slot, m)
         _attach_variants(slot, m)

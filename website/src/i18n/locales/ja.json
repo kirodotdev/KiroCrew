@@ -22813,6 +22813,8 @@
     "cancel_failed": "キャンセルできませんでした。",
     "filter_all": "すべてのセッション",
     "page_previous": "戻る",
+    "participants": "ここで書き込んだ人: {{n}}",
+    "participants_more": "ほかにここで書き込んだ人: {{n}}",
     "people_unnamed_platform_body": "Tailscale の許可リストにあるメンバーは Tailscale Serve 経由でこの Crew を使えますが、この OS では各メンバーが誰かを証明できないため、作業は「帰属なし」と表示されます。名前を表示するには、直接の Tailscale リンクを共有してください。リストにない人は拒否されます。",
     "sent_by_an_app": "アプリが送信",
     "setup_kiro_login_body": "メンバーは所属組織の Kiro ログインでサインインします。",

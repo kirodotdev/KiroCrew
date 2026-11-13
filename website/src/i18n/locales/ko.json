@@ -22813,6 +22813,8 @@
     "cancel_failed": "취소하지 못했습니다.",
     "filter_all": "모든 세션",
     "page_previous": "뒤로",
+    "participants": "여기에 글을 쓴 사람: {{n}}",
+    "participants_more": "여기에 글을 쓴 다른 사람: {{n}}",
     "people_unnamed_platform_body": "Tailscale 허용 목록에 있는 팀원은 Tailscale Serve로 이 Crew를 사용할 수 있지만, 이 운영 체제는 각 사람이 누구인지 증명할 수 없어 작업이 '미지정'으로 표시됩니다. 이름을 보려면 직접 Tailscale 링크를 공유하세요. 목록에 없는 사람은 거부됩니다.",
     "sent_by_an_app": "앱에서 보냄",
     "setup_kiro_login_body": "팀원은 소속 조직의 Kiro 로그인으로 로그인합니다.",

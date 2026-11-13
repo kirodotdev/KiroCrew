@@ -143,6 +143,8 @@ class _ChatSlot:
         "_last_stop_reason",
         "_created_by",
         "_attribution",
+        "_participants",
+        "_participants_dropped",
         "_created_by_sid",
         "_saved_created_by",
         "_lineage_minted",
@@ -468,6 +470,8 @@ class _ChatSlot:
     _last_stop_reason: str
     _created_by: str
     _attribution: Any
+    _participants: list[dict[str, Any]]
+    _participants_dropped: dict[str, Any]
     _created_by_sid: str
     _saved_created_by: str
     _lineage_minted: bool

@@ -23366,6 +23366,8 @@
     "cancel_failed": "Abbruch fehlgeschlagen.",
     "filter_all": "Alle Sitzungen",
     "page_previous": "Zurück",
+    "participants": "Personen, die hier geschrieben haben: {{n}}",
+    "participants_more": "Weitere Personen, die hier geschrieben haben: {{n}}",
     "people_unnamed_platform_body": "Teammitglieder auf der Tailscale-Zulassungsliste können diese Crew über Tailscale Serve nutzen, aber dieses Betriebssystem kann nicht nachweisen, wer sie sind, daher erscheint ihre Arbeit als Nicht zugeordnet. Teile stattdessen den direkten Tailscale-Link, um ihre Namen zu sehen. Wer nicht auf der Liste steht, wird abgewiesen.",
     "sent_by_an_app": "Gesendet von einer App",
     "setup_kiro_login_body": "Teammitglieder melden sich mit der Kiro-Anmeldung ihrer Organisation an.",

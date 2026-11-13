@@ -87,6 +87,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `dashboard/handlers/crew_workers.py`, the registered sink that passes the
         # display battery in.
         "crew_timeline.py",
+        # Pure helper: `_read_entry` redacts a participant label read back from the
+        # agent-editable metadata line and emits nothing. The egress is the slot
+        # projection and `dashboard/handlers/members_roster.py`, the registered
+        # sink that serves the Bots roster.
+        "shared_crew/participants.py",
         # Pure helper: `redact` returns the redacted string and emits nothing. Its
         # only caller is `dashboard/warm_task_brief.py`, the registered sink that
         # posts the result.
