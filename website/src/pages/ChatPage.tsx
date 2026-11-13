@@ -99,6 +99,7 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 
 import { i18nT } from '../i18n/t'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 
 /**
  * Horizontal room the chat pane reclaims (negative margin) while the desktop
@@ -813,7 +814,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Session mode of the active slot. In the unified chat view the page-level
   // `mode` prop is always '' — the slot's own mode is the source of truth.
   const effectiveMode = currentSlot?.mode || mode
-  const title = currentSlot?.title && currentSlot.title !== currentSlot.key ? currentSlot.title : activeSlot || ''
+  const title = currentSlot?.title && !isUntitledSession(currentSlot) ? currentSlot.title : activeSlot || ''
   const displayMode = slotApprovalMode(approvalMode, currentSlot)
   // What the composer's model, effort and project chips show.
   const {

@@ -7,6 +7,7 @@ import { compareBySort, comparePinnedThenSort } from './sessionOrder'
 import { i18nT } from '../../i18n/t'
 import { rankedPinnedKeys, reconcilePinnedSessionOrder } from '../../utils/pinnedSessionOrder'
 import { LIST_TITLE_CLS } from '../../components/listShell'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 /** Rows shown before the list defers to "show all". Sized so the flyout stays
  *  a glance rather than a panel: past ~8 rows the eye has to scan, at which
@@ -286,7 +287,7 @@ const SessionFlyout = forwardRef<HTMLDivElement, Props>(function SessionFlyout({
           const isActive = slot.key === activeSlot
           const status = statusOf(slot)
           const isUnread = !status && unread.has(slot.key)
-          const label = slot.title && slot.title !== slot.key ? slot.title : slot.key
+          const label = sessionDisplayTitle(slot)
           return (
             <button
               key={slot.key}

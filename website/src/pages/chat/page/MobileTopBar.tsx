@@ -17,6 +17,7 @@ import type { AppDispatch } from '../../../store'
 import { requestSlotReveal } from '../../../store/chatSlice'
 import type { ChatSlot } from '../../../types'
 import { errMessage } from '../../../utils/thunkError'
+import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import SessionTitleControl from '../SessionTitleControl'
 import MilestonesIndicator from '../../../components/milestones/MilestonesIndicator'
@@ -176,7 +177,7 @@ export default function MobileTopBar({
                         rather than a link: the bar holds two controls and this
                         label is one of them. The ⋯ menu carries the link. */}
                     {currentSlot?.code_channel && <span className="mr-1 inline-flex"><CodeChannelMark size={12} /></span>}
-                    {title}
+                    {activeSlot ? sessionDisplayTitle({ key: activeSlot, title }) : title}
                   </>
                 }
               />

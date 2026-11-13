@@ -16,6 +16,7 @@ import { deleteSlot } from '../../store/chatSlice'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
 import type { ChatFolder } from '../../types'
 import type { Slot } from './types'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 /** Why a previewed root stays, per the server's `root_kept`. */
 const ROOT_KEPT_LINE = {
@@ -136,7 +137,7 @@ export default function FolderCleanupPanel({ folders, root, slots = [], onClose 
           <div ref={attachSessions} className={`max-h-40 overflow-y-auto rounded-md border border-border bg-bg-elevated p-1.5 ${sessionEdges.bottom ? MORE_BELOW_MASK : ''}`} data-testid="folder-cleanup-sessions">
             <div ref={attachSessionsContent}>
             {toClose.map((s, i) => {
-              const path = `${folderPath(folders, s.folder_id ?? '')} / ${s.title && s.title !== s.key ? s.title : s.key}`
+              const path = `${folderPath(folders, s.folder_id ?? '')} / ${sessionDisplayTitle(s)}`
               return (
                 <div key={s.key} className="text-[12px] text-muted py-0.5 px-1">
                   <div className="truncate" title={path}>{path}</div>

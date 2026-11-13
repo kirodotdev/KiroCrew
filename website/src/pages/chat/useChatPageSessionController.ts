@@ -34,6 +34,7 @@ import { toSlug } from '../../utils/shareUrl'
 import { focusComposer } from './composerFocus'
 import { useLaunchedDraftDiscard } from './useLaunchedDraftDiscard'
 import { PENDING_OPEN_LEASE_MS, resumeStillOpening } from '../../store/chatSlice'
+import { isUntitledSession } from '../../utils/sessionDisplayTitle'
 
 /** Read a URL-derived key from the close-hold record without traversing its prototype. */
 export function closeHoldForUrl<T>(closing: Record<string, T>, key: string | null): T | undefined {
@@ -1141,7 +1142,7 @@ export function useChatPageSessionController({
     }
     pendingSidRef.current = false
     const slot = filteredSlots.find(s => s.key === activeSlot)
-    const slug = slot?.title && slot.title !== slot.key ? toSlug(slot.title) : ''
+    const slug = slot?.title && !isUntitledSession(slot) ? toSlug(slot.title) : ''
     const expectedPath = `${basePath}${slug ? '/' + slug : ''}`
     const next = new URLSearchParams(sp)
     next.set('sid', activeSlot)

@@ -8,6 +8,7 @@ import {
   type PopoutMap,
   type PopoutMsg,
 } from './popoutController'
+import { isUntitledSession } from './sessionDisplayTitle'
 
 /**
  * Cross-window coordination for popped-out chat sessions.
@@ -37,7 +38,7 @@ export function popoutWindowName(slot: string): string {
 
 /** Build the popout URL for a session, mirroring the `/chat` share-link shape. */
 export function buildPopoutUrl(slot: string, title?: string): string {
-  const slug = title && title !== slot ? toSlug(title) : ''
+  const slug = title && !isUntitledSession({ key: slot, title }) ? toSlug(title) : ''
   const params = new URLSearchParams({ sid: slot })
   return `${window.location.origin}/popout/chat${slug ? '/' + slug : ''}?${params.toString()}`
 }

@@ -403,7 +403,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // stays in the tooltip, where it tells untitled rows apart.
   const shownTitle = memberTitle ?? sessionDisplayTitle(s)
   // The tooltip keeps a topic stored before the thread was named after the crewmate.
-  const tooltipTitle = memberTitle !== null && s.title && s.title !== s.key && s.title !== memberTitle
+  const tooltipTitle = memberTitle !== null && s.title && !isUntitledSession(s) && s.title !== memberTitle
     ? `${memberTitle}: ${s.title}`
     : memberTitle ?? (isUntitledSession(s) ? `${shownTitle} · ${s.key}` : shownTitle)
   // Inside a crew group the header already names the machine, so the row
@@ -1245,7 +1245,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const rowMenuProps = useMemo(() => ({
       slotKey: rowKey,
       mode,
-      onRename: () => onRenameStart(rowKey, scope, rowTitle && rowTitle !== rowKey ? rowTitle : '', true),
+      onRename: () => onRenameStart(rowKey, scope, rowTitle && !isUntitledSession({ key: rowKey, title: rowTitle }) ? rowTitle : '', true),
       onAutoTitle: () => onAutoTitle(rowKey),
       onOpenInNewTab: onOpenSlotInNewTab ? () => onOpenSlotInNewTab(rowKey) : undefined,
       // A row menu opens from inside this panel, where the folder-order banner
@@ -1281,7 +1281,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         && !sessionRefBlockReason({ key: rowKey, activeSlot: isSidebarActiveSlot ? rowKey : null, memoryMode: s.memory_mode })
         ? () => onDropSessionRef({
             key: rowKey,
-            title: rowTitle && rowTitle !== rowKey ? rowTitle : rowKey,
+            title: rowTitle && !isUntitledSession({ key: rowKey, title: rowTitle }) ? rowTitle : rowKey,
             messages: s.messages,
           })
         : undefined,
@@ -1537,7 +1537,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
             if (renamingHere) return
             e.preventDefault()
             e.stopPropagation()
-            onRenameStart(s.key, scope, s.title && s.title !== s.key ? s.title : '', false)
+            onRenameStart(s.key, scope, s.title && !isUntitledSession(s) ? s.title : '', false)
           }}>
           {/* The root of the Crew Mode worker in the pane: said for readers too,
               not by the tint alone. */}

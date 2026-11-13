@@ -10,6 +10,7 @@
 import v8 from 'node:v8'
 import vm from 'node:vm'
 import { describe, it, expect, vi } from 'vitest'
+import { i18nT } from '../../i18n/t'
 import {
   buildSidebarRows, chipLabel, guideStepOnRowControl, sameRowView,
   type ConductorRowView, type RowPlacement, type RowScene, type RowShell, type SidebarRowInputs, type SidebarRows,
@@ -976,11 +977,14 @@ describe('the window a row stubs into', () => {
   const rows = buildSidebarRows(inputs([a, b]))
   const mounted = (over: Parameters<typeof scene>[0], slot: Slot = a) => rows.views(scene(over)).windowOf(slot).keepMounted
 
-  it('titles the stub by the session title, falling back to its key', () => {
+  it('titles the stub the way its row is titled, an untitled one by the label', () => {
     const views = rows.views(scene())
+    const untitled = i18nT('pages.artifactDetailPage.untitled_session')
     expect(views.windowOf(a).title).toBe('Title a')
-    expect(views.windowOf(local('k', { title: '' })).title).toBe('k')
-    expect(views.windowOf(local('k', { title: 'k' })).title).toBe('k')
+    expect(views.windowOf(local('k', { title: '' })).title).toBe(untitled)
+    expect(views.windowOf(local('k', { title: 'k' })).title).toBe(untitled)
+    // The backend's English placeholder for an open untitled slot is not a title.
+    expect(views.windowOf(local('k', { title: 'New Session…' })).title).toBe(untitled)
   })
 
   it('stubs a row only when nothing on it would be lost', () => {

@@ -751,6 +751,16 @@ closed-session chip's name (`components/markdown/linkTargets.ts`), localized at
 render from the raw row it caches. A session missing from the slot list has an
 unknown title, so the fork-of tag and the embedded tab keep its key. Resuming a
 closed session still sends its raw title, or its key when untitled, never the label.
+The collapsed sidebar's session flyout (`pages/chat/SessionFlyout.tsx`), a row's
+scroll stub (`chat-sidebar/rows.ts`) and the two cleanup lists
+(`chat-sidebar/sessionCleanup.tsx`, `chat-sidebar/FolderCleanupPanel.tsx`) read
+"Untitled session" as the row does, and so does the phone top bar
+(`chat/page/MobileTopBar.tsx`), which the chat page hands the key. The rename box, a Bot
+thread's tooltip, a dragged session reference, the command center node, the chat
+page title, a short-name match and the chat, share and popout URL slugs also ask
+`isUntitledSession`, and each keeps its own fallback: the rename box opens empty
+and the URLs carry no slug. The browser tab title and the popout window title
+(`shell/appShell.tsx`, `PopoutFrame.tsx`) are not among them yet.
 
 `ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
 calls each owner hook where that block used to sit, so React runs the effects in

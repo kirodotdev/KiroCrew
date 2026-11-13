@@ -10,6 +10,7 @@
 
 import { normalizeRunSessionKey } from '../apps/workflows/runModel'
 import { chatDeepLinkSlot } from './navIntent'
+import { isUntitledSession } from './sessionDisplayTitle'
 
 /** Base for resolving a relative href when there is no document to resolve
  *  against, and the origin such an href then lands on. */
@@ -101,7 +102,7 @@ export function shortNameMatches(
     // stacked as `dashboard_dashboard_chat-…`.
     const key = rawKey.replace(/^(?:dashboard[:_])+/, '')
     if (!key.startsWith(prefix) || !SESSION_KEY_RE.test(key) || byKey.has(key)) return
-    byKey.set(key, { key, title: title && title !== rawKey ? title : key, stem, mintedAt: mintEpoch(key) })
+    byKey.set(key, { key, title: title && !isUntitledSession({ key: rawKey, title }) ? title : key, stem, mintedAt: mintEpoch(key) })
   }
   for (const slot of open) add(slot.key, slot.title, null)
   for (const row of onDisk) add(row.key, row.title, row.key)
