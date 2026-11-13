@@ -2667,7 +2667,8 @@ against sweep completeness, and are torn down at `close_all`.
 - **RSS-threshold recycle** (`_rss_threshold_check`, config
   `session.watchdog_rss_max_mb`, default 4096 via
   `DEFAULT_WATCHDOG_RSS_MAX_MB`; 0 disables): recycles non-busy
-  sessions whose `/proc` process-tree RSS (MiB) exceeds the ceiling. Skips
+  sessions whose `/proc` process-tree RSS (MiB) grows past the ceiling (a
+  runtime found already over it is held, see "footprint" below). Skips
   persistent (`_PERSISTENT_KEYS`) and `channel:`-prefixed keys — the same
   protected set as the idle sweep — and any session whose turn is in flight.
   A parent with attached sub-agent work — running or queued children, or a
@@ -2718,14 +2719,64 @@ against sweep completeness, and are torn down at `close_all`.
   distinct runtime pid per tick (`rss_by_pid`), since co-tenants share one tree,
   and at most one SUCCESSFUL reset happens per runtime pid per tick: the pid joins
   `recycled_pids` only after `reset` returns True, so a declined co-tenant does not
-  spend the budget. Each successful recycle is remembered per key for
-  `RSS_REBOUND_WINDOW_SECS` (24h) with the count of rebounds that led to it
-  (`session_rss_rebound`, which judges every crossing). A later ceiling crossing
-  by that key inside the window is a rebound, a sign that
-  `session.watchdog_rss_max_mb` sits below the workload's steady footprint: the
-  recycled session restores its whole conversation with `session/load`, so a
-  history that alone is over the ceiling puts every fresh process straight back
-  over it. The first crossing after each recycle logs one `RSS recycle rebound`
+  spend the budget. Every reading of an idle session goes to
+  `session_rss_rebound.judge_rss_reading`, which keeps one **footprint** per
+  runtime pid (`CleanupState.rss_footprints`, dropped by `prune_rss_records`
+  once no session names the pid). The tick that first reads a runtime only
+  notes it and never recycles; the next tick that reads it takes the footprint,
+  because the first can catch the MCP servers still starting. Local MCP servers
+  set a fresh process's size (measured on Windows: about 610 MB plus 108 MB per
+  local server, so 7.0 GB at 57 and 10.6 GB at 93), and a recycle of such a
+  process only buys the same process again after a cold start. A footprint over
+  the ceiling therefore HOLDS the runtime: one `RSS footprint ... settled above`
+  WARNING, no recycle and no chat notice, until its tree passes
+  `RSS_REBOUND_HOLD_GROWTH_FACTOR` (2x) that footprint, after which the ceiling
+  applies to it again, also if a guard declines that recycle. A footprint under
+  the ceiling is recorded as 0, and every later crossing by that runtime is
+  growth. A reading of 0 is an unreadable tree and settles nothing; sessions
+  sharing one runtime move its footprint once per tick. The footprint is for a
+  chat the watchdog has not recycled: while a key has a recycle record
+  (`CleanupState.rss_recycled`, below) its runtime takes no footprint and every
+  crossing goes to `judge_rss_crossing`, so the fresh process of a recycled
+  session that is back over the ceiling is a rebound, not a silent hold. A held
+  runtime that passes twice its footprint is therefore recycled once, and that
+  chat is on the rebound path until its record ends. A runtime first read under
+  a record is stored as settled at 0, so when the record ends the ceiling
+  applies to it as it did before footprints existed. The footprint is a start-up
+  figure: a first reading under the ceiling counts as start-up only for
+  `RSS_FOOTPRINT_SETTLE_TICKS` (2.5) times `MAX_TICK_INTERVAL_SECS`, which the
+  tick passes to `judge_rss_reading`: 750 s. One busy tick is allowed, two are
+  not. The window is two ticks and a half, not two, because a tick starts one
+  interval after the last one ended, so readings come 302 s apart at the 300 s
+  interval (measured on Linux): two ticks are 604 s, three are 906 s, and a
+  600 s window would recycle the chat that was busy at one tick. The window is
+  counted in the longest tick, the default; at a shorter tick
+  (`session.timeout_secs` under 1800) more readings fit into the same 750 s.
+  Read over the ceiling later than that, the runtime was read under it, settles
+  at 0 and is recycled on that reading. The hold's WARNING says which case it
+  is: `settled above <ceiling>MB without having been read under it` for a first
+  reading over the ceiling, `settled above <ceiling>MB <n>s after a first
+  reading of <m>MB, which counts as its start-up` for one under it. Two limits
+  follow from reading idle sessions on a 300 s tick: a process that leaks past
+  the ceiling between two readings inside that window is held at the second and
+  stopped at twice it, and one whose FIRST idle reading is already over the ceiling,
+  because its first turn was long, is held at its second reading however late
+  that comes. A reading while the session is busy cannot replace them: a
+  many-server chat climbs to its size during its first turn and for a while
+  after it (measured on Windows: a first reply takes 15 to 25 s at 57 to 93
+  local servers, and two chats with 93 were read at 5.8 and 6.4 GB, 36 and 48 s
+  after their first reply, on the way to 10.6 GB), so a busy reading lands on
+  that climb, would record a chat that is large by design as read under the
+  ceiling, and its first idle reading would recycle it. No reading tells that
+  chat from one its first turn made large; both are stopped at twice the size
+  taken. The warm-pool spare and the busy-session report compare
+  against the plain ceiling. Growth goes to `judge_rss_crossing`: each
+  successful recycle is remembered per key for
+  `RSS_REBOUND_WINDOW_SECS` (24h) with the count of rebounds that led to it. A
+  later crossing by that key inside the window is a rebound: the session's
+  history or its work takes each fresh process back over the ceiling. So the
+  three-recycle hold and its notice are reached by a runtime that was read
+  under the ceiling twice, or by a chat with a live recycle record. The first crossing after each recycle logs one `RSS recycle rebound`
   WARNING with the ceiling, the current and pre-recycle RSS and the elapsed
   time, and a rebound recycle's notice reason names `session.watchdog_rss_max_mb`
   and its value. A crossing updates the record and never drops it, so one a

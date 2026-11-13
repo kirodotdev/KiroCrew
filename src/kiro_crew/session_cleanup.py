@@ -35,10 +35,11 @@ from kiro_crew.runtime_reconcile import build_reconciler
 from kiro_crew.session_background_hold import background_hold_secs, hold_expired_reason
 from kiro_crew.session_idle_clock import last_activity as _last_activity
 from kiro_crew.session_rss_rebound import (
+    RssFootprint,
     RssHold,
     RssRecycle,
-    judge_rss_crossing,
-    prune_rss_recycles,
+    judge_rss_reading,
+    prune_rss_records,
     rss_recycle_reason,
 )
 from kiro_crew.watchdog import SessionWatchdog
@@ -190,6 +191,8 @@ class CleanupState:
     # Session key -> its last RSS recycle, kept for ``RSS_REBOUND_WINDOW_SECS``
     # and judged by ``session_rss_rebound`` at every later crossing by that key.
     rss_recycled: dict[str, RssRecycle] = field(default_factory=dict)
+    # Runtime pid -> the tree the watchdog found it at (``session_rss_rebound``).
+    rss_footprints: dict[int, RssFootprint] = field(default_factory=dict)
     # Busy session key -> leftover pids last reported this turn (session_cleanup_leftovers).
     leftover_noticed: dict[str, frozenset[int]] = field(default_factory=dict)
     # When the agent-scope reap hook last failed loudly. A failure there stops
@@ -772,8 +775,6 @@ class SessionCleanup:
             return
 
         now = self._deps.monotonic()
-        last_recycles = self.state.rss_recycled
-        prune_rss_recycles(last_recycles, now)
 
         # A session with a turn in flight is never recycled; it is only reported
         # (``session_cleanup_leftovers.report_busy_sessions``).
@@ -788,6 +789,7 @@ class SessionCleanup:
                 pid = self._owner.get_pid(key)
                 if pid is not None:
                     (busy if session.semaphore.locked() else candidates).append((key, pid, session))
+        prune_rss_records(self.state, now, {pid for _key, pid, _session in candidates + busy})
 
         # The warm-pool spare is owned by no session, so its own pass
         # (``session_cleanup_spare``) measures and recycles it off the same snapshot.
@@ -807,20 +809,16 @@ class SessionCleanup:
                     executor = self._deps.get_maintenance_executor()
                     rss = await loop.run_in_executor(executor, measure, pid)
                     rss_by_pid[pid] = rss
-                if rss > (limit := _spare.rss_limit_for(self, pid, rss)):
-                    # ``None`` holds a session whose fresh processes keep coming
-                    # straight back over the ceiling: recycling it again cannot help.
-                    rebounds = judge_rss_crossing(
-                        last_recycles,
-                        key,
-                        rss,
-                        ceiling=limit,
-                        now=now,
-                        logger=self._deps.logger,
-                        notify=self._owner.on_rss_hold,
-                    )
-                    if rebounds is not None:
-                        victims.append((key, pid, rss, limit, session, rebounds))
+                limit = _spare.rss_limit_for(self, pid, rss)
+                # ``None`` leaves the session running: it is under the ceiling, its
+                # runtime's own footprint is over it, or recycling it cannot help.
+                notify, log = self._owner.on_rss_hold, self._deps.logger
+                tick = self.MAX_TICK_INTERVAL_SECS
+                rebounds = judge_rss_reading(
+                    self.state, key, pid, rss, limit, now=now, tick=tick, logger=log, notify=notify
+                )
+                if rebounds is not None:
+                    victims.append((key, pid, rss, limit, session, rebounds))
 
         # One RECLAIM per runtime per tick. The threshold was crossed by a
         # process, and every session on it reads the same figure, so recycling
