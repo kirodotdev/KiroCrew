@@ -495,6 +495,9 @@ def test_a_symlinked_ancestor_is_checked_on_both_chains(tmp_path) -> None:
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0, reason="POSIX modes")
 def test_an_ancestor_crew_cannot_list_is_not_a_finding(tmp_path) -> None:
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     locked = tmp_path / "locked"
     work = locked / "sub" / "work"
     work.mkdir(parents=True)
@@ -551,6 +554,9 @@ async def test_a_config_write_failure_is_worded_for_the_person(tmp_path, monkeyp
     from kiro_crew.acp.harness.base import SpawnContext
 
     monkeypatch.setattr(copilot_mod, "config_dir", lambda: tmp_path / "home")
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
 
     async def _resolve(_backend):
@@ -843,6 +849,9 @@ async def test_the_spawn_hands_the_config_back_to_this_child_alone(tmp_path, mon
     from kiro_crew.acp.harness.base import SpawnContext
 
     monkeypatch.setattr(copilot_mod, "config_dir", lambda: tmp_path / "home")
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     client = AcpClient(work_dir=tmp_path, acp_backend=COPILOT)
 
     async def _resolve(_backend):

@@ -1330,9 +1330,10 @@ class _InertGatewayPosts(list):
 def _exported_gateway_ports() -> frozenset[int]:
     """Client ports the shell that started pytest exports, read once at import.
 
-    ``KIROCREW_PORT`` is the first step of the client's port resolution and the
-    floor does not clear it, so a developer who exports it to reach their own
-    gateway sends every unconfigured test there. ``KIROCREW_BOUND_PORT`` names the
+    ``KIROCREW_PORT`` is the first step of the client's port resolution. The floor
+    clears it for each test, but a session or module fixture runs outside that, so a
+    developer who exports it to reach their own gateway can still send a test there.
+    ``KIROCREW_BOUND_PORT`` names the
     gateway that spawned the run when an agent session runs the suite. Read here,
     before any test edits the environment, so a test that sets either variable to
     its own server's port is not mistaken for the shell's choice.
