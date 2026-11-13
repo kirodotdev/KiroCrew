@@ -502,8 +502,7 @@ class TestTrackUntrack:
         """
         from kiro_crew.session_pid import _replace_child_pids, _track_child_pids
 
-        with patch("kiro_crew.session_pid._pid_start_token", return_value="old"):
-            _track_child_pids({200: None}, parent_pid=999)
+        _track_child_pids({200: ("old", b"x")}, parent_pid=999)
         assert pid_file.read_text(encoding="utf-8").strip() == "200:999:old"
 
         with patch("kiro_crew.session_pid._pid_start_token", return_value="live-stranger") as live:

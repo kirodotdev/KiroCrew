@@ -575,11 +575,11 @@ def _track_pid(pid: int) -> None:
 def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
     """Append descendant PIDs to the tracking file as ``child:parent[:start-id]``.
 
-    The third field is the child's process-start identity
-    (:func:`_pid_start_token` -- colon-free, in-process and non-blocking on
-    every platform), recorded so the orphan sweep can prove a PID was
-    recycled before killing it. A child whose identity cannot be read at
-    track time is written in the legacy two-field shape.
+    The third field is the child's process-start identity as the caller
+    captured it (``(start_id, basename)`` records, carried through
+    :func:`_recorded_start_token`), never read again here: a fresh read could
+    be a stranger's that took the number since. A child the caller holds no
+    identity for is written in the legacy two-field shape.
     """
     if not pids:
         return
@@ -592,7 +592,7 @@ def _track_child_pids(pids: Mapping[int, object], parent_pid: int = 0) -> None:
                 key = f"{pid}:{parent_pid}"
                 if any(e == key or e.startswith(key + ":") for e in existing):
                     continue
-                token = _pid_start_token(pid)
+                token = _recorded_start_token(pids[pid])
                 entry = f"{key}:{token}" if token else key
                 f.write(f"{entry}\n")
                 existing.add(entry)
