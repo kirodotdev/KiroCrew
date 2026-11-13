@@ -7245,7 +7245,7 @@
       "image_zoom_hint": "{{key}}+스크롤로 확대/축소 (더블클릭하면 맞춤)",
       "html_preview": "HTML 미리보기",
       "invalid_json": "잘못된 JSON:",
-      "json_string_show_all_other": "전체 보기({{count}}자)",
+      "json_string_show_all_other": "전체 보기({{n}}자)",
       "json_string_show_less": "간략히 보기",
       "media_preview_failed": "재생에 실패했습니다. 브라우저가 이 파일을 디코딩할 수 없습니다.",
       "null": "null",
@@ -7288,10 +7288,10 @@
       "light_background": "밝은 배경",
       "dark_background": "어두운 배경",
       "sheet_tabs_label": "시트",
-      "showing_first_rows_other": "전체 {{count}}행 중 {{shown}}행 표시",
-      "items_count_other": "항목 {{count}}개",
-      "lines_count_other": "{{count}}줄",
-      "more_count_other": "{{count}}개 더"
+      "showing_first_rows_other": "전체 {{total}}행 중 {{shown}}행 표시",
+      "items_count_other": "항목 {{n}}개",
+      "lines_count_other": "{{n}}줄",
+      "more_count_other": "{{n}}개 더"
     },
     "folderColorNames": {
       "amber": "호박색",

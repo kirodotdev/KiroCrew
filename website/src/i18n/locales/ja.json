@@ -7245,7 +7245,7 @@
       "image_zoom_hint": "{{key}}+スクロールでズーム（ダブルクリックで全体表示）",
       "html_preview": "HTML プレビュー",
       "invalid_json": "無効な JSON：",
-      "json_string_show_all_other": "すべてを表示（{{count}} 文字）",
+      "json_string_show_all_other": "すべてを表示（{{n}} 文字）",
       "json_string_show_less": "表示を減らす",
       "media_preview_failed": "再生に失敗しました。ブラウザーはこのファイルをデコードできません。",
       "null": "null",
@@ -7288,10 +7288,10 @@
       "light_background": "明るい背景",
       "dark_background": "暗い背景",
       "sheet_tabs_label": "シート",
-      "showing_first_rows_other": "{{count}} 行中 {{shown}} 行を表示",
-      "items_count_other": "{{count}} 項目",
-      "lines_count_other": "{{count}} 行",
-      "more_count_other": "他 {{count}} 件"
+      "showing_first_rows_other": "{{total}} 行中 {{shown}} 行を表示",
+      "items_count_other": "{{n}} 項目",
+      "lines_count_other": "{{n}} 行",
+      "more_count_other": "他 {{n}} 件"
     },
     "folderColorNames": {
       "amber": "琥珀色",
