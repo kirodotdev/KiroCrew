@@ -89,7 +89,7 @@ describe('app shell composition', () => {
     const main = readFileSync(join(SRC, 'main.tsx'), 'utf8')
     expect(main).toMatch(/const rootTree = desktopTarget\s*\?\s*<Suspense[^>]*><DesktopWindowRoot [^]*?:\s*appTree\n/)
     expect(main.match(/\.render\(/g)).toEqual(['.render('])
-    expect(main).toContain('.render(rootTree)')
+    expect(main).toContain('.render(<AppMotionConfig>{rootTree}</AppMotionConfig>)')
   })
 
   it('keeps the facade exports and their identities', () => {

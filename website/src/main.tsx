@@ -37,6 +37,7 @@ import { desktopWindowBridge, desktopWindowTarget } from './desktopWindow/deskto
 import { ensureCatalog, i18next, initI18n, isCatalogChunkError } from './i18n/lazy'
 import { DEFAULT_LANGUAGE } from './i18n/languages'
 import { LanguageProvider } from './i18n/LanguageProvider'
+import { AppMotionConfig } from './AppMotionConfig'
 import App from './App'
 import { queryClient } from './api/queryClient'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -331,7 +332,7 @@ function boot(startSync: boolean): void {
   // definition for how the language is reconciled first).
   void catalogReady.then(() => {
     announceBoot('render')
-    createRoot(document.getElementById('root')!).render(rootTree)
+    createRoot(document.getElementById('root')!).render(<AppMotionConfig>{rootTree}</AppMotionConfig>)
     if (startSync) startUiPrefsSync()
   })
 }
