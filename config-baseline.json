@@ -2750,6 +2750,7 @@
         "rule_authority_order": "off",
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
+        "dream": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3437,6 +3438,23 @@
         "off",
         "shadow",
         "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.dream",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dreaming",
+      "help": "Whether an offline pass looks over stored lessons and facts for copies, near-copies, work status and old untagged rules while no chat turn is running. 'off' (default) schedules and reads nothing. 'propose' runs at most once a day per store, 200 rows and 10 minutes at a time, and writes an approval list (kirocrew memory dream list); nothing in it is applied, and lessons you taught are never proposed for change.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "propose"
       ],
       "defaultValue": "off"
     },
