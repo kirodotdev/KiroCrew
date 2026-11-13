@@ -756,6 +756,11 @@ class SubagentInfo:
     # None while the run holds its slot.
     _resume_event: Any = None
     _wait_failed: str = ""
+    # True while a dependency park's report is on the store's writer thread, the
+    # window before ``yield_slot`` sets ``_slot_released``. The pump's live-waiter
+    # snapshot (``taskq_sweep_pass``) counts it, so a wake that lands in that
+    # window goes through admission instead of moving the row to ``retry_wait``.
+    _dependency_parking: bool = False
     # One wake-up per caller waiting in ``wait_done``; a write of a true ``done``
     # calls each (``_DoneFlag``). Empty except during such a wait.
     _done_wakers: list[Callable[[], None]] = field(default_factory=list, repr=False, compare=False)
