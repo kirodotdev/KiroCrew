@@ -39,7 +39,10 @@ export type GatewayStatus = {
  * args as the gateway bounded them, env KEY names only.
  */
 export type LaunchRefusal = {
-  reason: 'added_outside_dashboard' | 'changed_needs_reapproval'
+  // `too_many_launches`: more launches than one approval covers, so it is never
+  // approvable; `launch_cap` is that limit.
+  reason: 'added_outside_dashboard' | 'changed_needs_reapproval' | 'too_many_launches'
+  launch_cap?: number
   commands?: string[][]
   envs?: string[][]
   approved_commands?: string[][]
@@ -71,6 +74,13 @@ export type BulkCandidate = { name: string; preview?: LaunchPreview; error?: unk
  */
 export function launchIsApprovable(launch: { complete?: boolean; expected_launch?: string }): boolean {
   return launch.complete !== false && !!launch.expected_launch
+}
+
+/** Why a refusal with no approvable identity cannot be approved here, as its key (`{{cap}}`: `launch_cap`). */
+export function notApprovableKey(refusal: LaunchRefusal): string {
+  return refusal.reason === 'too_many_launches'
+    ? 'pages.mcpManagement.approval_over_launch_cap'
+    : 'pages.mcpManagement.approval_not_approvable_here'
 }
 
 
