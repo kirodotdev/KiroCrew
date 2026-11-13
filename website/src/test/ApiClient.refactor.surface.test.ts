@@ -71,7 +71,7 @@ const API_KEY_ORDER = [
   'deleteKirocrewAgent', 'appearances', 'uploadCrewAvatar', 'models', 'harnessModels',
   'chatSlotSelectionCapabilities', 'chatSlotSteering', 'effortLevels', 'slashCommands', 'chatSlotAgent',
   'chatSlotModel', 'chatSlotAutocompact', 'setChatSlotAutocompact', 'chatSlotTurnTimeout',
-  'setChatSlotTurnTimeout', 'chatSlotsModel', 'chatSlotsFollowDefaultCount', 'chatSlotsFollowDefault',
+  'setChatSlotTurnTimeout', 'chatSlotsModel', 'chatSlotsFollowDefaultCount', 'chatSlotsFollowDefault', 'chatSlotsGenerateTitles', 'chatSlotsGenerateTitlesStatus',
   'chatSlotReasoningEffort', 'chatSlotUltracode', 'chatSlotEnvironment', 'chatSlotEnvironmentList',
   'chatSlotEnvironmentRead', 'chatSlotEnvironmentHealth', 'chatSlotEnvironmentGit',
   'sessionEnvironmentsCheck', 'sessionEnvironmentsWorkspaces', 'sessionEnvironmentsTemplates', 'chatSlotEnvironmentWrite',
