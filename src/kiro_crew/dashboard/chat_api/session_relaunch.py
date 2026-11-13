@@ -873,6 +873,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            slot._dirty = True
             if not project:
                 state.sessions.retract_cwd(session_key)
             # Determine whether a start that captured the OLD cwd is already
