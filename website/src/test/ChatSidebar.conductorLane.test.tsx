@@ -430,6 +430,24 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('crew-root-attention')).toBeNull()
   })
 
+  it("reads Done from the ledger's verdict, not from every crew member being done", async () => {
+    mocks.crewWorkersRows = [
+      { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: 'it_1', created_by: 'k-root' },
+    ]
+    const run = { settled: 'stopped', open: 1, accepted: 1, not_done: 0, at_limit: false }
+    const stopped = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true,
+      last_message: 'Stopped: docs left.', crew_work: { open: 1, person: 0, conductor_looping: false, run, items: [] } }]
+    const first = renderSidebar(stopped, [], null, {}, [], stopped)
+    await waitFor(() => expect(first.qc.getQueryState(['crew-workers', 'k-root'])?.status).toBe('success'))
+    // A stopped run keeps the row's usual line: the conductor's final report.
+    expect(first.queryByTestId('crew-root-done')).toBeNull()
+    expect(first.getByText('Stopped: docs left.')).toBeInTheDocument()
+    first.unmount()
+    const done = [{ ...stopped[0], crew_work: { open: 0, person: 0, conductor_looping: false, run: { ...run, settled: 'done', open: 0 }, items: [] } }]
+    const second = renderSidebar(done, [], null, {}, [], done)
+    await waitFor(() => expect(second.getByTestId('crew-root-done')).toHaveTextContent(/^Done$/))
+  })
+
   it('keeps the unread dot beside Done when the finished crew has an unread reply', async () => {
     mocks.crewWorkersRows = [
       { key: 'k-w1', title: 'W1', agent: '', status: 'idle', group: 'done', last_activity: '', ledger_item: '', created_by: 'k-root' },
