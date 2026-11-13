@@ -310,6 +310,11 @@ describe('command center projection', () => {
     expect(model.settled).toBe(false)
   })
 
+  it('rests a session whose queue holds only restored cards, which wait for the person', () => {
+    const model = buildCommandCenter(sources({ slots: [slot('root', { queue_depth: 1, queue_held_depth: 1 })] }))
+    expect(model.nodes[0].state).toBe('idle')
+  })
+
   it('settles only when every run rests, the plan is complete and the board omitted nothing', () => {
     const done = { item_id: 'a', title: 'a', state: 'accepted' }
     expect(buildCommandCenter(sources({ work: { items: [done] } })).settled).toBe(true)

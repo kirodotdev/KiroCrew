@@ -292,6 +292,9 @@ export interface ChatSlot extends TurnIdentityFields {
   incarnation?: string
   /** Prompts held for a later turn on this slot. */
   queue_depth?: number
+  /** Of those, the restored cards no drain starts on its own (`readyQueueDepth`).
+   *  Absent on an older gateway. */
+  queue_held_depth?: number
   /** Set when this session is a Slack code channel's (see `CodeChannelInfo`). */
   code_channel?: CodeChannelInfo
   /** Code channels are on but not read yet, so this Slack-linked row may still

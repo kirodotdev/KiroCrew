@@ -224,7 +224,9 @@ The MCP tool writes `released` on an `idle` or `queued` row's line, never on a
 process exists.
 
 The row's `status` separates `working` / `queued` / `idle` / `closed` / `lost` /
-`unknown`. A tree-backed row absent from the dashboard is `closed` or `lost`: the
+`unknown`. `queued` means an entry will start on its own: a queue holding only
+cards restored after a restart (`is_held_queue_entry`) reads `idle`, since those
+wait for a person. A tree-backed row absent from the dashboard is `closed` or `lost`: the
 roster records that a session the dashboard no longer holds still existed, and
 its folded lifecycle says which fate it met. `closed` (carrying `closed_at`) is
 the DELIBERATE tab close -- the worker finished and its tab was closed
