@@ -57,6 +57,11 @@ import functools
 import re
 from pathlib import Path
 
+import pytest
+
+# The tree-wide tests share one cached scan, so they run on one worker per run.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_lenient_read_rewrite_ratchet")
+
 _SRC = Path(__file__).resolve().parent.parent / "src"
 
 #: Caught by a handler, these mean "a read error other than a missing file".
@@ -347,7 +352,11 @@ def load_modules(root: Path, sources: dict[str, str] | None = None) -> dict[str,
 def _src_scan() -> tuple[dict[str, _Module], dict[str, list[int]]]:
     """``src/`` is read once per worker for every tree-wide test."""
     modules = load_modules(_SRC)
-    return modules, rewrites_from_lenient_reads(modules)
+    found = rewrites_from_lenient_reads(modules)
+    # The cache outlives this module's tests on the worker; keep the readers, not the text.
+    for module in modules.values():
+        module.text = None
+    return modules, found
 
 
 def test_no_new_rewrite_starts_from_a_lenient_read() -> None:

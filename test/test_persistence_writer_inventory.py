@@ -24,9 +24,11 @@ is asserted in ``test_memory_context_toggles.py``.
 from __future__ import annotations
 
 import ast
+import functools
 from pathlib import Path
 
 import pytest
+import source_corpus
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
@@ -135,7 +137,8 @@ EXEMPT = {
 }
 
 
-def _writer_sites() -> set[str]:
+@functools.lru_cache(maxsize=1)
+def _writer_sites() -> frozenset[str]:
     """Every ``<module>::<function>`` in the package that reaches a write primitive.
 
     Matches an attribute *reference*, not only a call: the offloading writers
@@ -145,13 +148,12 @@ def _writer_sites() -> set[str]:
     the paths most likely to skip a gate.
     """
     found: set[str] = set()
-    for path in SRC.rglob("*.py"):
-        rel = path.relative_to(SRC).as_posix()
+    root = source_corpus.src_root()
+    # A write primitive is matched by attribute name, so a file whose text never
+    # spells one cannot hold a site; only the result set is cached, never a tree.
+    for path, _text, tree in source_corpus.parsed_candidates(require_any=sorted(_WRITE_PRIMITIVES)):
+        rel = path.relative_to(root).as_posix()
         if rel.startswith("_vendor/"):
-            continue
-        try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
-        except (OSError, SyntaxError):  # pragma: no cover - unreadable source
             continue
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -159,7 +161,7 @@ def _writer_sites() -> set[str]:
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Attribute) and inner.attr in _WRITE_PRIMITIVES:
                     found.add(f"{rel}::{node.name}")
-    return found
+    return frozenset(found)
 
 
 def test_every_persistent_writer_is_classified() -> None:
