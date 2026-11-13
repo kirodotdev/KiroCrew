@@ -159,3 +159,40 @@ class TestRevalidationAndGzip:
         assert resp.headers["Content-Encoding"] == "gzip"
         assert len(wire) < len(raw) // 4
         assert json.loads(gzip.decompress(wire)) == json.loads(raw)
+
+    @pytest.mark.asyncio
+    async def test_a_cursor_read_is_bounded_by_bytes_and_its_echo_is_a_delta(
+        self, tmp_path, monkeypatch
+    ):
+        """The dashboard's refreshes read with ``cursor=1``; they get the same byte bound."""
+        monkeypatch.setattr(slot_detail, "SLOT_DETAIL_PAGE_BYTE_BUDGET", 5000)
+        state = _state(tmp_path, monkeypatch, [2000] * 30)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            first = await (await client.get(f"/api/chat/slots/{NAME}?limit=500&cursor=1")).json()
+            cur = first["cursor"]
+            echo = f"from={cur['from']}&since={cur['since']}&digest={cur['digest']}"
+            nxt = await (await client.get(f"/api/chat/slots/{NAME}?limit=500&{echo}")).json()
+        assert [m["content"].split(":")[0] for m in first["messages"]] == ["r28", "r29"]
+        assert (first["next_before"], cur["from"], cur["since"]) == (28, 28, 29)
+        assert nxt["delta"] == {"from": 28, "since": 29}
+        assert [m["content"].split(":")[0] for m in nxt["messages"]] == ["r29"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("first_limit", [1, 3])
+    async def test_an_echo_wider_than_the_held_cursor_serves_the_width_asked(
+        self, tmp_path, monkeypatch, first_limit
+    ):
+        """A narrow (or byte-cut) held cursor never narrows a later, wider read."""
+        monkeypatch.setattr(slot_detail, "SLOT_DETAIL_PAGE_BYTE_BUDGET", 50_000)
+        state = _state(tmp_path, monkeypatch, [2000] * 30)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            first = await (
+                await client.get(f"/api/chat/slots/{NAME}?limit={first_limit}&cursor=1")
+            ).json()
+            cur = first["cursor"]
+            echo = f"from={cur['from']}&since={cur['since']}&digest={cur['digest']}"
+            plain = await (await client.get(f"/api/chat/slots/{NAME}?limit=20")).json()
+            nxt = await (await client.get(f"/api/chat/slots/{NAME}?limit=20&{echo}")).json()
+        assert "delta" not in nxt
+        assert nxt["messages"] == plain["messages"]
+        assert nxt["next_before"] == plain["next_before"] == 10

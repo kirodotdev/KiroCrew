@@ -152,8 +152,8 @@ export const refreshSlot = createAsyncThunk<
     const view = state.messages
     /* `countMatchedFetchLimit` is the rule this shares with the background warm.
      * Where it declines -- nothing identified, a count past the ceiling, or a
-     * floor that over-requests into unidentified history -- the warm still reads
-     * unbounded; this path instead clamps to the floor/ceiling and lets the page
+     * floor that over-requests into unidentified history -- the warm reads one
+     * clamp-sized page and walks older; this path instead clamps to the floor/ceiling and lets the page
      * checks below decide. The one thing a decline changes here is whether
      * `spansView` may be trusted: on a window the floor over-requested from a view
      * it cannot fully identify, the page's range can reach above an unidentified
@@ -306,8 +306,8 @@ export const warmSlotCache = createAsyncThunk(
      * A bounded page is safe for this reducer: `warmSlotCache.fulfilled` keeps any
      * older head sitting above the page's first row (`olderHeadAbovePage`), so a
      * window narrower than the pane's scrollback merges with it instead of replacing
-     * it. A cache the bound cannot prove safe still takes the unbounded shape --
-     * `countMatchedFetchLimit` answers `undefined` there.
+     * it. A cache the bound cannot prove safe -- `countMatchedFetchLimit` answers
+     * `undefined` there -- reads one clamp-sized page and walks older (below).
      *
      * A STREAMING slot is no exception. The handler collapses chunk runs BEFORE it
      * slices. Its one folded streaming row carries no durable identity, so a
@@ -325,14 +325,14 @@ export const warmSlotCache = createAsyncThunk(
      * in time, so the coverage check below reports it as nothing to cover -- a window
      * that misses it then replaces the cache with no shortfall ever raised. Legacy
      * history written before the backend stamped a timestamp is the real case, and it
-     * takes the unbounded shape. `refreshSlot` does not need this: it validates the
+     * always walks older (below). `refreshSlot` does not need this: it validates the
      * page it got against the view and retries, so an unplaceable row costs it a round
      * trip rather than a row. */
     const unplaceable = cache.some(m => isDurableRow(m) && transcriptTsMs(m.ts) === null)
     /* The count-matched rule with no ceiling, so a cache held PAST the handler's
      * clamp is told apart from one the rule declines for want of identity. The
      * capped rule answers `undefined` for both; only the second needs the
-     * unbounded shape. A cache past the clamp asks for exactly one clamp-sized
+     * walk regardless of coverage. A cache past the clamp asks for exactly one clamp-sized
      * page and reaches the rest with `walkWindowBackTo` below, the way
      * `refreshSlot` and `switchSlot` do -- before this, every background turn end
      * and every reconnect re-read the whole transcript of any pane holding more
@@ -353,7 +353,17 @@ export const warmSlotCache = createAsyncThunk(
     const limit = running && cache.length > 0 && matchedLimit !== undefined
       ? Math.min(SLOT_DETAIL_MAX_LIMIT, matchedLimit + 1)
       : matchedLimit
-    const first = await fetchSlotDetail(key, limit)
+    /* No bound the rule can prove (a durable row with no readable instant, or one
+     * with no identity) used to read the whole chained transcript here. It reads
+     * the newest clamp-sized page instead and always walks older, below: the walk
+     * anchors on `meta.mid`, which needs no timestamp, and it is capped, so what
+     * the legacy rows cost is a bounded number of pages, never the whole history.
+     * shortcut: rows with neither a mid nor a timestamp cannot anchor, so the walk
+     * ends at its page cap and the reducer replaces; the older rows are one
+     * page-back away, upgrade when such history stops existing. */
+    const legacyUnbounded = limit === undefined
+    const pageLimit = limit ?? SLOT_DETAIL_MAX_LIMIT
+    const first = await fetchSlotDetail(key, pageLimit)
     /* Coverage, MEASURED against the rows this pane holds -- the same check
      * `switchSlot` runs after its bounded read, for the same reason: the window
      * extends BACKWARD from the newest row, so a pane parked on a head it paged into
@@ -367,7 +377,7 @@ export const warmSlotCache = createAsyncThunk(
      * above that anchor (`olderHeadAbovePage`). Every request on this path is
      * bounded, so the totals all count the same collapsed corpus and the walk's
      * own `total` is the comparable one. */
-    if (limit !== undefined && slotCoverageShortfall({ cached: cache, window: first.messages }) > 0) {
+    if (legacyUnbounded || slotCoverageShortfall({ cached: cache, window: first.messages }) > 0) {
       const walked = await walkWindowBackTo(key, first, cache)
       /* A hole the walk cannot close: the window anchors the cache, yet the cache
        * holds a row at or after that anchor which the window lacks. Walking older
@@ -383,7 +393,7 @@ export const warmSlotCache = createAsyncThunk(
         const prior = cache.filter(m => m.role !== 'thinking')
         const { cutIdx } = olderHeadAbovePage(prior, first.messages)
         if (cutIdx >= 0 && slotCoverageShortfall({ cached: prior.slice(cutIdx), window: first.messages }) > 0) {
-          const fresh = await fetchSlotDetail(key, limit)
+          const fresh = await fetchSlotDetail(key, pageLimit)
           return { ...fresh, warmSeq, runTickAtDispatch }
         }
       }

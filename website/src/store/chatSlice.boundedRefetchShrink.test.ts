@@ -199,7 +199,9 @@ describe('a bounded refetch must not shrink what is already loaded', () => {
 
     const cache = new Set(store.getState().chat.slotMessages.bg.map(m => m.content))
     const dropped = painted.filter(m => !cache.has(m.content)).map(m => m.content)
-    expect({ limit: limitsFor('bg').at(-1), dropped }).toEqual({ limit: undefined, dropped: [] })
+    // As for the switch above: the walk reaches the start in clamp-sized pages,
+    // never in one unbounded read.
+    expect({ unbounded: limitsFor('bg').includes(undefined), dropped }).toEqual({ unbounded: false, dropped: [] })
   })
 
   // Negative control: the bound must SURVIVE where it was designed to help, so the
