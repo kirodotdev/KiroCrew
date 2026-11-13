@@ -733,6 +733,10 @@ closed-session chip's name (`components/markdown/linkTargets.ts`), localized at
 render from the raw row it caches. A session missing from the slot list has an
 unknown title, so the fork-of tag and the embedded tab keep its key. Resuming a
 closed session still sends its raw title, or its key when untitled, never the label.
+The window titles leave an untitled session's name out instead: the main tab reads
+the panel alone (`Chat — <product>`, `shell/appShell.tsx`), as with no session open,
+and a chat popout its generic `Session` label (`pages/PopoutFrame.tsx`); both read
+`isUntitledSession`, so the backend placeholder counts as untitled there too.
 
 `ChatSidebar.tsx` is a facade over owners that each hold one responsibility. It
 calls each owner hook where that block used to sit, so React runs the effects in

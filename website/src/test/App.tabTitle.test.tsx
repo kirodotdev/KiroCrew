@@ -97,6 +97,15 @@ describe('main window tab title', () => {
     await waitFor(() => expect(document.title).toBe('Chat — Kiro Crew'))
   })
 
+  it('names Chat alone while the active session still carries the backend placeholder', async () => {
+    const store = renderAt('/chat')
+    act(() => {
+      store.dispatch(addSlotOptimistic(slot('s1', 'New Session…')))
+      store.dispatch(setActiveSlot('s1'))
+    })
+    await waitFor(() => expect(document.title).toBe('Chat — Kiro Crew'))
+  })
+
   it('names the panel on any other page', async () => {
     renderAt('/schedule')
     await waitFor(() => expect(document.title).toBe('Schedule — Kiro Crew'))
