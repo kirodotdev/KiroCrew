@@ -267,35 +267,66 @@ def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
 
 
 def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
-    """Allow deferral only for the pinned install and its own chat sibling.
+    """Whether a spawn of *spawned_binary* may leave Crew's servers to Tool Search.
 
-    The executable must match the pin or its chat sibling by realpath, and its
-    invoked directory must match the pin's directory. Both pinned executables
-    must meet the version floor; only those paths are probed. Missing spawn
-    paths, pod bundles, and non-pinned launchers keep Crew's servers resident.
+    Three install shapes can earn deferral, each judged on the file the session
+    is about to run, and each by the version floor alone:
+
+    * **The pinned install and its own chat sibling.** The executable must match
+      the pin or its chat sibling by realpath, and its invoked directory must
+      match the pin's directory. Both pinned executables must meet the floor;
+      only those paths are probed.
+    * **The operator's ``KIROCREW_KIRO_BIN``**, when it is the file spawned. Its
+      version is the answer :func:`kiro_cli_version_at` already gives for the
+      pin, which an absolute override is. No path derived from it is probed (the
+      KAS spawn skips that sibling for the same reason).
+    * **An install found only through ``PATH``**, when it is the file spawned.
+      Its version is read inside the sandbox and never waited for
+      (:mod:`kiro_crew.kiro_cli_path_probe`): while there is no answer, the
+      servers stay resident.
+
+    The last two derive no sibling, so a POSIX ``kiro-cli`` below 3.0.0, a
+    launcher that execs a ``kiro-cli-chat`` nobody probed, stays resident there.
+    Missing spawn paths, pod bundles and every other executable keep Crew's
+    servers resident, and so does every spawn once a request was refused for a
+    changed tool list in this process (:func:`note_tools_list_refusal`).
     Every check runs on the executables the sandbox wrap will run: the spawned
     path and the pin both pass through the edition's agent-executable resolver
     first, so a managed launcher is judged by the install it is swapped for,
     never by the launcher itself. Any failure keeps the servers resident; never raises.
-
-    An operator ``KIROCREW_KIRO_BIN`` override also keeps them resident: its
-    directory is the operator's choice, not a known install directory, so no path
-    derived from it is probed (the KAS spawn skips that sibling for the same reason).
     """
-    if not spawned_binary or (os.environ.get("KIROCREW_KIRO_BIN") or "").strip():
+    if not spawned_binary or _tools_list_refused_at is not None:
         return False
     try:
-        pinned = pin_kiro_cli()[0]
-        if pinned is None:
-            return False
+        pinned, unpinned = pin_kiro_cli()
         # The same resolver sandbox_argv applies to argv[0] before it execs: an
         # edition may swap a managed launcher (one with no kiro-cli-chat beside it)
         # for the direct install behind it. Identity on the public build.
         from kiro_crew.sandbox_argv import _resolve_agent_executable  # noqa: PLC0415
 
-        pinned = _resolve_agent_executable(pinned)
         spawned_binary = _resolve_agent_executable(spawned_binary)
-        if not pinned or not spawned_binary:
+        if not spawned_binary:
+            return False
+        override = (os.environ.get("KIROCREW_KIRO_BIN") or "").strip()
+        if override:
+            # An absolute override is the pin itself; a pin that is some other
+            # install, or any other file spawned, is not the operator's choice.
+            if pinned is None or not _names_override(pinned, override):
+                return False
+            pinned = _resolve_agent_executable(pinned)
+            if not pinned or not _same_spelling(spawned_binary, pinned):
+                return False
+            return _lone_file_drop_supported(pinned, kiro_cli_version_at(pinned))
+        if pinned is None:
+            found = path_only_install() if unpinned else None
+            found = _resolve_agent_executable(found) if found else None
+            if not found or not _same_spelling(spawned_binary, found):
+                return False
+            from kiro_crew import kiro_cli_path_probe  # noqa: PLC0415
+
+            return _lone_file_drop_supported(found, kiro_cli_path_probe.version_if_known(found))
+        pinned = _resolve_agent_executable(pinned)
+        if not pinned:
             return False
         sibling = chat_sibling(pinned)
         candidates = [pinned, sibling]
@@ -326,6 +357,88 @@ def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:
         )
     except Exception:  # noqa: BLE001 - an unanswerable trust check refuses deferral
         return False
+
+
+def _same_spelling(binary: str, other: str) -> bool:
+    """Whether two paths name one file by spelling alone: no symlink is followed."""
+    return os.path.normcase(os.path.abspath(binary)) == os.path.normcase(os.path.abspath(other))
+
+
+def _names_override(binary: str, override: str) -> bool:
+    """Whether *binary* is the file ``KIROCREW_KIRO_BIN`` names.
+
+    By spelling, as the operator named it; on Windows by real path too, because
+    the resolver hands every candidate back canonical there (an 8.3 short name
+    comes back spelled long).
+    """
+    if _same_spelling(binary, override):
+        return True
+    return sys.platform == "win32" and _same_spelling(binary, os.path.realpath(override))
+
+
+def _lone_file_drop_supported(binary: str, version: tuple[int, int, int] | None) -> bool:
+    """The deferral floor for a file judged alone, with no sibling derived.
+
+    A POSIX ``kiro-cli`` below 3.0.0 is a launcher: it execs a ``kiro-cli-chat``
+    whose version this file's own says nothing about.
+    """
+    if not mandatory_mcps_drop_supported(version):
+        return False
+    launcher_name = sys.platform != "win32" and os.path.basename(binary) == KIRO_CLI_NAME
+    return not launcher_name or standalone_kiro_cli(version)
+
+
+def path_only_install() -> str | None:
+    """The kiro-cli a spawn resolves when it is found through ``PATH`` alone.
+
+    ``None`` when an install is pinned, when the operator named one with
+    ``KIROCREW_KIRO_BIN``, or when none is installed. Resolved the way the ACP
+    spawn resolves it (:func:`resolve_kiro_cli`, made absolute), so the path
+    compares equal to the spawn's ``argv[0]``. Blocking: stats directories.
+    """
+    if (os.environ.get("KIROCREW_KIRO_BIN") or "").strip():
+        return None
+    pinned, unpinned = pin_kiro_cli()
+    if pinned is not None or not unpinned:
+        return None
+    found = resolve_kiro_cli()
+    return os.path.abspath(found) if found else None
+
+
+#: ``time.monotonic()`` of the first request this process saw refused because a
+#: deferred tool load changed the ``tools`` list under a signed thinking block,
+#: else ``None``. Set once and never cleared: from then on every kiro-cli spawn
+#: keeps Crew's servers resident, for the life of the process.
+_tools_list_refused_at: float | None = None
+
+
+def note_tools_list_refusal() -> None:
+    """Record that deferring Crew's tools got a request refused in this process.
+
+    The floor in :data:`MANDATORY_MCPS_DROP_MIN_VERSION` is empirical, so an
+    engine above it can still refuse. The session that hit it is rebuilt by its
+    caller; this makes that rebuild, and every later spawn, send the full tool
+    list. Process-wide rather than per install: a gateway runs one kiro-cli, and
+    keeping too many servers resident is the safe direction.
+
+    shortcut: a process already running keeps the list it started with. A warm-pool
+    process is discarded at claim (:func:`spawned_before_tools_list_refusal`); a
+    process shared between chats (the ``chat_runtime_sharing`` preview) is not, so
+    a rebuilt conversation placed on one still defers. Upgrade by fencing that
+    placement on the same test when the preview leaves preview.
+    """
+    global _tools_list_refused_at
+    if _tools_list_refused_at is None:
+        _tools_list_refused_at = time.monotonic()
+
+
+def spawned_before_tools_list_refusal(spawn_time: float) -> bool:
+    """Whether a process started at *spawn_time* (monotonic) predates the refusal.
+
+    Such a process read its never-defer list before the refusal was known, so it
+    may still be deferring Crew's tools.
+    """
+    return _tools_list_refused_at is not None and spawn_time <= _tools_list_refused_at
 
 
 def spec_permissions_supported(version: tuple[int, int, int] | None) -> bool:
@@ -1129,6 +1242,10 @@ def pin_kiro_cli() -> tuple[str | None, bool]:
     gateway's unattended paths run this in a thread under a timeout
     (``slack.gateway._pinned_kiro_cli``); a CLI command or a request handler
     already blocking on the spawn itself has nothing to gain from that.
+
+    The Tool Search gate's one read of a ``PATH``-only install, its ``--version``,
+    runs inside the strict sandbox or not at all
+    (:mod:`kiro_crew.kiro_cli_path_probe`); the pin's own read is never used on it.
     """
 
     pinned = resolve_kiro_cli(include_inherited_path=False)

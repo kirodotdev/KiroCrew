@@ -240,6 +240,20 @@ per-tool mounts, hooks, toolsSettings, excludedTools and auto-approval shortcuts
 sessions start but remain unverified rather than claiming full-spec parity. Pinned by `test_harness_parity.py::test_member_capabilities_are_opt_in`
 and `test_session_capabilities.py::test_real_session_provider_member_support_is_explicit`.
 
+`ACP_BACKENDS_COMPACTION_REPORTED` is the H6 opt-in for anything Kiro Crew sends
+once per engine conversation and sends again when the conversation may have lost it. It is
+`ACP_BACKENDS_SENT_IMAGE_RECORD` under the name of what it means (one list, defined
+from it in `agent_sdk/backends_turns.py`): the harnesses whose compaction, started
+by Kiro Crew or by the harness itself, sends a frame this client reads (kiro, kas,
+codex, claude). Its reader is the reply-format rules block: the context builder
+asks the turn's provider (`LLMProvider.reports_compaction`, False on the base
+class) and binds the block as the provider's delivery envelope only on a True.
+A harness outside the set, a provider that does not say, and a turn with no
+provider all get the rules on every message, so a harness that has not been shown
+to report its compaction never inherits the saving
+(`test_reply_format_once.py::TestEveryMessageWhereTheBlockCannotBeTakenOut`, a
+table over every selectable harness).
+
 `ACP_BACKENDS_NATIVE_TODOS` is the H6 opt-in for the harness-native `/todos`
 command. Only Claude belongs today. Before acquisition, the dashboard asks a
 positively live provider's `SessionCapabilities.supports_native_todos` field;

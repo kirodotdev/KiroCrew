@@ -233,6 +233,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # the child; on a running loop the same call runs in one worker thread. No
         # process is created here.
         "kiro_cli.py::_sandboxed_probe",
+        # Same pattern again, for a kiro-cli found only through ``PATH``: one fixed
+        # ``--version`` argv, and the ``asyncio.run`` drives
+        # ``kiro_prerequisite._run_process`` in strict mode with
+        # ``require_crew_sandbox``, so the file an agent may have planted is run
+        # inside Kiro Crew's own sandbox or not at all. No process is created here.
+        "kiro_cli_path_probe.py::_sandboxed_version",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's

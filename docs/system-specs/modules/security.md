@@ -4356,6 +4356,30 @@ preventing a planted `kiro-cli` basename from selecting the provider's trusted
 internal macOS delegation path. The strict wrapper additionally hides the
 configured data home, `~/.kiro/crew`, `~/.kirocrew`, and all known Kiro
 identity stores, so setup probes cannot read Kiro Crew state or bearer tokens.
+
+The Tool Search gate's read of a kiro-cli found only through `PATH`
+(`kiro_cli_path_probe`) is the same shape and follows one rule: **the probe
+never has more reach than the session's own launch of the same file.** `PATH`
+can lead with a directory an agent writes to, so its `--version` runs through
+the same runner as the candidate probes above (`kiro_prerequisite._run_process`,
+`sandboxed_spawn_argv(mode="strict")` behind the system `env` entry, output
+captured up to the runner's fixed bound and the process tree ended on a
+timeout), with
+the `--version` probe environment above and nothing else. A host with no
+sandbox backend is refused by the chokepoint itself. The runner's
+`require_crew_sandbox` keyword, which only this read passes, refuses the spawn
+with no child started when the
+wrap did not put the child in Kiro Crew's own sandbox (an
+unsandboxed opt-in, a gateway that itself runs inside a sandbox); every other
+caller of the runner leaves it off and runs as before. The read is not
+run on Windows, which has no sandbox backend. It adds no seal and no mask: the
+keyword only declines to run. Every such case answers "unknown", which keeps
+Kiro Crew's own MCP servers out of deferral. The pinned install and an absolute
+`KIROCREW_KIRO_BIN` keep their own read (`kiro_cli_version_at`), which runs
+inside the sandbox at the configured tier, as a session runs the same binary
+(`kiro_cli._sandboxed_probe`; its fixed argv still runs on a host with no
+sandbox backend); no file is added to that route.
+
 Trust is "the CLI runs, and it has a valid login": a Kiro CLI that answers
 `--version` is eligible for `whoami`, regardless of install
 source, owner, or fixed path. Kiro Crew is not the authority on where Kiro CLI

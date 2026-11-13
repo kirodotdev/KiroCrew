@@ -32,6 +32,7 @@ from kiro_crew.sandbox import (
     resource_limit_supervisor_argv,
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
+    wrapped_by_crew_sandbox,
 )
 
 logger = logging.getLogger("kiro_crew.kiro_prerequisite")
@@ -45,6 +46,8 @@ _WINDOWS_DESCENDANT_POLL_SECS = 0.05
 
 
 _UNVERIFIED_SANDBOX_MODE = "strict"
+
+_NOT_IN_CREW_SANDBOX_ERROR = "not run: the spawn would not be inside Kiro Crew's own sandbox"
 
 
 _PROCESS_GROUP_SUPERVISOR = str(Path(__file__).with_name("_process_group_supervisor.py"))
@@ -468,6 +471,7 @@ async def _run_process(
     extra_visible_dirs: tuple[str, ...] = (),
     first_party_fixed_argv: bool = False,
     reap_survivors: bool = False,
+    require_crew_sandbox: bool = False,
     _on_private_loop: bool = False,
 ) -> ProcessResult:
     """Run one fixed argv with bounded output, always inside the OS sandbox.
@@ -476,6 +480,13 @@ async def _run_process(
     call, and all of them go through the sandbox chokepoint. The one way a
     child runs unconfined is that chokepoint's own first-party carve-out, which
     only the LTS sign-in check claims (see *first_party_fixed_argv*).
+
+    *require_crew_sandbox* (default off) refuses the spawn, with no child started,
+    unless the chokepoint put it in Kiro Crew's OWN sandbox layer
+    (``wrapped_by_crew_sandbox``). The chokepoint can hand back an unconfined argv
+    (an operator's unsandboxed-exec opt-in, a caller already inside a sandbox, and
+    Windows, where this function skips the wrap), which a readiness probe accepts
+    and a caller that may run the file nowhere else does not.
 
     On Windows this re-enters itself once, on a private event loop owned by a
     pooled worker thread, because the spawn below reaches ``CreateProcess``
@@ -508,6 +519,7 @@ async def _run_process(
                 extra_visible_dirs=extra_visible_dirs,
                 first_party_fixed_argv=first_party_fixed_argv,
                 reap_survivors=reap_survivors,
+                require_crew_sandbox=require_crew_sandbox,
                 _on_private_loop=True,
             )
         )
@@ -549,6 +561,9 @@ async def _run_process(
                 if not resolved_wrapper:
                     raise OSError(f"sandbox wrapper is unavailable: {spawn_argv[0]}")
                 spawn_argv[0] = resolved_wrapper
+        if require_crew_sandbox and not wrapped_by_crew_sandbox(spawn_argv):
+            await _unlink_off_loop(cleanup_path)
+            return ProcessResult(ok=False, error=_NOT_IN_CREW_SANDBOX_ERROR)
         if platform_compat.IS_POSIX:
             # The immutable, gateway-captured supervisor is the outermost
             # process. Putting it inside the Linux namespace launcher makes the

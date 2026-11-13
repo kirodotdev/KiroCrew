@@ -18,6 +18,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Sequence
 
+from kiro_crew import kiro_cli
 from kiro_crew.acp.compaction_errors import (  # noqa: F401 - re-exported via this module's facade
     _COMPACTION_DETAIL_KEYS,
     _COMPACTION_DETAIL_MAX_CHARS,
@@ -61,7 +62,12 @@ from kiro_crew.acp.structured_error_data import (
     provider_data_text,
     structured_data_prose,
 )
+from kiro_crew.acp.thinking_binding_errors import (
+    _is_thinking_binding_mismatch,
+    _is_tools_list_refusal,
+)
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
@@ -1062,35 +1068,6 @@ _RE_IMAGE_FORMAT_UNSUPPORTED = re.compile(
     re.IGNORECASE,
 )
 
-# A preserved-thinking signature rejection whose own provider text says the block
-# is bound to another conversation is recoverable by replacing the NATIVE
-# conversation. Both clauses must appear IN ONE FIELD: the shorter
-# invalid-signature form also covers tampered or undecryptable signatures, and
-# pairing a clause from ``data`` with unrelated prose from ``message`` would mint
-# a recoverable verdict the provider never sent.
-_RE_THINKING_SIGNATURE_INVALID = re.compile(
-    r"Invalid `signature` in `thinking` block", re.IGNORECASE
-)
-_RE_THINKING_BOUND_TO_OTHER_CONVERSATION = re.compile(
-    r"\bblock is bound to a different conversation\b", re.IGNORECASE
-)
-
-
-def _is_thinking_binding_mismatch(error: object) -> bool:
-    """Whether one raw provider field carries both binding-mismatch clauses."""
-    if not isinstance(error, dict):
-        return False
-    for key in ("data", "message"):
-        value = error.get(key)
-        if (
-            isinstance(value, str)
-            and _RE_THINKING_SIGNATURE_INVALID.search(value)
-            and _RE_THINKING_BOUND_TO_OTHER_CONVERSATION.search(value)
-        ):
-            return True
-    return False
-
-
 # A concurrent in-flight prompt on the session, in kiro-cli's words and in goose's
 # (-32602 "session already has active run `<id>`" for a prompt sent while its run is
 # live). Read by the user-facing formatter below and by `_raise_acp_error`'s
@@ -1878,6 +1855,17 @@ def _raise_acp_error(
     err: AcpError
     if _is_thinking_binding_mismatch(error):
         err = AcpConversationBindingMismatch(formatted, transient=False, user_worded=worded)
+        # The two harnesses whose spawn reads the never-defer list, named one by one.
+        if backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS) and _is_tools_list_refusal(error):
+            # The refusal the never-defer floor exists to prevent, on an engine
+            # the floor let through. Remembered before the caller's one rebuild,
+            # so that rebuild and every later spawn send the full tool list.
+            kiro_cli.note_tools_list_refusal()
+            logger.warning(
+                "A request was refused because a deferred tool load changed its "
+                "tools list; Kiro Crew's own MCP servers stay out of Tool Search "
+                "deferral until this process restarts"
+            )
     else:
         err = AcpError(
             formatted,

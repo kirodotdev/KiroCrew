@@ -172,6 +172,17 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def reports_compaction(self) -> bool:
+        """Whether Kiro Crew sees a compaction of this session's conversation.
+
+        True only for a harness in ``ACP_BACKENDS_COMPACTION_REPORTED``. False is
+        "not known": a caller that sends something once per conversation then
+        sends it on every message, so a compaction it never heard of cannot
+        leave the conversation without it.
+        """
+        return False
+
+    @property
     def native_context_documents(self) -> dict[str, str]:
         """Exact documents supplied at native startup, empty without evidence."""
         return {}
