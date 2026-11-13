@@ -811,6 +811,17 @@ class CatalogNoInstallSource(CatalogUnavailable):
     """
 
 
+def log_unavailable(log: logging.Logger, what: str, exc: CatalogUnavailable) -> None:
+    """Log an expected refusal as one WARNING line naming its cause.
+
+    Offline or backing off, every store listing gets this answer, so a traceback
+    per listing buries the log. Call it from the ``except`` block: the stack is
+    still logged, at DEBUG.
+    """
+    log.warning("%s: %s", what, exc)
+    log.debug("%s", what, exc_info=True)
+
+
 def fetch_inventory_entries(*, ignore_failure_memory: bool = False) -> list[dict[str, Any]]:
     """The catalog's entries from a FRESH HTTPS fetch, never the on-disk cache.
 
