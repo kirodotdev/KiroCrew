@@ -175,6 +175,10 @@ async def api_upload(request: web.Request) -> web.Response:
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=120)
+    except asyncio.CancelledError:
+        # A torn-down request must not leave the chooser open with no owner.
+        await platform_compat.kill_and_reap(proc)
+        raise
     except asyncio.TimeoutError:
         try:
             proc.kill()
@@ -234,6 +238,10 @@ async def api_screenshot(request: web.Request) -> web.Response:
     )
     try:
         await asyncio.wait_for(proc.wait(), timeout=120)
+    except asyncio.CancelledError:
+        # A torn-down request must not leave the capture running with no owner.
+        await platform_compat.kill_and_reap(proc)
+        raise
     except asyncio.TimeoutError:
         try:
             proc.kill()

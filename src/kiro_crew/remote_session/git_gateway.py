@@ -886,6 +886,11 @@ async def login_status(host: str) -> str:
         except asyncio.TimeoutError:
             await _kill_child(process)
             continue
+        except asyncio.CancelledError:
+            # The check runs in its own session, so a cancel that skipped the
+            # kill would leave it running with no owner.
+            await _kill_child(process)
+            raise
         if code == 0:
             return "signed_in"
     return "unchecked" if "git-credential" in spec.sources else "not_signed_in"

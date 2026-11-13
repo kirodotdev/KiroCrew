@@ -309,6 +309,11 @@ async def _probe_permissions(platform_id: str) -> dict[str, str]:
             stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=PROBE_TIMEOUT_SECS)
+    except asyncio.CancelledError:
+        # A torn-down request must not leave the probe running with no owner.
+        if proc is not None:
+            await platform_compat.kill_and_reap(proc)
+        raise
     except (asyncio.TimeoutError, TimeoutError):
         # BOTH, deliberately. On Python 3.11+ these are the same class, but on 3.10
         # — which CI still gates on — ``asyncio.TimeoutError`` is a distinct class
