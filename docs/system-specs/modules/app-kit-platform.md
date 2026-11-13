@@ -973,8 +973,12 @@ listing has fetched, so it describes the fetch that built or held back the rows
 just listed). `refresh_registries` reports the
 same cause as `reason` on a failed row, for every cause but `other`, with the row's
 `host`, and every failed row's `cached`. The store page renders `registryStatus` as one notice
-(`registryListingFailureMessage` in `components/appstore/registryRefreshMessage.ts`)
-that leads with one remedy per cause and host, then names the registries whose apps
+(`registryListingFailureMessage` in `components/appstore/registryRefreshMessage.ts`).
+When the same listing answers `catalogUnavailable: true` (the offline fallback,
+below), the notice opens with `pages.appsPage.store_catalog_unreachable` on its own
+line, so the first load says the shelf holds only the bundled seed rows, before any
+refresh. The registry part
+leads with one remedy per cause and host, then names the registries whose apps
 are missing and the ones shown as last synced, one line each: connect to the VPN or check the
 network for `dns`, `network` and `timeout`; run `ssh <host>` once to add or fix its
 entry in `~/.ssh/known_hosts` for `host_key`; renew the git credentials for `auth`;
@@ -3356,9 +3360,10 @@ keeps the saved copy's rows, less the catalog-only `git` rows only a fresh fetch
 can make installable. Only with no fresh document does the memory make
 `load_official_catalog` answer from the seed without a fetch.
 
-That degradation is silent -- once the saved document expires, a failed fetch
-leaves the seed listing with no error -- so the store header carries a manual
-refresh. `POST /api/app-store/refresh` (`handle_registry_refresh`) drops the
+That degradation raises no error. Once the saved document expires, a failed
+fetch leaves the seed listing, still answered 200 and flagged only by
+`catalogUnavailable: true`, which the store's listing notice shows on load. To
+repair it, the store header carries a manual refresh. `POST /api/app-store/refresh` (`handle_registry_refresh`) drops the
 on-disk caches of all three published documents (catalog, category order,
 editorial) via each module's `forget_cache()`, which clears a stale document and
 the `_fetchFailedAt` back-off memory. The handler never fetches: the follow-up
