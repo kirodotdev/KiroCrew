@@ -271,6 +271,29 @@ async def test_post_token_returns_the_parsed_body(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
+async def test_token_and_revoke_posts_go_through_the_configured_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a proxy-only network the OAuth exchange and the revoke must not dial directly."""
+    from urllib import request as urllib_request
+
+    proxy = "http://proxy.invalid:3128"
+    monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
+    monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+    monkeypatch.setattr(oauth, "read_access_token", lambda: "acc")
+    monkeypatch.setattr(oauth, "_client_credentials", lambda: ("cid", "sec"))
+    posts = _patch_session(monkeypatch, _FakeResp(200, {"access_token": "a"}))
+
+    await oauth._post_token({"grant_type": "x"})
+    await oauth.revoke_tokens()
+
+    assert [(post["url"], post["proxy"]) for post in posts] == [
+        (oauth.TOKEN_URL, proxy),
+        (oauth.REVOKE_URL, proxy),
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response, code",
     [
