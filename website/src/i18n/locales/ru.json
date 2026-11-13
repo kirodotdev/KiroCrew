@@ -22229,6 +22229,8 @@
         "tier_power": "Мощный",
         "tier_power_why": "Большие разветвления задач, долгие сборки и много параллельных субагентов одновременно.",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} ГБ ОЗУ · {{diskGb}} ГБ диска",
+        "tier_price": "~{{hourly}}/ч · ~{{monthly}}/мес., если не выключать (примерно)",
+        "price_region_note": "Цены указаны по тарифам по запросу в {{priceRegion}}; в других регионах они могут отличаться.",
         "transport_hint_fargate": "Достигает задачи AWS Fargate через Session Manager. Она обслуживает API чата, а не панель.",
         "transport_hint_ssh": "Подключается по SSH.",
         "transport_hint_ssm": "Подключается через AWS Systems Manager Session Manager.",

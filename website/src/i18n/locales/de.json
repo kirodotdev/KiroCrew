@@ -21197,6 +21197,8 @@
         "tier_power": "Leistung",
         "tier_power_why": "Große Fan-outs, lange Builds und viele parallele Sub-Agents gleichzeitig.",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB Festplatte",
+        "tier_price": "~{{hourly}}/Std. · ~{{monthly}}/Monat bei Dauerbetrieb (ca.)",
+        "price_region_note": "Die Preise sind On-Demand-Tarife für {{priceRegion}}; in anderen Regionen können sie abweichen.",
         "transport_hint_fargate": "Erreicht einen AWS Fargate-Task über Session Manager. Er stellt eine Chat-API bereit, kein Dashboard.",
         "transport_hint_ssh": "Verbindet sich über SSH.",
         "transport_hint_ssm": "Verbindet sich über AWS Systems Manager Session Manager.",

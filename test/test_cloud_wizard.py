@@ -1228,6 +1228,7 @@ class TestDeployProgressInterrupt:
         out = capsys.readouterr().out
         rate = f"${wizard.sizes.default_tier().approx_usd_per_hr:.2f}/hr"
         assert "AWS may still be creating kirocrew-kc-new" in out and rate in out, out
+        assert "us-east-1 on-demand rate, other Regions may differ" in out, out
         scope = "--tag kc-new --region us-west-2 --profile dev"
         assert out.index(f"kirocrew cloud status {scope}") < out.index(
             f"kirocrew cloud destroy {scope}"
@@ -1515,6 +1516,19 @@ class TestFirstDeployConfirmsAccount:
         assert len(prompts) == 1
         assert "111122223333" in prompts[0] and "profile prod" in prompts[0]
         assert "nothing was created" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(("region", "named"), [("sa-east-1", True), ("us-east-1", False)])
+    def test_price_says_it_is_the_us_east_1_rate_in_another_region(
+        self, monkeypatch, capsys, region, named
+    ):
+        _, prompts = self._setup(monkeypatch)
+        monkeypatch.setattr(wizard.ui, "confirm", self._decline(prompts))
+
+        assert wizard.launch(profile="prod", region=region, size_key="light") == 0
+
+        out = capsys.readouterr().out
+        assert "/mo if left running (approx" in out, out
+        assert ("us-east-1 on-demand rate, other Regions may differ" in out) is named, out
 
     @pytest.mark.parametrize("tty", [False, True])
     def test_end_of_input_is_no_and_deploys_nothing(self, monkeypatch, capsys, tty):

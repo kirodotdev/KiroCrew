@@ -526,7 +526,8 @@ def launch(
             tier = sizes.interactive_tiers()[idx]
         ui.detail(
             f"~${tier.approx_usd_per_hr:.2f}/hr · "
-            f"~${sizes.monthly_estimate(tier):.0f}/mo if left running (approx)"
+            f"~${sizes.monthly_estimate(tier):.0f}/mo if left running "
+            f"({sizes.price_basis(region)})"
         )
         # An image of the other architecture fails only at the Instance resource,
         # after the role exists; refuse it before anything is asked or created.
@@ -624,7 +625,8 @@ def launch(
             print()
             ui.warn(
                 f"Stopped waiting, but AWS may still be creating {ec2.stack_name(tag)}; "
-                f"it bills about ${tier.approx_usd_per_hr:.2f}/hr while its instance runs."
+                f"it bills ~${tier.approx_usd_per_hr:.2f}/hr "
+                f"({sizes.price_basis(region)}) while its instance runs."
             )
             where = _cli_scope(profile, region)
             ui.detail(f"Check it:  kirocrew cloud status --tag {tag}{where}")

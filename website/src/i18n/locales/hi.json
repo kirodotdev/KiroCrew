@@ -21197,6 +21197,8 @@
         "tier_power": "पावर",
         "tier_power_why": "बड़े फ़ैन-आउट, लंबे बिल्ड और एक साथ कई समानांतर सब-एजेंट।",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB RAM · {{diskGb}} GB डिस्क",
+        "tier_price": "~{{hourly}}/घंटा · चालू छोड़ने पर ~{{monthly}}/महीना (अनुमानित)",
+        "price_region_note": "कीमतें {{priceRegion}} की ऑन-डिमांड दरें हैं; दूसरे रीजन में कीमतें अलग हो सकती हैं।",
         "transport_hint_fargate": "Session Manager के माध्यम से AWS Fargate टास्क तक पहुँचता है। यह चैट API देता है, डैशबोर्ड नहीं।",
         "transport_hint_ssh": "SSH के माध्यम से कनेक्ट होता है।",
         "transport_hint_ssm": "AWS Systems Manager Session Manager के माध्यम से कनेक्ट होता है।",

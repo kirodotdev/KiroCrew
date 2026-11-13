@@ -21713,6 +21713,8 @@
         "tier_power": "Potencia",
         "tier_power_why": "Fan-outs grandes, compilaciones largas y muchos subagentes en paralelo a la vez.",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · {{ramGb}} GB de RAM · {{diskGb}} GB de disco",
+        "tier_price": "~{{hourly}}/h · ~{{monthly}}/mes si se deja en marcha (aprox.)",
+        "price_region_note": "Los precios son tarifas bajo demanda de {{priceRegion}}; en otras regiones pueden ser distintos.",
         "transport_hint_fargate": "Llega a una tarea de AWS Fargate a través de Session Manager. Sirve una API de chat, no un panel.",
         "transport_hint_ssh": "Se conecta mediante SSH.",
         "transport_hint_ssm": "Se conecta a través de AWS Systems Manager Session Manager.",

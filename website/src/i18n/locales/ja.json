@@ -20681,6 +20681,8 @@
         "tier_power": "パワー",
         "tier_power_why": "大規模なファンアウト、長いビルド、多数の並列サブエージェント向けです。",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · RAM {{ramGb}} GB · ディスク {{diskGb}} GB",
+        "tier_price": "約 {{hourly}}/時間 · 起動したままなら約 {{monthly}}/月（概算）",
+        "price_region_note": "料金は {{priceRegion}} のオンデマンド料金です。他のリージョンでは異なる場合があります。",
         "transport_hint_fargate": "Session Manager 経由で AWS Fargate タスクに到達します。ダッシュボードではなくチャット API を提供します。",
         "transport_hint_ssh": "SSH で接続します。",
         "transport_hint_ssm": "AWS Systems Manager Session Manager 経由で接続します。",
