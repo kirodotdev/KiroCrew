@@ -70,7 +70,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
-    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire, _on_kas
+    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _crew_fires_agent_spawn, _fire
 
 
 async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
@@ -322,10 +322,11 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         remember = getattr(state.sessions, "remember_agent_spawn_context", None)
         if callable(remember):
             remember(session_key, spawn_injected)
-    elif _sends_prompt and turn._needs_reinjection and _on_kas(client):
-        # kiro-cli sends the agentSpawn output with every request; on KAS it
-        # lives only in the history, which a compaction summarized away. Send
-        # the kept output once more, on this first turn after it, unrun.
+    elif _sends_prompt and turn._needs_reinjection and _crew_fires_agent_spawn(client):
+        # kiro-cli runs the spec's hooks itself and sends the agentSpawn output
+        # with every request. Where Crew fires the hook instead, the output lives
+        # only in the history, which a compaction summarized away. Send the kept
+        # output once more, on this first turn after it, unrun.
         read_kept = getattr(state.sessions, "agent_spawn_context", None)
         kept = read_kept(session_key) if callable(read_kept) else ()
         spawn_injected = list(kept) if isinstance(kept, tuple) else []
