@@ -773,6 +773,19 @@ async def _cron_run_single(
         # run still in flight during the update) or one written while the
         # job was stateless is caught on the next fire, and a failed
         # write is retried by it.
+        # A member's turn dispatches the agent its binding names, which a 1.0
+        # capture or a job-level agent can spell differently. The record under
+        # the key is what the spawn gate reads as this session's template, so
+        # it names the agent this fire runs; member, store and mode stay.
+        if (
+            cron_execution.selection_kind == "member"
+            and cron_execution.member_id
+            and _single_kagent
+            and _single_kagent != cron_execution.template_id
+        ):
+            from dataclasses import replace as _with_dispatched
+
+            cron_execution = _with_dispatched(cron_execution, template_id=_single_kagent)
         from kiro_crew.cron_service.identity import rebind_cron_session_template
 
         await asyncio.to_thread(rebind_cron_session_template, session_key, cron_execution, job.name)

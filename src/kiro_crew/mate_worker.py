@@ -850,20 +850,25 @@ def cron_worker_execution(execution: Any, config: Any = None) -> Any:
     and app kept. A crewmate whose own file is gone runs on the worker too
     (:func:`_claimed_crewmate_file`), so the worker's own refusal
     (:func:`resolve_worker_spec`) stops it rather than the conductor running it.
+    A user-level spec of the crewmate's name answers that name, and its chats run
+    on it (:func:`member_chat_agent`), so its turn keeps the member route there.
     ``None`` for any other record.
     Blocking config read.
     """
+    from kiro_crew.config import loader
+
     member_id = getattr(execution, "member_id", None)
-    if (
-        execution is None
-        or getattr(execution, "selection_kind", "") != "member"
-        or not member_id
-        or not (
-            mate_file_for_member(member_id, config=config)
-            or _claimed_crewmate_file(member_id, config)
-        )
-    ):
+    if execution is None or getattr(execution, "selection_kind", "") != "member" or not member_id:
         return None
+    if not mate_file_for_member(member_id, config=config):
+        claimed = _claimed_crewmate_file(member_id, config)
+        # Only a user-level spec that parses and declares the name answers it, as
+        # for chats: a same-stem file naming another agent, or one that does not
+        # parse, leaves the name mate-owned or undeclared, so the worker refuses.
+        if not claimed or (
+            not is_mate_owned_agent(claimed) and claimed in loader._MATERIALIZED_AGENTS
+        ):
+            return None
     # The hand-off's own spelling (``session_create``): a template selection on
     # the worker under its own name, the member id kept.
     return execution.with_template(MATE_WORKER_AGENT, MATE_WORKER_AGENT)
