@@ -563,7 +563,7 @@ no newly disabled floor or governance-pinned rule) and the computer-use PUT's fi
 `409 write_refused` with a plain reason the card shows, and the file stays pending. An app token and an
 `X-Internal-Secret` caller are not the owner, and no agent or MCP tool names these routes, so
 a sandboxed process can write the file but can never make its own edit take effect. At boot a
-differing file with a copy is reported as pending on the gateway's first heartbeat. A deleted or unreadable file
+differing file with a copy raises its bell note once two scans in a row list it (a heartbeat sync, or the snapshot an Apply or Discard publishes), or is taken as announced on the first scan when an unresolved note from before the restart, read or not, names that version. A deleted or unreadable file
 is pending as `removed` (signature `removed`): Discard puts the endorsed copy back through
 the leaf's writer, and Apply answers `409 pending_removed`. Discard checks only the reviewed
 signature, so an edit that is not valid JSON can always be discarded. The card adds a

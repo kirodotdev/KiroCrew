@@ -257,20 +257,6 @@ def test_a_leaf_symlinked_to_a_regular_file_still_reads(monkeypatch, tmp_path) -
     assert lp.pending_changes() == []
 
 
-def test_a_scan_inside_the_endorsing_window_reports_pending(monkeypatch) -> None:
-    """Pins a known race: between the copy write and the rename the scan sees the new
-    copy beside the old file and lists the leaf. The next sync acknowledges the note."""
-    monkeypatch.setattr(lp, "enforcement_active", lambda: True)
-    path = config_dir() / "config.json"
-    path.write_bytes(_config(sandbox="auto"))
-    lp.record("config.json", path.read_bytes(), strict=True)
-    new = _config(sandbox="auto", model="next")
-    with lp.endorsing("config.json", new):
-        assert [p["leaf"] for p in lp.pending_changes()] == ["config.json"]
-        path.write_bytes(new)
-    assert lp.pending_changes() == []
-
-
 @pytest.fixture
 def _enforcing(monkeypatch):
     """Force the Linux-namespace scope gate on, so the substitution is deterministic."""

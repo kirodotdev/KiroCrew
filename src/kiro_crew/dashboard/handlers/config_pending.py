@@ -37,9 +37,9 @@ edit. Where there is no dashboard, the owner's terminal runs the same writer
 which refuses inside a Kiro Crew sandbox.
 
 :func:`sync_pending_notes` rides the event-loop heartbeat: a leaf that goes pending
-raises one bell notification per on-disk version (re-notified only for a new edit) on
-the channel users cannot mute (:data:`CHANNEL`), and a resolved leaf's note is
-acknowledged.
+(listed by two scans in a row, :func:`_settled`) raises one bell notification per
+on-disk version (re-notified only for a new edit) on the channel users cannot mute
+(:data:`CHANNEL`), and a resolved leaf's note is acknowledged.
 """
 
 from __future__ import annotations
@@ -83,6 +83,7 @@ _PUBLISHED_ATTR = "_config_pending_published"
 #: Set while a ``resolved`` mark is only in memory: its log rewrite failed, so the
 #: next sync writes again rather than leave a restart to read the old record.
 _RESOLVED_UNSAVED_ATTR = "_config_pending_resolved_unsaved"
+_LAST_SCAN_ATTR = "_config_pending_last_scan"
 
 
 def _snapshot() -> dict:
@@ -283,7 +284,8 @@ async def _resolve(request: web.Request, op: str, apply: bool) -> web.Response:
         )
     _audit(request, op, "ok", leaf)
     snapshot = await asyncio.to_thread(_snapshot)
-    await _publish(request.app["state"], snapshot["pending"])
+    state = request.app["state"]
+    await _publish(state, _settled(state, snapshot["pending"]))
     return web.json_response(snapshot)
 
 
@@ -398,8 +400,26 @@ async def _publish(state: Any, pending: list[dict]) -> None:
         state.broadcast_ws_owners(WS_EVENT, {"count": len(current)})
 
 
+def _settled(state: Any, pending: list[dict]) -> list[dict]:
+    """*pending* without a leaf that is new to this scan.
+
+    A save endorses its copy before it renames the new file into place, so a scan
+    between the two lists the old file, and the next scan does not. A leaf not yet
+    announced therefore counts once two scans in a row list it, at any signature, so a
+    file rewritten faster than the scans is still announced. An announced version
+    counts at once: this process published its leaf, or a note a restart kept, read or
+    not, names it and is not resolved. Dropping such a version would mark its note
+    resolved and send it again on the next scan.
+    """
+    before: set[str] = getattr(state, _LAST_SCAN_ATTR, set())
+    setattr(state, _LAST_SCAN_ATTR, {p["leaf"] for p in pending})
+    counted = before | set(getattr(state, _PUBLISHED_ATTR, None) or {})
+    noted = {(r.get("leaf"), r.get("signature")) for _, r in _notes(state) if not r.get("resolved")}
+    return [p for p in pending if p["leaf"] in counted or (p["leaf"], p["signature"]) in noted]
+
+
 async def _sync(state: Any) -> None:
-    await _publish(state, await asyncio.to_thread(lp.pending_changes))
+    await _publish(state, _settled(state, await asyncio.to_thread(lp.pending_changes)))
 
 
 async def sync_pending_notes(state: Any, now: float) -> None:
