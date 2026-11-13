@@ -75,7 +75,7 @@ def _targets(leaf: str) -> set[str]:
 
 class TestEntryGrammar:
     @pytest.mark.parametrize(
-        "entry", ["secrets.json", "tokens/oauth.json", "a/b/c", ".secret", "x" * 240]
+        "entry", ["secrets.json", "tokens/oauth.json", "a/b/c", ".secret", "x" * 240, "state/"]
     )
     def test_a_relative_path_under_the_data_dir_is_accepted(self, entry):
         assert credential_masks.entry_error(entry) is None
@@ -89,7 +89,8 @@ class TestEntryGrammar:
             "a/../../b",
             "./secrets.json",
             "a//b",
-            "dir/",
+            "a/b/",
+            "dir//",
             "a\\b",
             "C:secrets",
             "a\x00b",
