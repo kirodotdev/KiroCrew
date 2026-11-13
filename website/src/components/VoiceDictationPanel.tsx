@@ -226,12 +226,12 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
             ~300px) the keyboard hint no longer competes with the device picker
             for one row — the hint drops to its own line whole, and the picker
             keeps enough width to read its provider name instead of "Fa…". */}
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] font-medium text-danger">
+        <div className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11.5px] font-medium ${muted ? 'text-muted' : 'text-danger'}`}>
           <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
             {!muted && <span className="absolute inline-flex h-full w-full rounded-full bg-danger opacity-60 animate-ping" />}
             <span className={`relative inline-flex h-2 w-2 rounded-full ${muted ? 'bg-muted' : 'bg-danger'}`} />
           </span>
-          <span aria-live="polite" className={muted ? 'text-muted' : undefined}>{i18nT(muted ? 'components.voiceDictationPanel.muted' : 'components.voiceDictationPanel.listening')}</span>
+          <span aria-live="polite">{i18nT(muted ? 'components.voiceDictationPanel.muted' : 'components.voiceDictationPanel.listening')}</span>
           {/* Outside the live region beside it, and the same shadow floor as
               the hint: the reading sits over the shader like the rest of this
               row. */}
@@ -239,7 +239,7 @@ export default function VoiceDictationPanel({ sampleRef, value, partial, deviceL
           {/* Opts back into pointer events like the picker. Hidden once capture
               has ended: there is no microphone left to mute. */}
           {onToggleMute && !captureEnded && (
-            <VoiceMuteButton muted={muted} onToggle={onToggleMute} className="pointer-events-auto text-muted hover:text-text" />
+            <VoiceMuteButton muted={muted} onToggle={onToggleMute} className={`pointer-events-auto hover:text-text ${muted ? 'text-text' : 'text-muted'}`} />
           )}
           {/* The overlay is `pointer-events-none` so the shader stays visible and
               un-clickable; the picker is the one interactive child, so it opts
