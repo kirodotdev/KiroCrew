@@ -249,6 +249,12 @@ export interface DecisionsView {
    */
   endpointMoved: boolean
   /**
+   * The administrator's policy refuses the model the config names, so nothing is
+   * sent under the recorded consent. Told apart from `endpointMoved`: switching off
+   * and on again cannot help here, since the gateway refuses the enabling write.
+   */
+  withdrawn: boolean
+  /**
    * Sampling percentage worth PRINTING, or `null` when there is nothing to say.
    *
    * `null` covers the configs that mean "do not print a rate": the section or
@@ -329,6 +335,7 @@ const UNSUPPORTED: DecisionsView = {
   enabled: false,
   configuredEndpoint: '',
   endpointMoved: false,
+  withdrawn: false,
   bucket: null,
   toolArgs: false,
   compaction: false,
@@ -384,6 +391,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
       enabled: false,
       configuredEndpoint: '',
       endpointMoved: false,
+      withdrawn: false,
       toolArgs: false,
       compaction: false,
       memoryText: false,
@@ -395,10 +403,12 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
   }
   const enabled = root.enabled === true
   const configuredEndpoint = typeof root.configured_endpoint === 'string' ? root.configured_endpoint : ''
-  // `permits` is the server's own verdict (enabled AND same address). Read it
-  // rather than re-deriving equality here, so the card and the gate cannot
-  // disagree about whether anything is being sent.
-  const endpointMoved = enabled && root.permits !== true
+  // `permits` is the server's own verdict (enabled AND same address AND not refused
+  // by policy). Read it rather than re-deriving equality here, so the card and the
+  // gate cannot disagree about whether anything is being sent. `withdrawn` says the
+  // refusal is the reason, which is not a moved address.
+  const withdrawn = root.withdrawn === true
+  const endpointMoved = enabled && root.permits !== true && !withdrawn
   // An exact `true`, like `enabled` above: this field decides whether a new
   // category of conversation content leaves the machine, so a truthy stand-in is
   // not a deliberate yes. An older gateway omits it entirely and reads as off.
@@ -428,6 +438,7 @@ export function readConsent(body: unknown): Omit<DecisionsView, 'bucket' | 'poin
     enabled,
     configuredEndpoint,
     endpointMoved,
+    withdrawn,
     toolArgs,
     compaction,
     memoryText,

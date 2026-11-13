@@ -216,7 +216,15 @@ function clearHighlightStyles(el: HTMLElement): void {
  *  cut it short. */
 function flashSetting(pending: Map<HTMLElement, ReturnType<typeof setTimeout>>, el: HTMLElement): void {
   clearTimeout(pending.get(el))
-  el.style.outline = '2px solid var(--accent)'
+  // A row that sits beside selectable options marks itself `data-setting-flash=
+  // "neutral"`: there an accent ring reads as the option being selected.
+  if (el.closest('[data-setting-flash="neutral"]') !== null) {
+    el.style.outlineWidth = '2px'
+    el.style.outlineStyle = 'dashed'
+    el.style.outlineColor = 'var(--text)'
+  } else {
+    el.style.outline = '2px solid var(--accent)'
+  }
   el.style.outlineOffset = '4px'
   el.style.borderRadius = '8px'
   el.style.transition = 'outline-color 0.3s ease'

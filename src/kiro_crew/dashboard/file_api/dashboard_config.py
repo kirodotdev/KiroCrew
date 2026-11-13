@@ -738,13 +738,13 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     share_sites = (
         [] if social_share_denied else await asyncio.to_thread(social_share.permitted_sites)
     )
-    # Same shape, same reason: the Decisions feature-preview card is drawn only when
-    # the ceiling permits the seam, and this endpoint is the only place the dashboard
-    # can learn that. Presentation, not the control -- the consent PUT and the gate's
+    # Same shape, same reason: the Decisions feature-preview card draws its controls
+    # only when the ceiling permits the seam, and the administrator's notice when it
+    # does not, and this endpoint is the only place the dashboard can learn that. Presentation, not the control -- the consent PUT and the gate's
     # own consent read are the two chokepoints (``decisions/capability.py``). The card
     # is drawn while EITHER side permits: a fleet that allows hosted Jev but withdraws
     # local models (``capabilities.decisions_local``) still needs the card. A pinned
-    # ``capabilities.decisions`` deny covers the local side too, so it hides the card.
+    # ``capabilities.decisions`` deny covers the local side too, so it draws the notice.
     # Both rows evaluated in one hop, each audited once, never short-circuited.
     hosted_denied, local_denied = await asyncio.to_thread(denied_sides)
     decisions_denied = hosted_denied and local_denied
@@ -817,9 +817,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # The dialog draws only these buttons and re-reads this list before it
             # opens a site.
             "social_share_sites": share_sites,
-            # Read-only: the `capabilities.decisions` governance answer. False hides
-            # the Decisions (Jev) feature-preview card; the owner's own switch is
-            # the keystone behind `/api/decisions/consent`, never a field here.
+            # Read-only: the `capabilities.decisions` governance answer. False makes
+            # the Decisions feature-preview card draw the administrator's notice in
+            # place of its controls; the owner's own switch is the keystone behind
+            # `/api/decisions/consent`, never a field here.
             "decisions_enabled": not decisions_denied,
             # Read-only: the `capabilities.browse` governance answer. False makes
             # Settings -> Browser and the live browser card say browsing is off by

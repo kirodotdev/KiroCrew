@@ -2201,7 +2201,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "type": "toggle",
     "occurrence": 1,
     "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
-    "description": "Every time context fills up and {{productName}} compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
   },
   {
     "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
@@ -2333,15 +2333,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "developer.jev-api-key",
-    "label": "Jev API key",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",
-    "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it.",
     "tab": "developer",
-    "type": "input",
-    "occurrence": 1,
     "params": {
       "sub": "feature-previews"
-    }
+    },
+    "type": "input",
+    "occurrence": 1,
+    "settingId": "developer.jev-api-key",
+    "label": "Jev API key",
+    "description": "Kept in this dashboard's secret store on the machine that runs Kiro Crew, never in config.json, and never shown again once you save it."
   },
   {
     "id": "developer.mark-out-of-date-dashboard-fields",
@@ -3282,8 +3283,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "section": "posture"
     },
     "settingId": "security.config-pending",
-    "label": "Settings files changed outside {{productName}}",
-    "description": "Review edits made to settings files outside {{productName}}, then apply or discard them."
+    "label": "Settings files changed outside Kiro Crew",
+    "description": "Review edits made to settings files outside Kiro Crew, then apply or discard them."
   },
   {
     "id": "security.trust-every-third-party-app",
@@ -3318,7 +3319,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
       "section": "rules"
     },
     "label": "Your custom denies",
-    "description": "Add your own deny patterns (Python-compatible regex). These are enforced at {{productName}}'s PreToolUse gate alongside the built-in rules."
+    "description": "Add your own deny patterns (Python-compatible regex). These are enforced at Kiro Crew's PreToolUse gate alongside the built-in rules."
   },
   {
     "id": "session-environments.coder-url",

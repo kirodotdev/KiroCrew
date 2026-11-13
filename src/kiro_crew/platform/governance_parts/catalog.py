@@ -484,7 +484,8 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # consent PUT refuses to enable, and the gate's own consent read reports NOT
     # consented, so a keystone that already says ``true`` is inert rather than
     # carried over. ``GET /api/dashboard/config`` reports the answer as
-    # ``decisions_enabled`` so the Feature Previews card is not drawn at all.
+    # ``decisions_enabled``, and under a denial the Feature Previews card draws the
+    # administrator's notice in place of its controls.
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
     #
@@ -497,10 +498,22 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # runs on the session's own model provider, is asked about its point only.
     # They bind local presets too, because a ``capabilities.decisions`` answer
     # already does.
+    #
+    # A fourth, ``providers`` (``identifier``), is the per-model allow list: one
+    # entry per decision model the picker offers, by its picker id (``jev`` for the
+    # hosted provider, each local preset id, ``sagemaker``). ``capability.provider_id``
+    # names the configured one, and every check that reads this row for the configured
+    # provider asks it too, so a refused model is neither selectable nor used. ``none``
+    # is never asked, and neither is an endpoint the owner wrote by hand.
     "capabilities.decisions": ScopeSpec(
         CAPABILITY,
         capability_default=True,
-        scope_matchers={"models": "identifier", "points": "identifier", "endpoints": "host"},
+        scope_matchers={
+            "models": "identifier",
+            "points": "identifier",
+            "endpoints": "host",
+            "providers": "identifier",
+        },
     ),
     # The same seam answered by a LOCAL PRESET model on this machine
     # (``decisions/local_models.py``) instead of hosted Jev. Nothing leaves the
