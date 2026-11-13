@@ -730,6 +730,36 @@ def _memory_dream(args: argparse.Namespace) -> None:
         )
 
 
+def _memory_shadow(args: argparse.Namespace) -> None:
+    """``kirocrew memory shadow report``: per-stage shadow counts, read-only.
+
+    Reads the injection receipts and the store's file through a ``mode=ro``
+    connection (never ``init()``); a missing source prints as "no data".
+    """
+    from kiro_crew import memory_shadow_report as report
+    from kiro_crew.injection_receipts import _receipt_dir
+
+    since = report.parse_since(getattr(args, "since", None))
+    store_name = getattr(args, "store", None) or DEFAULT_MEMORY_STORE
+    cfg = KiroCrewConfig.load()
+    db_path = _admitted_store_path(store_name, cfg, may_create=False)
+    if db_path is None:
+        sys.exit(1)
+    data = report.build_report(
+        store=store_name,
+        receipt_dir=_receipt_dir(),
+        db_path=db_path,
+        memory_config=cfg.memory,
+        since=since,
+        stage=getattr(args, "stage", None),
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    for line in report.render_text(data):
+        print(safe_terminal_line(line))
+
+
 def _memory_cmd(args: argparse.Namespace) -> None:
     """Manage the memory system (vector store + markdown layer).
 
@@ -783,12 +813,16 @@ def _memory_verb(args: argparse.Namespace) -> None:
     if action is None:
         print(
             "Usage: kirocrew memory {list|search|show|stats|audit|export|migrate|backup|"
-            "backups|restore|create-store|carve|retired|forget|import|dream}"
+            "backups|restore|create-store|carve|retired|forget|import|dream|shadow}"
         )
         return
     # "dream" reads a store's file read-only, or only leaves a request for the gateway.
     if action == "dream":
         _memory_dream(args)
+        return
+    # "shadow" reads receipts and a store's file read-only, so nothing opens first.
+    if action == "shadow":
+        _memory_shadow(args)
         return
     cfg = KiroCrewConfig.load()
     # Only `export` and `import` name a store here; every other verb resolves the
