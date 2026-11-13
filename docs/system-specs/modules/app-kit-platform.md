@@ -769,6 +769,10 @@ Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
 that still name it; its three agent tools are its own, declared in its manifest and
 served by its own route through the `agentTools` seam (section 30.1; `issue-radar.md`,
 "Repository boundary").
+Notes' gate (`test/test_core_md_notebook_decoupling.py`) pins the rows that still name
+it: the masks, stubs, sweeps and moves for its earlier state layouts, which core keeps
+for a host still holding them, and the security-posture row for its error middleware
+(`md-notebook.md`, "State Layout").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
