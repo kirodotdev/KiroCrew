@@ -18,7 +18,8 @@ Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_d
 ``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_fold_mcp_frame``, ``_initialized``,
 ``_kas_telemetry_sent``, ``_mcp_gateway_overlay``, ``_member_context``, ``_open_mcp_report``,
 ``_pending_init_notifications``, ``_pid``,
-``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
+``_pool_lookup``, ``_process``, ``_record_tree_in_background``,
+``_refuse_over_ceiling_start``, ``_remote_session_servers``,
 ``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
 ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
@@ -1034,13 +1035,9 @@ async def _finish_create_session(
 
     # Each session start forks another agent process under the root, and
     # its MCP servers have just reported, so scan again: the spawn snapshot
-    # predates all of them. Safe to repeat -- see _snapshot_descendants.
-    #
-    # Guarded like every other post-session/new step here: session/new has
-    # already succeeded, so a cancellation inside the scan would leave the
-    # session live in the shared process with no handle returned to anyone.
-    # Only a cancellation can reach this arm; the scan swallows its own
-    # failures.
+    # predates all of them. The pass runs beside the session rather than in
+    # front of the first prompt; every kill waits for it, so nothing signals
+    # by a record it has not written (_record_tree_in_background).
     #
     # Startup is over by this point: session/new has succeeded, which is the
     # proof no sandbox refusal on the way here was fatal. So the startup latch
@@ -1055,11 +1052,7 @@ async def _finish_create_session(
     self._saw_sandbox_init_failure = False
     self._saw_delegate_launch_failure = False
     self._saw_kas_engine_refusal = False
-    try:
-        await self._snapshot_descendants()
-    except BaseException:
-        await self.terminate_session(session_id)
-        raise
+    self._record_tree_in_background()
 
     self._unclaimed_new_sessions.discard(session_id)
     logger.info("Created session %s on runtime PID %d", session_id, self._pid or 0)

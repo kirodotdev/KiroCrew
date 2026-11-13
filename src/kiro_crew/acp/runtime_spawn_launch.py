@@ -25,7 +25,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_mcp_secret_server``.
 
 Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
-``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
+``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
 
@@ -1137,19 +1137,13 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
             self._pid,
             self._scope_unit or "unnamed",
         )
-        # INSIDE the guard, which is what makes a cancelled scan safe. The
-        # runtime is already `_initialized` here and the caller does not hold
-        # it yet, so a CancelledError raised inside the scan -- an ordinary
-        # shutdown or a spawn-budget timeout during a /proc walk -- would
-        # otherwise leave a live process nobody owns. The guard's kill is the
-        # right answer to that, and it cannot fire for a merely FAILED scan:
-        # _snapshot_descendants swallows every Exception itself, so only a
-        # cancellation reaches this arm.
-        #
-        # The handshake a caller is waiting on ends here, so this never waits
-        # for a tree to appear: a scan that sees no descendant hands its one
-        # retry to a task of its own.
-        await self._snapshot_descendants(retry_when_empty=True)
+        # The handshake a caller is waiting on ends here, so the descendant
+        # pass runs beside the start instead of in front of it, and it never
+        # waits for a tree to appear: a pass that sees no descendant hands its
+        # one retry to a task of its own. Every kill waits for the pass
+        # (_record_tree_in_background), so nothing signals by a record it has
+        # not written, and a cancel of this task cannot land inside it.
+        self._record_tree_in_background(retry_when_empty=True)
     except BaseException:
         # One task this frame only WAITS on, so a cancellation cannot cut the
         # cleanup short. Two ordinary dashboard paths (a newer slot signal, a

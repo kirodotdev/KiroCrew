@@ -10,12 +10,12 @@ of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_bound_workspace_fd``, ``_child_pids``, ``_descendant_rescan_task``,
 ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``, ``_scope_unit``,
-``_spawn_work_dir``.
+``_start_tree_scans``, ``_spawn_work_dir``.
 
-Instance fields read: ``_close_remote_workspace``, ``_descendant_scan_lock``,
+Instance fields read: ``_KILL_TREE_WAIT_SECS``, ``_close_remote_workspace``, ``_descendant_scan_lock``,
 ``_exit_watch_task``, ``_native_skill_projection``, ``_pid``, ``_reader_task``,
 ``_rescan_descendants_later``, ``_spawn_skill_projection``, ``_spawn_start_token``,
-``_start_time``, ``_stderr_task``, ``_work_dir``.
+``_start_time``, ``_stderr_task``, ``_work_dir``, ``wait_tree_recorded``.
 """
 
 from __future__ import annotations
@@ -219,9 +219,54 @@ async def refresh_process_tree(self: AcpRuntime) -> None:
     The snapshot otherwise runs only at spawn, create and resume, so a child
     a turn started is missing from the handle, and only a recorded member may
     vouch for a leaderless group (``process_identity._group_member_vouches``).
-    Same guarded pass as every other snapshot (:meth:`_snapshot_descendants`).
+    Same guarded pass as every other snapshot (:meth:`_snapshot_descendants`),
+    taken after any background pass still running has written its record.
     """
+    await self.wait_tree_recorded()
     await self._snapshot_descendants()
+
+
+def _record_tree_in_background(self: AcpRuntime, *, retry_when_empty: bool = False) -> None:
+    """Run a descendant pass beside a start or a turn's end, not in front of it.
+
+    A runtime's spawn, every session start on it (fresh or resumed), and every
+    turn on it fork processes the last pass could not see, so the tree is
+    walked again once the ``initialize`` handshake, ``session/new`` or
+    ``session/load`` has succeeded, and when a turn ends
+    (``process_identity.record_live_children_after_turn``).
+    The pass is the same guarded :meth:`_snapshot_descendants`, and its caller
+    does not wait for it, because a person's first prompt has no use for the
+    record. What does use it is a kill, so every path that signals by the
+    record or takes a kill handle from it waits for this pass first
+    (:meth:`wait_tree_recorded`): the runtime's own kill and the pre-teardown
+    refresh. The record is therefore the same identity data, written before
+    anything kills by it; a pass the kill's bound (``_KILL_TREE_WAIT_SECS``)
+    cuts short is cancelled, and the kill acts on the earlier record.
+
+    The pass swallows its own failures, so the task never ends in an
+    exception; a cancellation (loop shutdown) leaves the earlier record.
+    """
+    scans = getattr(self, "_start_tree_scans", None)
+    if scans is None:
+        scans = self._start_tree_scans = set()
+    task = asyncio.ensure_future(self._snapshot_descendants(retry_when_empty=retry_when_empty))
+    scans.add(task)
+    task.add_done_callback(scans.discard)
+
+
+async def wait_tree_recorded(self: AcpRuntime, timeout: float | None = None) -> bool:
+    """Return once every background descendant pass has finished.
+
+    Waits without cancelling: a caller cancelled while it waits leaves the
+    pass running, so the record still lands for the orphan sweep. With a
+    *timeout*, returns ``False`` when a pass is still running at its expiry,
+    and leaves that pass running; ``True`` otherwise.
+    """
+    pending = [t for t in getattr(self, "_start_tree_scans", ()) if not t.done()]
+    if not pending:
+        return True
+    _done, still = await asyncio.wait(pending, timeout=timeout)
+    return not still
 
 
 async def _snapshot_descendants(self: AcpRuntime, *, retry_when_empty: bool = False) -> None:
@@ -270,8 +315,8 @@ async def _snapshot_descendants(self: AcpRuntime, *, retry_when_empty: bool = Fa
     session start that called it -- the cost is a leak the sweep still
     reports, not a broken session -- but it logs at WARNING, because that
     report is then the only signal left. A CANCELLATION is not a failure and
-    is deliberately NOT swallowed: it reaches the caller's cleanup guard,
-    which owns the half-built runtime or session it must tear down.
+    is deliberately NOT swallowed: it reaches the awaiting caller (a refresh,
+    or the failed-start record before its kill), or ends a background pass.
 
     Never waits for a tree to appear. *retry_when_empty* asks for one more
     look when this pass sees no descendant, and that look runs as a task of
@@ -592,6 +637,23 @@ async def _kill_inner(self: AcpRuntime, *, expected: bool = False, reason: str =
         except (asyncio.CancelledError, Exception):
             pass
 
+    # A background pass still running is waited for: its record is what the
+    # signals below and the survivor retention after them act on, and the root
+    # is not signalled until it is written. Waited for first, because a pass
+    # that sees no descendant schedules the deferred rescan cancelled next.
+    # Bounded: a pass still running at the bound (a hung walk) is cancelled,
+    # and the kill acts on the record the earlier passes wrote, the same as a
+    # kill that ran before the pass started.
+    if not await self.wait_tree_recorded(timeout=self._KILL_TREE_WAIT_SECS):
+        logger.warning(
+            "AcpRuntime: a descendant pass was still running after %.1fs "
+            "-- killing on the earlier record",
+            self._KILL_TREE_WAIT_SECS,
+        )
+        stuck = [t for t in getattr(self, "_start_tree_scans", ()) if not t.done()]
+        for task in stuck:
+            task.cancel()
+        await asyncio.gather(*stuck, return_exceptions=True)
     # A deferred descendant scan must not change this runtime's record under the
     # kill. A file write it already handed to the executor still lands, as one
     # from a cancelled session-start scan does: those lines stay for the orphan

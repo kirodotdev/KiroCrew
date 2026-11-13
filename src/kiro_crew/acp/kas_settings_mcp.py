@@ -36,6 +36,7 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import mcp_cleanup
 from kiro_crew.acp.kas_tool_limits import kas_globs, unmatched_disabled_globs
 from kiro_crew.mcp_cleanup import (  # noqa: F401 - include_mcp_json is re-exported
     KIROCREW_BIN_MCP_SERVERS,
@@ -187,7 +188,13 @@ def declared_servers(spec: Mapping[str, Any]) -> list[str]:
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return []
-    return [n for n, e in servers.items() if not mcp_server_muted_in_any_store(n, e)]
+    # Read through the module, so the one scope reader stays the patch seam.
+    scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
+    return [
+        n
+        for n, e in servers.items()
+        if not mcp_server_muted_in_any_store(n, e, scope_muted=scope_muted)
+    ]
 
 
 def stamp_settings_mcp(

@@ -203,10 +203,12 @@ def child_lines(lifecycle):
 async def test_session_start_persists_new_descendants(lifecycle, monkeypatch, resume):
     rt, resident, _ = make_runtime(lifecycle, monkeypatch)
     sibling = await await_until(asyncio.ensure_future(rt.create_session(mcp_servers=[])))
+    await await_until(asyncio.ensure_future(rt.wait_tree_recorded()))
     sibling_record = dict(rt._child_pids)
     assert child_lines(lifecycle) == {"1001:1000:child-1001"}
 
     handle = await await_until(asyncio.ensure_future(open_session(rt, resume)))
+    await await_until(asyncio.ensure_future(rt.wait_tree_recorded()))
 
     assert resident[handle.session_id] == 1002
     assert rt._child_pids == {**sibling_record, 1002: ("child-1002", b"node")}
@@ -218,46 +220,145 @@ async def test_session_start_persists_new_descendants(lifecycle, monkeypatch, re
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
-async def test_cancelled_descendant_scan_terminates_only_failed_session(
+async def test_a_session_start_does_not_wait_for_its_descendant_pass(
     lifecycle, monkeypatch, resume
 ):
-    rt, resident, terminated = make_runtime(lifecycle, monkeypatch)
-    sibling = await await_until(asyncio.ensure_future(rt.create_session(mcp_servers=[])))
-    entered = asyncio.Event()
-    snapshot = rt._snapshot_descendants
-
-    async def observed_snapshot(**kwargs):
-        entered.set()
-        await snapshot(**kwargs)
-
-    monkeypatch.setattr(rt, "_snapshot_descendants", observed_snapshot)
-    # Hold the real scan lock. The wrapper signals before delegating, and the
-    # task cannot yield back until the production scan waits on this lock.
+    """The session is handed back while its tree pass is still queued; the pass then lands."""
+    rt, resident, _ = make_runtime(lifecycle, monkeypatch)
+    # Hold the real scan lock, so the session-start pass cannot run.
     await await_until(asyncio.ensure_future(rt._descendant_scan_lock.acquire()))
-    task = asyncio.create_task(open_session(rt, resume))
     try:
-        await await_until(entered)
-        failed_sid = "resumed" if resume else "session-1"
-        assert resident[failed_sid] == 1002
-        assert failed_sid in rt._session_queues
-        assert not task.done()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await await_until(task)
-        assert terminated == [failed_sid]
-        assert resident == {sibling.session_id: 1001}
-        assert 1002 not in lifecycle.kernel.tokens
-        assert rt._session_queues == {sibling.session_id: sibling._queue}
-        assert child_lines(lifecycle) == {"1001:1000:child-1001"}
-        assert rt.is_alive()
-        # Exercise a real handle operation after the failed co-tenant's unwind.
-        await await_until(asyncio.ensure_future(sibling.set_mode("kirocrew")))
-        assert lifecycle.kernel.signals == []
+        handle = await await_until(asyncio.ensure_future(open_session(rt, resume)))
+        assert resident[handle.session_id] == 1001
+        assert rt._child_pids == {} and child_lines(lifecycle) == set()
     finally:
         rt._descendant_scan_lock.release()
-        if not task.done():
-            task.cancel()
-        await await_until(asyncio.gather(task, return_exceptions=True))
+    await await_until(asyncio.ensure_future(rt.wait_tree_recorded()))
+    assert rt._child_pids == {1001: ("child-1001", b"node")}
+    assert child_lines(lifecycle) == {"1001:1000:child-1001"}
+    assert lifecycle.kernel.signals == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True], ids=["new", "load"])
+async def test_a_kill_waits_for_the_session_start_pass_before_it_signals(
+    lifecycle, monkeypatch, resume
+):
+    """A child that left the group is only reachable through the record; the kill waits for it."""
+    rt, _, _ = make_runtime(lifecycle, monkeypatch)
+    kernel = lifecycle.kernel
+    await await_until(asyncio.ensure_future(rt._descendant_scan_lock.acquire()))
+    released = False
+    try:
+        await await_until(asyncio.ensure_future(open_session(rt, resume)))
+        kernel.groups[1001] = 1001  # the session's child leads a group of its own
+        waiting = asyncio.Event()
+        wait_tree_recorded = rt.wait_tree_recorded
+
+        async def observed_wait(**kwargs):
+            waiting.set()
+            return await wait_tree_recorded(**kwargs)
+
+        monkeypatch.setattr(rt, "wait_tree_recorded", observed_wait)
+        rt._KILL_TREE_WAIT_SECS = None  # unbounded: the wait itself is the subject
+        kill = asyncio.ensure_future(rt.kill(expected=True))
+        await await_until(waiting)
+        assert kernel.signals == [], "the root was signalled before its tree was recorded"
+        rt._descendant_scan_lock.release()
+        released = True
+        await await_until(kill)
+    finally:
+        if not released:
+            rt._descendant_scan_lock.release()
+    assert kernel.signals == [(1000, platform_compat.SIGTERM)]
+    assert 1001 in kernel.tokens
+    assert child_lines(lifecycle) == {
+        "1001:1000:child-1001"
+    }, "the survivor must stay recorded for the orphan sweep"
+
+
+@pytest.mark.asyncio
+async def test_a_turn_end_record_on_a_shared_runtime_does_not_wait_for_the_walk(
+    lifecycle, monkeypatch
+):
+    """The turn ends at once; the walk it started still lands, and a refresh waits for it."""
+    from kiro_crew import process_identity
+    from kiro_crew.acp.session_provider import AcpSessionProvider
+
+    rt, _, _ = make_runtime(lifecycle, monkeypatch)
+    lifecycle.kernel.add(1001, 1000, 1000, "child-1001")  # a turn forked it
+    provider = AcpSessionProvider.__new__(AcpSessionProvider)
+    provider._runtime = rt
+    # The group read is not this test's subject, and it would read the host.
+    monkeypatch.setattr(process_identity, "_retain_verified_group", lambda source: None)
+    await await_until(asyncio.ensure_future(rt._descendant_scan_lock.acquire()))
+    try:
+        await await_until(
+            asyncio.ensure_future(process_identity.record_live_children_after_turn(provider))
+        )
+        assert child_lines(lifecycle) == set(), "the walk ran in front of the turn's end"
+    finally:
+        rt._descendant_scan_lock.release()
+    await await_until(asyncio.ensure_future(rt.wait_tree_recorded()))
+    assert child_lines(lifecycle) == {"1001:1000:child-1001"}
+    assert lifecycle.kernel.signals == []
+
+
+@pytest.mark.asyncio
+async def test_a_kill_cancels_the_rescan_a_pending_spawn_pass_schedules(lifecycle, monkeypatch):
+    """A spawn pass that ends empty under the kill leaves no rescan running past it."""
+    rt, _, _ = make_runtime(lifecycle, monkeypatch)
+    rt._DESCENDANT_RESCAN_DELAY = 3600.0  # only ever cancelled, never waited out
+    await await_until(asyncio.ensure_future(rt._descendant_scan_lock.acquire()))
+    released = False
+    try:
+        rt._record_tree_in_background(retry_when_empty=True)
+        waiting = asyncio.Event()
+        wait_tree_recorded = rt.wait_tree_recorded
+
+        async def observed_wait(**kwargs):
+            waiting.set()
+            return await wait_tree_recorded(**kwargs)
+
+        monkeypatch.setattr(rt, "wait_tree_recorded", observed_wait)
+        rt._KILL_TREE_WAIT_SECS = None  # unbounded: the wait itself is the subject
+        kill = asyncio.ensure_future(rt.kill(expected=True))
+        await await_until(waiting)
+        rt._descendant_scan_lock.release()
+        released = True
+        await await_until(kill)
+    finally:
+        if not released:
+            rt._descendant_scan_lock.release()
+    retry = rt._descendant_rescan_task
+    assert retry is not None, "the empty spawn pass did not schedule its rescan"
+    assert retry.cancelled(), "a rescan scheduled under the kill outlived it"
+
+
+@pytest.mark.asyncio
+async def test_a_hung_start_pass_cannot_hold_the_kill_past_its_bound(lifecycle, monkeypatch):
+    """A walk that never returns is cancelled at the bound; the kill goes on, on the earlier record."""
+    rt, _, _ = make_runtime(lifecycle, monkeypatch)
+    kernel = lifecycle.kernel
+    kernel.add(1001, 1000, 1000, "child-1001")
+    hung = asyncio.Event()
+
+    async def hung_pass(**_kwargs):
+        hung.set()
+        await asyncio.Event().wait()  # a walk that never returns
+
+    monkeypatch.setattr(rt, "_snapshot_descendants", hung_pass)
+    rt._KILL_TREE_WAIT_SECS = 0.0  # the bound itself, not its length, is the subject
+    rt._record_tree_in_background()
+    await await_until(hung)
+    (pending,) = rt._start_tree_scans
+
+    await await_until(asyncio.ensure_future(rt.kill(expected=True)))
+
+    assert pending.cancelled(), "the hung pass outlived the kill"
+    assert kernel.signals == [(1000, platform_compat.SIGTERM)]
+    assert 1000 not in kernel.tokens and 1001 not in kernel.tokens
+    assert rt._child_pids == {} and child_lines(lifecycle) == set()
 
 
 @pytest.mark.asyncio

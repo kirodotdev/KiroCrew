@@ -5548,12 +5548,17 @@ scan does not face: the runtime's registered PID is the sandbox launcher, and
 the tree under it is `launcher -> agent -> agent chat process -> MCP servers`,
 so the scan runs when the initialize handshake proves the agent came up (and
 once more, off the spawn's own path, when that scan saw no descendant) and
-then at the end of every `_finish_create_session()` and `load_session()`,
+then after every `_finish_create_session()` and `load_session()`,
 because each session start — fresh or resumed — forks another agent process
-and re-initializes MCP servers the earlier scan could not have seen. The same
+and re-initializes MCP servers the earlier scan could not have seen. None of
+those starts waits for its pass: each runs as a task beside the start
+(`_record_tree_in_background`), and every kill waits for the passes still
+running before it signals or takes a handle (`wait_tree_recorded`, see
+[acp-client](acp-client.md) § The runtime tracks its descendants). The same
 guarded pass also runs at the END of every prompt turn, through
 `process_identity.record_live_children_after_turn()` in both providers' stream
-`finally`, so a child a turn forks is recorded while the leader is verified
+`finally` (on the kiro-backend shared runtime it starts the pass as a task, so
+the turn's end does not wait for it), so a child a turn forks is recorded while the leader is verified
 alive and is on the handle a later teardown takes even when the leader exits on
 its own before teardown, together with the leader's group id verified at that
 same point (see [acp-client](acp-client.md) § Pre-teardown tree
