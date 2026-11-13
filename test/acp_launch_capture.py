@@ -539,6 +539,16 @@ def _default_home_pins(tmp_path: Path) -> list:
     ]
 
 
+def _stop_the_copilot_walk(tmp_path: Path) -> None:
+    """Make *tmp_path* a git root, so Copilot's project-config walk ends there.
+
+    The walk runs up to the git root, else the filesystem root, and refuses the spawn
+    when it meets a real ``.mcp.json``: a ``tmp_path`` inside the home of a host that
+    holds one (an agent session's scratch) would otherwise reach it.
+    """
+    (tmp_path / ".git").mkdir(parents=True, exist_ok=True)
+
+
 def _capture_runtime_served(
     backend: str, tmp_path: Path, parent_env: dict, extra_patches: Sequence[Any] = ()
 ) -> dict[str, Any]:
@@ -630,6 +640,7 @@ def _capture_runtime_served(
         for ctx in stack:
             entered.append(ctx.__enter__())
         inherited_env = dict(os.environ)
+        _stop_the_copilot_walk(tmp_path)
         runtime = AcpRuntime(
             work_dir=tmp_path / "workspace",
             agent="kirocrew",
@@ -694,6 +705,7 @@ def capture(
         for ctx in stack:
             entered.append(ctx.__enter__())
         inherited_env = dict(os.environ)
+        _stop_the_copilot_walk(tmp_path)
         client = AcpClient(
             work_dir=tmp_path / "workspace",
             session_key="golden-session",

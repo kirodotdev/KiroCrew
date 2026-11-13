@@ -11,6 +11,7 @@ Must be runnable with ``--noconftest`` (no hypothesis dependency).
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import pytest
 
 from kiro_crew.cron_script import run_script_sandboxed
 from kiro_crew.platform import PROFILE_ENTERPRISE
+from kiro_crew.platform.discovery import PLUGIN_GROUP
 
 
 @pytest.fixture(autouse=True)
@@ -171,6 +173,19 @@ class TestNonStandaloneFailsAtLaunchNotMidScript:
         self, _cron_home, _spawns_real_child, monkeypatch, tmp_path
     ):
         _child_profile(monkeypatch, PROFILE_ENTERPRISE)
+        # The child reads the host's real entry points, so a companion installed on
+        # this host would compose there. An empty allowlist admits none, so the
+        # enterprise boot fails closed on every host. Exactly one companion reaches
+        # admission and raises the PluginAdmissionError subclass; none, or more
+        # than one, raises PlatformCompositionError before admission runs.
+        (_cron_home.parent / "admission_policy.json").write_text(
+            json.dumps({"mode": "enforce", "approved": []}), encoding="utf-8"
+        )
+        expected = (
+            "PluginAdmissionError"
+            if len(importlib.metadata.entry_points(group=PLUGIN_GROUP)) == 1
+            else "PlatformCompositionError"
+        )
         sentinel = tmp_path / "user-code-ran"
         script_path = _write_cron_script(
             _cron_home,
@@ -187,7 +202,7 @@ class TestNonStandaloneFailsAtLaunchNotMidScript:
             "the script body and only then failed closed, which is the "
             "misattributed-failure shape #6431 describes"
         )
-        assert "PlatformCompositionError" in result["error"], (
+        assert expected in result["error"], (
             "expected the preamble's fail-closed traceback; the class name only "
             f"reaches the operator via stderr. Got: {result['error'][:300]!r}"
         )

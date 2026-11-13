@@ -1629,6 +1629,9 @@ def test_a_missing_self_served_binary_names_its_install_command(
     monkeypatch.delenv(launch.bin_env_var, raising=False)
     monkeypatch.setattr(acp_client, "_mise_which", lambda _name: None)
     monkeypatch.setattr(acp_client, "augmented_path", lambda _path: str(empty))
+    # ``tmp_path`` is its own repo, so the Copilot config walk stops there, not in the
+    # host's home, where a real ``.mcp.json`` would refuse the spawn.
+    (tmp_path / ".git").mkdir()
     client = acp_client.AcpClient(work_dir=tmp_path, acp_backend=backend)
 
     with pytest.raises(AcpError) as excinfo:

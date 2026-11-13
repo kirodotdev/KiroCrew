@@ -267,6 +267,43 @@ def _pin_crew_log_off_for_the_process() -> None:
     os.environ["KIROCREW_CREW_LOG"] = "0"
 
 
+def _pin_the_profile_standalone_for_the_process() -> None:
+    """``KIROCREW_PROFILE=standalone`` for the whole run, not only inside each test.
+
+    ``_reset_platform_context`` pins it per test, but a module import, a session or
+    module fixture, and every child they start run outside that pin. On a host with a
+    companion installed such a child resolves the enterprise profile and its hooks
+    fail closed. A test that wants another profile still sets it itself.
+    """
+    os.environ["KIROCREW_PROFILE"] = "standalone"  # flake-ok: process-wide pin
+
+
+def _hide_the_hosts_companion_plugins() -> None:
+    """Hide the companion plugins installed on this host from in-process discovery.
+
+    A developer venv can hold a real ``kirocrew.plugins`` companion; CI has none, and a
+    test that plants no companion of its own assumes none. With one installed the
+    profile resolves to the enterprise edition, so ``current_context()`` fails closed,
+    the STT registry defers every unknown name, and boot composes the companion. The
+    wrapper drops the entry points present at configure time and keeps any a test
+    plants later through ``importlib.metadata``. ``bootstrap`` imported the function by
+    name, so its binding is replaced too. A child process still sees the companion.
+    """
+    from kiro_crew.platform import bootstrap, discovery
+
+    real = discovery.plugin_entry_points
+    host = {(ep.name, ep.value) for ep in real()}
+    if not host:
+        return
+
+    @functools.wraps(real)
+    def without_host_companions():
+        return [ep for ep in real() if (ep.name, ep.value) not in host]
+
+    discovery.plugin_entry_points = without_host_companions
+    bootstrap.plugin_entry_points = without_host_companions
+
+
 @pytest.hookimpl(trylast=True)
 def pytest_warning_recorded(warning_message, when, nodeid, location) -> None:
     """Drop a recorded warning's ``source`` object once the warning has been rendered.
