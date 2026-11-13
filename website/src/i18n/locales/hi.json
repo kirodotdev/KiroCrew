@@ -20843,7 +20843,11 @@
         "recheck": "फिर से जाँचें",
         "language": "भाषा",
         "language_for_spoken_replies": "बोले गए उत्तरों की भाषा",
-        "language_provider_default": "प्रदाता का डिफ़ॉल्ट"
+        "language_provider_default": "प्रदाता का डिफ़ॉल्ट",
+        "what_to_speak": "क्या बोला जाए",
+        "speak_mode_full": "पूरा उत्तर",
+        "speak_mode_summary": "संक्षिप्त सार",
+        "speak_mode_hint": "स्वतः बोलने और ज़ोर से पढ़ने पर लागू। संक्षिप्त सार पूर्ण उत्तर के बारे में कुछ बोले गए वाक्य हैं; यदि सार न बन सके, तो पूरा उत्तर बोला जाता है।"
       },
       "weComPanel": {
         "allow_all_bypass_note": "सभी को अनुमति चालू है: ऊपर की userid सूची दरकिनार है। वापस बदलने के लिए यह सुरक्षित रखी गई है।",

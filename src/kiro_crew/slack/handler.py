@@ -450,6 +450,7 @@ from kiro_crew.voice_reply import (  # noqa: F401 - read by the owners
     validated_language_code,
 )
 from kiro_crew.voice_reply import voice_reply as _voice_reply_fn  # noqa: F401 - read by the owners
+from kiro_crew.voice_summary import speak_mode_from_config  # noqa: F401 - read by the owners
 
 logger = logging.getLogger(__name__)
 
@@ -678,6 +679,12 @@ class _VoiceConfig:
     sessions: set[str] = None  # type: ignore[assignment]  # threads with voice on
     global_enabled: bool = False
     auto_speak: bool = False
+    # What the dashboard's Auto-speak and Read aloud speak: ``full`` reads the
+    # reply as written; ``summary`` speaks a short spoken summary of it and
+    # falls back to the full reply when no summary can be made. Values and
+    # validation live in ``kiro_crew.voice_summary``; Slack, Telegram and
+    # WhatsApp voice replies never read this field.
+    speak_mode: str = "full"
     voices: dict[str, str] = None  # type: ignore[assignment]
     engines: dict[str, str] = None  # type: ignore[assignment]
     rates: dict[str, str] = None  # type: ignore[assignment]

@@ -9,7 +9,7 @@ import { useMemo, useRef } from 'react'
 import { store, type AppDispatch } from '../../store'
 import { setVoicePlaying, setVoicePreparing, setVoiceAudio, selectSlotMessages } from '../../store/chatSlice'
 import { api } from '../../api/client'
-import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../../lib/voicePlayback'
+import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId, splitForSynthesis } from '../../lib/voicePlayback'
 import { reportVoiceFailure } from '../../lib/voiceFailure'
 import { speakOnClient, stopClientSpeech, clientSpeechAvailable } from '../../lib/clientSpeech'
 import { opensTurn } from '../../pages/chat/RecoveryCard'
@@ -18,6 +18,8 @@ import type { FrameData } from './frames'
 import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import { getMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
 import { isCrewmateSpeech } from '../../components/chat/crewmateBubbles'
+import { setVoiceSpeakMode, type VoiceSpeakMode } from '../../lib/voiceSpeakMode'
+import { isSystemNoticeKind } from '../../lib/systemNotice'
 
 type VoiceProgress = {
   slot: string
@@ -44,6 +46,24 @@ export function replyOfLastTurn(
     if (opensTurn(m)) return null
   }
   return null
+}
+
+/** Every reply row of the turn that just ended, oldest first: the segment rows
+ *  a tool call closed (`finalizeTrailingStreaming`) plus the trailing streaming
+ *  row. The summary mode speaks one summary of all of them, because a turn
+ *  that says "the migration failed" before its tool call and "Done." after it
+ *  must not be summarized from "Done." alone. Same walk as `replyOfLastTurn`. */
+export function replyRowsOfLastTurn(
+  msgs: readonly ChatMessage[],
+  isReply: (m: ChatMessage) => boolean = isAssistantRow,
+): ChatMessage[] {
+  const rows: ChatMessage[] = []
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]
+    if (m.role === 'streaming' || isReply(m)) rows.push(m)
+    else if (opensTurn(m)) break
+  }
+  return rows.reverse()
 }
 
 function voiceMessageId(message: ChatMessage): string {
@@ -102,10 +122,20 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const pendingVoiceRef = useRef<{ slot: string; text: string; request_id: string } | null>(null)
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const autoSpeakRef = useRef(false)
+  // `full` speaks sentences as they stream; `summary` waits for the finished
+  // reply, asks the gateway for a spoken summary and speaks that (or the full
+  // reply when no summary came back). Mirrored into `lib/voiceSpeakMode` for
+  // the Read aloud menu action, which runs outside this hook.
+  const speakModeRef = useRef<VoiceSpeakMode>('full')
   // Speech offsets belong to one concrete message. A segment for another slot
   // must not reset the active message, and a new post-tool segment must start
   // from zero even while the previous message remains in the transcript.
   const voiceProgressRef = useRef<VoiceProgress | null>(null)
+  // Message ids the summary mode has already folded into a spoken summary, so
+  // a repeated completion event for the same turn cannot summarize them twice.
+  // Several rows share one turn, which the single-message progress record above
+  // cannot hold. Cleared with the playback context on a new turn.
+  const summarizedRef = useRef(new Set<string>())
   const voiceMutedRef = useRef(false)  // suppress incoming chunks after interrupt
   const synthChainRef = useRef<Promise<unknown>>(Promise.resolve())  // serialize TTS calls
 
@@ -268,6 +298,51 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
       if (remaining) enqueueVoiceSynthesis(slot, remaining)
     }
 
+    // `summary` mode's one speech request per turn: nothing was streamed, so
+    // every reply row of the finished turn goes to the gateway together for a
+    // spoken summary, and whatever comes back (the summary, or the joined reply
+    // itself when the gateway declined or the request failed) enters the same
+    // synthesis chain. Each row is marked consumed first, so a repeated
+    // completion event cannot start a second summary. The wait shows as
+    // "preparing" with its own id until the text to speak is known; a Stop or
+    // a new turn bumps the epoch and the late answer is dropped. The fallback
+    // is split the way the streaming path would have spoken it, because one
+    // request over the synthesis bound is refused, not spoken.
+    const speakSummaryOf = (slot: string, rows: readonly ChatMessage[]) => {
+      const unspoken: string[] = []
+      for (const row of rows) {
+        const id = voiceMessageId(row)
+        if (!id || summarizedRef.current.has(id)) continue
+        summarizedRef.current.add(id)
+        if (row.content.trim()) unspoken.push(row.content.trim())
+      }
+      // The trailing row also takes the per-message progress record, so the
+      // full-mode paths agree that nothing of it is left to speak.
+      const tail = rows[rows.length - 1]
+      if (tail) {
+        const progress = voiceProgressFor(slot, tail)
+        if (progress) progress.spokenLen = tail.content.length
+      }
+      const text = unspoken.join('\n\n')
+      if (!text) return
+      const epoch = voiceEpochRef.current
+      const request_id = createVoiceRequestId()
+      awaitAudio(request_id)
+      // The whole turn goes to the gateway, which strips its markup before it
+      // clips the model input; a cut of the raw markdown here would drop prose
+      // the stripped form keeps. Only a real summary replaces the text: an
+      // echo (`summarized: false`) means the gateway declined, and then the
+      // full reply is spoken, as the setting promises.
+      api.voiceSummarize(text, request_id)
+        .then(r => (r && r.summarized === true && typeof r.text === 'string' && r.text.trim()) ? r.text : text)
+        .catch(() => text)
+        .then(spoken => {
+          audioSettled(request_id)
+          if (epoch !== voiceEpochRef.current || voiceMutedRef.current) return
+          for (const part of splitForSynthesis(spoken)) enqueueVoiceSynthesis(slot, part)
+        })
+    }
+
     const playNextVoiceChunk = () => {
       if (voicePlayingRef.current || voiceQueueRef.current.length === 0) return
       voicePlayingRef.current = true
@@ -301,7 +376,10 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
     }
 
     const refreshAutoSpeak = () => {
-      api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
+      api.voiceConfig().then(c => {
+        autoSpeakRef.current = !!c.autoSpeak
+        speakModeRef.current = setVoiceSpeakMode(c.speakMode)
+      }).catch(() => {})
     }
 
     return {
@@ -312,7 +390,8 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         // flush, after the batched content has landed in the store, so the scan
         // reads the post-dispatch streaming content. A crewmate thread's rows
         // live in its own slot list, not `chat.messages`.
-        if (!autoSpeakRef.current) return
+        // In `summary` mode nothing is spoken until the turn ends.
+        if (!autoSpeakRef.current || speakModeRef.current === 'summary') return
         const msgs = selectSlotMessages(store.getState(), slot)
         const streaming = [...msgs].reverse().find(m => m.role === 'streaming')
         if (streaming) {
@@ -329,6 +408,9 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         }
       },
       speakSegmentTail(slot) {
+        // A segment ends at a tool call; in `summary` mode the summary covers
+        // the finished reply, so segments are not spoken on their own.
+        if (speakModeRef.current === 'summary') return
         if (autoSpeakRef.current && !voiceMutedRef.current && slot === storeFocusedSlot()) {
           const streaming = [...selectSlotMessages(store.getState(), slot)].reverse().find(m => m.role === 'streaming')
           if (streaming) flushVoiceTail(slot, streaming)
@@ -340,8 +422,15 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         if (autoSpeakRef.current && !voiceMutedRef.current && slot === storeFocusedSlot()) {
           const msgs = selectSlotMessages(store.getState(), slot)
           const crewmate = slot === getMountedMemberThreadSlot()
-          const last = [...msgs].reverse().find(m => m.role === 'streaming')
-            ?? replyOfLastTurn(msgs, crewmate ? isCrewmateSpeech : isAssistantRow)
+          const isReply = crewmate ? isCrewmateSpeech : isAssistantRow
+          if (speakModeRef.current === 'summary') {
+            // A compaction or reload notice is an assistant row too; it is not
+            // part of the answer, so the summary must not carry it.
+            const isSpokenReply = (m: ChatMessage) => isReply(m) && !isSystemNoticeKind(m.kind ?? (m.meta?.kind as string | undefined))
+            speakSummaryOf(slot, replyRowsOfLastTurn(msgs, isSpokenReply))
+            return
+          }
+          const last = [...msgs].reverse().find(m => m.role === 'streaming') ?? replyOfLastTurn(msgs, isReply)
           if (last) flushVoiceTail(slot, last)
         }
       },
@@ -355,6 +444,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         stopVoice()
         voiceMutedRef.current = false
         voiceProgressRef.current = null
+        summarizedRef.current.clear()
       },
       onVoiceChunk(data) {
         if (voiceMutedRef.current || data.slot !== storeFocusedSlot()) return
@@ -422,6 +512,9 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           const detail = (event as CustomEvent<{ slot: string; request_id: string; code: string; speakable?: string }>).detail
           if (!voiceRequestsRef.current.delete(detail.request_id)) return
           audioSettled(detail.request_id)
+          // A cancelled request is the outcome Stop asked for, not a failure;
+          // the WS frame path above already reads it that way.
+          if (detail.code === 'voice_cancelled') return
           if (!voiceMutedRef.current && detail.slot === storeFocusedSlot()) {
             // The HTTP failure can be the first (or only) signal for a path that
             // does not broadcast a WS voice_error frame, so the same fallback
@@ -434,6 +527,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         const onVoiceConfigChanged = (e: Event) => {
           const detail = (e as CustomEvent).detail
           autoSpeakRef.current = !!detail?.autoSpeak
+          if (detail && 'speakMode' in detail) speakModeRef.current = setVoiceSpeakMode(detail.speakMode)
           if (!autoSpeakRef.current) stopVoice()
         }
         window.addEventListener('voice-stop', onVoiceStop)

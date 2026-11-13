@@ -3758,5 +3758,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "voice",
     "type": "select",
     "occurrence": 2
+  },
+  {
+    "id": "voice.what-to-speak",
+    "label": "What to speak",
+    "labelKey": "pages.settings.voicePanel.what_to_speak",
+    "hint": "For Auto-speak and Read aloud. A short summary is a few spoken sentences about the finished reply; when none can be made, the full reply is spoken.",
+    "tab": "voice",
+    "type": "select",
+    "occurrence": 1
   }
 ]

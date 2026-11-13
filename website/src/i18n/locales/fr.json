@@ -21360,7 +21360,11 @@
         "recheck": "Vérifier à nouveau",
         "language": "Langue",
         "language_for_spoken_replies": "Langue des réponses vocales",
-        "language_provider_default": "Valeur par défaut du fournisseur"
+        "language_provider_default": "Valeur par défaut du fournisseur",
+        "what_to_speak": "Quoi lire à voix haute",
+        "speak_mode_full": "Réponse complète",
+        "speak_mode_summary": "Résumé court",
+        "speak_mode_hint": "Pour la lecture automatique et Lire à voix haute. Un résumé court est quelques phrases parlées sur la réponse terminée ; s'il ne peut pas être produit, la réponse complète est lue."
       },
       "weComPanel": {
         "allow_all_bypass_note": "L’autorisation générale est activée : la liste de userid ci-dessus est ignorée. Elle est conservée pour ton retour en arrière.",

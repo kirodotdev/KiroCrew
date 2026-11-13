@@ -276,3 +276,25 @@ def test_dashboard_entrypoints_restore_voice_settings():
         assert "await asyncio.to_thread(load_voice_reply_config)" in inspect.getsource(
             func
         ), f"{name} must restore persisted voice settings without blocking the event loop"
+
+
+def test_speak_mode_defaults_to_full_when_missing(tmp_path, monkeypatch):
+    _cfg_file(tmp_path, monkeypatch, {"enabled": True})
+    load_voice_reply_config()
+    assert _vc.speak_mode == "full"
+
+
+def test_speak_mode_summary_is_restored(tmp_path, monkeypatch):
+    _cfg_file(tmp_path, monkeypatch, {"speak_mode": "summary"})
+    load_voice_reply_config()
+    assert _vc.speak_mode == "summary"
+
+
+def test_speak_mode_stranger_reads_as_full_with_one_warning(tmp_path, monkeypatch, caplog):
+    import logging
+
+    _cfg_file(tmp_path, monkeypatch, {"speak_mode": "brief"})
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.voice_summary"):
+        load_voice_reply_config()
+    assert _vc.speak_mode == "full"
+    assert sum("speak_mode" in r.getMessage() for r in caplog.records) == 1

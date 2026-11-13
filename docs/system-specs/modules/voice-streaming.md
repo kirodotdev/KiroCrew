@@ -195,6 +195,59 @@ size. This reduces model launches while retaining source order. An interruption
 invalidates the chain's epoch, so an old promise cannot start its queued text
 after a newer response starts.
 
+## Spoken summary
+
+`voice_reply.speak_mode = "summary"` changes what the dashboard speaks, not how.
+The playback owner keeps the mode beside the auto-speak flag (`speakModeRef`,
+read from `/api/voice/config` and from `voice-config-changed`, and mirrored into
+`website/src/lib/voiceSpeakMode.ts` for the Read aloud action). In `summary`
+mode `speakStreamedDelta()` and `speakSegmentTail()` speak nothing. At
+`chat_done`, `speakTurnTail()` gathers every reply row of the turn that ended
+(`replyRowsOfLastTurn()`: the segment rows a tool call closed plus the trailing
+streaming row, so the text before a tool call is summarized too; a system notice
+row such as a compaction note, `lib/systemNotice.isSystemNoticeKind()`, is left
+out), records each
+row's id in `summarizedRef` so a repeated completion event cannot summarize it
+again, and calls `speakSummaryOf()`, which posts the joined text as written to
+`POST /api/voice/summarize` with a request id (the gateway strips the markup
+before it clips, so the client never cuts the raw markdown), shows "preparing"
+under that id while it waits, and hands a returned summary (`summarized: true`)
+to `enqueueVoiceSynthesis()`. A declined or failed request speaks the joined
+reply itself, cut by
+`lib/voicePlayback.splitForSynthesis()` into pieces under the synthesis bound,
+because one oversized request is refused rather than spoken; a closed backtick
+fence is never cut, so the gateway still speaks it as "(code block)", and one
+past the synthesis cap goes out as an empty backtick fence. A Stop or a new
+turn bumps the epoch, so a late answer is dropped. `onVoiceFailed` reads
+`voice_cancelled` as the outcome Stop asked for, as `onVoiceError` does, so a
+request cancelled while a summary was in flight raises no failure notice.
+Read aloud (`pages/chat/speakReply.ts`) does the same from its click handler:
+it dispatches `voice-synthesis-start` first, inside the gesture, so the audio
+context unlocks and "preparing" shows, then summarizes, then synthesizes under
+the same request id. It speaks only while "preparing" is still on and its id is
+still the newest Read aloud, so a Stop, or a second Read aloud picked during
+the wait, leaves the late answer silent instead of raising a failure notice.
+
+`api_voice_summarize()` (`chat_voice.py`) answers `{ok, text, summarized,
+request_id}`. It validates the body like the synthesis endpoint (400
+`voice_invalid_request`; the only length refusal is `read_bounded_json`'s 413
+`payload_too_large`, at this route's own `_MAX_SUMMARY_BODY_BYTES` of 512 KiB so
+a whole turn arrives), echoes the text with `summarized: false` whenever
+`_vc.speak_mode` is not `summary`, and answers 503 `voice_summary_unavailable`
+when the app has no `state.sessions`. Otherwise it calls
+`voice_summary.summarize_for_speech()`, which redacts the reply, runs the fixed
+prompt through `llm_helpers.run_bg_oneliner()` (`model="auto"`,
+`sel_source="voice_summary"`, `SUMMARY_TIMEOUT_SECS`; a reply over
+`SUMMARY_MAX_INPUT_CHARS` hands the model the head and the tail of its
+`strip_markdown()` form with the middle marked as left out, the tail being the
+larger share because a turn's failure sits at its end), and returns `None`, so the
+endpoint echoes the text, on any exception or timeout, an empty answer, an answer
+longer than `SUMMARY_MAX_RATIO` of the `strip_markdown()` form of the reply, an
+answer that still carries a fence, heading, list, table row, link or option line,
+or a reply shorter than `SUMMARY_MIN_SOURCE_CHARS` once stripped. The summary is
+redacted again before it is returned. Channel voice replies
+(`speak_finished_turn`, Telegram, WhatsApp) never call it.
+
 For Polly, `api_voice_synthesize()` iterates
 `voice_reply.streaming_voice_reply()`, broadcasts each `voice_chunk`, then
 uses `stitch_mp3s()` to broadcast `voice_complete`. `stitch_mp3s()` hands
@@ -347,6 +400,7 @@ unsaved while the rest of the patch applies, and the 200 then also carries
 | `provider` | Resolved by `voice_reply.resolve_configured_provider()` for every reader; invalid values and the removed `piper` fall back to `voice_reply.DEFAULT_PROVIDER`. |
 | `enabled` | Enables global Slack voice replies. |
 | `auto_speak` | Enables dashboard auto-speak; `api_voice_config()` exposes it as `autoSpeak`. |
+| `speak_mode` | What dashboard auto-speak and Read aloud speak: `full` (the default) reads the reply as written; `summary` speaks a short spoken summary of the finished reply and falls back to the full reply when none can be made. Validated by `voice_summary.validated_speak_mode()`; the loader reads an unknown stored value as `full` with one warning, and the PUT refuses one with 400 `voice_speak_mode_invalid`. `api_voice_config()` exposes it as `speakMode`. Channel voice replies never read it. |
 | `voice_id`, `engine`, `pitch` | Polly synthesis settings. The dashboard synthesis endpoint accepts per-request overrides on the Polly path only, as body fields `voice` (not `voice_id`), `engine`, `rate` and `pitch`. |
 | `rate` | Speech rate as a percentage. Shared by Polly and the built-in engine, which converts it to words per minute or to SAPI's `-10..10`. |
 | `system_voice` | The built-in engine's own voice selector; empty means the OS default voice. |
@@ -357,6 +411,7 @@ unsaved while the rest of the patch applies, and the 200 then also carries
 
 * `GET` and `PUT /api/voice/config`
 * `POST /api/voice/synthesize`
+* `POST /api/voice/summarize`
 * `POST /api/voice/cancel`
 * `GET /api/voice/voices`
 * `GET /api/voice/system-voices`

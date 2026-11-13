@@ -582,11 +582,18 @@ still present, so there is nothing you have to remove by hand.
 ### Voice replies
 
 Spoken replies live in the `voice_reply` block of `config.json`: `enabled`,
-`auto_speak`, `provider` (`system`, the default host speech engine, or `polly`),
+`auto_speak`, `speak_mode`, `provider` (`system`, the default host speech engine, or `polly`),
 `voice_id`, `engine`, `rate`, `pitch`, `aws_profile`, `region`, `system_voice` and
 `language_code`. `language_code` is a language tag such as `en-US` for spoken
 replies; empty, the default, lets each provider use its own default language, and
 the built-in providers speak the language of the selected voice.
+`speak_mode` is what the dashboard's Auto-speak and Read aloud speak: `full`, the
+default, reads the reply as written; `summary` speaks a short spoken summary of
+the finished reply (two to four sentences: what was done, what you must decide,
+whether anything failed) and speaks the full reply when no summary can be made.
+The chat text is unchanged either way, and Slack, Telegram and WhatsApp voice
+replies always speak the full reply. Any other stored value reads as `full` and
+logs one warning. **Settings > Voice > What to speak** sets it.
 The `piper` provider was removed; a saved `piper` value speaks with `system` and
 logs one warning, and its `piper_*` keys are ignored. **Settings > Voice** is the writer for this block. It is not in
 the config schema, so `kirocrew config set voice_reply.<key>` answers

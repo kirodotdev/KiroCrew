@@ -331,6 +331,39 @@ describe('VoicePanel auto-speak', () => {
   })
 })
 
+/* ── what to speak ────────────────────────────────────────────────────────── */
+
+describe('VoicePanel what to speak', () => {
+  it('shows the stored mode and saves a pick as speakMode', async () => {
+    const { save } = seed({ speakMode: 'full' })
+    await field('What to speak')
+    expect(select(/^What to speak$/).textContent).toContain('Full reply')
+    await pick(/^What to speak$/, 'Short summary')
+    await waitFor(() => expect(save).toHaveBeenCalledWith({ speakMode: 'summary' }))
+  })
+
+  it('reads an older gateway without the field as the full reply', async () => {
+    seed({})
+    await field('What to speak')
+    expect(select(/^What to speak$/).textContent).toContain('Full reply')
+  })
+
+  it('broadcasts the picked mode on voice-config-changed', async () => {
+    const heard: unknown[] = []
+    const onChanged = (e: Event) => heard.push((e as CustomEvent).detail)
+    window.addEventListener('voice-config-changed', onChanged)
+    try {
+      seed({ speakMode: 'summary' })
+      await field('What to speak')
+      await pick(/^What to speak$/, 'Full reply')
+      await waitFor(() => expect(heard.length).toBeGreaterThan(0))
+      expect(heard[0]).toMatchObject({ speakMode: 'full' })
+    } finally {
+      window.removeEventListener('voice-config-changed', onChanged)
+    }
+  })
+})
+
 /* ── Amazon Polly ─────────────────────────────────────────────────────────── */
 
 describe('VoicePanel polly fields', () => {

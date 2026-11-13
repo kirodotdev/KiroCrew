@@ -167,7 +167,7 @@ const API_KEY_ORDER = [
   'voiceConfig', 'updateVoiceConfig', 'voiceVoices', 'voiceSystemVoices',
   'awsConsent', 'grantAwsConsent', 'revokeAwsConsent', 'credentialRedaction',
   'setCredentialRedaction', 'setProjectHooksConsent', 'getProjectHooksConsent', 'revealRedactedValue', 'configPending', 'applyConfigPending',
-  'discardConfigPending', 'voiceSynthesize', 'voiceCancel', 'channelsList',
+  'discardConfigPending', 'voiceSynthesize', 'voiceCancel', 'voiceSummarize', 'channelsList',
   'channelPresets', 'channelGet', 'channelCreate', 'channelClose',
   'channelPost', 'channelAddAgent', 'channelUpdateAgent', 'channelDismissAgent',
   'channelWakeAgent', 'channelApproveAgent', 'channelClearContext', 'listApps',

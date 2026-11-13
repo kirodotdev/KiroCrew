@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         logger,
         read_merged_config_files,
         resolve_configured_provider,
+        speak_mode_from_config,
         track_background_task,
         validated_config_string,
         validated_language_code,
@@ -76,6 +77,8 @@ def load_voice_reply_config(cfg: "KiroCrewConfig | None" = None) -> None:
     if _enabled:
         _vc.global_enabled = True
     _vc.auto_speak = bool(_vr.get("auto_speak", False))
+    # An absent key is ``full``; an unknown value is ``full`` with one warning.
+    _vc.speak_mode = speak_mode_from_config(_vr.get("speak_mode"))
     # All ten string reads in this block go through the same coercion: each is
     # hand-editable JSON that reaches the dashboard's config GET verbatim.
     _vc.default_voice = _str_or_default(_vr.get("voice_id"), "Ruth")

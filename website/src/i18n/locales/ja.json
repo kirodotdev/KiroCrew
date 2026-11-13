@@ -20326,7 +20326,11 @@
         "recheck": "再確認",
         "language": "言語",
         "language_for_spoken_replies": "音声で読み上げる返信の言語",
-        "language_provider_default": "プロバイダーの既定"
+        "language_provider_default": "プロバイダーの既定",
+        "what_to_speak": "読み上げる内容",
+        "speak_mode_full": "回答全文",
+        "speak_mode_summary": "短い要約",
+        "speak_mode_hint": "自動読み上げと「読み上げ」に適用されます。短い要約は、完了した回答についての数文の話し言葉です。要約を作成できない場合は回答全文を読み上げます。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "すべて許可がオンになっています。上記のユーザーIDリストはスキップされます。戻すときのために保持されています。",

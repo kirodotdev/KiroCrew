@@ -20326,7 +20326,11 @@
         "recheck": "다시 확인",
         "language": "언어",
         "language_for_spoken_replies": "음성으로 읽어 주는 답변의 언어",
-        "language_provider_default": "제공자 기본값"
+        "language_provider_default": "제공자 기본값",
+        "what_to_speak": "읽어 줄 내용",
+        "speak_mode_full": "전체 답변",
+        "speak_mode_summary": "짧은 요약",
+        "speak_mode_hint": "자동 읽기와 소리 내어 읽기에 적용됩니다. 짧은 요약은 완료된 답변에 대한 몇 문장의 말이며, 요약을 만들 수 없으면 전체 답변을 읽어 줍니다."
       },
       "weComPanel": {
         "allow_all_bypass_note": "모두 허용이 켜져 있어 위의 userid 목록은 무시됩니다. 다시 되돌릴 때를 위해 그대로 보관됩니다.",

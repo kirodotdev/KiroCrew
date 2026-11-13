@@ -145,6 +145,7 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=True,
             auto_speak=False,
+            speak_mode="full",
             provider="polly",
             default_voice="Joanna",
             default_engine="neural",
@@ -177,6 +178,7 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=True,
             auto_speak=False,
+            speak_mode="full",
             provider="system",
             default_voice="Ruth",
             default_engine="generative",
@@ -262,6 +264,7 @@ class TestVoiceConfig:
         mock_vc = MagicMock(
             global_enabled=True,
             auto_speak=False,
+            speak_mode="full",
             provider="system",
             default_voice="Ruth",
             default_engine="generative",
@@ -1788,6 +1791,7 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
         "validated_config_bool",
         "validated_config_string",
         "validated_language_code",
+        "validated_speak_mode",
         "_validate_rate",
         "_validate_pitch",
     }

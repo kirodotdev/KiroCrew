@@ -20843,7 +20843,11 @@
         "recheck": "Erneut prüfen",
         "language": "Sprache",
         "language_for_spoken_replies": "Sprache für gesprochene Antworten",
-        "language_provider_default": "Standard des Anbieters"
+        "language_provider_default": "Standard des Anbieters",
+        "what_to_speak": "Was vorgelesen wird",
+        "speak_mode_full": "Vollständige Antwort",
+        "speak_mode_summary": "Kurze Zusammenfassung",
+        "speak_mode_hint": "Gilt für Automatisch vorlesen und Vorlesen. Eine kurze Zusammenfassung sind einige gesprochene Sätze zur fertigen Antwort; kann keine erstellt werden, wird die vollständige Antwort vorgelesen."
       },
       "weComPanel": {
         "allow_all_bypass_note": "„Alle erlauben“ ist aktiv: Die Liste der userids oben wird übergangen. Die Liste bleibt erhalten, falls du zurückwechselst.",

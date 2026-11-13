@@ -179,6 +179,7 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/chat/tag-columns/{id}", chat.api_chat_tag_column_update)
     app.router.add_delete("/api/chat/tag-columns/{id}", chat.api_chat_tag_column_delete)
     app.router.add_post("/api/voice/synthesize", chat.api_voice_synthesize)
+    app.router.add_post("/api/voice/summarize", chat_voice.api_voice_summarize)
     app.router.add_post("/api/voice/cancel", chat_voice.api_voice_cancel)
     chat_voice.register_voice_lifecycle(app)
     app.router.add_get("/api/voice/config", chat.api_voice_config)
