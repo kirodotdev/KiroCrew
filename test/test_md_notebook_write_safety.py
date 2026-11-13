@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import subprocess
@@ -27,6 +28,16 @@ from md_notebook_helpers import _BARRIER_LOST_RUN_SEC, _clone, _git, _wait_for, 
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.testing.wait import await_until, until_parked
+
+
+@pytest.fixture
+def legacy_note_writer(fixtures, monkeypatch):
+    """Exercise the retained Windows writer's staging/retry seams.
+
+    Supported POSIX hosts now publish through DocumentStore; its Owner/App
+    serialization is covered by test_md_notebook_resource_access.py.
+    """
+    monkeypatch.setattr(fixtures[0], "owner_store_supported", lambda: False)
 
 
 def _parking_vault_lock(server_mod, monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -124,9 +135,11 @@ async def test_creating_writes_wait_for_a_running_sync(fixtures, monkeypatch) ->
                     f"{path}'s cancelled handler stayed queued",
                     _BARRIER_LOST_RUN_SEC,
                 )
-            saving = asyncio.ensure_future(
-                client.put("/api/note", {"path": "Saved/New.md", "content": "x"})
-            )
+            payload = {"path": "Saved/New.md", "content": "x"}
+            saved_path = Path(vault["localPath"]) / "Saved/New.md"
+            if saved_path.exists():
+                payload["baseHash"] = hashlib.sha256(saved_path.read_bytes()).hexdigest()
+            saving = asyncio.ensure_future(client.put("/api/note", payload))
             await _wait_for(
                 lambda: parked or saving.done(),
                 "the save never reached the vault lock",
@@ -382,6 +395,7 @@ async def test_scoped_mutation_rederives_paths_after_a_scope_link_swap(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_every_save_publishes_under_the_vault_lock(fixtures) -> None:
     """A sync's merge landing between a save's last check and its publish would
     be replaced by the publish with a 200: the tokenless path checks nothing on
@@ -415,6 +429,7 @@ async def test_every_save_publishes_under_the_vault_lock(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_failed_save_leaves_the_previous_note_intact(fixtures) -> None:
     """A write that dies partway must not destroy what was already there.
 
@@ -451,6 +466,7 @@ async def test_a_failed_save_leaves_the_previous_note_intact(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_contended_rename_does_not_lose_the_save(fixtures) -> None:
     """A vault is a directory other processes hold open; a save must survive it.
 
@@ -500,6 +516,7 @@ async def test_a_contended_rename_does_not_lose_the_save(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_contended_save_leaves_no_temp_behind(fixtures) -> None:
     """A successful save must not leave a generated temp in the vault.
 
@@ -564,6 +581,7 @@ async def test_a_contended_save_leaves_no_temp_behind(fixtures) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_sync_during_the_retry_window_never_commits_the_staged_temp(
     fixtures,
 ) -> None:
@@ -729,6 +747,7 @@ async def _parked_behind(lock: LoopBoundLock, contender: asyncio.Task, what: str
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
     fixtures,
 ) -> None:
@@ -874,6 +893,7 @@ async def test_a_sync_while_the_temp_is_still_staging_never_commits_it(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_an_external_edit_during_the_retry_window_still_wins(fixtures) -> None:
     """Retrying a contended save must not defeat the stale-write guard.
 
@@ -949,6 +969,7 @@ async def test_an_external_edit_during_the_retry_window_still_wins(fixtures) -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_retrying_save_without_basemtime_cannot_overwrite_a_later_one(
     fixtures,
 ) -> None:
@@ -1083,6 +1104,7 @@ async def test_a_retrying_save_without_basemtime_cannot_overwrite_a_later_one(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_tokenless_save_stages_inside_the_note_lock(fixtures) -> None:
     """Staging is the slow half of the transaction, so it must be serialized too.
 
@@ -1310,6 +1332,7 @@ async def test_a_rename_into_the_temp_shape_commits_both_halves(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("legacy_note_writer")
 async def test_a_tokenless_retry_refuses_to_overwrite_an_external_edit(
     fixtures, tmp_path: Path
 ) -> None:

@@ -738,6 +738,13 @@ def register_routes(app: web.Application) -> None:
     against the real call site in dashboard/server.py
     (``_mod.register_routes(app)``, single argument, no base_path passed in).
     """
+    from kiro_crew.apps.resource_access import register_provider
+
+    from .resource_reads import read_resource
+
+    register_provider(
+        app, "issue-radar", read_resource, enabled=lambda: is_app_enabled(store.APP_NAME)
+    )
     app.router.add_post("/api/apps/issue-radar/connect", _require_enabled(_handle_connect))
     app.router.add_get("/api/apps/issue-radar/issues", _require_enabled(_handle_issues))
     app.router.add_get("/api/apps/issue-radar/issue", _require_enabled(_handle_issue_detail))

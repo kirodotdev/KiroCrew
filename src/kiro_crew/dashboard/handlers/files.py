@@ -57,6 +57,8 @@ from aiohttp.multipart import BodyPartReader  # noqa: F401
 
 from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
 from kiro_crew._facade_compose import compose as _facade_compose
+from kiro_crew.apps import resource_access as app_resource_access  # noqa: F401 - owner: editor
+from kiro_crew.apps.document_store import DocumentStoreError  # noqa: F401 - owner: editor
 from kiro_crew.atomic_write import (  # noqa: F401
     atomic_write,
     open_access_control_source,
@@ -140,6 +142,8 @@ from kiro_crew.dashboard.file_api.desktop import (  # noqa: F401
     api_upload,
 )
 from kiro_crew.dashboard.file_api.editor import (  # noqa: F401
+    _owner_bound_document,
+    _owner_document_error,
     _read_safe_end,
     _resolve_diff_path,
     api_file_diff,

@@ -7848,6 +7848,59 @@ Pinned by `test/test_app_install_git.py`. Its two git spawns are not sandboxed,
 since the clone needs the operator's SSH agent, `~/.ssh` and credential helpers,
 and are listed with that justification in `test/spawn_audit_helpers.py`.
 
+## 39. Explicit resource delegation and shared document transactions
+
+`apps/resource_access.py` owns the exact operation grant and provider registry;
+`apps/document_store.py` owns UTF-8 snapshots and atomic CAS. Existing App-token
+admission and staged API permissions remain the authentication ceiling. A
+resource request additionally names one configured workspace, native resource,
+document and operation. Prefix or wildcard permissions do not satisfy this
+boundary, and an App never adopts the Owner's identity.
+
+```mermaid
+flowchart LR
+  MCP[Bounded MCP operations] --> App[Existing App token]
+  App --> Grant[Exact approved resource operation]
+  Grant --> Provider[Enabled native provider / server-selected resource]
+  Provider --> CAS[Pinned shared document transaction]
+  Owner[Owner editor / saved baseline] --> OwnerGate[Existing Owner gate]
+  OwnerGate --> CAS
+  CAS --> Disk[Native document / revision / durable readback]
+```
+
+Providers stay with their owning apps; core imports no app-specific implementation.
+Spec documents must belong to an existing native index entry under the allowed
+workspace's `.kiro/specs`; writing a file does not create a Spec registration.
+Spec mutations share the native turn-start lock and refuse active/armed agent
+turns. Notes resolve an existing native vault, preserve writable-vault and
+sensitive-path gates, and share the Owner editor's `contentHash`/`baseHash`
+contract. Their read snapshots are byte revisions, not modification-time guesses.
+Neither adapter executes Tasks, Git, sync or a worker.
+
+The Owner Files editor identifies managed documents through registered locators.
+An exact full read carries `X-Resource-Managed: true` and `X-File-Revision`.
+Managed writes require that revision. The UI compares a fresh read to its saved
+baseline before sending the revision, so it cannot silently substitute a newer
+revision underneath a stale draft. Partial or revisionless reads cannot be saved.
+Unmanaged files retain their prior Owner-only behavior. Unsupported platforms
+retain native Owner behavior and deny delegated access.
+
+The kernel serializes threads and processes through descriptor-pinned lock
+custody in `data_home()/cache/document-locks`. Resource directories gain no lock
+sidecars. It checks the expected revision inside that serialization, preserves
+access controls, publishes create without replacement, fsyncs and rereads the
+committed bytes. Missing or mismatched revisions fail closed. Reads and writes
+are bounded; a surprising post-mutation result is reported as unknown rather
+than a safe rejection.
+
+Read adapters are projections of native stores, not generic GET proxies. Issue
+Radar reads caches without provider CLI/model refresh. Research reads saved
+campaigns without granting trust or starting a loop. Design Tweak never ensures
+a preview, and Task Runner captures the existing runner without instantiating
+one. Resource reads do not expose settings, credentials or a general session
+transcript. New capabilities remain unadmitted until their exact resource grants
+are approved; no default enable or discovery change follows repository delivery.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

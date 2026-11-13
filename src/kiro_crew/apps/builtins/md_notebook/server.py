@@ -36,6 +36,13 @@ from aiohttp import web
 from kiro_crew import _facade_mirror, hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
+from kiro_crew.apps.builtins.md_notebook import server_vault_lock as _vault_lock_module
+from kiro_crew.apps.builtins.md_notebook.scoped_documents import (
+    owner_create,
+    owner_read,
+    owner_save,
+    owner_store_supported,
+)
 from kiro_crew.apps.builtins.md_notebook.server_host import (
     _find_gh,
     _pick_folder_sync,
@@ -97,11 +104,16 @@ from kiro_crew.apps.builtins.md_notebook.server_store import (
     synced_cleanly,
     write_vaults,
 )
+from kiro_crew.apps.builtins.md_notebook.server_vault_lock import (
+    vault_write_lock as _shared_vault_write_lock,
+)
 from kiro_crew.atomic_write import rename_with_retry, replace_with_retry
+from kiro_crew.dashboard.chat_utils_awaits import drained_to_thread
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
 PORT = int(os.environ.get("PORT", 9137))
+_vault_write_locks = _vault_lock_module._locks  # compatibility test seam
 
 
 # Capability probe. The gateway keeps an app's backend alive across UI reloads,
@@ -181,16 +193,9 @@ async def _save_locks_for(*paths: str) -> "AsyncIterator[None]":
 #
 # Lock order, everywhere: per-path save locks FIRST, this lock SECOND. The
 # sync path takes only this one, so no cycle is possible.
-_vault_write_locks: dict[str, LoopBoundLock] = {}
-
-
 def vault_write_lock(local_path: str) -> LoopBoundLock:
     """The lock a vault's writers and its sync share. Keyed by ``localPath``."""
-    lock = _vault_write_locks.get(local_path)
-    if lock is None:
-        lock = LoopBoundLock()
-        _vault_write_locks[local_path] = lock
-    return lock
+    return _shared_vault_write_lock(local_path)
 
 
 # Serializes every vaults.json read-modify-write. Clone/attach/forget/knowledge
@@ -867,7 +872,9 @@ async def api_note_read(request: web.Request) -> web.Response:
         # about what the vault itself contains: a vault can be attached to any
         # folder the user picks, so containment alone would happily serve a
         # private key that lives under it. The gate is what refuses that.
-        snap = await read_note_snapshot(abs_path)
+        snap = await asyncio.to_thread(owner_read, vault, rel)
+        if snap is None:
+            snap = await read_note_snapshot(abs_path)
         if snap is None:
             raise ApiError(f"no such note: {rel}", 404, code="no_such_note")
         content, content_hash = snap
@@ -899,6 +906,10 @@ async def _save_note_contents(
     base_hash: object = None,
 ) -> None:
     """Publish *content*, retrying a contended rename without losing a write.
+
+    Supported POSIX hosts use shared CAS and require baseHash for an existing
+    note. The staging/retry behavior below is the retained native fallback for
+    platforms where App document writes are unsupported.
 
     The rename can fail on Windows with `PermissionError` while another handle is
     open on the note -- routine for a vault the user also has open in an editor,
@@ -944,6 +955,15 @@ async def _save_note_contents(
 
     Budget mirrors `atomic_write.replace_with_retry`, whose window this is.
     """
+    # The native contentHash/baseHash protocol is the shared store's revision
+    # protocol. Keep the same per-note/vault order while the cross-process
+    # document lock serializes this Owner with admitted App writers.
+    if owner_store_supported():
+        await _assert_note_is_fresh(abs_path, rel, base_mtime, base_hash)
+        async with _save_lock(str(abs_path)), vault_write_lock(vault["localPath"]):
+            await asyncio.to_thread(_make_note_dirs_checked, vault, rel)
+            if await drained_to_thread(owner_save, vault, rel, content, base_mtime, base_hash):
+                return
     # ONE temp for the whole transaction, on either path. Staged before the
     # first attempt and republished by every retry, so success consumes it and
     # any exit path has exactly one file to discard. It carries
@@ -1196,6 +1216,9 @@ async def api_note_new(request: web.Request) -> web.Response:
         for n in range(1, MAX_UNTITLED):
             name = "Untitled.md" if n == 1 else f"Untitled {n}.md"
             try:
+                relative = f"{folder}/{name}" if folder else name
+                if owner_create(vault, relative):
+                    return name, "", directory
                 fd = os.open(directory / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
             except FileExistsError:
                 continue
@@ -1208,7 +1231,7 @@ async def api_note_new(request: web.Request) -> web.Response:
         raise ApiError("could not find a free note name", 409, code="no_free_note_name")
 
     async with vault_write_lock(vault["localPath"]):
-        name, content, directory = await asyncio.to_thread(_create_unique)
+        name, content, directory = await drained_to_thread(_create_unique)
     rel = f"{folder}/{name}" if folder else name
     mark_self_write(directory / name)
     cache = await get_cache(vault)

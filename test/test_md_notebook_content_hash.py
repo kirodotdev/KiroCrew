@@ -1,7 +1,7 @@
 """Notes (md-notebook) backend: the content-hash save-guard token.
 
 ``GET /api/note`` returns a ``contentHash`` beside ``mtime``, and ``PUT /api/note``
-accepts it back as ``baseHash``. When sent, the hash alone decides freshness, so an
+requires it back as ``baseHash`` on supported POSIX hosts. The hash decides freshness, so an
 external write that kept the note's mtime still answers 409 instead of being
 overwritten. Shared fixtures live in ``md_notebook_helpers.py``.
 """
@@ -72,8 +72,8 @@ async def test_same_mtime_external_write_is_a_conflict_with_base_hash(fixtures) 
 
 
 @pytest.mark.asyncio
-async def test_same_mtime_external_write_passes_the_mtime_only_guard(fixtures) -> None:
-    """Without ``baseHash`` the mtime-only behaviour is unchanged, gap included."""
+async def test_same_mtime_external_write_requires_content_hash(fixtures) -> None:
+    """Supported Owner saves require a hash even when the mtime still matches."""
     _mod, remote, _seed = fixtures
     async with signed_client(_mod) as client:
         vault = await _clone(client, remote)
@@ -84,8 +84,10 @@ async def test_same_mtime_external_write_passes_the_mtime_only_guard(fixtures) -
         status, body = await client.put(
             "/api/note", {"path": "One.md", "content": "mine", "baseMtime": read["mtime"]}
         )
-        assert status == 200, body
-        assert target.read_text(encoding="utf-8") == "mine"
+        assert status == 409, body
+        assert body["code"] == "ESTALE"
+        assert body["contentHash"] == _sha256(target.read_bytes())
+        assert target.read_text(encoding="utf-8") == "# One\n\nchanged by another program\n"
 
 
 @pytest.mark.asyncio

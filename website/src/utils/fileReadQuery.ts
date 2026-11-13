@@ -36,6 +36,9 @@ export interface FileReadResult {
   /** The body is not the file as written: the bytes were not valid UTF-8 and
    *  the decode substituted replacement characters (`X-Lossy-Decode`). */
   lossy: boolean
+  /** Delegated documents need the revision of a complete, exact read to save. */
+  resourceManaged?: boolean
+  revision?: string
 }
 
 /** Why a read handed over less than the file as written. */
@@ -76,5 +79,7 @@ export async function fetchFileRead(filePath: string, signal?: AbortSignal, slot
     truncated: res.headers.get('X-Truncated') === 'true',
     redacted: res.headers.get('X-Redacted') === 'true',
     lossy: res.headers.get('X-Lossy-Decode') === 'true',
+    resourceManaged: res.headers.get('X-Resource-Managed') === 'true',
+    revision: res.headers.get('X-File-Revision') || undefined,
   }
 }

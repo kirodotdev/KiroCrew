@@ -65,3 +65,6 @@ def register_all(app: web.Application) -> None:
     """Register every dashboard route on *app*, in the original order."""
     for _name, register in _REGISTRARS:
         register(app)  # type: ignore[operator]
+    from kiro_crew.apps.resource_access import register_routes
+
+    register_routes(app)

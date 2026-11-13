@@ -36,6 +36,7 @@
   },
   "backend": {
     "entryPoint": "kiro_crew.apps.builtins.design_tweak.backend.server",
+    "hooks": {"routes": "backend.resource_reads:register_routes"},
     "port": "auto",
     "healthCheck": "/health"
   },

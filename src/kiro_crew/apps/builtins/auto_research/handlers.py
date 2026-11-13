@@ -1053,6 +1053,13 @@ async def _handle_grill_tree(request: web.Request) -> web.Response:
 
 
 def register_routes(app: web.Application) -> None:
+    from kiro_crew.apps.resource_access import register_provider
+
+    from .resource_reads import read_resource
+
+    register_provider(
+        app, "auto-research", read_resource, enabled=lambda: is_app_enabled("auto-research")
+    )
     # Seeded while the app is still mutable; a handler-time ``setdefault`` would
     # write to the frozen app. Shared with the knowledge routes, so setdefault.
     app.setdefault("_bg_tasks", set())
