@@ -2800,6 +2800,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.minimize-to-tray",
+    "label": "Minimize to tray",
+    "labelKey": "pages.settings.displayPanel.minimize_to_tray",
+    "hint": "Minimizing the window hides it in the system tray instead of the taskbar. Click the tray icon to open it again.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "settingId": "display.minimize-to-tray"
+  },
+  {
     "id": "display.mode",
     "label": "Mode",
     "labelKey": "pages.settings.displayPanel.mode",

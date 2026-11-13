@@ -488,10 +488,11 @@ function createIpcRegistrar({
       return detectWsl();
     });
 
-    // What the main window's close button does, and whether the tray icon
-    // shows. Deliberately narrower than `assertLocalDashboard`, which would
-    // hide the rows from a main window on a configured remote host and leave
-    // that user no way to change them. The sender must be the main window's
+    // What the main window's close button does, whether the tray icon shows,
+    // and whether minimizing hides the window to it. Deliberately narrower
+    // than `assertLocalDashboard`, which would hide the rows from a main
+    // window on a configured remote host and leave that user no way to change
+    // them. The sender must be the main window's
     // top frame, still on its assigned dashboard origin. That trusts the main
     // window's dashboard, local or remote, with visible, reversible two-valued
     // preferences.
@@ -534,6 +535,14 @@ function createIpcRegistrar({
     ipcMain.handle("tray-icon:set", async (event, show) => {
       assertMainWindowDashboard(event, "tray-icon:set");
       return windows.trayIcon.set(show);
+    });
+    ipcMain.handle("minimize-to-tray:get", async (event) => {
+      assertMainWindowDashboard(event, "minimize-to-tray:get");
+      return windows.minimizeToTray.get();
+    });
+    ipcMain.handle("minimize-to-tray:set", async (event, on) => {
+      assertMainWindowDashboard(event, "minimize-to-tray:set");
+      return windows.minimizeToTray.set(on);
     });
 
     // Open a file the chat referenced in the user's own editor, by handing its

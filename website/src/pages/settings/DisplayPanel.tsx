@@ -49,6 +49,7 @@ import { useLiquidGlass } from '../../hooks/useLiquidGlass'
 import { useExplorePreview } from '../../hooks/usePreviewFlag'
 import { useCloseAction } from '../../hooks/useCloseAction'
 import { useTrayIcon } from '../../hooks/useTrayIcon'
+import { useMinimizeToTray } from '../../hooks/useMinimizeToTray'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { TranslucentPanelsPreview } from './TranslucentPanelsPreview'
 import { canOpenExternalTerminal, detectExternalTerminals } from '../../lib/externalTerminal'
@@ -98,6 +99,8 @@ const INTENSITY_LABEL_KEYS = {
 
 /** Why the tray icon switch is locked on, which the switch's description points at. */
 const TRAY_ICON_LOCKED_NOTE_ID = 'tray-icon-locked-note'
+/** Why the minimize-to-tray switch is locked off. */
+const MINIMIZE_TO_TRAY_LOCKED_NOTE_ID = 'minimize-to-tray-locked-note'
 
 export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const ime = useImeGuard()
@@ -134,6 +137,11 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
   const { liquidGlass, setLiquidGlass } = useLiquidGlass()
   const { closeAction, closeActionSupported, closeActionPending, closeActionFailed, setCloseAction } = useCloseAction()
   const { trayIcon, trayIconSupported, trayIconPending, trayIconFailed, setTrayIcon } = useTrayIcon(closeAction)
+  const {
+    minimizeToTray, minimizeToTraySupported, minimizeToTrayPending, minimizeToTrayFailed, setMinimizeToTray,
+  } = useMinimizeToTray(trayIcon.show)
+  // Offered only where a tray can bring the window back (never on macOS).
+  const minimizeToTrayOffered = minimizeToTraySupported && minimizeToTray.offered
   // "Show search in the top bar", on by default. useAppShell reads the same key
   // to draw the header, and usePersistedBool keeps the two readers in step.
   const [topbarSearch, setTopbarSearch] = usePersistedBool('mc-topbar-search', true)
@@ -819,8 +827,8 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main
-          window's dashboard (useCloseAction, useTrayIcon), local or remote
-          gateway. */}
+          window's dashboard (useCloseAction, useTrayIcon, useMinimizeToTray),
+          local or remote gateway. */}
       {closeActionSupported && (
         <SettingsSection title={i18nT('pages.settings.displayPanel.desktop_app')}>
           <SettingsCard>
@@ -860,6 +868,29 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
             )}
             {/* No hand-off, for the same drafts as the close row above. */}
             {trayIconFailed && (
+              <ErrorNotice
+                variant="inline"
+                message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}
+              />
+            )}
+            {minimizeToTrayOffered && (
+              <SettingsToggle
+                settingId="display.minimize-to-tray"
+                label={i18nT('pages.settings.displayPanel.minimize_to_tray')}
+                hint={i18nT('pages.settings.displayPanel.minimize_to_tray_desc')}
+                checked={minimizeToTray.on}
+                disabled={minimizeToTrayPending || !minimizeToTray.canEnable}
+                describedBy={minimizeToTray.canEnable ? undefined : MINIMIZE_TO_TRAY_LOCKED_NOTE_ID}
+                onChange={setMinimizeToTray}
+              />
+            )}
+            {minimizeToTrayOffered && !minimizeToTray.canEnable && (
+              <p id={MINIMIZE_TO_TRAY_LOCKED_NOTE_ID} className="text-[12px] text-muted">
+                {i18nT('pages.settings.displayPanel.minimize_to_tray_locked')}
+              </p>
+            )}
+            {/* No hand-off, for the same drafts as the close row above. */}
+            {minimizeToTrayFailed && (
               <ErrorNotice
                 variant="inline"
                 message={i18nT('pages.settings.displayPanel.keep_running_when_window_closed_save_failed')}

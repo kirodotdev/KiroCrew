@@ -1633,6 +1633,13 @@
       "hint": "Language for the dashboard interface."
     },
     {
+      "id": "display.minimize-to-tray",
+      "label": "Minimize to tray",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=display.minimize-to-tray",
+      "hint": "Minimizing the window hides it in the system tray instead of the taskbar. Click the tray icon to open it again."
+    },
+    {
       "id": "display.mode",
       "label": "Mode",
       "tab": "display",

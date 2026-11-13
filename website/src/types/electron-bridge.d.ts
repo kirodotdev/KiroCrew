@@ -115,6 +115,20 @@ declare global {
     set: (show: boolean) => Promise<TrayIconState>
   }
 
+  /** Whether minimizing hides the window to the tray. Offered on Windows, and
+   *  on Linux when the desktop has a tray; it can be turned on only while the
+   *  tray icon shows. */
+  interface MinimizeToTrayState {
+    on: boolean
+    offered: boolean
+    canEnable: boolean
+  }
+
+  interface MinimizeToTrayAPI {
+    get: () => Promise<MinimizeToTrayState>
+    set: (on: boolean) => Promise<MinimizeToTrayState>
+  }
+
   /** First-run setup's "connect to a crew on another machine" exit. `start`
    *  opens the desktop app's remote-crew form; on "switching" the window is
    *  about to leave this page for the crew's dashboard. */
@@ -364,6 +378,7 @@ declare global {
     localGatewayAPI?: LocalGatewayAPI
     closeActionAPI?: CloseActionAPI
     trayIconAPI?: TrayIconAPI
+    minimizeToTrayAPI?: MinimizeToTrayAPI
     remoteCrewSetupAPI?: RemoteCrewSetupAPI
     gatewayRestartAPI?: GatewayRestartAPI
     remoteCrewPaneAPI?: RemoteCrewPaneAPI
