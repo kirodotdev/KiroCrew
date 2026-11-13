@@ -1143,6 +1143,9 @@ class ConversationLog:
     record_consolidation_environment_failure = (
         _history_marker.record_consolidation_environment_failure
     )
+    clear_consolidation_environment_backoff = (
+        _history_marker.clear_consolidation_environment_backoff
+    )
 
 
 # This module is the facade of the conversation history family. Its names are
