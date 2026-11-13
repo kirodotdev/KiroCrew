@@ -5011,14 +5011,14 @@
       "office_preview_truncated": "Preview shows only the beginning of this document. Download the original for the full contents.",
       "open_in_new_tab": "Open in new tab",
       "pdf_preview": "PDF Preview",
-      "showing_first_rows_one": "Showing {{shown}} of {{count}} row",
-      "showing_first_rows_other": "Showing {{shown}} of {{count}} rows",
-      "items_count_one": "{{count}} item",
-      "items_count_other": "{{count}} items",
-      "lines_count_one": "{{count}} line",
-      "lines_count_other": "{{count}} lines",
-      "more_count_one": "{{count}} more",
-      "more_count_other": "{{count}} more"
+      "showing_first_rows_one": "Showing {{shown}} of {{total}} row",
+      "showing_first_rows_other": "Showing {{shown}} of {{total}} rows",
+      "items_count_one": "{{n}} item",
+      "items_count_other": "{{n}} items",
+      "lines_count_one": "{{n}} line",
+      "lines_count_other": "{{n}} lines",
+      "more_count_one": "{{n}} more",
+      "more_count_other": "{{n}} more"
     },
     "folderProjectHint": {
       "differs": "Commands, files and search here use {{current}}, not this folder's {{folder}}.",

@@ -7245,7 +7245,7 @@
       "image_zoom_hint": "{{key}}+滚动以缩放（双击恢复适应大小）",
       "html_preview": "HTML 预览",
       "invalid_json": "无效的 JSON：",
-      "json_string_show_all_other": "显示全部（{{count}} 个字符）",
+      "json_string_show_all_other": "显示全部（{{n}} 个字符）",
       "json_string_show_less": "收起",
       "media_preview_failed": "播放失败：浏览器无法解码此文件。",
       "null": "null",
@@ -7288,10 +7288,10 @@
       "light_background": "浅色背景",
       "dark_background": "深色背景",
       "sheet_tabs_label": "工作表",
-      "showing_first_rows_other": "显示 {{shown}} 行，共 {{count}} 行",
-      "items_count_other": "{{count}} 项",
-      "lines_count_other": "{{count}} 行",
-      "more_count_other": "还有 {{count}} 项"
+      "showing_first_rows_other": "显示 {{shown}} 行，共 {{total}} 行",
+      "items_count_other": "{{n}} 项",
+      "lines_count_other": "{{n}} 行",
+      "more_count_other": "还有 {{n}} 项"
     },
     "folderColorNames": {
       "amber": "琥珀色",
