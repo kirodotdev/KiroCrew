@@ -752,3 +752,11 @@ SESSION_QUEUE_SCHEMA = ToolSchema(
         FieldSpec("position", int, required=False, min_val=0, max_val=10_000),
     ],
 )
+
+SESSION_RUN_QUEUED_SCHEMA = ToolSchema(
+    tool_name="session_run_queued",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("queue_id", str, required=True, max_len=QUEUE_ENTRY_ID_MAX_CHARS),
+    ],
+)

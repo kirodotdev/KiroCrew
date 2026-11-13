@@ -398,6 +398,7 @@ class TestWhatThisSetGrants:
         # strict gate and route family; advertised only while
         # work_ledger.remote_dispatch is on.
         "crew_list",
+        "session_run_queued",
     }
     GRANTED_TOOLS = FOLDER_TOOLS | TAG_TOOLS | COLUMN_TOOLS | MOVE_TOOLS | PIN_TOOLS | SESSION_TOOLS
 

@@ -158,6 +158,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The agent route's transaction; the in-turn /agent command shares it.
                 ("chat_api/agent_switch.py", "switch_slot_agent"),
                 ("chat_api/turn_stop.py", "api_chat_slot_interrupt"),
+                # The idle Run now dispatch split out of the route above, shared
+                # with session_run_queued, re-reading the same state under the lock.
+                ("chat_api/turn_stop.py", "_dispatch_run_now_idle"),
                 # "Run this next" starts the chosen restored card itself only on
                 # an unreserved slot; a reserved one drains it at the turn's end.
                 ("chat_api/turn_stop.py", "_start_chosen_restored_card"),
@@ -261,6 +264,8 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The queue verb reports liveness beside the listing, for the
                 # same reason.
                 ("session_control_queue.py", "queue_target"),
+                # Picks the card's running or idle Run now path, as the route does.
+                ("session_control_run_queued.py", "run_queued_target"),
                 ("session_control_parts/session_messaging.py", "send_to_target"),
                 # Pre-pick idle check via _switch_target_busy (idle-only tool contract).
                 ("session_control_parts/model_switch.py", "set_model_target"),

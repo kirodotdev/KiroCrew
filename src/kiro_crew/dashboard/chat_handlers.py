@@ -403,6 +403,10 @@ from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_cron_run,
     _cancel_target,
     _compaction_in_flight,
+    _decline_compacting_interrupt,
+    _dispatch_run_now_idle,
+    _interrupt_claimed_turn,
+    _log_interrupt,
     _make_stop_resolver,
     _may_cancel_cron_run,
     _open_stop_event_card,
@@ -637,6 +641,7 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
 from kiro_crew.dashboard.slot_queue_repository import (  # noqa: F401
     RESTORED_QUEUE_KEY,
     RESTORED_SEND_CHOSEN_KEY,
+    clear_run_now_choice,
     refused_durable_ids,
     warn_if_not_durable,
 )

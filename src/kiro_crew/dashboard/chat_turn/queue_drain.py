@@ -52,6 +52,7 @@ from kiro_crew.dashboard.session_directive_apply import (
 from kiro_crew.dashboard.slot_queue_repository import (
     RESTORED_QUEUE_KEY,
     RESTORED_SEND_CHOSEN_KEY,
+    run_now_chosen_id,
     source_channels_of,
 )
 from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIXES
@@ -758,6 +759,15 @@ async def _start_next_queued_turn(
     if auto_priority:
         required_queue_id = priority_id
         allow_user_during_subagents = True
+    elif (
+        not required_queue_id
+        and not teardown_held
+        and not edit_held
+        and (chosen := run_now_chosen_id(slot))
+    ):
+        # A ``session_run_queued`` choice runs next, as its idle path would run it.
+        # Held like the promotion above: the mark stays and runs once the hold lifts.
+        required_queue_id, allow_user_during_subagents = chosen, True
 
     # A completion counts as a child until it has run: while it is still being
     # handed to this tab, or waits in the queue behind another system entry, a
