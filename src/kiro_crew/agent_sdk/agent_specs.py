@@ -4,6 +4,8 @@ The crewmate modules (``mate_config``, ``mate_worker``, ``mate_worker_kit``,
 ``mate_capability_catalog``, ``mate_config_migration``, and the heartbeat's ``goal_reminder``) read
 custom-agent specs the way a session would: the hardened reader in
 ``acp.kas_agents`` and the per-session MCP switch-off in ``acp.session_mcp``.
+The shared execution-prompt reader (``context_assembly.agent_spec``) takes KAS's
+prompt spelling, ``file://`` expansion and path check here too.
 Application code may not import ``kiro_crew.acp``
 (``scripts/check_agent_sdk_boundary.py``), so this module is the one seam they
 reach those reads through.
@@ -57,6 +59,30 @@ def resolve_prompt(spec: dict[str, Any], *, agent_id: str, agents_dir: Path) -> 
         return kas_agents.resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
     except kas_agents.KasAgentTranslationError as exc:
         raise AgentSpecUnreadable(str(exc)) from exc
+
+
+def spec_prompt(spec: dict[str, Any]) -> Any:
+    """*spec*'s prompt as written: ``prompt``, else kiro-cli's ``systemPrompt`` (``acp.kas_prompt``)."""
+    from kiro_crew.acp import kas_prompt
+
+    return kas_prompt.spec_prompt(spec)
+
+
+def expand_prompt_ref(ref: str) -> Path:
+    """A ``file://`` prompt *ref* with ``$VAR`` and ``~`` expanded as KAS expands them, unresolved.
+
+    ``acp.kas_prompt.expand_prompt_ref``; raises ``RuntimeError`` for ``~nosuchuser``.
+    """
+    from kiro_crew.acp import kas_prompt
+
+    return kas_prompt.expand_prompt_ref(ref)
+
+
+def is_unsafe_prompt_path(path: Path) -> bool:
+    """Whether the RESOLVED *path* may not be inlined into a prompt (``acp.kas_prompt_paths``)."""
+    from kiro_crew.acp import kas_prompt_paths
+
+    return kas_prompt_paths.is_unsafe_prompt_path(path)
 
 
 def agent_spec_absent(agents_dir: Path, agent_id: str) -> bool:
