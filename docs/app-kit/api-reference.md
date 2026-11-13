@@ -1533,6 +1533,32 @@ async def add_item(request, ctx):
 | `model_id` | The vector space's model id, or `""` with no backend. Store it with each vector; a different value later means old vectors are not comparable. |
 | `embed_sync(text)` | A `list[float]`, or `None` when no model can serve or the embed failed. **Blocking**: call it only inside `run()` or another worker. Called on the event loop it returns `None`. |
 | `await run(func, *args, **kwargs)` | `func(*args, **kwargs)`, run on the host's bounded embed pool. |
+| `await embed_batch(texts, *, instruction=None)` | An `EmbedBatchResult` for up to 64 texts, embedded on the host's background memory pool, one app batch at a time. Seam level 8. |
+| `embed_batch_sync(texts, *, instruction=None)` | The same, **blocking**, for a worker thread of your own; not inside `run()`, whose pool the host's chat turns wait on. Seam level 8. |
+
+The batch members answer with an `EmbedBatchResult`:
+`ready`, `vectors` (one per text, in input order), `model_id`, `dim`,
+`space_signature` and `reason`. Store `space_signature` with your vectors: a model
+change or a custom model gives a different signature, and vectors from different
+signatures are not comparable, so re-embed. When `ready` is `False`, `vectors` is
+empty and `reason` says why:
+
+| `reason` | Meaning |
+|---|---|
+| `invalid_input` | `texts` is not a non-empty list of non-blank strings, or `instruction` is blank. |
+| `too_many_texts` | More than 64 texts. Split the work across calls. |
+| `on_event_loop` | `embed_batch_sync` was called on the event loop. Use `await embed_batch(...)`. |
+| `not_ready` | No embedding is available right now: the model is downloading, loading, being swapped or absent, or the host's bulk queue is full. Fall back (keyword search) and retry later. |
+| `failed` | The embed raised or returned malformed vectors. Logged once per process. |
+
+Batch work needs no manifest permission. It runs at the shared model's bulk
+priority, behind the host's memory recall and explicit memory writes and level
+with its own bulk work such as consolidation (the Ollama provider
+does not order by priority), and it is paced like the host's own bulk work, so a
+full batch can take minutes. Each text is cut at the host's per-text limit.
+`instruction` is prefixed to every text as `Instruct: <instruction>\nQuery:`, the
+form the bundled instruction-tuned model expects: embed stored documents without it
+and queries with it. With a custom model or an `ollama:` model, leave it out.
 
 It never raises into your code: a missing embedding extra, a model that cannot load
 and a failing embed all read as `None`, and the first failure is logged once per
@@ -1721,11 +1747,13 @@ notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
 [Backend Environment Variables](#backend-environment-variables)), level 5 adds
 [`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), level 6
 adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`),
-and level 7 adds the manifest's `agentReadOnlyDirs` (see
+level 7 adds the manifest's `agentReadOnlyDirs` (see
 [manifest-reference.md](manifest-reference.md#agent-read-only-directories)), the
 [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk) and the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
-[manifest-reference.md](manifest-reference.md#desktop-windows)); each level
+[manifest-reference.md](manifest-reference.md#desktop-windows)), and level 8 adds the
+shared embedder's batch members (`ctx.embed.embed_batch`, see
+[Shared embedder](#shared-embedder-ctxembed)); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
