@@ -4,6 +4,7 @@ import TurnBlock from '../pages/chat/TurnBlock'
 import { groupDisplayItems } from '../pages/chat/groupDisplayItems'
 import type { DisplayItem, TurnItem } from '../pages/chat/types'
 import type { ChatMessage } from '../types'
+import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 
 function makeTurn(items: TurnItem[], complete = true): Extract<DisplayItem, {kind:'turn'}> {
   return { kind: 'turn', items, complete }
@@ -928,6 +929,36 @@ describe('TurnBlock — trailing recycle notice does not become the conclusion (
       expect(container.textContent).toContain(answer)
     })
   }
+})
+
+describe('TurnBlock — hidden steering reply does not become the conclusion', () => {
+  it('keeps the visible reply outside the collapse-all fold', () => {
+    const answer = 'The requested change is complete, and every focused check now passes cleanly.'
+    const steeringOnly = '[STEERING steer-ab12: Recorded a long internal steering acknowledgement that the Bot chat does not draw.]'
+    const grouped = groupDisplayItems([
+      { role: 'user', content: 'Make the change', ts: '0' },
+      { role: 'tool', content: '🔧 Running: edit', ts: '1' },
+      { role: 'assistant', content: answer, ts: '2' },
+      { role: 'assistant', content: steeringOnly, ts: '3', meta: { turn_stats: { elapsed_ms: 1200 } } },
+    ] as ChatMessage[])
+    const turn = grouped.turns.find((item): item is Extract<DisplayItem, { kind: 'turn' }> => item.kind === 'turn')
+    expect(turn).toBeDefined()
+
+    render(
+      <TurnBlock
+        turn={turn!}
+        collapseAll
+        renderItem={(item, i) => {
+          if (item.kind === 'single' && isHiddenInvisibleAssistantRow(item.msg, { steerChip: false })) return null
+          return <div data-testid={`item-${i}`}>{item.kind === 'single' ? item.msg.content : 'group'}</div>
+        }}
+      />,
+    )
+
+    const answerRow = screen.getByText(answer)
+    expect(answerRow.closest('[data-collapsed="true"]')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Worked through 1 step' })).toBeInTheDocument()
+  })
 })
 
 describe('TurnBlock — collapseAll folds a turn that has no conclusion', () => {
