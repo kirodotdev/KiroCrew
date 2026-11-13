@@ -13,7 +13,11 @@ describe('FilterChip gradient', () => {
   it('a paused Crew Mode chip dims and draws its dash in the gradient\'s own text colour, so the pause is seen', () => {
     // The gradient fill hides a transparent dashed border; a paused chip must
     // still read as "not narrowing right now" outside the open menu.
-    render(<FilterChip label="Ultra Mode" color="var(--accent)" gradient paused clearLabel="Clear" onClear={vi.fn()} testId="chip" />)
+    const pause = {
+      paused: true, onToggle: vi.fn(), pauseLabel: 'Pause Ultra Mode filter', resumeLabel: 'Resume Ultra Mode filter',
+      pausedText: 'paused', pauseHint: 'pause', resumeHint: 'resume',
+    }
+    render(<FilterChip label="Ultra Mode" color="var(--accent)" gradient pause={pause} clearLabel="Clear" onClear={vi.fn()} testId="chip" />)
     const chip = screen.getByTestId('chip')
     expect(chip.className).toContain('crew-grad')
     expect(chip.className).toContain('border-dashed')
