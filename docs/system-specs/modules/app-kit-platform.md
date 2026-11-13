@@ -5687,6 +5687,50 @@ Writers: `website/src/app-sdk/issues/`, `website/src/app-sdk/index.ts`,
 `website/src/types/index.sources.ts`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
 
+## 18i. The project picker reaches an app through the SDK, behind the declared listing
+
+`ProjectPicker` on `@kirocrew/app-sdk` (`website/src/app-sdk/ProjectPicker.tsx`) is the
+dashboard's own `components/ProjectPicker` (Favorites, Recent, Browse, the desktop
+shell's system folder picker, New folder), offered to an app page. It is App Kit seam
+level 7.
+
+Whether it mounts is decided by the identity the host published, the way §18g chooses
+the pull-request client:
+
+- **external**: mounted once `apiPathAllowed` admits every path in the module's
+  `PROJECT_PICKER_PATHS` (not re-exported: an app declares the paths in its static
+  manifest and never reads the list), each checked on its own: `/api/browse-dirs`,
+  `/api/browse-dirs/create` (New folder), `/api/recent-projects` and
+  `/api/favorite-projects` (the list, and the add and remove). A bare entry covers its
+  children, so the three bare families admit all four; an exact `=/api/browse-dirs`
+  admits the listing and not New folder, and the picker refuses. With one not admitted
+  the export renders an `ErrorNotice` naming the first missing path, with no agent
+  hand-off (it would unmount the form the picker opens from), and mounts nothing, so
+  no request is sent.
+- **builtin**: mounted, as the dashboard has it.
+- **none**: the external answer with nothing declared, the refusal.
+
+Unlike §18g, a mounted picker keeps the dashboard's client rather than a client over the
+app's scoped transport. The picker is host code with a fixed endpoint set, so the check
+before it mounts covers every request it can send, and its failure notices read the
+dashboard client's deadlines, `code`s and journaled error reports: a second client would
+name the same refusal differently in an app. This grants nothing the scoped transport
+would not, since a scoped request carries the dashboard user's own authority too (the
+frontend scoping is the trust model's guardrail, not a boundary) and the matcher is the
+same. `AppSdkProjectPicker.test.tsx` pins the three answers, the per-path refusal, the
+exact-entry refusal, and that every `api.` member the picker's source calls sends to a
+path the list names itself, so a new endpoint in the picker fails the test until the
+list names it.
+
+The export takes no `errorHandoff` (its hand-off navigates to the chat and unmounts the
+app page with whatever it held) and no `footer`. A built-in that opens the picker
+declares the families in its own manifest, so its adopted copy, which reaches the picker
+through this export, declares nothing the built-in did not (E9).
+
+Writers: `website/src/app-sdk/ProjectPicker.tsx`, `website/src/app-sdk/index.ts`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/app_sdk_level.py`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -6917,8 +6961,8 @@ pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 a
 manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
 an app's windows (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
-transport), and `ctx.chat_slots` (§41). Several seams share level 7, so an app that needs one
-feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
+transport), `ctx.chat_slots` (§41), and the SDK's project picker (§18i). Several seams share level 7, so an app that needs one
+feature-detects it (the manifest key or attribute, or the SDK export), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through

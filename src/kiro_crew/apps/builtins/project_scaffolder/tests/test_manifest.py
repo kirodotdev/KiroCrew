@@ -23,6 +23,7 @@ import pytest
 
 from kiro_crew.apps.discovery import discover_builtin_apps
 from kiro_crew.apps.manifest import AppManifest
+from kiro_crew.dashboard.token_auth_app_scope import _api_pattern_matches
 
 # .../project_scaffolder/tests/test_manifest.py -> parents[1] is the app root.
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +124,56 @@ def test_app_ships_no_executable_code(raw_manifest: dict):
         "project-scaffolder is manifest-only; new code here must be audited for "
         f"platform-specific behaviour before app.json keeps claiming Windows: {offenders}"
     )
+
+
+# --- the paths the page uses, declared so an adopted copy keeps them ----------
+
+#: What the page calls: its own two endpoints, and the three families that admit
+#: every path the shared project picker sends (``PROJECT_PICKER_PATHS`` in
+#: ``website/src/app-sdk/ProjectPicker.tsx``).
+PAGE_API_PATHS = [
+    "/api/project-scaffold",
+    "/api/browse-dirs",
+    "/api/recent-projects",
+    "/api/favorite-projects",
+]
+
+
+def test_declares_exactly_the_paths_its_page_calls(raw_manifest: dict):
+    """A built-in approves what it ships, and an adopted copy may declare no more.
+
+    The page has always opened the dashboard's project picker, whose listing,
+    recents, favourites and New folder requests went out under the dashboard's
+    own authority without a declaration. A copy of this app installed from its
+    repository reaches the picker through the App SDK, which mounts it only when
+    the manifest declares those families, and adoption refuses a tree that
+    declares more than the built-in. So the built-in declares them first: an
+    adopted copy then keeps the picker without widening anything, and nothing
+    beyond what the page already calls is declared.
+    """
+    assert raw_manifest["permissions"]["api"] == PAGE_API_PATHS
+
+
+def test_declared_picker_families_admit_exactly_the_sdk_paths():
+    """The three families admit every picker path, and each one admits some path.
+
+    Read through the gateway's own matcher, so a bare family covers New folder's
+    ``/api/browse-dirs/create`` as the token check does. Checked in a source
+    checkout: the wheel does not ship ``website/``, so an installed package
+    skips this.
+    """
+    sdk_source = Path(__file__).resolve().parents[6] / "website/src/app-sdk/ProjectPicker.tsx"
+    if not sdk_source.is_file():
+        pytest.skip("not a source checkout")
+    text = sdk_source.read_text(encoding="utf-8")
+    block = text[text.index("PROJECT_PICKER_PATHS = [") : text.index("] as const")]
+    sdk_paths = [line.strip().strip(",").strip("'") for line in block.splitlines()[1:]]
+    families = PAGE_API_PATHS[1:]
+    assert sdk_paths, "PROJECT_PICKER_PATHS parsed empty"
+    for path in sdk_paths:
+        assert any(_api_pattern_matches(f, path) for f in families), path
+    for family in families:
+        assert any(_api_pattern_matches(family, path) for path in sdk_paths), family
 
 
 # --- the host behaviour that decides whether the claim holds on Windows -------

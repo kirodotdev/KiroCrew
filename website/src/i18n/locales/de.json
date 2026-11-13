@@ -347,6 +347,9 @@
     "pullRequestPanel": {
       "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
     },
+    "projectPicker": {
+      "not_declared": "Diese App kann die Projektauswahl nicht anzeigen, denn ihre Berechtigungen deklarieren {{path}} nicht."
+    },
     "issues": {
       "assigned_to": "Zugewiesen an {{names}}",
       "assigned_to_me": "Mir zugewiesen",

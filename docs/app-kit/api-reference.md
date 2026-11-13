@@ -787,6 +787,48 @@ label, the first assignee, the author, the comment count (left out for Jira and 
 open only `http(s)` urls in a new tab with `rel="noopener noreferrer"`, and an avatar
 loads only from an `http(s)` url.
 
+## Project Picker
+
+`ProjectPicker` is the dashboard's own project-directory picker, the one the chat
+sidebar's folder settings and the composer's project chooser open: **Favorites**,
+**Recent**, **Browse**, the system folder picker in the desktop app, and **New folder**.
+An app that asks for a project directory opens it instead of restating it, so a
+directory reachable there is reachable in your page, spelled the same way. It needs
+`APP_SDK_LEVEL >= 7`.
+
+```tsx
+import * as sdk from '@kirocrew/app-sdk'
+
+const [open, setOpen] = useState(false)
+const browse = useRef<HTMLButtonElement>(null)
+
+sdk.APP_SDK_LEVEL >= 7 && sdk.ProjectPicker
+  ? <sdk.ProjectPicker open={open} onOpenChange={setOpen} anchorRef={browse} startPath={dir} onSelect={setDir} />
+  : null
+```
+
+The picker needs every path it sends in your manifest's `permissions.api`:
+`/api/browse-dirs` (the listing), `/api/browse-dirs/create` (**New folder**),
+`/api/recent-projects` and `/api/favorite-projects` (the list, and adding or removing
+a favourite). Declare the three bare families `/api/browse-dirs`,
+`/api/recent-projects` and `/api/favorite-projects`: a bare entry covers its children,
+while an exact `=/api/browse-dirs` leaves **New folder** out and the picker refuses.
+With any path missing, or outside an app, it renders a refusal naming the first
+missing path, with no **Ask the agent** hand-off (it would leave your page and lose
+what the form had not saved), and sends nothing. Declaring them is a real
+grant: **New folder** creates a directory on the gateway's disk, and a favourite is
+written to the user's settings. A built-in page keeps the picker as the dashboard has
+it.
+
+| Prop | Type | Required | Purpose |
+|---|---|---|---|
+| `open` | `boolean` | yes | Whether the picker is shown; closed, it renders nothing |
+| `onOpenChange` | `(open: boolean) => void` | yes | Called with `false` when the picker asks to close |
+| `onSelect` | `(path: string) => void` | yes | Called with the absolute directory chosen |
+| `anchorRef` | `RefObject<HTMLElement \| null>` | no | The element the popover hangs from |
+| `anchorRect` | `DOMRect \| null` | no | An anchor rectangle, when there is no element |
+| `startPath` | `string` | no | Where **Browse** opens; empty opens at the gateway user's home |
+
 ## Chat Marker Protocol
 
 An agent encodes UI affordances inline in the prose it streams. A surface that renders a transcript
@@ -1787,8 +1829,9 @@ and level 7 adds the manifest's `agentReadOnlyDirs` (see
 [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk), the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
 [manifest-reference.md](manifest-reference.md#desktop-windows)), the exact
-`permissions.api` entry (`=/api/example`, see the path matcher above) and
-[`ctx.chat_slots`](#chat-slots-ctxchat_slots); each level
+`permissions.api` entry (`=/api/example`, see the path matcher above),
+[`ctx.chat_slots`](#chat-slots-ctxchat_slots) and the dashboard's
+[project picker](#project-picker) (`ProjectPicker`); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call

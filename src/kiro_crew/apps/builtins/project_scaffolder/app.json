@@ -28,7 +28,10 @@
   },
   "permissions": {
     "api": [
-      "/api/project-scaffold"
+      "/api/project-scaffold",
+      "/api/browse-dirs",
+      "/api/recent-projects",
+      "/api/favorite-projects"
     ]
   },
   "ui": {

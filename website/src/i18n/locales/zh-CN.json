@@ -332,6 +332,9 @@
     "pullRequestPanel": {
       "not_declared": "此应用无法显示拉取请求：其权限未声明 {{path}}。"
     },
+    "projectPicker": {
+      "not_declared": "此应用无法显示项目选择器：其权限未声明 {{path}}。"
+    },
     "issues": {
       "assigned_to": "负责人：{{names}}",
       "assigned_to_me": "分配给我",
