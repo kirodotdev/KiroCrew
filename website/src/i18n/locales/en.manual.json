@@ -5086,7 +5086,8 @@
       "toggle_terminal": "Toggle terminal",
       "toggle_side_terminal": "Toggle side-panel terminal",
       "previous_terminal": "Previous terminal",
-      "next_terminal": "Next terminal"
+      "next_terminal": "Next terminal",
+      "toggle_dictation_mute": "Mute or unmute dictation"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} new notification",

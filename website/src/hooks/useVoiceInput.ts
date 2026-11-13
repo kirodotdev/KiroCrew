@@ -197,6 +197,10 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // updates ~60x/sec and must never trigger a React render.
   const sampleRef = useRef(createAudioSample())
   const mediaRef = useRef<MediaRecorder | null>(null)
+  // Mute for a batch recording. The recorder pauses, so the muted stretch is
+  // left out of the file instead of sent as silence the transcriber may turn
+  // into words.
+  const [batchMuted, setBatchMuted] = useState(false)
   const chunksRef = useRef<Blob[]>([])
   /**
    * Re-entrancy latch for the async startup window: a second click during
@@ -276,7 +280,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   // Destructure individual members so downstream useCallback deps track
   // stable references (start/stop/recording) instead of the hook's
   // always-new return object literal, preventing memoization churn.
-  const { recording: streamRecording, draining: streamDraining, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice, cancel: streamCancel } = useStreamingStt({
+  const { recording: streamRecording, draining: streamDraining, muted: streamMuted, setMuted: streamSetMuted, start: streamStart, stop: streamStop, switchDevice: streamSwitchDevice, cancel: streamCancel } = useStreamingStt({
     onPartial: streamOnPartial,
     onFinal: streamOnFinal,
     onCaptureStop: opts.onCaptureStop,
@@ -346,7 +350,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     warmPromiseRef.current = null
     if (mediaRef.current) {
       mediaRef.current.stream.getTracks().forEach(t => t.stop())
-      if (mediaRef.current.state === 'recording') mediaRef.current.stop()
+      if (mediaRef.current.state !== 'inactive') mediaRef.current.stop()
       mediaRef.current = null
     }
   }, [])
@@ -366,7 +370,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   const streamRecordingRef = useRef(false)
   streamRecordingRef.current = streamRecording
   const capturing = useCallback(
-    () => mediaRef.current?.state === 'recording' || streamRecordingRef.current,
+    () => (!!mediaRef.current && mediaRef.current.state !== 'inactive') || streamRecordingRef.current,
     [],
   )
   // The inbox request this instance currently displays as busy, if any.
@@ -606,6 +610,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
         levelStopRef.current?.()
         levelStopRef.current = null
         setLevel(0)
+        setBatchMuted(false)
         setDeviceLabel(''); setDeviceId('')
         stream?.getTracks().forEach(t => t.stop())
         // Cancelled (Esc): capture is already torn down above; drop the audio
@@ -624,6 +629,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
       }
       mr.start()
       mediaRef.current = mr
+      setBatchMuted(false)
       // Capture is running, so the last failed recording's offer ends here
       // (see the streaming path above for why not earlier).
       discardFailedCapture()
@@ -674,7 +680,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     setPartial('')
     levelStopRef.current?.()
     levelStopRef.current = null
-    if (mediaRef.current?.state === 'recording') {
+    if (mediaRef.current && mediaRef.current.state !== 'inactive') {
       mediaRef.current.stop()
       mediaRef.current = null
     }
@@ -715,7 +721,7 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
     // releasing a warm mic, which exists on the batch path alone.
     const transport = ownTransportRef.current ?? startupTransport
     if (transport ? transport === 'stream' : streamEnabled) { streamCancel(); setSessionOwner(null); return }
-    if (mediaRef.current?.state === 'recording') {
+    if (mediaRef.current && mediaRef.current.state !== 'inactive') {
       // onstop drops the blob (see discardRef) and tears down the meter + stream.
       discardRef.current = true
       mediaRef.current.stop()
@@ -755,6 +761,33 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
    */
   const isRecording = ownTransport === 'stream' ? streamRecording : ownTransport === 'batch' ? recording : false
   const toggle = useCallback(() => { if (isRecording) stop(); else start() }, [isRecording, start, stop])
+  const muted = ownTransport === 'stream' ? streamMuted : ownTransport === 'batch' ? batchMuted : false
+  /**
+   * Mute or unmute the capture in flight. Returns whether it is now in the
+   * requested state; false when nothing is capturing.
+   *
+   * Batch pauses the recorder and disables the track, so the meter reads zero
+   * and the file has a gap rather than silence. Either step failing stops the
+   * recording: a mute that cannot be confirmed must not keep recording.
+   */
+  const setMuted = useCallback((next: boolean): boolean => {
+    if (ownTransportRef.current === 'stream') return streamSetMuted(next)
+    const mr = mediaRef.current
+    if (!mr || mr.state === 'inactive') return false
+    const tracks = mr.stream.getAudioTracks()
+    try {
+      if (next && tracks.length === 0) throw new Error('no audio track')
+      if (next && mr.state === 'recording') mr.pause()
+      if (!next && mr.state === 'paused') mr.resume()
+    } catch {
+      stop()
+      return false
+    }
+    tracks.forEach(t => { t.enabled = !next })
+    setBatchMuted(next)
+    if (next) setLevel(0)
+    return true
+  }, [streamSetMuted, stop])
   /**
    * Change the capture device from the in-chat picker.
    *
@@ -850,5 +883,5 @@ export function useVoiceInput(onText: (text: string, sessionId: string | null, o
   const shownError = error ?? kept?.message ?? null
   const shownKept = error ? null : keptRecording
 
-  return { recording: isRecording, transcribing: transcribing || !!streamDraining, transport: ownTransport, drainCancellable, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error: shownError, keptRecording: shownKept, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
+  return { recording: isRecording, muted, setMuted, transcribing: transcribing || !!streamDraining, transport: ownTransport, drainCancellable, sessionOwner, streamEnabled, toggle, start, stop, cancel, prewarm, error: shownError, keptRecording: shownKept, level, deviceLabel, deviceId, clearError, partial, download, sampleRef, switchDevice, deviceSwitchIsLive }
 }

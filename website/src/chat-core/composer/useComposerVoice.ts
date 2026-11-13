@@ -38,6 +38,7 @@ import { parseSpeechProviders, speechProviderNotice } from '../../lib/speechProv
 import { dictationSeparator, spliceDictationText } from '../../lib/dictationText'
 import { useVoiceInput, voiceInputSupported, type TranscriptOrigin } from '../../hooks/useVoiceInput'
 import { usePushToTalk } from '../../hooks/usePushToTalk'
+import { DICTATION_MUTE_TOGGLE_EVENT } from '../../lib/dictationMute'
 import type { StopIntent } from '../../lib/pttSession'
 import { deliveringHeld, redeliverPending } from '../../hooks/voiceTranscriptInbox'
 import { haptic } from '../../lib/haptic'
@@ -949,6 +950,21 @@ export function useComposerVoice(host: ComposerVoiceHost) {
       if (live.recording && live.sessionOwner === sessionIdRef.current) stopVoice()
     })
   }, [stopVoice])
+  /**
+   * Mute or unmute the recording this composer owns. The microphone stays open
+   * and the timer keeps running; only what is sent changes. Inert without a
+   * live recording of this composer's own, which is also what keeps the
+   * shortcut from acting for a chat that is not capturing.
+   */
+  const toggleVoiceMute = useCallback(() => {
+    const live = voiceRef.current
+    if (!live.recording || live.sessionOwner !== sessionIdRef.current) return
+    live.setMuted(!live.muted)
+  }, [])
+  useEffect(() => {
+    window.addEventListener(DICTATION_MUTE_TOGGLE_EVENT, toggleVoiceMute)
+    return () => window.removeEventListener(DICTATION_MUTE_TOGGLE_EVENT, toggleVoiceMute)
+  }, [toggleVoiceMute])
   // Cancel (discard) the in-progress dictation — Esc. Batch simply drops the
   // pending audio (the hook's onstop skips transcription), so nothing lands in
   // the composer. Streaming additionally disarms the draining final AND removes
@@ -1280,6 +1296,7 @@ export function useComposerVoice(host: ComposerVoiceHost) {
     startVoice,
     stopVoice,
     toggleVoice,
+    toggleVoiceMute,
     cancelVoice,
     disarmForSend,
     micBusyElsewhere,
@@ -1334,6 +1351,9 @@ export function composerVoiceInputProps(cv: ComposerVoice) {
   const { voice, voiceOwned, polishError, clearVoiceError } = cv
   return {
     voiceRecording: voiceOwned && voice.recording,
+    /* The owned recording is muted: the mic is open but nothing is sent. */
+    voiceMuted: voiceOwned && voice.recording && voice.muted,
+    onVoiceToggleMute: cv.toggleVoiceMute,
     voiceTranscribing: voiceOwned && voice.transcribing,
     /* Whether the utterance in flight can still be called off, read from its own
        transport rather than from the streaming setting — the setting describes

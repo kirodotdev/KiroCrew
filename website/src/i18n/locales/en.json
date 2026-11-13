@@ -6086,7 +6086,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc to cancel, click the mic to finish",
       "esc_to_cancel_click_mic_to_send": "Esc to cancel, Shift-click keeps a draft, click the mic to send",
       "esc_to_cancel_enter_to_send": "Esc to cancel, Enter to send",
-      "listening": "Listening"
+      "listening": "Listening",
+      "muted": "Muted"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Enable it under",
@@ -6104,7 +6105,8 @@
       "voice_input_cannot_run": "Voice input can't run"
     },
     "voiceStatusBar": {
-      "recording": "Recording"
+      "recording": "Recording",
+      "muted": "Muted"
     },
     "webAppArtifactCard": {
       "acct": "acct",
@@ -6621,6 +6623,12 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (paused) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (paused)"
+    },
+    "voiceMuteButton": {
+      "mute": "Mute microphone",
+      "unmute": "Unmute microphone",
+      "shortcut_hint": "Alt+Shift+Q mutes or unmutes",
+      "shortcut_hint_mac": "⌥⇧Q mutes or unmutes"
     }
   },
   "hooks": {

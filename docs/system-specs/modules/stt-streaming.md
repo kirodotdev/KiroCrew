@@ -1153,6 +1153,34 @@ stderr is not quiet, so no test may assert it empty.
 
 `redirect_whispercpp_logs_to` stays at its `False` default. Its binding governs stderr rather than the log callback, and `None` redirects process-wide fd 2 during model loading, silencing unrelated threads while leaving stdout behavior unchanged.
 
+## Muting a dictation
+
+A recording can be muted and unmuted without ending it, from the button on the
+recording strip or the dictation panel, or with the rebindable
+`toggle-dictation-mute` chord (Alt+Shift+Q, Option+Shift+Q on macOS). The chord
+broadcasts `dictation-mute-toggle` (`website/src/lib/dictationMute.ts`), and only
+the composer that owns the live recording acts on it.
+
+The microphone stays open while muted. Releasing it would mean re-acquiring the
+device on unmute, which is slow and can prompt for permission again.
+
+- **Streaming.** The track is disabled and every frame read while muted goes out
+  as zeros of the same length (`useStreamingStt.setMuted`). Frames keep flowing
+  because Amazon Transcribe ends a stream that has had no audio for 15 seconds.
+  Zeroing on the page, not only disabling the track, means a frame still holding
+  sound from before the press, or a browser that ignores `enabled`, sends nothing.
+  An `endpoint` frame is ignored while muted, so the silence cannot be judged a
+  finished request and sent.
+- **Batch.** The `MediaRecorder` pauses, so the muted stretch is left out of the
+  file instead of reaching the transcriber as silence. A paused recorder is still
+  a live microphone, so stop and cancel treat any state but `inactive` as one.
+
+A mute that cannot be confirmed (no audio track, or the recorder refusing to
+pause) stops the recording instead. The timer keeps counting, the level meter
+reads zero, and a screen lock while muted still stops the recording as a draft.
+A device switched to mid-dictation starts muted if the old one was. The mute ends
+with the recording.
+
 ## Sending on a deliberate stop
 
 `stt.submit_on_release`, off by default, sends the message when the person

@@ -10055,7 +10055,8 @@
       "esc_to_cancel_click_mic_to_finish": "Échap pour annuler, cliquez sur le micro pour terminer",
       "esc_to_cancel_click_mic_to_send": "Échap pour annuler, Maj+clic garde un brouillon, clique sur le micro pour envoyer",
       "esc_to_cancel_enter_to_send": "Échap pour annuler, Entrée pour envoyer",
-      "listening": "Écoute en cours"
+      "listening": "Écoute en cours",
+      "muted": "Micro coupé"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Activez-la dans",
@@ -10084,7 +10085,8 @@
       "retry_transcription": "Réessayer",
       "save_recording": "Sauvegarder l’enregistrement",
       "discard_recording": "Abandonner l’enregistrement",
-      "recording_actions": "Autres actions pour cet enregistrement"
+      "recording_actions": "Autres actions pour cet enregistrement",
+      "muted": "Micro coupé"
     },
     "webAppArtifactCard": {
       "acct": "compte",
@@ -11638,6 +11640,12 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (en pause) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (en pause)"
+    },
+    "voiceMuteButton": {
+      "mute": "Couper le micro",
+      "unmute": "Réactiver le micro",
+      "shortcut_hint": "Alt+Shift+Q coupe ou réactive",
+      "shortcut_hint_mac": "⌥⇧Q coupe ou réactive"
     }
   },
   "hooks": {
@@ -11712,7 +11720,8 @@
       "toggle_terminal": "Afficher/masquer le terminal",
       "toggle_side_terminal": "Afficher/masquer le terminal du panneau latéral",
       "previous_terminal": "Terminal précédent",
-      "next_terminal": "Terminal suivant"
+      "next_terminal": "Terminal suivant",
+      "toggle_dictation_mute": "Couper ou réactiver le micro de la dictée"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} nouvelles notifications",

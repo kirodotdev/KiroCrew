@@ -9823,7 +9823,8 @@
       "esc_to_cancel_click_mic_to_finish": "বাতিল করতে Esc, শেষ করতে মাইকে ক্লিক করুন",
       "esc_to_cancel_click_mic_to_send": "বাতিল করতে Esc, খসড়া রাখতে Shift-ক্লিক, পাঠাতে মাইকে ক্লিক করো",
       "esc_to_cancel_enter_to_send": "বাতিল করতে Esc, পাঠাতে Enter",
-      "listening": "শোনা হচ্ছে"
+      "listening": "শোনা হচ্ছে",
+      "muted": "মিউট করা"
     },
     "voiceDisabledModal": {
       "enable_it_under": "এটি চালু করুন এখানে:",
@@ -9852,7 +9853,8 @@
       "retry_transcription": "আবার চেষ্টা করো",
       "save_recording": "রেকর্ডিং সংরক্ষণ করো",
       "discard_recording": "রেকর্ডিং বাতিল করো",
-      "recording_actions": "এই রেকর্ডিংয়ের আরও বিকল্প"
+      "recording_actions": "এই রেকর্ডিংয়ের আরও বিকল্প",
+      "muted": "মিউট করা"
     },
     "webAppArtifactCard": {
       "acct": "অ্যাকাউন্ট",
@@ -11383,6 +11385,12 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (বিরতিতে) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (বিরতিতে)"
+    },
+    "voiceMuteButton": {
+      "mute": "মাইক্রোফোন মিউট করো",
+      "unmute": "মাইক্রোফোন আনমিউট করো",
+      "shortcut_hint": "Alt+Shift+Q দিয়ে মিউট বা আনমিউট করো",
+      "shortcut_hint_mac": "⌥⇧Q দিয়ে মিউট বা আনমিউট করো"
     }
   },
   "hooks": {
@@ -11457,7 +11465,8 @@
       "toggle_terminal": "টার্মিনাল দেখান/লুকান",
       "toggle_side_terminal": "সাইড প্যানেলের টার্মিনাল দেখাও/লুকাও",
       "previous_terminal": "আগের টার্মিনাল",
-      "next_terminal": "পরের টার্মিনাল"
+      "next_terminal": "পরের টার্মিনাল",
+      "toggle_dictation_mute": "ডিক্টেশন মিউট বা আনমিউট করো"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}}টি নতুন বিজ্ঞপ্তি",

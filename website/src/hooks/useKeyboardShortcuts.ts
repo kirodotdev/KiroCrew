@@ -44,6 +44,7 @@ import { isEditableTarget } from '../utils/editableTarget'
 import { closeShownCrewWindow, crewWindowShown } from '../pages/chat/crew-window/crewWindowStore'
 import { stepTurn } from '../pages/chat/turnStep'
 import { noteEscapeStoppedSpeech } from '../utils/speechStopKey'
+import { requestDictationMuteToggle } from '../lib/dictationMute'
 
 /** Shortcuts scoped to the session on screen (see the crew-window guard). */
 const CREW_WINDOW_SCOPED: ReadonlySet<string> = new Set([
@@ -302,6 +303,7 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'cycle-model': 'hooks.useKeyboardShortcuts.cycle_model',
   'cycle-prev-model': 'hooks.useKeyboardShortcuts.previous_model',
   'toggle-focus-mode': 'hooks.useKeyboardShortcuts.toggle_focus_mode',
+  'toggle-dictation-mute': 'hooks.useKeyboardShortcuts.toggle_dictation_mute',
   // Reused: the chat header button this chord fires.
   'pop-out-session': 'pages.chatPage.pop_out_session_to_its_own_window',
   // Reused: the ChatInput control this chord fires.
@@ -1035,6 +1037,10 @@ export function useKeyboardShortcuts({ onToggleShortcutsModal, onNewChat, onCycl
         'cycle-model': () => onCycleModel?.(),
         'cycle-prev-model': () => onCyclePrevModel?.(),
         'toggle-focus-mode': () => onToggleFocusMode?.(),
+        // The composer that owns the live recording answers; with none, the
+        // chord is claimed and does nothing. A held chord's auto-repeat would
+        // flip the mute back and forth.
+        'toggle-dictation-mute': () => { if (!e.repeat) requestDictationMuteToggle() },
         // ⌘O / Ctrl+O: the chat header's pop-out button, for the active
         // session. A held chord's auto-repeat is not another press.
         'pop-out-session': () => { if (!e.repeat) onPopOutSession?.() },

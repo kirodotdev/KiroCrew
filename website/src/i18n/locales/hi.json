@@ -9823,7 +9823,8 @@
       "esc_to_cancel_click_mic_to_finish": "रद्द करने के लिए Esc, समाप्त करने के लिए माइक पर क्लिक करें",
       "esc_to_cancel_click_mic_to_send": "रद्द करने के लिए Esc, ड्राफ़्ट रखने के लिए Shift-क्लिक, भेजने के लिए माइक पर क्लिक करो",
       "esc_to_cancel_enter_to_send": "रद्द करने के लिए Esc, भेजने के लिए Enter",
-      "listening": "सुन रहा है"
+      "listening": "सुन रहा है",
+      "muted": "म्यूट है"
     },
     "voiceDisabledModal": {
       "enable_it_under": "इसे यहाँ चालू करें:",
@@ -9852,7 +9853,8 @@
       "retry_transcription": "फिर से कोशिश करो",
       "save_recording": "रिकॉर्डिंग सहेजो",
       "discard_recording": "रिकॉर्डिंग छोड़ दो",
-      "recording_actions": "इस रिकॉर्डिंग के लिए और विकल्प"
+      "recording_actions": "इस रिकॉर्डिंग के लिए और विकल्प",
+      "muted": "म्यूट है"
     },
     "webAppArtifactCard": {
       "acct": "खाता",
@@ -11383,6 +11385,12 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (रुका हुआ) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (रुका हुआ)"
+    },
+    "voiceMuteButton": {
+      "mute": "माइक्रोफ़ोन म्यूट करो",
+      "unmute": "माइक्रोफ़ोन अनम्यूट करो",
+      "shortcut_hint": "Alt+Shift+Q से म्यूट या अनम्यूट करो",
+      "shortcut_hint_mac": "⌥⇧Q से म्यूट या अनम्यूट करो"
     }
   },
   "hooks": {
@@ -11457,7 +11465,8 @@
       "toggle_terminal": "टर्मिनल दिखाएँ/छिपाएँ",
       "toggle_side_terminal": "साइड पैनल का टर्मिनल दिखाएँ/छिपाएँ",
       "previous_terminal": "पिछला टर्मिनल",
-      "next_terminal": "अगला टर्मिनल"
+      "next_terminal": "अगला टर्मिनल",
+      "toggle_dictation_mute": "डिक्टेशन म्यूट या अनम्यूट करो"
     },
     "useNativeNotification": {
       "new_notifications_one": "{{count}} नई सूचना",

@@ -9591,7 +9591,8 @@
       "esc_to_cancel_click_mic_to_finish": "Escキーでキャンセル、マイクをクリックして終了",
       "esc_to_cancel_click_mic_to_send": "Escキーでキャンセル、Shift+クリックで下書きを保持、マイクをクリックして送信",
       "esc_to_cancel_enter_to_send": "Escキーでキャンセル、Enterキーで送信",
-      "listening": "リッスン中"
+      "listening": "リッスン中",
+      "muted": "ミュート中"
     },
     "voiceDisabledModal": {
       "enable_it_under": "以下から有効にする",
@@ -9620,7 +9621,8 @@
       "retry_transcription": "再試行",
       "save_recording": "録音を保存",
       "discard_recording": "録音を破棄",
-      "recording_actions": "この録音のその他の操作"
+      "recording_actions": "この録音のその他の操作",
+      "muted": "ミュート中"
     },
     "webAppArtifactCard": {
       "acct": "アカウント",
@@ -11128,6 +11130,12 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（一時停止中）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（一時停止中）"
+    },
+    "voiceMuteButton": {
+      "mute": "マイクをミュート",
+      "unmute": "ミュートを解除",
+      "shortcut_hint": "Alt+Shift+Q でミュート切り替え",
+      "shortcut_hint_mac": "⌥⇧Q でミュート切り替え"
     }
   },
   "hooks": {
@@ -11202,7 +11210,8 @@
       "toggle_terminal": "ターミナルの表示を切り替え",
       "toggle_side_terminal": "サイドパネルのターミナルの表示を切り替え",
       "previous_terminal": "前のターミナル",
-      "next_terminal": "次のターミナル"
+      "next_terminal": "次のターミナル",
+      "toggle_dictation_mute": "音声入力のミュートを切り替え"
     },
     "useNativeNotification": {
       "new_notifications_other": "{{count}} 件の新しい通知"

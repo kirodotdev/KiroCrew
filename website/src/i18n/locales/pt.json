@@ -10055,7 +10055,8 @@
       "esc_to_cancel_click_mic_to_finish": "Esc para cancelar, clique no microfone para terminar",
       "esc_to_cancel_click_mic_to_send": "Esc para cancelar, Shift+clique mantém um rascunho, clique no microfone para enviar",
       "esc_to_cancel_enter_to_send": "Esc para cancelar, Enter para enviar",
-      "listening": "Ouvindo"
+      "listening": "Ouvindo",
+      "muted": "Silenciado"
     },
     "voiceDisabledModal": {
       "enable_it_under": "Ative em",
@@ -10084,7 +10085,8 @@
       "retry_transcription": "Tentar novamente",
       "save_recording": "Salvar a gravação",
       "discard_recording": "Descartar a gravação",
-      "recording_actions": "Mais ações para esta gravação"
+      "recording_actions": "Mais ações para esta gravação",
+      "muted": "Silenciado"
     },
     "webAppArtifactCard": {
       "acct": "conta",
@@ -11638,6 +11640,12 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (em pausa) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (em pausa)"
+    },
+    "voiceMuteButton": {
+      "mute": "Silenciar microfone",
+      "unmute": "Ativar microfone",
+      "shortcut_hint": "Alt+Shift+Q silencia ou ativa",
+      "shortcut_hint_mac": "⌥⇧Q silencia ou ativa"
     }
   },
   "hooks": {
@@ -11712,7 +11720,8 @@
       "toggle_terminal": "Alternar terminal",
       "toggle_side_terminal": "Alternar terminal do painel lateral",
       "previous_terminal": "Terminal anterior",
-      "next_terminal": "Próximo terminal"
+      "next_terminal": "Próximo terminal",
+      "toggle_dictation_mute": "Silenciar ou ativar o ditado"
     },
     "useNativeNotification": {
       "new_notifications_many": "{{count}} novas notificações",
