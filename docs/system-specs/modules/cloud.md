@@ -192,10 +192,14 @@ egress check (NAT or IGW) — each failing fast with actionable text instead of
 hanging to the `WaitCondition` timeout (the no-egress refusal offers leaving the
 subnet unset or choosing one with a NAT or internet-gateway route before a
 route-table change), and the same NAT→no-public-IP /
-IGW→public-IP parameter wiring applies. `--subnet` applies only to a **new**
-stack; reusing an existing stack warns interactively that its network is fixed,
-and **hard-fails under `--yes`** — a script's explicitly requested pin must not
-be silently ignored.
+IGW→public-IP parameter wiring applies. The dashboard also runs the same
+`resolve_explicit_subnet` check when Launch is chosen, before a job exists: a
+refusal of the subnet itself answers 400 `invalid_subnet`, shown under the
+Subnet ID field, and any other AWS failure of that check answers 502
+`aws_call_failed`; the job's own check in `ec2.deploy` stays. `--subnet`
+applies only to a **new** stack; reusing an existing stack warns
+interactively that its network is fixed, and **hard-fails under `--yes`** — a
+script's explicitly requested pin must not be silently ignored.
 
 `launch --ami <ami-id>` and `launch --extra-packages <names>` customize a
 **new** box only, with the same existing-stack rule as `--subnet` (warn

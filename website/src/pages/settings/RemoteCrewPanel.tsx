@@ -106,6 +106,7 @@ export { TurnUrlField } from './RemoteCrewPanelCrewRow'
 
 /** The shape of an AWS Region name, e.g. us-east-1 or us-gov-west-1. The gateway validates it again. */
 const AWS_REGION_RE = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/
+const SUBNET_ERROR_ID = 'remote-crew-subnet-error'
 
 export function RemoteCrewPanel() {
   const queryClient = useQueryClient()
@@ -295,6 +296,8 @@ export function RemoteCrewPanel() {
   // row disappears on its own when the teardown finishes.
   const [deletingTags, setDeletingTags] = useState<Set<string>>(new Set())
   const [actionErr, setActionErr] = useState<string | null>(null)
+  // A launch refused for its subnet: shown under the Subnet ID field, not at the top.
+  const [subnetErr, setSubnetErr] = useState<string | null>(null)
   // A crew connected HERE that the gateway showing this page declined to adopt as
   // a tab of its own. Separate from `actionErr` because the connect succeeded:
   // folding it in would report a working crew as a failed connect.
@@ -788,7 +791,7 @@ export function RemoteCrewPanel() {
   const launchMutation = useMutation({
     mutationFn: (body: { provider_id?: string; profile: string; region: string; size_key: string; subnet_id?: string }) =>
       api.cloudLaunch(body),
-    onMutate: () => setActionErr(null),
+    onMutate: () => { setActionErr(null); setSubnetErr(null) },
     onSuccess: job => {
       setActiveLaunchId(job.id)
       reloadLaunches()
@@ -797,7 +800,11 @@ export function RemoteCrewPanel() {
       if (sentLaunchDraft.current) dispatch(dropLaunchedCrewDraft(sentLaunchDraft.current))
       if (sentLaunchKey.current) setLaunchedKey(sentLaunchKey.current)
     },
-    onError: e => setActionErr(errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))),
+    onError: e => {
+      const msg = errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error'))
+      if (e instanceof ApiError && parseErrorCode(e.body) === 'invalid_subnet') setSubnetErr(msg)
+      else setActionErr(msg)
+    },
     onSettled: () => { sentLaunchDraft.current = null; sentLaunchKey.current = null },
   })
   const enableMutation = useMutation({
@@ -1539,13 +1546,17 @@ export function RemoteCrewPanel() {
                 type="text"
                 value={subnetId}
                 aria-label={i18nT('pages.settings.remoteCrewPanel.subnet')}
-                onChange={e => setSubnetId(e.target.value)}
+                aria-invalid={subnetErr ? true : undefined}
+                aria-describedby={subnetErr ? SUBNET_ERROR_ID : undefined}
+                onChange={e => { setSubnetId(e.target.value); setSubnetErr(null) }}
                 placeholder="subnet-0123456789abcdef0"
                 spellCheck={false}
                 className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-hidden focus-visible:border-accent"
               />
               <span className="block mt-1 text-[12px]">{i18nT('pages.settings.remoteCrewPanel.subnet_hint')}</span>
             </label>
+            {/* askAgent ON: the unlaunched subnet draft lives in the store and survives the hand-off. */}
+            {subnetErr && <ErrorNotice id={SUBNET_ERROR_ID} variant="inline" className="mt-1" message={subnetErr} askAgent />}
 
             <div className="mt-4">
               <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
