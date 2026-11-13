@@ -147,7 +147,11 @@ class TestSpawnCli:
             ),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
-        assert "No subagents." in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert out == (
+            "No subagents started from the CLI. Runs that a chat or another "
+            "session started are not listed here; see them in the dashboard.\n"
+        )
 
     def test_list_http_error_with_json_body_prints_server_error(
         self, capsys: pytest.CaptureFixture[str]

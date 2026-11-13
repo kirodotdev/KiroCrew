@@ -239,7 +239,12 @@ def _spawn(args: argparse.Namespace) -> None:
         queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
         partial = data.get("queued_truncated") is True
         if not agents and not queued and not partial:
-            print("No subagents.")
+            # The gateway lists only runs no session started for a caller with
+            # no session key, so an empty reply does not mean nothing runs.
+            print(
+                "No subagents started from the CLI. Runs that a chat or another "
+                "session started are not listed here; see them in the dashboard."
+            )
             return
         for q in queued:
             # Accepted, no run yet (or waiting to resume one): a distinct icon,

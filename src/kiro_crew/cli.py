@@ -10,7 +10,7 @@ Commands:
     kirocrew update               Update Kiro Crew via git fetch + rebuild
     kirocrew cron list|add|remove Manage scheduled jobs
     kirocrew spawn run "task"     Spawn a background subagent
-    kirocrew spawn list           List subagents
+    kirocrew spawn list           List subagents that no session started
     kirocrew learn add|list|remove Save and manage learned corrections
     kirocrew setup                Interactive setup wizard
     kirocrew doctor               Verify setup
