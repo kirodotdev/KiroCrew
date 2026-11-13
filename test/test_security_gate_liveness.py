@@ -801,7 +801,43 @@ def _url_payload_command(n: int) -> str:
 #: rebuild's budget for every caller and is reused for a second on the event loop, so
 #: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
 #: at once while that listing is still in flight. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_901
+#: Raised by 624, from 35,901, to 36,525, for ``redaction_patterns._glued_matches`` and pass
+#: 1's glued splice, so that two credentials written back to back, where the first's
+#: body class takes the second's prefix, both redact. The JWT header check moves
+#: into ``_validated_match`` so the inner scan shares it; ``_probe_at`` and the two window constants keep the inner scan
+#: linear. The glued scan adds no regex: every reader it needs is plain code over the
+#: existing patterns. ``_find_uri_start`` / ``_uri_scheme_end`` find a glued link's
+#: scheme as string literals and ``_run_end`` ends its authority, so its userinfo is
+#: matched to its last `@`; an `eyJ` start is probed on its own and read whole (only
+#: the first `eyJ` of a segment run); ``_find_pem_end`` / ``_pem_end_at`` find a PEM
+#: END marker with ``str.find`` and check its label by hand, so a glued block is read to
+#: it as the plain scan does; ``_aws_label_end`` / ``_bearer_prefix_end`` (literal names,
+#: ``_separator_end`` by hand, ``Authorization`` through the pre-filter's own anchors)
+#: keep a field label a value already swallowed part of that value unless
+#: ``_TOKEN_CHARS`` shows only its separator was taken; ``_find_spaced_start`` finds PEM,
+#: Bearer and AWS field starts on their own (read past a search bound by
+#: ``_START_LOOKAHEAD``, the longest start literal), and a ``_Span`` with no match
+#: redacts the rest of the run once the probe budget is spent, once per run and without
+#: skipping a credential that starts inside it; ``_pem_body_end`` lets the inner scan
+#: step over starts before a complete PEM block's END marker, which cannot reach past
+#: it; a header nested in a truncated PEM block ends where that block does, so it is
+#: skipped; ``_is_aws_value_run`` lets a field label inside an AWS value run already
+#: read to its end skip the probe that would re-read it; ``_glued_match`` reads a
+#: Discord or link-token start behind a ``_GUARD_CHARS`` character on a slice of at
+#: most five segment runs, where those branches' start lookbehinds see nothing, and
+#: ``_find_glued_discord_start`` finds such Discord starts from the pre-filter's own
+#: Discord anchor; ``_abutting_match`` probes those two branches at a match's end,
+#: where the plain scan resumes behind that same character, and a glued JWT hit
+#: ``_validated_match`` rejects retries through ``_glued_match`` too; the pass-1 splice
+#: takes only the part past the span before it, and the manifest lines. No branch
+#: widened; other ``_credential_matches`` callers are unchanged unless they pass
+#: ``glued=True``. ``test_credential_glued_plain_readers`` holds each reader to the
+#: regex spelling it replaces. After the probe budget is spent the spaced-start search
+#: still reads one window at a time, so a repeated label stays linear; and
+#: ``text_redaction._glued_key_tail`` lets the stream commit a credential before an AWS
+#: key name that ends it and hold the name in the AWS discard, so the stream reads it
+#: as a field once its separator follows, as the batch pass does.
+_PACKAGE_LINE_BUDGET = 36_525
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -19,7 +19,9 @@ here.
 from __future__ import annotations
 
 import re
+import string
 from collections.abc import Iterator
+from typing import cast
 
 import kiro_crew.security.pem_scan as pem_scan
 from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
@@ -466,45 +468,596 @@ def _credential_search(text: str, pos: int, starts: list[int]) -> re.Match[str] 
     return _CREDENTIAL_PATTERNS.match(text, first)
 
 
-def _credential_matches(text: str) -> Iterator[re.Match[str]]:
+class _Span:
+    """A span of *text* that ``re.Match`` cannot report: read like a match, through
+    ``start``, ``end`` and ``group``.
+
+    With *match*, it is a pattern match read on ``text[start:]`` (see
+    :func:`_glued_match`), reported at the text's own positions. Without one, it is
+    the run ``text[start:end]`` the glued scan redacts whole when its probe budget runs
+    out, and it has no groups.
+    """
+
+    __slots__ = ("_end", "_start", "_text", "match")
+
+    def __init__(self, text: str, start: int, end: int, match: re.Match[str] | None = None) -> None:
+        self._text, self._start, self._end, self.match = text, start, end, match
+
+    def start(self, group: int | str = 0) -> int:
+        if group == 0 or self.match is None:
+            return self._start if group == 0 else -1
+        at = self.match.start(group)
+        return at if at == -1 else at + self._start
+
+    def end(self, group: int | str = 0) -> int:
+        if group == 0 or self.match is None:
+            return self._end if group == 0 else -1
+        at = self.match.end(group)
+        return at if at == -1 else at + self._start
+
+    def group(self) -> str:
+        return self._text[self._start : self._end]
+
+
+#: The character class the Discord and link-token start lookbehinds refuse.
+_GUARD_CHARS = frozenset(string.ascii_letters + string.digits + "_-")
+
+
+def _glued_match(
+    pattern: re.Pattern[str], text: str, start: int, endpos: int | None = None
+) -> re.Match[str] | _Span | None:
+    """``pattern.match(text, start, endpos)``, as if nothing came before *start*.
+
+    A start glued inside another credential, or right at its end, sees that
+    credential's last character before it, and the Discord and link-token branches
+    guard their start with a lookbehind that refuses a token character there. No
+    other branch looks before its start, and those two start only at ``M``, ``N``,
+    ``O`` or ``eyJ``, so only such a start behind a guard character is read on a
+    slice of the text, where the lookbehind sees nothing. Both branches, and the JWT
+    branch that also starts at ``eyJ``, read only segment runs joined by ``.``, at
+    most five of them (a JWE), so the slice ends after the fifth: no match there
+    reads further. Discord's and the link token's ``(?![A-Za-z0-9_-])`` sit after
+    their third and second runs, inside the slice, so each sees what it sees in place.
+    """
+    end = len(text) if endpos is None else endpos
+    if (
+        start == 0
+        or start >= end
+        or text[start - 1] not in _GUARD_CHARS
+        or not (text[start] in "MNO" or text.startswith("eyJ", start, end))
+    ):
+        return pattern.match(text, start, end)
+    stop = start
+    for _ in range(5):
+        run = _JWT_SEGMENT_RUN_RE.match(text, stop, end)
+        stop = stop if run is None else run.end()
+        if stop >= end or text[stop] != ".":
+            break
+        stop += 1
+    hit = pattern.match(text[start:stop])
+    return None if hit is None else _Span(text, start, start + hit.end(), hit)
+
+
+def _validated_match(
+    text: str, m: re.Match[str] | _Span, *, glued: bool = False
+) -> re.Match[str] | _Span | None:
+    """*m*, or for a JWT-branch hit whose header is not JSON, or a Telegram-branch hit on
+    a CDK-generated ARN's account-id boundary, the other branches' match there.
+
+    A header holding a second ``eyJ`` stays a credential: rejecting it would rescan that
+    header once per ``eyJ``. With *glued*, *m* came from :func:`_glued_match` and the
+    JWT retry reads its start the same way. A Telegram hit starts at a digit, where no
+    branch guards its start, so its retry is the plain one either way.
+    """
+    header = m.group().split(".", 1)[0]
+    if m.group().startswith("eyJ") and m.group().count(".") >= 2 and not is_jwt_header(header):
+        if glued:
+            return _glued_match(_CREDENTIAL_PATTERNS_SANS_JWT, text, m.start())
+        return _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
+    if (
+        _TELEGRAM_AT_RE.fullmatch(m.group())
+        and _ARN_ACCOUNT_ID_12_DIGITS_RE.match(text, m.start())
+        and _ARN_ACCOUNT_ID_PREFIX_RE.search(
+            text, max(0, m.start() - _ARN_PREFIX_MAX_LOOKBACK), m.start()
+        )
+        and not _arn_exemption_withheld(m.group())
+    ):
+        return _CREDENTIAL_PATTERNS_SANS_TELEGRAM.match(text, m.start())
+    return m
+
+
+#: The AWS labelled branches' field names, as `_CREDENTIAL_PATTERNS` spells them.
+_AWS_LABELS = (
+    "SecretAccessKey",
+    "aws_secret_access_key",
+    "SessionToken",
+    "aws_session_token",
+    "AccessKeyId",
+    "aws_access_key_id",
+)
+#: What ends the value class `[^\s"',}]` the three AWS labelled branches share,
+#: besides whitespace.
+_AWS_VALUE_STOPS = "\"',}"
+#: The userinfo branch's schemes, as `_CREDENTIAL_PATTERNS` spells them.
+_URI_SCHEMES = (
+    "postgres://",
+    "postgresql://",
+    "mysql://",
+    "mongodb://",
+    "mongodb+srv://",
+    "redis://",
+    "rediss://",
+    "amqp://",
+    "amqps://",
+    "http://",
+    "https://",
+    "ftp://",
+    "ftps://",
+)
+#: Literal starts of the branches whose own grammar can hold a space, so a span that
+#: ends at a space can still be cut short by one; probed even after the probe budget is
+#: spent. The Bearer header's ``Authorization`` is found by :func:`_find_authorization`.
+_SPACED_STARTS = (pem_scan.HEADER_PREFIX, *_AWS_LABELS)
+#: A Bearer token character, as the Bearer branch and the stream's Bearer discard
+#: spell the class: text that continues a token after a span's end.
+_TOKEN_CHARS = frozenset(string.ascii_letters + string.digits + "._~+/-")
+
+#: How far past a match's end a glued-credential probe reads before widening.
+_GLUED_WINDOW = 512
+#: Probes per match that extend nothing; past that the rest of the run is redacted.
+_GLUED_PROBES = 8
+#: How far past a search bound a start search reads, so a start just before the bound
+#: still matches whole: at least the longest of ``_SPACED_STARTS``, ``Authorization``
+#: and ``_URI_SCHEMES`` (``aws_secret_access_key``, 21 characters).
+_START_LOOKAHEAD = 32
+
+
+def _run_end(text: str, pos: int, stops: str = "") -> int:
+    """End of the run from *pos* of characters that are neither whitespace nor in *stops*."""
+    end = pos
+    while end < len(text) and not text[end].isspace() and text[end] not in stops:
+        end += 1
+    return end
+
+
+def _separator_end(text: str, pos: int) -> int:
+    """End of the labelled branches' ``["']?\\s*[:=]\\s*["']?`` at *pos*, else -1.
+
+    Each part is greedy and the next part cannot start with what it took, so the one
+    left-to-right read is the regex's own.
+    """
+    if text.startswith(('"', "'"), pos):
+        pos += 1
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    if not text.startswith((":", "="), pos):
+        return -1
+    pos += 1
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return pos + 1 if text.startswith(('"', "'"), pos) else pos
+
+
+def _aws_label_end(text: str, start: int) -> int:
+    """End of an AWS labelled branch's field name and separator at *start*, else -1:
+    inside another credential's value, a field name whose separator that value already
+    took is part of the value. No two of the names start alike, so the first that
+    matches is the only one."""
+    for label in _AWS_LABELS:
+        if text.startswith(label, start):
+            return _separator_end(text, start + len(label))
+    return -1
+
+
+def _authorization_at(text: str, start: int) -> bool:
+    """Whether ``(?i:Authorization)`` matches at *start*.
+
+    It is read by the pre-filter's own anchors on its ``z`` (see the note above them),
+    so the case folding is the regex engine's, not a hand-rolled one.
+    """
+    anchor = {
+        "z": _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
+        "Z": _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE,
+    }.get(text[start + 7 : start + 8])
+    return anchor is not None and anchor.match(text, start + 7) is not None
+
+
+def _find_authorization(text: str, pos: int, endpos: int) -> int:
+    """Leftmost start >= *pos* of a ``(?i:Authorization)`` that ends by *endpos*, else -1."""
+    found = [
+        hit.start() - 7
+        for anchor in (
+            _CREDENTIAL_PREFILTER_AUTHORIZATION_RE,
+            _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE,
+        )
+        if (hit := anchor.search(text, pos + 7, endpos)) is not None
+    ]
+    return min(found, default=-1)
+
+
+def _bearer_prefix_end(text: str, start: int) -> int:
+    """End of the Bearer branch's header name, separator and scheme at *start*, else -1:
+    part of a value only when that value already took the separator.
+
+    ``Bearer`` is compared through ``str.lower``: ``re`` folds none of its letters onto
+    anything but their own two cases, so the two agree on it, as
+    ``test_the_bearer_scheme_fold_agrees_with_the_regex_engine`` pins.
+    """
+    if not _authorization_at(text, start):
+        return -1
+    at = _separator_end(text, start + len("Authorization"))
+    if at == -1 or text[at : at + 6].lower() != "bearer":
+        return -1
+    end = at + 6
+    while end < len(text) and text[end].isspace():
+        end += 1
+    return end if end > at + 6 else -1
+
+
+def _uri_scheme_end(text: str, start: int) -> int:
+    """End of a scheme in ``_URI_SCHEMES`` at *start*, else -1."""
+    for scheme in _URI_SCHEMES:
+        if text.startswith(scheme, start):
+            return start + len(scheme)
+    return -1
+
+
+def _find_uri_start(text: str, pos: int, endpos: int) -> int:
+    """Leftmost start >= *pos* of a scheme in ``_URI_SCHEMES`` that ends by *endpos*,
+    else -1. A scheme name holds no ``:``, so the first ``://`` that ends one ends the
+    leftmost."""
+    at = pos
+    while (sep := text.find("://", at, endpos)) != -1:
+        starts = [
+            sep + 3 - len(scheme)
+            for scheme in _URI_SCHEMES
+            if sep + 3 - len(scheme) >= pos and text.startswith(scheme, sep + 3 - len(scheme))
+        ]
+        if starts:
+            return min(starts)
+        at = sep + 1
+    return -1
+
+
+def _find_spaced_start(text: str, pos: int, endpos: int) -> int:
+    """Leftmost start >= *pos* of one of ``_SPACED_STARTS`` or of ``Authorization`` that
+    ends by *endpos*, else -1."""
+    found = [at for start in _SPACED_STARTS if (at := text.find(start, pos, endpos)) != -1]
+    if (at := _find_authorization(text, pos, endpos)) != -1:
+        found.append(at)
+    return min(found, default=-1)
+
+
+def _pem_end_at(text: str, at: int) -> int:
+    """End of a PEM END marker (``pem_scan.END``, ``-----END [A-Z ]*PRIVATE KEY-----``)
+    at *at*, else -1.
+
+    ``-`` is not in ``[A-Z ]``, so the marker's label is the whole ``[A-Z ]`` run after
+    ``-----END ``, which must end in ``PRIVATE KEY`` and be followed by ``-----``.
+    """
+    head = at + len("-----END ")
+    if not text.startswith("-----END ", at):
+        return -1
+    run = head
+    while run < len(text) and (text[run] == " " or "A" <= text[run] <= "Z"):
+        run += 1
+    tail = "PRIVATE KEY"
+    if run - len(tail) < head or not text.startswith(tail, run - len(tail)):
+        return -1
+    return run + 5 if text.startswith("-----", run) else -1
+
+
+def _find_pem_end(text: str, pos: int) -> tuple[int, int]:
+    """Start and end of the first PEM END marker at or after *pos*, else ``(-1, -1)``.
+
+    Two candidates' label runs never overlap (``-`` ends a run), so the search is linear.
+    """
+    while (at := text.find("-----END ", pos)) != -1:
+        if (end := _pem_end_at(text, at)) != -1:
+            return at, end
+        pos = at + 1
+    return -1, -1
+
+
+def _find_glued_discord_start(text: str, pos: int, before: int, endpos: int) -> int:
+    """Leftmost start in ``[pos, before)`` where the Discord branch matches by *endpos*
+    with its start lookbehind dropped, else -1.
+
+    ``_CREDENTIAL_PATTERNS.search`` refuses such a start behind a token character, as
+    every Discord token glued inside a span is. The token's first ``.`` sits 23 to 31
+    characters after its start, so each first dot the pre-filter's own Discord anchor
+    finds names the nine starts to try, and dots come in order of their starts.
+    """
+    at = pos
+    while (dot := _CREDENTIAL_PREFILTER_DISCORD_RE.search(text, at, endpos)) is not None:
+        first = dot.start()
+        if first - 31 >= before:
+            break
+        for start in range(max(pos, first - 31), min(before, first - 22)):
+            if text[start] in "MNO" and _glued_match(_CREDENTIAL_PATTERNS, text, start, endpos):
+                return start
+        at = first + 1
+    return -1
+
+
+def _probe_at(text: str, start: int, end: int, ends: list[int]) -> re.Match[str] | _Span | None:
+    """The validated match at *start*, read through a window past *end* that doubles
+    only while the match reaches its edge, so a probe that extends nothing stays short.
+
+    Every branch but two is a greedy run, so a hit that stops inside the window is the
+    whole match. The URI userinfo branch backtracks to the last `@` of the authority,
+    so a URI start is matched up to where that authority ends instead. A PEM header's
+    full block runs to the next END marker, so it is matched up to that marker, and
+    only when the marker lies past *end* (a block that ends inside the span extends
+    nothing); *ends* caches that marker, since starts only rise. Authorities end at
+    the next `/` and starts rise, so neither kind of read overlaps another.
+    """
+    if (scheme_end := _uri_scheme_end(text, start)) != -1:
+        hit = _glued_match(_CREDENTIAL_PATTERNS, text, start, _run_end(text, scheme_end, "/"))
+        return None if hit is None else _validated_match(text, hit, glued=True)
+    if text.startswith("eyJ", start):
+        # Only the JWT and link-token branches start here, and both read segment
+        # runs, so the match is read whole rather than through a window.
+        hit = _glued_match(_CREDENTIAL_PATTERNS, text, start)
+        return None if hit is None else _validated_match(text, hit, glued=True)
+    if text.startswith(pem_scan.HEADER_PREFIX, start):
+        if ends[0] < start:
+            at, stop = _find_pem_end(text, start)
+            ends[0], ends[1] = (at, stop) if at != -1 else (len(text) + 1, -1)
+        if ends[1] == -1:
+            return _CREDENTIAL_PATTERNS_NO_PEM_BLOCK.match(text, start)
+        if ends[1] <= end:
+            return None
+        return _CREDENTIAL_PATTERNS.match(text, start, ends[1])
+    # A field label's separator and scheme can sit after any amount of whitespace, so
+    # the window is measured from the end of the whole label, not from the span. No
+    # AWS field name starts like `Authorization`, so at most one of the two is found.
+    label_end = max(_aws_label_end(text, start), _bearer_prefix_end(text, start))
+    endpos = min(len(text), max(end, label_end) + _GLUED_WINDOW)
+    while True:
+        hit = _glued_match(_CREDENTIAL_PATTERNS, text, start, endpos)
+        if hit is None or hit.end() < endpos or endpos == len(text):
+            break
+        endpos = min(len(text), start + 2 * (endpos - start))
+    return None if hit is None else _validated_match(text, hit, glued=True)
+
+
+def _pem_body_end(text: str, start: int, end: int) -> int:
+    """Where the END marker of a complete PEM block spanning ``text[start:end]`` starts,
+    or -1 when that span is not one.
+
+    No match can carry on across the space after ``-----END``: no branch's value class
+    holds a space, and the only whitespace a label may skip comes right after its own
+    name or separator. So nothing that starts before that marker reaches past *end*,
+    and those starts need no probe.
+    """
+    if not text.startswith(pem_scan.HEADER_PREFIX, start):
+        return -1
+    at = text.rfind("-----END ", start, end)
+    return at if at != -1 and _pem_end_at(text, at) == end else -1
+
+
+def _is_aws_value_run(text: str, label_end: int, hit: re.Match[str] | _Span) -> bool:
+    """Whether *hit*, read at an AWS field label ending at *label_end*, is that field's
+    whole value run: its value is non-empty and all in the branches' shared value
+    class, and it stops where that class does."""
+    return hit.end() > label_end and _run_end(text, label_end, _AWS_VALUE_STOPS) == hit.end()
+
+
+def _glued_matches(
+    text: str, m: re.Match[str] | _Span, ends: list[int]
+) -> Iterator[re.Match[str] | _Span]:
+    """Credentials that start inside *m* and run past its end, as when two are written
+    back to back and *m*'s body class took the second one's leading characters.
+
+    Every start inside the span is probed, nested ones included, whether the span ends
+    at a space or not: a PEM header or a Bearer header holds a space of its own. After
+    ``_GLUED_PROBES`` that extend nothing only those spaced starts are still probed,
+    and the rest of a non-space run is yielded whole, so the budget fails closed.
+    Starts are searched one ``_GLUED_WINDOW`` at a time, and a probe reads one window
+    past the span unless it extends it, so the scan stays linear. *ends* is the
+    caller's PEM END cache, shared across the scan so each marker is searched once.
+    """
+    end = m.end()
+    pos = m.start() + 1
+    probes = 0
+    exhausted = False
+    outer_is_aws_value = _aws_label_end(text, m.start()) != -1
+    # Starts before a complete PEM block's END marker cannot reach past it, so the
+    # scan steps over them rather than probing each one into the block's body.
+    covered = _pem_body_end(text, m.start(), end)
+    # Where a truncated PEM block (a header no END marker follows) that the span
+    # holds ends. A PEM header nested in it sits on one of its body lines, so its own
+    # truncated tail resumes at a newline that block already read and ends where it
+    # does: it extends nothing, and probing each one would re-read the rest.
+    truncated = end if covered == -1 and text.startswith(pem_scan.HEADER_PREFIX, m.start()) else -1
+    # ends[3] is the end of the segment run whose first `eyJ` was already probed. It is
+    # shared across the scan: starts rise, and every `eyJ` in one run shares its end,
+    # so a run is walked once however many matches start inside it.
+    if text.startswith("eyJ", m.start()) and m.start() >= ends[3]:
+        ends[3] = _segment_run_end(text, m.start())
+    while end < len(text) and pos < end:
+        if pos < covered:
+            pos = covered
+            continue
+        if probes >= _GLUED_PROBES:
+            exhausted = True
+            # The start lies inside the span; the match reaching its own space may not.
+            # One window at a time, as below: a search to the span's end on every
+            # step would rescan it once per repeated label.
+            bound = min(end, pos + _GLUED_WINDOW)
+            start = _find_spaced_start(text, pos, min(len(text), bound + _START_LOOKAHEAD))
+            if start == -1 or start >= bound:
+                pos = bound
+                continue
+        else:
+            # Search one window of starts at a time, so a hit whose value class runs
+            # on (a label inside a long value) reads at most two windows, not to the end.
+            bound = min(end, pos + _GLUED_WINDOW)
+            limit = min(len(text), bound + _GLUED_WINDOW)
+            hit = _CREDENTIAL_PATTERNS.search(text, pos, limit)
+            start = hit.start() if hit is not None and hit.start() < bound else bound
+            # That search refuses a Discord start behind a token character, as one
+            # glued inside the span always is, so those starts are found on their own.
+            discord = _find_glued_discord_start(text, pos, start, limit)
+            if discord != -1:
+                start = discord
+            # A link's userinfo can run past the window before its `@`, so a scheme
+            # start is a candidate whether or not the windowed search matched there.
+            uri = _find_uri_start(text, pos, min(len(text), bound + _START_LOOKAHEAD))
+            if uri != -1 and uri < start:
+                start = uri
+            # A JWT's payload can run past the window before its second `.`, so an
+            # `eyJ` start is a candidate on its own too, read through the window's end
+            # so a start whose three characters straddle it is not skipped. That also
+            # covers a link token, whose start the search refuses as it does Discord's.
+            jwt = text.find("eyJ", max(pos, ends[3]), min(len(text), bound + 2))
+            if jwt != -1 and jwt < start:
+                start = jwt
+            # A field label can reach its value only past a long whitespace run, so
+            # PEM, Bearer and AWS field starts are candidates on their own too.
+            spaced = _find_spaced_start(text, pos, min(len(text), bound + _START_LOOKAHEAD))
+            if spaced != -1 and spaced < start:
+                start = spaced
+            if start >= bound:
+                pos = bound
+                continue
+        pos = start + 1
+        if text.startswith("eyJ", start):
+            # Every `eyJ` in one segment run shares the run's end, so a JWT match at a
+            # later one ends where the first one's does: only the first is probed, and
+            # a large token with many inner `eyJ` runs does not spend the budget.
+            if start < ends[3]:
+                continue
+            # The link token's dot-boundary guard applies only to an `eyJ` right after
+            # a `.`, so such a start leaves the run's next `eyJ`, which it does not
+            # guard, to be probed; that one then stands for the rest of the run.
+            dotted = start > 0 and text[start - 1] == "."
+            ends[3] = start + 1 if dotted else _segment_run_end(text, start)
+        aws = _aws_label_end(text, start)
+        if (
+            aws != -1
+            and aws <= end
+            and (
+                outer_is_aws_value or (start < m.end() and text[end : end + 1] not in _TOKEN_CHARS)
+            )
+        ):
+            # The span took this field's separator and either is itself an AWS
+            # field's value or, for a field name inside the match the span began
+            # with, is not followed by token text: value text. A field name whose
+            # separator comes after the span has its own value there, so it is
+            # probed. A span that took the separator alone, with token text after it
+            # (a Bearer token's `=` padding), leaves the field's value out, so the
+            # field is probed: the same bytes the stream's Bearer discard drops.
+            continue
+        if aws != -1 and ends[4] <= start and aws < ends[5] <= end:
+            # This field's label ends inside an AWS value run already read to its
+            # end, which the span reaches. The three AWS branches share one value
+            # class, so this field's value runs on to that same end: it extends
+            # nothing, and probing it would re-read the run.
+            continue
+        bearer = _bearer_prefix_end(text, start)
+        if bearer != -1 and bearer <= end:
+            continue  # the span took this header's separator: it is value text
+        if start < truncated and text.startswith(pem_scan.HEADER_PREFIX, start):
+            continue
+        probes += 1
+        inner = _probe_at(text, start, end, ends)
+        if (
+            aws != -1
+            and inner is not None
+            and inner.start() == start
+            and _is_aws_value_run(text, aws, inner)
+        ):
+            ends[4], ends[5] = aws, inner.end()
+        if inner is not None and inner.end() > end:
+            yield inner
+            end, probes, exhausted = inner.end(), 0, False
+            inner_body_end = _pem_body_end(text, inner.start(), end)
+            covered = max(covered, inner_body_end)
+            if inner_body_end == -1 and text.startswith(pem_scan.HEADER_PREFIX, inner.start()):
+                truncated = end
+            # The span's end now belongs to this match: whether it is an AWS field's
+            # value is read from it, not from the match the span began with.
+            outer_is_aws_value = _aws_label_end(text, inner.start()) != -1
+    if exhausted and end < len(text) and not text[end].isspace() and end >= ends[2]:
+        # Out of probes with the run still going: a credential may start at a start not
+        # probed yet, so the rest of the run is redacted rather than left to chance.
+        # A later match inside this run that runs out of probes too would only redact
+        # this same rest again, so it is redacted, and read, once.
+        ends[2] = _run_end(text, end)
+        yield _Span(text, end, ends[2])
+
+
+def _abutting_match(text: str, pos: int, ends: list[int]) -> re.Match[str] | _Span | None:
+    """A Discord or link-token credential starting exactly at *pos*, the end of the
+    match just yielded, which the plain scan's start lookbehind refuses there.
+
+    A fixed-length credential (an ``AKIA`` key) takes none of the next one's
+    characters, so no start inside its span reaches this one. A link token's first
+    segment runs to its segment run's end, so a later ``eyJ`` in a run already probed
+    fails too; ``ends[6]`` caches that run's end and the run is read once.
+    """
+    if pos == 0 or pos >= len(text) or text[pos - 1] not in _GUARD_CHARS:
+        return None
+    if text.startswith("eyJ", pos):
+        if pos < ends[6]:
+            return None
+        ends[6] = _segment_run_end(text, pos)
+    elif text[pos] not in "MNO":
+        return None
+    return _glued_match(_CREDENTIAL_PATTERNS, text, pos)
+
+
+def _credential_matches(text: str, *, glued: bool = False) -> Iterator[re.Match[str] | _Span]:
     """``_CREDENTIAL_PATTERNS.finditer(text)``, minus JWT/Telegram shape-only false hits.
 
     A rejected hit retries the other branches at its start, then resumes one character on,
-    so a credential nested inside the rejected span is still found. A header holding a
-    second ``eyJ`` stays a credential: rejecting it would rescan that header once per ``eyJ``.
+    so a credential nested inside the rejected span is still found. With *glued*, a
+    credential written back to back with the one before it is yielded too, overlapping
+    it (see :func:`_glued_matches`); starts still rise. Without it, every hit is a plain
+    ``re.Match``.
     """
     pos = 0
     starts = [-1, -1, -1, -2]
-    while (m := _credential_search(text, pos, starts)) is not None:
-        header = m.group().split(".", 1)[0]
-        if m.group().startswith("eyJ") and m.group().count(".") >= 2 and not is_jwt_header(header):
-            alt = _CREDENTIAL_PATTERNS_SANS_JWT.match(text, m.start())
-            if alt is None:
-                pos = m.start() + 1
-                continue
-            m = alt
-        elif (
-            _TELEGRAM_AT_RE.fullmatch(m.group())
-            and _ARN_ACCOUNT_ID_12_DIGITS_RE.match(text, m.start())
-            and _ARN_ACCOUNT_ID_PREFIX_RE.search(
-                text, max(0, m.start() - _ARN_PREFIX_MAX_LOOKBACK), m.start()
+    # The PEM END cache, how far a fail-closed rest already reaches, and the end of the
+    # last probed `eyJ` segment run: probe starts rise across the whole scan, so all
+    # three stay valid. The last probed AWS value run (start, end) follows; it is a
+    # fact about the text alone, so it stays valid wherever the scan is. The last slot
+    # is the end of the last segment run an abutting `eyJ` was probed in.
+    ends = [-1, -1, -1, -1, -1, -1, -1]
+    abutting: re.Match[str] | _Span | None = None
+    while (m := abutting or _credential_search(text, pos, starts)) is not None:
+        validated = _validated_match(text, m, glued=abutting is not None)
+        abutting = None
+        if validated is None:
+            # A rejected Telegram hit skips its whole digit run: mid-run still reads
+            # one digit short.
+            digits = (
+                _TELEGRAM_DIGITS_RE.match(text, m.start())
+                if _TELEGRAM_AT_RE.fullmatch(m.group())
+                else None
             )
-            and not _arn_exemption_withheld(m.group())
-        ):
-            alt = _CREDENTIAL_PATTERNS_SANS_TELEGRAM.match(text, m.start())
-            if alt is None:
-                # Skip the whole digit run: mid-run still reads one digit short.
-                digits = _TELEGRAM_DIGITS_RE.match(text, m.start())
-                pos = digits.end() if digits else m.start() + 1
-                continue
-            m = alt
-        yield m
-        pos = max(m.end(), m.start() + 1)
+            pos = digits.end() if digits else m.start() + 1
+            continue
+        yield validated
+        end = validated.end()
+        for inner in _glued_matches(text, validated, ends) if glued else ():
+            yield inner
+            if not (isinstance(inner, _Span) and inner.match is None):
+                # The fail-closed rest is redacted but not skipped: the scan resumes
+                # at its start, so a credential that begins inside it is still found
+                # whole, and the splice redacts only its part past the rest.
+                end = inner.end()
+        pos = max(end, validated.start() + 1)
+        if glued:
+            abutting = _abutting_match(text, pos, ends)
 
 
 def iter_credential_matches(text: str) -> Iterator[re.Match[str]]:
     """Public name for :func:`_credential_matches`, the linear scan ``redact_credentials`` runs."""
-    return _credential_matches(text)
+    # Without glued=True every hit is a plain re.Match (see _credential_matches).
+    return cast("Iterator[re.Match[str]]", _credential_matches(text))
 
 
 def _contains_credential_pattern(text: str) -> bool:

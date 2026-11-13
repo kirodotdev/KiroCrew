@@ -1002,9 +1002,9 @@ def _pattern_pass(
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
     if _might_contain_credential(text):
-        for m in _credential_matches(text):
+        for m in _credential_matches(text, glued=True):
             # Keep the Bearer branch's non-secret prefix (end() is -1 elsewhere).
-            start = max(m.start(), m.end("bearer_prefix"))
+            kept = m.end("bearer_prefix")
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -1013,9 +1013,16 @@ def _pattern_pass(
             # redaction-subsystem output expected to be safe to log/surface, so it
             # must carry no secret bytes. The base64 / bare-secret passes below
             # likewise log length only.
-            warnings.append(f"Redacted credential pattern ({m.end() - start} chars)")
+            warnings.append(f"Redacted credential pattern ({m.end() - max(m.start(), kept)} chars)")
+            # A credential glued to the one before it starts inside that span;
+            # only its part past the span is still in plaintext.
+            start = max(m.start(), kept, taken[-1][1] if taken else -1)
+            if start >= m.end():
+                continue  # wholly inside a span already redacted
             taken.append((start, m.end(), _REDACTED_CREDENTIAL_TAG))
-            rules[start] = _pass1_rule(m.group())
+            rule, label = _pass1_rule(m.group())
+            # A record shows the label part still inside the clipped span.
+            rules[start] = (rule, label[start - m.start() :])
     return taken
 
 
@@ -1506,6 +1513,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ARN_ACCOUNT_ID_12_DIGITS_RE,
         _ARN_ACCOUNT_ID_PREFIX_RE,
         _ARN_PREFIX_MAX_LOOKBACK,
+        _AWS_LABELS,
+        _AWS_VALUE_STOPS,
         _BOT_ID_LENGTHS,
         _CDK_NAME_MAX_LEN,
         _CDK_RESOURCE_NAME_RE,
@@ -1522,22 +1531,49 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CREDENTIAL_PREFILTER_TELEGRAM_RE,
         _CREDENTIAL_PREFILTER_URI_RE,
         _CREDENTIAL_STARTS_SANS_JWT,
+        _GLUED_PROBES,
+        _GLUED_WINDOW,
+        _GUARD_CHARS,
         _JWT_SEGMENT_RUN_RE,
         _NATIVE_GATE,
         _PREFILTER_MIN_LEN,
+        _SPACED_STARTS,
+        _START_LOOKAHEAD,
         _TELEGRAM_AT_RE,
         _TELEGRAM_BRANCH,
         _TELEGRAM_DIGITS_RE,
+        _TOKEN_CHARS,
+        _URI_SCHEMES,
+        _abutting_match,
         _arn_exemption_withheld,
+        _authorization_at,
+        _aws_label_end,
+        _bearer_prefix_end,
         _contains_credential_pattern,
         _credential_search,
+        _find_authorization,
+        _find_glued_discord_start,
+        _find_pem_end,
+        _find_spaced_start,
+        _find_uri_start,
+        _glued_match,
+        _glued_matches,
+        _is_aws_value_run,
         _jwt_branch_matches_at,
         _load_native_gate,
         _might_contain_credential_py,
         _native_gate_fingerprint,
         _next_jwt_branch_start,
+        _pem_body_end,
+        _pem_end_at,
+        _probe_at,
+        _run_end,
         _sans_jwt_start,
         _segment_run_end,
+        _separator_end,
+        _Span,
+        _uri_scheme_end,
+        _validated_match,
         get_credential_patterns,
         iter_credential_matches,
     )
