@@ -7221,6 +7221,7 @@
       "generating": "génération…",
       "unwrap": "Désactiver le retour à la ligne",
       "wrap": "Retour à la ligne",
+      "wrap_not_saved": "Impossible d’enregistrer le choix du retour à la ligne dans ce navigateur",
       "code_label": "code",
       "code_region": "Code {{lang}}"
     },

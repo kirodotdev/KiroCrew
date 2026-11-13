@@ -6849,6 +6849,7 @@
       "generating": "生成中…",
       "unwrap": "不折行",
       "wrap": "折行",
+      "wrap_not_saved": "无法在此浏览器中保存自动换行设置",
       "code_label": "代码",
       "code_region": "{{lang}} 代码"
     },

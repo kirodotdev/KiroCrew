@@ -13,7 +13,7 @@
 // 4. Prose blocks wrap by default, but can be unwrapped if desired.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 import { CodeBlock } from '../components/CodeBlock'
 import { i18next } from '../i18n/all'
@@ -190,6 +190,64 @@ describe('CodeBlock: localized names', () => {
       expect(bare.container.textContent).toContain('código')
     } finally {
       await i18next.changeLanguage(previous)
+    }
+  })
+})
+
+// Issue #36860: the last Wrap choice is one chat setting every code block follows.
+describe('CodeBlock: the wrap choice is remembered for every code block', () => {
+  beforeEach(() => {
+    __resetStagingForTests()
+  })
+
+  const wrapState = (container: HTMLElement) => container.querySelector('pre')!.className.includes('whitespace-pre-wrap')
+
+  it('applies a press on one block to the blocks on screen and to the next one rendered', () => {
+    const first = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+    const second = render(<CodeBlock code={LONG_CODE} lang="sh" complete={false} />)
+
+    fireEvent.click(within(first.container).getByTestId('code-block-wrap-toggle'))
+
+    expect(wrapState(first.container)).toBe(true)
+    expect(wrapState(second.container)).toBe(true)
+    expect(JSON.parse(localStorage.getItem('mc-chat-config') || '{}').codeWrap).toBe('wrap')
+    first.unmount()
+    second.unmount()
+    // A later render (a new session, or after a reload) starts from the stored choice.
+    const later = render(<CodeBlock code={LONG_CODE} lang="py" complete={false} />)
+    expect(wrapState(later.container)).toBe(true)
+    expect(later.getByTestId('code-block-wrap-toggle')).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('makes a prose block follow a stored choice not to wrap', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ codeWrap: 'nowrap' }))
+    const { container } = render(<CodeBlock code={LONG_CODE} lang="markdown" complete={false} />)
+
+    expect(wrapState(container)).toBe(false)
+  })
+
+  it('keeps each block on its own default for a missing or unknown stored value', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ codeWrap: 'sideways' }))
+    const code = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+    const prose = render(<CodeBlock code={LONG_CODE} lang="markdown" complete={false} />)
+
+    expect(wrapState(code.container)).toBe(false)
+    expect(wrapState(prose.container)).toBe(true)
+  })
+
+  it('says so, and changes no block, when the storage refuses to keep the choice', () => {
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage disabled') })
+    try {
+      const { container, getByTestId } = render(<CodeBlock code={LONG_CODE} lang="ts" complete={false} />)
+
+      fireEvent.click(getByTestId('code-block-wrap-toggle'))
+
+      expect(wrapState(container)).toBe(false)
+      expect(screen.getByRole('alert')).toHaveTextContent("Couldn't save the line wrap choice in this browser")
+      // Nothing unsaved sits beside the notice, so it offers the agent hand-off.
+      expect(screen.getByRole('button', { name: /ask the agent/i })).toBeInTheDocument()
+    } finally {
+      setItem.mockRestore()
     }
   })
 })

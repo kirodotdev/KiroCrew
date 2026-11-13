@@ -2419,7 +2419,8 @@
       "copied": "Copied!",
       "copy": "Copy",
       "unwrap": "Unwrap lines",
-      "wrap": "Wrap lines"
+      "wrap": "Wrap lines",
+      "wrap_not_saved": "Couldn't save the line wrap choice in this browser"
     },
     "blockquote": {
       "copied": "Copied!",
