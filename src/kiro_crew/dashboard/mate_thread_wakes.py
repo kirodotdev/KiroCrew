@@ -559,13 +559,22 @@ def _is_jobs_own_cron_key(job: Any, session_key: str) -> bool:
     )
 
 
-async def note_cron_result(state: Any, job: Any, session_key: str, reply_text: str) -> bool:
+async def note_cron_result(
+    state: Any,
+    job: Any,
+    session_key: str,
+    reply_text: str,
+    *,
+    mcp_report: dict[str, Any] | None = None,
+) -> bool:
     """Report a crewmate's scheduled turn to its thread, as one of its workers. Never raises.
 
     The caller decides the result CHANGED; this decides whose it is, from
     attested state only: *session_key* is *job*'s own ``cron:`` key, its capture
     names ``job.member_id``, and the turn ran on that crewmate's worker. Then it
-    takes the worker path. Returns whether a report was recorded.
+    takes the worker path, with *mcp_report* (the cron session's own MCP report
+    payload, :func:`provider_mcp_payload`) standing in for the worker slot's.
+    Returns whether a report was recorded.
     """
     try:
         member = getattr(job, "member_id", "") or ""
@@ -593,11 +602,27 @@ async def note_cron_result(state: Any, job: Any, session_key: str, reply_text: s
         if thread is None or not is_crewmate_thread(thread):
             return False
         title = crewmate_prompts.fill("worker_report.cron_title", name=getattr(job, "name", ""))
-        _record_report(state, thread.key, session_key, title, reply_text or "")
+        _record_report(state, thread.key, session_key, title, reply_text or "", mcp_report)
         return True
     except Exception:
         logger.warning("cron report for %s failed", session_key, exc_info=True)
         return False
+
+
+def provider_mcp_payload(provider: Any) -> dict[str, Any] | None:
+    """*provider*'s own session MCP report payload, or None. Never raises.
+
+    Read through the declared ``LLMProvider.mcp_session_report`` contract; a
+    provider that keeps no report, one whose read fails, and a payload that is
+    not a dict all read as no report.
+    """
+    try:
+        report = provider.mcp_session_report() if provider is not None else None
+        payload = report.payload() if report is not None else None
+    except Exception:  # noqa: BLE001 - a missing report is never worth a lost wake
+        logger.debug("Failed to read the session MCP report", exc_info=True)
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def note_turn_end(

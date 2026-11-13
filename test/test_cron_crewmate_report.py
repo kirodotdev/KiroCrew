@@ -89,7 +89,7 @@ async def _settle():
         await asyncio.wait(others, timeout=5)
 
 
-async def _deliver(state, job, result, rh):
+async def _deliver(state, job, result, rh, client=None):
     """The cron's own delivery, cut short after the dedupe by ``silent``."""
     from kiro_crew.slack import gateway
 
@@ -98,7 +98,7 @@ async def _deliver(state, job, result, rh):
     state.has_slot = lambda key: False
     state.notify = MagicMock()
     return await gateway.GatewayOrchestrator._deliver_cron_agent_result(
-        gw, job, f"cron:{job.id}", MagicMock(), result, rh, None, None
+        gw, job, f"cron:{job.id}", client or MagicMock(), result, rh, None, None
     )
 
 
@@ -167,3 +167,44 @@ async def test_a_key_the_job_did_not_mint_is_not_its_report(monkeypatch, woken):
     assert not await wakes.note_cron_result(state, _job(member_id="beta"), "cron:hourly", "x")
     await _settle()
     assert woken == []
+
+
+class _ReportingClient:
+    """A provider whose scheduled session kept *report*, read through the provider contract."""
+
+    def __init__(self, report):
+        self._report = report
+
+    def mcp_session_report(self):
+        return self._report
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_turn_report_names_the_servers_its_session_could_not_use(
+    monkeypatch, woken
+):
+    """The cron session's own MCP report stands in for the worker slot's stored one."""
+    from kiro_crew import mate_capability_catalog as catalog_mod
+    from kiro_crew.acp.mcp_session_report import (
+        EVENT_MCP_SERVER_INIT_FAILURE,
+        EVENT_MCP_SERVER_INITIALIZED,
+        McpSessionReport,
+    )
+
+    monkeypatch.setattr(mate_worker, "cron_worker_execution", lambda execution, config=None: True)
+    spec = {"mcpServers": {"slack": {}, "notes": {}}, "tools": ["@slack", "@notes"]}
+    monkeypatch.setattr(catalog_mod, "worker_spec", lambda member: spec)
+    report = McpSessionReport()
+    report.record_event(EVENT_MCP_SERVER_INITIALIZED, "notes")
+    report.record_event(EVENT_MCP_SERVER_INIT_FAILURE, "slack", "Authentication expired")
+    job = _job(silent=True, last_posted_hash="old")
+
+    await _deliver(_State(), job, "digest", "new", client=_ReportingClient(report))
+    await _settle()
+
+    [(_key, prompt)] = woken
+    unusable = [line for line in prompt.splitlines() if "sign-in missing or expired" in line]
+    assert len(unusable) == 1, prompt
+    [line] = unusable
+    assert "slack (sign-in missing or expired)" in line and "notes" not in line
+    assert "Authentication expired" not in prompt
