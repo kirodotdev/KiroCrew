@@ -325,7 +325,7 @@ Examples:
         help=_ALERT_AFTER_HELP,
     )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
-    cron_update.add_argument("--channel", help="New channel ID")
+    cron_update.add_argument("--channel", help='New channel ID ("" clears it)')
     cron_update.add_argument(
         "--agent",
         dest="agent",

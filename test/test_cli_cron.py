@@ -292,10 +292,11 @@ class TestCronCli:
             )
         assert capsys.readouterr().out == "Updated job: abc123 (existing)\n"
 
-    def test_cron_update_whitespace_channel_skipped(self, tmp_path, capsys):
+    def test_cron_update_blank_channel_clears_it(self, tmp_path, capsys):
+        # Same as cron_update's channel: blank (after strip) clears delivery.
         with patch("kiro_crew.cli_commands.CronService") as mock_svc_cls:
             mock_svc = mock_svc_cls.return_value
-            mock_svc.update_job.return_value = None
+            mock_svc.update_job.return_value = MagicMock(id="job1")
             args = argparse.Namespace(
                 cron_action="update",
                 job_id="job1",
@@ -306,14 +307,13 @@ class TestCronCli:
                 channel="   ",
                 approval_mode=None,
             )
-            # Nothing to write is a refusal: exit 1 on stderr, like a bad channel.
-            with pytest.raises(SystemExit) as exc:
+            try:
                 _cron(args)
-            assert exc.value.code == 1
-            out, err = capsys.readouterr()
-            assert err == "Provide at least one field to update\n"
-            assert out == ""
-            mock_svc.update_job.assert_not_called()
+            except SystemExit as exc:
+                pytest.fail(f"a blank --channel was refused (exit {exc.code})")
+            mock_svc.update_job.assert_called_once()
+            assert mock_svc.update_job.call_args.kwargs["channel"] == ""
+            assert mock_svc.update_job.call_args.kwargs["thread_ts"] == ""
 
     def test_bare_cron_prints_usage_without_building_the_service(self, capsys):
         # CronService creates cron-history/ on a fresh data home.
