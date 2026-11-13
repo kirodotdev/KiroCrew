@@ -12,7 +12,7 @@ import json
 import sys
 import urllib.error
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -115,19 +115,63 @@ def test_auto_is_always_valid() -> None:
     assert code == 0
 
 
-def test_a_signed_out_backend_is_reported_and_exits_1() -> None:
-    body = io.BytesIO(
-        json.dumps({"error": "run kiro-cli login", "code": "kiro_prerequisite_required"}).encode()
-    )
-    refusal = urllib.error.HTTPError("u", 503, "Service Unavailable", {}, body)  # type: ignore[arg-type]
-    code, out, err, _sent = _run([], refusal)
-    assert code == 1 and out == ""
-    assert "Error: the backend is signed out: run kiro-cli login" in err
+def _refusal(code: str) -> urllib.error.HTTPError:
+    body = io.BytesIO(json.dumps({"error": "sign in", "code": code}).encode())
+    return urllib.error.HTTPError("u", 503, "Service Unavailable", {}, body)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("code", ["kiro_prerequisite_required", "kas_bundle_sign_in_required"])
+def test_a_signed_out_backend_is_reported_and_exits_1(code: str) -> None:
+    exit_code, out, err, _sent = _run([], _refusal(code))
+    assert exit_code == 1 and out == ""
+    assert err.strip() == "Error: the backend is signed out: sign in"
+
+
+def test_only_a_retryable_answer_invites_a_retry() -> None:
+    _code, _out, err, _sent = _run([], _refusal("model_list_unavailable"))
+    assert "try again" in err
+    _code, _out, err, _sent = _run([], _refusal("kas_bundle_not_installed"))
+    assert "try again" not in err
 
 
 def test_an_unproven_gateway_is_refused() -> None:
     code, _out, err, _sent = _run([], _GatewayPeerRefused("not the recorded gateway"))
     assert code == 1 and "gateway ownership not verified" in err
+
+
+@pytest.mark.asyncio
+async def test_the_gateway_admits_the_cli_request_and_still_refuses_a_bare_one() -> None:
+    """Drive the REAL token middleware with the CLI's own request shape.
+
+    The CLI sends only ``X-Internal-Secret`` from loopback; ``/api/models`` must
+    take it as the cookie-authed picker's twin, and refuse a wrong secret.
+    """
+    from aiohttp import web
+
+    from kiro_crew.dashboard.server import _MIXED_INTERNAL_API_PATHS, _STRICT_INTERNAL_API_PATHS
+    from kiro_crew.dashboard.token_auth import token_auth_middleware
+
+    mw = token_auth_middleware(
+        internal_paths=_STRICT_INTERNAL_API_PATHS,
+        mixed_internal_paths=_MIXED_INTERNAL_API_PATHS,
+        internal_secret="s3cret",
+    )
+    reached: list[str] = []
+
+    async def _handler(request: web.Request) -> web.Response:
+        reached.append(request.path)
+        return web.json_response([])
+
+    def _req(headers: dict[str, str]) -> Any:
+        req = MagicMock(spec=web.Request)
+        req.path, req.query, req.cookies = "/api/models", {}, {}
+        req.remote, req.headers, req.method = "127.0.0.1", headers, "GET"
+        return req
+
+    assert (await mw(_req({"X-Internal-Secret": "s3cret"}), _handler)).status == 200
+    assert (await mw(_req({"X-Internal-Secret": "wrong"}), _handler)).status in (401, 403)
+    assert (await mw(_req({}), _handler)).status in (401, 403)
+    assert reached == ["/api/models"]
 
 
 def test_no_gateway_is_reported() -> None:

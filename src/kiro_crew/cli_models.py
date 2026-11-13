@@ -34,8 +34,11 @@ from kiro_crew.cli_commands_gateway_api import (
 )
 from kiro_crew.terminal_safe import safe_terminal_line
 
-# The ``code`` the gateway puts on a signed-out 503 (``kiro_readiness``).
-_SIGNED_OUT_CODE = "kiro_prerequisite_required"
+# The ``code`` values ``/api/models`` puts on a 503: signed out (kiro-cli, or the
+# bundled KAS engine), and the degraded answers a retry can clear. Any other code
+# (a missing bundle, no sandbox) is printed without inviting a retry.
+_SIGNED_OUT_CODES = frozenset({"kiro_prerequisite_required", "kas_bundle_sign_in_required"})
+_RETRYABLE_CODES = frozenset({"model_list_unavailable", "model_list_revalidating"})
 _AUTO = "auto"
 
 
@@ -110,9 +113,12 @@ def _fetch(port: int) -> tuple[object | None, str]:
         if not isinstance(body, dict):
             body = {}
         message = str(body.get("error") or f"{exc.code} {exc.reason}")
-        if body.get("code") == _SIGNED_OUT_CODE:
+        code = body.get("code")
+        if code in _SIGNED_OUT_CODES:
             return None, f"the backend is signed out: {message}"
-        return None, f"model list unavailable: {message}; try again in a moment"
+        if code in _RETRYABLE_CODES:
+            return None, f"model list unavailable: {message}; try again in a moment"
+        return None, f"model list unavailable: {message}"
     except (urllib.error.URLError, OSError) as exc:
         from kiro_crew.loopback_http import deadline_expired
 
