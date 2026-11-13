@@ -681,6 +681,9 @@ After any install, the desktop app included, install Kiro CLI from
 kiro-cli login
 ```
 
+On Linux the Kiro CLI installer needs `unzip`; the one-line install (`cli.sh`)
+says so before its next steps when the host has neither `unzip` nor `kiro-cli`.
+
 The desktop app does not carry its own kiro-cli: it detects the one you
 installed, and the **Set up Kiro** page shows the install and sign-in commands
 until it finds one. (A build made with `BUNDLE_KIRO_CLI=1` stages a copy inside

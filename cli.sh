@@ -1505,6 +1505,18 @@ _userns_profile_notice() {
   echo "  kirocrew service install    # needs sudo; it also runs Kiro Crew as a service" >&2
 }
 _userns_profile_notice /proc/sys/kernel/apparmor_restrict_unprivileged_userns /etc/apparmor.d/kirocrew-userns
+# The Linux Kiro CLI installer refuses a host without unzip. Kiro Crew does not
+# need it, so this only warns, and only where kiro-cli is not installed yet. The
+# OS name is an argument so a test can pass its own.
+_unzip_notice() {
+  [ "$1" = Linux ] || return 0
+  command -v kiro-cli >/dev/null 2>&1 && return 0
+  command -v unzip >/dev/null 2>&1 && return 0
+  echo "" >&2
+  echo "NOTE: unzip is not installed, and the Kiro CLI installer (https://kiro.dev/cli/) needs it." >&2
+  echo "To use Kiro CLI, install the unzip package first (Debian/Ubuntu: 'sudo apt-get install -y unzip'; Fedora/RHEL/Amazon Linux: 'sudo dnf install -y unzip')." >&2
+}
+_unzip_notice "$(uname -s 2>/dev/null || true)"
 if [ "$_kas_rc" -eq 3 ]; then
   echo "" >&2
   echo "Kiro Crew is installed, but this host cannot run the built-in KAS engine (the reason is above)." >&2
