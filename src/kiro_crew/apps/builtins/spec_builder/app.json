@@ -28,6 +28,9 @@
     ],
     "storage": true
   },
+  "agentReadOnlyDirs": [
+    "trust"
+  ],
   "backend": {
     "routes": "backend.routes:register_routes"
   },

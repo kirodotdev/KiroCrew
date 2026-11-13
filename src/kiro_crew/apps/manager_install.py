@@ -20,7 +20,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Iterator
 
-from kiro_crew.apps import credential_masks, protected_app_state
+from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
 from kiro_crew.apps.manager_records import (
@@ -802,8 +802,10 @@ def update_app(
                 # puts the prior state back.
                 protected_app_state.set_owner_disabled(name, True)
             # The old manifest leaves with the old tree below while the data waits aside:
-            # its credential masks must stand in the record first (apps.credential_masks).
+            # its credential masks and read-only directories must stand in their records
+            # first (apps.credential_masks, apps.agent_readonly_dirs).
             credential_masks.remember_declaration(name)
+            agent_readonly_dirs.remember_declaration(name)
             if _owned_data_dir(data_dir):
                 shutil.move(str(data_dir), str(tmp_data))
                 preserved_data = True

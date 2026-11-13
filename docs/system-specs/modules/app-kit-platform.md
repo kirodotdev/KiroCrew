@@ -5631,7 +5631,8 @@ dashboard state on first use, and `DashboardState` declares neither.
 `test/core_app_independence.py` scanner. The only core strings left naming the app are
 a pinned list that may only shrink: the `security_posture.py` rows classifying its
 backend modules, and the docs lint's runtime-data row for
-`trust/spec-builder-decisions.json`, which [security](security.md) cites. Its
+`apps/spec-builder/data/trust/spec-builder-decisions.json`, which [security](security.md)
+cites. Its
 dashboard half is `website/src/apps/spec-builder/specBuilderBoundary.test.ts`: outside
 `src/apps/spec-builder/`, only `apps/builtinRegistry.ts` imports the UI, and the
 page's tests live beside it. The app's rows of core contracts are pinned in the app's
@@ -6769,7 +6770,8 @@ the set of seams a built-in's code needed from core, published generically. Noth
 any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
-pull-request panel (§18g); level 6 adds the SDK's issue list (§18h). An app reads `ctx.sdk_level` or the SDK export to detect an
+pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
+manifest's `agentReadOnlyDirs` (§39). An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
@@ -7102,7 +7104,8 @@ ties the shipped pins to the structural route registry (`route_registry._route_f
 level field, so the tool never picks a level above 1 itself. It reads the pinned tree
 for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
 `permissions.agentTurns` and `permissions.workerAutoApprove` in `app.json` (level 2),
-`credentialMasks` (level 3), and `ctx.turns`, `ctx.untrusted`, `ctx.lifecycle` or
+`credentialMasks` (level 3), `agentReadOnlyDirs` (level 7), and `ctx.turns`,
+`ctx.untrusted`, `ctx.lifecycle` or
 `ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
 `conftest.py` (level 2), and `ctx.app_token` or `ctx.gateway_origin` there (level 5), read as an attribute of a context-named receiver or as a
 `getattr`/`hasattr` of that name on any receiver. A level below the highest one found
@@ -7765,8 +7768,10 @@ data-home root, outside its data directory, so they keep their core rows until t
 store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
 "Repository boundary").
 
-**Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys and level 5
-`ctx.app_token` and `ctx.gateway_origin`): an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
+**Seam level.** The masks are level 3 (level 4 adds §30.1's tool keys, level 5
+`ctx.app_token` and `ctx.gateway_origin`, level 6 §18h's issue list, and level 7 §39's
+`agentReadOnlyDirs`):
+an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
 the file.
 
 Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,
@@ -7847,6 +7852,126 @@ Writers: `apps/git_install.py`, `cli_commands_app.py` (`_resolve_install_source`
 Pinned by `test/test_app_install_git.py`. Its two git spawns are not sandboxed,
 since the clone needs the operator's SSH agent, `~/.ssh` and credential helpers,
 and are listed with that justification in `test/spawn_audit_helpers.py`.
+
+## 39. An app's agent-read-only directories are declared in its manifest (seam level 7)
+
+An app that keeps state an agent must not rewrite declares the directories in `app.json`:
+`"agentReadOnlyDirs": ["notes", "trust"]`. Each entry is a path relative to the app's
+data directory, so it names `apps/<name>/data/<entry>` under the data home. Driver
+decision 3 of 2026-11-09 on #26967 (delegated by the maintainer): a generic,
+tightening-only seam, the app's own data directory only, the same shape and limits as
+`credentialMasks` (§37).
+
+**One engine.** `apps/agent_readonly_dirs.py` reads the declaration with
+`apps/credential_masks.py`'s engine under its own `DeclarationKind` (key
+`agentReadOnlyDirs`, record suffix `-agent-readonly-dirs.json`). So the grammar
+(`entry_error`), the 32-entry cap, the sources (every shipped package's `app.json` and
+every installed `apps/<dir>/app.json`, the name taken from where it sits), the
+per-manifest cache, the two spellings (`apps/<name>/data/<entry>` and the lifecycle's
+`apps/.<name>-data-tmp/<entry>`) and the retained record are §37's, unchanged. The
+lifecycle refreshes the record at the same three points (`_write_installed`
+best-effort, `update_app` and a keep-data `uninstall_app` strictly, before the data
+moves). `AppManifest.validate` refuses a bad entry, `signing_payload` covers a non-empty
+declaration (sorted; absent when empty) and `to_dict` and the built-in snapshot keep it.
+The two declarations never read each other's records. One cross-check joins them: an
+entry at or beneath one of the same manifest's `credentialMasks` files is refused
+(`agent_readonly_dirs.mask_conflict_errors`), because a mask names a file and the sandbox
+creates an absent read-only directory, and `_establish_app_readonly_dirs` never creates
+one there for a manifest that skipped validation.
+
+**The tool gate.** `security.paths.sensitive_write_path_refusal` adds every declared
+spelling, under both `_CREW_HOME_PREFIXES`, to the rows it matches
+(`_app_readonly_dir_rows`), so an agent's file-edit tool is refused under each declared
+directory exactly as under a `_WRITE_PROTECTED_HOME_PATHS` row, with the same `$HOME`
+anchoring, `KIROCREW_HOME` re-anchoring and symlink resolution. The read gate does not
+read a declaration, so the directory stays readable. Listing the declarations scans
+`apps/` and stats each manifest, so no caller lists them on its own thread:
+`security.paths_targets._app_readonly_dir_rows` takes the listing on the `mc-pathres`
+threads within the anchor rebuild's budget, on the event loop and on the permission and
+tool-gate workers alike. A listing that misses the budget refuses the write as a stall
+does, and stays the only one in flight: later checks refuse at once while it runs rather
+than wait on it again or start another. The event loop reuses a listing for one second; any other thread takes a new
+one unless one is in flight. The reuse only delays a declaration just added; a running
+agent's sandbox reads them at its spawn anyway.
+
+**The OS sandbox, every mode.** `sandbox_argv._live_plan_host` adds every declared
+spelling (both data-home prefixes and a relocated home) to the crew-home `READONLY`
+targets, and its parents to the seal parents, so each one is sealed exactly as a core
+`READONLY` leaf is: a read-only bind on Linux, a `file-write*` and `file-link` deny on
+Seatbelt, with every parent guarded against rename on both (the namespace launcher pins
+the ones the uid could rename; Seatbelt denies a write to each literal entry). A
+declared spelling a mask covers stays masked (the namespace plan keeps a mask over a
+seal, and Seatbelt's rules are denies only), so a declaration cannot unmask a core leaf.
+Before every spawn, `sandbox_aliases._establish_app_readonly_dirs` refuses
+(`SandboxCeilingUnsealable`) when a link sits at a declared spelling in the live home or
+at a component between the data home and it, because a seal would land on what the link
+reaches while the name stays replaceable. On Linux it also creates an absent `data/`
+spelling inside an `apps/<name>/data` that is already a real directory, since `mount(2)`
+cannot seal an absent path and an agent could otherwise create it and write inside, and
+hands each one to the launcher as a required target with its identity. It never creates
+`data/` itself: the lifecycle reads an owned `data/` beside held-aside data as proof the
+held copy is stale, so a `data/` made by a spawn after an interrupted keep-data uninstall
+would have the next install delete the only copy (`_app_data_dir_settled`). It does not
+consult the move-aside name, which an agent can create. The staged spelling is never
+created. An absent app gets nothing created.
+
+**The app's own backend.** `sandbox_tiers.app_declared_readonly_targets(name,
+builtin=...)` returns the declared spellings minus any leaf that is, holds or sits
+beneath a core leaf of any disposition (`HIDDEN`, relocated `HIDDEN`, `READONLY`,
+`VISIBLE`), and minus any spelling beneath another mask or behind a planted link.
+`apps/backend.py` passes them as `extra_visible_dirs` to that app's backend spawn, and
+`_live_plan_host` leaves a declared seal off a spawn whose `extra_visible_dirs` names
+its exact spelling, both compared after folding a linked data-home spelling onto its
+canonical root (`sandbox_plan.fold_crew_home_alias`), as the namespace plan folds seals. That exact match is the only way a declared seal is lifted, and it
+lifts no core seal. The staged spelling is not handed back. An in-gateway backend (both
+built-ins below) runs outside every sandbox and is unaffected.
+
+**Residual.** §37's: the installed tree is sandbox-writable, so an agent that rewrites an
+installed app's `app.json` drops its declaration from the next spawn. A file inside a
+declared directory that already had a second hard link elsewhere before the seal is
+writable through that other name, as for a core `READONLY` directory. A link at a
+component below the data home refuses every sandboxed spawn on the host until it is
+replaced with a real directory, as for a credential mask. A Linux sandbox already running
+when the lifecycle moves the app's data (an update, a keep-data uninstall, an adoption)
+keeps its seals where it placed them: the move-aside spelling, absent at its spawn, is
+not sealed for it, and the data moved back into the new `apps/<name>` is reached through
+a parent its pinned seals (and a mask beneath them) are not attached under, until it
+respawns. New spawns seal what they find, and a Linux spawn made while
+`apps/<name>/data` is absent (the data held aside, or never created) finds an absent
+declared directory it does not create, so the tool gate is its only fence there until
+the data is back.
+Tracked in #33612, with `credentialMasks`' move-aside spelling.
+
+**Built-ins.** Meetings declares `notes` (its per-meeting user notes, `meetings.md`),
+which replaces the `_WRITE_PROTECTED_HOME_PATHS` row core carried for
+`apps/meetings/data/notes` with the same tool-gate fence plus the OS seal. Spec Builder
+declares `trust` and keeps its decision record at
+`apps/spec-builder/data/trust/spec-builder-decisions.json`. It was under the data home's
+`trust/` (the SEL trust root), whose read+write row stays for the SEL key. The backend
+settles the record once, the first time it finds the new path absent
+(`decisions._move_legacy_decisions`): it moves an existing record there, copy first and
+remove after, so a failure at either step keeps every answer, or writes an empty one when
+there is none, so a file an agent's shell plants at the old, sandbox-visible `trust/`
+afterwards is never imported. It reads the old record only as a regular file with one
+name: a symlink or a second hard link planted there makes the store unusable instead of
+copying its target into the agent-readable record. Agents may now read it, which the decision's "read but not
+write" names. A purge uninstall now
+removes the record with the app's data.
+
+**Seam level.** `APP_SDK_LEVEL` is 7. An app reads `ctx.sdk_level` and, below 7, knows
+nothing fences the directories: an older host ignores the key.
+
+Writers: `apps/agent_readonly_dirs.py`, `apps/credential_masks.py`, `apps/manifest.py`,
+`apps/discovery.py`, `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`security/paths.py`, `security/paths_lists.py`, `security/paths_targets.py` (the tier
+name in the expiry log), `sandbox_aliases.py`, `sandbox_argv.py`,
+`sandbox_tiers.py`, `sandbox.py` (facade), `apps/backend.py`, `apps/manager_records.py`,
+`apps/manager_install.py`, `apps/manager_uninstall.py`, `scripts/adoption_pin.py`,
+`apps/builtins/meetings/app.json`, `apps/builtins/spec_builder/app.json`,
+`apps/builtins/spec_builder/backend/decisions.py`. Tests:
+`test/test_app_agent_readonly_dirs.py` (including a real Linux namespace spawn that
+gets `EROFS` writing a declared directory and keeps writing its sibling),
+`src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_decision_ledger.py`.
 
 ## Windows stale-backend cleanup capacity
 

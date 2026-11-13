@@ -1715,12 +1715,14 @@ the untrusted-text controls (`ctx.untrusted`), the manifest's `agentTools`
 block (see [manifest-reference.md](manifest-reference.md)) and the dashboard's
 [`PullRequestPanel`](#pull-request-panel) to everything level 1 has, level 3
 adds the manifest's `credentialMasks` (see
-[manifest-reference.md](manifest-reference.md#credential-masks)), and level 4 adds the
+[manifest-reference.md](manifest-reference.md#credential-masks)), level 4 adds the
 `agentTools` keys `namespace`, `timeoutSeconds` and `result` and an app's own bell
 notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
 [Backend Environment Variables](#backend-environment-variables)), level 5 adds
-[`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), and level 6
-adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`); each level
+[`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), level 6
+adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`),
+and level 7 adds the manifest's `agentReadOnlyDirs` (see
+[manifest-reference.md](manifest-reference.md#agent-read-only-directories)); each level
 includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.

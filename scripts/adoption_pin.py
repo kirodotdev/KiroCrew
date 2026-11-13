@@ -117,7 +117,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     """Every App Kit seam above level 1 that the app tree at *tree* uses, with its level.
 
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
-    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3) and the
+    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
+    ``agentReadOnlyDirs`` at level 7) and the
     context seams any non-test ``.py`` file reaches. A miss lets a pin adopt on a
     host without the seam, so the scan errs wide: a false hit only asks for a
     higher ``--min-sdk-level``.
@@ -133,6 +134,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
             uses[f"app.json permissions.{flag}"] = 2
     if raw.get("credentialMasks"):
         uses["app.json credentialMasks"] = 3
+    if raw.get("agentReadOnlyDirs"):
+        uses["app.json agentReadOnlyDirs"] = 7
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):

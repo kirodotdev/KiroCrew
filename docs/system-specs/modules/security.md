@@ -1548,6 +1548,23 @@ a sandbox disposition holds for it. The
 installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops
 that app's masks from its next spawn; that residual is stated, not sealed.
 
+**App-declared agent-read-only directories.** An app's manifest may also list
+directories under its own data directory in `agentReadOnlyDirs`
+([app-kit-platform](app-kit-platform.md#39-an-apps-agent-read-only-directories-are-declared-in-its-manifest-seam-level-7)),
+read by the same engine. Each declared spelling joins the write-protected rows of
+`sensitive_write_path_refusal` and the crew-home `READONLY` targets and seal parents in
+`sandbox_argv._live_plan_host`, so it is fenced from an agent's file tools and sealed
+read-only, with its parents guarded against rename, in every sandbox mode. On the event
+loop the gate reads the rows from a listing taken on the `mc-pathres` threads within the
+anchor rebuild's budget and reused for a second; a listing that misses it refuses, and
+later checks refuse at once while it still runs.
+`sandbox_aliases._establish_app_readonly_dirs` refuses a spawn when a link sits at a
+declared spelling or below the data home on the way to it, and on Linux creates an absent
+one inside an existing app `data/`, so its seal is not vacuous. Only the app's own backend spawn gets it back
+(`sandbox_tiers.app_declared_readonly_targets`, exact spelling, never a core leaf).
+Tightening only: no read+write row, mask or core disposition reads a declaration, so
+`test_sandbox_governance_mask.py`'s pin is unchanged.
+
 Hides credential paths from kiro-cli subprocess tree using platform-native isolation:
 
 - **Linux**: user + mount namespace — `unshare(CLONE_NEWUSER)` → identity UID/GID map → `unshare(CLONE_NEWNS)` → private propagation on `/` → bind-mount empty dirs. Availability is decided **empirically** by `_probe_unshare_once()`, which performs this **exact split sequence** up to and including the propagation mount rather than a combined `unshare(NEWUSER|NEWNS)` — see "Linux capability probe mirrors the split sequence" below for why the combined form gives a false positive, and why stopping at the unshares gave another.
@@ -2007,7 +2024,8 @@ and audit-free; a real operator trust grant retains its once-per-endpoint audit.
 **Array-nested target paths bind on both planes (issue #6558).** A batch-shaped tool carries its real targets inside an array argument (`{"operations": [{"mode": "Line", "path": …}]}`). The sensitive-path keystone (the tool gate's `param-paths` tier, over `target_paths` / `TargetPaths`) was made nesting-aware first; the governance INTERSECTION plane (`platform/governance_parts/tool_calls.py` `_tool_arg_paths` / `classify_tool_args`) previously read only the TOP level, so a nested path produced no `(scope, item)` pair, `gate_decision` hit its permit-by-default `if not pairs` branch, and an operator ceiling denying `filesystem.read`/`filesystem.write` outside the workspace never bound on the nested spelling. The bounded, depth-aware, iterative walk now lives in ONE shared lower-level module, `kiro_crew.platform.tool_paths` (stdlib-only, imports neither `hooks` nor `governance`, so there is no cycle — `hooks` imports `governance`), and BOTH planes delegate to it. The third extractor, `hooks._SEARCH_DENY_ARG_KEYS`, stays flat by design (documented residual below) and is out of scope.
 - **Truncated-scan policy on the permit-by-default plane.** The shared walk is bounded (`_TARGET_PATH_MAX_PATHS`=256, `_TARGET_PATH_MAX_NODES`=10_000) and reports a `truncated` flag. The `hooks` keystone fails SAFE by hard-denying any truncated scan. The governance plane is permit-by-default and must NOT blanket-deny an ungoverned standalone host, so on truncation it emits the filesystem scope(s) the tool kind implies (`edit`→`filesystem.write`; `read`→`filesystem.read`; unknown-kind-without-command→both) against a synthetic, never-permittable item (`_TRUNCATED_SCAN_ITEM`, containing a NUL byte so no allow-list pattern can match it). Effect: a prefix-bounded ALLOW-mode ceiling that confines the scope to a workspace DENIES the unverifiable call (closing the "bury the path past 10_000 nodes to escape the ceiling" fail-open), while an ungoverned scope still permits it (permit-by-default preserved). (A catch-all ALLOW pattern — `**`/`/**`/`*` — does match the marker via fnmatch and permits, but such a ceiling confines nothing and is unconstrained anyway, so this is consistent with its own posture rather than a bypass.) A DENY-mode ceiling that blocks only specific paths permits the marker — a targeted deny is not a general confinement and a partial scan cannot prove the buried path hit that one pattern; the always-on resolved keystone remains the authoritative guard for the sensitive tiers there. This resolves issue #6558 open-question-2 (option (c)); rejected: (a) permit-as-before keeps the fail-open, (b) unconditional deny over-blocks ungoverned hosts and every unrelated scope.
 
-**Spec Builder's decision record** (`trust/spec-builder-decisions.json`) — the app
+**Spec Builder's decision record** (`apps/spec-builder/data/trust/spec-builder-decisions.json`,
+in the directory the app's manifest declares in `agentReadOnlyDirs`): the app
 refuses a second answer for the same normalized question. Each record is bound to a
 fingerprint of the rendered id, title, and order-independent option set, so reordering the
 same choices cannot reopen a settled question while an agent reusing an id for a new question
