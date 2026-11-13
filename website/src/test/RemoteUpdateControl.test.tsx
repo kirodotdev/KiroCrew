@@ -142,6 +142,20 @@ describe('RemoteUpdateControl', () => {
     expect(await screen.findByText('Old box now runs 0.9.1.')).toBeInTheDocument()
   })
 
+  it('never calls an update confirmed when the version before it is unknown', async () => {
+    vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
+      job: { ...RUNNING, state: 'unverified', phase: 'done', finished_at: 2, version_before: '', version_after: '0.9.1' },
+    })
+    // A versions row read before the restart still says the old version.
+    vi.mocked(api.instancesVersions).mockResolvedValue({
+      local_version: '0.9.1',
+      instances: [{ id: 'old', name: 'Old box', version: '0.9.0', behind: true, updatable: true }],
+    })
+    renderWithProviders(<RemoteUpdateControl instanceId="old" name="Old box" />)
+    expect(await screen.findByText(/now runs 0\.9\.1\. Its version before the update could not be read/)).toBeInTheDocument()
+    expect(screen.queryByText(/Old box now runs 0\.9\.\d\.$/)).toBeNull()
+  })
+
   it('shows the remote error tail of a failed update and names the Try again it offers', async () => {
     vi.mocked(api.remoteUpdateStatus).mockResolvedValue({
       job: { ...RUNNING, state: 'failed', error: 'release feed unreachable', finished_at: 2 },

@@ -98,7 +98,9 @@ jobs:
       contents: read
       pull-requests: read
       id-token: write
-    timeout-minutes: 30
+    # 30 for the review itself, plus the 20-minute rate-limit wait the
+    # `Resolve human override` read may spend.
+    timeout-minutes: 50
     outputs:
       in_scope: ${{ steps.scope.outputs.in_scope }}
       override: ${{ steps.human_override.outputs.active }}
@@ -293,18 +295,44 @@ jobs:
           # string as "no override recorded" re-gates a verdict a human has
           # already cleared, so absorb the transient case here and fail CLOSED
           # on a read that never succeeds.
+          #
+          # A read refused by a spent API rate limit waits for the reset, not a
+          # second: the limit resets hourly, and a run that fails here leaves a
+          # `failure` the same-repo per-head floor then keeps for this head.
+          # As in .github/actions/gh-rate-limit: until the REST `core` reset
+          # that `gh api rate_limit` (no quota) reports, 60s when core is not
+          # spent (a secondary limit), at most 1200s in all; a later reset
+          # fails closed.
+          rl_waited=0
+          wait_out_rate_limit() {
+            grep -qi 'rate limit' "$1" || return 1
+            local reset delay
+            reset="$(gh api rate_limit --jq '.resources.core | select(.remaining == 0) | .reset' 2>/dev/null)" || reset=""
+            if [[ "$reset" =~ ^[0-9]+$ ]]; then delay=$((reset - $(date +%s) + 5)); else delay=60; fi
+            [ "$delay" -ge 5 ] || delay=5
+            if [ $((rl_waited + delay)) -gt 1200 ]; then
+              echo "The API rate limit resets in ${delay}s, past this step's 1200s wait (${rl_waited}s used)."
+              return 1
+            fi
+            rl_waited=$((rl_waited + delay))
+            echo "Rate-limited: waiting ${delay}s for the reset before reading again."
+            sleep "$delay"
+          }
           comments=""
           read_ok=""
+          read_err="$(mktemp)"
           for attempt in 1 2 3; do
-            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate)"; then
+            if comments="$(gh api "repos/$REPO/issues/$PR/comments" --paginate 2>"$read_err")"; then
               read_ok=1
               break
             fi
+            cat "$read_err" >&2
             echo "Reading the PR comments failed on attempt $attempt."
             if [ "$attempt" -lt 3 ]; then
-              sleep "$attempt"
+              wait_out_rate_limit "$read_err" || sleep "$attempt"
             fi
           done
+          rm -f "$read_err"
           if [ -z "$read_ok" ]; then
             echo "::error::Could not read this PR's comments after 3 attempts, so this lane cannot tell whether a human override is recorded for $HEAD. Failing closed rather than re-gating a verdict a human may have cleared -- re-run this job."
             exit 1
@@ -1508,8 +1536,9 @@ jobs:
       contents: read
       pull-requests: write
     # A full-history checkout on the runner fleet can take most of fifteen
-    # minutes even with the blobless filter below; 20 leaves headroom.
-    timeout-minutes: 20
+    # minutes even with the blobless filter below; 20 leaves headroom, and 20
+    # more covers the rate-limit wait the per-head floor's read may spend.
+    timeout-minutes: 40
     steps:
       # Measurement only: counts this job's GitHub API calls by kind so the
       # shared GITHUB_TOKEN quota can be attributed per workflow. Every later
@@ -2973,17 +3002,39 @@ jobs:
           # check-run listing at all, are both decided by the shared table: an
           # exit-0 response with no body names no check-runs either way, and only
           # a well-formed listing may mean "no prior".
+          #
+          # A rate-limited read waits for the reset exactly as `generate`'s
+          # `Resolve human override` does, for the same reason: a run that
+          # cannot read its priors fails, and that failure floors this head.
+          rl_waited=0
+          wait_out_rate_limit() {
+            grep -qi 'rate limit' "$1" || return 1
+            local reset delay
+            reset="$(gh api rate_limit --jq '.resources.core | select(.remaining == 0) | .reset' 2>/dev/null)" || reset=""
+            if [[ "$reset" =~ ^[0-9]+$ ]]; then delay=$((reset - $(date +%s) + 5)); else delay=60; fi
+            [ "$delay" -ge 5 ] || delay=5
+            if [ $((rl_waited + delay)) -gt 1200 ]; then
+              echo "The API rate limit resets in ${delay}s, past this step's 1200s wait (${rl_waited}s used)."
+              return 1
+            fi
+            rl_waited=$((rl_waited + delay))
+            echo "Rate-limited: waiting ${delay}s for the reset before reading again."
+            sleep "$delay"
+          }
           priors=""; readable="true"
+          read_err="$(mktemp)"
           for attempt in 1 2 3; do
             if priors="$(gh api --method GET \
-              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all")"; then
+              "repos/$REPO/commits/$HEAD/check-runs?check_name=$enc&per_page=100&filter=all" 2>"$read_err")"; then
               readable="true"
               break
             fi
+            cat "$read_err" >&2
             priors=""; readable="false"
             echo "Reading the prior check-runs for $HEAD failed on attempt $attempt."
-            if [ "$attempt" -lt 3 ]; then sleep "$attempt"; fi
+            if [ "$attempt" -lt 3 ]; then wait_out_rate_limit "$read_err" || sleep "$attempt"; fi
           done
+          rm -f "$read_err"
           # This run's own check-run is still in progress, so it is not among the
           # completed rows. The status step passed, so this run publishes a green
           # job -- a `success` check-run -- which is what the floor compares.

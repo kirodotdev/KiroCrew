@@ -144,12 +144,19 @@ class ProcessSession(Protocol):
     _opencode_denies_in_force: frozenset[str] | None
     _opencode_denies_unenforced: frozenset[str]
     _opencode_native_mounts: frozenset[str]
+    _mimocode_config_mcp_servers: tuple[str, ...]
+    _mimocode_denies_in_force: frozenset[str] | None
+    _mimocode_denies_unenforced: frozenset[str]
+    _mimocode_native_mounts: frozenset[str]
+    _mimocode_disabled_servers: frozenset[str]
+    _mimocode_governed_stop: tuple[str, str] | None
     _session_mcp_cache: list[dict[str, Any]] | None
     _pi_gate_nonce: str
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _pi_steer_channel: Any
     _deepseek_gate_nonce: str
+    _unasked_shell_tripwire: bool
     _deepseek_read_only_issue: str
     _copilot_mcp_config_path: str
     _launch_mcp_servers: list[Any] | None
@@ -421,6 +428,17 @@ class TeardownPolicy:
     local_only: bool = False
     """Unregister without the destructive verb unless privacy requires deletion."""
 
+    delete_disposable_record: Callable[[str, Mapping[str, str] | None], bool] | None = None
+    """Crew's own delete of a disposable session's record, for a host whose verb keeps it.
+
+    ``None`` means the verb, or the kiro-cli transcript sweep the shared runtime
+    already runs, answers for the record. codex evicts and keeps the rollout under
+    ``CODEX_HOME``, so its harness names the rollout delete here. The shared
+    runtime calls it for an incognito or temporary session with the session id
+    and the runtime's ``extra_env``, which can move the store the child wrote.
+    Returns whether the cleanup completed.
+    """
+
 
 # ── Unroutable permission answer ──
 
@@ -625,6 +643,7 @@ class HarnessAdapter(LaunchAdapter):
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
         ssh_auth_sock_forwarded: bool = False,
+        governance_app: str | None = None,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -649,6 +668,10 @@ class HarnessAdapter(LaunchAdapter):
         from *work_dir* (the runtime's) for a session opened in another checkout.
         A host that reads workspace settings beside the session reads them there;
         one that projects nothing ignores it.
+
+        ``governance_app`` is the app whose governance profile the session runs
+        under, or ``None`` when the caller cannot vouch for it. Only the KAS
+        projection reads it, for the profiles a translated allow meets.
         """
 
     def record_session_projection(self, handle: Any, custom_agents: Any, active_agent: str) -> None:
@@ -696,14 +719,17 @@ class HarnessAdapter(LaunchAdapter):
     ) -> tuple[dict[str, Any], str | None]:
         """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
 
-        Asked after the runtime built the request and before it goes out. Every host
-        the backend table serves sends what the runtime built and activates the agent
-        the caller asked for, so this answer returns BOTH of the caller's objects
-        unchanged, and the request stays byte-identical to one built without this
-        seam. A host that places the session where Kiro Crew's agent does not exist
-        (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`) reshapes
-        the request and activates nothing. Raising ``AcpRuntimeError`` here refuses
-        the start before anything is sent.
+        Asked after the runtime built the request and before it goes out. This
+        default sends what the runtime built and activates the agent the caller asked
+        for, so it returns BOTH of the caller's objects unchanged, and the request
+        stays byte-identical to one built without this seam. KAS
+        (:class:`~kiro_crew.acp.harness.kas.KasHarness`) also names the mode a
+        ``session/new`` starts in, its injected agent or the start agent it adds
+        beside one that declares MCP servers, and still activates the
+        caller's agent. A host that places the session where Kiro Crew's agent does
+        not exist (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`)
+        reshapes the request and activates nothing. Raising ``AcpRuntimeError`` here
+        refuses the start before anything is sent.
         """
         return params, agent
 
@@ -745,6 +771,20 @@ class HarnessAdapter(LaunchAdapter):
         returned is the user-facing refusal, ready to raise as-is.
         """
         return None
+
+    def start_mode_ran_servers(self, mode_id: str) -> bool:
+        """Whether the mode a session started in may have started MCP servers of its own.
+
+        Asked after ``set_mode`` switched a new session away from *mode_id*, as a
+        seam rather than a backend test (harness-parity H13). Reports staged
+        before the switch describe that mode's servers, so the start skips them
+        unless the mode had none. This base answer is ``True``: a mode a host
+        chose may run any server. A host that starts a session in an agent it
+        registered without servers answers ``False`` for that agent, and the
+        reports staged under it, which can only name session-level servers,
+        still count.
+        """
+        return True
 
     # ── Seam 4: inbound requests the host answers ──
 

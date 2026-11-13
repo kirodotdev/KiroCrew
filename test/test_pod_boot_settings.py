@@ -353,7 +353,7 @@ class TestBootTimeSettings:
             ),
         )
         err = capsys.readouterr().err
-        assert "kirocrew pod down demo && kirocrew pod up demo --approval reads" in err
+        assert "`kirocrew pod down demo`, then `kirocrew pod up demo --approval reads`" in err
         assert "pod restart" not in err
 
     def test_up_tolerates_a_namespace_without_the_flag(

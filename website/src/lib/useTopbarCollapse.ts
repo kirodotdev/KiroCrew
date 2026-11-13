@@ -40,7 +40,8 @@ export type TopbarSide = 'left' | 'right'
  *  - Actions group (`tbr`): 1 metrics numbers -> waveform icon, 2 feedback
  *    labels -> icons, 3 credits counter -> coin icon, 4 the feedback pill,
  *    5 readout capsule -> connection dot and the metrics notice -> its icons,
- *    6 the update pill's label, so the pill cannot push the bell out.
+ *    6 the update pill's label, so the pill cannot push the bell out, and the
+ *    offline notice's text beside the connection dot.
  *  A group that still does not fit at its last level holds content no rung can
  *  hide (the open Windows menu, an extension widget), and clips its own tail
  *  inside its track. */

@@ -5,8 +5,8 @@
  * or fails to open never puts another conversation in its place (#25341).
  * ChatPage is stubbed, so a rendered chat is the active slot on screen.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, screen } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
+import { act, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import { addSlotOptimistic, removeSlotOptimistic } from '../store/dashboardSlice'
 import type { RootState } from '../store'
@@ -15,27 +15,42 @@ import { i18nT } from '../i18n/t'
 import { clearSlotSuccession, recordSlotSuccession } from '../utils/slotSuccession'
 import ChatPanel from '../app-sdk/ChatPanel'
 
-vi.mock('../pages/ChatPage', () => ({
-  default: (props: { embedded?: boolean; embedMode?: 'chat' | 'sessions'; noUrlSync?: boolean }) => (
-    <div
-      data-testid="chat-page"
-      data-embedded={props.embedded ? 'true' : 'false'}
-      data-embed-mode={props.embedMode ?? 'unset'}
-      data-no-url-sync={props.noUrlSync === undefined ? 'unset' : String(props.noUrlSync)}
-    >
-      ChatPage
-    </div>
-  ),
-}))
+vi.mock('../pages/ChatPage', async () => {
+  const { useContext } = await import('react')
+  const { ExpandStepsContext } = await import('../hooks/useToolCallsStartExpanded')
+  function ChatPageStub(props: { embedded?: boolean; embedMode?: 'chat' | 'sessions'; noUrlSync?: boolean }) {
+    const expandSteps = useContext(ExpandStepsContext)
+    return (
+      <div
+        data-testid="chat-page"
+        data-embedded={props.embedded ? 'true' : 'false'}
+        data-embed-mode={props.embedMode ?? 'unset'}
+        data-no-url-sync={props.noUrlSync === undefined ? 'unset' : String(props.noUrlSync)}
+        data-expand-steps={String(expandSteps)}
+      >
+        ChatPage
+      </div>
+    )
+  }
+  return { default: ChatPageStub }
+})
 
 // Mirrors the real thunk: a live session becomes the active slot; a deleted one
-// rejects with the 404 payload and leaves the previous active slot in place.
+// rejects with the 404 payload and leaves the previous active slot in place; a
+// held one opens only when the test calls the function stored for it.
 // Records whether the slot list had the row when the switch ran.
 const goneSlots = vi.hoisted(() => new Set<string>())
+const heldSlots = vi.hoisted(() => new Map<string, () => void>())
 const listedAtSwitch = vi.hoisted(() => [] as boolean[])
 const switchSlot = vi.hoisted(() => vi.fn((key: string) => (dispatch: (a: unknown) => void, getState: () => RootState) => {
   listedAtSwitch.push(getState().dashboard.slots.some(s => s.key === key))
   if (goneSlots.has(key)) return { unwrap: () => Promise.reject({ status: 404, message: 'not found' }) }
+  if (heldSlots.has(key)) {
+    const held = new Promise<void>(resolve => {
+      heldSlots.set(key, () => { dispatch({ type: 'chat/setActiveSlot', payload: key }); resolve() })
+    })
+    return { unwrap: () => held }
+  }
   dispatch({ type: 'chat/setActiveSlot', payload: key })
   return { unwrap: () => Promise.resolve() }
 }))
@@ -72,6 +87,7 @@ beforeEach(() => {
   listedAtSwitch.length = 0
   clearSlotSuccession()
   goneSlots.clear()
+  heldSlots.clear()
 })
 
 describe('ChatPanel', () => {
@@ -107,6 +123,15 @@ describe('ChatPanel', () => {
     expect(chatPage.getAttribute('data-embedded')).toBe('true')
     expect(chatPage.getAttribute('data-embed-mode')).toBe('chat')
     expect(chatPage.getAttribute('data-no-url-sync')).toBe('true')
+  })
+
+  it('opens the transcript steps for this panel only with expandSteps, writing no chat config', async () => {
+    const { unmount } = renderWithProviders(<ChatPanel slotKey="zzq-slot-1" />, { store: storeWith('zzq-slot-1') })
+    expect((await screen.findByTestId('chat-page')).getAttribute('data-expand-steps')).toBe('false')
+    unmount()
+    renderWithProviders(<ChatPanel slotKey="zzq-slot-1" expandSteps />, { store: storeWith('zzq-slot-1') })
+    expect((await screen.findByTestId('chat-page')).getAttribute('data-expand-steps')).toBe('true')
+    expect(localStorage.getItem('mc-chat-config')).toBeNull()
   })
 
   it('switches once per slot key, and again when the key changes', async () => {
@@ -164,5 +189,99 @@ describe('ChatPanel', () => {
     expect(screen.getByTestId('chat-page')).toBeInTheDocument()
     expect(store.getState().chat.activeSlot).toBe('zzq-other')
     expect(switchesTo('zzq-slot-1')).toBe(1)
+  })
+
+  it('with its sessions rail, draws no chat until its session has opened', async () => {
+    heldSlots.set('zzq-slot-1', () => {})
+    renderWithProviders(<ChatPanel slotKey="zzq-slot-1" />, { store: storeWith('zzq-slot-1') })
+    await waitFor(() => expect(switchesTo('zzq-slot-1')).toBe(1))
+    // The other chat is still the active slot, so a chat drawn now would be it.
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument()
+    await act(async () => { heldSlots.get('zzq-slot-1')?.() })
+    expect(await screen.findByTestId('chat-page')).toBeInTheDocument()
+  })
+
+  it('stops taking its session back from a second conversation-only panel', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => { warn.mockRestore(); vi.useRealTimers() })
+    // Every switch-back lands at this one instant, so they form one quick run.
+    vi.setSystemTime(new Date('2026-11-09T12:00:00Z'))
+    const store = storeWith('zzq-slot-1', 'zzq-slot-2')
+    renderWithProviders(
+      <>
+        <ChatPanel slotKey="zzq-slot-1" conversationOnly />
+        <ChatPanel slotKey="zzq-slot-2" conversationOnly />
+      </>,
+      { store },
+    )
+    // The first panel gives up and draws nothing; the second keeps its session.
+    await waitFor(() => {
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(screen.getAllByTestId('chat-page')).toHaveLength(1)
+    })
+    expect(store.getState().chat.activeSlot).toBe('zzq-slot-2')
+    // Each panel: its first switch, then ten switch-backs.
+    expect([switchesTo('zzq-slot-1'), switchesTo('zzq-slot-2')]).toEqual([11, 11])
+    // A slot list change after a quiet gap does not start the fight again.
+    vi.setSystemTime(new Date('2026-11-09T12:00:06Z'))
+    await act(async () => { store.dispatch(addSlotOptimistic(slot('zzq-slot-3'))) })
+    expect([switchesTo('zzq-slot-1'), switchesTo('zzq-slot-2')]).toEqual([11, 11])
+    expect(store.getState().chat.activeSlot).toBe('zzq-slot-2')
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('takes its session back again once it has been handed another session', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => { warn.mockRestore(); vi.useRealTimers() })
+    // One instant throughout, so no quiet gap can be what starts a new run.
+    vi.setSystemTime(new Date('2026-11-09T12:00:00Z'))
+    const store = storeWith('zzq-slot-1', 'zzq-slot-2')
+    const { rerender } = renderWithProviders(
+      <>
+        <ChatPanel key="a" slotKey="zzq-slot-1" conversationOnly />
+        <ChatPanel key="b" slotKey="zzq-slot-2" conversationOnly />
+      </>,
+      { store },
+    )
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1))
+    expect(store.getState().chat.activeSlot).toBe('zzq-slot-2')
+    // The competing panel goes, and the capped one is handed the session that is
+    // already active, then its own again.
+    rerender(<><ChatPanel key="a" slotKey="zzq-slot-1" conversationOnly /></>)
+    expect(screen.queryByTestId('chat-page')).not.toBeInTheDocument()
+    rerender(<><ChatPanel key="a" slotKey="zzq-slot-2" conversationOnly /></>)
+    expect(await screen.findByTestId('chat-page')).toBeInTheDocument()
+    rerender(<><ChatPanel key="a" slotKey="zzq-slot-1" conversationOnly /></>)
+    await waitFor(() => {
+      expect(store.getState().chat.activeSlot).toBe('zzq-slot-1')
+      expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    })
+    act(() => { store.dispatch({ type: 'chat/setActiveSlot', payload: 'zzq-other' }) })
+    await waitFor(() => {
+      expect(store.getState().chat.activeSlot).toBe('zzq-slot-1')
+      expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+    })
+    // The capped run's eleven, the reopen, then one switch-back.
+    expect(switchesTo('zzq-slot-1')).toBe(13)
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps taking its session back when other sessions open seconds apart', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    onTestFinished(() => { warn.mockRestore(); vi.useRealTimers() })
+    const store = storeWith('zzq-slot-1')
+    renderWithProviders(<ChatPanel slotKey="zzq-slot-1" conversationOnly />, { store })
+    expect(await screen.findByTestId('chat-page')).toBeInTheDocument()
+    // One more switch-back than a quick run may hold, each six seconds after the last.
+    for (let n = 1; n <= 11; n++) {
+      vi.setSystemTime(new Date(Date.UTC(2026, 10, 9, 12, 0, 6 * n)))
+      act(() => { store.dispatch({ type: 'chat/setActiveSlot', payload: 'zzq-other' }) })
+      await waitFor(() => {
+        expect(store.getState().chat.activeSlot).toBe('zzq-slot-1')
+        expect(screen.getByTestId('chat-page')).toBeInTheDocument()
+      })
+    }
+    expect(switchesTo('zzq-slot-1')).toBe(12)
+    expect(warn).not.toHaveBeenCalled()
   })
 })

@@ -159,6 +159,44 @@ async def test_global_history_keeps_its_existing_aggregate_edit_contract(env, mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("has_today", [True, False])
+async def test_global_history_edit_writes_only_todays_part(env, monkeypatch, has_today):
+    """An edit that keeps the earlier days as shown saves today's part, not all of it."""
+    store = await document_store(env, "")
+    today = store._today_history_file()
+    monkeypatch.setattr(store, "_today_history_file", lambda: today)
+    yesterday = today.with_name(f"{date.fromisoformat(today.stem) - timedelta(days=1)}.md")
+    await asyncio.to_thread(yesterday.write_text, "Prior V1 day", encoding="utf-8")
+    if has_today:
+        await asyncio.to_thread(today.write_text, "Current V1 day", encoding="utf-8")
+    expected_today = "Current V1 day\n" if has_today else ""
+
+    for visit in range(2):
+        response = await memory.api_memory_history(request(env, owner=True, session="dashboard:ui"))
+        shown = json.loads(response.text)["content"]
+        assert shown.count("Prior V1 day") == 1
+        edit = f"Owner V1 edit {visit}"
+        if expected_today:
+            submitted = shown.replace("Current V1 day", f"Current V1 day\n{edit}", 1)
+            expected_today = expected_today.rstrip("\n") + f"\n{edit}\n"
+            if visit:
+                submitted = shown.replace("Owner V1 edit 0", f"Owner V1 edit 0\n{edit}", 1)
+        else:
+            submitted = f"{edit}\n\n{shown}"
+            expected_today = f"{edit}\n"
+        saved = await memory.api_memory_history(
+            request(env, body={"content": submitted}, owner=True, session="dashboard:ui").clone(
+                method="PUT"
+            )
+        )
+        assert saved.status == 200
+        assert await asyncio.to_thread(today.read_text, encoding="utf-8") == expected_today
+        assert await asyncio.to_thread(yesterday.read_text, encoding="utf-8") == "Prior V1 day"
+        aggregate = await asyncio.to_thread(store.read_recent_history)
+        assert aggregate.count("Prior V1 day") == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["append", "hidden_content"])
 async def test_private_history_rechecks_exact_target_before_replacement(env, monkeypatch, change):
     store = await document_store(env, "member-alice")

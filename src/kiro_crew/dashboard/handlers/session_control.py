@@ -20,6 +20,7 @@ from aiohttp import web
 
 from kiro_crew import conductor_patrol, session_ledger
 from kiro_crew.dashboard import session_control as sc
+from kiro_crew.dashboard import session_control_queue as scq
 from kiro_crew.dashboard import session_send_receipts
 from kiro_crew.dashboard.handlers import remote_dispatch_routes as crew_routes
 from kiro_crew.dashboard.handlers import work_ledger as work_ledger_routes
@@ -304,7 +305,7 @@ async def _refuse_unprompted_seed(state: DashboardState, caller_key: str) -> Non
     A conductor auto-approves ``session_create`` but not ``session_send``; an
     unreadable spec cannot say which prompt applies, so it is refused too.
     """
-    from kiro_crew.agent_sdk.mcp_refs import entry_grants, entry_reaches
+    from kiro_crew.agent_sdk.agent_specs import creates_without_send
 
     # The header is often the history key; the slot is then found by the walk.
     slot = state.get_slot(caller_key) or state.get_slot(sc.caller_slot_key(state, caller_key))
@@ -319,13 +320,7 @@ async def _refuse_unprompted_seed(state: DashboardState, caller_key: str) -> Non
         if slot is not None
         else None
     )
-    tool = "@kirocrew-dashboard/session_"
-    entries = granted or ()
-    # Create over-matches (a wider read refuses more); send must be a grant
-    # kiro-cli itself honours, or the seed would skip a prompt it still shows.
-    create = any(entry_reaches(e.strip(), tool + "create") for e in entries)
-    send = any(entry_grants(e, tool + "send") for e in entries)
-    if granted is None or (create and not send):
+    if granted is None or creates_without_send(granted):
         raise sc.SessionControlError(
             "a first message needs session_send's approval: create the session, "
             "then session_send to it",
@@ -451,6 +446,17 @@ async def api_session_control_create(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        if body.get("backend") not in (None, ""):
+            from kiro_crew import session_harness_preview as harness_preview
+
+            # Behind the `session_harness` feature preview: refused before any
+            # other read, so nothing is created and no crew is reached.
+            if not await asyncio.to_thread(harness_preview.session_harness_enabled):
+                raise sc.SessionControlError(
+                    harness_preview.PREVIEW_OFF_MESSAGE,
+                    status=403,
+                    code=harness_preview.PREVIEW_OFF_CODE,
+                )
         if body.get("backend") and (crew_routes.has_crew(body) or "work_item" in body):
             # A remote crew starts its sessions on its own gateway's harnesses,
             # which this gateway cannot check; refused rather than dropped.
@@ -807,6 +813,9 @@ async def api_session_control_generate_title(request: web.Request) -> web.Respon
     state: DashboardState = request.app["state"]
     try:
         body = await _body(request)
+        # The title is built from the target's rows: a target restored as a
+        # sidebar row loads its window first, ahead of the gate's prewarm.
+        await sc.load_target_window(state, _target(body))
         result = await sc.generate_title_target(
             state,
             caller_session_key=_read_session_key(request),
@@ -843,6 +852,72 @@ async def api_session_control_set_color(request: web.Request) -> web.Response:
     except sc.SessionControlError as exc:
         return _refusal(exc)
     return web.json_response(result)
+
+
+# ``set_note`` folds to ``other`` the same way ``set_color`` does.
+@_counted("set_note")
+async def api_session_control_set_note(request: web.Request) -> web.Response:
+    """POST /api/session-control/set-note — leave a note on a session the caller created.
+
+    Written by ``POST /api/chat/slots/{slot}/note``'s own code, so its limits,
+    redaction, hold during a running turn and reply are that route's.
+    """
+    from kiro_crew.dashboard import chat_handlers  # circular: it imports this package
+
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here, for the reason `api_session_control_stop` gives.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        note = body.get("note", "")
+        invalid = chat_handlers._validate_content(note)
+        if invalid is not None:
+            return invalid
+        # The write appends to the target's rows: a target restored as a sidebar
+        # row loads its window first, ahead of the gate's prewarm.
+        await sc.load_target_window(state, _target(body))
+        slot = await sc.authorize_created_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            operation="set_note",
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    # The containment this note is admitted under. No await since the gate, but a
+    # mirror can be linked off the loop after the gate's own read, so a mirror seen
+    # here is refused as the gate refuses it, never recorded as admitted.
+    admission = sc.containment_meta(state, slot)
+    if admission[sc.QUEUED_CONTAINMENT_META_KEY].get("mirrored"):
+        return _refusal(
+            sc.SessionControlError(
+                "sessions mirrored to a channel are not addressable",
+                status=403,
+                code="mirrored_target",
+            )
+        )
+    response = await chat_handlers.write_slot_note(
+        state,
+        slot,
+        content=note,
+        source=sc.SESSION_NOTE_SOURCE,
+        display_source=sc.SESSION_NOTE_SOURCE,
+        max_age=chat_handlers._NOTE_CONTEXT_MAX_AGE,
+        ephemeral=True,
+        caller=_read_session_key(request),
+        admission=admission,
+    )
+    if response.status == 200:
+        sc._audit(
+            caller_session_key=_read_session_key(request),
+            operation="set_note",
+            slot_key=slot.key,
+            outcome="allowed",
+        )
+    return response
 
 
 @_counted("close")
@@ -1192,6 +1267,7 @@ async def api_session_control_read(request: web.Request) -> web.Response:
         return await crew_routes.handle_crew_call(request, "read", dict(request.query))
     state: DashboardState = request.app["state"]
     await sc.load_target_window(state, request.query.get("target") or "")
+    await sc.prewarm_app_reach(state)
     await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
@@ -1227,8 +1303,9 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
         return refused
     # Same placement as `read`: query parsing is synchronous, and `read_summary`
     # runs its gate before its first await.
-    await sc.prewarm_enabled_check()
     state: DashboardState = request.app["state"]
+    await sc.prewarm_app_reach(state)
+    await sc.prewarm_enabled_check()
     try:
         target = (request.query.get("target") or "").strip()
         if not target:
@@ -1237,6 +1314,44 @@ async def api_session_control_summary(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=target,
+            caller_fenced=_carried_fence(request),
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
+# ``queue`` is not in ``SESSION_CONTROL_OPS``, so it folds to ``other`` like
+# ``revive`` and ``history``; adding it to the closed list needs no route edit.
+@_counted("queue")
+async def api_session_control_queue(request: web.Request) -> web.Response:
+    """POST /api/session-control/queue — list or move a managed session's queue."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        action = body.get("action", "list")
+        entry = body.get("entry", "")
+        position = body.get("position")
+        if not isinstance(action, str):
+            raise sc.SessionControlError("action must be a string", code="bad_request")
+        if not isinstance(entry, str) or len(entry) > MAX_SHORT_STRING:
+            raise sc.SessionControlError("entry must be a short string", code="bad_request")
+        if position is not None and (isinstance(position, bool) or not isinstance(position, int)):
+            raise sc.SessionControlError("position must be an integer", code="bad_request")
+        target = _target(body)
+        # After the body read, like `summary`: `queue_target` is synchronous from
+        # its gate to its write, so this is the last suspension before the gate.
+        await sc.prewarm_enabled_check()
+        result = await scq.queue_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=target,
+            action=action,
+            entry=entry.strip(),
+            position=position,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:

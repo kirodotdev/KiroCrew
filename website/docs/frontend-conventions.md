@@ -97,6 +97,9 @@ Other shared modules:
   constrain the text column's height while reserving room for the hand-off.
   `messagePlacement` is `'beside'` by default; `'below'` puts the raw message on
   its own line under a plain-language `title`, and is ignored without a `title`.
+  `actionPlacement="below-on-phone"` puts the hand-off under the message only
+  below `sm` and beside it from `sm` up, in both variants, so a notice that
+  spans a settings card keeps its sentence the row's width on a phone.
 - `Clickable.tsx` (accessible clickable div; see below)
 - `SegmentedControl.tsx` (sliding pill, Framer Motion) — see the switcher rule below.
   It is a WAI-ARIA radiogroup: each segment is `role="radio"` with `aria-checked`
@@ -227,6 +230,7 @@ and every other concern has one owner under `components/markdown/`.
 | `MarkdownRenderer.tsx` | the ordered remark and rehype chains, and the parser built from them that the source repairs read (`AUTOLINK_PARSER`); `MD_COMPONENTS`, the element-to-renderer map, with the fence `code` override and the link overrides `MdAnchor` / `MdParagraph`; the per-block source passes and their order (`MarkdownBlock`); fence dispatch (`BlockRenderer`); the root component and its providers |
 | `markdown/contexts.ts` | every context the pipeline's modules share, each created once; the facade re-exports the six public ones (`MediaApprovedCtx` stays private to `markdown/remoteMedia.tsx`, which both provides and reads it) |
 | `markdown/linkTargets.ts`, `markdown/pathReferences.ts` | what a link or code span points at: artifact routes, unfurl eligibility, open sessions, sidebar folder paths (folder-chip resolution); path candidates, `file:line` suffixes, probe resolution and activation |
+| `markdown/linkAddressTip.tsx` | a link's address bubble: which links show their address (`linkAddress`), the hover pause, and stepping aside for an app's link-preview card |
 | `markdown/sanitize.ts` | the tag and attribute allowlist (`rehypeSanitize`) and `remarkVerbatimUnknownTags` |
 | `markdown/treeTransforms.ts` | fenced-code marking, block unwrapping, soft breaks, source positions, position-stable root keys |
 | `markdown/streamingEffects.ts` | the streaming tail's glow, reveal and caret |
@@ -705,7 +709,9 @@ parameters a fetch varies on, so a stale entry cannot serve a different subject.
 Real-time updates arrive on a single WebSocket at `/api/ws`, read through
 `useWebSocket`, which reconnects with capped exponential backoff (1s doubling to a
 10s ceiling) and re-fetches state through Redux on reconnect instead of reloading
-the page.
+the page. The slot list is the exception: the new socket's connect snapshot
+carries it, so the reconnect catch-up reads it over HTTP only when that snapshot
+is empty or does not come (`createReconnectSnapshotWait` in `reconnectCatchUp.ts`).
 
 `src/hooks/useWebSocket.ts` is the composition point and the only import path:
 it holds the frame routing table (one `case` per frame type), the silence
@@ -950,8 +956,9 @@ files own it:
     settings icon-tile and goal-mark tokens, the dock pass-through and the
     global reduced-motion transition reset.
   - `content-fit.css` owns the rules that make content fit its box: font-metric
-    compensation on the nav rail, the crew-chip cut edge, image and spacer
-    reservations, the pane-dim token and the markdown-table breakout.
+    compensation on the nav rail, the Hindi and Bengali letter-spacing reset,
+    the crew-chip cut edge, image and spacer reservations, the pane-dim token
+    and the markdown-table breakout.
 
   `cli-mode.css`, `message-font-size.css` and `crew-notes.css` in the same
   directory are imported by `main.tsx` instead. A test that measures the

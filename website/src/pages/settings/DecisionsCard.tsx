@@ -30,7 +30,7 @@ import {
   type DecisionPointRow,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
-import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE } from './decisionsProviderQuery'
+import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE, isRefusedHostedDefault } from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
@@ -497,6 +497,12 @@ export function DecisionsCard() {
   // With no decision model chosen there is nothing to consent to sending to; the
   // gateway refuses an enabling write, and the switch says so instead of offering one.
   const noModel = providerQ.data?.active === PRESET_NONE
+  // The hosted default the ceiling refuses reads as "No model" too, but the owner chose
+  // nothing: the picker names the refusal. That refusal is the dashboard surface's
+  // answer; a surface the ceiling permits may still send under the RECORDED consent,
+  // so the switch below shows that consent as it stands and keeps it revocable.
+  const refusedDefault = providerQ.data !== undefined && isRefusedHostedDefault(providerQ.data)
+  const recordedConsentLive = refusedDefault && view.enabled
 
   return (
     <SettingsCard>
@@ -531,14 +537,18 @@ export function DecisionsCard() {
           at all, where nothing can leave the machine. */}
       <p
         id={EGRESS_NOTE_ID}
-        className={backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'}
+        className={
+          refusedDefault && !recordedConsentLive ? 'hidden' : backendMissing ? 'text-[12px] text-muted opacity-40' : 'text-[12px] text-text'
+        }
       >
         {/* Any address the gateway classifies as this machine -- a local preset or a
             hand-written loopback address -- makes the "over the internet" sentence
             false. The local wording names only the first hop ("the server at the
             address below, on this machine") and leaves where that server forwards it
             to the server, which holds for a hand-written tunnel too. */}
-        {noModel
+        {refusedDefault && !recordedConsentLive
+          ? null
+          : noModel && !recordedConsentLive
           ? i18nT('pages.developer.featurePreviewsTab.decisions_no_model_note')
           : providerQ.data?.loopback === true
             ? i18nT('pages.developer.featurePreviewsTab.decisions_egress_local')

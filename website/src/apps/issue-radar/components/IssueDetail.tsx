@@ -314,9 +314,9 @@ function eventVisual(
 
   switch (ev.kind) {
     case 'labeled':
-      return { Icon: Tag, color: 'text-accent', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.added_the')} {labelChip} {i18nT('apps.issueRadar.components.issueDetail.label')}</> }
+      return { Icon: Tag, color: 'text-accent', body: <Trans i18nKey="apps.issueRadar.components.issueDetail.added_the_label_chip" components={{ who, label: labelChip ?? <></> }} /> }
     case 'unlabeled':
-      return { Icon: Tag, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.removed_the')} {labelChip} {i18nT('apps.issueRadar.components.issueDetail.label')}</> }
+      return { Icon: Tag, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.issueDetail.removed_the_label_chip" components={{ who, label: labelChip ?? <></> }} /> }
     case 'assigned':
       return {
         Icon: UserPlus, color: 'text-muted',
@@ -352,9 +352,9 @@ function eventVisual(
         ),
       }
     case 'milestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.added_this_to_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.issueDetail.milestone')}</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.issueDetail.added_this_to_the_milestone_name" components={{ who, milestone: <span className="font-medium text-text">{ev.milestone}</span> }} /> }
     case 'demilestoned':
-      return { Icon: MilestoneIcon, color: 'text-muted', body: <>{who} {i18nT('apps.issueRadar.components.issueDetail.removed_this_from_the')} <span className="font-medium text-text">{ev.milestone}</span> {i18nT('apps.issueRadar.components.issueDetail.milestone')}</> }
+      return { Icon: MilestoneIcon, color: 'text-muted', body: <Trans i18nKey="apps.issueRadar.components.issueDetail.removed_this_from_the_milestone_name" components={{ who, milestone: <span className="font-medium text-text">{ev.milestone}</span> }} /> }
     case 'cross-referenced':
       return {
         Icon: ev.source?.is_pr ? GitPullRequest : Link2, color: 'text-accent',
@@ -416,7 +416,7 @@ function RelatedLinks({ items }: { items: RelatedRef[] }) {
   return (
     <section className="mb-6">
       <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">
-        <Link2 size={12} /> {i18nT('apps.issueRadar.components.issueDetail.linked')} {terms.changeRequestPlural} {i18nT('apps.issueRadar.components.issueDetail.issues')}
+        <Link2 size={12} /> {i18nT('apps.issueRadar.components.issueDetail.linked_change_requests_and_issues', { changeRequests: terms.changeRequestPlural })}
         <span className="text-muted normal-case tracking-normal opacity-70">· {items.length}</span>
       </div>
       <div className="flex flex-col gap-1.5">
@@ -1076,9 +1076,14 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
                 <div className="flex items-center gap-2">
                   {me && !editingAssignees && (
                     <button
-                      onClick={toggleSelf}
-                      disabled={assigneesMutation.isPending}
-                      className="inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent disabled:opacity-50"
+                      // `aria-disabled`+`aria-busy` while the assignee write runs,
+                      // not `disabled`: a keyboard user who pressed this keeps focus
+                      // here instead of dropping it to <body>; the press is refused.
+                      onClick={() => { if (!assigneesMutation.isPending) toggleSelf() }}
+                      aria-disabled={assigneesMutation.isPending || undefined}
+                      aria-busy={assigneesMutation.isPending || undefined}
+                      data-busy={assigneesMutation.isPending || undefined}
+                      className="busy-cue [--busy-dim:0.5] inline-flex items-center gap-1 text-[11px] text-muted hover:text-accent cursor-pointer bg-transparent"
                     >
                       {assignedToMe
                         ? <><UserMinus size={11} /> {i18nT('apps.issueRadar.components.issueDetail.unassign_me')}</>

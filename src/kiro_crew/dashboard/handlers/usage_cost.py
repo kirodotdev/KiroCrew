@@ -13,6 +13,7 @@ import math
 import time
 from typing import Any
 
+from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
     NAVIGABLE_CATEGORY,
     SPEND_WINDOW_DAYS,
@@ -138,14 +139,17 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                     if ts_epoch is None or ts_epoch < prior_cutoff or ts_epoch >= upper:
                         continue
 
-                    credits = float(obj.get("credits") or 0.0)
+                    raw_credits = obj.get("credits")
                     # Shards written before the persist-side guard can already
                     # hold `NaN` / `Infinity` — `json.loads` accepts those bare
                     # tokens even though they are not valid JSON. Letting one
                     # through would poison every total it touches and make
                     # `web.json_response` emit a body no browser can parse, so
-                    # the row is dropped rather than counted as free.
-                    if not math.isfinite(credits):
+                    # the row is dropped rather than counted as free. A string
+                    # or an int wider than a double is dropped the same way; a
+                    # row with no credits is a turn that billed none.
+                    credits = 0.0 if not raw_credits else _finite_number(raw_credits)
+                    if credits is None:
                         continue
                     model = str(obj.get("model") or "unknown")
                     slot = str(obj.get("slot") or "")

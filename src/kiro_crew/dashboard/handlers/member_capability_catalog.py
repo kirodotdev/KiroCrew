@@ -25,6 +25,7 @@ session is not a crewmate thread, and its spec leaves both tools out
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -72,7 +73,8 @@ def gateway_matches(params: dict[str, Any]) -> set[str]:
     What lets the card say a server comes from this gateway: its draft value is
     the gateway's own entry, re-read now (``_find_server_spec_anywhere``, the MCP
     page's lookup), enabled, and equal key for key to what a file takes from it
-    (``transport_for_file``: command, args, env, headers, cwd and every other key).
+    (``transport_for_file``: command, args, env, headers, cwd and every other key),
+    as it is or with its env and header values masked (:func:`mask_settings`).
     A changed ``env`` or ``cwd``, or an entry the user switched off, is not this
     gateway's server. Blocking.
     """
@@ -85,34 +87,106 @@ def gateway_matches(params: dict[str, Any]) -> set[str]:
             continue
         name = str(op.get("id") or "")
         current = _find_server_spec_anywhere(name) if name else None
-        if (
-            isinstance(current, dict)
-            and _switched_on(name)
-            and catalog_mod.transport_for_file(current) == value
-        ):
+        live = catalog_mod.transport_for_file(current)
+        if live is not None and _switched_on(name) and value in (live, mask_settings(live)):
             out.add(name)
     return out
 
 
 #: Transport keys whose values may hold a credential (an API key in env, a token in headers).
 _SETTINGS_KEYS = ("env", "headers")
+#: What a card shows for a set env or header value: the mask every capability view
+#: shows (``agent_capabilities.safe_view``), which the capability editor refuses as a value.
+SETTING_MASK = "[REDACTED]"
+
+
+def mask_settings(transport: Any) -> Any:
+    """*transport* with each set env and header value shown as :data:`SETTING_MASK`."""
+    if not isinstance(transport, dict):
+        return transport
+    return {
+        k: (
+            {n: SETTING_MASK if x else x for n, x in v.items()}
+            if k in _SETTINGS_KEYS and isinstance(v, dict)
+            else v
+        )
+        for k, v in transport.items()
+    }
+
+
+def masks_settings(entry: Any) -> bool:
+    """Whether *entry* shows any env or header value as :data:`SETTING_MASK`."""
+    return isinstance(entry, dict) and any(
+        isinstance(entry.get(k), dict) and SETTING_MASK in entry[k].values() for k in _SETTINGS_KEYS
+    )
+
+
+def masks_unresolved(params: dict[str, Any]) -> bool:
+    """Whether a capabilities card sets a masked server entry the gateway did not resolve for it.
+
+    Its apply fills a masked entry in from the gateway (:func:`gateway_transport_behind`),
+    so only a server ``request_capabilities`` resolved, named in its ``origins``, may carry one.
+    """
+    origins = params.get("origins") or {}
+    return any(
+        op.get("section") == "mcpServers"
+        and masks_settings(op.get("value"))
+        and origins.get(op.get("id"), {}).get("source") != catalog_mod.SOURCE_GATEWAY
+        for op in (params.get("draft") or {}).get("operations") or []
+    )
 
 
 def _carries_settings(transport: dict[str, Any] | None) -> bool:
-    """Whether a gateway server's transport may hold a credential.
+    """Whether a gateway server's transport may hold a credential its masked card would show.
 
-    It sets any env or header value, or the masking every capability view uses
-    (``agent_capabilities.safe_view``) would hide part of it: a credential
-    passed as an argument (``--api-key <value>``, ``--token=<value>``,
-    ``-e NAME=<value>``) is caught there.
+    The masking every capability view uses (``agent_capabilities.safe_view``)
+    would hide more than its env and header values: a credential passed as an
+    argument (``--api-key <value>``, ``--token=<value>``, ``-e NAME=<value>``),
+    or an env value repeated in an argument, is caught there.
     """
     if not isinstance(transport, dict):
         return False
-    if any(transport.get(k) for k in _SETTINGS_KEYS):
-        return True
     from kiro_crew.agent_capabilities import safe_view
 
-    return safe_view(transport) != transport
+    return safe_view(transport) != mask_settings(transport)
+
+
+def gateway_entry_behind(name: str, shown: Any) -> dict[str, Any] | None:
+    """The gateway's live entry for *name* if a card's masked *shown* entry is still it.
+
+    What a card's apply records in place of the masked entry it carries, so the
+    values come from this gateway's own config and never from a request body.
+    ``None`` unless :func:`resolve_server` would put exactly *shown* on a card
+    now: the server is gone or switched off, carries a credential outside its
+    setting values, or its launch line or setting keys differ. Blocking.
+    """
+    from kiro_crew import template_mcp_additions as additions
+
+    live = _maskable_gateway_transport(name)
+    if live is None:
+        return None
+    try:
+        if additions.validate_entry(mask_settings(live)) != shown:
+            return None
+    except additions.AdditionError:
+        return None
+    return live
+
+
+def gateway_transport_behind(name: str, shown: Any) -> dict[str, Any] | None:
+    """:func:`gateway_entry_behind` for a crewmate file's masked transport *shown*. Blocking."""
+    live = _maskable_gateway_transport(name)
+    return live if live is not None and mask_settings(live) == shown else None
+
+
+def _maskable_gateway_transport(name: str) -> dict[str, Any] | None:
+    """The gateway's switched-on transport for *name*, if masking its settings hides it all."""
+    from kiro_crew.dashboard.handlers.mcp import _find_server_spec_anywhere
+
+    live = catalog_mod.transport_for_file(_find_server_spec_anywhere(name))
+    if live is None or not _switched_on(name) or _carries_settings(live):
+        return None
+    return live
 
 
 def _switched_on(name: str) -> bool:
@@ -231,6 +305,30 @@ def _auto_approve(addition: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(tools))
 
 
+#: Official-registry refusals after which the edition package registry is asked:
+#: the official registry is absent (the edition withholds it) or lacks the id.
+_EDITION_LOOKUP_CODES = frozenset({"provider_unavailable", "server_not_found"})
+
+
+def _edition_package_message(registry_id: str) -> str:
+    params = json.dumps({"provider": "capability", "id": registry_id}, ensure_ascii=False)
+    return (
+        f"{registry_id} is in this edition's package registry (Packages), which "
+        "installs it itself, so no server entry is built for it here; ask the user "
+        f"with propose_change kind mcp.install and params {params}. That install "
+        "adds it to the MCP page and the default agent; for another agent, ask "
+        "again with source 'gateway' once it is installed"
+    )
+
+
+def _settings_refusal(name: str, settings_hint: str) -> catalog_mod.AdditionError:
+    return catalog_mod.AdditionError(
+        "carries_settings",
+        f"{name} carries its own env, headers or credential arguments, so "
+        f"it is not copied onto a card; {settings_hint}",
+    )
+
+
 async def resolve_server(
     name: Any, source: Any, registry_id: Any, *, settings_hint: str
 ) -> tuple[str, dict[str, Any] | None, dict[str, str]]:
@@ -242,13 +340,23 @@ async def resolve_server(
     entry for *name* (present and switched on); ``source: "registry"`` takes the
     official registry's install plan for *registry_id*, the spec
     ``/api/mcp/discover/install`` would write, under the name that install would
-    give it. A gateway entry carrying env, headers or credential arguments is
-    refused (``carries_settings``, with *settings_hint* saying where the user adds
-    it), because a card's params reach the agent that asked. Raises
-    :class:`mate_capability_catalog.AdditionError`.
+    give it. A card's params reach the agent that asked, so a gateway entry's env
+    and header values come back masked (:func:`mask_settings`; the apply step
+    fills them in, :func:`gateway_entry_behind` or
+    :func:`gateway_transport_behind`), and one carrying any other
+    credential, such as an argument, is refused (``carries_settings``, with
+    *settings_hint* saying where the user adds it). A registry id the
+    official registry cannot resolve but the edition package registry holds is
+    refused ``edition_package``, naming the ``mcp.install`` card that installs
+    it: that install runs in the edition's manager and yields no entry to
+    record. Raises :class:`mate_capability_catalog.AdditionError`.
     """
     from kiro_crew.dashboard.handlers.mcp import _find_server_spec_anywhere
-    from kiro_crew.dashboard.handlers.mcp_discover import OfficialPlanError, official_install_plan
+    from kiro_crew.dashboard.handlers.mcp_discover import (
+        OfficialPlanError,
+        edition_package_detail,
+        official_install_plan,
+    )
 
     if source == catalog_mod.SOURCE_GATEWAY:
         if not isinstance(name, str) or not name:
@@ -262,13 +370,9 @@ async def resolve_server(
         transport = catalog_mod.transport_for_file(entry)
         if _carries_settings(transport):
             # A card's params and plan reach the proposing agent, and a
-            # credential in env, headers or arguments would go with them.
-            raise catalog_mod.AdditionError(
-                "carries_settings",
-                f"{name} carries its own env, headers or credential arguments, so "
-                f"it is not copied onto a card; {settings_hint}",
-            )
-        return name, transport, {"source": catalog_mod.SOURCE_GATEWAY}
+            # credential in its arguments would go with them.
+            raise _settings_refusal(name, settings_hint)
+        return name, mask_settings(transport), {"source": catalog_mod.SOURCE_GATEWAY}
     if source == catalog_mod.SOURCE_REGISTRY:
         rid = registry_id
         if not isinstance(rid, str) or not rid.strip() or len(rid) > 200:
@@ -278,6 +382,10 @@ async def resolve_server(
         try:
             plan_name, plan, _method, _env = await official_install_plan(rid.strip())
         except OfficialPlanError as exc:
+            if exc.code in _EDITION_LOOKUP_CODES and await edition_package_detail(rid.strip()):
+                raise catalog_mod.AdditionError(
+                    "edition_package", _edition_package_message(rid.strip())
+                ) from None
             raise catalog_mod.AdditionError("registry_unavailable", exc.message) from None
         name = plan_name
         if await asyncio.to_thread(_find_server_spec_anywhere, name) is not None:
@@ -352,11 +460,9 @@ async def additions_to_draft(
         tools = _auto_approve(addition)
         if source == catalog_mod.SOURCE_GATEWAY and isinstance(name, str) and name in have_servers:
             raise catalog_mod.AdditionError("already_has", f"the worker already has {name}")
+        hint = "tell the user to add it in your advanced settings"
         name, transport, origin = await resolve_server(
-            name,
-            source,
-            addition.get("registry_id"),
-            settings_hint="tell the user to add it in your advanced settings",
+            name, source, addition.get("registry_id"), settings_hint=hint
         )
         if name in have_servers:
             raise catalog_mod.AdditionError("already_has", f"the worker already has {name}")

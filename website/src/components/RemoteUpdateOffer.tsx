@@ -23,6 +23,7 @@ import { useInstanceVersions } from '../hooks/useInstanceVersions'
 import RemoteUpdateControl from './RemoteUpdateControl'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
+import { fmtList } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 
 /** Where the version this browser last offered remote updates for is kept.
@@ -119,7 +120,7 @@ export default function RemoteUpdateOffer() {
             <ErrorNotice
               variant="inline"
               className="mt-2"
-              message={i18nT('components.remoteUpdateOffer.unread', { names: unread.join(', ') })}
+              message={i18nT('components.remoteUpdateOffer.unread', { names: fmtList(unread, { style: 'narrow' }) })}
             />
           </>
         )}

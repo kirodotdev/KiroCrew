@@ -27,7 +27,7 @@ import { ApiError } from '../api/apiError'
 import type { Notification } from '../types'
 
 vi.mock('../api/client', () => ({
-  api: { resolveApproval: vi.fn(), ackNotification: vi.fn().mockResolvedValue({}), unackNotification: vi.fn().mockResolvedValue({}), deleteNotification: vi.fn().mockResolvedValue({}) },
+  api: { decideApproval: vi.fn(), ackNotification: vi.fn().mockResolvedValue({}), unackNotification: vi.fn().mockResolvedValue({}), deleteNotification: vi.fn().mockResolvedValue({}) },
 }))
 vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <span>{content}</span>,
@@ -39,7 +39,7 @@ globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} 
 
 const approvalNote: Notification = {
   kind: 'approval', ts: '2026-09-28T13:55:22Z', title: 'Tool approval: shell',
-  body: 'gh issue view 14704', approval_id: 'apr-gone', acked: true, _local: true,
+  body: 'gh issue view 14704', approval_id: 'apr-gone', approval_instance: 'inst-gone', acked: true, _local: true,
 }
 const notFound = () => Object.assign(new Error('not found or expired'), { status: 404 })
 
@@ -50,39 +50,57 @@ function renderPanel(onClose = vi.fn()) {
 }
 
 beforeEach(() => {
-  vi.mocked(api.resolveApproval).mockReset()
+  vi.mocked(api.decideApproval).mockReset()
   vi.mocked(api.deleteNotification).mockReset()
   vi.mocked(api.deleteNotification).mockResolvedValue({})
 })
 
 describe('NotificationDetailPanel approval decisions', () => {
+  it('a decide on a slotless coordinator row is bound to its instance', async () => {
+    vi.mocked(api.decideApproval).mockResolvedValue({})
+    const n: Notification = { ...approvalNote, approval_instance: 'inst-cron' }
+    const store = createTestStore({ notifications: { items: [n] } as RootState['notifications'] })
+    renderWithProviders(<NotificationDetailPanel n={n} onClose={vi.fn()} />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Reject/ }))
+    expect(api.decideApproval).toHaveBeenCalledWith({ origin: 'coordinator', id: 'apr-gone', slot: '', instance: 'inst-cron' }, 'reject')
+  })
   it('a decision that lands removes the row and closes the panel', async () => {
-    vi.mocked(api.resolveApproval).mockResolvedValue({})
+    vi.mocked(api.decideApproval).mockResolvedValue({})
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Reject/ }))
-    expect(api.resolveApproval).toHaveBeenCalledWith('apr-gone', 'reject')
     await waitFor(() => { expect(onClose).toHaveBeenCalledTimes(1) })
     await waitFor(() => { expect(store.getState().notifications.items).toEqual([]) })
     expect(store.getState().notifications.retiredApprovals ?? {}).toEqual({})
     // The row was this tab's own copy: no request, so nothing can fail.
     expect(api.deleteNotification).not.toHaveBeenCalled()
   })
-  it('a 404 retires the row: buttons withdrawn, error notice, no DELETE, panel stays open', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(notFound())
+  it('a row that names no request sends nothing and retires as refused', async () => {
+    const { approval_instance: _none, ...n } = approvalNote
+    const store = createTestStore({ notifications: { items: [n] } as RootState['notifications'] })
+    renderWithProviders(<NotificationDetailPanel n={n} onClose={vi.fn()} />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
+    expect(api.decideApproval).not.toHaveBeenCalled()
+    expect(store.getState().notifications.retiredApprovals).toEqual({ [n.ts]: true })
+    expect(screen.getByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+    expect(store.getState().notifications.decidingApprovals ?? {}).toEqual({})
+  })
+  it('a 404 retires the row: buttons withdrawn, status notice, no DELETE, panel stays open', async () => {
+    vi.mocked(api.decideApproval).mockRejectedValue(notFound())
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     expect(await screen.findByTestId('notif-approval-retired')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
     expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
     expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull()
     expect(store.getState().notifications.retiredApprovals).toEqual({ [approvalNote.ts]: true })
-    // The decide failed, so the sentence is an error notice, not muted status.
-    expect(screen.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'alert')
+    // The approval is gone, so the sentence is status, not an error (#18203).
+    expect(screen.getByTestId('notif-approval-retired')).toHaveAttribute('role', 'status')
+    expect(screen.queryByRole('alert')).toBeNull()
     expect(api.deleteNotification).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
   })
 
   it('a decision on a stored note whose DELETE fails keeps the panel open with a neutral recorded notice and no buttons', async () => {
-    vi.mocked(api.resolveApproval).mockResolvedValue({})
+    vi.mocked(api.decideApproval).mockResolvedValue({})
     vi.mocked(api.deleteNotification).mockRejectedValueOnce(new Error('offline'))
     const stored: Notification = { ...approvalNote, _local: undefined }
     const store = createTestStore({ notifications: { items: [stored] } as RootState['notifications'] })
@@ -118,7 +136,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   })
   it('an expiry frame during the decision keeps the panel row and shows the refusal', async () => {
     let reject: (e: unknown) => void = () => {}
-    vi.mocked(api.resolveApproval).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej }))
+    vi.mocked(api.decideApproval).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej }))
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     act(() => { store.dispatch(endApprovalRow(approvalNote.ts)) })
@@ -133,7 +151,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   ] as const) {
     it(`${label} after an expiry frame during the decision keeps the panel row and shows the failure until dismissed`, async () => {
       let reject: (e: unknown) => void = () => {}
-      vi.mocked(api.resolveApproval).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej }))
+      vi.mocked(api.decideApproval).mockReturnValueOnce(new Promise((_res, rej) => { reject = rej }))
       const { store, onClose } = renderPanel()
       await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
       act(() => { store.dispatch(endApprovalRow(approvalNote.ts)) })
@@ -168,7 +186,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   })
 
   it('a 404 moves keyboard focus to the panel\'s Close once the pressed button is withdrawn', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(notFound())
+    vi.mocked(api.decideApproval).mockRejectedValue(notFound())
     const { store } = renderPanel()
     screen.getByRole('button', { name: /Approve/ }).focus()
     await userEvent.keyboard('{Enter}')
@@ -183,7 +201,7 @@ describe('NotificationDetailPanel approval decisions', () => {
 
   it('a 404 does not pull focus away from a reader who has moved on', async () => {
     let refuse: (e: unknown) => void = () => {}
-    vi.mocked(api.resolveApproval).mockImplementationOnce(() => new Promise((_, rej) => { refuse = rej }))
+    vi.mocked(api.decideApproval).mockImplementationOnce(() => new Promise((_, rej) => { refuse = rej }))
     const store = createTestStore({ notifications: { items: [approvalNote] } as RootState['notifications'] })
     renderWithProviders(<><input aria-label="Search" data-testid="search-elsewhere" /><NotificationDetailPanel n={approvalNote} onClose={vi.fn()} /></>, { store })
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
@@ -213,7 +231,7 @@ describe('NotificationDetailPanel approval decisions', () => {
   })
 
   it('a non-terminal refusal from the decide route keeps both buttons and quotes its reason', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new ApiError(400, 'invalid approval target'))
+    vi.mocked(api.decideApproval).mockRejectedValue(new ApiError(400, 'invalid approval target'))
     const { store, onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     expect(await screen.findByTestId('notif-approval-refusal')).toHaveTextContent(
@@ -226,52 +244,26 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(onClose).not.toHaveBeenCalled()
   })
 
-  it('a 503 on a row that names its request says pressing again is safe', async () => {
-    const targeted: Notification = { ...approvalNote, approval_instance: 'inst-1', slot: 'dashboard:s1' }
-    vi.mocked(api.resolveApproval).mockRejectedValue(new ApiError(503, 'upstream proxy overloaded'))
-    const store = createTestStore({ notifications: { items: [targeted] } as RootState['notifications'] })
-    renderWithProviders(<NotificationDetailPanel n={targeted} onClose={vi.fn()} />, { store })
-    await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
-    const notice = await screen.findByTestId('notif-approval-refusal')
-    expect(notice).toHaveTextContent(i18nT('components.notifications.notificationFeed.decision_failed_retry'))
-    expect(notice.textContent).not.toContain(i18nT('components.approvalCard.decision_failed'))
-    // The safe-retry copy rides only on a decide that named its request.
-    expect(vi.mocked(api.resolveApproval).mock.calls.at(-1)?.slice(0, 3)).toEqual(
-      ['apr-gone', 'approve', { origin: 'coordinator', slot: 'dashboard:s1', instance: 'inst-1' }])
-  })
-
   it.each([503, 502])('a %i keeps the buttons and says it in plain words, never the layer\'s own text', async (status) => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new ApiError(status, 'upstream proxy overloaded'))
+    vi.mocked(api.decideApproval).mockRejectedValue(new ApiError(status, 'upstream proxy overloaded'))
     const { onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
     const notice = await screen.findByTestId('notif-approval-refusal')
-    expect(notice).toHaveTextContent(i18nT('components.approvalCard.decision_failed'))
+    expect(notice).toHaveTextContent(i18nT('components.notifications.notificationFeed.decision_failed_retry'))
     expect(notice.textContent).not.toContain('upstream proxy overloaded')
     expect(screen.getByRole('button', { name: /Approve/ })).toBeTruthy()
     expect(onClose).not.toHaveBeenCalled()
   })
 
   it('a transport failure with no response keeps the buttons and says the decision may not have landed', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new TypeError('Failed to fetch'))
+    vi.mocked(api.decideApproval).mockRejectedValue(new TypeError('Failed to fetch'))
     const { onClose } = renderPanel()
     await userEvent.click(screen.getByRole('button', { name: /Reject/ }))
     expect(await screen.findByTestId('notif-approval-refusal')).toHaveTextContent(
-      i18nT('components.approvalCard.decision_failed'),
+      i18nT('components.notifications.notificationFeed.decision_failed_retry'),
     )
     expect(screen.getByRole('button', { name: /Approve/ })).toBeTruthy()
     expect(onClose).not.toHaveBeenCalled()
-  })
-
-  it('a row that names its request decides with that target, and a refused stale target retires it', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(notFound())
-    const bound: Notification = { ...approvalNote, slot: 'slot-a', approval_instance: 'inst-a' }
-    const store = createTestStore({ notifications: { items: [bound] } as RootState['notifications'] })
-    renderWithProviders(<NotificationDetailPanel n={bound} onClose={() => {}} />, { store })
-    await userEvent.click(screen.getByRole('button', { name: /Approve/ }))
-    // The server refuses a stale instance instead of settling the request that
-    // took the id over.
-    expect(api.resolveApproval).toHaveBeenCalledWith('apr-gone', 'approve', { origin: 'coordinator', slot: 'slot-a', instance: 'inst-a' })
-    expect(await screen.findByTestId('notif-approval-retired')).toBeInTheDocument()
   })
 
   it.each([
@@ -279,7 +271,7 @@ describe('NotificationDetailPanel approval decisions', () => {
     ['a clear-all', clearAllNotifications()],
   ])('%s that omits a deciding row keeps it, so a late 404 still renders the refusal', async (_label, replace) => {
     let refuse: (e: unknown) => void = () => {}
-    vi.mocked(api.resolveApproval).mockReturnValue(new Promise((_res, rej) => { refuse = rej }))
+    vi.mocked(api.decideApproval).mockReturnValue(new Promise((_res, rej) => { refuse = rej }))
     // clearSeq 0 matches the snapshot's, so the reducer applies it.
     const store = createTestStore({ notifications: { items: [approvalNote], clearSeq: 0 } as RootState['notifications'] })
     const onClose = vi.fn()
@@ -365,9 +357,9 @@ describe('NotificationDetailPanel approval decisions', () => {
     expect(failed).toHaveLength(3)
     for (const el of failed) {
       // One sentence for one failure: the same copy as under a recorded
-      // decision, inline under "no longer pending".
+      // decision, boxed under the boxed "no longer pending" status.
       expect(el).toHaveTextContent(decidedClearFailedCopy())
-      expect(el.tagName).toBe('SPAN')
+      expect(el.tagName).toBe('DIV')
     }
     expect(screen.queryByTestId('notif-decision-recorded')).toBeNull()
   })

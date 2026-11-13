@@ -184,7 +184,12 @@ async def get_subagent_runtime(
             try:
                 await runtime.spawn(**spawn_kwargs)
             except runtime_dead:
-                if attempt >= max_retries:
+                from kiro_crew.agent_sdk import kas_start_was_refused
+
+                # kiro-cli refusing its v3 engine is the host's answer, and the
+                # runtime already recorded it: a respawn on the parent's KAS posture
+                # would only be refused again.
+                if attempt >= max_retries or kas_start_was_refused(runtime):
                     raise
                 attempt += 1
                 self._deps.logger.warning(

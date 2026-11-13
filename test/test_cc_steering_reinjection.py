@@ -4,7 +4,8 @@ The Claude Code backend does not read an agent's ``resources``, so session start
 puts the ``file://`` steering text of ``kirocrew.json`` into the prompt. A
 compaction drops that prompt text; kiro-cli keeps its natively loaded resources.
 The first turn after a compaction on Claude Code therefore re-injects it, under the
-session-start gate, and no other harness receives it.
+session-start gate. kiro-cli and KAS do not receive it. Codex shares the gate
+(``test_folder_steering_provider_dedup.py``).
 """
 
 from __future__ import annotations
@@ -103,12 +104,15 @@ def test_member_turn_gets_no_block(home):
     """A member chat carries its steering inside the essentials envelope."""
     assert (
         inclusion.steering_resources_part(
-            agent=None, is_cc=True, essentials="[member essentials]", context_groups=None
+            agent=None,
+            provider_type=PROVIDER_CLAUDE_CODE,
+            essentials="[member essentials]",
+            context_groups=None,
         )
         == ""
     )
     assert _RULE in inclusion.steering_resources_part(
-        agent=None, is_cc=True, essentials="", context_groups=None
+        agent=None, provider_type=PROVIDER_CLAUDE_CODE, essentials="", context_groups=None
     )
 
 

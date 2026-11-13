@@ -1,13 +1,14 @@
 # OAuth app registration runbooks
 
-Some Connections providers do not support Dynamic Client Registration, so Kiro Crew cannot obtain an OAuth client from them on its own. For each of those providers an operator has to create an OAuth app in the vendor's developer console once, register the redirect URI Kiro Crew reserves for that provider, and paste the resulting Client ID (and, for confidential clients, the Client secret) into the Kiro Crew dashboard under **Settings → OAuth Apps**. Each runbook below walks one provider from an empty vendor console to a working **Connect** button, and states the vendor's review, approval and scope requirements as documented on the date in its Sources section. Environment variables `KIROCREW_CONNECTIONS_<PROVIDER>_CLIENT_ID` / `_CLIENT_SECRET` are the container and CI alternative to the dashboard fields.
+Some Connections providers do not support Dynamic Client Registration, so Kiro Crew cannot obtain an OAuth client from them on its own. For each of those providers an operator has to create an OAuth app in the vendor's developer console once, register the redirect URI Kiro Crew reserves for that provider, and paste the resulting Client ID (and, for confidential clients, the Client secret) into the Kiro Crew dashboard under **Settings → Connections**. Each runbook below walks one provider from an empty vendor console to a working **Connect** button, and states the vendor's review, approval and scope requirements as documented on the date in its Sources section. Environment variables `KIROCREW_CONNECTIONS_<PROVIDER>_CLIENT_ID` / `_CLIENT_SECRET` are the container and CI alternative to the dashboard fields.
 
-The redirect URI is fixed per provider (host, port and path) and is shown with a copy button on the provider's card in **Settings → OAuth Apps**. Most providers use the `127.0.0.1` loopback literal; Slack and HubSpot use the host name `localhost` because it is the only plain-http host those vendors accept. GitHub, Asana, Google Drive, Gmail, Google Calendar, Google Sheets, Google Docs and Google Slides are the pre-registered providers on this build. The Slack, HubSpot and Box runbooks are written ahead of their Connections entry, so each card appears once that entry ships; Microsoft 365 is a different case, explained in its own runbook. For the Google runbooks, the OAuth client must be created with **Use this client for an AI-powered agent** ticked: Google's Workspace MCP servers reject other clients from 2026-11-11, and an existing client cannot be marked after 2026-11-12 ([Workspace release notes, 2026-10-12](https://developers.google.com/workspace/chat/release-notes)).
+The redirect URI is fixed per provider (host, port and path) and is shown with a copy button on the provider's card in **Settings → Connections**. Most providers use the `127.0.0.1` loopback literal; Slack and HubSpot use the host name `localhost` because it is the only plain-http host those vendors accept. GitHub, Asana, Google Drive, Gmail, Google Calendar, Google Sheets, Google Docs and Google Slides are the pre-registered providers on this build. The Slack, HubSpot and Box runbooks are written ahead of their Connections entry, so each card appears once that entry ships; Microsoft 365 is a different case, explained in its own runbook. For the Google runbooks, the OAuth client must be created with **Use this client for an AI-powered agent** ticked: Google's Workspace MCP servers reject other clients from 2026-11-11, and an existing client cannot be marked after 2026-11-12 ([Workspace release notes, 2026-10-12](https://developers.google.com/workspace/chat/release-notes)).
 
 | Runbook | Redirect URI to register |
 |---|---|
 | [github.md](github.md) | `http://127.0.0.1:48101/callback` |
 | [asana.md](asana.md) | `http://127.0.0.1:48102/callback` |
+| [google.md](google.md) | **One setup for every Google card** (Gmail, Drive, Calendar, Sheets, Docs, Slides): a script, three clicks, paste once |
 | [google-drive.md](google-drive.md) | `http://127.0.0.1:48103/callback` |
 | [gmail.md](gmail.md) | `http://127.0.0.1:48104/callback` |
 | [google-calendar.md](google-calendar.md) | `http://127.0.0.1:48105/callback` |
@@ -19,17 +20,6 @@ The redirect URI is fixed per provider (host, port and path) and is shown with a
 | [box.md](box.md) | `http://127.0.0.1:48108/callback` |
 | [microsoft-365.md](microsoft-365.md) | none — Microsoft 365 is not a Connections entry; the runbook explains the status and an optional Entra registration to prepare |
 
-## One Google client for every Google card
+## One Google app for every Google card
 
-Each Google product has its own card in **Settings → OAuth Apps**, its own fixed port and its own redirect URI, but one Google OAuth client can serve all six. Create the client once (any Google runbook, section 1), add every redirect URI below to its **Authorized redirect URIs**, enable each product's API and MCP API in the same project, and add each product's scopes on **Data Access**. Then paste the same Client ID and Client secret into each Google card you use.
-
-| Card | Redirect URI to add to the shared client |
-|---|---|
-| Google Drive | `http://127.0.0.1:48103/callback` |
-| Gmail | `http://127.0.0.1:48104/callback` |
-| Google Calendar | `http://127.0.0.1:48105/callback` |
-| Google Sheets | `http://127.0.0.1:48109/callback` |
-| Google Docs | `http://127.0.0.1:48110/callback` |
-| Google Slides | `http://127.0.0.1:48111/callback` |
-
-The client must have **Use this client for an AI-powered agent** ticked. Removing the app at [https://myaccount.google.com/permissions](https://myaccount.google.com/permissions) revokes every Google card connected through that project at once.
+All six Google cards share one Google OAuth client. Follow [google.md](google.md): `scripts/google-oauth-setup.sh` (or `scripts/google-oauth-setup.ps1`) creates the project and enables the APIs, then three console steps make the client. Saving its Client ID and secret on the Google entry in **Settings → Connections**, with **Also save on …** on, fills the other five. The per-product pages keep only that product's scopes, endpoint and gotchas.

@@ -37,13 +37,9 @@ from kiro_crew.work_vocab import WORK_WAKE_STATUSES, wake_statuses
 
 logger = logging.getLogger(__name__)
 
-#: The store's per-conductor item cap, spelled here as a literal rather than read
-#: from ``work_ledger`` so this module does not import the store for one integer --
-#: importing the whole store to derive a rate bound would spend a store-seam slot
-#: (``_PERMITTED_STORE_IMPORTERS``) for no store access. It must stay equal to
-#: ``work_ledger.MAX_ITEMS_PER_CONDUCTOR``; ``test_probe_work_ledger.py`` asserts
-#: ``_MAX_TRACKED_ITEMS >= work_ledger.MAX_ITEMS_PER_CONDUCTOR``, which fails loudly
-#: if the source cap ever grows past this derivation.
+#: Mirrors ``work_ledger.MAX_ITEMS_PER_CONDUCTOR`` as a literal: importing the store
+#: for one integer would spend a ``_PERMITTED_STORE_IMPORTERS`` slot.
+#: ``test_probe_work_ledger.py`` fails if the source cap grows past it.
 _MAX_ITEMS_PER_CONDUCTOR = 32
 
 #: Worker statuses whose ARRIVAL needs the conductor, as this gate reads them.
@@ -61,9 +57,7 @@ WAKE_STATUSES = frozenset(WORK_WAKE_STATUSES)
 #: Event kinds a worker can produce. Only ``report`` is one -- every other kind in
 #: ``work_ledger.EVENT_KINDS`` (``create``, ``bind``, ``decision``, ``verdict``,
 #: ``close``) is written by the CONDUCTOR itself, and a gate that wakes on its
-#: owner's own writes never sleeps. This is the same rule the RFC states for
-#: Phase 5's ``channel_open`` / ``channel_close``, applied to the kinds that are
-#: actually on this base.
+#: owner's own writes never sleeps.
 WORKER_EVENT_KINDS = frozenset({"report"})
 
 #: Wakes one item may cause per hour. Past it the revision still advances and the
@@ -126,15 +120,12 @@ def _wake_times(entry: Any, *, since: float) -> tuple[float, ...]:
     allowance early in the next both satisfy it, while an hour containing both does
     not. Counting the moments answers for whichever hour is being asked about.
 
-    Entries that are not usable numbers are dropped by :func:`_as_number`, which reads
-    them as older than every real moment. A file written before this shape existed
-    therefore has no moments to count and reads as an unspent budget, which costs at
-    most one window's wakes once.
+    Unusable entries read as older than every real moment (:func:`_as_number`), so a
+    file without moments reads as an unspent budget, costing at most one window's
+    wakes once.
 
-    The comparison is strict, so a moment exactly one window old has aged out. That is
-    the boundary the marker-and-tally form had, and keeping it means an item charged to
-    its cap in one instant may spend again exactly one window later rather than one
-    tick after that.
+    The comparison is strict: a moment exactly one window old has aged out, so an item
+    charged to its cap may spend again exactly one window later.
     """
     if not isinstance(entry, dict):
         return ()
@@ -208,8 +199,8 @@ def worker_closed(slot_table: Any, session_key: str) -> bool:
     reported, that skips the window and records a permanent stall for a live worker.
 
     Anything unreadable answers False, which is the direction that cannot invent a stall:
-    a slot table this cannot interrogate leaves the staleness window measuring time, which
-    is what shipped. A table with no ``slot_exists`` is unreadable in that sense: no other
+    a slot table this cannot interrogate leaves the staleness window measuring time. A
+    table with no ``slot_exists`` is unreadable in that sense: no other
     accessor answers existence for a slot being built. Note the asymmetry with
     :func:`worker_running`, whose safe direction is also False -- there "unknown" must not
     SUPPRESS a wake, here it must not CAUSE one, and False happens to be both.
@@ -285,6 +276,38 @@ def worker_looping(nudge_service: Any, session_key: str) -> bool:
     return False
 
 
+def worker_loop_held(nudge_service: Any, session_key: str) -> bool:
+    """Whether *session_key*'s session holds an ACTIVE loop that cannot fire.
+
+    Held on an unanswered approval, or past its runtime budget or cycle cap. Such a
+    loop is what a worker's ``progress`` report may lean on ("my loop checks every 20
+    minutes"), yet it wakes nobody, so ``work_ledger.is_stale`` stops honouring that
+    report's ``wake_at``. A stopped loop is no loop: its worker's ``wake_at`` is a
+    plain wait the ``wait_due`` wake ends.
+
+    Anything unreadable answers False, which keeps today's ``wake_at`` deferral.
+    """
+    if nudge_service is None or not session_key:
+        return False
+    getter = getattr(nudge_service, "get_by_slot", None)
+    if not callable(getter):
+        return False
+    try:
+        from kiro_crew.autonudge_service.model import budget_elapsed, cap_reached
+
+        for candidate in _loop_keys(session_key):
+            loop = getter(candidate)
+            if loop is not None and getattr(loop, "active", False) is True:
+                return bool(
+                    getattr(loop, "approval_stalled", False)
+                    or budget_elapsed(loop)
+                    or cap_reached(loop)
+                )
+    except Exception:
+        logger.debug("wake gate: loop hold lookup failed for %s", session_key, exc_info=True)
+    return False
+
+
 def _loop_can_fire(loop: Any) -> bool:
     """Whether *loop* is active, BOUNDED, and has budget left to wake its session again.
 
@@ -356,6 +379,35 @@ def is_actionable_event(kind: str, status: str | None, *, remote_dispatch: bool 
     return (status or "").strip() in wake_statuses(remote_dispatch)
 
 
+#: The waking statuses a same-status repeat may be suppressed for: a wait
+#: (``blocked``) or a finish (``done``) said again carries no new ask.
+_REPEATABLE_STATUSES = frozenset({"blocked", "done"})
+
+
+def repeats_status(
+    previous_kind: str | None, previous_status: str | None, status: str | None
+) -> bool:
+    """Whether a report says the same status as the event just before it.
+
+    Such a report does not wake: the conductor already woke on the first one, and
+    the board still holds the new text for its next read. Only the event RIGHT
+    before counts, so a ``progress`` in between, or any write of the conductor's own
+    (a ``decision``, a ``verdict``) makes the next report news again. With no event
+    before it (the first report, or a tail cut short) it is news too. A changed
+    summary or pr on the same status does not count: telling real news from a
+    re-worded wait is not something a status gate can do.
+
+    Only a WAIT repeats (:data:`_REPEATABLE_STATUSES`). A ``question`` or a ``reply``
+    is a new answer the conductor must read each time, and a conductor that answers
+    by ``session_send`` writes no ledger event between two of them.
+    """
+    if (status or "").strip() not in _REPEATABLE_STATUSES:
+        return False
+    if (previous_kind or "").strip() not in WORKER_EVENT_KINDS:
+        return False
+    return (previous_status or "").strip() == (status or "").strip()
+
+
 def _rate_path(conductor_key: str):
     """Where this conductor's wake budget lives: under the WATCH state root.
 
@@ -366,14 +418,10 @@ def _rate_path(conductor_key: str):
     the opposite kind of state: worthless once the watch ends, and safe to lose at any
     moment because losing it costs at most one extra wake.
 
-    ``irq.state_path`` puts it beside the watch state, whose retention it now shares:
-    ``irq`` does NOT delete its state files, and nothing sweeps that directory today,
-    so this file is retained rather than collected. What the move buys is that it is
-    retained somewhere an operator or a future sweeper may freely delete, instead of
-    somewhere deletion is deliberately prevented. The fold/digest naming is reused
-    rather than reinvented. The job id is fixed because the budget is per ITEM per
-    hour across that conductor's watches -- two watches on one ledger share the
-    allowance, since the item they would wake for is the same item.
+    ``irq.state_path`` puts it beside the watch state and shares its retention:
+    nothing deletes it, but an operator or a sweeper may. The job id is fixed because
+    the budget is per ITEM per hour across that conductor's watches, so two watches on
+    one ledger share the allowance.
     """
     return irq.state_path("work-ledger-rate", conductor_key, "rate")
 
@@ -431,11 +479,8 @@ def within_rate_limit(conductor_key: str, item_id: str, *, now: float | None = N
     Read-only: it answers without spending the budget, so an item refused for some
     other reason has not used a wake. :func:`note_wake` is what spends it.
 
-    The window is sliding rather than fixed, so an item that was noisy for an hour
-    is not muted for the rest of the run, and no hour anywhere permits more than the
-    budget. A start-of-window marker with a tally would give both: it resets on
-    expiry, so a full allowance just before a reset and another just after it both
-    pass while the hour spanning them holds twice the budget.
+    The window is sliding, so an item noisy for an hour is not muted for the rest of
+    the run and no hour permits more than the budget (see :func:`_wake_times`).
 
     It counts DISTINCT wakes only because the probe asks :func:`already_woke` first:
     a token already charged never reaches this question, so a re-read of an
@@ -611,9 +656,10 @@ def wake_brief(*, item_id: str, status: str) -> str:
     the boundary the store's importer allowlist exists to draw, without the
     server-resolved identity check that path requires.
 
-    Nothing is lost by it. The conductor reads the record with ``work_ledger_read``,
-    which is exactly what the footer tells it to do, so the wake's job is to name
-    WHICH item moved and how, not to restate what the tool returns whole.
+    Nothing is lost by it. The conductor reads the record with the tool the footer
+    names (``work_ledger_read``, or ``accept_eval`` for a ``done`` item, whose reply
+    carries the worker's report), so the wake's job is to name WHICH item moved and
+    how, not to restate what the tool returns whole.
     """
     return f"[work-ledger wake] item={item_id} status={status or '(unset)'}"
 
@@ -653,20 +699,24 @@ MAX_WAKE_BRIEF_CHARS = 4_000
 #: The POINTER that closes a delivered wake: where the conductor goes for the state,
 #: rather than the state itself.
 #:
-#: A wake names what moved and says where to look, and carries no copy of the board.
-#: Inlining the board costs a payload proportional to the WHOLE goal for news that
-#: only ever means that ONE item moved: on a twenty-item board that is tens of
-#: kilobytes of mostly-closed rows per wake, every one of them already read on the
-#: wake before, spent to save a tool call the conductor can make for a fraction of
-#: the context. A pointer is constant in size and leaves the ledger as the single
-#: source of truth rather than something a wake hands out stale copies of.
+#: No copy of the board: that would cost a payload the size of the whole goal for
+#: news about one item. A pointer is constant in size and keeps the ledger the single
+#: source of truth.
 #:
 #: Both read shapes are spelled because the two next moves need different reads: the
 #: item that moved is one row, and the conductor's periodic sweep of everything else
 #: is the compact board. The ``<id>`` is deliberately a placeholder -- the ids are on
 #: the brief lines above this one, and one wake can name several.
+#:
+#: A ``done`` item is the one move that needs no read first: ``accept_eval`` reads the
+#: item's bar from the ledger itself and returns what the worker reported beside the
+#: verdict, so pointing a ``done`` at a read would cost the conductor a model round
+#: trip for a document it then hands straight back.
 WAKE_READ_POINTER = (
-    "[work-ledger] read the ledger before acting: work_ledger_read(item_id=<id>) "
+    "[work-ledger] for status=done call accept_eval(item_id=<id>): it reads the "
+    "item's bar itself and returns the worker's report beside the verdict, so no "
+    "read is needed first. "
+    "Otherwise read the ledger before acting: work_ledger_read(item_id=<id>) "
     "for an item named above, or work_ledger_read(compact=true) for the board."
 )
 
@@ -680,10 +730,8 @@ def wake_turn_text(briefs: str) -> str:
     it. The delivery site owns where this string goes -- prefixed onto the nudge
     prompt, or steered into a turn already running -- and both get the same text.
 
-    NO BOARD. The wake is a notification, not a transfer of state: it tells the
-    conductor which item moved and leaves the ledger where the ledger lives, so the
-    cost of a wake does not grow with the size of the goal. ``work_ledger_read`` is
-    the conductor's own identity-gated read and is available to it in that same turn.
+    NO BOARD (see :data:`WAKE_READ_POINTER`): ``work_ledger_read`` is the conductor's
+    own identity-gated read, available in that same turn.
 
     Empty briefs answer ``""`` rather than a pointer to nothing -- a tick that
     observed no news has no item to point AT, and the caller then delivers the plain

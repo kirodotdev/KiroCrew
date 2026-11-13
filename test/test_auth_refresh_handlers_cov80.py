@@ -835,6 +835,32 @@ async def test_rotation_carries_the_boot_binding_onto_both_new_cookies(
 
 
 @pytest.mark.asyncio
+async def test_rotation_carries_the_embed_parent_port_onto_both_new_cookies(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """A framed remote pane keeps its CSP parent after a refresh.
+
+    The embedding dashboard's port is what ``frame-ancestors`` allows; a rotated
+    access token without it answers the pane's next load with bare ``'self'``.
+    """
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_parent_port
+    from kiro_crew.dashboard.token_auth_tokens import token_embed_parent_port
+
+    token, _chain, _jti, _exp = generate_refresh_token("alice", embed_parent_port="5476")
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+
+    cookies = {morsel.key: morsel.value for morsel in response.cookies.values()}
+    assert token_embed_parent_port(cookies[f"mc_token_{PORT}"]) == 5476
+    assert refresh_token_embed_parent_port(cookies[refresh_cookie_name(str(PORT))]) == "5476"
+
+    # A chain opened without the claim stays without it.
+    plain, *_ = generate_refresh_token("alice")
+    assert refresh_token_embed_parent_port(plain) == ""
+    assert refresh_token_embed_parent_port("not-a-token") == ""
+
+
+@pytest.mark.asyncio
 async def test_a_boot_bound_rotation_keeps_its_address_pin(
     state: RefreshStateManager, audit: list
 ) -> None:
@@ -1099,6 +1125,35 @@ async def test_logout_records_a_noop_when_the_access_cookie_was_not_revocable(
 
 
 @pytest.mark.asyncio
+async def test_logout_revokes_on_unavailable_state_even_if_the_store_reads_again(
+    audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revoke follows the validation's own answer, not a second look at the store."""
+    unavailable = (False, "alice", "refresh state unavailable (x)", "chain-1", "j", 1.0)
+    monkeypatch.setattr(h, "validate_refresh_token", lambda _t: unavailable)
+    fake = MagicMock()
+    fake.degraded_reason.return_value = ""  # the file read again in between
+    fake.revoke_chain.return_value = True
+    monkeypatch.setattr(h, "_get_state", lambda: fake)
+    request = _mk("POST", "/api/auth/logout", cookies={refresh_cookie_name(str(PORT)): "tok"})
+    await h.api_auth_logout(request)
+    assert fake.revoke_chain.call_args.args[0] == "chain-1"
+
+
+@pytest.mark.asyncio
+async def test_logout_reports_an_unstored_access_cookie_revocation(
+    audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A logout the denylist could not store answers 503, not 200, and clears the cookies."""
+    monkeypatch.setattr(h, "revoke_access_cookie", MagicMock(side_effect=OSError("unreadable")))
+    request = _mk("POST", "/api/auth/logout", cookies={f"mc_token_{PORT}": "tok"})
+    response = await h.api_auth_logout(request)
+    assert response.status == 503
+    assert ("", "access_cookie_revoked", "not_persisted", "") in audit
+    assert f"mc_token_{PORT}" in _set_cookie_names(response)
+
+
+@pytest.mark.asyncio
 async def test_a_refused_rotation_leaves_an_audit_row_like_every_other_outcome(
     state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1180,3 +1235,215 @@ async def test_logout_on_a_degraded_store_still_revokes_and_does_not_claim_succe
         "the audit row blames the cookie for what is a storage fault, which sends the "
         f"operator looking in the wrong place; rows={outcomes}"
     )
+
+
+class _Beacon:
+    """A thread-safe signal the loop awaits, so a test never parks a pool thread on a wait."""
+
+    def __init__(self) -> None:
+        import asyncio
+
+        self._loop = asyncio.get_running_loop()
+        self._event = asyncio.Event()
+
+    def set(self) -> None:
+        self._loop.call_soon_threadsafe(self._event.set)
+
+    async def reached(self, bound: float = 10.0) -> None:
+        import asyncio
+
+        await asyncio.wait_for(self._event.wait(), bound)
+
+
+@pytest.mark.asyncio
+async def test_a_same_ip_refresh_during_a_rotation_write_never_revokes_the_chain(
+    state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second tab refreshing while the first tab's rotation write is pending is not reuse.
+
+    The rotation marks its jti consumed before its write and installs the grace payload only
+    after it, so a duplicate from the same address that checks in between sees a consumed jti
+    and no grace entry. That is a benign race, not theft: revoking the chain kills the pair
+    the first tab is about to receive and signs the user out everywhere.
+    """
+    import asyncio
+    import threading
+
+    in_write = _Beacon()
+    release = threading.Event()
+    checked_while_pending = _Beacon()
+    real_atomic_write = rt.atomic_write
+
+    def _stuck_write(path: Any, payload: Any, **kw: Any) -> None:
+        in_write.set()
+        release.wait(10)
+        real_atomic_write(path, payload, **kw)
+
+    monkeypatch.setattr(rt, "atomic_write", _stuck_write)
+    revoked: list[str] = []
+    real_revoke = state.revoke_chain
+
+    def _spy_revoke(chain_id: str, exp: float) -> bool:
+        revoked.append(chain_id)
+        return real_revoke(chain_id, exp)
+
+    monkeypatch.setattr(state, "revoke_chain", _spy_revoke)
+    real_is_consumed = state.is_consumed
+    calls = {"n": 0}
+
+    def _spy_is_consumed(jti: str) -> bool:
+        calls["n"] += 1
+        consumed = real_is_consumed(jti)
+        if calls["n"] >= 2 and consumed:
+            checked_while_pending.set()
+        return consumed
+
+    monkeypatch.setattr(state, "is_consumed", _spy_is_consumed)
+
+    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+
+    def _request() -> web.Request:
+        return _mk(
+            origin="http://localhost:7777",
+            cookies={refresh_cookie_name(str(PORT)): token},
+        )
+
+    first = asyncio.ensure_future(h.api_auth_refresh(_request()))
+    await in_write.reached()
+    second = asyncio.ensure_future(h.api_auth_refresh(_request()))
+    await checked_while_pending.reached()
+    release.set()
+    first_response, second_response = await asyncio.gather(first, second)
+    assert first_response.status == 200
+    assert revoked == [], "a duplicate refresh during the rotation write revoked the chain"
+    assert not state.is_chain_revoked(chain_id)
+    assert second_response.status in (200, 409, 503)
+
+
+@pytest.mark.asyncio
+async def test_a_same_ip_duplicate_is_served_the_pair_once_the_rotation_write_lands(
+    state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The duplicate that waited out the write answers with the first tab's replacement."""
+    import asyncio
+    import threading
+
+    in_write = _Beacon()
+    release = threading.Event()
+    real_atomic_write = rt.atomic_write
+
+    def _stuck_write(path: Any, payload: Any, **kw: Any) -> None:
+        in_write.set()
+        release.wait(10)
+        real_atomic_write(path, payload, **kw)
+
+    monkeypatch.setattr(rt, "atomic_write", _stuck_write)
+    duplicate_waiting = _Beacon()
+    real_await = state.await_pending_rotation
+
+    def _spy_await(*args: Any, **kw: Any) -> bool:
+        duplicate_waiting.set()
+        return real_await(*args, **kw)
+
+    monkeypatch.setattr(state, "await_pending_rotation", _spy_await)
+    token, _chain, _jti, _exp = generate_refresh_token("alice")
+
+    def _request() -> web.Request:
+        return _mk(
+            origin="http://localhost:7777",
+            cookies={refresh_cookie_name(str(PORT)): token},
+        )
+
+    first = asyncio.ensure_future(h.api_auth_refresh(_request()))
+    await in_write.reached()
+    second = asyncio.ensure_future(h.api_auth_refresh(_request()))
+    await duplicate_waiting.reached()
+    release.set()
+    first_response, second_response = await asyncio.gather(first, second)
+    assert first_response.status == 200
+    assert second_response.status == 200
+    assert _set_cookie_names(second_response) == _set_cookie_names(first_response)
+    assert ("alice", "refresh_token_use", "reuse_detected", _chain) not in audit
+
+
+@pytest.mark.asyncio
+async def test_a_duplicate_of_a_failed_rotation_is_told_to_retry_not_revoked(
+    state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the write the duplicate waited on fails, it gets 503 and the chain survives."""
+    import asyncio
+    import threading
+
+    in_write = _Beacon()
+    release = threading.Event()
+
+    def _failing_write(path: Any, payload: Any, **kw: Any) -> None:
+        in_write.set()
+        release.wait(10)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(rt, "atomic_write", _failing_write)
+    duplicate_waiting = _Beacon()
+    real_await = state.await_pending_rotation
+
+    def _spy_await(*args: Any, **kw: Any) -> bool:
+        duplicate_waiting.set()
+        return real_await(*args, **kw)
+
+    monkeypatch.setattr(state, "await_pending_rotation", _spy_await)
+    revoked: list[str] = []
+    monkeypatch.setattr(state, "revoke_chain", lambda c, e: revoked.append(c) or True)
+    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+
+    def _request() -> web.Request:
+        return _mk(
+            origin="http://localhost:7777",
+            cookies={refresh_cookie_name(str(PORT)): token},
+        )
+
+    first = asyncio.ensure_future(h.api_auth_refresh(_request()))
+    await in_write.reached()
+    second = asyncio.ensure_future(h.api_auth_refresh(_request()))
+    await duplicate_waiting.reached()
+    release.set()
+    first_response, second_response = await asyncio.gather(first, second)
+    assert first_response.status == 503
+    assert second_response.status == 503
+    assert revoked == [], "a duplicate of a rotation that rolled back revoked the chain"
+    assert not state.is_chain_revoked(chain_id)
+
+
+@pytest.mark.asyncio
+async def test_a_different_ip_duplicate_during_a_rotation_write_still_revokes(
+    state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A duplicate from another address is theft-shaped and revokes, pending write or not."""
+    import asyncio
+    import threading
+
+    in_write = _Beacon()
+    release = threading.Event()
+    real_atomic_write = rt.atomic_write
+
+    def _stuck_write(path: Any, payload: Any, **kw: Any) -> None:
+        in_write.set()
+        release.wait(10)
+        real_atomic_write(path, payload, **kw)
+
+    monkeypatch.setattr(rt, "atomic_write", _stuck_write)
+    token, chain_id, _jti, _exp = generate_refresh_token("alice")
+    cookies = {refresh_cookie_name(str(PORT)): token}
+
+    first = asyncio.ensure_future(
+        h.api_auth_refresh(_mk(origin="http://localhost:7777", cookies=cookies))
+    )
+    await in_write.reached()
+    thief = asyncio.ensure_future(
+        h.api_auth_refresh(
+            _mk(origin="http://localhost:7777", cookies=cookies, remote="198.51.100.77")
+        )
+    )
+    release.set()
+    _first_response, thief_response = await asyncio.gather(first, thief)
+    assert thief_response.status == 401
+    assert state.is_chain_revoked(chain_id)

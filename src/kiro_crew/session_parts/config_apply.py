@@ -11,7 +11,7 @@ on an instance reaches every caller.
 
 Instance fields written: ``_adopted_autocompact_pct``, ``_cfg``.
 
-Instance fields read: ``_background_runtime``, ``_compaction``.
+Instance fields read: ``_background_runtime``, ``_cold_start_agent``, ``_compaction``.
 """
 
 from __future__ import annotations
@@ -29,10 +29,6 @@ if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
 
-# Paths whose new value is only honoured by a rebuilt provider factory or a
-# re-derived warm pool. Anything else under ``session``/``agent`` is read
-# off ``_cfg`` (or fresh from the loader) at its point of use, so adopting
-# the new config object is the whole apply.
 # The sections this manager subscribes to; a degraded one defers the apply.
 _CONFIG_SECTIONS: tuple[str, ...] = (
     "session",
@@ -47,6 +43,9 @@ _CONFIG_SECTIONS: tuple[str, ...] = (
     # ``_cfg`` at each cold start (session._session_model).
     "apps",
 )
+# Paths honoured only by a rebuilt provider factory or a re-derived warm pool.
+# Anything else under ``session``/``agent`` is read off ``_cfg`` at its point of
+# use, so adopting the new config object is the whole apply.
 _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.model",
     "agent.reasoning_effort",
@@ -58,6 +57,9 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
     "agent.sandbox",
     "agent.sandbox_allow_no_isolation",
     "agent.sandbox_allow_unsandboxed_exec",
+    # A warm process carries the read-only layer it was spawned under.
+    "agent.sandbox_readonly_paths",
+    "agent.sandbox_readonly_exceptions",
     "agent.member_acp_backend",
     # A warm process carries the environment it was spawned with.
     "agent.env",
@@ -81,20 +83,15 @@ _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
 async def _on_config_change(self: SessionManager, change: ConfigChange) -> None:
     """Hot-apply a ``config.json`` write observed by the config watcher.
 
-    Every writer -- dashboard, ``kirocrew config set``, ``$EDITOR`` -- lands
-    here, so nothing below depends on which one wrote. The new config is
-    adopted as ``_cfg`` unconditionally: the cleanup loop re-reads its idle
-    timeout and RSS ceiling from it every tick, and the soft-stop budget is
-    read from it per stop. A change to a factory-bound default goes through
-    ``refresh_defaults`` so live sessions keep running while new ones spawn
-    on the new defaults. A ``watchdog.*`` or per-crew ``watchdog_*`` change
-    re-clamps the windows on every live handle.
+    Every writer (dashboard, ``kirocrew config set``, ``$EDITOR``) lands here.
+    The new config is adopted as ``_cfg`` unconditionally, since the cleanup loop
+    and soft-stop read it live. A factory-bound default goes through
+    ``refresh_defaults`` so live sessions keep running; a ``watchdog.*`` or
+    per-crew ``watchdog_*`` change re-clamps every live handle.
 
-    Fails closed like the owned appliers: while any watched section is
-    degraded the document holds DEFAULTS for it, and adopting those would
-    rebuild the provider factory on the default model and backend and drain
-    the warm pool. The manager keeps what is in force and the watcher retries
-    each tick until the document validates.
+    Fails closed: a degraded watched section holds DEFAULTS, and adopting them
+    would rebuild the factory on the default model and drain the warm pool, so
+    the apply is deferred and the watcher retries each tick.
     """
     if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
         raise live.ConfigDeferred(change.changed)
@@ -138,22 +135,13 @@ async def refresh_defaults(self: SessionManager, cfg: KiroCrewConfig | None = No
 def _sync_autocompact_pct(self: SessionManager) -> None:
     """Adopt a newly published compaction threshold, if one arrived.
 
-    The threshold is captured on ``_cfg`` when the gateway starts, so on its
-    own a config write would reach disk and stop there. Every successful
-    ``KiroCrewConfig.load`` publishes it, and prompt assembly loads
-    config once per turn, so a write from ANY writer -- the dashboard PATCH
-    handler or ``kirocrew config set`` -- is in force by the next context
-    reading without a restart.
+    ``_cfg`` captures the threshold at start; every ``KiroCrewConfig.load``
+    publishes it and prompt assembly loads config once per turn, so a write from
+    any writer is in force by the next context reading without a restart.
 
-    Adopt-on-CHANGE rather than unconditional assignment: a manager
-    constructed with a config that carries its own threshold must keep it, so
-    only a value that differs from the last one this manager adopted wins.
-    That also makes the sync idempotent, which matters because the gate calls
-    it on every reading.
-
-    Reads a module-level snapshot, never config.json -- this runs on the
-    event loop, where a stat/read/validate is exactly what the publish idiom
-    exists to avoid.
+    Adopt only on CHANGE: a manager built with its own threshold keeps it, and
+    the sync stays idempotent for the gate that calls it on every reading. Reads
+    a module-level snapshot, never config.json, because it runs on the loop.
     """
     published = published_autocompact_pct()
     if published != self._adopted_autocompact_pct:
@@ -177,7 +165,12 @@ def widen_cold_start_queues(self: SessionManager) -> None:
     published runtime spawn width move from their floors to the host-sized
     widths without a probe here. An explicit integer is already at its
     width, so this is a no-op for it. Never shrinks a queue.
+
+    Sized from the settings the manager was built with, not from ``_cfg``: both
+    widths are restart settings and this runs again whenever a later host
+    reading raises the ``auto`` width (``start_gate_widening``), by which time
+    a config change may have replaced ``_cfg``.
     """
-    agent = getattr(self._cfg, "agent", None)
+    agent = self._cold_start_agent
     configure_runtime_spawn_width(agent)
     widen_cold_start_semaphore(self._start_sem, cached_cold_start_concurrency(agent))

@@ -53,7 +53,6 @@ from pathlib import Path, PurePath  # noqa: F401
 from typing import BinaryIO, Callable, NamedTuple, TypeVar  # noqa: F401
 
 from aiohttp import web
-from aiohttp.client_exceptions import ClientConnectionResetError  # noqa: F401
 from aiohttp.multipart import BodyPartReader  # noqa: F401
 
 from kiro_crew import executors, pinned_fs, platform_compat, sandbox_plan  # noqa: F401
@@ -63,6 +62,7 @@ from kiro_crew.atomic_write import (  # noqa: F401
     open_access_control_source,
     pinned_parent_replace_supported,
 )
+from kiro_crew.bounded_read import bounded_read  # noqa: F401
 from kiro_crew.cli_commands_workspace import _ws_dir_in_use  # noqa: F401
 from kiro_crew.config import loader as config_loader  # noqa: F401
 from kiro_crew.config.loader import (  # noqa: F401
@@ -221,6 +221,7 @@ from kiro_crew.dashboard.file_api.pinned_io import (  # noqa: F401
     _CheckedFile,
     _classify_request_paths,
     _file_write_blocking,
+    _is_live_memory_store_file,
     _open_checked,
     _open_checked_file,
     _open_rb_nofollow,
@@ -315,7 +316,9 @@ from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     api_upload_file,
 )
 from kiro_crew.dashboard.file_api.workspaces import (  # noqa: F401
+    _invalid_dir,
     _resolve_ws_dir,
+    _resolved_ws_dirs,
     _WorkspaceConflict,
     api_workspaces,
     api_workspaces_create,
@@ -372,11 +375,13 @@ from kiro_crew.hooks import (  # noqa: F401
     safe_read_prefix,
 )
 from kiro_crew.image_refs import PATH_MARKS  # noqa: F401 - owner: uploads
+from kiro_crew.memory_stores import MEMORY_DB_FILE  # noqa: F401 - owner: pinned_io
 from kiro_crew.messaging.display_safety import redact_for_display  # noqa: F401
 from kiro_crew.messaging.outbound_files import OutboundFile  # noqa: F401
 from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime  # noqa: F401
-from kiro_crew.owner_only_files import (  # noqa: F401 - owner: uploads
+from kiro_crew.owner_only_files import (  # noqa: F401 - owner: uploads, pinned_io
     OWNER_ONLY_FILE_MODE,
+    SQLITE_SIDECAR_SUFFIXES,
     ensure_directory,
     is_owner_only_target,
 )
@@ -456,9 +461,8 @@ mimetypes.add_type(
 _INLINE_DISPOSITION_PREFIXES = frozenset({"audio/", "video/", "image/", "application/pdf"})
 
 #: Session-key namespace of a sub-agent run. A sub-agent has no tab of its own, so
-#: its file card belongs to the PARENT's tab — the surface every other sub-agent
-#: output already routes to (``subagent_manager.monitoring``'s completion
-#: injection, ``chat_utils.subagent_event_slot``'s WS frames).
+#: its file card belongs to the tab its ``subagent_*`` WS frames draw in
+#: (``chat_utils.subagent_event_slot``): its PARENT's, or a nested run's root chat's.
 _SUBAGENT_SESSION_PREFIX = "subagent:"
 
 
@@ -472,10 +476,12 @@ is_tracked_channel = _owner_channel_upload.is_tracked_channel
 
 
 def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str:
-    """The parent session key of the sub-agent running under *session_key*, or ``""``.
+    """The session key whose tab shows the sub-agent running under *session_key*, or ``""``.
 
-    Matches on BOTH spellings a run can be keyed by — its ``conversation_key`` (a
-    continuable run) and ``subagent:<id>`` — the same comparison
+    That is the run's parent, or for a nested run the chat its spawn tree started
+    from (``SubagentInfo.root_session_key``). Matches on BOTH spellings a run can
+    be keyed by — its ``conversation_key`` (a continuable run) and
+    ``subagent:<id>`` — the same comparison
     ``subagent_manager.continuation`` makes, because a continuable run's key is not
     derivable from its id. Returns ``""`` when the manager is absent or the run is
     unknown, so the caller SUPPRESSES the card rather than guessing a tab.
@@ -522,10 +528,15 @@ def _subagent_parent_session_key(state: DashboardState, session_key: str) -> str
         )
 
     best = max(matches, key=_rank)
-    parent = getattr(best, "parent_session_key", "")
+    # A nested run's parent is a ``subagent:<id>`` key no tab shows, so the root of
+    # its spawn tree, which admission stamps on the run, comes first; the parent
+    # answers for a record that carries none.
     # isinstance, not truthiness: a stubbed manager can hand back a
     # non-str here and dashboard_slot_key would treat it as a key.
-    return parent if isinstance(parent, str) else ""
+    for key in (getattr(best, "root_session_key", ""), getattr(best, "parent_session_key", "")):
+        if isinstance(key, str) and key:
+            return key
+    return ""
 
 
 def _sel():
@@ -852,6 +863,10 @@ _READ_PATH_EXTRA_MAGIC: tuple[tuple[bytes, str], ...] = (
     (b"MM\x00\x2a", "image/tiff"),
     (b"\x00\x00\x01\x00", "image/x-icon"),
 )
+#: The ``error`` every file route answers with its 503 ``file_busy``: another
+#: program holds the file without sharing it for reading (a Windows sharing or
+#: lock violation), and the same request succeeds once that program closes it.
+_FILE_BUSY_ERROR = "the file is open in another program; close it there and retry"
 
 
 #: Canonical upload extension per sniffed raster type: the suffix a mislabelled

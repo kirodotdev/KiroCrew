@@ -10,6 +10,7 @@ module too (:mod:`kiro_crew._facade_mirror`). This module never imports the faca
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,8 @@ from kiro_crew.dashboard.handlers.mcp_config_files import (
 )
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 
+logger = logging.getLogger("kiro_crew.dashboard.handlers.mcp")
+
 
 def _find_server_spec_anywhere(name: str) -> dict | None:
     """Locate a server's full spec from any known source.
@@ -37,7 +40,9 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     (``config_dir()/mcp.json``, i.e. ~/.kiro/crew/mcp.json) → kiro global →
     edition-contributed provider scopes.  Returns a shallow copy with
     ``disabled`` stripped (the caller decides whether to disable in its target
-    scope).
+    scope), and with the rendered spec's ``x-kirocrew-derived`` and
+    ``x-kirocrew-withheld`` records stripped too: they hold only in the file the
+    rebuild wrote them into, and a record of additions refuses them as unknown keys.
 
     The agents-dir candidate is an AGENT SPEC and is read through the hardened
     reader (size cap, sensitive-symlink screen, non-object rejection, SEL denial
@@ -49,11 +54,17 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
     agent-spec reader does not describe them.
     """
 
+    from kiro_crew.mcp_provenance import DERIVED_KEY, WITHHELD_KEY  # noqa: PLC0415
+
+    # ``disabled`` is the target scope's to decide; the two provenance records
+    # describe the rendered agent spec they were written into.
+    not_copied = {"disabled", DERIVED_KEY, WITHHELD_KEY}
+
     def _usable(data: dict[str, Any]) -> dict | None:
         # By raw key or alias: a slash-named entry serves its canonical row.
         spec = _config_entry_for(data.get("mcpServers", {}), name)
         if isinstance(spec, dict) and (spec.get("command") or spec.get("url")):
-            return {k: v for k, v in spec.items() if k != "disabled"}
+            return {k: v for k, v in spec.items() if k not in not_copied}
         return None
 
     found = _usable(
@@ -130,9 +141,13 @@ def _set_kirocrew_entry(
 
     ``existing_only`` flips only an entry the store already holds as a mapping
     and never adds one: no mapping entry answers ``"absent"`` with nothing
-    written, and a file that exists but is not a readable MCP config answers
-    ``"corrupt"`` rather than being read as empty. The toggle uses it to tell a
-    store-held server from one held elsewhere.
+    written. The toggle uses it to tell a store-held server from one held
+    elsewhere.
+
+    A store that exists but is not a readable MCP config answers ``"corrupt"``
+    in either mode, and its bytes stay as they are. Read as empty, it would be
+    written back holding this one entry, and every other server in it would be
+    gone.
 
     When ``enabled`` is True and ``spec`` is provided, upserts the full spec
     (used for preservation copies).  When enabled is False, adds/updates the
@@ -150,16 +165,12 @@ def _set_kirocrew_entry(
     answers ``"ambiguous"``.
 
     Returns a short label describing what happened: ``"added"``, ``"enabled"``,
-    ``"disabled"``, ``"ambiguous"`` or ``"noop"``, and with ``existing_only``
-    also ``"absent"`` or ``"corrupt"``.
+    ``"disabled"``, ``"ambiguous"``, ``"noop"`` or ``"corrupt"``, and with
+    ``existing_only`` also ``"absent"``.
     """
-    if existing_only:
-        loaded = _load_config_for_update(_kirocrew_mcp_json())
-        if loaded is None:
-            return "corrupt"
-        data = loaded
-    else:
-        data = _load_json_or_empty(_kirocrew_mcp_json())
+    data = _load_config_for_update(_kirocrew_mcp_json())
+    if data is None:
+        return "corrupt"
     servers = data.setdefault("mcpServers", {})
     try:
         key = _resolve_key_from_read(servers, name, preferred)
@@ -391,11 +402,16 @@ def _set_tool_overrides(name: str, tool_overrides: dict[str, bool]) -> list[str]
     removes them.  Creates the entry if absent (sourcing full spec from
     any scope so the server keeps loading).
 
-    Returns a list of tool names whose state changed.
+    Returns a list of tool names whose state changed. A store that exists but is
+    not a readable MCP config changes nothing and is not written, since writing
+    back an empty read would drop every other server in it.
     """
     if not tool_overrides:
         return []
-    data = _load_json_or_empty(_kirocrew_mcp_json())
+    data = _load_config_for_update(_kirocrew_mcp_json())
+    if data is None:
+        logger.warning("tool overrides for %r not applied: store mcp.json unreadable", name)
+        return []
     servers = data.setdefault("mcpServers", {})
     entry = servers.get(name)
     if not isinstance(entry, dict):

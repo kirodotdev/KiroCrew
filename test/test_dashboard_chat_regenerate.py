@@ -10,6 +10,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
 
+GATEWAY_PROMPT = "[Workflow `nightly` finished: finished] Its result was just posted above."
+
 # ── Regenerate + variant switching ──
 
 
@@ -57,6 +59,58 @@ class TestRegenerateAndVariants:
                 assert resp.status == 409
         finally:
             release.set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inject_kind", ["workflow", "heartbeat"])
+    async def test_regenerate_reruns_a_gateway_prompt_and_keeps_the_rows_above_it(
+        self, tmp_path, monkeypatch, inject_kind
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "/workflow nightly")
+        slot.append(
+            "assistant", "[Workflow completion event] nightly", meta={"kind": "workflow_result"}
+        )
+        slot.append("inject", GATEWAY_PROMPT, "msg msg-inject", meta={"injectKind": inject_kind})
+        slot.append("assistant", "The nightly build is green.")
+        slot.drain()
+        armed: list[str] = []
+        run_chat = AsyncMock(
+            side_effect=lambda *_a, **_kw: armed.extend(
+                m["content"] for m in slot._regenerate_target.rows
+            )
+        )
+
+        with patch("kiro_crew.dashboard.chat_regenerate._run_chat", new=run_chat):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat/slots/s1/regenerate")
+                body = await resp.json()
+                await asyncio.sleep(0)
+
+        assert resp.status == 200, body
+        # The gateway's prompt re-runs as the gateway's text, so the request above it
+        # is not run again and only the answer is up for replacement.
+        assert run_chat.call_args.args[2] == GATEWAY_PROMPT
+        assert run_chat.call_args.kwargs["_synthetic_payload"] is True
+        assert run_chat.call_args.kwargs["_directive_user_origin"] is False
+        assert armed == ["The nightly build is green."]
+
+    @pytest.mark.asyncio
+    async def test_regenerate_refuses_a_gateway_prompt_with_no_answer(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "/workflow nightly")
+        slot.append(
+            "assistant", "[Workflow completion event] nightly", meta={"kind": "workflow_result"}
+        )
+        slot.append("inject", GATEWAY_PROMPT, "msg msg-inject", meta={"injectKind": "workflow"})
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/regenerate")
+            body = await resp.json()
+        assert resp.status == 400
+        assert body["code"] == "no_assistant_message"
 
     @pytest.mark.asyncio
     async def test_regenerate_requires_prior_assistant(self, tmp_path, monkeypatch):

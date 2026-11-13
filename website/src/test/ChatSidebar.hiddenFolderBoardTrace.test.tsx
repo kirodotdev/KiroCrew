@@ -418,6 +418,20 @@ describe('one derived count, reported the same way everywhere', () => {
     expect(container.querySelector('[data-testid="hidden-reveal-root"]')).toBeNull()
   })
 
+  it('stays silent about it on a flat board, which draws no folder block to take away', () => {
+    // Board-flat keeps the columns but draws no folder block, so the uncheck takes nothing
+    // this folder's own attribute had not already taken, and only the ordinary hide beside
+    // it withholds anything.
+    hideFolders(HIDE_WHEN_EMPTY_FOLDER, HIDDEN_FOLDER)
+    localStorage.setItem('mc-sidebar-lane', 'flat')
+    const { container, getByTestId } = renderSidebar(true)
+    expect(getByTestId('column-col-idle')).not.toBeNull()
+    expect(header(container, SHOWN_FOLDER), 'not the flat board: a folder block is drawn').toBeNull()
+    expect(notice(container)?.getAttribute('data-hidden-folder-count')).toBe('1')
+    expect(noticeCount(container)).toMatch(/^1 hidden folder$/)
+    expect(container.querySelector('[data-folder-hide-active]')?.getAttribute('data-folder-hide-active')).toBe('1')
+  })
+
   it('says nothing is withheld while a search suspends the hide', () => {
     // Searching turns the folder hide off entirely, so every match stays reachable. A
     // count that kept reporting during a search would claim rows are withheld at the

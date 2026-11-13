@@ -70,7 +70,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
-    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
+    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire, _on_kas
 
 
 async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
@@ -318,6 +318,17 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         return _Flow.END
     if is_new and _sends_prompt:
         spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
+        # Defensive on the accessor, like ``turn_bracket.consume_reinjection``.
+        remember = getattr(state.sessions, "remember_agent_spawn_context", None)
+        if callable(remember):
+            remember(session_key, spawn_injected)
+    elif _sends_prompt and turn._needs_reinjection and _on_kas(client):
+        # kiro-cli sends the agentSpawn output with every request; on KAS it
+        # lives only in the history, which a compaction summarized away. Send
+        # the kept output once more, on this first turn after it, unrun.
+        read_kept = getattr(state.sessions, "agent_spawn_context", None)
+        kept = read_kept(session_key) if callable(read_kept) else ()
+        spawn_injected = list(kept) if isinstance(kept, tuple) else []
     else:
         spawn_injected = []
 
@@ -565,6 +576,9 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
                     session_key,
                     source="slack" if slot._turn_channel_origin else "dashboard",
                     on_bound=_owe_code_channel_turn_end,
+                    # What the person asked, without this runner's prepends: a
+                    # cancelled-turn preamble may quote an older prompt.
+                    prompt=str(turn._jev_route_text or ""),
                 )
             except Exception:
                 logger.debug("code channel turn-start hooks failed", exc_info=True)
@@ -666,6 +680,8 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     turn._turn_cost_usd = _turn_cost_usd
     _turn_model = ""
     turn._turn_model = _turn_model
+    # Set at EVENT_COMPLETE when the turn rebuilt the prompt cache (``cache_rewrite``).
+    turn._turn_cache_rewrite = False
     # Set once EVENT_COMPLETE has filled the four figures above.
     _turn_stats_captured = False
     turn._turn_stats_captured = _turn_stats_captured

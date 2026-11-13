@@ -226,6 +226,140 @@ def member_store_ownership_holds(config: KiroCrewConfig, member: str, entry_stor
     return record is not None and record.owner_member == member
 
 
+def _missing_member_database_repair(config: KiroCrewConfig, member: str, store: str):
+    """The repair for *member*'s own store whose ``memory.db`` is gone, or ``None``.
+
+    A user who deletes ``memory.db`` to wipe a Bot's memory otherwise loses the
+    Bot's chat for good. Only that one case is repairable: the config must bind
+    *store* to *member* alone, by name and by immutable id, the store directory
+    must be a real directory, nothing may sit at the database path, and every
+    SQLite side file left there (``-wal``, ``-shm``, ``-journal``) must be a
+    regular file, not a link. Anything else returns ``None`` and callers keep
+    refusing.
+
+    Returns ``(member_id, database, side_files)``. Read-only. Blocking IO.
+    """
+    import os
+    import stat
+
+    from kiro_crew.execution_context import member_config_for_id
+    from kiro_crew.memory_stores import MEMORY_DB_FILE, _named_store_dir
+
+    agent = config.agents.get(member)
+    record = config.memory_stores.get(store)
+    if agent is None or record is None or record.memory_version != 2:
+        return None
+    member_id = agent.member_id
+    if (
+        not member_id
+        or agent.memory_store != store
+        or record.owner_member_id != member_id
+        or record.owner_member != member
+        or sum(other.memory_store == store for other in config.agents.values()) != 1
+    ):
+        return None
+    try:
+        if member_config_for_id(config, member_id)[0] != member:
+            return None
+        directory = _named_store_dir(store)
+        if not stat.S_ISDIR(directory.lstat().st_mode):
+            return None
+        database = directory / MEMORY_DB_FILE
+        if os.path.lexists(database):
+            return None
+        side_files = []
+        for suffix in ("-wal", "-shm", "-journal"):
+            side = directory / f"{MEMORY_DB_FILE}{suffix}"
+            try:
+                mode = side.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(mode):
+                return None
+            side_files.append(side)
+    except (OSError, ValueError):
+        return None
+    return member_id, database, side_files
+
+
+def _recreate_missing_member_database(config: KiroCrewConfig, member: str, store: str) -> bool:
+    """Give *member*'s own store a new empty database when its file is gone.
+
+    Acts only when :func:`_missing_member_database_repair` finds the case
+    repairable. Side files left behind by the deleted database hold nothing
+    usable without it, and a stale WAL could be replayed into the new file, so
+    each is renamed aside to ``<name>.orphaned-<ns>``, never deleted. The new
+    database carries the same member and store identity normal creation writes,
+    created exclusively with owner-only permissions. Call with the memory-store
+    namespace lock held. Blocking IO.
+    """
+    import os
+    import time
+    from uuid import uuid4
+
+    from kiro_crew.atomic_write import fsync_dir
+    from kiro_crew.member_memory_backup import StoresInUse, hold_stores_for_replace
+    from kiro_crew.memory_stores import UnknownMemoryStore, memory_stores_root
+    from kiro_crew.vector_memory import create_member_database, sqlite3
+
+    repair = _missing_member_database_repair(config, member, store)
+    if repair is None:
+        return False
+    try:
+        with hold_stores_for_replace(memory_stores_root(), [store]):
+            # Closing SQLite can change its side files; validate them again under admission.
+            repair = _missing_member_database_repair(config, member, store)
+            if repair is None:
+                return False
+            member_id, database, side_files = repair
+            stamp = time.time_ns()
+            for side in side_files:
+                os.replace(side, side.with_name(f"{side.name}.orphaned-{stamp}"))
+            temporary = database.with_name(f"{database.name}.repair-{uuid4().hex}")
+            try:
+                create_member_database(temporary, member_id=member_id, store_id=store)
+                db = sqlite3.connect(temporary, isolation_level=None)
+                try:
+                    db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    db.execute("PRAGMA journal_mode=DELETE")
+                finally:
+                    db.close()
+                # Never publish a main file whose committed pages still live in a side file.
+                if any(
+                    os.path.lexists(temporary.with_name(temporary.name + suffix))
+                    for suffix in ("-wal", "-shm", "-journal")
+                ):
+                    raise OSError("Recreated memory database still has SQLite side files")
+                # Windows refuses fsync on a read-only handle (EBADF).
+                fd = os.open(temporary, os.O_RDWR)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                fsync_dir(database.parent)
+                os.replace(temporary, database)
+                fsync_dir(database.parent)
+            except BaseException:
+                for suffix in ("", "-wal", "-shm", "-journal"):
+                    try:
+                        os.unlink(temporary.with_name(temporary.name + suffix))
+                    except FileNotFoundError:
+                        pass
+                raise
+    except StoresInUse as exc:
+        raise UnknownMemoryStore(
+            "The Bot's memory is still open in another process; "
+            "stop that process and restart to apply the repair"
+        ) from exc
+    logger.warning(
+        "Bot %r's private memory database was missing; created a new empty one "
+        "(%d leftover side file(s) moved aside)",
+        member,
+        len(side_files),
+    )
+    return True
+
+
 async def pin_private_agent_store(
     state: DashboardState,
     session_key: str,
@@ -262,7 +396,19 @@ async def pin_private_agent_store(
     from kiro_crew.memory_stores import (  # noqa: F811
         UnknownMemoryStore,
         memory_store_namespace_lock,
+        require_member_memory_store,
     )
+
+    if (
+        entry_store
+        and await asyncio.to_thread(_missing_member_database_repair, config, selected, entry_store)
+        is not None
+    ):
+        from kiro_crew.context import release_cached_memory_store
+
+        # Evict before namespace admission: context cache readers take these locks
+        # in the opposite order. POSIX use admission still refuses a reopened store.
+        await asyncio.to_thread(release_cached_memory_store, entry_store)
 
     changed = (
         f"Bot {selected!r} changed during private memory assignment; "
@@ -278,6 +424,22 @@ async def pin_private_agent_store(
         _current_selected, current_store = _member_private_selection(selected, current)
         if current_store != entry_store:
             raise UnknownMemoryStore(changed)
+        if current_store:
+            # Same store at entry and now, so nothing changed: a store that still
+            # fails its identity check is broken, and the refusal names why
+            # instead of reporting a change that never happened.
+            try:
+                try:
+                    require_member_memory_store(current, selected)
+                except UnknownMemoryStore:
+                    if not _recreate_missing_member_database(current, selected, current_store):
+                        raise
+                    require_member_memory_store(current, selected)
+            except UnknownMemoryStore as exc:
+                raise UnknownMemoryStore(
+                    f"Bot {selected!r}'s private memory cannot be opened: {exc}; "
+                    "no private memory was granted"
+                ) from exc
         if current_store and not member_store_ownership_holds(current, selected, current_store):
             raise UnknownMemoryStore(changed)
         return _pin_private_agent_assignment(

@@ -35,6 +35,15 @@ async def test_health_returns_ok_with_identity() -> None:
     assert body["ok"] is True
     assert body["app"] == "kirocrew"
     assert body["version"] == __version__
+    assert body["edition"] == "oss"
+
+
+@pytest.mark.asyncio
+async def test_health_reports_the_lts_edition(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An LTS desktop shell reads `edition` to refuse adopting an oss gateway."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+    body = json.loads((await core_mod.api_health(_probe_req())).body)
+    assert body["edition"] == "lts"
 
 
 @pytest.mark.asyncio

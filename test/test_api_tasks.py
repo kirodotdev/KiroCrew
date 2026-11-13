@@ -1050,3 +1050,28 @@ def test_routes_are_registered_in_order() -> None:
     assert paths.index("/api/tasks/summary") < paths.index("/api/tasks/{task_id}")
     assert "/api/tasks/{task_id}/cancel" in paths
     assert "/api/tasks" in paths
+
+
+def test_the_task_route_table_is_exactly_these_routes() -> None:
+    """Every ``/api/tasks`` route by method and path, so adding or dropping one is a
+    deliberate edit here: a new route, a mutating one above all, also needs its gate
+    reviewed."""
+    from kiro_crew.dashboard.routes import system as system_routes
+
+    app = web.Application()
+    system_routes.register(app)
+    routes = {
+        (r.method, r.resource.canonical)
+        for r in app.router.routes()
+        if r.resource is not None
+        and r.resource.canonical.startswith("/api/tasks")
+        and r.method != "HEAD"  # aiohttp adds a HEAD twin to every add_get
+    }
+    assert routes == {
+        ("GET", "/api/tasks"),
+        ("GET", "/api/tasks/summary"),
+        ("GET", "/api/tasks/{task_id}"),
+        ("POST", "/api/tasks/{task_id}"),
+        ("POST", "/api/tasks/{task_id}/cancel"),
+        ("GET", "/api/tasks/{task_id}/timeline"),
+    }

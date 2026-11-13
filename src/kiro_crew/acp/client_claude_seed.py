@@ -10,7 +10,8 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_claude_inline_settings``,
 ``_claude_local_settings_excluded``, ``_claude_settings_authored``,
 ``_claude_settings_claim_unrevoked``, ``_claude_settings_shared``,
-``_claude_settings_written``, ``_permission_surface_share_validated``.
+``_claude_settings_written``, ``_permission_surface_share_validated``,
+``claude_mode_pinned_notice``.
 
 Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
 ``_session_key``, ``_work_dir``.
@@ -30,7 +31,10 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, pinned_fs
 from kiro_crew.acp import seed_provenance
-from kiro_crew.acp.claude_settings_sources import other_sources_define_available_models
+from kiro_crew.acp.claude_settings_sources import (
+    other_sources_define_available_models,
+    user_models_a_family_entry_covers,
+)
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.session_mcp import session_mcp_deny_rules
 from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules, session_allowlist_spec
@@ -314,7 +318,11 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
     allowlist = model_registry.seed_available_models(self._model_registry_namespace)
     if allowlist:
         if other_sources_define_available_models(Path(self._work_dir)):
-            data["availableModels"] = allowlist
+            # The adapter gives each literal entry one picker row, while the CLI
+            # also allows the newer models a version prefix covers. Naming the
+            # ones the user's own settings route keeps the two pickers equal.
+            covered = user_models_a_family_entry_covers()
+            data["availableModels"] = [*allowlist, *(m for m in covered if m not in allowlist)]
         else:
             logger.info(
                 "advertised-model cache is warm but no settings file Crew checks defines "
@@ -358,6 +366,12 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
             "and availableModels too when another settings source defines one.",
             self._claude_local_settings_path(),
         )
+        # The names the user's own settings cover come from no cache. Under the
+        # adapter's union they only add rows to a list another file defines.
+        if other_sources_define_available_models(Path(self._work_dir)):
+            covered = user_models_a_family_entry_covers()
+            if covered:
+                data["availableModels"] = covered
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 
@@ -391,7 +405,8 @@ def _write_claude_local_settings(self: AcpClient) -> None:
        registry-derived list seeded here does exactly the same thing to any
        model the registry has not caught up on. So on a cold advertised-model
        cache both keys are omitted (the adapter's own provider list is
-       already right) and the re-seed after this session's capture fills them
+       already right), apart from the names the user's own settings cover,
+       and the re-seed after this session's capture fills them
        in. With a warm cache and no other source defining a list, only
        ``model`` is written: a specific id in Crew's list disables that
        family's alias wildcard, and a ``model`` key does not. See
@@ -441,6 +456,7 @@ def _write_claude_local_settings(self: AcpClient) -> None:
     # Re-decided on every run; only the foreign-file branch below sets it.
     self._claude_local_settings_excluded = False
     self._claude_inline_settings = None
+    self.claude_mode_pinned_notice = ""
     if not _claude_settings_usable(local_settings):
         # A symlink, or a sensitive resolved target: creating the file would
         # follow the link and write Crew's settings through it. Left entirely

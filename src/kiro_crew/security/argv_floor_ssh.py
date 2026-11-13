@@ -27,7 +27,11 @@ import re
 # keep resolving the unpatched object and the instrument would count nothing.
 from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
-from .argv_floor_self import _self_token_frames, _static_substitution_output
+from .argv_floor_self import (
+    _quoted_assignment_scripts,
+    _self_token_frames,
+    _static_substitution_output,
+)
 from .shell_normalizer import (
     _argv_programs,
     _cut_at_operator,
@@ -397,13 +401,17 @@ def _brace_expansions(token: str) -> "list[str] | None":
     return words
 
 
-def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool = True) -> bool:
+def _operand_targets_self(
+    operand: str, *, host_position: bool = True, dns: bool = True, match_globs: bool = True
+) -> bool:
     """True if *operand* names THIS machine as a connection target.
 
     ``dns=False`` passes ``dns_fallback=False`` to every host check (no
     hosts-file or DNS alias verdict, no unread-address-table window), for a
     word that is not itself the destination (see
-    ``_command_value_names_self_endpoint``).
+    ``_command_value_names_self_endpoint``).  ``match_globs=False`` passes
+    the same to every host check, for an operand of a bare glob verb (see
+    ``_is_ssh_to_self``).
 
     Resolves the host part the way the ssh family reads an operand: an
     optional ``ssh://``/``scp://``/``sftp://``/``rsync://`` scheme (authority
@@ -439,7 +447,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
     # has no operator left, so the recursive call cuts nothing and does not
     # recurse again, and a bare ``$VAR`` (no operator to cut) is unaffected.
     cut = _cut_at_operator(t)
-    if cut != t and _operand_targets_self(cut, host_position=host_position, dns=dns):
+    if cut != t and _operand_targets_self(
+        cut, host_position=host_position, dns=dns, match_globs=match_globs
+    ):
         return True
     for hint in _HOSTNAME_SUBSTITUTION_HINTS:
         if hint in t:
@@ -454,7 +464,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
     # (``foo${X:-localhost}bar``): the embedded word alone is self even when
     # the resolved whole is not.
     for match in _EXPANSION_DEFAULT_RE.finditer(t):
-        if _operand_targets_self(match.group(1), host_position=host_position, dns=dns):
+        if _operand_targets_self(
+            match.group(1), host_position=host_position, dns=dns, match_globs=match_globs
+        ):
             return True
     # Bash substitutes a parameter default INTO the surrounding
     # word (``local${KC_UNSET:-host}`` -> ``localhost``), so the whole
@@ -464,7 +476,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
     # (nesting and colon-less operators included); the recursive call sees a
     # string with no such form left, so it does not recurse here again.
     resolved = _resolve_param_defaults(t)
-    if resolved != t and _operand_targets_self(resolved, host_position=host_position, dns=dns):
+    if resolved != t and _operand_targets_self(
+        resolved, host_position=host_position, dns=dns, match_globs=match_globs
+    ):
         return True
     # A single integer literal inside arithmetic expansion is
     # printed decimally by bash (``$((0x7f))`` -> ``127``), gluing into the
@@ -473,7 +487,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
     # docstring) — and the substituted string carries no ``$((…))`` literal,
     # so the recursion is a single level.
     normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
-    if normalized != t and _operand_targets_self(normalized, host_position=host_position, dns=dns):
+    if normalized != t and _operand_targets_self(
+        normalized, host_position=host_position, dns=dns, match_globs=match_globs
+    ):
         return True
     # An arithmetic expansion that SURVIVED normalization is an
     # expression (``$((0+1))``) whose produced text only the shell knows.
@@ -496,7 +512,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
     if choices is None:
         return True
     for choice in choices:
-        if choice != t and _operand_targets_self(choice, host_position=host_position, dns=dns):
+        if choice != t and _operand_targets_self(
+            choice, host_position=host_position, dns=dns, match_globs=match_globs
+        ):
             return True
     scheme_seen = False
     for scheme in ("ssh://", "scp://", "sftp://", "rsync://"):
@@ -512,7 +530,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
     # The DNS layer applies to the WHOLE token only when the token sits in
     # host position (or a scheme marked it as an authority) -- a plain word
     # here may be a local filename.
-    if _host_is_self(t, dns_fallback=dns and (host_position or scheme_seen)):
+    if _host_is_self(
+        t, dns_fallback=dns and (host_position or scheme_seen), match_globs=match_globs
+    ):
         return True
     if t.startswith("[") or "@[" in t:
         # Bracketed IPv6, optionally behind userinfo: user@[::1]:path
@@ -526,7 +546,8 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
             # whole remainder after it as a bare host first: ``user@::1``
             # names ``::1``, which the plain colon split below would misread
             # as an empty host.  Userinfo marks the remainder as a host.
-            if _host_is_self(t[len(pre_colon.rsplit("@", 1)[0]) + 1 :], dns_fallback=dns):
+            after_userinfo = t[len(pre_colon.rsplit("@", 1)[0]) + 1 :]
+            if _host_is_self(after_userinfo, dns_fallback=dns, match_globs=match_globs):
                 return True
         host = pre_colon
         if "@" in host:
@@ -543,14 +564,25 @@ def _operand_targets_self(operand: str, *, host_position: bool = True, dns: bool
         # no path).  A token with a ``/`` outside a scheme keeps the colon-first
         # order: its ``@`` is path data (``far:/backup/a@b``).
         tail = t.rsplit("@", 1)[1]
-        if _host_is_self(tail, dns_fallback=dns and (host_position or scheme_seen)):
+        tail_dns = dns and (host_position or scheme_seen)
+        if _host_is_self(tail, dns_fallback=tail_dns, match_globs=match_globs):
             return True
         tail_host = tail.partition(":")[0]
         if tail_host != tail and _host_is_self(
-            tail_host, dns_fallback=dns and (host_position or scheme_seen)
+            tail_host, dns_fallback=tail_dns, match_globs=match_globs
         ):
             return True
-    return _host_is_self(host, dns_fallback=dns and (host_position or scheme_seen or host != t))
+    return _host_is_self(
+        host,
+        dns_fallback=dns and (host_position or scheme_seen or host != t),
+        match_globs=match_globs,
+    )
+
+
+def _ssh_verb_basename(token: str) -> str:
+    """*token*'s program basename as ``_ssh_family_verb`` reads it (``ssh.exe`` is ``ssh``)."""
+    base = _program_basename(_strip_redirect(token.strip("\"'")))
+    return base[: -len(".exe")] if base.endswith(".exe") else base
 
 
 def _ssh_family_verb(token: str) -> "str | None":
@@ -560,9 +592,7 @@ def _ssh_family_verb(token: str) -> "str | None":
     resolve to the bare verb.  A glob basename that CAN expand to one
     (``s?h``, see ``_GLOB_CHARS``) resolves to the verb it can name.
     """
-    base = _program_basename(_strip_redirect(token.strip("\"'")))
-    if base.endswith(".exe"):
-        base = base[: -len(".exe")]
+    base = _ssh_verb_basename(token)
     if base in _SSH_FAMILY_VERBS:
         return base
     if _GLOB_CHARS.intersection(base):
@@ -901,6 +931,12 @@ def _function_call_binds_self(text: str) -> bool:
     return False
 
 
+def _reaches_self_over_ssh(text_lower: str) -> bool:
+    """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
+    read whole: the separator mask would turn a script's own separators into data."""
+    return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
+
+
 def _is_ssh_to_self(text_lower: str) -> bool:
     """True if *text_lower* opens an ssh/scp/sftp/rsync channel to THIS host.
 
@@ -1055,6 +1091,20 @@ def _is_ssh_to_self(text_lower: str) -> bool:
         disqualified: "bool | None" = None
         for i, token in enumerate(tokens):
             verb = _ssh_family_verb(token)
+            # A verb read through a bare glob (``s?h``, a lone ``*``) expands only
+            # in the working directory, so it already spends the one filesystem
+            # expansion this floor models and a glob operand after it is not read
+            # as this host.  Two wildcard words in a row are every five-field cron
+            # schedule (``0 * * * *``), and a working directory that expands both
+            # into a self connection also makes a lone ``*`` that whole command
+            # line, which no static floor reads.  A verb glob with a directory part
+            # (``/usr/bin/s?h``) expands outside it, so its operands keep glob
+            # host matching.
+            glob_verb = (
+                verb is not None
+                and _ssh_verb_basename(token) != verb
+                and not any(sep in token for sep in "/\\")
+            )
             if verb is None and bound_program_verbs:
                 stripped_prog = token.strip("\"'")
                 verb = bound_program_verbs.get(stripped_prog) or bound_program_verbs.get(
@@ -1231,6 +1281,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         if checkable and _operand_targets_self(
                             _unmask_separators(remainder),
                             host_position=positional_pending and not value_shadow,
+                            match_globs=not glob_verb,
                         ):
                             return True
                         if not value_shadow:
@@ -1367,6 +1418,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
                         _unmask_separators(stripped),
                         host_position=positional_pending
                         and (not value_shadow or value_shadow_ambiguous),
+                        match_globs=not glob_verb,
                     ):
                         return True
                     if _routing_option_value_targets_self(

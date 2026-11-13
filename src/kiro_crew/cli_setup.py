@@ -18,6 +18,7 @@ from slack_sdk.web import WebClient
 
 from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
+from kiro_crew.agent_sdk import kas_bundle
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
@@ -190,12 +191,19 @@ def _ensure_prerequisites() -> bool:
             header_printed = True
 
     # Node is required for the dashboard build (and for MCP servers shipped as
-    # npm packages, e.g. the Playwright browser MCP).
+    # npm packages, e.g. the Playwright browser MCP). On the KAS bundle route the
+    # engine runs the Node its bundle ships, so `kirocrew doctor`'s node row
+    # calls a missing one not needed, and setup says the same.
     if not shutil.which("node"):
         _header()
-        print(
-            f"  ⚠️  node not found on PATH — install Node.js >= v{format_node_version(MIN_NODE_VERSION)} from https://nodejs.org\n"
-        )
+        if kas_bundle.kas_bundle_route():
+            engine = kas_bundle.installed_bundle()
+            own = f"Node {engine.node_version}" if engine and engine.node_version else "Node"
+            print(f"  ⏭  node not on PATH; not needed (KAS runs its engine bundle's own {own})\n")
+        else:
+            print(
+                f"  ⚠️  node not found on PATH — install Node.js >= v{format_node_version(MIN_NODE_VERSION)} from https://nodejs.org\n"
+            )
 
     # kiro-cli is the agent backend. Note its absence so the user can install it.
     if not shutil.which(KIRO_CLI_BIN):
@@ -493,7 +501,8 @@ def _setup_impl(
     # 7. Cloud (run KiroCrew on the user's own AWS EC2) — optional, delegated.
     _maybe_setup_cloud()
 
-    print("\n👻 Done! Try: kirocrew doctor && kirocrew gateway")
+    # No `&&`: Windows PowerShell 5.1 cannot parse it. The words keep its condition.
+    print("\n👻 Done! Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`.")
 
 
 def _builtin_cloud_lane_offered() -> bool:

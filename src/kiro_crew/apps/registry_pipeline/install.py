@@ -105,6 +105,7 @@ from kiro_crew.sandbox import (
     wrap_argv_async,
 )
 from kiro_crew.sel import sel
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger(_FACADE)
 
@@ -871,7 +872,7 @@ async def install_from_registry(
                 (app_source / "app.json").read_text,
                 "utf-8",
             )
-            parsed = json.loads(manifest_raw)
+            parsed = loads_user_json(manifest_raw)
             if isinstance(parsed, dict):
                 manifest_data = parsed
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
@@ -1147,7 +1148,7 @@ async def install_from_registry(
             # must pass the same fail-closed gates as the post-build read.
             manifest_data = None
             try:
-                parsed = json.loads(
+                parsed = loads_user_json(
                     await asyncio.to_thread((app_source / "app.json").read_text, "utf-8")
                 )
                 if isinstance(parsed, dict):

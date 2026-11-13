@@ -28,7 +28,9 @@ from dataclasses import dataclass, field, replace  # noqa: F401
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Mapping, Optional  # noqa: F401
 
-from kiro_crew import _facade_mirror, platform_compat
+from kiro_crew import _facade_mirror
+from kiro_crew import mcp_structured_text as _structured_text  # noqa: F401
+from kiro_crew import platform_compat
 from kiro_crew.constants import (  # noqa: F401
     KIROCREW_SPAWNED_ENV,
     KIROCREW_SPAWNED_VALUE,
@@ -81,7 +83,7 @@ from kiro_crew.mcp_gateway.backend_tmp import (
     sweep_backend_tmp,
     tmp_env,
 )
-from kiro_crew.mcp_gateway.backend_wire import _PendingRequest
+from kiro_crew.mcp_gateway.backend_wire import _keep_stderr_line, _PendingRequest
 from kiro_crew.mcp_gateway.image_budget import (  # noqa: F401
     line_may_carry_image_block,
     parse_image_bearing_frame,
@@ -101,6 +103,7 @@ from kiro_crew.sandbox import (
     format_declared_temp_refusals,
 )
 from kiro_crew.security import redact
+from kiro_crew.security.pem_scan import HEADER_PREFIX as _PEM_HEADER_PREFIX  # noqa: F401
 from kiro_crew.sel import SecurityEventLog  # noqa: F401
 
 if False:  # typing-only import guard
@@ -154,6 +157,11 @@ class Backend:
     # so its ``identity_unattested`` refusal can say what the daemon saw; the
     # daemon's own log line is the only other place the reason exists.
     control_plane_denial: str = ""
+    # The owner port a Kiro Crew control-plane backend was spawned for (its
+    # ``KIROCREW_BOUND_PORT``); 0 for every other backend. After the owner
+    # announces a different port, the pool retires a backend whose value differs
+    # and never hands it out again (``launch.bound_to_owner_port``).
+    owner_port: int = 0
     _shutdown_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # --- Sharing boundary state (Milestone 2) -------------------------------
     # Each attached stub appears in ``_stub_inboxes`` keyed by stub_uuid; the
@@ -311,6 +319,19 @@ class Backend:
     # loop and (b) outlives shutdown if the process survives SIGKILL, leaking
     # its stderr pipe fd across LRU-eviction churn.
     _stderr_task: Optional[asyncio.Task[None]] = None
+    # The backend's last stderr lines as the server wrote them, each PEM block
+    # kept as one withheld line and each line bounded (``_keep_stderr_line``).
+    # The pump logs each line only at DEBUG, so this tail is what names a death
+    # the backend reached on its own (``_report_backend_exit``), which judges it
+    # whole before it logs any of it. Unredacted, so the repr leaves it out.
+    # Not a constructor argument: ``spawn_backend`` hands over the list its
+    # stderr drain fills.
+    _stderr_tail: list[str] = field(default_factory=list, init=False, repr=False)
+    # Set before the gateway itself ends the process: ``shutdown`` closing its
+    # stdin, ``recycle_if_idle``'s kill. A death seen after that is the
+    # gateway's, even when that act is cancelled or yields before it records a
+    # reason, so it is never named as the backend's own exit.
+    _gateway_ending: bool = field(default=False, init=False)
     # The process's start id, read once right after spawn, while nothing can
     # have reaped it yet. The out-of-band backend record publishes this, not a
     # fresh read at heartbeat time: by then the backend may have exited and
@@ -515,6 +536,7 @@ class Backend:
     _fail_init = _backend_handshake._fail_init
     _on_upstream_initialize = _backend_handshake._on_upstream_initialize
     # Liveness and teardown of a ``Backend``: ``kiro_crew.mcp_gateway.backend_liveness``.
+    _report_backend_exit = _backend_liveness._report_backend_exit
     _broadcast_backend_gone = _backend_liveness._broadcast_backend_gone
     _heartbeat_once = _backend_liveness._heartbeat_once
     _cancel_background_tasks = _backend_liveness._cancel_background_tasks
@@ -542,6 +564,35 @@ class Backend:
     _parse_ui_contents = _backend_mcp_apps._parse_ui_contents
 
 
+def _default_work_dir() -> Optional[Path]:
+    """The gateway's default work dir, ``workspace_root()/_default``, or ``None``.
+
+    The one ``--work-dir`` the rewriter writes into every stub, and the one cwd the
+    daemon spawns a backend in (``daemon.launch.env_target_resolver``) and is willing
+    to recreate (``_restore_default_work_dir``).
+
+    The gateway hands the daemon the exact directory its rewrite used
+    (``manager.BACKEND_WORK_DIR_ENV``), and that wins: resolving it again here
+    could differ, since the rewrite's resolution creates the root and falls back
+    to the default base when it cannot, which a non-creating resolution does not
+    reproduce in every case. Without that value (a daemon started on its own),
+    the root is resolved here without creating it. ``None`` when it cannot be.
+    """
+    # Deferred: ``manager`` sits above this module in the gateway's layers, and
+    # ``config.loader`` imports the rewriter's path helpers.
+    from kiro_crew.config.loader_locations import workspace_root
+    from kiro_crew.mcp_gateway.manager import BACKEND_WORK_DIR_ENV
+
+    pinned = os.environ.get(BACKEND_WORK_DIR_ENV, "")
+    if pinned and os.path.isabs(pinned):
+        return Path(pinned)
+
+    try:
+        return workspace_root(create=False) / "_default"
+    except (OSError, ValueError):
+        return None
+
+
 def _restore_default_work_dir(work_dir: str, server_name: str) -> None:
     """Recreate the gateway's default work dir when it is *work_dir* and has vanished.
 
@@ -558,12 +609,8 @@ def _restore_default_work_dir(work_dir: str, server_name: str) -> None:
     """
     if os.path.isdir(work_dir):
         return
-    # Deferred: ``config.loader`` imports the rewriter's path helpers.
-    from kiro_crew.config.loader_locations import workspace_root
-
-    try:
-        default = workspace_root(create=False) / "_default"
-    except (OSError, ValueError):
+    default = _default_work_dir()
+    if default is None:
         return
     if os.path.normcase(str(default)) != os.path.normcase(work_dir):
         return
@@ -626,6 +673,8 @@ async def spawn_backend(
        ``~/.aws`` etc. is a known residual risk — backends that need AWS
        credentials read them from disk via ``ada`` / default credential
        chain, same as today's non-pooled topology).
+       The one key added back is the boot-time ``SSH_AUTH_SOCK``, for the
+       backends an operator names.
     3. Backends run as the invoking user's UID, same as kiro-cli —
        the pool does not elevate privileges.
 
@@ -769,14 +818,16 @@ async def spawn_backend(
         raise RuntimeError("subprocess pipes not attached")
 
     # Drain stderr in the background so a chatty backend can't fill the OS
-    # pipe buffer and wedge itself. We log every line at DEBUG. The task ref
+    # pipe buffer and wedge itself. We log every line at DEBUG and keep the
+    # last few for the warning that names the backend's own exit. The task ref
     # is stored on the Backend so shutdown() can cancel it
     # and release the stderr pipe fd; otherwise it is only weakly held and
     # leaks if the process outlives a SIGKILL.
     stderr_task: Optional[asyncio.Task[None]] = None
+    stderr_tail: list[str] = []
     if process.stderr is not None:
         stderr_task = asyncio.create_task(
-            _pump_stderr(process.stderr, pool_key.human_readable()),
+            _pump_stderr(process.stderr, pool_key.human_readable(), stderr_tail),
             name=f"mcp-gateway-backend-stderr-{process.pid}",
         )
 
@@ -794,6 +845,7 @@ async def spawn_backend(
     )
     backend._last_ping_response_mono = now  # cold-start: not insta-stale
     backend._stderr_task = stderr_task
+    backend._stderr_tail = stderr_tail
     backend.start_id = start_id
     if backend_tmp is not None:
         # Liveness anchor for the daemon-boot sweep: a SIGKILL'd daemon can
@@ -804,8 +856,17 @@ async def spawn_backend(
     return backend
 
 
-async def _pump_stderr(reader: asyncio.StreamReader, label: str) -> None:
-    """Consume a backend's stderr line by line at DEBUG level."""
+async def _pump_stderr(
+    reader: asyncio.StreamReader, label: str, tail: Optional[list[str]] = None
+) -> None:
+    """Consume a backend's stderr line by line at DEBUG level.
+
+    Each line also goes to ``tail`` when one is given, as the server wrote it,
+    and the tail keeps the last few (``_keep_stderr_line``) for the warning that
+    names the backend's own exit. That warning judges the kept lines together,
+    so they are not redacted one by one here.
+    """
+    in_pem_block = False
     while True:
         try:
             line = await reader.readline()
@@ -823,11 +884,11 @@ async def _pump_stderr(reader: asyncio.StreamReader, label: str) -> None:
         # (tracing/log crate output) and would otherwise flood INFO logs.
         # redact() so a secret printed to stderr (e.g. a token fragment in a
         # stack trace) does not land verbatim in the KiroCrew log.
-        logger.debug(
-            "backend[%s] stderr: %s",
-            label,
-            redact(line.decode("utf-8", errors="replace").rstrip()),
-        )
+        text = line.decode("utf-8", errors="replace").rstrip()
+        redacted = redact(text)
+        logger.debug("backend[%s] stderr: %s", label, redacted)
+        if tail is not None:
+            in_pem_block = _keep_stderr_line(tail, text, redacted, in_pem_block)
 
 
 # --------------------------------------------------------------------------- #
@@ -921,6 +982,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.mcp_gateway.backend_liveness import (  # noqa: F401
         _RECYCLE_EXEMPT_METHODS,
+        _STDERR_DRAIN_WAIT_SECS,
         HARD_WEDGE_CEILING_SECS,
         HEARTBEAT_PING_ID,
         HEARTBEAT_TIMEOUT_SECS,
@@ -954,6 +1016,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_gateway.backend_wire import (  # noqa: F401
         _JSONRPC_SERVER_ERROR,
         _MCP_IDENT_LOG_MAX,
+        _PEM_END_PREFIX,
+        _STDERR_PEM_WITHHELD,
+        _STDERR_TAIL_LINE_MAX,
+        _STDERR_TAIL_LINES,
         _TOOL_ERROR_LOG_MAX,
         _TOOL_ERROR_PRESCAN_MAX,
         _WRITE_DRAIN_TIMEOUT_SECS,

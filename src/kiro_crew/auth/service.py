@@ -175,6 +175,18 @@ class _PendingOidcLogin:
     transport_failures: int = 0
 
 
+def _idc_lookup_context(pending: _PendingOidcLogin) -> str:
+    """The start URL, region and control planes behind one IdC profile lookup, for logs.
+
+    All three are configuration, not credentials; the token never appears here.
+    """
+    hosts = ", ".join(control_plane.control_plane_urls(pending.region))
+    return (
+        f"start URL {pending.start_url or '(none)'}, region {pending.region}, "
+        f"control planes asked: {hosts}"
+    )
+
+
 # How long the loopback listener waits for the portal to redirect back. Long enough
 # for a full Google/GitHub sign-in with 2FA; short enough that a browser that can
 # never reach this machine's loopback (tunnel, tailnet, phone) degrades to the
@@ -418,12 +430,32 @@ class KasLoginService:
         epoch: int,
         signout_gen: str = "",
     ) -> dict[str, Any]:
-        """Register a fresh SSO-OIDC client and start its device authorization."""
+        """Start an SSO-OIDC device authorization for the ``identity`` slot.
+
+        The client registration the slot's stored sign-in carries is reused while
+        it is in date (:func:`builder_id.stored_client`), as kiro-cli does. A new
+        client is registered otherwise, and also when StartDeviceAuthorization
+        answers the stored one with any error but a start-URL refusal, so a
+        registration AWS refuses can never stop the user signing in again.
+        """
         session = await self._http()
-        client = await builder_id.register_client(region, session=session)
-        auth = await builder_id.start_device_authorization(
-            client, region=region, start_url=start_url, session=session
-        )
+        stored = await asyncio.to_thread(self._store.load, identity)
+        client = builder_id.stored_client(stored, region)
+        auth = None
+        if client is not None:
+            try:
+                auth = await builder_id.start_device_authorization(
+                    client, region=region, start_url=start_url, session=session
+                )
+            except builder_id.StartUrlRejectedError:
+                raise
+            except builder_id.BuilderIdAuthError as err:
+                logger.info("stored SSO-OIDC client refused, registering a new one: %s", err)
+        if client is None or auth is None:
+            client = await builder_id.register_client(region, session=session)
+            auth = await builder_id.start_device_authorization(
+                client, region=region, start_url=start_url, session=session
+            )
         return await self._register_pending(
             _PendingOidcLogin(
                 client=client,
@@ -639,18 +671,32 @@ class KasLoginService:
             # This leg deliberately gets no transport budget: the device code is
             # already redeemed, so a later poll cannot re-obtain the token, and
             # answering "pending" would only loop the dashboard until expiry.
+            # The code tells the two apart, so the card can say "no Kiro profile"
+            # only when the lookup answered and the list was empty.
             try:
-                profiles = await control_plane.list_available_profiles(
+                listing = await control_plane.list_available_profiles(
                     token.access_token, region=pending.region, session=session
                 )
             except control_plane.ControlPlaneError as err:
-                logger.warning("could not resolve IdC profile ARN: %s", err)
+                logger.warning(
+                    "could not resolve IdC profile ARN (%s): %s", _idc_lookup_context(pending), err
+                )
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "profile_lookup_failed"}
+            profiles = listing.profiles
             if not profiles:
-                logger.warning("IdC login has no available Kiro profiles")
+                # Everything needed to tell a wrong host or region from a real
+                # provisioning gap. None of it is a credential.
+                logger.warning(
+                    "IdC login has no available Kiro profiles "
+                    "(IdC region %s, control plane %s, %d page(s) read, start URL %s)",
+                    pending.region,
+                    listing.url,
+                    listing.pages,
+                    pending.start_url,
+                )
                 await self._forget(login_id)
-                return {"status": "error"}
+                return {"status": "error", "code": "no_kiro_profile"}
             if len(profiles) > 1:
                 # Multi-profile selection UX is a documented follow-up; until then
                 # the first profile wins, and the choice is visible in the log.

@@ -9,6 +9,7 @@ match keeps its own words. The cooldown is the real one: the prefix is seeded in
 
 from __future__ import annotations
 
+import asyncio
 import os
 import threading
 from pathlib import Path
@@ -149,8 +150,12 @@ def test_an_uncharged_stall_does_not_blame_the_prefix(tmp_path: Path, monkeypatc
         (_NOW + 100.0, paths._PATH_RESOLVE_WAIT_CAP_SECS),
     )
 
-    with pytest.raises(security.PathResolutionStalled) as raised:
+    # The allowance applies only to a thread running an event loop.
+    async def _on_loop() -> None:
         paths._resolved_forms_bounded(expanded)
+
+    with pytest.raises(security.PathResolutionStalled) as raised:
+        asyncio.run(_on_loop())
     assert prefix not in paths._path_resolve_degraded  # nothing was charged
     reason = paths._stall_refusal(raised.value, target)
 

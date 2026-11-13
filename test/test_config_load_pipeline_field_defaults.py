@@ -44,6 +44,8 @@ _READ_STAGE_DEPARTURES = {
     ("agent", "kas_persist_mcp_sign_in"): False,
     # Fail closed: a malformed value must not auto-approve conductor sends.
     ("agent", "conductor_own_child_verbs"): False,
+    # Fail closed: a malformed value must not move kiro-cli's KAS extract.
+    ("agent", "kas_repair_kiro_cli_extract"): False,
     # A present but malformed harness choice is an unusable explicit choice, not
     # an absent key: it takes the Kiro CLI floor, never the KAS product default.
     ("agent", "acp_backend"): "",

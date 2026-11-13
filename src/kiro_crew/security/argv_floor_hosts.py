@@ -944,7 +944,7 @@ def _kernel_says_own_address(
     return False
 
 
-def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
+def _host_is_self(host: str, *, dns_fallback: bool = True, match_globs: bool = True) -> bool:
     """True if *host* (already isolated) names this machine.
 
     Checks the hard-coded loopback names, IP-literal forms — bare IPv6
@@ -954,6 +954,8 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
     end runs only with ``dns_fallback`` (round-17): callers set it for tokens
     in HOST POSITION, so a dotted local FILENAME (``backup.tar.gz`` as an scp
     source) is never refused as an unresolved first-contact hostname.
+    ``match_globs=False`` reads a glob host as no self name at all, for an
+    operand of a verb that was itself a bare glob (see ``_is_ssh_to_self``).
     """
     host = host.rstrip(".")
     if not host:
@@ -973,6 +975,8 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
         # pattern that CAN match a self name is treated as one (see
         # ``_GLOB_CHARS``); a pattern that cannot match any self name is
         # not a self target, and no later layer parses a glob.
+        if not match_globs:
+            return False
         candidates = set(_LOOPBACK_HOST_NAMES) | {"127.0.0.1", "::1"} | _own_host_names()
         return any(fnmatch.fnmatchcase(cand, host) for cand in candidates)
     if host in _LOOPBACK_HOST_NAMES:

@@ -1812,6 +1812,7 @@ class _PumpMixin(ManagerComponent):
                 delegation=info.delegation,
                 backend=info.backend,
                 depth=info.depth,
+                silent=info.silent,
                 memory_store=info.memory_store,
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,

@@ -205,10 +205,11 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: captured from the one-module file before the split: each keeps the kind and the
 #: signature it had there. ``safe_read_file_bytes_nolink``'s keyword-only
 #: ``admit_hardlinked`` and ``ScriptHookStore``'s callers all read these shapes.
-#: Re-pinned twice since: ``_governance_denial`` gained ``alias_groups`` and
+#: Re-pinned three times since: ``_governance_denial`` gained ``alias_groups`` and
 #: ``deny_aliases`` (the KAS tool-id spellings ``gate_decision`` reads as one
 #: identity), then ``own_scopes`` (the scopes a proven non-shell call is judged
-#: in), all keyword defaults, so every pre-split caller still fits.
+#: in), then ``shell_command`` (a shell call's recovered command, its one
+#: ``commands`` item), all keyword defaults, so every pre-split caller still fits.
 #: ``run_script_hook`` and ``_hook_subprocess_env`` take trailing
 #: ``acp_session_id=None`` and ``session_model=None`` keywords,
 #: ``fire_tool_hooks`` a trailing ``session_model=None`` and
@@ -226,7 +227,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``session_key=None`` keyword (the channel session governance judges a bot turn
 #: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
-_BASE_SHAPE_DIGEST = "3b879286a26da3e939b77ea21f186380f304be1252a7b3854942164992fdaf98"
+_BASE_SHAPE_DIGEST = "99a8550367a8fe7af43162aedfa9cbe5c47b961e41df01ef8ed89e68a4f72342"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in

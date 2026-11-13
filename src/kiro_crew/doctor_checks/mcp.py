@@ -1,9 +1,10 @@
 """MCP rows of ``kirocrew doctor`` that neither repair a spec nor start a server.
 
-Strict-identity routing, the MCP gateway daemon's code revision, and what each
-selectable harness's MCP projection does to the default spec. The MCP Tools repair
-and probe and the MCP Governance read stay in :mod:`kiro_crew.cli_doctor`, where
-repository gates pin them.
+Strict-identity routing, the MCP gateway daemon's code revision, what each
+selectable harness's MCP projection does to the default spec, and which authored
+agents name a server Kiro Crew's projection does not deliver on the backend in use.
+The MCP Tools repair and probe and the MCP Governance read stay in
+:mod:`kiro_crew.cli_doctor`, where repository gates pin them.
 """
 
 from __future__ import annotations
@@ -42,12 +43,15 @@ def _doctor_unresolved_mcp_refs() -> None:
     consumer's knowledge. ``agent_spec_mcp_refs`` reads the mirror seam only, so a
     backend projecting outside ``providers/mirrors/`` (KAS) reads as unprojected;
     ``has_mirror`` tells the two cases apart. kiro-cli resolves its refs against the
-    spec it is handed, so a healthy install prints a clean row there.
+    spec it is handed, so a healthy install prints a clean row there. A mirror leaves
+    Crew's own identity-bound servers out on purpose (``mirror_withheld_crew_refs``),
+    so those refs get a ⏹ "withholds by design" row, never a dropped ref's ⚠.
     """
-    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs
+    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, mirror_withheld_crew_refs
 
     try:
         spec_found, rows = agent_spec_mcp_refs(_MAIN_AGENT_NAME)
+        by_design = mirror_withheld_crew_refs(_MAIN_AGENT_NAME)
     except Exception:
         # Triage must survive an unreadable spec or registry; the rows are advisory.
         return
@@ -55,10 +59,26 @@ def _doctor_unresolved_mcp_refs() -> None:
         print("  mcp tool refs: \u23f9 no default agent spec on disk yet")
         return
 
+    explained = False
     for backend, unresolved, has_mirror in rows:
         label = agents._backend_policy_label(backend)
+        withheld = [ref for ref in unresolved if ref in by_design] if has_mirror else []
+        if withheld:
+            unresolved = [ref for ref in unresolved if ref not in withheld]
+            shown = ", ".join(render._safe_display(ref) for ref in withheld)
+            print(f"  mcp tool refs: \u23f9 {label} withholds by design: {shown}")
+            if not explained:
+                # Once, not per backend: the reason is the same on every such mirror.
+                explained = True
+                render._print_wrapped(
+                    "These are Kiro Crew's own servers that act for one session. These "
+                    "backends cannot hand them the session's identity, so their "
+                    "projections leave them out rather than mount servers that would "
+                    "refuse every call; nothing needs fixing."
+                )
         if not unresolved:
-            print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
+            if not withheld:
+                print(f"  mcp tool refs: \u2705 {label} \u2014 every @server ref resolves")
             continue
         # Read off a hand-editable spec a cloned repo or an installed app can
         # author, so it can carry OSC/ANSI sequences that spoof the lines around
@@ -88,6 +108,102 @@ def _doctor_unresolved_mcp_refs() -> None:
             "anyway -- a registry-marked entry, an entry with no usable "
             "transport, or a name the spec references but never defines. Compare "
             "the agent spec's mcpServers against its tools list."
+        )
+
+
+#: Most authored agent specs :func:`_doctor_authored_agent_mcp_refs` judges. Each
+#: one costs a spec read and a projection, and triage must stay quick on a host
+#: with hundreds of agents; the rest are counted, not dropped without a word.
+_AUTHORED_AGENT_REF_CHECK_CAP = 64
+
+
+def _authored_agent_names() -> list[str]:
+    """The user-level agents a person or a tool wrote, in name order.
+
+    The agent roster's user-level rows (``agent_discovery.list_agents``, so a name
+    is the one a session selects) less the specs Kiro Crew writes itself: its
+    managed specs, the Bot service agents, and the derived copies the roster
+    already treats as internal (skill views, app launch copies, side-chat
+    read-only copies). Those are checked by the default spec's rows or derive
+    from an agent listed here.
+    """
+    from kiro_crew.agent_discovery import is_internal_agent_spec, list_agents
+    from kiro_crew.agent_files import is_mate_service_agent
+
+    return sorted(
+        {
+            info.name
+            for info in list_agents()
+            if not info.kirocrew_owned
+            and not is_mate_service_agent(info.name)
+            and not is_internal_agent_spec(info)
+        }
+    )
+
+
+def _doctor_authored_agent_mcp_refs(cfg: KiroCrewConfig) -> None:
+    """One row per authored agent with ``@server`` refs Kiro Crew's projection does
+    not deliver on the backend in use.
+
+    :func:`_doctor_unresolved_mcp_refs` asks the question for the default spec on
+    every harness; a user's own agent (hand-written, or installed by a tool such as
+    AIM) is just as able to name a server nothing it is handed defines, and its
+    sessions then run without that server's tools. Each agent is judged on the
+    SELECTED backend only, through the same ``agent_spec_mcp_refs`` seam, with Kiro
+    Crew's default servers modelled as a spawn adds them, so an agent relying on
+    ``@kirocrew-core`` is not reported where its spawn gets the server: on KAS
+    always, and on kiro-cli only while a spawn would project the skill view, the
+    one thing that carries it there. On kiro-cli the global settings file's servers are
+    counted too, for an agent that loads that file. Silent for a backend that
+    runs no spec server at all (the selected-backend projection row says so) and
+    for agents whose refs resolve.
+
+    The verdict is the default spec rows' hedged one: Kiro Crew's projection
+    delivers none of the listed servers, and the harness may still mount a
+    same-named one from its own configuration, so the row never says a server is
+    absent. Reports only and appends no issue, like the default spec's rows: a ref
+    to a server another tool installs later is the author's choice, not a broken
+    install. Agent names and refs come off hand-editable files, so both are
+    printed through ``_safe_display``.
+    """
+    from kiro_crew.agent_sdk.drivers.acp import agent_spec_mcp_refs, backend_delivers_spec_servers
+
+    try:
+        backend = cfg.agent.acp_backend
+        if not backend_delivers_spec_servers(backend):
+            return
+        names = _authored_agent_names()
+    except Exception:
+        # Triage must survive an unreadable agents directory; the rows are advisory.
+        return
+    label = agents._backend_policy_label(backend)
+    reported = False
+    for name in names[:_AUTHORED_AGENT_REF_CHECK_CAP]:
+        try:
+            _found, rows = agent_spec_mcp_refs(name, backends=(backend,))
+        except Exception:
+            continue
+        for _backend, unresolved, _has_mirror in rows:
+            if not unresolved:
+                continue
+            refs = ", ".join(render._safe_display(ref) for ref in unresolved)
+            print(
+                f"  mcp tool refs: \u26a0 agent {render._safe_display(name)} on {label}: "
+                f"Kiro Crew's projection delivers none of {refs}"
+            )
+            reported = True
+    unchecked = len(names) - _AUTHORED_AGENT_REF_CHECK_CAP
+    if unchecked > 0:
+        print(f"  mcp tool refs: \u23f9 {unchecked} more authored agent(s) not checked")
+    if reported:
+        render._print_wrapped(
+            "Each listed agent's tools list names these servers, and neither its "
+            "mcpServers nor anything Kiro Crew adds to its sessions on this backend "
+            "defines them, so Kiro Crew's projection delivers none of them. The "
+            "harness may mount a same-named server from its own configuration, so a "
+            "listed ref may still be served and this row cannot tell which. If that "
+            "agent's sessions lack those tools, define each server in the agent's "
+            "mcpServers, or remove the ref from its tools."
         )
 
 
@@ -144,12 +260,10 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
         declared = ability_for(backend)
     except Exception:
         return
-    if not declared.projection:
+    if declared.projection != "no-channel":
         return
-    kind, channel, tracking = declared.projection, declared.channel, declared.tracking
+    channel, tracking = declared.channel, declared.tracking
     label = agents._backend_policy_label(backend)
-    if kind != "no-channel":
-        return
     print(f"  mcp projection: \u23f9 {label} carries none of Kiro Crew's own tools")
     render._print_wrapped(
         "This harness advertises no transport the session MCP array can use, so "
@@ -462,9 +576,8 @@ def _doctor_mcp_share_refused(cfg: KiroCrewConfig, issues: list[str]) -> None:
     print(f"  mcp sharing: ⚠ not shared, one copy per chat: {rows}")
     render._print_wrapped(
         "Config asks to share these servers, but the gateway refused their launch "
-        "until it is approved on the dashboard. Open Customize \u2192 Connections, the "
-        "MCP Servers sub-tab, and scroll to the MCP Management section "
-        "(/capabilities?tab=mcp&view=mcp-servers), approve each one, then run "
+        "until it is approved on the dashboard. Open MCP Servers, the "
+        "Sharing view (/mcp?view=sharing), approve each one, then run "
         "`kirocrew restart` so new chats use the shared copy.",
         keep=("`kirocrew restart`",),
     )

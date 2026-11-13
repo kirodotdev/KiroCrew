@@ -32,6 +32,10 @@ silently reorder every existing result. Instead:
    ``str.count`` tests.
 2. The unchanged scoring code then runs on those candidates only, taking their
    folded text from this store instead of from the JSONL.
+3. For a needle whose candidate set is exact
+   (:meth:`SessionSearchIndex.answers_presence_exactly`), the same lookup also
+   says how many vouched-for sessions hold it, which the ranking's idf needs
+   without reading the sessions the lookup ruled out.
 
 A session the index does not vouch for is scanned exactly as before, so the
 index can be empty, partial, stale, or absent without changing one result.
@@ -740,6 +744,21 @@ class SessionSearchIndex:
                 continue
             out.append((pos, "session_fts", _or_group(spellings)))
         return out
+
+    @staticmethod
+    def answers_presence_exactly(needle: "SearchNeedle") -> bool:
+        """Whether this needle's candidate set is EXACTLY the sessions holding it.
+
+        :meth:`_lookups` only promises a superset, which is all the gate needs.
+        Counting how many sessions contain a needle needs the exact set, and two
+        lookups give more: a two-character CJK word matches its characters
+        anywhere in the document, and a digit-bounded number matches inside a
+        longer number. Every other lookup is a substring test on the same folded
+        text ``count_needle`` reads.
+        """
+        if needle.digit_bounded or not SessionSearchIndex._lookups([needle]):
+            return False
+        return not (len(needle.text) == 2 and all(map(is_cjk_char, needle.text)))
 
     @staticmethod
     def _candidates_from(

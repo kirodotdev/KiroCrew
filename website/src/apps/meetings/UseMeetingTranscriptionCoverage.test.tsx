@@ -308,6 +308,19 @@ describe('useMeetingTranscription — starting up', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(1)
   })
 
+  it('records the microphone saved in Settings, as dictation does', async () => {
+    localStorage.setItem('mc-mic-device-id', 'usb-mic')
+    try {
+      const h = await mount()
+      await startCapture(h)
+
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: { deviceId: { exact: 'usb-mic' } } })
+      expect(sockets).toHaveLength(1)
+    } finally {
+      localStorage.removeItem('mc-mic-device-id')
+    }
+  })
+
   it('collapses two starts that race inside the await window', async () => {
     const h = await mount()
     await act(async () => {

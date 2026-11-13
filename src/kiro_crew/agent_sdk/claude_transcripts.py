@@ -14,7 +14,9 @@ log is deleted. Nothing here follows a symlink: a linked ``projects``,
 
 It sits behind the agent-SDK boundary so the consumers outside it (the subagent
 prune) reach Claude's store, and Claude's provider label, without importing the
-ACP layer.
+ACP layer. :func:`claude_session_dir` spells the sibling directory for a reader:
+the subagents' transcripts Claude Code files there are what
+``acp.claude_background_calls`` reads.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import logging
 import os
 import re
 import shutil
+from pathlib import Path
 
 from kiro_crew.acp.claude_settings_sources import claude_config_dir
 from kiro_crew.acp.types import PROVIDER_LABEL_CLAUDE
@@ -56,6 +59,21 @@ def claude_project_dir_name(cwd: str) -> str | None:
         return None
     name = _PROJECT_NAME_UNSAFE_RE.sub("-", os.path.realpath(cwd))
     return name if len(name) <= _PROJECT_NAME_MAX_CHARS else None
+
+
+def claude_session_dir(session_id: str, cwd: str) -> Path | None:
+    """``<config dir>/projects/<project>/<sid>``, the directory beside a session's transcript.
+
+    ``None`` when the id is not UUID-shaped, *cwd* is empty or unspellable, or no
+    config directory resolves.
+    """
+    if not isinstance(session_id, str) or not _SESSION_ID_RE.fullmatch(session_id):
+        return None
+    project_name = claude_project_dir_name(cwd)
+    root = claude_config_dir()
+    if project_name is None or root is None:
+        return None
+    return root / "projects" / project_name / session_id
 
 
 def _reason(exc: OSError) -> str:
@@ -125,6 +143,7 @@ def delete_claude_session_files(session_id: str, cwd: str) -> bool:
 
 __all__ = [
     "claude_project_dir_name",
+    "claude_session_dir",
     "delete_claude_session_files",
     "is_claude_provider_label",
 ]

@@ -9,13 +9,18 @@ compared against is pinned by ``TestSandboxEscapeSshSelfOwnHost`` in
 
 from __future__ import annotations
 
+import json
 import re
+from unittest.mock import MagicMock, patch
 
 import pytest
 from denied_commands_security_helpers import _own_address_probe_stays_local  # noqa: F401
 from denied_commands_security_helpers import _denied_by, _rule_pattern
 
+import kiro_crew.sel as sel_mod
 from kiro_crew import security
+from kiro_crew.llm_helpers import ToolApprovalPolicy, _resolve_permission
+from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
 from kiro_crew.security import BUILTIN_DENIED_RULES
 from kiro_crew.security import argv_floor as _argv_floor
 from kiro_crew.security import compute_effective_denied, is_denied, is_safe_user_regex
@@ -410,6 +415,9 @@ class TestSandboxEscapeSshSelf:
             # into the surrounding word (``$((0x7f)).0.0.1`` -> ``127.0.0.1``).
             "ssh $((0x7f)).0.0.1 id",
             "scp /tmp/f $((0x7f)).0.0.1:/tmp/x",
+            # a carrier's quoted script that assigns the verb and then runs it is read
+            # whole, as the same script typed directly is.
+            "bash -c 'x=ssh; $x localhost'",
         ],
     )
     def test_self_targets_are_denied(self, cmd):
@@ -577,6 +585,7 @@ class TestSandboxEscapeSshSelf:
             # the NEXT simple command is not this command's ssh target.
             "scp f.txt far-host:/x; ping localhost",
             "ssh far-host; echo localhost",
+            "bash -c 'x=far-host; ssh $x id'",
         ],
     )
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
@@ -722,6 +731,104 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh localho?t id") == self._RULE
         assert _denied_by("ssh 127.0.0.? id") == self._RULE
         assert _denied_by("ssh remo?e.example.com id") is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "* *",
+            "0 * * * *",
+            "0 9 * * 1-5",
+            "*/15 * * * *",
+            "it runs on the cron schedule 0 * * * * (top of every hour).",
+            # The residual this costs: a bare glob verb and its glob host both
+            # expand in a working directory the caller filled, which already
+            # makes a lone ``*`` the whole connection.
+            "s?h local*",
+        ],
+    )
+    def test_a_glob_host_after_a_glob_verb_is_not_this_host(self, text):
+        # One filesystem expansion per connection: two wildcard words in a row
+        # are every five-field cron schedule, not ``ssh localhost``.
+        assert _denied_by(text) is None, text
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "* localhost",
+            "s?h localhost",
+            # ``0`` is the unspecified address, so a schedule whose last field is
+            # ``0`` after a ``*`` (``0 0 * * 0``) is still read as this connection.
+            "s?h 0",
+            "sudo s?h localhost id",
+            "ssh local* id",
+            "ssh *",
+            "rsync -a x *:/tmp",
+            "/usr/bin/sc? localhost:/tmp/* .",
+            # A verb glob with a directory part expands outside the working
+            # directory, so only the host needs a file the caller made.
+            "/usr/bin/s?h local*",
+            "/usr/bin/s?h -F /dev/null local* id",
+        ],
+    )
+    def test_one_glob_beside_a_literal_still_names_this_host(self, cmd):
+        assert _denied_by(cmd) == self._RULE, cmd
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "server,tool,params",
+        [
+            (
+                "kirocrew-cron",
+                "cron_add",
+                {"name": "digest", "cron_expr": "0 9 * * 1-5", "message": "Summarize my PRs"},
+            ),
+            (
+                "tracker",
+                "add_comment",
+                {"id": "t1", "comment": "It runs on the cron schedule 0 * * * * every hour."},
+            ),
+        ],
+    )
+    async def test_an_unattended_mcp_call_quoting_a_cron_schedule_is_approved(
+        self, server, tool, params
+    ):
+        # The unattended tool gate hands every string argument of an MCP call to
+        # ``is_denied``, so a schedule in one is judged as a command line.
+        approved: list[str] = []
+        rows: list[dict] = []
+
+        class _Provider:
+            async def approve_tool(self, request_id: str) -> None:
+                approved.append(request_id)
+
+            async def reject_tool(self, request_id: str) -> None:
+                pass
+
+        event = LLMEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            title=tool,
+            request_id="r1",
+            tool_kind="other",
+            tool_input=json.dumps(params),
+            raw_tool_params=params,
+            raw_params_trusted=True,
+            shell_classified=True,
+            is_shell=False,
+            mcp_identity_trusted=True,
+            mcp_server_name=server,
+            tool_name=tool,
+        )
+        sel_stub = MagicMock()
+        sel_stub.log_tool_invocation.side_effect = lambda **kw: rows.append(kw)
+        with patch.object(sel_mod, "sel", lambda: sel_stub):
+            ok = await _resolve_permission(
+                _Provider(),  # type: ignore[arg-type]
+                event,
+                ToolApprovalPolicy.AUTO_APPROVE,
+                None,
+            )
+        assert ok is True, rows
+        assert approved == ["r1"]
 
     def test_fold_ambiguous_flag_does_not_hide_the_destination(self, monkeypatch):
         # ``-C`` (compression, valueless) folds onto value-taking

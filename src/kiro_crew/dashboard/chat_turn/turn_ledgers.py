@@ -172,6 +172,12 @@ def _queue_recovery(
         # The same holds for a BACKGROUND start a bulk Resume asked for: nobody
         # waits on its retry either, so the retry starts BACKGROUND too.
         _recovery_meta[START_BACKGROUND_META_KEY] = True
+    if turn._card_origin:
+        # A recovery is a second turn of the SAME card reply: it stays untrusted,
+        # or a retry would run the page's words with the thread's auto-approval.
+        from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+        _recovery_meta[CARD_ORIGIN_META_KEY] = True
     if payload == RecoveryPayload.ORIGINAL and isinstance(_current_replay_message, dict):
         # ORIGINAL replays must preserve the triggering row's attachment
         # lists. The provider prompt already carries the full markers, but
@@ -211,6 +217,11 @@ def _queue_recovery(
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.
     carry_regenerate_target(slot, _recovery_qid)
+    # A retry of a completion turn still reports on the same sub-agent runs, so
+    # its trace joins theirs (tracing/subagents.py).
+    from kiro_crew.tracing import subagents as trace_subagents
+
+    trace_subagents.requeue(_recovery_turn_id, _recovery_qid)
     # A recovery of a channel message is still that channel's words: it keeps
     # the channels admission judges it by. A restriction only, so it is kept
     # even on a turn whose channel-origin flag a restart removed.

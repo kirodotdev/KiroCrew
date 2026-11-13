@@ -56,6 +56,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_set_model": {"target": "chat-2", "model": "sonnet"},
     "session_reload": {"target": "chat-2"},
     "session_set_color": {"target": "chat-2", "color": "1"},
+    "session_set_note": {"target": "chat-2", "note": "The build is green."},
     "session_rename": {"target": "chat-2", "title": "Worker"},
     "session_generate_title": {"target": "chat-2"},
     "session_close": {"target": "chat-2"},
@@ -70,6 +71,7 @@ _DASHBOARD_TOOL_CALLS = {
     "session_read_message": {"target": "chat-2"},
     "session_summary": {"target": "chat-2"},
     "work_dispatch": {"title": "t", "acceptance": {}, "agent": "a", "seed": "s"},
+    "session_queue": {"target": "chat-2"},
 }
 
 

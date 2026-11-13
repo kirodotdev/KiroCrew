@@ -731,6 +731,23 @@ class TestSttTranscribe:
         assert body["error"] == "STT not available"
 
     @pytest.mark.asyncio
+    async def test_a_body_that_is_not_multipart_is_400(self) -> None:
+        req = _req()
+        req.content_type = "application/json"
+        resp = await core_mod.api_stt_transcribe(req)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "not_multipart"
+
+    @pytest.mark.asyncio
+    async def test_a_multipart_type_with_no_boundary_is_400(self) -> None:
+        req = _req()
+        req.content_type = "multipart/form-data"
+        req.multipart = AsyncMock(side_effect=ValueError("boundary missing"))
+        resp = await core_mod.api_stt_transcribe(req)
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "not_multipart"
+
+    @pytest.mark.asyncio
     async def test_missing_audio_field_is_400(self) -> None:
         resp = await core_mod.api_stt_transcribe(_multipart_req(None))
         assert resp.status == 400

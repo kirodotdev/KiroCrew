@@ -769,6 +769,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _first_message_line,
     _pending_approval_phrase,
     _RefusalCodes,
+    _render_session_queue,
     _render_session_summary,
     _resolve_folder_for_new_session,
     _run_session_adopt,
@@ -781,6 +782,7 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_generate_title,
     _run_session_handoff,
     _run_session_history_list,
+    _run_session_queue,
     _run_session_read_message,
     _run_session_release,
     _run_session_reload,
@@ -790,10 +792,12 @@ from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _run_session_send,
     _run_session_set_color,
     _run_session_set_model,
+    _run_session_set_note,
     _run_session_status,
     _run_session_stop,
     _run_session_summary,
     _run_work_dispatch,
+    _status_activity_suffix,
     _summary_time,
     _worker_capabilities_line,
 )
@@ -853,13 +857,17 @@ def _list_tools() -> list[dict[str, Any]]:
 
     Reaching this process at all means an agent spec referenced this server, so
     the assignment already happened; there is nothing left to gate here. The one
-    conditional part is the ``crew`` argument on the five session tools, which is
-    advertised only while ``work_ledger.remote_dispatch`` is on.
+    conditional parts are the ``crew`` argument on the five session tools, which is
+    advertised only while ``work_ledger.remote_dispatch`` is on, and ``backend`` on
+    ``session_create`` / ``work_dispatch``, only while the ``session_harness``
+    feature preview is on.
     """
     from kiro_crew.mcp_session_crew import with_crew_schema
     from kiro_crew.remote_dispatch import remote_dispatch_enabled
+    from kiro_crew.session_harness_preview import session_harness_enabled, with_backend_schema
 
-    return with_crew_schema(TABLE.list(), remote_dispatch_enabled())
+    tools = with_crew_schema(TABLE.list(), remote_dispatch_enabled())
+    return with_backend_schema(tools, session_harness_enabled())
 
 
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:

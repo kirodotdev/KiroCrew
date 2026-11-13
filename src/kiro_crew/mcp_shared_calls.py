@@ -135,6 +135,17 @@ class DeferredTool:
         """Best-effort hook when the call is cancelled before it settled."""
         return None
 
+    def progress_phase(self) -> str:
+        """What the call is doing now, in a word, for its MCP progress heartbeat.
+
+        Read on the dispatch thread every :data:`PROGRESS_HEARTBEAT_SECS` while the
+        call is parked and progressing. The default is the tool's own ``phase``
+        attribute when it keeps one, else ``"running"``; a tool overrides it when
+        it has a better word (``"waiting_for_answer"``).
+        """
+        phase = getattr(self, "phase", "")
+        return phase if isinstance(phase, str) and phase else "running"
+
     def abandon(self) -> str | None:
         """Called instead of :meth:`cancel` when the loop must answer this
         call without ever stepping it again: the parked table is full, the
@@ -217,6 +228,9 @@ class _MappedDeferred(DeferredTool):
     def cancel(self) -> None:
         self._inner.cancel()
 
+    def progress_phase(self) -> str:
+        return self._inner.progress_phase()
+
     def abandon(self) -> str | None:
         text = self._inner.abandon()
         return None if text is None else self._fn(text)
@@ -235,15 +249,23 @@ class _MappedDeferred(DeferredTool):
 #: late enough for a healthy call to cross the slow-request threshold.
 INFLIGHT_REPORT_SECS = 30.0
 
+#: How often a parked call that asked for progress (its ``tools/call`` carried a
+#: ``_meta.progressToken``) gets an MCP ``notifications/progress`` naming its
+#: current phase. A long tool's heartbeat: well inside every per-call silence
+#: bound a client keeps (the session handle's shortest is 5 min), so a call that
+#: is only waiting never reads as one that was lost.
+PROGRESS_HEARTBEAT_SECS = 30.0
+
 #: A deferred call whose current step has run longer than this is NOT reported
 #: as progressing: a step is an HTTP round-trip, so one that holds a pool
 #: thread for a minute is the stall the report exists to expose.
 DEFERRED_STEP_STUCK_SECS = 60.0
 
 #: Threads the loop runs deferred steps on. A ``wait`` step is a millisecond
-#: keepalive and a ``spawn_sub_agents`` step one poll pass, but an
-#: ``ask_question`` step holds the server's fixed ``ASK_WAIT_SLICE_SECS``
-#: long-poll and a parent's resume probe is held server-side up to 8s, so the pool is sized
+#: keepalive, but an ``ask_question`` step holds the server's fixed
+#: ``ASK_WAIT_SLICE_SECS`` long-poll, a parent's resume probe is held server-side
+#: up to 8s and a ``spawn_sub_agents`` pass waits on its children for up to 2s (in
+#: at most half of these threads at once), so the pool is sized
 #: for a few of those in flight at once without starving the quick steps. The
 #: bound exists so a gateway that stops answering cannot grow threads without limit.
 DEFERRED_STEP_WORKERS = 8
@@ -331,7 +353,11 @@ class _DeferredEntry:
     queue wait never reads as a stuck step, while a step that never gets a
     thread stops being vouched for. ``cancelled`` marks a call whose cancel
     arrived mid-step: its step's result is dropped when the step returns, since
-    a cancelled request gets no response.
+    a cancelled request gets no response. ``tool_call_id`` is the harness call
+    the request was approved under, installed for each step as it was for the
+    worker; ``progress_token`` is the request's own ``_meta.progressToken``
+    (None when it sent none), and ``progress_sent`` / ``next_progress`` pace the
+    progress heartbeat (:data:`PROGRESS_HEARTBEAT_SECS`).
     """
 
     __slots__ = (
@@ -344,6 +370,10 @@ class _DeferredEntry:
         "step_queued",
         "step_started",
         "cancelled",
+        "tool_call_id",
+        "progress_token",
+        "progress_sent",
+        "next_progress",
     )
 
     def __init__(
@@ -353,6 +383,9 @@ class _DeferredEntry:
         caller_ctx: "CallerContext | None",
         tenant_nonce: str,
         deferred: DeferredTool,
+        *,
+        tool_call_id: str = "",
+        progress_token: Any = None,
     ) -> None:
         self.req_id = req_id
         self.tool_name = tool_name
@@ -363,6 +396,10 @@ class _DeferredEntry:
         self.step_queued = 0.0
         self.step_started = 0.0
         self.cancelled = False
+        self.tool_call_id = tool_call_id
+        self.progress_token = progress_token
+        self.progress_sent = 0
+        self.next_progress = time.monotonic() + PROGRESS_HEARTBEAT_SECS
 
     @property
     def session_key(self) -> str:
@@ -378,6 +415,54 @@ class _DeferredEntry:
             return True
         since = self.step_started if self.step_started else self.step_queued
         return (now - since) < DEFERRED_STEP_STUCK_SECS
+
+
+#: The MCP progress notification a parked call's heartbeat is sent as.
+PROGRESS_NOTIFICATION = "notifications/progress"
+#: Longest phase word a progress heartbeat carries.
+PROGRESS_PHASE_MAX_CHARS = 64
+
+
+def request_progress_token(params: dict[str, Any]) -> Any:
+    """A ``tools/call`` request's own ``_meta.progressToken``, or None.
+
+    MCP lets a progress notification name only a token its request carried, a
+    string or an integer; anything else is no token, and the call then gets no
+    progress heartbeat.
+    """
+    meta = params.get("_meta")
+    token = meta.get("progressToken") if isinstance(meta, dict) else None
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return None
+    return token
+
+
+def progress_heartbeat(entry: _DeferredEntry, now: float) -> dict[str, Any] | None:
+    """The ``notifications/progress`` params *entry* is due at *now*, or None.
+
+    Every :data:`PROGRESS_HEARTBEAT_SECS` a parked call that asked for progress
+    gets one: its own token, a count that only grows, and its current phase as
+    the message. A long tool's heartbeat, so a client that times calls by their
+    silence (the session handle's per-call timer, an SDK that resets its timer
+    on progress) does not read a call that is only waiting as one that was lost.
+    A call whose step is stuck (:meth:`_DeferredEntry.progressing`) or whose
+    cancel landed is not vouched for, and skips that beat.
+    """
+    if entry.progress_token is None or now < entry.next_progress:
+        return None
+    entry.next_progress = now + PROGRESS_HEARTBEAT_SECS
+    if entry.cancelled or not entry.progressing(now):
+        return None
+    entry.progress_sent += 1
+    try:
+        phase = entry.deferred.progress_phase()
+    except Exception:  # noqa: BLE001 - a phase is a label, never the call's fate
+        phase = "running"
+    return {
+        "progressToken": entry.progress_token,
+        "progress": entry.progress_sent,
+        "message": str(phase)[:PROGRESS_PHASE_MAX_CHARS],
+    }
 
 
 def _declares_inflight_capability(init_params: dict[str, Any]) -> bool:
@@ -534,6 +619,9 @@ class _AuditedDeferred(DeferredTool):
 
     def cancel(self) -> None:
         self._inner.cancel()
+
+    def progress_phase(self) -> str:
+        return self._inner.progress_phase()
 
     def abandon(self) -> str | None:
         return self._inner.abandon()

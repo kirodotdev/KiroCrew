@@ -8,7 +8,6 @@ alias, and ``announce_alias``.
 from __future__ import annotations
 
 import errno
-import gc
 import json
 import os
 import stat
@@ -24,6 +23,7 @@ from native_skill_projection_helpers import (
     _hold_the_prune_clock,
     _legacy_alias,
     _metadata_file,
+    _wait_for_dropped_projection_ends,
 )
 
 from kiro_crew.acp import skill_projection as projection
@@ -372,7 +372,7 @@ def test_deeply_nested_ownership_sidecar_reads_as_unowned_in_the_prune(
     alias_path = _alias_file(agents, first)
     metadata_path = _metadata_file(agents, first)
     del first
-    gc.collect()
+    _wait_for_dropped_projection_ends()
 
     metadata_path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
     alias_raw = alias_path.read_bytes()

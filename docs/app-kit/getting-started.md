@@ -187,7 +187,7 @@ and install from a local path. The enabled app then appears in the sidebar.
 During development:
 
 1. Edit `ui/src/App.tsx`.
-2. Run `cd ui && npm run build`.
+2. Run `npm run build` in `ui/`.
 3. Use the installed app's **Update** action in the authenticated App Store UI.
 4. Refresh the dashboard.
 
@@ -341,7 +341,8 @@ its message is used; the SDK does not select another session on failure.
 `memoryMode` (`'persistent'`, `'incognito'` or `'temporary'`) and
 `sessionFolder: false` shape a new session and are ignored with `slotKey`.
 Either one opens a new draft session, like `autoSend: false`, so the message is
-staged for the user to send.
+staged for the user to send. If the user leaves that draft session without having
+typed, clicked or changed anything in it, the host discards it.
 
 To tell an older host from one with these seams, read `APP_SDK_LEVEL` through a
 namespace import (`import * as sdk from '@kirocrew/app-sdk'`; an older host has

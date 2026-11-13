@@ -536,7 +536,9 @@ Then **claim atomically** — the lock label and the assignee in ONE call, never
 two. The forge is the cross-operator lock and your ledger is only a cache of
 it; a claim written as two calls is a window another operator dispatches into.
 Only after the claim lands: `session_create` (titled `{id}: {item}`), seed it with the work-order brief, record
-`{state: dispatched, session, ts}` in the ledger.
+`{state: dispatched, session, ts}` in the ledger. The seed is a `session_send`
+when your prompt carries this line: "`session_create`'s `message` is refused
+for this agent (`message_needs_send_approval`): create, then `session_send`."
 
 **The claim is only valid while a worker holds it.** If ANY post-claim step
 fails — session create refused, create rate limit hit, seed rejected, trust grant
@@ -1465,9 +1467,9 @@ same read, expects it to fail, and declines to guess an owner when it does.
 
 What the pytest rule flags is **a run whose worker pool bypasses the budget**:
 an explicit numeric `-n` of two or more (`-n 4`, `-n=4`, `-n4`, `-n 32`,
-`--numprocesses 2`), because `xdist_budget.py`'s hook only ever sizes `auto`, so
-a number is a count the host's memory and the other runs on it are never
-consulted about. `-n auto`, `-n logical` and a bare `pytest` are quiet: the
+`--numprocesses 2`), because `xdist_budget.py`'s memory hook only ever sizes
+`auto`: a number still claims the host's shared slots, but the host's live free
+memory is never consulted about it. `-n auto`, `-n logical` and a bare `pytest` are quiet: the
 bare form inherits the project's `addopts`, which supply `-n auto`, so its pool
 is budgeted by the same hook. `-n0` and `-n 1` are quiet too, as single-process
 runs with xdist inactive. Where `-n` is given twice the last one wins, as pytest

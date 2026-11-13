@@ -1014,6 +1014,7 @@ def _preview_body(plan: ExportPlan) -> dict[str, Any]:
         "filename": bundle_filename(plan.name),
         "description": plan.manifest.get("description", ""),
         "model": plan.manifest.get("modelHint", ""),
+        "reasoning_effort": plan.manifest.get("reasoningEffortHint", ""),
         "dashboard": plan.manifest.get("dashboardTemplate", ""),
         "avatar": avatar_kind,
         "avatar_digest": hashlib.sha256(avatar_bytes).hexdigest() if avatar_bytes else "",

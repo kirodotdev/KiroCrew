@@ -25,7 +25,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.browser_harness.budgets import TAKEOVER_IDLE_S
+from kiro_crew.browser_harness.budgets import HOLD_TIMEOUT_S, TAKEOVER_IDLE_S
 from kiro_crew.browser_harness.screencast import (
     LiveConfig,
     LiveStream,
@@ -177,6 +177,18 @@ class LiveSession:
     #: and at the turn's start and end, so a note goes to the agent only while an
     #: op is there to take it.
     parked: bool = False
+    #: When the parked op's hold ends (``HOLD_TIMEOUT_S`` after :meth:`LiveHub.park`;
+    #: ``0.0`` at a turn's start). The hub
+    #: owns this end: past it a hand-back goes to chat and the op's poll is told the
+    #: hold is over (:meth:`LiveHub.hold_over`), so the two never disagree.
+    parked_until: float = 0.0
+    #: The hand-back came while the op was still parked: its poll resumes the op.
+    park_resumed: bool = False
+    #: A supervisor state (:meth:`LiveHub.set_state`) reported while the person held
+    #: the browser, or ``""``. The card stays ``in_control`` until the hand-back,
+    #: which publishes this instead of ``live``: only a lock release leaves
+    #: ``in_control``.
+    queued_state: str = ""
     #: The hand-back choices the agent's parked op offered, or ``[]``: the card then
     #: shows its own defaults (:meth:`LiveHub.set_handback_options`).
     handback_options: list[str] = field(default_factory=list)
@@ -514,7 +526,11 @@ class LiveHub:
         sess.loop = None
         sess.handback = None
         sess.parked = False
+        sess.parked_until = 0.0
+        sess.park_resumed = False
         sess.handback_options = []
+        # A state queued for the hand-back belongs to the turn that reported it.
+        sess.queued_state = ""
         sess.started_at = self._clock()
         sess.ended_at = 0.0
         sess.started_ms = int(time.time() * 1000)
@@ -582,6 +598,7 @@ class LiveHub:
         sess.released.set()
         sess.ended_at = self._clock()
         sess.ended_ms = int(time.time() * 1000)
+        sess.queued_state = ""
         sess.state = STATE_DONE
         stream, sess.stream = sess.stream, None
         if stream is not None:
@@ -858,7 +875,11 @@ class LiveHub:
         sess = self._session(session_key)
         if state == STATE_IN_CONTROL and not sess.lock.held():
             state = STATE_LIVE
-        sess.state = state
+        if sess.lock.held() and state != STATE_IN_CONTROL:
+            # The person holds the browser: the state waits for the hand-back.
+            sess.queued_state = state
+        else:
+            sess.state = state
         self._update_page(sess, url=url, title=title, browser=browser, headless=headless)
         self._emit(sess)
 
@@ -936,6 +957,7 @@ class LiveHub:
         if sess.lock.held():
             await stream.set_takeover(True)
         sess.rung = stream.rung
+        sess.queued_state = ""
         sess.state = STATE_IN_CONTROL if sess.lock.held() else STATE_LIVE
         self._emit(sess)
         return stream
@@ -1007,6 +1029,11 @@ class LiveHub:
             raise LookupError("turn_over")
         if not sess.lock.claim(USER):
             return False
+        if sess.park_resumed:
+            # Taken back before the parked op's poll saw the hand-back: that op waits
+            # again, on its first hold's end, and is not resumed by the earlier one.
+            sess.parked = True
+            sess.park_resumed = False
         sess.claim_turn = sess.turn_id
         sess.seen_at = self._clock()
         sess.released.clear()
@@ -1018,6 +1045,9 @@ class LiveHub:
             pass
         if not sess.lock.held():
             return True
+        if sess.state not in ("", STATE_LIVE, STATE_IN_CONTROL):
+            # Kept for the hand-back, as a state reported during the takeover is.
+            sess.queued_state = sess.state
         sess.state = STATE_IN_CONTROL
         if sess.stream is not None:
             await sess.stream.set_takeover(True)
@@ -1030,7 +1060,8 @@ class LiveHub:
 
         A *note* or *choice* goes to the agent's op parked on this takeover
         (:meth:`park`), whose hand-back poll takes it: ``"agent"``. With no op
-        parked (the turn ended, or the agent is between browser ops and may end
+        parked (the turn ended, the parked op's hold ran out, or the agent is
+        between browser ops and may end
         its turn without another), the card sends it as the person's next chat
         message instead -- queued behind a running turn like anything typed -- so
         it is never held for an op that may not come: ``"chat"``. Nothing said:
@@ -1058,7 +1089,9 @@ class LiveHub:
 
             await self._release_input(sess, held, stream, lambda: self._fold(sess), _quiet)
             return DELIVERED_CHAT if said else ""
-        waiting, sess.parked = sess.parked, False
+        waiting = sess.parked and self._clock() < sess.parked_until
+        sess.parked = False
+        sess.park_resumed = sess.park_resumed or waiting
         if said and waiting and not sess.turn_over and sess.handback is None:
             sess.handback = {"choice": choice, "note": note}
             delivered = DELIVERED_AGENT
@@ -1079,8 +1112,9 @@ class LiveHub:
             _open()
         if sess.stream is not None:
             await sess.stream.set_takeover(False)
+        queued, sess.queued_state = sess.queued_state, ""
         if sess.state == STATE_IN_CONTROL:
-            sess.state = STATE_LIVE
+            sess.state = queued or STATE_LIVE
         if was_held:
             await self._emit_now(sess)
         return delivered
@@ -1090,6 +1124,36 @@ class LiveHub:
         sess = self._sessions.get(session_key)
         if sess is not None and sess.lock.held():
             sess.parked = True
+            sess.park_resumed = False
+            # Every park is a hold of its own, a re-park after a hand-back too: the
+            # shim restarts its own deadline when the op it re-posts is held again.
+            sess.parked_until = self._clock() + HOLD_TIMEOUT_S
+
+    def hold_over(self, session_key: str) -> bool:
+        """The parked op's hold ended before the person handed back to it.
+
+        Its poll then stops the op instead of resuming it: a hand-back after the end
+        went to chat (:meth:`release`), so resuming would run the op behind words
+        the agent never sees.
+        """
+        sess = self._sessions.get(session_key)
+        return (
+            sess is not None
+            and sess.parked_until > 0.0
+            and not sess.park_resumed
+            and self._clock() >= sess.parked_until
+        )
+
+    def handback_seen(self, session_key: str) -> None:
+        """A parked op's poll saw the hand-back: a later claim has nothing to re-park.
+
+        The hold's end stays as it is: another call parked in the same session may
+        still be polling, and past the end it must be told ``hold_over`` too. The
+        next :meth:`park` or turn sets a fresh one.
+        """
+        sess = self._sessions.get(session_key)
+        if sess is not None:
+            sess.park_resumed = False
 
     def take_handback(self, session_key: str) -> dict[str, str] | None:
         """What the person said at the hand-back, once: the agent's op takes it."""

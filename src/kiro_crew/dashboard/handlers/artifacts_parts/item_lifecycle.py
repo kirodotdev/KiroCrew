@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.artifacts_parts.record_serialization import _s
 from kiro_crew.dashboard.handlers.artifacts_parts.route_plumbing import (
     _audit,
     _err,
+    _is_agent_call,
     _json_response,
     _non_owner_refusal,
     _notify_artifact_update,
@@ -472,8 +473,7 @@ async def api_artifact_record_event(request: web.Request) -> web.Response:
             "use POST /api/artifacts (create), PATCH /api/artifacts/{slug} "
             "(update / iterate / revert) for content-mutating events"
         )
-    is_mcp = request.headers.get("X-Internal-Secret") is not None
-    actor = "agent" if is_mcp else "user"
+    actor = "agent" if _is_agent_call(request) else "user"
     session_id_hdr = request.headers.get("X-Session-Key")
     if session_id_hdr == "dashboard:ui":
         session_id_hdr = None
@@ -672,13 +672,14 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
         # Blocking store read/write (meta.json + up to 25 MiB current.html) —
         # offload off the event loop.
         await _run_off_loop(lambda: store.get(slug))
-    except ArtifactNotFoundError as exc:
+        await _run_off_loop(lambda: store.relocate(slug, source_path))
+        # Reload the full artifact (with content from the new source_path) so the
+        # response carries the live file bytes rather than content: null.
+        art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactNotFoundError as exc:  # also a delete racing the relocate
         return _err(str(exc), status=404)
-
-    await _run_off_loop(lambda: store.relocate(slug, source_path))
-    # Reload the full artifact (with content from the new source_path) so the
-    # response carries the live file bytes rather than content: null.
-    art = await _run_off_loop(lambda: store.get(slug))
+    except ArtifactValidationError as exc:  # a malformed slug, or a refused relocate
+        return _err(str(exc))
 
     _audit(
         tool="artifact_relocate",

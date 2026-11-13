@@ -135,7 +135,9 @@ class DummyPublishProvider(PublishProvider):
             concurrency_token=str(res.get("sha256") or expected_token),
         )
 
-    async def update_sharing(self, *, external_id, visibility, shared_with) -> None:
+    async def update_sharing(
+        self, *, external_id, visibility, shared_with
+    ) -> tuple[str, str] | None:
         self.calls.append(
             (
                 "update_sharing",
@@ -144,6 +146,9 @@ class DummyPublishProvider(PublishProvider):
         )
         if self.update_sharing_response.get("error"):
             raise PublishError(str(self.update_sharing_response["error"]))
+        notice = str(self.update_sharing_response.get("notice") or "")
+        code = str(self.update_sharing_response.get("notice_code") or "")
+        return (notice, code) if notice else None
 
     async def unpublish(self, *, external_id) -> None:
         self.calls.append(("delete", {"artifact_id": external_id}))

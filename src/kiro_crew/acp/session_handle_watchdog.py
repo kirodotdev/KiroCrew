@@ -39,9 +39,11 @@ from kiro_crew.acp.liveness import (
     VERDICT_UNKNOWN,
     VERDICT_WORKING,
     LivenessOracle,
+    ToolCallState,
     _consume_future_exception,
     consult_offloaded,
 )
+from kiro_crew.acp.tool_silence import EVIDENCE_SILENCE_TIMER
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     PROGRESS_SOURCE_PROCESS_EVIDENCE,
@@ -83,6 +85,13 @@ class WatchdogSettings:
     tool_stall_hard_cap_secs: float = 7200.0
     model_silent_probe_secs: float = 1800.0
     remote_flat_probe_secs: float = 0.0
+    # Per-call silence bounds (``acp.tool_silence``): how long one non-shell call
+    # may go without a frame attributable to it before it is cancelled and the
+    # model told it timed out. 0 turns a class off.
+    builtin_tool_silence_secs: float = 300.0
+    mcp_network_silence_secs: float = 300.0
+    mcp_stdio_silence_secs: float = 1800.0
+    subagent_silence_secs: float = 600.0
     wellness_sample_secs: float = 3.0
     # Whether a per-agent watchdog_tool_stall_* override was applied to this
     # snapshot. Telemetry-only (the kirocrew.watchdog.action attr): a BOOLEAN,
@@ -119,6 +128,10 @@ _TURN_BOUNDED_WINDOWS = (
     "tool_stall_hard_cap_secs",
     "model_silent_probe_secs",
     "remote_flat_probe_secs",
+    "builtin_tool_silence_secs",
+    "mcp_network_silence_secs",
+    "mcp_stdio_silence_secs",
+    "subagent_silence_secs",
 )
 
 
@@ -265,13 +278,17 @@ def _watchdog_evidence_class(evidence: str) -> str:
     could have started still running), ``shell`` (other shell-child evidence),
     ``remote_flat`` (opaque MCP tool, flat subtree, the tool's own MCP
     server holding an established TCP connection — a tool blocked on its own
-    remote call), ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
+    remote call), ``silence`` (a per-call silence timer ran out: no frame for the
+    call within its class's bound, ``acp.tool_silence``), ``wait`` (the
+    declared-duration wait tool), ``platform_limited`` (the
     oracle had no platform evidence to sharpen the verdict — a live-but-flat
     shell child on macOS, any tree probe on Windows), ``degraded`` (everything
     else: sampling baseline, unreadable /proc, no pid, oracle error — the
     oracle could not attest either way).
     """
     e = evidence or ""
+    if e.startswith(EVIDENCE_SILENCE_TIMER):
+        return "silence"
     if e.startswith(EVIDENCE_ESTABLISHED_FLAT):
         return "established_flat"
     if e.startswith(EVIDENCE_SHELL_CHILD_ABSENT):
@@ -569,8 +586,9 @@ def _emit_watchdog_metric(
     shell_child_absent and a prompt-shaped command's platform_limited to the
     ordinary silence window, remote_flat to the opt-in remote-call budget),
     "extended" (model-wait established_flat extends the 600s stale window to the
-    model-silent probe window for a non-streamed server-side think), or
-    "working_cap" (a WORKING reading ran past the hard cap).
+    model-silent probe window for a non-streamed server-side think),
+    "working_cap" (a WORKING reading ran past the hard cap), or "silence" (a
+    non-shell call's own silence timer ran out, ``acp.tool_silence``).
     ``agent_override`` is the per-agent-override BOOLEAN from the settings
     snapshot — deliberately NOT the agent name (per-agent joins happen via
     the always-on token row store, not OTel attrs). Failures never reach
@@ -622,6 +640,7 @@ async def _end_stalled_tool(
     idle: float,
     *,
     status: StructuredStatus | None = None,
+    stalled: ToolCallState | None = None,
 ) -> AsyncIterator[AcpEvent]:
     """Cancel this session, clean its matched shell tree, and end the turn.
 
@@ -632,9 +651,11 @@ async def _end_stalled_tool(
     terminal event carries the cleanup count with the tool title / redacted
     command / evidence so recovery can say whether the old command is still
     running. ``status`` is the typed ``waiting_input`` classification when the
-    stall was one (RFC §14.6).
+    stall was one (RFC §14.6). ``stalled`` is the call that ran out when it is
+    not the judged one (a per-call silence timer names its own call); the event
+    then names it, and a shell tree is cleaned only when that call is a shell.
     """
-    tool = self._inflight_tool
+    tool = stalled if stalled is not None else self._inflight_tool
     logger.warning(
         "Tool stall on session %s (idle %.0fs, verdict=%s: %s) — cancelling "
         "session (runtime kept alive for co-tenants)",

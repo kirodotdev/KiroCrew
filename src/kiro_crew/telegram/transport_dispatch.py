@@ -548,18 +548,6 @@ class TelegramDispatcher:
         )
         reply_thread = self._route_thread(route)
         routing_id = self._session_resume.expectation_id(chat_id, reply_thread)
-        self._routing_checks[routing_id] = self._routing_checks.get(routing_id, 0) + 1
-        try:
-            permitted = await channel_inbound_permitted("telegram")
-        finally:
-            remaining = self._routing_checks[routing_id] - 1
-            if remaining:
-                self._routing_checks[routing_id] = remaining
-            else:
-                self._routing_checks.pop(routing_id)
-        if not permitted:
-            logger.info("telegram inbound dropped: denied by channels governance policy")
-            return
         native_session_key = self._session_key(route)
 
         async def _resolve_refused_route() -> RoutingDecision:
@@ -600,20 +588,6 @@ class TelegramDispatcher:
             restricted=_refused_turn_restricted,
         ):
             return
-        # Counted here, matching where Slack counts it: an inbound message the
-        # governance gate refused never happened as far as the operator's own
-        # traffic figures go, but everything past this point did.
-        Stats().inc_message_received()
-        _activation = self._activation_outcome(msg)
-        if _activation is not None:
-            sel().log_api_access(
-                caller=str(msg.user_id) or "unknown",
-                operation="telegram.inbound",
-                outcome=_activation,
-                source="telegram",
-                resources=f"chat={msg.conversation_id}",
-            )
-            return
         text = msg.text
 
         # Per-message mid-turn override: "/queue …" / "/steer …" let the user
@@ -641,6 +615,54 @@ class TelegramDispatcher:
             if interpret_as_command and override_mode is None
             else None
         )
+        # Inbound channels-governance gate (off-loop), rechecked per message. Only
+        # a message this dispatcher acts on as /stop claims the pure-cancel
+        # exemption, judged past this bot's @username exactly as ``parse_command``
+        # judged it, so a halt stays reachable on a denied channel. Imported here,
+        # like the bridged-reply consumer below, so the facade's pinned name
+        # surface does not grow.
+        from kiro_crew.messaging.dispatch import inbound_permitted
+        from kiro_crew.telegram.commands import _strip_bot_mention
+
+        stop_text = _strip_bot_mention(text.strip(), self.bot_username) if cmd == "stop" else ""
+        self._routing_checks[routing_id] = self._routing_checks.get(routing_id, 0) + 1
+        try:
+            permitted = await inbound_permitted("telegram", text=stop_text)
+        finally:
+            remaining = self._routing_checks[routing_id] - 1
+            if remaining:
+                self._routing_checks[routing_id] = remaining
+            else:
+                self._routing_checks.pop(routing_id)
+        if not permitted:
+            return
+        # A reply answering a bridged approval note is decided here and starts no
+        # turn; a re-entered drain was checked already, and a stop is never an
+        # answer, so the exemption above reaches only the stop.
+        from kiro_crew.telegram.dispatch.bridge_reply import consume_bridged_reply
+
+        if (
+            interpret_commands
+            and cmd != "stop"
+            and await consume_bridged_reply(
+                self.dashboard_state, msg, lambda note: self._notify(chat_id, note)
+            )
+        ):
+            return
+        # Counted here, matching where Slack counts it: an inbound message the
+        # governance gate refused never happened as far as the operator's own
+        # traffic figures go, but everything past this point did.
+        Stats().inc_message_received()
+        _activation = self._activation_outcome(msg)
+        if _activation is not None:
+            sel().log_api_access(
+                caller=str(msg.user_id) or "unknown",
+                operation="telegram.inbound",
+                outcome=_activation,
+                source="telegram",
+                resources=f"chat={msg.conversation_id}",
+            )
+            return
         decision = RoutingDecision()
         # A HOST-scoped listing is not conversation work: `/spawn list` and
         # `/task status` report on the whole box, so routing them through a resumed

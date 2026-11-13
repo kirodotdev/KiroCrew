@@ -26,6 +26,7 @@ from kiro_crew import _facade_mirror, mcp_quarantine, platform_compat
 from kiro_crew.env import denied_spec_env_keys, emit_env, spec_env_path
 from kiro_crew.mcp_cleanup import mcp_entry_is_muted
 from kiro_crew.mcp_discovery_config import (
+    _declared_type,
     _load_agent_config,
     _load_mcp_json,
     _load_mcp_json_by_source,
@@ -36,6 +37,7 @@ from kiro_crew.mcp_discovery_config import (
 from kiro_crew.mcp_discovery_probe import _drop_temp_refusals, probe_server
 from kiro_crew.mcp_discovery_probe_state import _prune_unresolvable, _sanitize_probe_error
 from kiro_crew.mcp_discovery_server_info import _CC_SIDECAR_SURFACE, SCOPE_KIROCREW, McpServerInfo
+from kiro_crew.mcp_oauth_projection import oauth_withheld
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.user_json import has_json_comments, loads_user_json
 
@@ -117,7 +119,24 @@ def _spawn_fingerprint(server: McpServerInfo) -> tuple[str, ...] | None:
         args = tuple(str(a) for a in raw_args)
     except TypeError:
         args = (repr(raw_args),)
-    return (server.command, *args)
+    return (_launcher_key(server.command), *args)
+
+
+def _launcher_key(command: str) -> str:
+    """*command* as the program Windows starts, so its spellings share one key.
+
+    Windows ignores case and the ``PATHEXT`` suffix, and a bare name resolves to
+    a file on ``PATH``, so ``npx``, ``npx.cmd`` and ``C:\\nodejs\\NPX.CMD`` are
+    one launcher there (see :func:`_basenames_match`). The key keeps only the
+    folded basename. Two different files that share it are only probed one
+    after another, which is the cost this key exists to pay. POSIX keeps the
+    command as written: case and extension are part of a name there.
+    """
+    if not platform_compat.IS_WINDOWS:
+        return command
+    name = _basename_any(command).casefold()
+    stem, ext = ntpath.splitext(name)
+    return stem if ext and ext in _win_exec_suffixes() else name
 
 
 def _timed_out_locally(server: McpServerInfo) -> bool:
@@ -528,9 +547,11 @@ def discover_servers_to_sync() -> list[McpServerInfo]:
             args=spec.get("args"),
             env=spec.get("env") or {},
             url=spec.get("url", ""),
+            declared_type=_declared_type(spec),
             headers=spec.get("headers") or {},
             scopes=_spec_scopes(spec),
             client_id=_spec_client_id(spec),
+            oauth_withheld=oauth_withheld(spec.get("oauth")),
             source="discovered",
             source_owned=_declared_source_owned(spec),
         )
@@ -826,6 +847,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_config import (  # noqa: F401
         _MALFORMED_TRANSPORT_MAX,
         _display_transport,
+        _encoding_reason,
         _mcp_names_from_file,
         _server_from_spec,
         configured_mcp_aliases,
@@ -847,10 +869,24 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.mcp_discovery_probe import (  # noqa: F401
         _ENV_NOT_A_MAP_ERROR,
         _MAX_BANNER_LINES,
+        _STDERR_FIRST_WAIT_SECS,
+        _STDERR_QUIET_SECS,
+        _STDERR_READ_BYTES,
+        _STDERR_READS,
+        _STDERR_SHOWN_CHARS,
+        _STDOUT_LINE_HELD_CHARS,
+        _STDOUT_TAIL_LINE_CHARS,
+        _STDOUT_TAIL_LINES,
+        _STDOUT_WITHHELD,
+        _STOPPED_AFTER_LISTING,
+        _handlers_answer,
+        _last_lines,
+        _lists_before_handlers,
         _probe_on_private_loop,
         _read_stdio_jsonrpc_response,
         _redact_temp_refusal_text,
         _served_by_gateway,
+        _stderr_text,
         _temp_refusal_records,
         secret_reference_refusal,
     )
@@ -936,6 +972,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.hooks import (  # noqa: F401
         safe_read_file,
+        safe_read_file_bytes,
     )
     from kiro_crew.json_line import (  # noqa: F401
         parse_json_object_line,
@@ -944,6 +981,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         invalid_disabled_flag,
         mcp_entry_is_registry_governed,
         warn_invalid_disabled,
+    )
+    from kiro_crew.mcp_entry import (  # noqa: F401
+        lists_before_handlers,
     )
     from kiro_crew.mcp_gateway.hashing import (  # noqa: F401
         hash_command,
@@ -987,4 +1027,5 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.user_json import (  # noqa: F401
         loads_user_jsonc,
+        wide_bom_reason,
     )

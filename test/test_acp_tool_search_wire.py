@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.acp.harness import harness_for
+from kiro_crew.acp.harness._common import MANDATORY_MCPS_ENV
 from kiro_crew.acp.runtime import AcpRuntime, AcpToolSurfaceBindingError, AcpWorkspaceBindingError
 from kiro_crew.acp.types import (
     ACP_BACKEND_CODEX,
@@ -31,6 +32,7 @@ from kiro_crew.acp.types import (
     KAS_CLIENT_CAPABILITIES,
 )
 from kiro_crew.agent_sdk.tool_search import (
+    JOB_TOOLS,
     TOOL_SEARCH_DEFAULT_MIN_PCT,
     TOOL_SEARCH_DEFAULT_MIN_TOKENS,
     ToolSearchSettings,
@@ -200,18 +202,37 @@ class TestKasNeverDefer:
         out = kas_client_meta_settings(ToolSearchSettings(False), loader_granted=False)
         assert out["toolSearch"]["neverDefer"] == []
 
-    def test_with_the_loader_no_list_is_sent(self):
-        """The spec-grants-tool_search path keeps deferring exactly as before."""
-        out = kas_client_meta_settings(
-            ToolSearchSettings(True, 5, 50_000), loader_granted=True, never_defer=["a::x"]
-        )
+    def test_with_the_loader_an_empty_list_sends_no_key(self):
+        """A loader-granting spec whose agent declares no job tools keeps
+        deferring exactly as before."""
+        out = kas_client_meta_settings(ToolSearchSettings(True, 5, 50_000), loader_granted=True)
         assert "neverDefer" not in out["toolSearch"]
+
+    def test_with_the_loader_the_callers_list_is_sent(self):
+        """The agent's job tools: on the list, sorted, with deferral still on."""
+        out = kas_client_meta_settings(
+            ToolSearchSettings(True, 5, 50_000), loader_granted=True, never_defer=["b::y", "a::x"]
+        )
+        assert out["toolSearch"] == {
+            "enabled": True,
+            "minPct": 5,
+            "minTokens": 50_000,
+            "neverDefer": ["a::x", "b::y"],
+        }
 
 
 class TestHandshakeNeverDefer:
     """The KAS ``initialize`` request built from the projected spawn spec."""
 
-    def _caps(self, monkeypatch, spec):
+    @pytest.fixture(autouse=True)
+    def _no_operator_never_defer_list(self, _floor_monkeypatch):
+        """A host that exports ``ASBX_KIRO_MANDATORY_MCPS`` would otherwise decide
+        these tests; the ones about that variable set it themselves."""
+        _floor_monkeypatch.delenv(MANDATORY_MCPS_ENV, raising=False)
+
+    def _caps(
+        self, monkeypatch, spec, *, agent=None, backend=ACP_BACKEND_KAS, enabled=True, whole=False
+    ):
         from kiro_crew.acp import kas_secret_storage, runtime_spawn_launch
 
         monkeypatch.setattr(kas_secret_storage, "persistence_enabled", lambda: False)
@@ -221,11 +242,13 @@ class TestHandshakeNeverDefer:
             {"kirocrew-core": ["memory_recall", "skill_search"]}.get,
             raising=False,
         )
-        rt = AcpRuntime(acp_backend=ACP_BACKEND_KAS)
-        rt._tool_search = ToolSearchSettings(True, 5, 50_000)
+        rt = AcpRuntime(acp_backend=backend)
+        if agent is not None:
+            rt._agent = agent
+        rt._tool_search = ToolSearchSettings(enabled, 5, 50_000)
         rt._projected_spawn_spec = lambda: spec
         caps = asyncio.run(runtime_spawn_launch._handshake_client_capabilities(rt))
-        return caps["_meta"]["kiro"]["settings"]["toolSearch"]
+        return caps if whole else caps["_meta"]["kiro"]["settings"]["toolSearch"]
 
     def test_a_spec_without_the_loader_keeps_its_mcp_tools_direct(self, monkeypatch):
         wire = self._caps(monkeypatch, {"tools": ["@kirocrew-core", "@srv/one"]})
@@ -236,9 +259,75 @@ class TestHandshakeNeverDefer:
             "srv::one",
         ]
 
-    def test_a_spec_with_the_loader_still_defers(self, monkeypatch):
-        wire = self._caps(monkeypatch, {"tools": ["tool_search", "@kirocrew-core"]})
+    def test_a_spec_with_the_loader_and_no_declared_job_tools_still_defers(self, monkeypatch):
+        """An operator's own agent, an app's agent, a crew member's template: no
+        row in the declaration, so the wire is what it was."""
+        wire = self._caps(
+            monkeypatch, {"tools": ["tool_search", "@kirocrew-core"]}, agent="my-own-agent"
+        )
         assert wire == {"enabled": True, "minPct": 5, "minTokens": 50_000}
+
+    @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_CLIENT_META_SETTINGS))
+    @pytest.mark.parametrize("agent", sorted(JOB_TOOLS))
+    def test_a_declared_agent_keeps_its_job_tools_direct(self, monkeypatch, backend, agent):
+        """Every harness that takes a never-defer list reads the one declaration:
+        the agent's job tools are on it, and nothing else the spec mounts is."""
+        spec = {"tools": ["tool_search", "@kirocrew-core", "@kirocrew-dashboard", "@kirocrew-work"]}
+        wire = self._caps(monkeypatch, spec, agent=agent, backend=backend)
+        assert wire["enabled"] is True
+        assert wire["neverDefer"] == sorted(JOB_TOOLS[agent])
+        assert "kirocrew-core::memory_recall" not in wire["neverDefer"]
+
+    def test_an_operators_spec_under_a_shipped_name_takes_that_agents_row(self, monkeypatch):
+        """The declaration is keyed by agent name. A spec an operator saved under
+        a shipped name is that agent as far as the list goes: it keeps direct the
+        row's tools its own ``tools`` mounts, and none of its other tools."""
+        own_spec = {"tools": ["tool_search", "@kirocrew-core/spawn_run", "@srv/one"]}
+        wire = self._caps(monkeypatch, own_spec, agent="kirocrew")
+        assert wire["enabled"] is True
+        assert wire["neverDefer"] == ["kirocrew-core::spawn_run"]
+
+    def test_tool_search_off_still_keeps_the_job_tools_direct(self, monkeypatch):
+        """KAS defers on ``neverDefer`` alone, so the toggle changes what
+        ``enabled`` says and nothing about which tools need a load."""
+        spec = {"tools": ["tool_search", "@kirocrew-core"]}
+        wire = self._caps(monkeypatch, spec, agent="kirocrew", enabled=False)
+        assert wire["enabled"] is False
+        assert wire["neverDefer"] == sorted(JOB_TOOLS["kirocrew"])
+
+    @pytest.mark.parametrize("value", ["", "kirocrew-core", "my-server"])
+    def test_an_operators_own_never_defer_list_is_the_whole_list(self, monkeypatch, value):
+        """``ASBX_KIRO_MANDATORY_MCPS`` in the gateway's environment, even empty,
+        is the operator deciding what stays direct: Crew adds no tool beside it."""
+        monkeypatch.setenv(MANDATORY_MCPS_ENV, value)
+        spec = {"tools": ["tool_search", "@kirocrew-core"]}
+        wire = self._caps(monkeypatch, spec, agent="kirocrew")
+        assert wire == {"enabled": True, "minPct": 5, "minTokens": 50_000}
+
+    def test_an_operators_list_does_not_take_a_loaderless_spec_s_tools_away(self, monkeypatch):
+        """Without the loader a deferred tool is unreachable, so that list is not
+        the operator's to empty."""
+        monkeypatch.setenv(MANDATORY_MCPS_ENV, "")
+        wire = self._caps(monkeypatch, {"tools": ["@srv/one"]}, agent="kirocrew")
+        assert wire["neverDefer"] == ["srv::one"]
+
+    def test_the_declaration_changes_one_key_of_the_handshake(self, monkeypatch):
+        """The list only says "do not defer". Everything that decides what a session
+        may call (the spec's ``tools``, ``excludedTools`` and grants, which travel at
+        ``session/new``, and Crew's own gate) is untouched: the same spec under an
+        agent with a row and under one without puts the same handshake on the wire,
+        but for ``neverDefer``."""
+        spec = {
+            "tools": ["tool_search", "@kirocrew-core"],
+            "excludedTools": ["@kirocrew-core/spawn_run"],
+        }
+        before = json.dumps(spec, sort_keys=True)
+        declared = self._caps(monkeypatch, spec, agent="kirocrew", whole=True)
+        undeclared = self._caps(monkeypatch, spec, agent="my-own-agent", whole=True)
+        assert json.dumps(spec, sort_keys=True) == before
+        listed = declared["_meta"]["kiro"]["settings"]["toolSearch"].pop("neverDefer")
+        assert listed == sorted(JOB_TOOLS["kirocrew"])
+        assert declared == undeclared
 
     def test_an_unreadable_spec_lists_nothing(self, monkeypatch):
         wire = self._caps(monkeypatch, None)
@@ -611,6 +700,12 @@ class TestLoaderReachabilityOnSharedProcess:
                 [{"id": "worker", "tools": ["tool_search"]}],
                 False,
                 id="a_different_agent_with_the_loader_passes",
+            ),
+            pytest.param(
+                ON,
+                [{"id": "worker", "tools": ["fs_read"]}, {"id": "helper", "tools": ["*"]}],
+                True,
+                id="a_registered_sub_agent_lends_the_session_no_loader",
             ),
             pytest.param(
                 OFF,

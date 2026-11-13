@@ -278,7 +278,12 @@ def test_the_cloud_sandbox_is_a_harness_the_runtime_installs():
 @pytest.mark.parametrize("backend", _SERVED_BACKENDS)
 @pytest.mark.parametrize("method", ["session/new", "session/load"])
 def test_every_served_host_sends_the_request_it_was_built(backend, method):
-    """The request seam is an identity on every host the backend table serves (H13)."""
+    """A request with no customAgents batch goes out as built on every served host (H13).
+
+    The one exception the seam allows is KAS naming the batch's first agent as
+    ``_meta.kiro.modeId`` on ``session/new`` (test_kas_mode_binding.py), which
+    these params do not carry.
+    """
     params = {"cwd": "/workspace/ws", "mcpServers": [{"name": "kirocrew-core"}]}
     out, agent = harness_for(backend).session_request(
         method, params, "kirocrew", agent_capabilities={}

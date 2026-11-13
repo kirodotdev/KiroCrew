@@ -39,7 +39,13 @@ import threading
 import time  # noqa: F401 - kept bound on the facade
 import unicodedata
 from collections import OrderedDict, defaultdict, deque  # noqa: F401 - kept bound
-from collections.abc import Awaitable, Callable, Collection, Iterator  # noqa: F401 - kept bound
+from collections.abc import (  # noqa: F401 - kept bound
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+)
 from collections.abc import Set as AbstractSet  # noqa: F401 - kept bound on the facade
 from contextlib import contextmanager  # noqa: F401 - kept bound on the facade
 from dataclasses import dataclass  # noqa: F401 - kept bound on the facade
@@ -68,6 +74,7 @@ from kiro_crew.context_assembly import budget as _budgets  # noqa: F401 - loaded
 from kiro_crew.context_assembly import delivery_records as _delivery_records
 from kiro_crew.context_assembly import inclusion as _inclusion  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import markers as _markers  # noqa: F401 - loaded eagerly
+from kiro_crew.context_assembly import mcp_servers as _mcp_servers  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import member as _member  # noqa: F401 - loaded eagerly
 from kiro_crew.context_assembly import member_gates as _member_gates
 from kiro_crew.context_assembly import output_contract as _output_contract  # noqa: F401
@@ -1049,7 +1056,11 @@ def ui_language_tag(cfg: "KiroCrewConfig") -> str:
 
 
 def _project_steering_delivered(
-    provider_type: str | None, native_steering: bool, project: str | None
+    provider_type: str | None,
+    native_steering: bool,
+    project: str | None,
+    *,
+    agent: str | None = None,
 ) -> bool:
     """Whether the project/global ``.kiro/steering`` trees already reach the model.
 
@@ -1060,10 +1071,13 @@ def _project_steering_delivered(
     project and global ``.kiro/steering`` trees arrive wholesale too (a
     workspace that sets ``chat.disableInheritingDefaultResources`` gets only
     the declared resources, so the folder carries the trees minus the
-    documents in the launch record); the Claude Code
-    seam receives the explicit ``[Steering resources]`` load in ``build_message`` (gated on
-    ``is_cc``); KAS reports ``native_steering`` on
-    its session provider. Every other harness -- Codex, OpenCode, Pi, Goose,
+    documents in the launch record); a harness Crew loads the spec's steering
+    for (``acp_driver.crew_loads_spec_steering``: the Claude Code seam and
+    Codex) receives the explicit ``[Steering resources]`` load in
+    ``build_message``, but only for the Kiro Crew default agent: that load
+    sends nothing for a custom *agent*, so there the folder still carries the
+    trees (``None`` is the default agent); KAS reports ``native_steering`` on
+    its session provider. Every other harness -- OpenCode, Pi, Goose,
     DeepSeek -- has NO path for those trees today, so a folder that declares one
     of them must deliver its documents itself rather than skip them as "already
     delivered" with nothing arriving in their place. A harness that is not
@@ -1073,9 +1087,14 @@ def _project_steering_delivered(
     harness. The driver is asked directly, with no admission check on
     *project*: this path also serves non-member sessions and must not raise.
     """
+    from kiro_crew.agent_files import is_kirocrew_default_agent
+
     return (
         (provider_type == PROVIDER_ACP and acp_driver.inherits_default_resources(project))
-        or is_claude_code(provider_type)
+        or (
+            acp_driver.crew_loads_spec_steering(provider_type)
+            and (not agent or is_kirocrew_default_agent(agent))
+        )
         or bool(native_steering)
     )
 
@@ -1133,6 +1152,7 @@ def build_cancelled_turn_preamble(
     *,
     user_cap: int = 2000,
     assist_cap: int = 2000,
+    newest_request: bool = False,
 ) -> str:
     """Build a preamble describing the most recent cancelled turn, if any.
 
@@ -1143,17 +1163,19 @@ def build_cancelled_turn_preamble(
     immediately before it plus any assistant text in between. Return a
     short bracketed preamble. Returns "" if nothing to inject.
 
-    Called by both dashboard and Slack callers after ``prev_turn_cancelled``
-    is observed on the session.
+    Called by the dashboard, Slack and the shared channel pipeline after
+    ``prev_turn_cancelled`` is observed on the session.
     """
     try:
         # Whole rows: ``recent()`` keeps only role and content, and the walk reads
-        # ``meta`` to step past a steer the person took back. Both callers run this
+        # ``meta`` to step past a steer the person took back. Every caller runs this
         # in a worker thread, since it reads the whole transcript.
         rows = _without_warm_task_brief_messages(conversation_log.read_messages(session_key))
     except Exception:
         return ""
-    return _replay.cancelled_turn_preamble(rows[-20:], user_cap=user_cap, assist_cap=assist_cap)
+    return _replay.cancelled_turn_preamble(
+        rows[-20:], user_cap=user_cap, assist_cap=assist_cap, newest_request=newest_request
+    )
 
 
 # ── Provider-Agnostic Session Replay ──
@@ -1533,6 +1555,14 @@ class ContextBuilder:
         self.tab_notices_for_session: (
             Callable[[str], tuple[list[str], Callable[[bool], None]] | None] | None
         ) = None
+        # Installed by the gateway: the MCP servers a session cannot use right now,
+        # by state, for the turn's `[MCP SERVERS]` block (`context_assembly.mcp_servers`),
+        # and what each session was last told of them. In memory and bounded.
+        self.mcp_states_for_session: (
+            Callable[[str], Mapping[str, tuple[str, ...]] | None] | None
+        ) = None
+        self._mcp_states_told: OrderedDict[str, dict[str, tuple[str, ...]]] = OrderedDict()
+        self._mcp_states_told_lock = threading.Lock()
         # Lessons each session has already been shown, keyed by the fixed-size
         # digest of its session key: its session-start block plus every per-message
         # block since, so `memory.inject_lessons_per_turn` skips them. In memory

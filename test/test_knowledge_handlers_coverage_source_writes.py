@@ -9,6 +9,7 @@ background agent sync task that branch starts. Shared harness pieces come from
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,10 +24,18 @@ from knowledge_handlers_coverage_helpers import (  # noqa: F401 -- the fixture i
 
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
-from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.ingestion import FileTooLargeError, IngestionPipeline
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.url_fetch import FetchedPage
 from kiro_crew.testing.wait import await_until
+
+# An ingest failure, and whether the handler logs it at ERROR: the pipeline already
+# warned about an oversized file, so that one is not logged a second time.
+_INGEST_FAILURES = [
+    (RuntimeError("boom"), True),
+    (FileTooLargeError("raise knowledge.max_ingest_file_mb in config to ingest it"), False),
+]
+_INGEST_FAILURE_IDS = ["read_error", "oversized"]
 
 # agent document
 
@@ -223,16 +232,19 @@ class TestIngestText:
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
 
     @pytest.mark.asyncio
-    async def test_ingest_failure_is_500_and_cleans_up(self, store):
+    @pytest.mark.parametrize("exc, logs_error", _INGEST_FAILURES, ids=_INGEST_FAILURE_IDS)
+    async def test_ingest_failure_is_500_and_cleans_up(self, store, caplog, exc, logs_error):
         sid = store.add_source("s", "web", "https://example.com")
-        pipeline = MagicMock(ingest_file=AsyncMock(side_effect=RuntimeError("boom")))
-        async with _client(_make_app(store, pipeline=pipeline)) as client:
-            resp = await client.post(
-                f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "hello"}
-            )
-            assert resp.status == 500
-            assert (await resp.json())["error"] == "internal server error"
+        pipeline = MagicMock(ingest_file=AsyncMock(side_effect=exc))
+        with caplog.at_level(logging.ERROR, logger=kh.logger.name):
+            async with _client(_make_app(store, pipeline=pipeline)) as client:
+                resp = await client.post(
+                    f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "hello"}
+                )
+                assert resp.status == 500
+                assert (await resp.json())["error"] == "internal server error"
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
+        assert bool([r for r in caplog.records if r.name == kh.logger.name]) is logs_error
 
     @pytest.mark.asyncio
     async def test_the_gate_is_held_from_the_lookup_through_the_ingest(self, store, monkeypatch):
@@ -408,6 +420,23 @@ class TestBackgroundAgentSync:
         row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
         assert row["sync_status"] == "synced"
         assert not Path(pipeline.ingest_file.await_args.args[0]).exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc, logs_error", _INGEST_FAILURES, ids=_INGEST_FAILURE_IDS)
+    async def test_ingest_failure_marks_source_error(
+        self, store, monkeypatch, caplog, exc, logs_error
+    ):
+        sid = store.add_source("s", "web", "https://example.com")
+        monkeypatch.setattr(
+            f"{MODULE}.fetch_page",
+            AsyncMock(return_value=FetchedPage("https://example.com", "fetched body", ".txt")),
+        )
+        pipeline = MagicMock(ingest_file=AsyncMock(side_effect=exc))
+        with caplog.at_level(logging.ERROR, logger=kh.logger.name):
+            await kh._background_url_sync(sid, "https://example.com", "S", store, pipeline)
+        row = store.db.execute("SELECT sync_status FROM sources WHERE id = ?", (sid,)).fetchone()
+        assert row["sync_status"] == "error"
+        assert bool([r for r in caplog.records if r.name == kh.logger.name]) is logs_error
 
     @pytest.mark.asyncio
     async def test_fetch_failure_marks_source_error(self, store, monkeypatch):

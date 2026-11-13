@@ -7,7 +7,8 @@ created slot writes.
 Instance fields of ``DashboardState`` this module reads and writes:
 
 Reads only: ``_ephemeral_keys``, ``_restricted_keys``, ``_slack_to_slot``, ``_slots``,
-``_slots_under_construction``, ``restoring_open_slots``, ``sessions``,
+``_slots_under_construction``, ``owed_slot_keys_known``, ``restoring_open_slot_keys``,
+``restoring_open_slots``, ``sessions``, ``slot_list_rebuilding``,
 ``unrestored_slot_keys``.
 
 A function whose first parameter is ``self`` is a ``DashboardState`` method: the
@@ -17,6 +18,7 @@ and writes the state's own fields and calls its siblings through ``self``.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
@@ -25,6 +27,8 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config.sections_defaults import DEFAULT_MAX_PER_CREATOR
+from kiro_crew.config.sections_limits import MAX_PER_CREATOR_MAX, MAX_PER_CREATOR_MIN
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
 from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -43,6 +47,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
+#: How long a send or create naming a missing slot waits for the startup restore to
+#: publish the tabs it owes. Kept well below the dashboard's send abort
+#: (``SEND_ABORT_MS`` in website/src/chat-core/transport/sendTurn.ts), so the answer
+#: reaches the client before it gives up on the request.
+OWED_KEYS_WAIT_SECONDS = 5.0
+
 
 #: The single ceiling on live slots, owned by the module that owns the slot
 #: table (see :meth:`DashboardState.live_slot_count`). Every path that allocates
@@ -53,22 +63,83 @@ logger = logging.getLogger("kiro_crew.dashboard.state")
 MAX_LIVE_SLOTS = 500
 
 
-#: The most live slots ONE creator may hold, as a sub-ceiling under
-#: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
-#: distribution, so a single automated creator working through a nudge loop can
-#: reach 500 on its own and every later create -- including the person opening a
-#: new chat tab -- gets the 409. That is the availability half of the cap: a
-#: bounded resource that one caller may exhaust entirely is not bounded from
-#: anybody else's point of view.
+#: The most live slots ONE creator may hold when ``session.max_per_creator`` is not
+#: set, as a sub-ceiling under :data:`MAX_LIVE_SLOTS`. The cap in force is
+#: :func:`max_slots_per_creator`; this is its default and its fallback. The global
+#: ceiling alone bounds the total but not the distribution, so a single automated
+#: creator working through a nudge loop can reach 500 on its own and every later
+#: create -- including the person opening a new chat tab -- gets the 409. That is
+#: the availability half of the cap: a bounded resource that one caller may exhaust
+#: entirely is not bounded from anybody else's point of view.
 #:
-#: Deliberately far above real use and far below the global ceiling: a decomposed
-#: goal runs on the order of ten concurrent sessions, so 50 never binds honest
-#: work, while 450 slots stay reachable by everyone else no matter what one
-#: caller does. Enforced in ``session_control.create_session``, which is the only
-#: entry point that creates on some OTHER caller's behalf; a person's own new tab
-#: and a fork are attributed to nobody and so are bounded by the global ceiling
-#: alone.
-MAX_SLOTS_PER_CREATOR = 50
+#: The default sits far below the global ceiling: a decomposed goal runs on the
+#: order of ten concurrent sessions, so 50 rarely binds, while 450 slots stay
+#: reachable by everyone else no matter what one caller does. An owner whose Bot
+#: runs more raises the setting, up to ``MAX_PER_CREATOR_MAX``, which still leaves
+#: :data:`CREATOR_CAP_RESERVE` slots out of any one creator's reach. Enforced by
+#: the session-control verbs that charge a caller a slot (create, fork, revive,
+#: handoff); a person's own new tab and a fork from the dashboard are attributed
+#: to nobody and so are bounded by the global ceiling alone.
+MAX_SLOTS_PER_CREATOR = DEFAULT_MAX_PER_CREATOR
+
+#: The live slots no single creator can take, whatever ``session.max_per_creator``
+#: says: the highest setting is :data:`MAX_LIVE_SLOTS` minus this.
+CREATOR_CAP_RESERVE = MAX_LIVE_SLOTS - MAX_PER_CREATOR_MAX
+
+#: The config key the owner changes the per-creator cap with, named in the refusal.
+MAX_PER_CREATOR_SETTING = "session.max_per_creator"
+
+
+def max_slots_per_creator() -> int:
+    """The per-creator cap in force: ``session.max_per_creator``, else the default.
+
+    Read on every call, from the config watcher's snapshot when one is armed and
+    through the loader's fingerprint cache otherwise, so a saved change applies to
+    the next create with no restart. The loader holds the value inside
+    ``[MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX]`` and so does this function. A
+    config that cannot be read,
+    or one whose value is not an integer, answers :data:`MAX_SLOTS_PER_CREATOR`:
+    an unreadable cap never refuses a create the default would have admitted.
+    """
+    try:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        snap = live.snapshot()
+        cap = (snap if snap is not None else KiroCrewConfig.load()).session.max_per_creator
+    except Exception:  # noqa: BLE001 -- a cap is not worth failing a create over
+        logger.warning(
+            "could not read %s; using the default of %d",
+            MAX_PER_CREATOR_SETTING,
+            MAX_SLOTS_PER_CREATOR,
+            exc_info=True,
+        )
+        return MAX_SLOTS_PER_CREATOR
+    if isinstance(cap, bool) or not isinstance(cap, int):
+        return MAX_SLOTS_PER_CREATOR
+    # The loader already holds the range. Held here too, so the reserve under the
+    # global ceiling does not depend on where a config object came from.
+    return max(MAX_PER_CREATOR_MIN, min(MAX_PER_CREATOR_MAX, cap))
+
+
+def creator_slot_cap_refusal(state: "DashboardState", creator_key: str) -> str | None:
+    """Why *creator_key* may not be charged another live slot, or ``None`` when it has room.
+
+    The one reading of the per-creator cap, so the session-control verbs that
+    charge a caller a slot (create, fork, revive, handoff) refuse at the same
+    number and with the same sentence. The sentence says
+    how many sessions the creator holds and where the owner changes the limit.
+    """
+    cap = max_slots_per_creator()
+    held = state.creator_slot_count(creator_key)
+    if held < cap:
+        return None
+    return (
+        f"per-caller slot cap reached: {creator_key!r} holds {held} live sessions and "
+        f"the limit is {cap}. Close sessions it no longer needs, or the owner can raise "
+        "the limit in Settings > Chat > Sessions > Sessions per creator "
+        f"({MAX_PER_CREATOR_SETTING}, {MAX_PER_CREATOR_MIN}-{MAX_PER_CREATOR_MAX})"
+    )
 
 
 def _is_genuine_slack_link(thread_ts: str | None, channel_id: str | None) -> bool:
@@ -391,6 +462,33 @@ def slot_exists(self: DashboardState, name: str) -> bool:
     if name in (getattr(self, "unrestored_slot_keys", None) or ()):
         return True
     return bool(getattr(self, "restoring_open_slots", False))
+
+
+async def session_still_loading(self: DashboardState, name: str) -> bool:
+    """Whether *name* is a tab the startup restore still owes and has not built.
+
+    A send or a create for it must be refused, not admitted: with no slot yet, it
+    would mint a fresh one under the saved key and lose the saved state (the agent
+    binding). Only keys in the restore's plan (``restoring_open_slot_keys``) are
+    refused. Before the restore has read its snapshot the plan is not known yet, so a
+    name with no live slot waits for it (``owed_slot_keys_known``), at most
+    ``OWED_KEYS_WAIT_SECONDS``, and is refused if the plan is still unknown then. Once
+    the plan is known, a key it does not name is admitted as before. Callers pass only
+    a NAMED key: a new chat with no name never reaches here and never waits.
+    """
+    under_construction = getattr(self, "_slots_under_construction", None) or ()
+    if name in self._slots and name not in under_construction:
+        return False
+    known = self.owed_slot_keys_known
+    if not known.is_set() and self.slot_list_rebuilding:
+        try:
+            await asyncio.wait_for(known.wait(), timeout=OWED_KEYS_WAIT_SECONDS)
+        except asyncio.TimeoutError:
+            # The plan is still unknown: the name may be a saved tab, so refuse.
+            return True
+    return name in self.restoring_open_slot_keys and (
+        name not in self._slots or name in under_construction
+    )
 
 
 def get_linked_slot(self: DashboardState, session_key: str) -> "_ChatSlot | None":

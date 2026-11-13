@@ -685,7 +685,9 @@ def test_an_uncontained_expose_leaf_is_dropped_not_honoured(monkeypatch) -> None
     # a re-exposure stays a HOST decision rather than a declared one.
     monkeypatch.setitem(gate.ADAPTER_EXPOSED_CREDENTIAL_LEAVES, enforced, ("Documents/notes.txt",))
     hidden = gate.adapter_hidden_credential_dirs(enforced)
-    assert gate.adapter_expose_files(enforced, hidden) == ()
+    assert gate.adapter_expose_files(enforced, hidden) == (
+        os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts"),
+    )
 
 
 def test_a_sibling_of_a_masked_directory_is_not_treated_as_inside_it() -> None:
@@ -722,6 +724,24 @@ def test_the_unprobed_remedy_never_asserts_the_sign_in_state() -> None:
             )
 
 
+def test_a_harness_that_signs_in_on_its_own_says_where_its_terminal_is() -> None:
+    """A dashboard-only user is told the sign-in runs on the gateway host, and where
+    the dashboard opens a terminal there."""
+    own = [
+        d
+        for d in host_auth.AGENT_AUTH_DECLARATIONS
+        if d.entitlement_source == host_auth.ENTITLEMENT_OWN_CREDENTIAL_FILE
+    ]
+    assert len(own) >= 6
+    for declaration in own:
+        for text in (
+            host_auth.sign_in_remedy(declaration.backend),
+            host_auth.signed_out_message(declaration.backend),
+        ):
+            assert "terminal on the gateway host" in text, declaration.backend
+            assert host_auth.HOST_TERMINAL_NOTE in text, declaration.backend
+
+
 def test_the_kiro_signed_out_message_tells_the_user_to_send_again() -> None:
     """The signed-out message ends at sending again, not at starting a new chat.
 
@@ -741,11 +761,14 @@ def test_the_kiro_signed_out_message_tells_the_user_to_send_again() -> None:
     kas = host_auth.signed_out_message("kas")
     assert kas != expected
     assert "kiro-cli login" not in kas
-    assert "Settings → Agent Harness → Kiro sign-in" in kas
+    assert "Settings → Agent Harness → Kiro Agent → Kiro sign-in" in kas
     assert kas.endswith("then send your message again.")
     # The standing (unprobed) remedy names the same path, in plain prose.
     remedy = host_auth.declaration_for("kas").sign_in_remedy
-    assert "Settings → Agent Harness → Kiro sign-in" in remedy and "kiro-cli login" not in remedy
+    assert (
+        "Settings → Agent Harness → Kiro Agent → Kiro sign-in" in remedy
+        and "kiro-cli login" not in remedy
+    )
     assert "start a new chat" not in remedy
 
 

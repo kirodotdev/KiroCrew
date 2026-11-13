@@ -8,7 +8,8 @@ account, and an acquire path added later cannot leave the check out. These tests
 that front door: the order, the two
 ways an acquire skips the check (its caller ran it, or an outer acquire in the same
 task did), that a task started inside an acquire still checks its own, that a
-check which fails never fails the acquire, that only the final drain skips it (an
+check which fails never fails the acquire and one that does not finish in time never
+holds it up, that only the final drain skips it (an
 update pause does not), and that the check the dashboard installs is the gate's
 unattended caller, installed by both dashboard start paths.
 """
@@ -41,6 +42,7 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.session import SessionManager, _Session
+from kiro_crew.session_parts import claims
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 from kiro_crew.workflows.agent_pool import _WorkflowSessionWorker
@@ -277,6 +279,40 @@ async def test_a_cancelled_check_cancels_the_acquire(monkeypatch) -> None:
 
     # A cancellation is not a failed check to step over: nothing is allocated.
     assert order == ["check"]
+
+
+class _StuckCheck(_Check):
+    """An installed check that never finishes."""
+
+    async def __call__(self) -> None:
+        await super().__call__()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_does_not_finish_in_time_does_not_hold_up_the_acquire(
+    monkeypatch, caplog
+) -> None:
+    order: list[str] = []
+    # Literal 0 is the already-expired deadline. raising=False so that without the bound
+    # the acquire hangs and fails by assertion; the log line below proves this patch is
+    # the deadline the acquire read.
+    monkeypatch.setattr(claims, "_IDENTITY_CHECK_BEFORE_ACQUIRE_TIMEOUT_SECS", 0, raising=False)
+    async with _manager() as manager:
+        manager.identity_check_before_acquire = _StuckCheck(order)
+        with monkeypatch.context() as patched:
+            allocation = _Allocation(manager, order)
+            patched.setattr(manager, "_allocation_boundary", lambda: allocation)
+            with caplog.at_level(logging.WARNING, logger="kiro_crew.session"):
+                provider, _is_new, _resumed = await await_until(
+                    asyncio.ensure_future(manager.get_or_create("taskrunner:step")),
+                    what="the acquire past the stuck check",
+                )
+
+    assert provider is allocation.provider
+    # The check started and was given up on, in the acquire's own task.
+    assert order == ["check", "allocate:taskrunner:step"]
+    assert "took over 0s; acquiring without it" in caplog.text
 
 
 @pytest.mark.asyncio

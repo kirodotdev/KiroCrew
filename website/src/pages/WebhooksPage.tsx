@@ -49,6 +49,7 @@ import { Badge, Btn, Checkbox, IconButton, Input, PageHeader, SearchInput, Skele
 import { useColumnResize, type CollapseConfig } from '../hooks/useColumnResize'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { timeAgo } from '../utils/timeAgo'
+import { queryReadFailed } from '../utils/queryReadFailed'
 
 import { fmtBytes, fmtDateTime, fmtDuration, fmtNumber, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
@@ -475,6 +476,12 @@ export default function WebhooksPage() {
   const agents = agentsQuery.data ?? []
   // A roster that failed to LOAD must not look like an install with no agents,
   // so the failure is rendered at page level (below), with its own Retry.
+  // queryReadFailed, not `isError`: with no roster cached a Retry clears `error`
+  // and returns to pending, so a row keyed on `isError` alone would unmount its
+  // own Retry -- and the keyboard focus on it -- for the whole retry. The row
+  // stays mounted through the retry and shows a loading line in place of the
+  // error message while `error` is briefly cleared.
+  const rosterFailed = queryReadFailed(agentsQuery)
   const rosterError = agentsQuery.isError
     ? (agentsQuery.error instanceof Error ? agentsQuery.error.message : String(agentsQuery.error))
     : null
@@ -557,8 +564,11 @@ export default function WebhooksPage() {
     onError: (e: Error) => setTestResult({ ok: false, status: 0, error: e.message }),
   })
 
-  const mutationError = createToken.error || updateToken.error || revokeToken.error
-    || deleteContext.error || setSwitch.error
+  // The banner reports the most recently started action only: a later action
+  // that succeeds clears an older failure, and a newer failure replaces it.
+  const latestMutation = [createToken, updateToken, revokeToken, deleteContext, setSwitch]
+    .reduce((a, m) => (m.submittedAt > a.submittedAt ? m : a))
+  const mutationError = latestMutation.error
   const mutationMessage = mutationError instanceof Error ? mutationError.message : null
 
   /* filter applies to every group at once */
@@ -1400,18 +1410,27 @@ export default function WebhooksPage() {
               </p>
             </div>
           )}
-          {rosterError && (
+          {rosterFailed && (
             <div className="flex items-start gap-2.5 px-4 py-3 border-b border-border" data-testid="webhooks-roster-error">
               {/* Hand-off only while the new-source draft is empty (hasSourceDraft):
                   the destination-agent picker below is part of that draft. Retry
                   stays a sibling — retry and hand-off are different next steps. */}
-              <ErrorNotice
-                className="flex-1"
-                title={i18nT('components.agentSelector.roster_load_failed')}
-                message={rosterError}
-                askAgent={!hasSourceDraft}
-              />
-              <Btn onClick={() => { void agentsQuery.refetch() }} disabled={agentsQuery.isFetching} className="shrink-0">
+              {/* The error text is briefly cleared while a retry reads (ErrorNotice
+                  renders nothing without a message), so show a loading line in its
+                  place rather than leaving the Retry alone with no context. */}
+              {rosterError ? (
+                <ErrorNotice
+                  className="flex-1"
+                  title={i18nT('components.agentSelector.roster_load_failed')}
+                  message={rosterError}
+                  askAgent={!hasSourceDraft}
+                />
+              ) : (
+                <p role="status" className="flex-1 text-[13px] text-muted">{i18nT('components.agentSelector.retrying')}</p>
+              )}
+              {/* busy, not native `disabled`: a disabled button leaves the tab
+                  order, dropping a keyboard user to the page body for the retry. */}
+              <Btn busy={agentsQuery.isFetching} onClick={() => { void agentsQuery.refetch() }} className="shrink-0">
                 {i18nT('pages.webhooksPage.retry')}
               </Btn>
             </div>

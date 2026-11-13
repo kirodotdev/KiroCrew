@@ -32,6 +32,8 @@ import type { ChatMessage } from '../../types'
 import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
 import { classifyDrop } from '../../utils/dropClassify'
 import { servedUploadMb, spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
+import { pinSlotSuccession, releaseSlotSuccession, resolveSlotSuccession } from '../../utils/slotSuccession'
+import { holdSlotUploadFailure } from '../../utils/slotUploadFailures'
 import {
   adoptSourceSelections,
   commitDismissedSource,
@@ -57,6 +59,7 @@ import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
+import { isUnansweredRead } from '../../api/queryClient'
 import {
   cancelComposerUploads,
   composerUploadSlot,
@@ -187,9 +190,13 @@ export function useChatPageResourcesController({
     staleTime: 30_000,
   })
   // A failed read leaves self-hosted source chips inert, so say so -- once
-  // per failure (keyed on errorUpdatedAt), not on every re-render.
+  // per failure (keyed on errorUpdatedAt), not on every re-render. A re-read
+  // the gateway never answered (a dropped link, a restart) while an earlier
+  // answer is still cached says nothing: the chips keep working from that
+  // answer, and the next connection's first 'slots' frame re-reads this key.
   useEffect(() => {
     if (!sourceHostErrorAt || !sourceHostError) return
+    if (sourceHostCfg && isUnansweredRead(sourceHostError)) return
     showActionError(i18nT('pages.chatPage.source_hosts_failed_reason', { reason: errMessage(sourceHostError) || i18nT('pages.chatPage.unknown_error') }))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one notice per failure
   }, [sourceHostErrorAt])
@@ -656,6 +663,27 @@ export function useChatPageResourcesController({
   }, [tabsCtl, dispatch, search.close, handleFileOpen])
 
 
+  /** Report an attachment failure to the slot whose files failed. On screen it
+   *  is `showOnScreen` (the banner or the action notice). Any other slot holds
+   *  it (`holdSlotUploadFailure`) until that chat is shown, where the upload
+   *  banner takes it. A slot a memory-mode switch replaced reports to its
+   *  successor, so the failure is never held for a chat that is gone. */
+  // The page can unmount while a request runs (the person left /chat). Its
+  // setters then go nowhere, so the failure is held for the remount.
+  const pageMountedRef = useRef(true)
+  useEffect(() => {
+    pageMountedRef.current = true
+    return () => { pageMountedRef.current = false }
+  }, [])
+  const reportAttachmentFailure = useCallback((message: string, fromSlot: string | null, showOnScreen: (m: string) => void) => {
+    // A slot still on screen in a mounted page was not replaced, whatever an
+    // older entry in the succession table says. An unmounted page's ref is
+    // frozen, so it always follows the table.
+    const forSlot = pageMountedRef.current && fromSlot === activeSlotRef.current ? fromSlot : (resolveSlotSuccession(fromSlot) ?? null)
+    if (!forSlot || (pageMountedRef.current && forSlot === activeSlotRef.current)) { showOnScreen(message); return }
+    holdSlotUploadFailure(forSlot, message)
+  }, [activeSlotRef])
+
   const takeScreenshot = useCallback(async () => {
     // Capture the slot at click-time. If the user switches away before the
     // screenshot promise resolves, we must land the file in the slot the user
@@ -665,6 +693,9 @@ export function useChatPageResourcesController({
     if (!requestSlot) return
     setUploading(true)
     holdComposerSend(requestSlot)
+    // A memory-mode switch can replace the slot while the capture runs; the pin
+    // keeps its successor resolvable so a failure is reported where it lives.
+    pinSlotSuccession(requestSlot)
     let completedPaths: string[] = []
     try {
       const { path } = await api.screenshot()
@@ -677,12 +708,17 @@ export function useChatPageResourcesController({
       // reaching the gateway -- and the bare `catch {}` this replaces left the
       // user clicking Screenshot with no attachment and no notice. The server
       // states the cause, so pass it through rather than paraphrasing it.
-      showActionError(i18nT('pages.chatPage.screenshot_failed_reason', { reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }))
+      reportAttachmentFailure(
+        i18nT('pages.chatPage.screenshot_failed_reason', { reason: errMessage(e) || i18nT('pages.chatPage.unknown_error') }),
+        requestSlot,
+        m => showActionError(m),
+      )
     } finally {
+      releaseSlotSuccession(requestSlot)
       finishComposerAttachment(requestSlot, completedPaths)
       setUploading(false)
     }
-  }, [activeSlotRef, setUploading, showActionError])
+  }, [activeSlotRef, setUploading, showActionError, reportAttachmentFailure])
 
   // Every capture owns a token and a counted hold. The active overlay releases
   // only its token, while capture failure and unmount release the specific
@@ -812,11 +848,13 @@ export function useChatPageResourcesController({
     const controller = new AbortController()
     registerComposerUpload(requestSlot, controller)
     let completedPaths: string[] = []
+    // Reported in `finally`, once the slot this upload lands in is known.
+    let failure = ''
     try {
       const res = await api.uploadFiles(files, controller.signal,
         (loaded, total) => reportComposerUploadProgress(controller, loaded, total))
       if (res.error) {
-        setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error }))
+        failure = i18nT('pages.chatPage.upload_failed_error', { error: res.error })
       } else if (res.paths?.length) {
         completedPaths = res.paths
       }
@@ -828,12 +866,13 @@ export function useChatPageResourcesController({
       // blanket message blames file type and a 50 MB cap for a 150 MB
       // recording the user deliberately stopped.
       if ((err as Error | undefined)?.name !== 'AbortError') {
-        setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb'))
+        failure = i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb')
       }
     } finally {
       // Where THIS upload lives now: the replacement when a memory-mode switch
       // handed it over (with its hold) while it ran, else where it started.
       const landing = composerUploadSlot(controller) ?? requestSlot
+      if (failure) reportAttachmentFailure(failure, landing, m => setUploadError(m))
       // Drop only THIS request's controller: the registry keeps Cancel offered
       // while a sibling upload of the slot is still running.
       unregisterComposerUpload(landing, controller)
@@ -846,7 +885,7 @@ export function useChatPageResourcesController({
     // The files were sent (a server-side refusal surfaces as an error above,
     // not a local pre-check hint), so no local-refusal hint was set.
     return false
-  }, [activeSlotRef, localUploadRefusal, setUploadError, setUploadHint, setUploading, setResizedInfo])
+  }, [activeSlotRef, localUploadRefusal, setUploadError, setUploadHint, setUploading, setResizedInfo, reportAttachmentFailure])
 
   /** The overlay's crop: `uploadFiles` takes its own hold synchronously (before
    *  its first await) and only then is the snip's released, so Send is never

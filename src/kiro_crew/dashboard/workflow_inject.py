@@ -351,22 +351,26 @@ def inject_workflow_result(
         return False
 
 
-def _seed_turn_timeout(slot: Any, meta: Optional[dict]) -> None:
+def _seed_turn_timeout(state: DashboardState, slot: Any, meta: Optional[dict]) -> None:
     """Give a fresh slot linked to an existing transcript that transcript's turn time limit.
 
     *meta* is the transcript's readable metadata line, or ``None`` when it could
     not be read. Unread, the slot holds no limit of its own and is marked
     unhydrated, so its saves carry the on-disk value forward instead of
-    replacing it with "follow the global".
+    replacing it with "follow the global". A live alias's limit stays either way.
     """
     from kiro_crew.dashboard.slot_persistence.metadata_values import _validate_turn_timeout_secs
+    from kiro_crew.dashboard.transcript_binding import (
+        mark_turn_timeout_unread,
+        seed_turn_timeout_from_disk,
+    )
 
     if meta is None:
-        slot.turn_timeout_secs = None
-        slot._turn_timeout_hydrated = False
+        mark_turn_timeout_unread(state, slot)
         return
-    slot.turn_timeout_secs = _validate_turn_timeout_secs(meta.get("turn_timeout_secs"))
-    slot._turn_timeout_hydrated = True
+    seed_turn_timeout_from_disk(
+        state, slot, _validate_turn_timeout_secs(meta.get("turn_timeout_secs"))
+    )
 
 
 async def inject_bound_workflow_result(
@@ -466,7 +470,7 @@ async def inject_bound_workflow_result(
                     memory_mode=execution.memory_mode,
                 )
                 slot.memory_store = execution.store.legacy_name
-                _seed_turn_timeout(slot, limit_meta if limit_readable else None)
+                _seed_turn_timeout(state, slot, limit_meta if limit_readable else None)
             on_injected = None
         delivered = dict(snapshot)
         delivered["memory_mode"] = execution.memory_mode

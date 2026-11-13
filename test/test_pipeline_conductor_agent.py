@@ -426,7 +426,7 @@ class TestFleetProbe(FleetProbeHarness):
 
         Here ``auto`` is the bounded spelling (``xdist_budget.py`` sizes it by memory) and
         the gate runner emits it, while ``setup.cfg`` says "an explicit -n <N> bypasses
-        the budget". ``-n0`` and ``-n 1`` are a single process."""
+        the memory budget". ``-n0`` and ``-n 1`` are a single process."""
         mod = self._mod()
         proc = tmp_path / "proc"
         quiet = {

@@ -23,6 +23,7 @@ fixture in ``telegram_parity_helpers.py``.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
@@ -616,6 +617,43 @@ class TestThinking:
         await renderer.on_done()
         assert [t for t, _ in client.sent if "blockquote expandable" in t]
 
+    @pytest.mark.asyncio
+    async def test_a_cut_reasoning_post_never_ends_in_half_an_entity(self) -> None:
+        # Escaping grows each & to five characters, so a budget cut can land inside
+        # one; the post must drop the fragment rather than send "&am".
+        renderer, client = _renderer(show_thinking=True)
+        budget = renderer._thinking_budget()
+        pad = (budget - 3) % 5  # the cut then falls 3 characters into an "&amp;"
+        await renderer.on_thinking("x" * pad + "&" * budget)
+        renderer._buf = ["ok"]
+        await renderer.on_done()
+        quote = next(t for t, _ in client.sent if "blockquote expandable" in t)
+        inner = quote.removesuffix("</blockquote>")
+        assert re.search(r"&[#\w]*$", inner) is None, inner[-12:]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("err,expected", [({"error_code": 400}, 0), ({}, 1)])
+    async def test_a_refused_reasoning_post_counts_no_redactions(
+        self, err: dict[str, Any], expected: int
+    ) -> None:
+        # The tally feeds the turn's "hidden N items" notice, which describes
+        # LANDED text. A refusal (400) landed nothing; a failure with no answer
+        # (a timeout) may have posted, so it still counts.
+        renderer, client = _renderer(show_thinking=True)
+        real_send = client.send_message
+
+        async def _send(chat_id: int, text: str, **kw: Any) -> Any:
+            if "blockquote expandable" in text:
+                kw["err_out"].update(err)
+                return None
+            return await real_send(chat_id, text, **kw)
+
+        client.send_message = _send  # type: ignore[method-assign]
+        await renderer.on_thinking(f"key {_AWS_KEY}")
+        renderer._buf = ["ok"]
+        await renderer.on_done()
+        assert renderer._redacted_creds == expected
+
 
 # ---------------------------------------------------------------------------
 # Stall marks
@@ -783,6 +821,21 @@ class TestOffsetDurability:
         await client._get_updates()
         assert client._offset == 10
         assert not path.exists(), "an observed-but-undispatched batch must not be acked"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [None, "x", {"update_id": "8"}, {"update_id": True}])
+    async def test_a_malformed_item_does_not_stop_the_cursor_moving(
+        self, tmp_path: Any, bad: Any
+    ) -> None:
+        # Raising here would leave the cursor short of update 9, so every later
+        # poll would refetch the same batch and the bot would hear nothing new.
+        # The item is dropped, not dispatched: the cursor cannot pass it, so a
+        # dispatched copy would start a new turn on every poll.
+        client = TelegramClient(token="t:1", offset_path=tmp_path / "offset.json")
+        batch = [{"update_id": 7}, bad, {"update_id": 9}]
+        client._api = AsyncMock(return_value=batch)  # type: ignore[method-assign]
+        assert await client._get_updates() == [{"update_id": 7}, {"update_id": 9}]
+        assert client._offset == 10
 
     @pytest.mark.asyncio
     async def test_an_in_flight_turn_holds_the_cursor_behind_it(self, tmp_path: Any) -> None:

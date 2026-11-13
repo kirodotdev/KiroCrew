@@ -122,6 +122,11 @@ export default [
       // stays fully covered. Stated as a false-negative class: copy added to this
       // module will not be reported. Keep it stylesheet-only.
       'src/components/library/artifactThumbSvgCss.ts',
+      // Keeps the rules of an SVG artifact's own stylesheet that select inside the
+      // drawing, for SvgShadow: CSSOM rule class names and CSS patterns handed to
+      // the browser's parser, no copy. Stated as a false-negative class: copy
+      // added to this module will not be reported. Keep it stylesheet-only.
+      'src/components/svgStylesheet.ts',
       // The Liquid Glass surface: SVG path data, an inline SVG displacement-map
       // document, `url("data:image/svg+xml…")`, `linear-gradient(…)`, `path("…")`
       // and `color-mix(…)` values, every one built as a string and handed to the
@@ -780,7 +785,7 @@ export default [
               // The install command the Decisions card's SageMaker option shows
               // when the gateway has no boto3: typed into a terminal, so the
               // same wire-string class, and enumerated for the same reason.
-              "^pip install 'boto3>=1\\.34,<2'$",
+              '^pip install "boto3>=1\\.34,<2"$',
               // A `mc:`-NAMESPACED BROWSER-STORAGE KEY, e.g.
               // `mc:notif:activeKinds:v2`, `mc:notif:seenChannels`. The dashboard
               // namespaces every localStorage key it owns under `mc:`, and such
@@ -1030,6 +1035,11 @@ export default [
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
               '^(GitHub|GitLab|Azure DevOps|Bitbucket|Bitbucket Server|Gerrit)$',
+              // The Connections page's one Google entry: the bare brand is its
+              // settings-search suffix (`settingsManual.ts`), the same in every
+              // language, like the provider names the other OAuth app entries
+              // take from the registry. Whole-value-anchored like the entries above.
+              '^Google$',
               // The local editor brands the "Open in {{editor}}" row names
               // (utils/remoteEditorUrl.ts `REMOTE_EDITORS`): a product name, the same in
               // every language. Whole-value-anchored like the entries above.

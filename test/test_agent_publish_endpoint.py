@@ -14,9 +14,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
+from config_pending_helpers import HAND_EDIT, make_config_json_pending
+from sidecar_fault_helpers import fail_one_sidecar_read
 
 from kiro_crew import agent_state
-from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, PendingEditBlocksSave
 from kiro_crew.dashboard.handlers.agents import api_agent_publish
 
 
@@ -180,6 +182,26 @@ async def test_publish_copies_model_tracking(tmp_path):
 
     assert resp.status == 200
     assert agent_state.get_model_managed("published") is False
+
+
+@pytest.mark.asyncio
+async def test_publish_a_failed_model_read_fails_and_unwinds(tmp_path, monkeypatch):
+    """One unreadable sidecar read of the copy's flag is not "unset". A template
+    with no flag stops tracking the shipped default, so publish answers
+    bookkeeping_failed and leaves no shared template behind."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed_private_copy(agents_dir, "c", "c", "kirocrew")
+    agent_state.set_model_managed("c", True)
+    fail_one_sidecar_read(monkeypatch, "get_model_managed", "c")
+
+    with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir):
+        resp = await api_agent_publish(_publish_request("c", {"crew": "c", "name": "published"}))
+
+    assert resp.status == 500
+    assert json.loads(resp.text)["code"] == "bookkeeping_failed"
+    assert not (agents_dir / "published.json").exists()
+    assert KiroCrewConfig.load().agents["c"].kiro_agent == "c"
 
 
 @pytest.mark.asyncio
@@ -527,6 +549,31 @@ async def test_publish_failure_after_the_create_compensates(tmp_path, failing, c
     assert resp.status == 500
     assert json.loads(resp.text)["code"] == code
     # Compensated: no orphan file, no lineage for the never-bound name.
+    assert not (agents_dir / "published.json").exists()
+    assert agent_state.get_fork_info("published") is None
+
+
+@pytest.mark.asyncio
+async def test_publish_of_a_pending_config_json_compensates_and_hands_the_refusal_on(
+    tmp_path, monkeypatch
+):
+    """config.json has a change pending owner review: the rebind is refused, the
+    created file and its lineage are undone, and the refusal reaches the dashboard
+    chain, which answers 409, not the publish's own 500."""
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    _seed_private_copy(agents_dir, "design-crew", "design-crew", "kirocrew")
+    path = make_config_json_pending(monkeypatch)
+
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents_dir),
+        pytest.raises(PendingEditBlocksSave),
+    ):
+        await api_agent_publish(
+            _publish_request("design-crew", {"crew": "design-crew", "name": "published"})
+        )
+
+    assert path.read_bytes() == HAND_EDIT
     assert not (agents_dir / "published.json").exists()
     assert agent_state.get_fork_info("published") is None
 

@@ -31,6 +31,24 @@ export interface SlotTurnTimeout {
   max: number
 }
 
+/** One row of `GET /api/chat/slots/{slot}/steering`. `reaches` is `harness` or
+ *  `briefing` where another loader decides by its own rules. */
+export interface ChatSteeringFile {
+  name: string
+  path: string
+  source: 'global' | 'project' | 'folder' | 'agent'
+  /** `unknown` for a linked file the listing could not read. */
+  applies: 'always' | 'manual' | 'auto' | 'fileMatch' | 'unknown'
+  reaches: 'yes' | 'no' | 'harness' | 'briefing'
+  reason: string
+}
+
+/** What `GET /api/chat/slots/{slot}/steering` answers. */
+export interface ChatSteering {
+  provider: string
+  files: ChatSteeringFile[]
+}
+
 /** What `GET /api/chat/slots/follow-default` answers. */
 export interface FollowDefaultCount {
   count: number
@@ -61,14 +79,21 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
         model_effort_pair_ids?: boolean
         /** Present when this session's harness lists other models than the configured backend. */
         models_backend?: string
+        /** The session's ultracode switch; present only while its harness advertises one. */
+        ultracode?: boolean
       }>,
+    /** The steering files this chat receives, read-only (`handlers/chat_steering.py`). */
+    chatSlotSteering: (slot: string) =>
+      fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/steering').then(j) as Promise<ChatSteering>,
     effortLevels: (slot?: string) =>
       fetch('/api/effort-levels' + (slot ? '?slot=' + encodeURIComponent(slot) : '')).then(j) as Promise<string[]>,
     // Bounded HERE, not per initiator: react-query dedupes on the key, so the
     // weakest initiator would otherwise decide whether the promise is bounded.
-    slashCommands: (signal?: AbortSignal) =>
+    /** `slot` adds what that chat's own session advertised (claude's project
+     *  and user commands and skills). */
+    slashCommands: (signal?: AbortSignal, slot?: string) =>
       withDeadline(SLASH_COMMANDS_TIMEOUT_MS, signal, s =>
-        fetch('/api/slash-commands', { signal: s }).then(j)),
+        fetch('/api/slash-commands' + (slot ? '?slot=' + encodeURIComponent(slot) : ''), { signal: s }).then(j)),
     /** `kind` names the namespace the user picked from. Omitted, the backend
      *  keeps its legacy name-first resolution; stated, a same-name template and
      *  member are told apart and an unresolvable choice is refused (409) rather
@@ -118,6 +143,9 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       post('/api/chat/slots/follow-default', { digest }).then(j) as Promise<{ ok: boolean; changed: number }>,
     chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
       post('/api/chat/slots/' + encodeURIComponent(slot) + '/reasoning-effort', { reasoning_effort }).then(j) as Promise<{ ok?: boolean; reasoning_effort?: string; model?: string; deferred?: boolean }>,
+    /** Turn the live session's ultracode switch on or off; answers the value it reads back. */
+    chatSlotUltracode: (slot: string, enabled: boolean) =>
+      post('/api/chat/slots/' + encodeURIComponent(slot) + '/ultracode', { enabled }).then(j) as Promise<{ ok: boolean; ultracode: boolean }>,
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>

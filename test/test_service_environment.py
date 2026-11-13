@@ -435,6 +435,60 @@ class TestServicePathMiseShims:
         assert dirs.index(shims) < dirs.index("/usr/bin")
         assert "/opt/tools/bin" in dirs
 
+    def test_installer_nvm_bin_behind_usr_bin_moves_ahead_of_it(self, monkeypatch):
+        nvm = "/home/tester/.nvm/versions/node/v22.22.2/bin"
+        monkeypatch.setenv("PATH", f"/usr/bin:/opt/tools/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.count(nvm) == 1
+        assert dirs.index(nvm) < dirs.index("/usr/local/bin") < dirs.index("/usr/bin")
+        assert "/opt/tools/bin" in dirs
+
+    def test_nvm_bin_follows_the_mise_shims(self, monkeypatch):
+        shims = "/home/tester/.local/share/mise/shims"
+        nvm = "/home/tester/.nvm/versions/node/v24.1.0/bin"
+        monkeypatch.setenv("PATH", f"/usr/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs[:4] == ["/home/tester/.local/bin", shims, nvm, "/usr/local/bin"]
+
+    def test_xdg_nvm_root_is_promoted(self, monkeypatch):
+        nvm = "/home/tester/.config/nvm/versions/node/v24.1.0/bin"
+        monkeypatch.setenv("PATH", f"/usr/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.index(nvm) < dirs.index("/usr/bin")
+
+    def test_custom_nvm_dir_is_promoted(self, monkeypatch):
+        nvm = "/opt/tools/node-manager/versions/node/v22.22.2/bin"
+        monkeypatch.setenv("NVM_DIR", "/opt/tools/node-manager")
+        monkeypatch.setenv("PATH", f"/usr/bin:{nvm}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.index(nvm) < dirs.index("/usr/bin")
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "/home/tester/.nvm/versions/node/v22.22.2",  # version dir, not its bin
+            "/home/tester/.nvm/bin",  # not a versioned Node
+            "/opt/node/v22/bin",  # not under an nvm root
+            "/opt/other/versions/node/v22/bin",  # nvm layout, but no nvm root
+            ".nvm/versions/node/v22.22.2/bin",  # relative
+        ],
+    )
+    def test_non_nvm_entries_are_not_promoted(self, monkeypatch, entry):
+        monkeypatch.delenv("NVM_DIR", raising=False)
+        monkeypatch.setenv("PATH", f"/usr/bin:{entry}")
+
+        dirs = common.service_path("/home/tester").split(":")
+
+        assert dirs.index(entry) > dirs.index("/usr/bin")
+
     def test_mise_data_dir_is_honoured(self, monkeypatch):
         monkeypatch.setenv("MISE_DATA_DIR", "/data/mise")
         monkeypatch.setenv("PATH", "/usr/bin")

@@ -553,7 +553,7 @@ with a message before any request, and a given N always reads that version.
 | `PATCH` | `/api/artifact-folders/{id}` | Rename / reparent / reorder / icon / color |
 | `DELETE` | `/api/artifact-folders/{id}` | `?delete_contents=` picks keep (re-parent, default) vs cascade (delete subtree incl. artifacts) |
 | `PATCH` | `/api/artifacts/{slug}/folder` | Move an artifact into a folder (`{folder}` id/path or `{folder_id}` id-only) |
-| `POST` | `/api/artifacts/{slug}/publish/reprobe-notice` | Re-ask the destination whether a delivery notice still applies (`publish_sync.reprobe_notice`) and clear it once the copy is genuinely being served. READ-ONLY at the destination: it resolves through the drive's read path, never the create-capable one, so a re-check cannot provision infrastructure or rewrite a bucket policy |
+| `POST` | `/api/artifacts/{slug}/publish/reprobe-notice` | Re-ask the destination whether a delivery notice still applies and clear it only after the condition clears (`publish_sync.reprobe_notice`). READ-ONLY at the destination: it resolves through the drive's read path, never the create-capable one, so a re-check cannot provision infrastructure or rewrite a bucket policy |
 | `POST` | `/api/artifacts/{slug}/pull-latest` | Pull the tracked upstream (`?source=publication\|origin\|auto`) into a NEW local snapshot via `publish_sync.pull_upstream`; ungated ingress |
 | `GET` | `/api/artifacts/{slug}/upstream-status` | Cheap metadata-only drift check (`publish_sync.upstream_status`); best-effort, never blocks on the network |
 | `POST` | `/api/artifacts/{slug}/overwrite-remote` | Force-push local content over an upstream-ahead remote (`publish_sync.overwrite_upstream`); **egress — gated by `_publish_governance_denied` on the resolved `publication.provider`** |
@@ -592,7 +592,14 @@ rename-safe membership id, tolerant-loaded for legacy meta.json.
 `~/.kiro/crew/artifact_folders.json` — create/rename/reparent (cycle- and
 depth-guarded, `MAX_FOLDER_DEPTH` 20)/reorder/delete, breadcrumb, item counts,
 and id-or-path resolution with mkdir -p semantics (`resolve_path`, all-or-nothing
-rollback). Folder delete is an explicit choice: keep (re-parent direct children
+rollback). `POST /api/artifacts` with a `folder` path and `POST /api/artifact-folders`
+with a `parent` path refuse what their create would refuse before they mkdir -p, so
+a refused field, slug, color or depth leaves no folder behind (a slug that a concurrent
+save claims between the check and the create is refused after it): the save asks
+`ArtifactStore.check_create` first, and the folder create checks the color and
+resolves `parent` with `as_parent=True`, which refuses a missing segment too deep to
+hold the new folder.
+Folder delete is an explicit choice: keep (re-parent direct children
 to the parent) vs cascade (permanently delete the whole subtree, incl.
 descendant artifacts) — never silent. The file is tolerant-loaded: an entry
 with no id, or a list/object id, is dropped, and an `order` that `int()` cannot
@@ -798,10 +805,15 @@ treats the version push as best-effort: its re-publish branch runs
 and returns normally — so the route answers 200 with a publication whose remote
 content is stale. A non-empty (non-whitespace) `last_error` is therefore an error
 outcome carrying the provider's own already-redacted message; whitespace-only
-stays success, because the core writes `""` to clear the field. A publish that
-SUCCEEDED but whose link is not usable yet (e.g. CloudFront still rolling out)
-records that status on the separate `publication.notice` field, never
-`last_error` — so it does not render the publish as failed or withhold the URL.
+stays success, because the core writes `""` to clear the field. A publish or
+visibility change that SUCCEEDED but whose link needs a warning records that status
+on the separate `publication.notice` field, never `last_error`. The paired
+`notice_code` selects the dashboard copy: `rolling_out`, `distribution_disabled`,
+`origin_mismatch`, or the generic `unknown` fallback. An origin mismatch warns that
+the link may serve different content and directs the user to fix the distribution
+origin in the AWS console. The warning does not render the publish as failed or
+withhold the URL. A visibility provider returns a `(notice_text, notice_code)` pair
+when the completed change creates a new warning; `None` clears an older notice.
 
 ### An artifact that is already published
 
@@ -1023,6 +1035,27 @@ a public link with no warning. App-registered rows from
 `GET /api/publish-providers` are the public-web deploy surface and are always
 treated as reachable.
 
+**Expiry on a core destination.** A destination states the lifetimes it can give a
+publication in its sharing model: `expiration_choices_days` (ascending whole days),
+`allows_no_expiration` and `default_expiration_days`, all carried on each
+`GET /api/artifacts/publish-providers` row. `SharingModel` refuses an inconsistent
+declaration when it is built. When the list is non-empty, the Publish panel offers those
+periods (plus "Never" when allowed) on a first publish, preselects the default, repeats
+the choice on the confirm step, and names the period in the public-exposure
+acknowledgment. `POST /api/artifacts/{slug}/publish` takes `expires_in_days` (whole days,
+`null` for no expiry, absent for the destination's default; any other shape is a 400).
+`publish_sync.publish` resolves it against the declaration, refuses an undeclared value
+with a 400 before anything is uploaded, and passes the period to `PublishProvider.publish`
+as `expires_in_days`. It passes the keyword only to a destination that declares choices,
+so a provider written before it keeps its signature; a request naming an expiry for such a
+destination is a 400. The destination fixes the lifetime when the publication is created,
+so a re-publish that names an expiry is a 409: it comes from a panel that saw the artifact
+unpublished, and reporting success would claim a lifetime that was never applied. The
+panel sends no expiry on a re-publish. A core row never shows the deploy surface's TTL
+control, because the core publish carries no `ttl_hours`. `supports_expiration` follows
+`expiration_choices_days` unless a provider sets it; an explicit `False` beside declared
+choices is refused.
+
 ## Widget auto-registration
 
 **Every `<mcwidget>` the agent emits becomes an artifact automatically** — no
@@ -1064,7 +1097,10 @@ untouched (a replayed or rehydrated message never duplicates or clobbers content
 the user has since iterated on), and a widget carrying an explicit `slug=`
 attribute is skipped entirely, since re-emission names an existing artifact
 rather than authoring a new one. Failures are logged, never raised — a lost
-registration must not break the chat turn that produced the widget.
+registration must not break the chat turn that produced the widget. The
+widget's `title` is fitted to the name rules rather than validated: it is
+stripped, cut to `MAX_NAME_LEN`, and a blank one becomes `Widget`, so an
+over-long or blank title never costs the widget its artifact.
 
 **Restricted sessions never register.** Incognito and temporary slots
 (`slot.is_restricted`, i.e. `memory_mode != "persistent"`) are denied every
@@ -1578,7 +1614,7 @@ same DevTools pipe). This is the one run handed the record rather than the synth
 copy: the page is already applied and the tab already serves it that read, so the run
 gets the same `LivePage.arm` read through the same `_page_safe` redaction and
 `verification.data` says `record`; the page is drawn as the tab's own frame draws it: the dashboard's default light theme tokens (`dashboard_snapshot_look.LIGHT_TOKENS`, pinned by a test to the `[data-theme="light"]` block of `website/src/styles/design-tokens.css`, with the frame's aliases; the body's padding and font stay the frame's own host stylesheet's, as on the tab), the Tailwind runtime read from the built package (the same vendored file the tab loads, read and `</script`-escaped by `publish_sync._tailwind_runtime_js` and `_SCRIPT_CLOSE_RE` as a published widget is, inlined because the run fetches nothing; a build without it answers `no_image` saying so), then the package's own theme, with the UI language Settings stores (`dashboard.language`) as the page's locale; it is the default light look, not the person's own theme pack or dark mode, and the tool says so; and the script-grant audit row names the applied package and version rather than `(staged)`, so the picture shows what the person's tab shows and the log shows which applied page ran. The
-page is the tab's page in force: the instance's pinned snapshot (`instance.pinned_package`), or for an older unlocked record from before pins (`instance.keeps_older_package_rule`) the bound package's newest version a person cut, as `member_dashboard._serve` draws it, and must be
+page is the tab's page in force: the instance's pinned snapshot (`instance.pinned_package`), or for an older record from before pins (`instance.keeps_older_package_rule`) the bound package's newest version a person cut, as `member_dashboard._serve` draws it, and must be
 bound to the caller the prefix's gate vetted; a page that is only saved is never run over
 the record. A template page, no applied page, a root session and a package bound elsewhere
 answer `snapshot.status: no_image` with a reason and run nothing. The picture is
@@ -1649,11 +1685,11 @@ counted from the save: at it the browser's whole process group is killed and the
 limit starts no browser, and the save route waits at most `REPLY_SECONDS` for the check
 whatever it is doing. The page stays saved, and not live, whatever the run finds.
 
-**Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a Bot's binding only. The person's lock refuses the apply with `dashboard_locked`.
+**Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a Bot's binding only.
 
-**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — beside the person's lock, outside the `members/<slug>/` tree the Bot's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for an unlocked record written before the `package` key existed. `member_dashboard._serve` and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record, or an older record under the lock, uses its template copy; only an older unlocked record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
+**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — outside the `members/<slug>/` tree the Bot's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for a record written before the `package` key existed. `member_dashboard._serve` and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record uses its template copy; only an older record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
 
-**Every apply is a version, and one rollback goes back.** A package apply, a template `dashboard_apply` (with a `template_id`; `dashboard_preview` is only a look) and a rollback each write an instance version. A template apply releases the package, which is how a Bot goes from its package back to a template page. `dashboard_rollback(to_version)` restores the version's own page in force: a package version re-pins its snapshot, and a template version releases it. A package apply prunes the snapshots that no kept version, current record or lock still pins. While the lock holds, `read` answers the lock snapshot, so a pinned page stays the page the person locked, and apply and rollback are refused.
+**Every apply is a version, and one rollback goes back.** A package apply, a template `dashboard_apply` (with a `template_id`; `dashboard_preview` is only a look) and a rollback each write an instance version. A template apply releases the package, which is how a Bot goes from its package back to a template page. `dashboard_rollback(to_version)` restores the version's own page in force: a package version re-pins its snapshot, and a template version releases it. A package apply prunes the snapshots that no kept version or current record still pins.
 
 **Containment is unchanged.** The page is minted by `dashboard_frame` (sandbox `allow-scripts` only, `connect-src 'none'`, the model as the push allowlist, bindings written as text). The writer gate is unchanged: only the bound Bot writes its package, and `binding_refusal` refuses a served version bound to anyone else. `catalog.PAGE_SINKS` is the one list of calls that turn a value into markup or code (decision 4): `test_dashboard_template_sink_ban.py` holds every shipped page and gallery package to it, and the catalog scan reports a `user` page that uses one as a problem and does not serve it.
 
@@ -1951,6 +1987,10 @@ the builtin `artifacts` skill):
 - Resolution stays human-only: the resolve endpoint returns 403 for any
   MCP-originated request (actor inferred from the `X-Internal-Secret`
   header, never from a body flag).
+- An agent cannot undo a resolve either: `artifact_mark_review` on a thread
+  whose status is already `resolved` returns 409 for an MCP-originated
+  request and leaves the thread resolved. The person can still
+  reopen or mark review from the dashboard.
 - Agents may not delete provider-synced comments (403) — provider
   reconciliation (companion edition) would resurrect or desync them; mark
   REVIEW instead.
@@ -2068,6 +2108,17 @@ adding a parallel watcher (see `kiro_crew.knowledge.artifact_ingest`):
   **unconditionally**, comparing the artifact store against
   `artifact_item_state`: ingest what is missing or changed, drop state for
   artifacts that no longer exist. `created` is now reported for logging only.
+  The pass runs as the sync's own task, and `ArtifactKnowledgeSync.stop()`
+  asks it to end at its next artifact boundary: `_stop_artifact_ingest`
+  calls it both when `knowledge.auto_ingest_artifacts` is switched off and
+  at app exit (`on_cleanup`, registered before the knowledge pools shut
+  down), so a pass never outlives the sync that started it by more than the
+  artifact in hand. `stop()` neither cancels nor waits: a cancel mid-ingest
+  skips finalize and strands committed chunks that no artifact owns, and a
+  wait would hold the live-config applier's timeout or the 10 s graceful
+  shutdown on an LLM-backed ingest. When the pool shutdown cuts the artifact
+  in hand short, its ingest fails and records no content hash, so the next
+  start ingests it again (`knowledge.md`, Pool mechanics).
   - **Converged is free.** `ingest_artifact` already skips unchanged content, so
     the steady state spends no extraction calls and logs at debug.
   - **Removals are judged against every artifact, not the eligible kinds.**
@@ -2198,7 +2249,9 @@ the rail), because the chat page shows the active session.
 
 The page's reading comes from its own window and can be stale, so the decision is
 the server's. The page sends `deleteSlot({ key, discard: true })`, which runs the
-sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`.
+sidebar close's client bookkeeping but calls `POST /api/chat/slots/{slot}/discard`,
+and opens no other session in place of the active one it discards: the user is on
+another page, so a landing would open, and mark read, a session they never chose.
 That route refuses with 409 `turn_in_flight` when the slot holds a reservation,
 `slot_not_empty` when it has a transcript row or a queued prompt,
 `automation_active` when a goal loop or monitor is bound to it, paused included as
@@ -2227,6 +2280,12 @@ the row comes back with the refetch, no close-refused notice shows, and another
 session's notice stays. Any untouched
 session the panel showed is discarded, not only one this page created, so a
 session left behind by a full page unload goes the next time its panel closes.
+The untouched reading lives in `website/src/lib/untouchedSession.ts`, shared with
+the routed chat's discard of an app's draft launch session
+([app-kit-platform](app-kit-platform.md#host-mediated-chat-launch-and-cron-toggles)).
+It reads the composer's stored drafts, so while the last write of the text, file
+or session-reference drafts failed (storage full or disabled) it never reads a
+session as untouched: storage can then be older than what the composer holds.
 
 **Live refresh** — the artifact mutation funnel broadcasts a typed
 `artifact_update {slug, version, deleted}` WS event
@@ -2301,6 +2360,12 @@ dashboard's active slot, so `ArtifactChatPanel` keeps it on the bound session wi
 `useOwnSlotChat` (`website/src/hooks/useOwnSlotChat.ts`): it switches to the bound
 session and shows the chat only while that session is the active slot. Another
 session made active while the panel is open (a transcript link) is switched back.
+A run of switch-backs each less than `SWITCH_BACK_GAP_MS` after the one before
+stops after `MAX_SWITCH_BACKS`: the panel logs a console warning and switches
+back no more for that session, showing no chat, so two such panels on different
+sessions stop taking the active slot from each other. A switch-back after a
+quieter gap starts a new run; handing the panel a different session, or
+remounting it, clears the cap.
 A 404 from the switch, or a confirmed close of the session, takes the row out of
 the slot list (`armConfirmedCloseHold` then `removeSlotOptimistic`, as archiving a
 gone session does), so the page resolves the next bound session or offers **Start
@@ -2490,7 +2555,11 @@ paths rejected (`is_sensitive_path`); reads go through the inode-pinned
 the iframe) with `default-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' data:
 blob:`: no `'unsafe-eval'` (the channel injects no runtime, so nothing needs JS
 eval) but `'wasm-unsafe-eval'` so served `.wasm` can still compile, plus
-`nosniff` and `no-store`. All filesystem work runs off the
+`nosniff` and `no-store`. `'unsafe-inline'` stays because refusing it removes
+no reach: the channel injects nothing and treats the whole tree as untrusted,
+so an inline script gets the same opaque origin and `'self'` fetch limit as a
+served (or `data:`) script, while apps that ship inline scripts or styles
+would break. All filesystem work runs off the
 event loop via `asyncio.to_thread`.
 
 ### Deploy Routes (`/api/deploy/*`)
@@ -2598,10 +2667,21 @@ agent-authored SVG as an image would reintroduce a same-origin script vector.
 `SvgViewer` and the library card draw it in a shadow root of its own
 (`SvgShadow`) and keep its `<style>` elements there: drawn straight into the
 page, an SVG's stylesheet would apply to the whole dashboard, print included,
-while inside its own root it styles that SVG and nothing else. Its rules can
-still size and place the SVG's own outer box (`:host`), as the SVG's `style`
-attribute always could, and can match on the page around it
-(`:host-context()`), but they restyle nothing outside the SVG.
+while inside its own root it styles that SVG and nothing else. Each stylesheet
+keeps only what reaches into the drawing, by allowlist (`svgStylesheet.ts`),
+because the page's custom properties inherit into the drawing and CSS keeps
+adding ways to test them (`if()`, `style()`, `attr()`, a `var()` fallback) and
+fetch a remote image as the signal. A declaration, in a stylesheet or a `style`
+attribute, and every other attribute value (SVG reads `fill="..."` as CSS) keep
+only the functions a drawing needs (colors, `url()`, `calc()`, transforms,
+gradients, filters, shapes); any other function, `var()` included, drops it. A selector keeps only
+structural and interaction pseudo-classes, so `:host`, `:host-context()`,
+`:scope` and `:target` go, and a top-level `&` goes. Every at-rule but `@media`,
+`@supports`, `@layer`, `@keyframes`, `@font-face` and `@namespace` goes. CSS text
+holding a backslash goes whole. Both surfaces sanitize with DOMPurify's SVG
+profile, so no HTML (a `popover`, say) sits beside the drawing. The host has
+layout and paint containment, so an SVG placed with `position: fixed` or a
+transform stays inside the host's box.
 
 ### Storage layout
 
@@ -2708,7 +2788,9 @@ cannot strip them.
   backslashes are treated as escapes **only** before markdown-significant
   characters, so a native Windows path (`C:\Users\me\shot.png`) survives; alt
   text accepts escaped brackets (`![Revenue \[Q1\]](…)`) and is unescaped for
-  display.
+  display. The artifact name is that alt text cut to `MAX_NAME_LEN` (blank
+  becomes the default name), so a long caption never costs the image its
+  artifact.
 - **Skipped:** remote/`data:`/protocol-relative URLs (never fetched), relative
   paths, unsupported extensions, sensitive paths, and restricted/incognito
   sessions.

@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from kiro_crew.autonudge_judge import ending_phrase, screen_phrase
+from kiro_crew.autonudge_judge_phrases import ending_phrase, screen_phrase
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.mcp_tools._limits import _MONITOR_DEFAULT_MAX_CYCLES
 from kiro_crew.monitoring.limits import DEFAULT_RUNTIME_CEILING_SECS, runtime_ceiling_secs
@@ -196,6 +196,21 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["seconds", "reason"],
+            },
+        },
+        {
+            "name": "mcp_server_wait",
+            # Short on purpose: it rides in every request of the agents that list
+            # it as a job tool (``agent_sdk.tool_search.JOB_TOOLS``). The turn's
+            # own ``[MCP SERVERS]`` block says when and how to use it.
+            "description": (
+                "Wait for one of this session's MCP servers that is still starting. "
+                "Returns when it is connected, or says why it will not be. Call once."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"server": {"type": "string"}},
+                "required": ["server"],
             },
         },
         {
@@ -742,10 +757,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "'progress', a worker ending its turn and a worker's session "
                             "closing all leave the interval as it is, so a worker that "
                             "crashed or went silent is found by the item's stale flag on "
-                            "an ordinary cycle. For a conductor patrolling "
-                            "dispatched workers this is the field to use, and it lets "
-                            "you set interval_secs in hours -- the timer becomes the "
-                            "liveness fallback, not the delivery path. Omit it and the "
+                            "an ordinary cycle. Closing every item does not end the "
+                            "watch: it wakes you once to say so and stays armed for "
+                            "the next item, until autonudge_stop, a person's stop or "
+                            "the loop's own bounds. For a conductor patrolling "
+                            "dispatched workers this is the field to use, and it fixes "
+                            "interval_secs at the 300 s patrol interval -- the timer is "
+                            "the liveness fallback, not the delivery path. Omit it and the "
                             "subject is inferred from `message`, which is how a pull "
                             "request is named. Gating does not need `gate` as well: "
                             "naming a watch gates the loop on its own"
@@ -912,7 +930,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "losing its cycle count. After it, a cycle where no worker "
                             "said anything actionable costs no turn, and a worker's "
                             "report of 'blocked', 'question' or 'done' pulls the next "
-                            "cycle forward. Omit it to leave the "
+                            "cycle forward. Closing every item wakes you once and "
+                            "leaves the watch armed. Omit it to leave the "
                             "loop's current subject alone"
                         ),
                     },
@@ -1076,21 +1095,28 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             "name": "suggest_followup",
             "description": (
                 "Offer the user up to 3 follow-up items as a card below the chat "
-                "composer in the CURRENT dashboard session. Each item shows a title "
-                "and description with three buttons: 'Start in new worktree' (creates "
-                "a git worktree off origin/HEAD, or the project's current HEAD when "
-                "that does not resolve, opens a new chat "
-                "session scoped to it, and pre-fills the composer with your prompt), "
+                "composer in the CURRENT dashboard session. Each item shows a title, "
+                "a description and the first three lines of your prompt, with a "
+                "'Show prompt' toggle for the rest, and three buttons: 'Start in a "
+                "separate copy' (creates a git worktree off origin/HEAD, or the "
+                "project's current HEAD when that does not resolve, opens a new chat "
+                "session scoped to it, and pre-fills its composer with your prompt), "
                 "'Add to this session' (pre-fills this session's composer with your "
-                "prompt), and 'Skip'. Both non-skip buttons PRE-FILL the composer — "
-                "the user still presses send — so nothing runs without their consent. "
+                "prompt), and 'Skip'. Both non-skip buttons PRE-FILL a composer and "
+                "the user still presses send, so nothing runs without their consent. "
+                "Only when the user has turned on 'Send follow-ups with one click' in "
+                "Settings does Start SEND your prompt as the new session's first "
+                "message instead, so one click starts a turn that runs it in the "
+                "background while the user stays in this session; the "
+                "button then reads 'Run in a separate copy' ('Run in new chat'). "
                 "When the session has no project directory, or its project directory "
                 "is not a git repository (or is only a folder inside a repository "
                 "rooted higher up), the first button is 'Start in new chat' "
                 "instead: it opens a new chat session in the same project directory "
-                "and sidebar folder, with no worktree and no git call, and pre-fills "
-                "its composer (the tool result tells you when the session has no "
-                "project directory); 'Add to this session' always works."
+                "and sidebar folder, with no worktree and no git call, and hands it "
+                "your prompt the same way (the tool result tells you when the "
+                "session has no project directory); 'Add to this session' always "
+                "works."
                 "\n\n"
                 "Call this at the END of a turn when you have finished the requested "
                 "work and see concrete next steps worth doing. Do NOT call it to ask a "
@@ -1101,7 +1127,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                 "The 'prompt' field is the real payload: write a COMPLETE, standalone "
                 "handoff instruction for the next agent, which may have none of this "
                 "session's context. Name the files, paths, constraints, and acceptance "
-                "criteria explicitly. 'title'/'description' are only the human-facing "
+                "criteria explicitly. Start may send it verbatim, so write it to be "
+                "safe to run as written. 'title'/'description' are only the human-facing "
                 "label. Prefer 'branch' + the worktree route for work that should not "
                 "share this session's working tree."
                 "\n\n"

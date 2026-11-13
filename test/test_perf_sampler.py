@@ -103,6 +103,78 @@ def _recognisable_workload(deadline: float | None = None) -> None:
         total += sum(i * i for i in range(2000))
 
 
+def _burn_until_sampled(sampler: perf_sampler.StackSampler) -> None:
+    """Keep _recognisable_workload on the stack until *sampler* has sampled it.
+
+    Poll for the frame rather than burning a fixed span and hoping a sample landed.
+    The requested interval is only a request: Windows rounds `Event.wait` up to
+    ~15.6ms and a loaded runner starves the daemon thread, so a fixed 0.25s burn that
+    expected ~125 samples has seen one (of an unrelated frame) or none at all. Holding
+    the frame until it is seen makes a test independent of the achieved rate, and the
+    deadline still fails loudly.
+    """
+    give_up_at = time.monotonic() + 30.0
+
+    def _seen() -> bool:
+        # Snapshot before scanning: the sampler thread inserts into `_counts` on
+        # every tick, and iterating it live can raise "dictionary changed size
+        # during iteration" -- which would be a NEW flake in the wait that exists
+        # to remove one. `list()` on a dict is atomic under the GIL. `_samples`
+        # too: a tick bumps it after `_counts`, and it is what the CLI checks.
+        return sampler._samples > 0 and any(
+            "_recognisable_workload" in stack for stack in list(sampler._counts)
+        )
+
+    while not _seen():
+        if time.monotonic() >= give_up_at:
+            # Not `assert`: the CLI prints and swallows a --call target's
+            # AssertionError, while pytest's Failed is a BaseException it lets through.
+            pytest.fail(
+                "the sampler never sampled _recognisable_workload in 30s "
+                f"(samples={sampler._samples})"
+            )
+        _recognisable_workload(min(time.monotonic() + 0.05, give_up_at))
+
+
+@pytest.fixture
+def hold_until_sampled(monkeypatch):
+    """A call that returns once the sampler `_perf_sample` built has sampled it.
+
+    The CLI builds its own StackSampler, so record it to give a --call target
+    something to wait on (see _burn_until_sampled).
+    """
+    built: list[perf_sampler.StackSampler] = []
+
+    def _build(*args, **kwargs):
+        built.append(perf_sampler.StackSampler(*args, **kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(cli_perf, "StackSampler", _build)
+    return lambda: _burn_until_sampled(built[-1])
+
+
+@pytest.fixture
+def probe_module(monkeypatch, hold_until_sampled):
+    """Install an importable module exposing the workloads --call needs.
+
+    The test file itself is not importable as ``test.test_perf_sampler`` (the
+    test directory is not a package), so a synthetic module gives --call a
+    real import target without depending on collection layout.
+    """
+    import sys
+    import types
+
+    def _boom() -> None:
+        hold_until_sampled()
+        raise RuntimeError("boom")
+
+    module = types.ModuleType("_kc_perf_probe")
+    module.work = hold_until_sampled  # type: ignore[attr-defined]
+    module.boom = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "_kc_perf_probe", module)
+    return "_kc_perf_probe"
+
+
 class TestStackSampler:
     @pytest.mark.parametrize("bad", [0.0, 0.0005, 1.5, -1.0])
     def test_rejects_out_of_range_interval(self, bad):
@@ -110,29 +182,9 @@ class TestStackSampler:
             perf_sampler.StackSampler(interval=bad)
 
     def test_collects_samples_and_names_the_frame(self):
-        # Poll for the frame rather than burning a fixed span and hoping a sample
-        # landed. The requested 2ms interval is only a request: Windows rounds
-        # `Event.wait` up to ~15.6ms and a loaded runner starves the daemon thread,
-        # so the old fixed 0.25s burn expected ~125 samples and CI observed one (of
-        # an unrelated frame). Holding the frame until it is seen makes this
-        # independent of the achieved rate, and the deadline still fails loudly.
         sampler = perf_sampler.StackSampler(interval=0.002)
         sampler.start()
-        give_up_at = time.monotonic() + 30.0
-
-        def _seen() -> bool:
-            # Snapshot before scanning: the sampler thread inserts into `_counts` on
-            # every tick, and iterating it live can raise "dictionary changed size
-            # during iteration" -- which would be a NEW flake in the test that exists
-            # to remove one. `list()` on a dict is atomic under the GIL.
-            return any("_recognisable_workload" in stack for stack in list(sampler._counts))
-
-        while not _seen():
-            assert time.monotonic() < give_up_at, (
-                "the sampler never sampled _recognisable_workload in 30s "
-                f"(samples={sampler._samples})"
-            )
-            _recognisable_workload(min(time.monotonic() + 0.05, give_up_at))
+        _burn_until_sampled(sampler)
         report = sampler.stop()
 
         assert report.samples > 0
@@ -333,26 +385,6 @@ class TestPySpy:
 
 
 class TestCliSample:
-    @pytest.fixture
-    def probe_module(self):
-        """Install an importable module exposing the workloads --call needs.
-
-        The test file itself is not importable as ``test.test_perf_sampler`` (the
-        test directory is not a package), so a synthetic module gives --call a
-        real import target without depending on collection layout.
-        """
-        import sys
-        import types
-
-        module = types.ModuleType("_kc_perf_probe")
-        module.work = _recognisable_workload  # type: ignore[attr-defined]
-        module.boom = _raises_after_work  # type: ignore[attr-defined]
-        sys.modules["_kc_perf_probe"] = module
-        try:
-            yield "_kc_perf_probe"
-        finally:
-            sys.modules.pop("_kc_perf_probe", None)
-
     def test_in_process_run_writes_a_private_artifact(self, monkeypatch, tmp_path, probe_module):
         monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
         out = tmp_path / "nested" / "p.folded"
@@ -441,11 +473,6 @@ class TestCliSample:
         assert "--pid" in err and "--call" in err
 
 
-def _raises_after_work() -> None:
-    _recognisable_workload()
-    raise RuntimeError("boom")
-
-
 # ── Gateway PID resolution ──
 
 
@@ -532,26 +559,17 @@ class TestArtifactWriteFailure:
         assert cli_perf._write_artifact(target, "x") is False
         assert "Could not write the profile" in capsys.readouterr().err
 
-    def test_cli_exits_nonzero_instead_of_tracebacking(self, monkeypatch, tmp_path, capsys):
+    def test_cli_exits_nonzero_instead_of_tracebacking(
+        self, monkeypatch, tmp_path, capsys, probe_module
+    ):
         monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
-        import sys as _sys
-        import types
-
-        module = types.ModuleType("_kc_perf_probe_w")
-        module.work = _recognisable_workload  # type: ignore[attr-defined]
-        _sys.modules["_kc_perf_probe_w"] = module
-        try:
-            unwritable = tmp_path / "adir"
-            unwritable.mkdir()
-            args = _sample_args(
-                perf_call="_kc_perf_probe_w:work", interval=0.002, output=unwritable
-            )
-            # Sampling succeeded; only the write failed, so this must be a clean
-            # nonzero exit with a diagnostic rather than an uncaught OSError.
-            assert cli_perf._perf_sample(args) == 6
-            assert "Could not write the profile" in capsys.readouterr().err
-        finally:
-            _sys.modules.pop("_kc_perf_probe_w", None)
+        unwritable = tmp_path / "adir"
+        unwritable.mkdir()
+        args = _sample_args(perf_call=f"{probe_module}:work", interval=0.002, output=unwritable)
+        # Sampling succeeded; only the write failed, so this must be a clean
+        # nonzero exit with a diagnostic rather than an uncaught OSError.
+        assert cli_perf._perf_sample(args) == 6
+        assert "Could not write the profile" in capsys.readouterr().err
 
 
 class TestPySpyPathShortening:
@@ -753,7 +771,9 @@ class TestShortenPathsWithSpaces:
 
 
 class TestCallExitsCleanly:
-    def test_systemexit_from_the_call_still_writes_the_profile(self, monkeypatch, tmp_path):
+    def test_systemexit_from_the_call_still_writes_the_profile(
+        self, monkeypatch, tmp_path, hold_until_sampled
+    ):
         """CLI entry points exit via sys.exit on their NORMAL path.
 
         Catching only Exception meant profiling the most natural targets produced
@@ -763,11 +783,7 @@ class TestCallExitsCleanly:
         out = tmp_path / "p.folded"
 
         def _exits():
-            # Sleep rather than burn CPU: the sampler walks sys._current_frames()
-            # on a wall-clock interval and a sleeping thread is still sampled, so
-            # this collects samples deterministically instead of racing the
-            # interval under parallel test load.
-            time.sleep(0.3)
+            hold_until_sampled()
             raise SystemExit(1)
 
         monkeypatch.setattr(cli_perf, "_resolve_callable", lambda _spec: _exits)

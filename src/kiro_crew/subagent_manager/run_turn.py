@@ -64,6 +64,7 @@ if TYPE_CHECKING:
         _route_unpinned_start,
         _RunCreditAccounting,
         _selection_kind,
+        _spawning_agents,
         _validate_agent,
         _vet_spawn_governance,
         acp_error_is_transient,
@@ -107,6 +108,7 @@ async def _run_inner_impl(
     setattr(info, "_session_id", "")
     setattr(info, "_session_provider", "")
     setattr(info, "_session_cwd", "")
+    setattr(info, "_session_codex_home", "")
     # Mark the real start of execution BEFORE any await so the startup
     # watchdog measures from here, not from registration (which may include
     # an arbitrary spawn-approval wait). Must be the first statement.
@@ -239,9 +241,19 @@ async def _run_inner_impl(
     kind = _selection_kind(info)
     if info.crew or execution.member_id or (not info.agent and agent):
         policy_agent = info.crew or (execution.selection_name if kind == "member" else agent)
-        denial = await asyncio.to_thread(
-            _vet_spawn_governance, info.parent_session_key, policy_agent, app=info.app
-        )
+        denial = None
+        for parent_agent in _spawning_agents(
+            self._manager._agents.values(), info.parent_session_key or ""
+        ) or ("",):
+            denial = await asyncio.to_thread(
+                _vet_spawn_governance,
+                info.parent_session_key,
+                policy_agent,
+                app=info.app,
+                **({"parent_agent": parent_agent} if parent_agent else {}),
+            )
+            if denial:
+                break
         if denial:
             raise RuntimeError(f"spawn refused by governance: {denial}")
         sel().log_api_access(
@@ -524,8 +536,10 @@ async def _run_inner_impl(
     child_escalation_limit = max(turn_limit * 3, 60)
     await _session.persist_spawn_records(self, info, session_key, agent, client)
 
-    _rp = agent_dir_for_display(info.id) / "result.txt"
-    info.result_path = str(_rp)
+    # Off the loop: the display path resolves the run directory, a realpath that
+    # opens every path part on Windows.
+    _run_dir = await asyncio.to_thread(agent_dir_for_display, info.id)
+    info.result_path = str(_run_dir / "result.txt")
     # This attempt's first text chunk starts the live partial and
     # result.txt afresh, so they hold this attempt's text alone, never
     # glued to an earlier attempt's: until then that partial stays
@@ -551,6 +565,19 @@ async def _run_inner_impl(
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
+    if _spec.lost:
+        # Once per run, for the operator. Not in the result, which callers may
+        # parse. The log counts the keys and does not name them, so no spec text
+        # reaches it; a dashboard chat on the same agent names them.
+        from kiro_crew.agent_sdk.spec_hooks import session_agent
+
+        logger.warning(
+            "Subagent %s: agent %s sets %d spec key(s) this backend does not apply "
+            "as written in this run",
+            info.id,
+            session_agent(client, agent),
+            len(_spec.lost),
+        )
     _hook_prefix = await _session.fire_prompt_hooks(
         self,
         info,
@@ -577,6 +604,8 @@ async def _run_inner_impl(
             session_key=session_key,
             agent=info.agent or "",
             app=info.app or "",
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict

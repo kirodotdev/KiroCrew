@@ -55,17 +55,14 @@ logger = logging.getLogger(__name__)
 
 # The stop-reason strings this mapping recognises, spelled here rather than
 # imported from ``kiro_crew.acp.types``. Application code must not reach the ACP
-# layer -- ``scripts/check_agent_sdk_boundary.py`` enforces that, and the
-# baseline it ratchets can only shrink, so a metrics leaf is not the place to add
-# an exemption. The file already spelled the clean-completion vocabulary
-# ("end_turn" / "stop" / "completed") as literals for the same reason.
+# layer -- ``scripts/check_agent_sdk_boundary.py`` enforces that with a baseline
+# that can only shrink. The clean-completion vocabulary ("end_turn" / "stop" /
+# "completed") is spelled as literals for the same reason.
 #
-# Duplicating a wire constant is only safe with a guard, so
 # ``test/metrics/test_turn_profile.py`` pins each of these against the ACP
-# constant it mirrors: the test tree is outside the boundary gate's scope
-# (``DEFAULT_TARGETS = ("src",)``), so the pin can import what this module may
-# not. A change to the backend's vocabulary reddens there instead of silently
-# reclassifying every turn of one kind as ``error``.
+# constant it mirrors (the test tree is outside the boundary gate's
+# ``DEFAULT_TARGETS = ("src",)``), so a vocabulary change fails there instead of
+# silently reclassifying every turn of one kind as ``error``.
 _STOP_CANCELLED = "cancelled"
 _STOP_TOOL_STALL = "error: tool stall"
 _STOP_STALE_RECOVER = "stale_recover"
@@ -73,10 +70,8 @@ _STOP_STALE_RECOVER = "stale_recover"
 #: The instrument name. ``dashboard/handlers/telemetry.py`` reads the same
 #: constant, so emitter and reader cannot drift apart.
 #:
-#: ``metrics/provider.py``'s bucket table keeps its own literal, and that is not
-#: an oversight: this module imports ``get_recorder`` from it, so having it import
-#: the name back would be a cycle. That one duplicate is the cost of the import
-#: direction, not a spelling nobody noticed.
+#: ``metrics/provider.py``'s bucket table keeps its own literal: this module
+#: imports ``get_recorder`` from it, so importing the name back would be a cycle.
 TURN_METRIC = "kirocrew.turn.duration"
 
 #: Per-turn token volume. ONE instrument with a ``direction`` attribute rather
@@ -105,13 +100,10 @@ TURN_COST_METRIC = "kirocrew.turn.cost_usd"
 
 #: Outcome for a turn whose surface could not determine a stop reason at all.
 #: Deliberately NOT ``unknown``: that label is in
-#: ``telemetry._TERMINAL_FAULT_OUTCOMES``, so every clean background turn
-#: reaching a helper site that passes a bare ``TurnUsage`` would have landed in
-#: the fault-rate NUMERATOR and inflated the fault rate the moment this metric
-#: was widened. It is also not folded into ``ok``, which would claim a success
-#: nobody observed. It is its own slice, excluded from faults and visible in the
-#: outcome breakdown, so the blind spot is a number an operator can see rather
-#: than a guess in either direction.
+#: ``telemetry._TERMINAL_FAULT_OUTCOMES``, so every clean background turn from a
+#: helper site that passes a bare ``TurnUsage`` would count as a fault. Nor ``ok``,
+#: which would claim a success nobody observed. Its own slice keeps the blind spot
+#: visible in the outcome breakdown and out of the fault rate.
 OUTCOME_UNCLASSIFIED = "unclassified"
 
 
@@ -207,14 +199,13 @@ def emit_turn_duration(
 
     ``duration_ms`` is the provider-reported duration and ``elapsed_ms`` the
     locally measured wall clock; the first non-zero wins. Both are needed
-    because the acp provider ALWAYS reports ``TurnUsage.duration_ms == 0``
-    (nothing in the codebase assigns it — only claude_code fills it in), so a
-    provider-only value silently skipped the emit for effectively all traffic
-    and left turn latency / fault rate / throughput reading a flat 0.
+    because the acp provider ALWAYS reports ``TurnUsage.duration_ms == 0`` (only
+    claude_code fills it in), so a provider-only value would skip the emit for
+    almost all traffic.
 
     A still-zero duration skips the emit deliberately: an absent sample reads as
     "no data" on the Telemetry page, whereas a recorded 0 would render as a
-    plausible-looking 0ms p50 — the very symptom that guard's misuse caused.
+    plausible-looking 0ms p50.
 
     ``session_source`` is derived with
     :func:`kiro_crew.messaging.link.telemetry_channel_of`, which exists for

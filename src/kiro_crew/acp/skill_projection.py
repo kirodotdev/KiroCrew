@@ -38,6 +38,7 @@ from kiro_crew.config.paths import (  # noqa: F401
     kiro_home,
     project_agents_dir,
 )
+from kiro_crew.file_uri import file_uri_path_text  # noqa: F401
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes  # noqa: F401
 from kiro_crew.security import _PATH_RESOLVE_TIMEOUT_SECS  # noqa: F401
 from kiro_crew.user_json import copy_json_document  # noqa: F401
@@ -97,6 +98,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         census_projected_aliases,
         census_projection_residue,
         drain_stale_aliases,
+        prune_stale_aliases_at_stop,
     )
     from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (  # noqa: F401
         _ABSENT_SETTINGS,
@@ -129,7 +131,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _pinned_source,
         _projection_enabled,
         _relaunch_reserved_servers,
+        _skill_view_census,
         _warn_ceiling_fallback_once,
+        next_spawn_projects_skill_view,
         prepare_native_skill_projection,
         project_agent_view,
     )
@@ -248,6 +252,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _sidecar_answers_for,
         _ViewLedgerWrites,
         is_skill_view_name,
+        owned_view_source,
         remembered_view_source,
         resolve_source_agent,
         source_agent_name,

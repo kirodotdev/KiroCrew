@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, act, cleanup, within } from '@testing-library/react'
 import AssistantMessage, { fmtTurnElapsed, fmtTurnModel } from '../pages/chat/AssistantMessage'
 import { fmtCredits } from '../i18n/format'
 import { i18next } from '../i18n/all'
@@ -213,6 +213,24 @@ describe('AssistantMessage', () => {
     render(<AssistantMessage content="v1" isStreaming={false} slotRunning={false} variants={variants} variantIdx={0} onSwitchVariant={() => {}} />)
     expect(screen.queryByTitle('Previous version')).not.toBeInTheDocument()
     expect(screen.queryByTitle('Next version')).not.toBeInTheDocument()
+  })
+
+  it('keeps keyboard focus on the version arrows when Previous or Next goes disabled', () => {
+    const variants = [{ content: 'v1' }, { content: 'v2' }]
+    render(<AssistantMessage content="v2" isStreaming={false} variants={variants} variantIdx={1} />)
+    const prev = screen.getByTitle('Previous version')
+    const next = screen.getByTitle('Next version')
+    // Previous onto the first version disables it, so focus moves to Next.
+    act(() => { prev.focus() })
+    fireEvent.click(prev)
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    expect(prev).toBeDisabled()
+    expect(document.activeElement).toBe(next)
+    // Next back onto the last version disables it, so focus moves to Previous.
+    fireEvent.click(next)
+    expect(screen.getByText('2/2')).toBeInTheDocument()
+    expect(next).toBeDisabled()
+    expect(document.activeElement).toBe(prev)
   })
 
   it('disables variant arrows when slotRunning', () => {
@@ -599,7 +617,7 @@ describe('AssistantMessage', () => {
     // without a cue HERE the reader perceives nothing happening and clicks again.
     const idle = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onLoadEarlier={vi.fn()} />)
     openOverflow()
-    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+    expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeInTheDocument()
     expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
     idle.unmount()
     render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onFork={vi.fn()} onLoadEarlier={vi.fn()} loadingOlder />)
@@ -654,7 +672,7 @@ describe('AssistantMessage', () => {
     const forkItem = screen.getByTitle('Fork conversation from here')
     expect(forkItem).toBeDisabled()
     expect(forkItem.querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-    expect(forkItem.querySelector('svg.lucide-git-fork')).not.toBeInTheDocument()
+    expect(forkItem.querySelector('svg.lucide-split')).not.toBeInTheDocument()
 
     await act(async () => { resolveFork(); await Promise.resolve() })
     expect(screen.getByTitle('Fork conversation from here')).not.toBeDisabled()
@@ -736,7 +754,7 @@ describe('AssistantMessage', () => {
       render(<AssistantMessage {...menuProps} {...stable} onFork={vi.fn()} forkDirectionChoice />)
       openOverflow()
       for (const id of ['fork-from-here', 'fork-with-history']) {
-        expect(screen.getByTestId(id).querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+        expect(screen.getByTestId(id).querySelector('svg.lucide-split')).toBeInTheDocument()
       }
     })
 
@@ -810,7 +828,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       // The plain entry forks with history here, so its label says no more than it did.
       expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Fork conversation from here')
-      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeInTheDocument()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeInTheDocument()
       expect(screen.queryByTestId('fork-with-history')).toBeNull()
     })
 
@@ -847,7 +865,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
       // The spinner takes the icon's place, so the label keeps its column beside its neighbours.
-      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-split')).toBeNull()
       expect(screen.getByTestId('fork-with-history-label').querySelectorAll('svg')).toHaveLength(1)
       expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
       expect(screen.getByTestId('fork-with-history')).toHaveAttribute('aria-disabled', 'true')
@@ -884,7 +902,7 @@ describe('AssistantMessage', () => {
       openOverflow()
       expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
       // The spinner takes the icon's place here too, so both entries' labels stay in one column.
-      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeNull()
       expect(screen.getByTestId('fork-with-history').querySelector('svg.lucide-loader-circle')).not.toBeInTheDocument()
       expect(screen.getByTestId('fork-with-history')).toHaveAttribute('aria-disabled', 'true')
       expect(screen.getByTestId('fork-from-here')).toHaveTextContent('Forking…')
@@ -947,7 +965,7 @@ describe('AssistantMessage', () => {
       fireEvent.click(screen.getByTestId('fork-from-here'))
       openOverflow()
       expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-loader-circle')).toBeInTheDocument()
-      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-git-fork')).toBeNull()
+      expect(screen.getByTestId('fork-from-here').querySelector('svg.lucide-split')).toBeNull()
       await act(async () => { resolveFork(); await Promise.resolve() })
     })
   })
@@ -1331,6 +1349,37 @@ describe('turn stats footer (elapsed time + credits)', () => {
     expect(screen.getByTestId('turn-model')).toHaveTextContent('claude-opus-4-8[1m]')
     expect(screen.getByTestId('turn-model')).not.toHaveTextContent('global.anthropic')
     expect(screen.getByTestId('turn-stats').title).toContain('global.anthropic.claude-opus-4-8[1m]')
+  })
+
+  it('shows a "Cache rebuilt" marker with its reason only on a turn the gateway marked', () => {
+    render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'rewrite' }} />)
+    const chip = screen.getByTestId('turn-cache-rewrite')
+    const hint = 'This reply had to store the whole conversation again, so it cost more than usual.'
+    expect(chip).toHaveTextContent('Cache rebuilt')
+    // The reason sits on the app's info tip, which a keyboard can reach: closed,
+    // the hint is its title; focus opens it and attaches the hint as its
+    // description.
+    const tip = within(chip).getByRole('button', { name: 'More information' })
+    expect(tip).toHaveAttribute('title', hint)
+    act(() => { tip.focus() })
+    expect(tip).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('tooltip')).toHaveTextContent(hint)
+    // Open, the glyph's own title is gone, so the nearest title at or above it
+    // is what a hovering browser shows. It must be empty, or the footer's
+    // summary appears as a second tooltip beside the bubble.
+    expect(tip.closest('[title]')).toHaveAttribute('title', '')
+    // Footer text, not a pill.
+    expect(chip.className).not.toMatch(/\bborder\b|\brounded-full\b/)
+    // The marker trails the elapsed time after the footer's own separator, and
+    // leaves the billed amount where it was.
+    expect(screen.getByTestId('turn-stats').textContent!.replace(/\s+/g, ' ').trim()).toMatch(/^2\.50 credits ·\s*1m 24s\s*·\s*Cache rebuilt$/)
+  })
+
+  it('draws no cache chip when the key is absent or holds another value', () => {
+    const { rerender } = render(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5 }} />)
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
+    rerender(<AssistantMessage content="done" isStreaming={false} slotRunning={false} turnStats={{ elapsed_ms: 84_000, credits: 2.5, cache: 'warm' as never }} />)
+    expect(screen.queryByTestId('turn-cache-rewrite')).not.toBeInTheDocument()
   })
 
   it('omits the model chip when the backend did not resolve one', () => {

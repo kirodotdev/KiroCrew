@@ -261,10 +261,16 @@
       // Only a worker actually mid-turn pulses.
       function live(it) { return view(it) === 'working' && !(it.looping === true && it.worker === 'idle'); }
       // THE CHAT BOX, never the wire: the host fills the person's composer with this
-      // text and the person presses send, so a row can offer a reply and never speak
-      // as them. Same message office and project-report post.
+      // text and the person presses send. Used for Reply, whose text is a starter.
       function act(text) {
         try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: text }, '*'); }
+        catch (e) { /* no host: the choice simply does nothing */ }
+      }
+      // A FINISHED answer (an offered option): asks the host to send it in one click.
+      // The host sends only when the person turned "Send replies in one click" on;
+      // otherwise, or on any refusal, it fills the composer exactly as `act` does.
+      function send(text) {
+        try { parent.postMessage({ type: 'kirocrew-dashboard:send', text: text }, '*'); }
         catch (e) { /* no host: the choice simply does nothing */ }
       }
       // A link the row names, opened BY THE HOST in a new tab: the frame has no
@@ -303,12 +309,15 @@
         var o = e && Array.isArray(e.options) ? e.options : [];
         return o.filter(function (x) { return !!text(x); }).slice(0, 6);
       }
-      function button(label, cls, say) {
+      // `post` is how the click reaches the host: `act` (fill the chat box) by default,
+      // `send` for a finished answer.
+      function button(label, cls, say, post) {
         var b = document.createElement('button');
         b.type = 'button';
         if (cls) b.className = cls;
         b.textContent = label;
-        if (say !== null) b.addEventListener('click', function () { act(say); });
+        var to = post || act;
+        if (say !== null) b.addEventListener('click', function () { to(say); });
         return b;
       }
       function actions(it) {
@@ -319,7 +328,9 @@
         row.appendChild(button(i18n('reply'), 'reply', ref));
         var opts = optionsFor(id);
         for (var i = 0; i < opts.length; i++) {
-          var ob = button(i18n('option', { o: clip(opts[i], 40) }), null, ref + clip(opts[i], 200));
+          // An option is a finished answer: sent in one click when the person allows it.
+          // Reply above stays `act`: its text is a starter the person finishes.
+          var ob = button(i18n('option', { o: clip(opts[i], 40) }), null, ref + clip(opts[i], 200), send);
           ob.title = i18n('option_title');
           row.appendChild(ob);
         }

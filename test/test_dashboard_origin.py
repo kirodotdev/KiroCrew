@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import socket
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -291,7 +292,7 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
         assert any("ssh -NL 5476:localhost:5476 myhost" in ln for ln in lines)
         assert any("http://localhost:5476?token=t" in ln for ln in lines)
-        assert any("systemd" in ln for ln in lines)
+        assert "👻 Run 24/7:  kirocrew service install" in lines
 
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
@@ -385,6 +386,59 @@ class TestFormatDashboardUrls:
         lines = format_dashboard_urls("http://host:5476?token=abc", port=5476, local_only=False)
         proxy_line = [ln for ln in lines if "Proxy" in ln][0]
         assert "proxy.devspaces.example.com?token=abc" in proxy_line
+
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.machine_hostname", return_value="localhost")
+    def test_without_token_the_url_is_bare_and_names_kirocrew_token(
+        self, _mh: object, _dp: object
+    ) -> None:
+        """A stdout a service manager keeps gets the origin, never the login link."""
+        lines = format_dashboard_urls(
+            "http://localhost:5476?token=abc", port=5476, with_token=False
+        )
+        assert lines == [
+            "👻 Dashboard:",
+            "   http://localhost:5476",
+            "👻 Sign in:   run kirocrew token for a sign-in link",
+        ]
+
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 5678"})
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.machine_hostname", return_value="myhost")
+    def test_without_token_the_ssh_tunnel_line_carries_no_token(
+        self, _mh: object, _dp: object
+    ) -> None:
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476, with_token=False)
+        assert "             then open http://localhost:5476" in lines
+        assert not any("token=" in ln for ln in lines)
+        assert any("kirocrew token" in ln for ln in lines)
+
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value="https://proxy.devspaces.example.com")
+    @patch(f"{_MOD}.machine_hostname", return_value="localhost")
+    def test_without_token_the_proxy_line_carries_no_token(self, _mh: object, _dp: object) -> None:
+        lines = format_dashboard_urls(
+            "http://host:5476?token=abc", port=5476, local_only=False, with_token=False
+        )
+        assert "👻 Proxy:     https://proxy.devspaces.example.com" in lines
+        assert not any("token=" in ln for ln in lines)
+
+    @pytest.mark.parametrize(
+        "stdout, expected",
+        [
+            pytest.param(SimpleNamespace(isatty=lambda: True), True, id="terminal"),
+            pytest.param(SimpleNamespace(isatty=lambda: False), False, id="log_file"),
+            pytest.param(SimpleNamespace(), False, id="no_isatty"),
+            pytest.param(None, False, id="pythonw"),
+        ],
+    )
+    def test_login_link_may_print_only_to_a_terminal(self, stdout: object, expected: bool) -> None:
+        # Resolved here, not at import time: a tree without the helper then fails
+        # this test alone instead of aborting the collection of the whole file.
+        from kiro_crew.dashboard.urls import login_link_may_print
+
+        with patch("sys.stdout", stdout):
+            may_print = login_link_may_print()
+        assert may_print is expected
 
     @pytest.mark.parametrize(
         "url, local_only",

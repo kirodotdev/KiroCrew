@@ -1183,7 +1183,12 @@ class TestNewConversation:
 
         # Fresh session/new on the SAME runtime (cwd+agent from the runtime).
         runtime.create_session.assert_awaited_once_with(
-            cwd="/tmp/ws", agent="kirocrew", memory_mode="persistent", session_key=""
+            cwd="/tmp/ws",
+            agent="kirocrew",
+            memory_mode="persistent",
+            session_key="",
+            member_session_key="",
+            channel_id="",
         )
         # Handle swapped to the fresh session → next prompt starts clean.
         assert provider._handle is new_handle
@@ -1216,6 +1221,20 @@ class TestNewConversation:
         assert runtime.create_session.await_args.kwargs["session_key"] == "slot:owner"
 
     @pytest.mark.asyncio
+    async def test_a_bot_or_channel_chat_keeps_its_mount_and_channel(self):
+        # A Bot DM's dispatch tools and a Slack chat's channel ride session/new on a
+        # cold start; a chat's fresh conversation must carry them too.
+        old = _make_handle(session_id="old-session-1")
+        runtime, _new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime, session_key="member:bot")
+
+        await provider.new_conversation(member_session_key="member:bot", channel_id="C123")
+
+        kwargs = runtime.create_session.await_args.kwargs
+        assert kwargs["member_session_key"] == "member:bot"
+        assert kwargs["channel_id"] == "C123"
+
+    @pytest.mark.asyncio
     async def test_the_fresh_conversation_keeps_the_delete_delay(self):
         """A pooled worker sets the delay once; every later conversation inherits it."""
         old = _make_handle(session_id="old-session-1")
@@ -1226,6 +1245,25 @@ class TestNewConversation:
         await provider.new_conversation()
 
         assert new_handle.delete_delay_secs == 1800.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("routed", [True, False])
+    async def test_the_fresh_conversation_keeps_the_keepalive_routes_mark(self, routed):
+        """The registry ``/api/session-keepalive`` reads holds the provider, not the
+        handle: a fresh conversation still times its calls on Kiro Crew's servers
+        exactly when the old one did."""
+        old = _make_handle(session_id="old-session-1")
+        old.keepalive_routed = False
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.keepalive_routed = False
+        provider = AcpSessionProvider(old, runtime)
+        if routed:
+            provider.mark_keepalive_routed()
+            assert old.keepalive_routed is True
+
+        await provider.new_conversation()
+
+        assert new_handle.keepalive_routed is routed
 
     def test_the_workflow_provider_passes_the_delete_delay_to_its_session(self):
         """A workflow worker holds an ``AcpProvider``; only its shared-runtime client
@@ -1287,6 +1325,34 @@ class TestNewConversation:
         # (never a window referencing a terminated one), and old was NOT destroyed.
         assert provider._handle is old
         old.destroy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_fresh_conversation_clears_the_resumed_observation(self):
+        # A session restored via session/load reads resumed=True, which tells the
+        # turn path the backend already holds the history. The fresh session/new
+        # holds none, so a stale True would run the next turn on an empty context.
+        old = _make_handle(session_id="old-session-1")
+        runtime, _new_handle = self._runtime_with_new_session()
+        provider = AcpSessionProvider(old, runtime)
+        provider.resumed = True
+
+        await provider.new_conversation()
+
+        assert provider.resumed is False
+
+    @pytest.mark.asyncio
+    async def test_failed_create_keeps_the_resumed_observation(self):
+        old = _make_handle(session_id="old-session-1")
+        runtime, _ = self._runtime_with_new_session()
+        runtime.create_session = AsyncMock(side_effect=RuntimeError("session/new boom"))
+        provider = AcpSessionProvider(old, runtime)
+        provider.resumed = True
+
+        with pytest.raises(RuntimeError):
+            await provider.new_conversation()
+
+        # Still on the restored session, so it still holds its history.
+        assert provider.resumed is True
 
     @pytest.mark.asyncio
     async def test_refuses_a_backend_that_does_not_evict_before_creating_anything(self):
@@ -1407,6 +1473,22 @@ class TestNewConversation:
         await provider.new_conversation()
 
         new_handle.set_model.assert_not_awaited()
+        assert provider._handle is new_handle
+
+    @pytest.mark.asyncio
+    async def test_an_inherited_model_is_reapplied_as_inherited(self):
+        """An unpinned KAS session on kiro-cli's chat.defaultModel keeps it across a
+        fresh conversation, still as an inherited model, not a pin."""
+        old = _make_handle(session_id="old-session-1")
+        old.model = ""
+        old.inherited_model = "claude-opus-5.5"
+        runtime, new_handle = self._runtime_with_new_session()
+        new_handle.set_model = AsyncMock()
+        provider = AcpSessionProvider(old, runtime)
+
+        await provider.new_conversation()
+
+        assert new_handle.set_model.await_args_list == [call("claude-opus-5.5", inherit=True)]
         assert provider._handle is new_handle
 
     @pytest.mark.asyncio

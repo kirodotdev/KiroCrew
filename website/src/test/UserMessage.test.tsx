@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach, beforeEach, onTestFinished } from 'vitest'
 import { render, screen, fireEvent, act } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import UserMessage from '../pages/chat/UserMessage'
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
@@ -277,6 +278,20 @@ describe('UserMessage', () => {
     expect(screen.getByText('Steered into the running turn')).toBeInTheDocument()
   })
 
+  // An app's answer steered into the running turn takes this branch, which skips
+  // the person byline; it must still name the app, not read as the owner's typing.
+  it('names the app on a steered row an app sent', () => {
+    const qc = new QueryClient()
+    qc.setQueryData(['apps'], [])
+    render(
+      <QueryClientProvider client={qc}>
+        <UserMessage content="Approved" meta={{ steer: true, steerState: 'consumed', turnActor: 'app', appLabel: 'notes-app' }} messageTs="steer-app" renderContent={renderContent} />
+      </QueryClientProvider>,
+    )
+    expect(screen.getByText('Steered into the running turn')).toBeInTheDocument()
+    expect(screen.getByTestId('message-app-sender')).toHaveTextContent('Sent by the notes-app app')
+  })
+
   // The client mints its own bubble as `{ steer: true, optimistic: true }` with no
   // state before the server has answered at all -- the least confirmed a steer can
   // be. It must not fall through to the legacy state-less case and claim success.
@@ -403,6 +418,14 @@ describe('steer pending / requeued treatments', () => {
 
   it('renders the requeued line only for a requeued steer', () => {
     render(<UserMessage content="go north" meta={{ steer: true, steerState: 'requeued' }} messageTs="req-only" slotRunning renderContent={renderContent} />)
+    expect(screen.getByText(REQUEUED)).toBeInTheDocument()
+    expect(screen.queryByText(BADGE)).not.toBeInTheDocument()
+  })
+
+  // A surface without the shared turn grouping still draws a superseded row, so
+  // it must keep the requeued line rather than read as a plain second send.
+  it('keeps the requeued line on a superseded steer row', () => {
+    render(<UserMessage content="go north" meta={{ steer: true, steerState: 'superseded' }} messageTs="req-superseded" renderContent={renderContent} />)
     expect(screen.getByText(REQUEUED)).toBeInTheDocument()
     expect(screen.queryByText(BADGE)).not.toBeInTheDocument()
   })

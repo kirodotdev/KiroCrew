@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +23,7 @@ from test_consolidation_semantic_item_bound import (
     _CODE,
     _LARGE,
     _LARGE_KEY,
+    _LOGGER,
     _SMALL,
     _SMALL_KEY,
     _audited,
@@ -285,3 +287,77 @@ async def test_a_v1_pass_audits_after_its_history_entry_under_the_commit_it_made
     assert outcome is None
     assert [r["memory_key"] for r in _audited(store)] == [_LARGE_KEY]
     assert store.get_semantic(_SMALL_KEY) is not None
+
+
+async def _next_pass(c, generation: int, *items: object) -> str:
+    """A prefs-only pass over a fresh span whose model answers with *items*; its prompt.
+
+    Each pass reads a new generation, so a member store does not replay an earlier
+    pass's receipt in its place.
+    """
+    c._log.snapshot_for_consolidation.return_value = (
+        [{"role": "user", "content": f"turn {generation}"}],
+        1,
+        generation,
+        0,
+    )
+    _, prompts = await _run(c, *items)
+    return prompts[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["v1", "member"])
+async def test_a_refused_value_is_listed_in_the_next_prompt_once(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, opened, path: str
+) -> None:
+    # The refusing pass marks its span consolidated, so the session's next prompt is
+    # the model's one chance to propose the fact again within the bound.
+    heading = "## Semantic Values Refused Last Pass"
+    store, c = _store_for(path, tmp_path, monkeypatch, opened)
+
+    first = await _next_pass(c, 1, _item(_SMALL_KEY, _SMALL), _item(_LARGE_KEY, _LARGE))
+    second = await _next_pass(c, 2)
+    third = await _next_pass(c, 3)
+
+    assert heading not in first
+    listed = [{"key": _LARGE_KEY, "chars": len(_LARGE), "value": _LARGE}]
+    assert heading in second
+    assert json.dumps(listed, indent=1) in second
+    assert f"over the {_BOUND}-character bound" in second
+    assert heading not in third, "a pass that listed the value and wrote its answer drops it"
+    assert store.get_semantic(_LARGE_KEY) is None
+
+
+def test_a_note_keeps_its_newest_five_and_the_prune_deletes_only_stale_notes(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, opened, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Imported here, so this module still collects where the helpers do not exist yet.
+    from kiro_crew.history_consolidation_memory import (
+        _refused_semantic_note,
+        _update_refused_semantic_note,
+    )
+
+    store, _ = _store_for("v1", tmp_path, monkeypatch, opened)
+    store._write_meta("consolidation_refused_semantic:gone", "[]")
+    store._write_meta("consolidation_refused_semantic:fresh", "[]")
+    store._write_meta("other.meta", "kept")
+    with store._db_lock:
+        store.db.execute(
+            "UPDATE memory_meta SET updated_at = ? WHERE key IN (?, ?)",
+            ("2000-01-01T00:00:00+00:00", "consolidation_refused_semantic:gone", "other.meta"),
+        )
+        store.db.commit()
+    entries = [{"key": f"project.fact{i}", "chars": _BOUND + i, "value": "v"} for i in range(7)]
+
+    with caplog.at_level(logging.WARNING, logger=_LOGGER):
+        assert _update_refused_semantic_note(store, "k", add=entries)
+
+    assert _refused_semantic_note(store, "k") == entries[-5:]
+    full = [r.getMessage() for r in caplog.records if "note of k is full" in r.getMessage()]
+    assert len(full) == 1, "the overflow is said once per write"
+    assert "dropped 2 " in full[0]
+    assert "project.fact0" in full[0] and "project.fact1" in full[0]
+    assert "project.fact2" not in full[0]
+    assert store._read_meta("consolidation_refused_semantic:gone") is None
+    assert store._read_meta("consolidation_refused_semantic:fresh") == "[]"
+    assert store._read_meta("other.meta") == "kept", "the prune reads only note rows"

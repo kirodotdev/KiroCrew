@@ -380,8 +380,8 @@ class TestRestrictToOwner:
     A bare ``if IS_POSIX: os.chmod(...)`` guard would leave Windows with NO per-file
     owner-only restriction on the token signing key, per-app secrets, refresh-token
     state, snapshot tarball, and cron internal-secret temp file.
-    ``restrict_to_owner`` covers both: POSIX chmod 0o600,
-    Windows an owner-only DACL applied via icacls (S-1-3-4 = Owner Rights).
+    ``restrict_to_owner`` covers both: POSIX chmod 0o600, Windows an in-process
+    owner-only DACL granting Owner Rights (S-1-3-4) and the invoking user's SID.
     """
 
     def test_applies_owner_only_mode_on_posix(self, tmp_path):

@@ -397,8 +397,10 @@ def install() -> None:
     # Write the launcher BEFORE loading: a loaded agent whose Program does not
     # exist fails to spawn and KeepAlive would retry it in a tight loop.
     write_live_program(render_live_program(kirocrew_bin()))
-    if PLIST_PATH.exists():
-        _bootout(wait=True)
+    # Boot out whatever launchd still holds, plist or not: a job whose plist is
+    # gone (an earlier uninstall launchd refused, or a hand-deleted file) is
+    # still loaded, and bootstrapping over it fails with "5: Input/output error".
+    _bootout(wait=True)
     _write_plist_atomic(render_plist())
     domain = _pod_launchd.domain()
     load_res = _bootstrap_into(domain)
@@ -476,19 +478,40 @@ def _loaded_domain() -> str | None:
     return None
 
 
-def is_active() -> bool:
-    """Return True if launchd reports the agent loaded with a PID."""
-    res = _launchctl("list", LAUNCHD_LABEL)
-    if res.returncode != 0:
-        return False
-    # `launchctl list <label>` prints a plist-ish dict with PID = <int>;
-    # an unloaded agent returns nonzero. A loaded-but-not-running agent
-    # has PID = "-" instead of a number.
-    for line in res.stdout.splitlines():
+def _listed_pid(stdout: str) -> bool | None:
+    """Whether a ``launchctl list <label>`` dict names a numeric ``"PID"``.
+
+    A running job's dict carries ``"PID" = <int>;``; a loaded job that is not
+    running (crashed, or throttled by ``KeepAlive``) carries no ``"PID"`` line
+    and keeps its ``"LastExitStatus"``. ``None`` when there is no ``"PID"`` line.
+    """
+    for line in stdout.splitlines():
         line = line.strip()
         if line.startswith('"PID"'):
             return "=" in line and line.split("=")[-1].strip().rstrip(";").isdigit()
-    return True  # `list <label>` succeeded; treat as active even if PID line absent
+    return None
+
+
+def is_active() -> bool:
+    """Return True if launchd reports the agent loaded with a PID, or loaded with none."""
+    res = _launchctl("list", LAUNCHD_LABEL)
+    if res.returncode != 0:
+        return False
+    # An unloaded agent returns nonzero. A loaded agent with no "PID" line is
+    # treated as active, so stop and restart never skip a loaded job.
+    pid = _listed_pid(res.stdout)
+    return True if pid is None else pid
+
+
+def is_up() -> bool:
+    """True only when launchd reports the agent RUNNING, with a numeric PID.
+
+    The health predicate behind the ``kirocrew service status`` exit code, the
+    macOS half of :func:`kiro_crew.service.linux.is_up`. Unlike
+    :func:`is_active`, a loaded agent with no ``"PID"`` line reads as down.
+    """
+    res = _launchctl("list", LAUNCHD_LABEL)
+    return res.returncode == 0 and _listed_pid(res.stdout) is True
 
 
 def stop() -> bool:

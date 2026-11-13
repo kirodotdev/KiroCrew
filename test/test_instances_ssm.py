@@ -64,6 +64,14 @@ class TestSsmValidation:
             with pytest.raises(SsmValidationError):
                 validate_aws_region(bad)
 
+    @pytest.mark.parametrize("region", ["us-east-\uff11", "us-east-\u0661", "eu-west-\u0662\u0663"])
+    def test_region_refuses_non_ascii_digits(self, region):
+        """Python's ``\\d`` matches any Unicode digit; AWS region names are ASCII."""
+        from kiro_crew.instances.validation import SsmValidationError, validate_aws_region
+
+        with pytest.raises(SsmValidationError):
+            validate_aws_region(region)
+
     def test_ssm_run_as_accepts_unix_usernames_and_defaults_when_empty(self):
         """Empty means "the default user", never an empty ``sudo -u``."""
         from kiro_crew.instances.validation import validate_ssm_run_as
@@ -463,6 +471,19 @@ class TestSsmRegistry:
         with pytest.raises(InvalidInstanceError):
             reg.add(name="Bogus", connection_method="telnet", ssh_host="h")
 
+    def test_add_refuses_a_region_with_non_ascii_digits(self, tmp_path):
+        """The record check agrees with ``validate_aws_region``: ASCII digits only."""
+        from kiro_crew.instances.registry import InvalidInstanceError
+
+        reg = self._reg(tmp_path)
+        with pytest.raises(InvalidInstanceError):
+            reg.add(
+                name="Wide",
+                connection_method="ssm",
+                ssm_target="i-0123456789abcdef0",
+                aws_region="us-east-\uff11",
+            )
+
     def test_update_can_switch_method(self, tmp_path):
         reg = self._reg(tmp_path)
         reg.add(name="Dev", ssh_host="dev-1", instance_id="dev")
@@ -828,6 +849,34 @@ class TestSsmTunnelProcessGroup:
         child_path = seen["env"]["PATH"].split(os.pathsep)
         assert child_path.index(str(inherited)) < child_path.index(str(install_dir))
 
+    @pytest.mark.asyncio
+    async def test_ssm_child_gets_no_python_interpreter_settings(self, monkeypatch):
+        """aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME must not reach it.
+
+        Everything else ``tool_spawn_env`` builds, the widened PATH included, still does.
+        """
+        import kiro_crew.instances.ssh_tunnel_manager as mod
+
+        seen = {}
+
+        async def fake_exec(*argv, **kw):
+            seen.update(kw)
+            raise OSError("stop here — we only care about the spawn kwargs")
+
+        spawn_env = {
+            "PATH": "<widened>",
+            "PYTHONPATH": "<gw>",
+            "PYTHONHOME": "<gw>",
+            "AWS_PROFILE": "k",
+        }
+        monkeypatch.setattr(mod, "tool_spawn_env", lambda head: dict(spawn_env))
+        monkeypatch.setattr(mod.asyncio, "create_subprocess_exec", fake_exec)
+        monkeypatch.setattr(mod.platform_compat, "IS_POSIX", True)
+
+        await self._tunnel("ssm").start()
+
+        assert seen["env"] == {"PATH": "<widened>", "AWS_PROFILE": "k"}
+
     def test_teardown_routes_through_the_platform_shim(self, monkeypatch):
         """Not raw os.killpg — that leaves the plugin alive on Windows."""
         import kiro_crew.instances.ssh_tunnel_manager as mod
@@ -1109,6 +1158,9 @@ class TestSsmTransportSelection:
         st = await mgr.connect("ec2")
         assert st.state == TunnelState.ERROR
         assert "session-manager-plugin" in st.error
+        # The dashboard shows this (Connect in Settings, Retry in the crew panel), not a CLI.
+        assert "then connect again:" in st.error
+        assert "kirocrew cloud connect" not in st.error
         # No tunnel was spawned for a missing prerequisite.
         assert mgr.status("ec2") is None
         await mgr.shutdown()
@@ -1396,14 +1448,14 @@ class TestSsmDiagnostics:
         monkeypatch.setattr(diag, "_probe_ssm_managed", node_ok)
 
         async def dash_down(*a, **k):
-            return False
+            return diag.REMOTE_DOWN, diag._SSM_REASONS[diag.REMOTE_DOWN]
 
         monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", dash_down)
         res = await diag.diagnose_instance_ssm("i-0123456789abcdef0", 7777, 7777)
         assert res.code == diag.REMOTE_DOWN
 
         async def dash_ok(*a, **k):
-            return True
+            return diag.OK, ""
 
         monkeypatch.setattr(diag, "_probe_remote_dashboard_ssm", dash_ok)
         # local_port == 0 -> never connected (not a broken tunnel)
@@ -1422,6 +1474,12 @@ class TestSsmDiagnostics:
         import kiro_crew.instances.diagnostics as diag
 
         res = await diag.diagnose_instance_ssm("-oProxyCommand=evil", 7777, 7777)
+        assert res.code == diag.UNKNOWN
+        assert res.probes == []
+        # remote_bin reaches the remote shell, so it is validated before any dispatch too.
+        res = await diag.diagnose_instance_ssm(
+            "i-0123456789abcdef0", 7777, 7777, remote_bin="$(id)"
+        )
         assert res.code == diag.UNKNOWN
         assert res.probes == []
 

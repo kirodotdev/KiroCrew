@@ -51,6 +51,10 @@ class _Slot:
         self._lineage_minted = False
         self._reports_to_creator = False
         self.display_title = f"title of {key}"
+        self.mcp_report: dict | None = None
+
+    def mcp_report_payload(self) -> dict | None:
+        return self.mcp_report
 
     @property
     def running(self) -> bool:
@@ -399,6 +403,38 @@ async def test_a_held_report_keeps_only_the_excerpt_it_shows(dispatched):
     assert dispatched == [("member-atlas", expected)]
 
 
+@pytest.mark.asyncio
+async def test_a_report_names_the_worker_servers_its_session_could_not_use(dispatched, monkeypatch):
+    """A gap the worker reports on its own failed server is not a missing capability.
+
+    ``jira`` is declared but not mounted, so the worker lacks it: it is not named.
+    """
+    from kiro_crew import mate_capability_catalog as catalog_mod
+
+    mounted = ["notes", "tracker", "wiki", "calendar"]
+    spec = {"mcpServers": {n: {} for n in [*mounted, "jira"]}, "tools": [f"@{n}" for n in mounted]}
+    monkeypatch.setattr(catalog_mod, "worker_spec", lambda member: spec)
+    mate, worker = _crewmate(), _worker()
+    worker.mcp_report = {
+        "ready": ["notes"],
+        "failed": ["tracker", "wiki", "jira"],
+        "failures": {"tracker": "Authentication expired", "wiki": "spawn ENOENT"},
+        "awaiting_auth": ["calendar"],
+        "no_tools": ["notes"],
+    }
+    state = _State(mate, worker)
+
+    wakes.note_turn_end(state, worker, "Could not file the tickets.")
+    await _settle(state)
+
+    [(_key, prompt)] = dispatched
+    assert (
+        "tracker (sign-in missing or expired), wiki (failed to start), "
+        "calendar (waiting for authorization), notes (started with no tools)."
+    ) in prompt
+    assert "not a missing capability" in prompt and "jira" not in prompt
+
+
 def test_a_worker_gap_is_asked_for_on_the_users_next_turn():
     """``request_capabilities`` is refused on a wake turn, so the note waits for the user."""
     from kiro_crew.dashboard.handlers import member_self
@@ -407,17 +443,13 @@ def test_a_worker_gap_is_asked_for_on_the_users_next_turn():
     assert "next message" in wakes._missing_capability_line("jira")
 
 
-def _page(
-    monkeypatch, *, panel=True, suggestions=False, locked=False, fields=("for_you", "verdict")
-):
+def _page(monkeypatch, *, panel=True, suggestions=False, fields=("for_you", "verdict")):
     """Stub the page lookups ``page_line`` reads, so each test names the tab's state."""
     from kiro_crew import dashboard_agentic
-    from kiro_crew.dashboard_templates import instance as template_instance
 
     manifest = object()
     monkeypatch.setattr(members_mod, "crew_panel_enabled", lambda: panel)
     monkeypatch.setattr(dashboard_agentic, "tab_shows_suggestions", lambda slug: suggestions)
-    monkeypatch.setattr(template_instance, "is_locked", lambda slug: locked)
     monkeypatch.setattr(
         dashboard_agentic, "page_in_force", lambda slug: (object(), manifest) if fields else None
     )
@@ -444,8 +476,6 @@ def test_a_report_on_the_suggestions_page_carries_the_build_line(monkeypatch):
 
     _page(monkeypatch, suggestions=True)
     assert wakes.page_line("atlas") == dashboard_agentic.SUGGESTIONS_LINE
-    _page(monkeypatch, suggestions=True, locked=True)
-    assert wakes.page_line("atlas") == ""
 
 
 def test_no_page_line_without_page_tools_or_fields(monkeypatch):

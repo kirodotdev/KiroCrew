@@ -123,16 +123,18 @@ _RTS_ENDPOINT = _RTS_ENDPOINTS[_DEFAULT_RTS_REGION]
 _SVC = "com.amazon.aws.codewhisperer.runtime.AmazonCodeWhispererService"
 _TARGET_GET_USAGE = f"{_SVC}.GetUsageLimits"
 _TARGET_LIST_PROFILES = f"{_SVC}.ListAvailableProfiles"
+#: Pages one profile lookup may read, the same bound as the sign-in listing's.
+_LIST_PROFILES_MAX_PAGES = 20
 _CONTENT_TYPE = "application/x-amz-json-1.0"
 # A Kiro/Q user-agent is required for the IDE-origin code path; without it the
 # API rejects the request.
 _USER_AGENT = "AmazonQ-For-CLI/1.24.0 ua/2.0 os/linux lang/rust KiroCrew"
 _TIMEOUT_SECS = 15
 # Aggregate wall-clock budget across ALL candidate tokens. Each token can cost
-# up to two 15s requests (ListAvailableProfiles + GetUsageLimits), and there can
-# be several candidates, so without this the pill could spin for minutes before
-# falling back to the text scrape. Once exceeded we stop trying tokens and let
-# the caller degrade to the scrape.
+# several 15s requests (paged ListAvailableProfiles + GetUsageLimits), so without
+# this the pill could spin for minutes before falling back to the text scrape.
+# Once exceeded we stop listing pages and trying tokens and let the caller
+# degrade to the scrape.
 _TOTAL_DEADLINE_SECS = 30
 
 # ``auth_state`` values reported by :func:`fetch_usage_limits`, so the
@@ -242,6 +244,8 @@ _SQLITE_AUDIT_READ_ID = "kiro_usage_api.sqlite_token"
 _MAX_CREDITS = 1_000_000.0
 _MAX_BONUS_GRANTS = 32
 _MAX_BONUS_NAME_CHARS = 100
+#: Longest ``days_left`` a nested grant reports, matching the text parser's bound.
+_MAX_BONUS_DAYS_LEFT = 3_650
 
 # Cap the RTS response body so an oversized or indefinitely-streamed response
 # cannot exhaust memory or tie up a shared subprocess worker. The usage JSON is
@@ -673,7 +677,11 @@ def _profile_cache_key(token: str, expected_arn: str | None) -> str:
 
 
 def _list_profile_arn(
-    token: str, *, expected_arn: str | None = None, endpoint: str | None = None
+    token: str,
+    *,
+    expected_arn: str | None = None,
+    endpoint: str | None = None,
+    deadline: float | None = None,
 ) -> str | None:
     """Return the profile ARN this token should use, or None.
 
@@ -702,43 +710,55 @@ def _list_profile_arn(
     key = _profile_cache_key(token, expected_arn)
     if key in _PROFILE_ARN_CACHE:
         return _PROFILE_ARN_CACHE[key]
-    try:
-        r = _post(token, _TARGET_LIST_PROFILES, {}, endpoint=endpoint)
-    except _RequestError:
-        return None
-    if r.status_code != 200:
-        return None
-    try:
-        body = r.json()
-    except ValueError:
-        return None
-    if not isinstance(body, dict):
-        return None
-    profiles = body.get("profiles")
-    if not isinstance(profiles, list):
-        return None
-    arn: str | None = None
-    name: str | None = None
-    for p in profiles:
-        if not isinstance(p, dict):
-            continue
-        candidate = p.get("arn") or p.get("profileArn")
-        if not candidate:
-            continue
-        if expected_arn and candidate != expected_arn:
-            # Anchored mode: only the asked-about profile is an answer.
-            continue
-        arn = candidate
-        # Human label for the signed-in account. Bounded like the plan name
-        # so a hostile/oversized value can't reach the cache/UI unbounded;
-        # only a non-empty string qualifies.
-        pname = p.get("profileName") or p.get("profileDisplayName")
-        if isinstance(pname, str) and pname:
-            name = pname[:100]
-        break
-    if arn is not None:
-        _remember_profile(key, arn, name)
-    return arn
+    # The listing is paged: follow ``nextToken`` like the sign-in listing in
+    # ``auth/login/control_plane.py`` does, under the same page cap and the
+    # caller's monotonic deadline, and stop on a repeated token. A failed or
+    # malformed page, a loop, the cap or an expired deadline is a miss,
+    # re-probed on the next refresh like any other transient failure.
+    seen_tokens: set[str] = set()
+    request: dict[str, object] = {}
+    for _page in range(_LIST_PROFILES_MAX_PAGES):
+        if deadline is not None and time.monotonic() > deadline:
+            return None
+        try:
+            r = _post(token, _TARGET_LIST_PROFILES, request, endpoint=endpoint)
+        except _RequestError:
+            return None
+        if r.status_code != 200:
+            return None
+        try:
+            body = r.json()
+        except ValueError:
+            return None
+        if not isinstance(body, dict):
+            return None
+        profiles = body.get("profiles")
+        if not isinstance(profiles, list):
+            return None
+        for p in profiles:
+            if not isinstance(p, dict):
+                continue
+            candidate = p.get("arn") or p.get("profileArn")
+            if not candidate:
+                continue
+            if expected_arn and candidate != expected_arn:
+                # Anchored mode: only the asked-about profile is an answer.
+                continue
+            # Human label for the signed-in account. Bounded like the plan name
+            # so a hostile/oversized value can't reach the cache/UI unbounded;
+            # only a non-empty string qualifies.
+            name: str | None = None
+            pname = p.get("profileName") or p.get("profileDisplayName")
+            if isinstance(pname, str) and pname:
+                name = pname[:100]
+            _remember_profile(key, candidate, name)
+            return candidate
+        next_token = body.get("nextToken")
+        if not isinstance(next_token, str) or not next_token or next_token in seen_tokens:
+            return None
+        seen_tokens.add(next_token)
+        request = {"nextToken": next_token}
+    return None
 
 
 def _remember_profile(key: str, arn: str, name: str | None) -> None:
@@ -779,6 +799,54 @@ def _bounded(value: object) -> float | None:
     if not math.isfinite(f) or f < 0 or f > _MAX_CREDITS:
         return None
     return f
+
+
+def _nested_bonuses(credit: dict) -> list[dict[str, object]]:
+    """The active bonus grants GetUsageLimits nests under the CREDIT entry (``bonuses``).
+
+    Each grant names itself in ``displayName``; ``bonusCode`` is a redemption code
+    and is never shown. A grant whose ``status`` is present and not ``ACTIVE`` is
+    over. ``days_left`` is the whole days until ``expiresAt`` (epoch seconds), as
+    kiro-cli's ``/usage`` shows it, and is omitted when the time is missing or out
+    of range.
+    """
+    grants = credit.get("bonuses")
+    if not isinstance(grants, list):
+        return []
+    out: list[dict[str, object]] = []
+    for g in grants:
+        if len(out) >= _MAX_BONUS_GRANTS:
+            break
+        if not isinstance(g, dict):
+            continue
+        status = g.get("status")
+        if status is not None and str(status).upper() != "ACTIVE":
+            continue
+        used = _bounded(g.get("currentUsageWithPrecision"))
+        if used is None:
+            used = _bounded(g.get("currentUsage"))
+        limit = _bounded(g.get("usageLimitWithPrecision"))
+        if limit is None:
+            limit = _bounded(g.get("usageLimit"))
+        name = g.get("displayName")
+        if used is None or limit is None or limit <= 0:
+            continue
+        if not isinstance(name, str) or not name or not name.isprintable():
+            continue
+        entry: dict[str, object] = {
+            "name": name[:_MAX_BONUS_NAME_CHARS],
+            "used": used,
+            "total": limit,
+        }
+        try:
+            seconds_left = float(g.get("expiresAt")) - time.time()  # type: ignore[arg-type]
+            days: int | None = math.floor(seconds_left / 86400)
+        except (TypeError, ValueError, OverflowError):
+            days = None
+        if days is not None and 0 <= days <= _MAX_BONUS_DAYS_LEFT:
+            entry["days_left"] = days
+        out.append(entry)
+    return out
 
 
 def _map_response(data: dict) -> dict | None:
@@ -905,8 +973,10 @@ def _map_response(data: dict) -> dict | None:
     # dashboard never branches on source. Retain every bounded grant; the legacy
     # scalar fields mirror the first one for older clients.
     _bonus_markers = ("FREE_TRIAL", "FREETRIAL", "TRIAL", "BONUS", "PROMO", "GIFT", "WELCOME")
-    bonus_credits: list[dict[str, object]] = []
+    bonus_credits: list[dict[str, object]] = _nested_bonuses(credit)
     for b in breakdowns:
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
         if b is credit:
             continue
         rtype = str(b.get("resourceType") or "").upper()
@@ -1186,7 +1256,9 @@ def fetch_usage_limits(expected_arn: str | None) -> UsageResult:
                     "kiro-cli's own auth store"
                 )
                 continue
-            arn = _list_profile_arn(token, expected_arn=expected_arn, endpoint=endpoint)
+            arn = _list_profile_arn(
+                token, expected_arn=expected_arn, endpoint=endpoint, deadline=deadline
+            )
             if expected_arn and (not arn or arn != expected_arn):
                 # ARN-anchored mode: the expected profile is genuinely absent
                 # from this token's own profile list (or the probe failed), so
@@ -1289,11 +1361,12 @@ def fetch_usage_limits_with_credential(token: str, profile_arn: str | None) -> U
     if not token:
         return UsageResult(None, AUTH_NO_CREDENTIAL)
     endpoint = _rts_endpoint(profile_arn)
+    deadline = time.monotonic() + _TOTAL_DEADLINE_SECS
     try:
-        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint)
+        arn = profile_arn or _list_profile_arn(token, endpoint=endpoint, deadline=deadline)
         if profile_arn:
             # Fills the display-name cache only; the stored ARN is the answer.
-            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint)
+            _list_profile_arn(token, expected_arn=profile_arn, endpoint=endpoint, deadline=deadline)
         elif arn:
             # A discovered ARN names its own region; send the read there.
             endpoint = _rts_endpoint(arn)

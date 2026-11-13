@@ -63,6 +63,45 @@ class TestChannel:
         assert SYSTEM_CHANNELS[CHANNEL] == "default"
 
 
+class TestProbeTimeoutReleasesTheSlot:
+    """A probe that times out before its worker started must release the
+    in-flight slot, or sampling stops for the life of the process."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_before_worker_start_lets_the_next_sample_run(
+        self, notes, monkeypatch
+    ) -> None:
+        clock = [0.0]
+        calls: list[int] = []
+
+        def _probe() -> ResourceStatus:
+            calls.append(1)
+            return _status(POSTURE_AMPLE, gb=20.0)
+
+        bus = NotificationBus(sink=notes.append)
+        notifier = ResourcePressureNotifier(bus, probe_fn=_probe, clock=lambda: clock[0])
+
+        # First tick: the to_thread job is still queued when wait_for times out,
+        # so the worker never runs and _probe_started stays False. Simulate that
+        # by timing out without awaiting the coroutine.
+        real_wait_for = asyncio.wait_for
+
+        async def _timeout_before_start(coro, timeout):  # type: ignore[no-untyped-def]
+            coro.close()  # the queued job is cancelled; _run_probe never runs
+            raise asyncio.TimeoutError
+
+        monkeypatch.setattr(asyncio, "wait_for", _timeout_before_start)
+        await notifier.maybe_sample()
+        assert calls == []  # the probe never ran
+        assert notifier._inflight is False  # the slot was released, not stuck
+
+        # Next interval: a normal sample must run, proving sampling resumed.
+        monkeypatch.setattr(asyncio, "wait_for", real_wait_for)
+        clock[0] = SAMPLE_INTERVAL_SECS + 1.0
+        await notifier.maybe_sample()
+        assert calls == [1]
+
+
 class TestSliceOomNote:
     """A slice OOM report captured off-loop is pushed onto the bus from the
     loop side — 'a random subagent died (137)' must be diagnosable from the
@@ -71,9 +110,7 @@ class TestSliceOomNote:
     @pytest.mark.asyncio
     async def test_oom_report_reaches_the_bus(self, notes, monkeypatch) -> None:
         bus = NotificationBus(sink=notes.append)
-        notifier = ResourcePressureNotifier(
-            bus, probe_fn=lambda: _status(POSTURE_AMPLE, gb=20.0)
-        )
+        notifier = ResourcePressureNotifier(bus, probe_fn=lambda: _status(POSTURE_AMPLE, gb=20.0))
         monkeypatch.setattr(
             resource_pressure,
             "check_agents_slice_pressure",
@@ -88,12 +125,8 @@ class TestSliceOomNote:
     @pytest.mark.asyncio
     async def test_quiet_when_no_kills(self, notes, monkeypatch) -> None:
         bus = NotificationBus(sink=notes.append)
-        notifier = ResourcePressureNotifier(
-            bus, probe_fn=lambda: _status(POSTURE_AMPLE, gb=20.0)
-        )
-        monkeypatch.setattr(
-            resource_pressure, "check_agents_slice_pressure", lambda: None
-        )
+        notifier = ResourcePressureNotifier(bus, probe_fn=lambda: _status(POSTURE_AMPLE, gb=20.0))
+        monkeypatch.setattr(resource_pressure, "check_agents_slice_pressure", lambda: None)
         await notifier.maybe_sample()
         assert [n for n in notes if n.get("group_key") == "agents-slice-oom"] == []
 
@@ -108,9 +141,7 @@ class TestCriticalEpisode:
         assert "1.2 GB" in note["body"]
         assert "load 0.5/core" in note["body"]
 
-    def test_staying_critical_is_quiet_within_the_realert_interval(
-        self, notifier, notes
-    ) -> None:
+    def test_staying_critical_is_quiet_within_the_realert_interval(self, notifier, notes) -> None:
         for t in range(0, int(CRITICAL_REALERT_SECS), 30):
             notifier.observe(_status(POSTURE_CRITICAL), now=float(t))
         assert len(notes) == 1
@@ -145,9 +176,7 @@ class TestCriticalEpisode:
             notifier.observe(_status(posture, gb=3.0), now=float(t))
         assert len(notes) == 1  # the entry note only
 
-    def test_realert_measures_continuous_critical_not_wall_time(
-        self, notifier, notes
-    ) -> None:
+    def test_realert_measures_continuous_critical_not_wall_time(self, notifier, notes) -> None:
         notifier.observe(_status(POSTURE_CRITICAL), now=0.0)
         # dip to tight just before the cadence would elapse
         notifier.observe(_status(POSTURE_TIGHT, gb=3.0), now=CRITICAL_REALERT_SECS - 30.0)
@@ -288,9 +317,7 @@ class TestMaybeSample:
         asyncio.run(scenario())
         assert loop_thread and loop_thread[0] is not threading.main_thread()
 
-    def test_stalled_probe_forfeits_the_sample_instead_of_hanging(
-        self, notes, monkeypatch
-    ) -> None:
+    def test_stalled_probe_forfeits_the_sample_instead_of_hanging(self, notes, monkeypatch) -> None:
         monkeypatch.setattr(resource_pressure, "PROBE_TIMEOUT_SECS", 0.05)
         bus = NotificationBus(sink=notes.append)
         release = threading.Event()
@@ -319,7 +346,9 @@ class TestMaybeSample:
             calls.append(clock_now[0])
             return _status(POSTURE_AMPLE, gb=12.0)
 
-        notifier = ResourcePressureNotifier(bus, probe_fn=counting_probe, clock=lambda: clock_now[0])
+        notifier = ResourcePressureNotifier(
+            bus, probe_fn=counting_probe, clock=lambda: clock_now[0]
+        )
         notifier._inflight = True  # simulate a probe still occupying the slot
         clock_now[0] = SAMPLE_INTERVAL_SECS * 3
 

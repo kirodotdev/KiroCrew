@@ -753,17 +753,15 @@ async def _settle_session_model(
     resumed: bool,
     _is_refusal_retry_turn: bool,
     _synthetic_recovery_turn: bool,
-    crew_model: str = "",
 ) -> bool:
     """Settle the model a turn's session runs on before anything model-dependent.
 
-    Restores a refusal fallback the previous turn left, backfills an unpinned slot
-    from the provider, records the pinned-model verdict a fresh or reloaded session
-    gives and the model it serves. True when the session withheld the slot's pin.
+    Restores a refusal fallback the previous turn left, records the pinned-model
+    verdict a fresh or reloaded session gives and the model it serves. True when
+    the session withheld the slot's pin.
 
-    ``crew_model`` is the crew's own pin for this turn. Only a slot that pins
-    nothing itself but has a crew pin is backfilled; a slot with neither pin
-    inherits the default, whatever it resolves to, and is never written.
+    A slot with no pick of its own is never written, whether it inherits the
+    default or its Bot's model: ``slot.model`` holds only a person's pick.
     """
     # ── Refusal-fallback restore (agent.refusal_fallback_model) ──
     # A refusal retry swapped the live session for ONE message; at the
@@ -785,47 +783,21 @@ async def _settle_session_model(
         and not _synthetic_recovery_turn
     ):
         await _restore_refusal_fallback(slot, client)
-    # Backfill slot.model from provider if user didn't explicitly set one.
-    # AcpProvider stores the resolved model on client._model. For claude_code
-    # that is a provider id; map it back to the canonical registry key so it
-    # matches the canonical-keyed dropdown rows (else the active row won't
-    # highlight and the header shows the raw provider id). Gated on the real
-    # provider so a kiro/acp dotted id (which collides with a claude_code
-    # alias spelling) is left as-is.
     withheld_pin = False
-    # None = no verdict this spawn: either nothing is pinned (the backfill
-    # branch below) or the pin is unjudgeable here (see
-    # `_pinned_model_verdict`). Bound before the branch so the backfill path
-    # cannot leave it undefined.
+    # None = no verdict this spawn: either nothing is pinned or the pin is
+    # unjudgeable here (see `_pinned_model_verdict`).
     verdict: bool | None = None
-    if not slot.model and not slot._active_fallback_model and not slot._refusal_fallback_primary:
-        # The fallback-active guard is load-bearing: while a throttle
-        # fallback is serving this session, the provider's resolved model
-        # IS the fallback candidate, and slot.model is PERSISTED — writing
-        # the candidate here would outlive the in-memory sticky state
-        # across a gateway restart and turn a temporary fallback into a
-        # permanent pin. The refusal-fallback record guards the same
-        # hazard on the replay turn (the restore above skips that turn by
-        # design, so the provider still reports the refusal candidate
-        # here). An unpinned slot simply stays unpinned for the
-        # fallback's duration; the next non-fallback turn applies the
-        # rule below.
-        #
-        # A slot that inherits (no crew pin either) is not written, whatever
-        # the default resolves to, Auto included: storing the served model
-        # would turn "inherit" into a pin, and the slot would stop following
-        # a later change to the default. The chip reads the served model
-        # through ``_sync_served_model`` instead.
-        #
-        # Nor while a deferred model pick is pending: a mid-turn Auto pick
-        # commits ``slot.model = ""`` and marks ``_deferred_model_switch_key``
-        # for the boundary. Backfilling the served (old) model here would
-        # overwrite that "" and the boundary would then apply the old model,
-        # silently undoing the pick — the same guard the completion backfill
-        # carries (``turn_stats``).
-        if crew_model and not slot._deferred_model_switch_key:
-            slot.model = _backfill_canonical_model(client, provider_name) or slot.model
-    elif is_new or resumed:
+    # A slot with no pick of its own is never written from the provider, Bot
+    # pin or not: `slot.model` is persisted and re-sent on every resume, so a
+    # stored served model would turn "inherit" into a pin. The slot would then
+    # stop following its Bot's model and the default, and take an engine
+    # fallback's promotion as if a person had picked it. The chip reads the
+    # served model through ``_sync_served_model`` instead. While Crew's own
+    # fallback serves the slot, the provider's model is the candidate, so no
+    # verdict is recorded for it either.
+    if (slot.model or slot._active_fallback_model or slot._refusal_fallback_primary) and (
+        is_new or resumed
+    ):
         # Record the verdict for BOTH answers, not only the withhold: it is
         # carried in the slots payload so the composer reads the
         # backend's own answer instead of inferring "usable?" from whether
@@ -841,10 +813,9 @@ async def _settle_session_model(
         verdict = _pinned_model_verdict(client, slot.model, provider_name)
         slot.record_model_withheld(verdict)
     if is_new or resumed:
-        # Record what this fresh/reloaded session actually RUNS on, for both
-        # branches above: the inheriting slot (no pin — the first branch,
-        # whose backfill leaves `slot.model` empty on purpose) is the one
-        # whose chip has nothing else to name, and a withheld pin runs on
+        # Record what this fresh/reloaded session actually RUNS on, pinned or
+        # not: the inheriting slot (no pick, so `slot.model` stays empty on
+        # purpose) is the one whose chip has nothing else to name, and a withheld pin runs on
         # the same served default. `client` here is the AcpProvider
         # wrapper (see _sync_served_model for why its PUBLIC accessor is
         # the only readable source).

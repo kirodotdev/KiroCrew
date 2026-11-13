@@ -103,7 +103,7 @@
       "silent": true,
       "persistent_session": false,
       "enabled": true,
-      "message": "Follow the rotation-check SOP at ~/.kiro/crew/skills/ops-mission-control/sops/rotation-check.md. FIRST: GET /api/apps/ops-mission-control/state and if no provider has configured=true, produce NO output and stop - the app is not set up yet, so there is nothing to arm and this must cost nothing. Otherwise POST /api/apps/ops-mission-control/rotation/arm, which resolves the shift and arms or disarms the app's crons itself. You do NOT choose which crons to pause: the route computes the tier map and refuses to pause an always-tier job, so a mistake here cannot strand the instance unable to re-arm. If the response reports an empty changed list, produce NO output."
+      "message": "Follow the rotation-check SOP at ~/.kiro/crew/skills/ops-mission-control/sops/rotation-check.md. POST /api/apps/ops-mission-control/rotation/arm, which resolves the shift and arms or disarms the app's crons itself, and keeps dispatch and reconcile paused while no signal source is configured. Do not skip this call when the app looks unconfigured: it is what pauses those jobs after the last signal source is removed. You do NOT choose which crons to pause: the route computes the tier map and refuses to pause an always-tier job, so a mistake here cannot strand the instance unable to re-arm. If the response reports an empty changed list, produce NO output."
     },
     {
       "name": "ledger-hygiene",
@@ -115,7 +115,67 @@
     }
   ],
   "backend": {
-    "routes": "backend.routes:register_routes"
+    "routes": "backend.routes:register_routes",
+    "hooks": {
+      "routes": "backend.agent_tool_hook:register_agent_tool_routes"
+    }
+  },
+  "agentTools": {
+    "route": "agent-tools",
+    "tools": [
+      {
+        "name": "ops_mission_control_api",
+        "title": "Call Ops Mission Control",
+        "description": "Call the Ops Mission Control app's HTTP API with the gateway's own credential. This is the ONLY way an agent session reaches that API: raw HTTP has no credential and is refused with 403, and no CLI or environment variable provides one. Use it for every call an ops-mission-control SOP asks for \u2014 reading state/signals/incidents/rotation/ledger, claiming and transitioning incidents, arming the rotation, posting ledger entries. Paths are rooted at the app base (pass '/state', not the full URL) and only the SOP surface is reachable: provider configuration, settings, webhook ingest and the human proposal-decision routes are deliberately not callable from here.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "GET",
+                "POST"
+              ],
+              "description": "HTTP method"
+            },
+            "path": {
+              "type": "string",
+              "enum": [
+                "/dispatch",
+                "/handover",
+                "/incident/action",
+                "/incident/claim",
+                "/incident/transition",
+                "/incidents",
+                "/ledger",
+                "/ledger/contradictions",
+                "/ledger/hygiene",
+                "/rotation",
+                "/rotation/arm",
+                "/signals",
+                "/state"
+              ],
+              "description": "API path relative to /api/apps/ops-mission-control. GET: /state /signals /incidents /handover /rotation /ledger /ledger/contradictions. POST: /dispatch /incident/transition /incident/claim /incident/action /rotation/arm /ledger /ledger/hygiene."
+            },
+            "query": {
+              "type": "string",
+              "maxLength": 512,
+              "description": "Optional query string without the leading '?', GET only \u2014 e.g. 'status=investigating' or 'id=INV-42' on /incidents"
+            },
+            "body_json": {
+              "type": "string",
+              "maxLength": 32768,
+              "description": "JSON object for POST bodies, serialized as a string \u2014 e.g. '{\"id\": \"INV-42\", \"status\": \"resolved\"}' for /incident/transition"
+            }
+          },
+          "required": [
+            "method",
+            "path"
+          ]
+        },
+        "maxResultChars": 60000
+      }
+    ]
   },
   "ui": {
     "pages": [

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import kiro_crew
-from kiro_crew.mcp_tools.apps import OPS_MISSION_CONTROL_ALLOWED_CALLS
+from kiro_crew.apps.builtins.ops_mission_control.backend.http_routes.agent_tool import ALLOWED_CALLS
 
 _SOPS = (
     Path(kiro_crew.__file__).resolve().parent / "builtin_skills" / "ops-mission-control" / "sops"
@@ -34,7 +34,7 @@ def _sops() -> list[Path]:
 def test_every_app_call_in_a_sop_is_reachable_through_the_tool(sop: Path) -> None:
     text = sop.read_text(encoding="utf-8")
     for method, path in _CALL.findall(text):
-        assert (method, path.rstrip("/")) in OPS_MISSION_CONTROL_ALLOWED_CALLS, (
+        assert (method, path.rstrip("/")) in ALLOWED_CALLS, (
             f"{sop.name} tells the agent to call {method} {path}, which "
             "ops_mission_control_api refuses"
         )

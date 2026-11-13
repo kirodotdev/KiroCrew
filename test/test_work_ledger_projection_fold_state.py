@@ -578,6 +578,7 @@ def _closed_cached(title: str, closed_at: str) -> str:
     """A cached item, recorded and closed, with a pinned ``closed_at``."""
     item = wl.apply_conductor_action(CONDUCTOR, "create", title=title, acceptance={})["item"]
     wl.mark_item_recorded(CONDUCTOR, item.item_id)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item.item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item.item_id, state="accepted")
     path = wl.item_path(CONDUCTOR, item.item_id)
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -623,6 +624,7 @@ def test_a_rebuild_keeps_a_closed_record_the_fold_forgot(monkeypatch) -> None:
 def _closed_unrecorded(title: str) -> str:
     """A cached item closed by the store but NEVER recorded in the crew log."""
     item = wl.apply_conductor_action(CONDUCTOR, "create", title=title, acceptance={})["item"]
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item.item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item.item_id, state="accepted")
     return item.item_id
 
@@ -687,6 +689,7 @@ def test_a_rebuild_keeps_the_binding_of_a_forgotten_record_it_keeps(monkeypatch)
     item = wl.apply_conductor_action(CONDUCTOR, "create", title="old", acceptance={})["item"]
     wl.mark_item_recorded(CONDUCTOR, item.item_id)
     wl.apply_conductor_action(CONDUCTOR, "bind", item_id=item.item_id, worker_session_key=WORKER)
+    wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item.item_id, verdict="pass")
     wl.apply_conductor_action(CONDUCTOR, "close", item_id=item.item_id, state="accepted")
     assert wl.read_binding(WORKER) == (CONDUCTOR, item.item_id)
 

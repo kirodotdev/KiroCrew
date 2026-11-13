@@ -11,7 +11,7 @@ All selectable recognisers implement streaming (`stt_stream._STREAMING_PROVIDERS
 | `local` (default) | this process, whisper.cpp held loaded by [`kiro_crew.stt`](../../../src/kiro_crew/stt/__init__.py) | free | desktop builds include the runtime; select a model and click **Download now** |
 | `apple` | the OS, on-device SpeechAnalyzer | free | macOS 26 or later, and a Swift toolchain to build the helper |
 | `transcribe` | AWS Transcribe Streaming | billed per audio-second | the `voice` extra, and a recorded AWS consent |
-| `codex` | OpenAI through Codex's ChatGPT-authenticated WebRTC transport | account-dependent usage and limits | Codex adapter (`@agentclientprotocol/codex-acp`, or `CODEX_PATH`) with voice access, ChatGPT login, and `pip install 'kirocrew[voice-codex]'` |
+| `codex` | OpenAI through Codex's ChatGPT-authenticated WebRTC transport | account-dependent usage and limits | Codex adapter (`@agentclientprotocol/codex-acp`, or `CODEX_PATH`) with voice access, ChatGPT login, and `pip install "kirocrew[voice-codex]"` |
 | `off` | nowhere | free | none. Every speech path answers `stt_disabled`, exactly as `stt.enabled = false` does; the live socket returns a `stt_streaming_disabled` error frame because `off` is not in `_STREAMING_PROVIDERS`. Also the value an unknown stored provider degrades to ([Legacy provider values](#legacy-provider-values)) |
 
 The batch path at `POST /api/stt/transcribe` (`transcribe.transcribe_audio`)
@@ -1532,7 +1532,11 @@ The message names the file and the remedy: copy it to a temporary name in the sa
 directory, then rename that copy over the path. `ModelStore.ensure` still returns
 `None` rather than raising: it records a `failed` status flagged `refused` (shown on
 the settings page like any failure), starts no download, and `ensure_loaded` reports
-that message instead of "not downloaded". Not on the spawn path, deliberately —
+that message instead of "not downloaded". `ModelStore.status` is the one status the
+settings page shows, and while a download runs only that model's writes replace it.
+Every write is also kept per model, and `ensure_loaded` reads its own model's through
+`ModelStore.status_for`, so a check during another model's download keeps its reason.
+Not on the spawn path, deliberately —
 `cp -al`, `hardlink`, `jdupes -L`, `rdfind -makehardlinks` and dotfile managers all
 produce this shape, and refusing a spawn for it would cost every sandboxed spawn on
 that host rather than one model load. (`rsync --link-dest` and rsnapshot rotation link
@@ -1560,7 +1564,7 @@ The catalog is not the whole set. `stt.model` also accepts `custom`, which runs 
 - The path must resolve, symlinks followed, to a regular file strictly inside `models_dir()`. Any `..` component, an absolute path elsewhere, a symlink out of the directory, a catalog file name (the catalog download deletes or overwrites a file there) and a `.part` staging file are refused by `models.custom_model_file`, which returns the real path the engine then loads, and which runs when `PUT /api/config/stt` saves the field and again on every load.
 - The file is hashed on every load and refused on a mismatch, like a catalog file. A refused custom file is left in place, because it is the user's own file.
 - The catalog's seal checks apply too, and refuse the load with a `failed` status flagged `refused`: `models` and the whisper folder must be real directories (`sandbox.require_real_model_path`), so the resolved file sits under the read-only seal, and the hash is the same one-descriptor check (`_sha256_verified_file`), so a second hard link, a symlinked leaf or a change during the read refuses it. A link below the folder is followed and must stay inside it.
-- A half-configured pair degrades to the default model with a warning. A complete pair whose file is missing does NOT degrade: it fails at load with the reason in `ModelStore.status`, so a different model is never run in its place without a word.
+- A half-configured pair degrades to the default model with a warning. A complete pair whose file is missing does NOT degrade: it fails at load with the reason in `ModelStore.status_for("custom")` (and in `ModelStore.status` unless another model is downloading), so a different model is never run in its place without a word.
 - Both fields are owner-only on `GET`/`PUT /api/config/stt`. `config.json` is mounted read-only in the agent sandbox, so the pin cannot be rewritten to match a file an agent placed in the models directory.
 
 ## Caps and limits
@@ -1654,6 +1658,7 @@ A composed edition can add STT providers through the `speech` slot on `PlatformC
 - **Default precedence.** A stored `stt.provider` always wins. Only an absent key takes the edition's `default_stt()`, and only when that is `None` does it take core's `local`. An unusable stored value keeps its built-in fallback below, so a typo never reaches the edition default.
 - **Streaming.** A registered provider joins the streaming grant only when its `streaming` attribute is true. Positive membership stays the rule.
 - **A session limit the backend owns.** A streaming provider whose backend decides how long one session runs may set the optional `owns_session_limit = True` (`speech_providers.owns_session_limit`; exactly `True` only, as for `streaming`). Core then arms no deadline for its sessions and its `ready` frame carries no `max_duration_ms`, so the backend's limit is the only one and can change without a client release. When the backend ends a session at its limit, the provider emits an `error` event with `code: "stt_max_duration_exceeded"` after any trailing `final`. Core relays that code, so the dashboard shows its length-limit message, and audits the end as `timeout`, as it does its own cap. Such a provider must bound its own I/O (connect and read timeouts), because no core deadline will end a session whose backend stops answering. Without the attribute, `_MAX_STREAM_DURATION_SECS` applies, as it does to the built-in providers.
+- **A provider that reads only PCM WAV.** `transcribe_file` gets the clip as it was recorded: webm from the dashboard, ogg/Opus from Slack. A provider that reads only 16 kHz mono 16-bit PCM WAV may set the optional `needs_pcm_wav = True` (`speech_providers.needs_pcm_wav`; exactly `True` only). `transcribe_audio` then passes a clip already in that form unchanged and converts any other one into a temporary WAV with the decoder the built-in providers use (`_registered_clip`, through `_extract_segment`), which it removes after the call. The copy is bounded at `_MAX_AUDIO_SECS` plus one second, and a longer clip is refused rather than cut short. No decoder, a clip whose suffix the decoder pins to no demuxer (`_DEMUXER_BY_SUFFIX`; it is never converted, since a sniffed playlist would open the files it names), a failed decode or an over-length clip returns None without calling the provider, so the user sees the usual transcription failure: `batch_duration_cap_secs` stays None for a registered provider, so no caller probes the length up front and an over-length clip gets that failure, not the too-long message. Without the attribute, the provider gets the clip unchanged.
 - **Error codes a session may relay.** An `error` event's `code` reaches the client only when it is in `stt_stream.RELAYED_SESSION_ERROR_CODES`, today `stt_max_duration_exceeded` alone. Any other code, or none, is sent as `stt_session_failed`, so a provider can name a condition the dashboard already renders but cannot invent one it has no text for.
 
 ### The capability `providers` list

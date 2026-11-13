@@ -21,6 +21,7 @@ from session_control_helpers import (  # noqa: F401 -- autouse, registers by imp
     _fresh_stop_windows,
 )
 
+from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard import session_control as sc
 from kiro_crew.dashboard.handlers import session_control as handler
 
@@ -278,7 +279,7 @@ class TestCarriedFenceVerdict:
 
 
 class TestEveryRouteForwardsTheCarriedVerdict:
-    """The carry is held by seven hand-written call sites; pin all of them.
+    """The carry is held by one hand-written call site per route; pin all of them.
 
     A route that forgets ``_carried_fence(request)`` reopens the TOCTOU window for its
     verb. ``caller_fenced`` must be ``True`` for a member and ``None`` for an owner; for
@@ -299,6 +300,12 @@ class TestEveryRouteForwardsTheCarriedVerdict:
             "set_color_target",
             True,
             {"target": "chat-7", "color": "2"},
+            None,
+        ),
+        "api_session_control_set_note": (
+            "authorize_created_target",
+            True,
+            {"target": "chat-7", "note": "The build is green."},
             None,
         ),
         "api_session_control_rename": (
@@ -339,16 +346,23 @@ class TestEveryRouteForwardsTheCarriedVerdict:
         request["internal_auth"] = True
         return request
 
+    class _Answer(dict):
+        """A recorder's return: the JSON a route answers, plus the ``key`` the slot a
+        gate returns carries, which the set-note route's audit reads."""
+
+        key = "chat-7"
+
     def _record(self, monkeypatch, core_name, awaited):
         seen: dict = {}
+        answer = self._Answer(ok=True)
 
         async def _async_recorder(state, **kwargs):
             seen.update(kwargs)
-            return {"ok": True}
+            return answer
 
         def _sync_recorder(state, **kwargs):
             seen.update(kwargs)
-            return {"ok": True}
+            return answer
 
         monkeypatch.setattr(sc, core_name, _async_recorder if awaited else _sync_recorder)
 
@@ -358,8 +372,13 @@ class TestEveryRouteForwardsTheCarriedVerdict:
         async def _no_window_load(_state, _target):
             return None
 
+        async def _no_note_write(_state, _slot, **_kwargs):
+            return web.json_response({"ok": True})
+
         monkeypatch.setattr(sc, "prewarm_enabled_check", _no_prewarm)
         monkeypatch.setattr(sc, "load_target_window", _no_window_load)
+        # set-note writes through the note route's body once its gate returns.
+        monkeypatch.setattr(chat_handlers, "write_slot_note", _no_note_write)
         return seen
 
     @pytest.mark.asyncio

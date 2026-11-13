@@ -146,7 +146,7 @@ def test_native_windows_stub_and_daemon_use_on_disk_casing(
     assert raw == str(bin_dir / f"{bare}.EXE")
     assert raw != str(exe)
     servers = {"demo": {"command": raw if absolute else bare, "args": ["--stdio"]}}
-    spec = {"name": "case-agent", "mcpServers": {} if injected else servers}
+    spec = {"name": "case-agent", "mcpServers": {} if injected else servers, "tools": ["*"]}
     notes = rewriter._RewritePassNotes()
     result, wrapped = rewriter._rewrite_single_spec(
         spec,

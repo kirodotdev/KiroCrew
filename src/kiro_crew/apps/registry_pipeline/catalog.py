@@ -34,6 +34,7 @@ from kiro_crew.apps.registry_pipeline.caches import (
 )
 from kiro_crew.apps.registry_pipeline.checkout import _communicate_with_timeout
 from kiro_crew.apps.registry_pipeline.git_targets import (
+    _FETCH_CAUSE_OTHER,
     _entry_git_url,
     _git_target_is_unsupported,
     _git_url_host,
@@ -46,12 +47,13 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _apply_configured_branch,
     _fetch_and_cache_external_registry,
     _load_external_registries,
-    _registry_sign_in_refused,
+    _registry_fetch_failure,
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
 from kiro_crew.apps.registry_pipeline.sources import (
     _edition_registry_rows,
     _effective_registries,
+    _is_pinned_registry_move,
     _load_registry_file,
 )
 from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
@@ -465,9 +467,13 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
     Returns ``{ok, refreshed, failed, results, apps, lastSyncedAt}`` where
     ``ok`` is True only if every matched registry refreshed successfully and
     ``results`` carries the per-registry outcome so the UI can distinguish
-    "synced" from "sync failed, serving stale"; a failed row whose clone git
-    refused for credentials also carries ``reason: "auth"`` and the ``host`` from
-    its configured URL, so the UI can name the fix and where it applies. When *repo* is supplied but
+    "synced" from "sync failed, serving stale". Every failed row carries
+    ``cached``: whether an index cache from an earlier successful fetch is still
+    there for the listing to serve, so the UI can tell a registry shown as last
+    synced from one whose apps are missing. A failed row whose failure was
+    classified also carries ``reason`` (``auth``, ``dns``, ``host_key``,
+    ``network`` or ``timeout``) and the ``host`` from its configured URL, so the
+    UI can name the fix and where it applies. When *repo* is supplied but
     matches no configured registry, returns ``ok: False`` with
     ``not_found: True`` so the route can map it to HTTP 404.
     """
@@ -511,9 +517,12 @@ async def refresh_registries(repo: str | None = None) -> dict[str, Any]:
         entries = await _fetch_and_cache_external_registry(reg)
         if entries is None:
             failed.append(display_name)
-            row: dict[str, Any] = {"name": display_name, "ok": False}
-            if _registry_sign_in_refused(reg.repo, reg.branch):
-                row["reason"] = "auth"
+            # The fetch never touches the cache on failure, so the copy read
+            # above is the one the listing serves from.
+            row: dict[str, Any] = {"name": display_name, "ok": False, "cached": prior is not None}
+            cause = _registry_fetch_failure(reg.repo, reg.branch)
+            if cause and cause != _FETCH_CAUSE_OTHER:
+                row["reason"] = cause
                 host = _git_url_host(reg.repo)
                 if host:
                     row["host"] = host
@@ -1372,7 +1381,11 @@ def _registry_app_candidates(name: str) -> list[dict[str, Any]]:
         for entry in cached or []:
             if isinstance(entry, dict) and entry.get("name") == name:
                 _apply_configured_branch([entry], reg)
-                candidates.append(entry)
+                # The registry a row came from is decided here, by which index it
+                # was read out of. A tag the cache file carries is not evidence:
+                # the file is agent-writable, and provenance matching would read
+                # a forged tag as the row's source.
+                candidates.append({**entry, "_registry": _public_registry_name(reg)})
     return candidates
 
 
@@ -1382,13 +1395,16 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
     A row matches only when BOTH the clone URL and the originating registry id
     equal what was recorded at install time, so neither a row that reuses the
     name on a different repo nor a different registry publishing the same
-    name/URL pair can stand in for the pinned source.  Returns None when no
-    candidate matches; raises :class:`official_catalog.CatalogUnavailable` when
-    the official catalog could not be consulted to build the candidate set.
+    name/URL pair can stand in for the pinned source.  The one exception is an
+    app that moved between two build-pinned registries; see
+    :func:`_moved_between_pinned_registries`.  Returns None when no candidate
+    matches; raises :class:`official_catalog.CatalogUnavailable` when the
+    official catalog could not be consulted to build the candidate set.
     """
     want_url = str(meta.get("sourceUrl", "") or "")
     want_registry = str(meta.get("sourceRegistry", "") or "")
-    for entry in _registry_app_candidates(name):
+    candidates = _registry_app_candidates(name)
+    for entry in candidates:
         # Credentials select how git fetches the source; they are not the source
         # identity. Rotation from one userinfo value to another must neither
         # rebind the grant nor strand an update of the same repository.
@@ -1399,6 +1415,42 @@ def _pinned_registry_entry(name: str, meta: dict[str, Any]) -> dict[str, Any] | 
             current_registry, want_registry
         ):
             continue
+        return entry
+    return _moved_between_pinned_registries(name, candidates, want_url, want_registry)
+
+
+def _moved_between_pinned_registries(
+    name: str,
+    candidates: list[dict[str, Any]],
+    want_url: str,
+    want_registry: str,
+) -> dict[str, Any] | None:
+    """The row for an app whose listing moved from one build-pinned registry to another.
+
+    Only reached when no row matches the recorded source exactly. Without it,
+    every existing install of a moved app refuses all later updates, and
+    installing it again is refused for the same reason, so the only way out is
+    uninstall and reinstall. :func:`_is_pinned_registry_move` decides which moves
+    qualify; each candidate's ``_registry`` is stamped from the index it was read
+    from, so a cache file cannot claim to be a pinned registry. The repository
+    must still match exactly. Execution trust is bound to the repository, so it
+    carries over.
+
+    The install that consumes this row records the new registry as the app's
+    source, so the move is accepted once and the record then matches exactly.
+    """
+    for entry in candidates:
+        current = str(entry.get("_registry", "") or "")
+        if not _is_pinned_registry_move(want_registry, current):
+            continue
+        if not _same_git_target(_entry_git_url(entry), want_url):
+            continue
+        logger.info(
+            "app %r: recorded registry %r no longer lists it; resolving to pinned registry %r",
+            name,
+            want_registry,
+            current,
+        )
         return entry
     return None
 

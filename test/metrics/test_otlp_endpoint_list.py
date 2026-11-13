@@ -556,11 +556,17 @@ class TestReaderBuild:
 
     def test_no_headers_passes_no_headers_kwarg(self, monkeypatch):
         """A destination that keeps the process-wide fallbacks (the legacy entry,
-        one built in code) is built exactly as before."""
+        one built in code) passes no headers kwarg, and gets the session the
+        exporter would have loaded itself: the credential-provider one."""
+        import opentelemetry.exporter.otlp.proto.http.metric_exporter as mod
+        import requests
+
+        provided = requests.Session()
+        monkeypatch.setattr(mod, "_load_session_from_envvar", lambda _variable: provided)
         captured = _capture_exporter(monkeypatch)
         self._build(OtlpDestination("x", "http://127.0.0.1:1/v1/metrics", frozenset({"metrics"})))
         assert "headers" not in captured
-        assert "session" not in captured
+        assert captured["session"] is provided
 
     def test_an_own_headers_only_destination_blocks_both_fallbacks(self, monkeypatch):
         import requests

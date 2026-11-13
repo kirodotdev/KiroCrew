@@ -143,13 +143,19 @@ export type InsideLink = false | 'external' | 'local'
 export const InsideLinkCtx = createContext<InsideLink>(false)
 
 /**
- * Whether inline-code chips may issue stat probes.
+ * Whether inline-code chips and path links may issue stat probes on render.
  *
- * False while a message streams. Mid-stream a path arrives one chunk at a time,
- * and the prefixes are themselves valid candidates — `/Users` is a real
- * directory on the way to `/Users/me/project/file.ts` — so probing every chunk
- * would burn requests and briefly render the wrong affordance before settling.
- * Chips stay inert until the text stops moving.
+ * Set per markdown block (`MarkdownBlock`), false only for the text a
+ * streaming message is still typing: its open markdown block, every paragraph
+ * piece of it, while that block ends the message. There a path arrives one
+ * chunk at a time, and the prefixes are themselves valid candidates (`/Users`
+ * is a real directory on the way to `/Users/me/project/file.ts`), so probing
+ * every chunk would burn requests and briefly render the wrong affordance
+ * before settling. A block the assembler has closed (a fence or widget
+ * follows it, open or not) no longer moves, so it probes while the turn still
+ * runs. Where it is false, a path-shaped inline-code span is probed on demand
+ * instead (`InlineCode`): when the pointer comes to it. It becomes the path
+ * chip if it names a file or directory, and until then its click copies.
  */
 export const PathProbeCtx = createContext<boolean>(true)
 

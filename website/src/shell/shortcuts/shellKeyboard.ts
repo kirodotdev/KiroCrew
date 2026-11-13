@@ -119,11 +119,14 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   useEffect(() => {
     // A notice that offers a new chat stays until the user dismisses it or uses
     // the offer: expiring it would unmount the banner while its create runs and
-    // hide a failed create.
-    if (!agentSwitchNotice || agentSwitchNotice.newChatAgent) return
+    // hide a failed create. A notice that offers to open a session started in
+    // the background stays too: it is the one place that names that session,
+    // and the banner drops a plain one once the user is on it. A popout or embed frame
+    // shows no such offer, so there it expires like plain status.
+    if (!agentSwitchNotice || agentSwitchNotice.newChatAgent || (agentSwitchNotice.openSlot && !isPopout && !isEmbed)) return
     const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
     return () => window.clearTimeout(timer)
-  }, [agentSwitchNotice, dispatch])
+  }, [agentSwitchNotice, dispatch, isPopout, isEmbed])
   // A new chat that could not get its own session folder opened on the default
   // project; the API client announces it for every create path (see
   // lib/sessionFolderNotice), and it shares this transient notice. The folder

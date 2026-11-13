@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore } from '../store'
 import { fetchSlots, sseStatus, setEnabledAppIds } from '../store/dashboardSlice'
+import { offlineReason } from '../utils/offlineReason'
 import { prefillCrewAddForm, setActiveId } from '../store/instancesSlice'
 import { selectAllSurfacesAttention, surfaceLabel, surfaceMachineValue } from '../surfaces/registry'
 import { switchSlot, selectActiveSlotProject, stageToMainComposer, setPendingInput } from '../store/chatSlice'
@@ -23,6 +24,7 @@ import { hardNavigate, installSoftNavigate } from '../utils/errorReport'
 import { fetchNotifications, armBootNotificationsFallback } from '../store/notificationsSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useDashboardHealthProbe } from '../hooks/useDashboardHealthProbe'
+import { useGatewayConnecting } from '../hooks/useConnected'
 import { useConfigAutolinkRules } from '../hooks/useConfigAutolinkRules'
 import { usePreviewFlagServerSync } from '../hooks/usePreviewFlagServerSync'
 import { useTheme } from '../hooks/useTheme'
@@ -36,6 +38,7 @@ import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
 import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
@@ -52,6 +55,8 @@ import { useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
 import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
+import { usePersistedBool } from '../hooks/usePersistedBool'
+import { usePaletteShortcutsEnabled } from '../hooks/useCommandPalette'
 import { showNativeDevTools, subscribeNativeNavigate, useMacFullscreen } from './platform/electronBridge'
 import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteCrewAddLink'
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
@@ -164,6 +169,8 @@ export function useAppShell() {
   // The slice also carries the slot list and the subagent maps, so selecting all of
   // it would re-render the root on dashboard traffic neither of these fields reads.
   const connected = useAppSelector(s => s.dashboard.connected)
+  const offlineCause = useAppSelector(s => s.dashboard.offlineCause)
+  const gatewayConnecting = useGatewayConnecting()
   // Gateway (web) update flag OR desktop updater availability (mirrored from
   // Electron update-state by useUpdateSubscription) -- both light the same
   // Settings nav dot in the rails.
@@ -201,12 +208,15 @@ export function useAppShell() {
   // Auth takes precedence over transport: `authRequired` (a 403 auth flag) and
   // `connected` (Redux transport state) are independently sourced, so the
   // session can expire while the socket is still up, and "Gateway connected"
-  // would then be a reassuring lie nothing else corrects.
+  // would then be a reassuring lie nothing else corrects. Before the first
+  // socket has opened or closed nothing has failed, so it says connecting.
   const gatewayStatusMsg = authRequired
     ? i18nT('app.gateway_offline_session_expired_see_banner_above')
     : connected
       ? i18nT('app.gateway_connected')
-      : i18nT('app.gateway_offline_reconnecting')
+      : gatewayConnecting
+        ? i18nT('app.gateway_connecting')
+        : offlineReason(offlineCause)
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
@@ -389,17 +399,31 @@ export function useAppShell() {
     onboarded,
     importOnboarded,
     privacyAcked,
+    privacyAckVersion,
     themeBootReady,
+    themeBootRead,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
   } = useTheme()
-  const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, themeBootReady, markOnboarded })
+  // First run's chapters write the host's flags, so they wait for the host's own
+  // answer. A failed boot read leaves only this browser's flags, which a new
+  // browser does not have; it may go on only where they already say first run
+  // is done.
+  const firstRun = useFirstRunChapters({
+    onboarded, importOnboarded, privacyAcked, privacyAckVersion,
+    themeBootReady: themeBootReady && (themeBootRead || onboarded),
+    hostStateUnread: themeBootReady && !themeBootRead && !onboarded,
+    markOnboarded,
+  })
   // Decided once per document: the URL does not change under a mounted App.
   const lookPreviewFrame = isLookPreviewFrame()
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
+  // Finish an agent update request's approved install wherever the user is
+  // when its download lands, not only on Settings > About.
+  useAgentInstallLatch()
   // Notify the main process whenever the gateway status reports a security
   // policy provider governs this install's updates, so the feed lane stands down.
   usePolicyGovernedNotification()
@@ -818,6 +842,18 @@ export function useAppShell() {
   // rungs still leave a group's contents overflowing; its level classes can
   // hide metric numbers without resizing the box the metrics probe observes.
   const topbarLevels = useTopbarCollapse(topPeekSurface, !isMobile)
+  // "Show search in the top bar" (Settings -> Display -> View). Off, the desktop
+  // header drops the search trigger, leaving the focus-mode toggle alone in the
+  // centre cell, and weights the side tracks 1:2 toward the right group; both
+  // groups' boxes change size, so the collapse hook's observers re-settle both
+  // ladders. With keyboard shortcuts switched off (Settings -> Shortcuts, in
+  // this tab or another) nothing else opens search on desktop, so the box stays
+  // shown whatever the setting holds; usePaletteShortcutsEnabled follows the
+  // flag exactly as the palette's keydown handler reads it. The guide gate
+  // follows what is drawn. The Settings switch (DisplayPanel) writes the same key.
+  const [topbarSearchSetting] = usePersistedBool('mc-topbar-search', true)
+  const paletteChordLive = usePaletteShortcutsEnabled()
+  const topbarSearch = topbarSearchSetting || !paletteChordLive
   const metrics = useMetricsReadout(isMobile, updateAvailable, topbarLevels.right)
   const { capsuleCollapsed, setCapsuleCollapsed, capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef } = metrics
 
@@ -826,6 +862,7 @@ export function useAppShell() {
   // own drawer replaces the menu button there).
   useGuideGate('terminal_enabled', terminalEnabled)
   useEffect(() => { showNativeDevTools() }, [])
+  useGuideGate('topbar_search_shown', topbarSearch)
   useGuidePredicate('not_on_sessions_page', location.pathname !== '/sessions')
   // Whether the rail draws Connect your phone at all: the pairing guide's blocker otherwise.
   useGuidePredicate('phone_connect_available', hasRenderableMobileConnect)
@@ -1037,7 +1074,7 @@ export function useAppShell() {
   const mobileNavOpen = mobileNavPhase === 'open'
 
   return {
-    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
+    isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, gatewayConnecting, updateAvailable, settingsDotLabel, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
     hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
@@ -1056,7 +1093,7 @@ export function useAppShell() {
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,
     setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
-    membersBarPending, mobileNavOpen,
+    membersBarPending, mobileNavOpen, topbarSearch,
   }
 }
 

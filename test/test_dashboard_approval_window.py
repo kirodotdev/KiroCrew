@@ -627,6 +627,73 @@ class TestTheRunnersApprovalWindow:
         assert _expiry_notes(record) == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("script", "bridged"),
+        [
+            (lambda: _prompt_turn(), 1),
+            (lambda: _prompt_turn(Wait(_CEILING - 5)), 0),
+        ],
+        ids=["waits", "no-budget"],
+    )
+    async def test_only_a_prompt_that_waits_is_handed_to_the_bridge(
+        self, monkeypatch, script, bridged: int
+    ) -> None:
+        # A no-budget decline never resolves its future, so the hand-off must not
+        # start for it: the chat app would hear "waiting" for a refused tool.
+        handed: list[str] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw["request_id"]),
+        )
+        await run_turn(script(), config={"agent": {"chat_turn_timeout_secs": _CEILING}})
+        assert handed == ["req-1"] * bridged
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("slot", "window"),
+        [(SlotSpec(key="chat-1"), 600), (SlotSpec(key="worker-1", app="issue-radar"), 180)],
+        ids=["attended", "unattended"],
+    )
+    async def test_the_bridged_answer_dies_with_the_prompts_own_window(
+        self, monkeypatch, slot: SlotSpec, window: int
+    ) -> None:
+        # A chat app's Approve must not outlive the wait it answers, so the
+        # binding's deadline is the window this prompt really waits.
+        handed: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw),
+        )
+        await run_turn(_prompt_turn(), slot=slot)
+        [kw] = handed
+        assert kw["ttl_s"] == window
+        assert kw["crew_log_session"] and isinstance(kw["turn"], int)
+        # A plain prompt is answerable, and the buttons sit beside what it runs.
+        assert kw["answerable"] is True
+        assert kw["approval_detail"]
+
+    @pytest.mark.asyncio
+    async def test_an_unverified_child_request_gets_no_chat_app_buttons(self, monkeypatch) -> None:
+        # Its card text is agent-authored and the dashboard row warns so; a chat
+        # app's Approve beside that text alone would drop the warning.
+        handed: list[dict] = []
+        monkeypatch.setattr(
+            "kiro_crew.notifications.bridge_approval_note.schedule_pending_approval",
+            lambda state, fut, **kw: handed.append(kw),
+        )
+        child = AcpEvent(
+            kind=EVENT_PERMISSION_REQUEST,
+            request_id="req-1",
+            title="fs_write",
+            tool_kind="edit",
+            sub_session_id="child-1",
+        )
+        assert child.child_low_fidelity
+        await run_turn(TurnScript(events=[child, _AFTER, _DONE]))
+        [kw] = handed
+        assert kw["answerable"] is False
+
+    @pytest.mark.asyncio
     async def test_a_muted_session_still_leaves_the_bell_note(self) -> None:
         # Muting a session hides the notes it publishes itself. This one is the
         # gateway's report about it, which a mute leaves alone.
@@ -759,8 +826,12 @@ class TestAnswerReleasesTheApprovalHold:
 
     @staticmethod
     def _releases(record: TurnRecord) -> list[str]:
+        # Only the answer's release: every turn's start also releases (unarmed).
         return [
-            call.args[0] for call in record.autonudge_calls if call.name == "release_approval_hold"
+            call.args[0]
+            for call in record.autonudge_calls
+            if call.name == "release_approval_hold"
+            and call.kwargs.get("why") == "an approval was answered"
         ]
 
     @pytest.mark.asyncio
@@ -776,3 +847,16 @@ class TestAnswerReleasesTheApprovalHold:
         record = await run_turn(_prompt_turn(), slot=slot)
         assert self._releases(record) == []
         assert record.notify_approval_stalled == [("chat-1", 600)]
+
+    @pytest.mark.asyncio
+    async def test_a_new_turn_releases_the_hold_unarmed_whoever_sent_it(self) -> None:
+        """A turn's start ends a hold left by an earlier turn; its own end re-arms."""
+        slot = SlotSpec(key="chat-1", autonudge=True)
+        record = await run_turn(_prompt_turn(answers={"req-1": APPROVED}), slot=slot)
+        releases = [
+            (call.args[0], call.kwargs.get("arm"))
+            for call in record.autonudge_calls
+            if call.name == "release_approval_hold"
+            and call.kwargs.get("why") == "a new turn started in the session"
+        ]
+        assert releases == [("chat-1", False)]

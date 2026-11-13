@@ -29,7 +29,7 @@ import CategoryRail from '../../components/appstore/CategoryRail'
 import AppListRow from '../../components/appstore/AppListRow'
 import TrustAppModal, { isTrustDeniedError } from '../../components/appstore/TrustAppModal'
 import SourcesPopover from '../../components/appstore/SourcesPopover'
-import { categoryCounts, categoryFor, type Category } from '../../components/appstore/categories'
+import { categoryCounts, categoryFor, categoryLabel, type Category } from '../../components/appstore/categories'
 import { sourceKey, sourceRowKey, type RegistryApp } from '../../components/appstore/types'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
@@ -41,7 +41,9 @@ import { useAppActions } from './useAppActions'
 import { useAppUpdates } from './useAppUpdates'
 import UpdatesList from './UpdatesList'
 import { cardDataKey } from './cardDataKey'
-import { registryRefreshFailureMessage } from '../../components/appstore/registryRefreshMessage'
+import {
+  registryListingFailureMessage, registryRefreshFailureMessage,
+} from '../../components/appstore/registryRefreshMessage'
 
 /**
  * Which app in a featured card has an action in flight, or null.
@@ -158,7 +160,7 @@ function DiscoverPageBody() {
   const {
     apps, appsError, registryError, loading,
     browseApps, featuredSections, categories, sources, updatables,
-    announceAppsChanged, registriesUnknown,
+    announceAppsChanged, registriesUnknown, registryFetchFailures,
   } = useAppsData()
 
   useEffect(() => {
@@ -240,6 +242,15 @@ function DiscoverPageBody() {
     // Clear only while the banner still shows what this handler put there.
     else setError(prev => (prev === previous ? '' : prev))
   }
+
+  // Registries whose index fetch failed, as the listing reports them: their
+  // apps are missing from the shelf, or shown as last synced, and nothing else
+  // on the page says so. Shown whatever the banner above holds, because the
+  // banner speaks for one refresh and this notice for the listing on screen. A
+  // dismissal holds until the text changes, so a new failure or cause shows again.
+  const [dismissedFetchNotice, setDismissedFetchNotice] = useState('')
+  const fetchNotice = registryListingFailureMessage(registryFetchFailures ?? [])
+  const showFetchNotice = fetchNotice !== '' && fetchNotice !== dismissedFetchNotice
   const handleRefresh = async () => {
     if (refreshing) return
     setRefreshing(true)
@@ -448,6 +459,17 @@ function DiscoverPageBody() {
             className="mb-4 animate-rise"
           />
         )}
+        {/* No hand-off: the SourcesPopover's install-path input shares this
+            page, and navigating away would discard what the user typed. */}
+        {showFetchNotice && (
+          <ErrorNotice
+            message={fetchNotice}
+            messageClassName="whitespace-pre-line"
+            onDismiss={() => setDismissedFetchNotice(fetchNotice)}
+            className="mb-4 animate-rise"
+            testId="registry-fetch-notice"
+          />
+        )}
         {successMsg && (
           <div className="mb-4 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--ok) 45%, transparent)' }}>
             <span className="text-text text-sm flex-1">{successMsg}</span>
@@ -625,7 +647,7 @@ function DiscoverPageBody() {
 
             <div className="flex items-baseline justify-between mt-2 mb-3">
               <h3 className="text-[17px] font-semibold text-text-strong">
-                {category === 'all' ? i18nT('pages.appsPage.all_apps') : category}
+                {category === 'all' ? i18nT('pages.appsPage.all_apps') : categoryLabel(category)}
               </h3>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-[224px_minmax(0,1fr)] gap-6 items-start">

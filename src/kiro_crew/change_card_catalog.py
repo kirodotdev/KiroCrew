@@ -860,6 +860,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.config.sections import (  # noqa: F401
         DEFAULT_MODEL,
         FEATURE_PREVIEW_FLAGS,
+        MAX_PER_CREATOR_MAX,
+        MAX_PER_CREATOR_MIN,
         MEMBER_APPROVAL_MODES,
         effective_pin_scope,
         normalize_agent_model,

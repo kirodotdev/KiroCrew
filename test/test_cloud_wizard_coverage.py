@@ -222,6 +222,8 @@ def test_a_failed_plugin_install_is_reported_and_refused(monkeypatch, capsys):
     result = ssm.PluginInstallResult(ok=False, message="sudo: a password is required")
     monkeypatch.setattr(ssm, "session_manager_plugin_installed", lambda: False)
     monkeypatch.setattr(ssm, "reinstall_cannot_clear_refusal", lambda: False)
+    monkeypatch.setattr(ssm, "session_manager_plugin_refusal", lambda: None)
+    monkeypatch.setattr(ssm, "session_manager_plugin_can_install", lambda: True)
     monkeypatch.setattr(ssm, "install_session_manager_plugin", lambda: result)
     assert wizard._ensure_session_manager_plugin(assume_yes=True) is False
     out = capsys.readouterr().out
@@ -242,12 +244,13 @@ class TestLaunchDiscovery:
             {"tag": "crew-a", "stack_name": "stack-again"},
         ]
         monkeypatch.setattr(ec2, "list_stacks", lambda *_a: rows)
+        monkeypatch.setattr(ec2, "live_instance_tags", lambda *_a: {"crew-a"})
         found = wizard._discover_existing_launches(LaunchState(), "dev", "us-east-1")
         assert found == [wizard._ExistingLaunch("crew-a", "stack-a", "CREATE_COMPLETE")]
 
     def test_choosing_a_new_installation_among_several_stacks_keeps_none(self, monkeypatch, capsys):
         monkeypatch.setattr(ui, "choose", lambda title, options, default_index=0: len(options) - 1)
-        assert wizard._choose_existing_launch(self.LAUNCHES, LaunchState()) is None
+        assert wizard._choose_existing_launch(self.LAUNCHES) is None
         assert "Creating a new installation; existing stacks are unchanged." in (
             capsys.readouterr().out
         )

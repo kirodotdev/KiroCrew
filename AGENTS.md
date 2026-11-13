@@ -6,6 +6,9 @@ open before touching that subsystem: see
 [Read before you touch](#read-before-you-touch). The frontend has its own router,
 [`website/AGENTS.md`](website/AGENTS.md).
 
+This codebase is yours: what it's for and how it's built are your call, and
+you'll keep building on it.
+
 ## What this is
 
 Kiro Crew is an open-source personal AI agent: chat from the web dashboard, the

@@ -210,6 +210,16 @@ class TestAcpClientUnaskedClaudeAutoAudit:
         assert calls == []
 
     @pytest.mark.asyncio
+    async def test_an_auto_request_pinned_on_the_exclusion_path_writes_nothing(self, monkeypatch):
+        """It asked for ``auto`` but runs in ``default``: no classifier approved it."""
+        calls = self._sel_calls(monkeypatch)
+        client = self._client()
+        client._claude_local_settings_excluded = True
+        client._observed_tool_calls["tc1"] = ("Read", "read")
+        await client._maybe_audit_unasked_tool_call(self._result_ev())
+        assert calls == []
+
+    @pytest.mark.asyncio
     async def test_a_session_not_in_auto_mode_writes_nothing(self, monkeypatch):
         calls = self._sel_calls(monkeypatch)
         client = self._client(permission_mode=None)
@@ -409,9 +419,10 @@ class TestAcpClientZeroTools:
 
     @pytest.mark.asyncio
     async def test_a_backend_that_does_not_honour_the_ban_is_not_refused(self):
-        """codex's sessions run on ``AcpRuntime``, which carries no zero-tool refusal,
-        so the refusal is not applied there and a zero-tool spec does not force the
-        session to judge requests."""
+        """codex's sessions run on ``AcpRuntime``, whose handle refuses on its own
+        (``AcpSessionHandle._deny_zero_tools``, pinned in ``test_codex_zero_tools.py``),
+        so the client's refusal is not applied here and a zero-tool spec does not force
+        this client to judge requests."""
         client = AcpClient(acp_backend=ACP_BACKEND_CODEX)
         client._spec_zero_tools = True
         event = client._build_permission_event(self._permission_request())

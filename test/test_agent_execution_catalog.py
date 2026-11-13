@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, call
@@ -12,7 +13,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew import agent_files
+from kiro_crew import agent_files, member_goals, member_notes, members
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import KiroCrewAgentConfig
@@ -168,6 +169,69 @@ async def test_catalog_uses_requesting_project_and_preserves_scope(catalog, tmp_
     catalog.discovery.assert_called_once_with(project_dir=tmp_path)
     assert rows[-1]["scope"] == "project"
     assert rows[-1]["selection_kind"] == "template"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case, scoped",
+    [
+        ("owner", True),
+        ("sensitive", False),
+        ("other-user", False),
+        ("app", False),
+        ("chat-key", False),
+    ],
+)
+async def test_the_owner_names_a_project_no_chat_runs_in(catalog, tmp_path, case, scoped):
+    # The folder settings modal lists the agents of the folder's project
+    # directory, which no chat is bound to yet; only the owner may name one, a
+    # request naming a chat keeps that chat's project, and a path a folder save
+    # would refuse lists the global templates only.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    named = {"sensitive": "~/.ssh"}
+    headers = {"X-Session-Key": "chat-empty"} if case == "chat-key" else {}
+    if case == "other-user":
+        catalog.caller.user = "another-user"
+    elif case == "app":
+        catalog.caller.app = "caller-app"
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get(
+            "/api/agents/catalog",
+            params={"project_path": named.get(case, str(repo))},
+            headers=headers,
+        )
+        assert response.status == 200
+    expected = Path(os.path.realpath(repo)) if scoped else None
+    catalog.discovery.assert_called_once_with(project_dir=expected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "named, screen_refuses", [(r"\\remote-host\share", True), ("relative/repo", False)]
+)
+async def test_a_named_project_the_path_screen_refuses_is_never_resolved(
+    catalog, monkeypatch, named, screen_refuses
+):
+    # On Windows `realpath` on a UNC share is itself the outbound SMB probe, so
+    # the shared path screen runs first and the folder validator, which
+    # resolves, is never reached for a refused or relative path. The screen
+    # also fences sensitive paths, so its refusal is the one that is audited.
+    if screen_refuses:
+        monkeypatch.setattr("kiro_crew.hooks.validate_file_path", lambda raw: None)
+    validator = Mock(side_effect=AssertionError("resolved before the path screen"))
+    monkeypatch.setattr(agent_catalog, "_validate_project_dir", validator)
+    audit = Mock()
+    monkeypatch.setattr(agent_catalog, "sel", lambda: audit)
+    async with TestClient(TestServer(catalog.app)) as client:
+        response = await client.get("/api/agents/catalog", params={"project_path": named})
+        assert response.status == 200
+    validator.assert_not_called()
+    catalog.discovery.assert_called_once_with(project_dir=None)
+    calls = [
+        (c.kwargs["outcome"], c.kwargs["resources"]) for c in audit.log_api_access.call_args_list
+    ]
+    assert calls == ([("denied", named)] if screen_refuses else [])
 
 
 @pytest.mark.asyncio
@@ -703,3 +767,111 @@ async def test_catalog_pin_display_is_safe_for_every_caller(
     if stored != expected:
         assert stored not in text + caplog.text
     assert catalog.config.agents["atlas"].acp_backend == stored
+
+
+# ── own setup a crewmate row does not carry ──
+# The chat picker withholds a crewmate on the shared store whose template is
+# listed only when it has nothing of its own. The browser judges the row's own
+# fields; ``own_setup`` answers for the rest, so a crewmate set up through its
+# rules, goals or briefing on the default workspace stays reachable from a chat.
+
+_TRACKER = "atzptl-tracker"
+
+
+@pytest.fixture
+def tracker(catalog):
+    """A crewmate upgraded from shared memory: default store and workspace, a listed
+    template, and nothing on its row. Returns its slug."""
+    catalog.config.agents[_TRACKER] = KiroCrewAgentConfig(kiro_agent="reviewer")
+    return members.member_slug(_TRACKER, catalog.config)
+
+
+async def _member_own_setup(app) -> dict[str, object]:
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get("/api/agents/catalog")
+        assert response.status == 200
+        rows = (await response.json())["agents"]
+    return {
+        row["name"]: row.get("own_setup", "absent")
+        for row in rows
+        if row["selection_kind"] == "member"
+    }
+
+
+@pytest.mark.asyncio
+async def test_only_shared_store_crewmates_carry_own_setup(catalog, tracker):
+    # `reviewer` keeps memory of its own, so the picker never withholds it and
+    # its records are not read.
+    assert await _member_own_setup(catalog.app) == {
+        "reviewer": "absent",
+        "retained-member": False,
+        _TRACKER: False,
+    }
+
+
+def _write_goal(slug: str, name: str) -> None:
+    path = member_goals.member_goals_path(slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"member": name, "slug": slug, "goals": [{"id": "g0000000a", "text": "Ship"}]}
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(
+            lambda slug, name: members.write_member_rules(
+                slug, member=name, text="Only touch the ATZ portal queue."
+            ),
+            id="permanent-rules",
+        ),
+        pytest.param(
+            lambda slug, name: member_notes.write_member_notes(slug, "Working the ATZ queue."),
+            id="briefing",
+            marks=pytest.mark.skipif(
+                not members.member_briefing_supported(),
+                reason="briefing reads fail closed without O_NOFOLLOW",
+            ),
+        ),
+        pytest.param(_write_goal, id="goal"),
+    ],
+)
+async def test_a_crewmate_record_on_disk_is_own_setup(catalog, tracker, write, caplog):
+    write(tracker, _TRACKER)
+    with caplog.at_level("DEBUG", logger=agent_catalog.logger.name):
+        result = await _member_own_setup(catalog.app)
+    assert result[_TRACKER] is True
+    assert result["retained-member"] is False
+    # Read, not guessed: an unreadable record also counts, and must not be why.
+    assert "records unreadable" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "pin",
+    [
+        {"acp_backend": "kas"},
+        {"worker_model": "auto"},
+        {"worker_reasoning_effort": "low"},
+        {"approval_mode": "trust_reads"},
+        {"dynamic_capabilities": True},
+    ],
+    ids=lambda pin: next(iter(pin)),
+)
+async def test_a_choice_the_row_does_not_carry_is_own_setup(catalog, tracker, pin):
+    for field, value in pin.items():
+        setattr(catalog.config.agents[_TRACKER], field, value)
+    assert (await _member_own_setup(catalog.app))[_TRACKER] is True
+
+
+@pytest.mark.asyncio
+async def test_unreadable_rules_count_as_own_setup(catalog, tracker, caplog):
+    # A record that cannot be read may hold the crewmate's setup, and withholding
+    # the row is the only way to err that hides a crewmate.
+    path = members.member_rules_path(tracker)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+    with caplog.at_level("DEBUG", logger=agent_catalog.logger.name):
+        assert (await _member_own_setup(catalog.app))[_TRACKER] is True
+    assert "records unreadable" in caplog.text

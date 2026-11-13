@@ -33,7 +33,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import MINYEAR, date, datetime
 from difflib import SequenceMatcher
 
 from kiro_crew.sel import sel
@@ -125,6 +125,29 @@ _MONTH_NAME_RE = re.compile(
     r"(?P<gap>\s*)(?P<n1>\d{1,4})?(?:[\s,]+(?P<n2>\d{2,4}))?",
     re.IGNORECASE)
 
+# A second, stricter reading of the same names, used ONLY as an extra gate after
+# the match above has passed, so it can reject a pair and never admit one. The
+# patterns above take a month as its first three letters followed by any
+# letters, so "Marketing", "Decision", "Novel" or "Marché" read as months: the
+# word is stripped from the stem and taken as a date both names share, which
+# can open the date gate for a monthly series or merge two different titles.
+# Here a month is a real spelling that ends at a letter boundary.
+_REAL_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?"
+    r"|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"(?![^\W\d_])"
+)
+_REAL_DATE_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:\d{4}[-_./]?\d{2}[-_./]?\d{2}"
+    r"|\d{1,2}[-_./]\d{1,2}(?:[-_./]\d{2,4})?"
+    r"|" + _REAL_MONTH + r"\.?\s*\d{0,4})"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE)
+_REAL_MONTH_NAME_RE = re.compile(
+    r"(?<![A-Za-z0-9])(" + _REAL_MONTH + r")\.?"
+    r"(?P<gap>\s*)(?P<n1>\d{1,4})?(?:[\s,]+(?P<n2>\d{2,4}))?",
+    re.IGNORECASE)
+
 
 def _norm_year(value: int) -> int:
     """Map a 2-digit year to 20xx; leave 4-digit years untouched."""
@@ -178,7 +201,7 @@ class DocRef:
         return (self.source_id, self.file_path or self.content_hash or "")
 
 
-def normalize_filename(name: str) -> str:
+def normalize_filename(name: str, date_re: re.Pattern[str] = _DATE_TOKEN_RE) -> str:
     """Lowercase, drop the extension, strip copy/date modifiers, collapse separators.
 
     Dates are stripped (not placeheld) so the stem captures only the title; the
@@ -192,12 +215,14 @@ def normalize_filename(name: str) -> str:
         stem = stem.rsplit(".", 1)[0]
     stem = stem.lower()
     stem = _COPY_MODIFIER_RE.sub(" ", stem)
-    stem = _DATE_TOKEN_RE.sub(" ", stem)
+    stem = date_re.sub(" ", stem)
     stem = _SEP_RE.sub(" ", stem).strip()
     return stem
 
 
-def _extract_dates(name: str) -> list[tuple[int | None, int, int | None]]:
+def _extract_dates(
+    name: str, month_re: re.Pattern[str] = _MONTH_NAME_RE
+) -> list[tuple[int | None, int, int | None]]:
     """Pull every date-like token from a filename as (year|None, month, day|None).
 
     Used ONLY to block a fuzzy filename match when two otherwise-similar names
@@ -233,7 +258,7 @@ def _extract_dates(name: str) -> list[tuple[int | None, int, int | None]]:
         if 1 <= nmonth <= 12 and 1 <= nday <= 31:
             out.append((nyear, nmonth, nday))
 
-    for m in _MONTH_NAME_RE.finditer(stem):
+    for m in month_re.finditer(stem):
         mmonth = _MONTH_MAP[m.group(1).lower()[:3]]
         n1, n2, gap = m.group("n1"), m.group("n2"), m.group("gap")
         myear: int | None = None
@@ -265,15 +290,20 @@ def _date_distance_days(d1: tuple[int | None, int, int | None],
         ry1 = 2000
     if ry2 is None:
         ry2 = 2000
+    # A four-digit run read as an ISO date can name year 0000 (a zero-padded
+    # counter such as "Scan_00000105"), which `date()` refuses; clamp so the
+    # distance still compares month and day instead of failing the whole sweep.
+    ry1 = max(ry1, MINYEAR)
+    ry2 = max(ry2, MINYEAR)
     day1 = min(dd1 or 15, 28)
     day2 = min(dd2 or 15, 28)
     return abs((date(ry1, m1, day1) - date(ry2, m2, day2)).days)
 
 
-def _dates_compatible(a: str, b: str) -> bool:
+def _dates_compatible(a: str, b: str, month_re: re.Pattern[str] = _MONTH_NAME_RE) -> bool:
     """False only when BOTH names carry dates and the closest pair is more than
     _DATE_MATCH_MAX_DAYS apart. If either name has no date, dates don't block."""
-    da, db = _extract_dates(a), _extract_dates(b)
+    da, db = _extract_dates(a, month_re), _extract_dates(b, month_re)
     if not da or not db:
         return True
     closest = min(_date_distance_days(x, y) for x in da for y in db)
@@ -305,8 +335,29 @@ def _stems_near_match(na: str, nb: str, a: str, b: str) -> bool:
     if not na or not nb:
         return False
     if na == nb or SequenceMatcher(None, na, nb).ratio() >= _FILENAME_RATIO_FLOOR:
-        return _dates_compatible(a, b)
+        # The real-month check runs second and can only reject, so dedup never
+        # merges a pair the existing match keeps apart: a merge deletes the
+        # loser's items. One corrected grammar in place of the existing one
+        # would merge pairs it keeps apart today, since its over-broad month
+        # match strips words like "Marketing" and so shortens their stems.
+        return _dates_compatible(a, b) and _real_month_gate(a, b)
     return False
+
+
+def _real_month_gate(a: str, b: str) -> bool:
+    """The same filename and date test with only real month spellings read as
+    months (see ``_REAL_MONTH``).
+
+    Runs only after the test above has passed, so it can only reject a pair:
+    the merges it allows are a subset of what that test allows on its own.
+    """
+    ra = normalize_filename(a, _REAL_DATE_TOKEN_RE)
+    rb = normalize_filename(b, _REAL_DATE_TOKEN_RE)
+    if not ra or not rb:
+        return False
+    if ra != rb and SequenceMatcher(None, ra, rb).ratio() < _FILENAME_RATIO_FLOOR:
+        return False
+    return _dates_compatible(a, b, _REAL_MONTH_NAME_RE)
 
 
 def _cosine(a: list[float] | None, b: list[float] | None) -> float:

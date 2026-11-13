@@ -52,6 +52,9 @@ from kiro_crew.agent_discovery import (
     read_agent_spec_strict,
 )
 from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
+from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - read by the owners
+    continue_timed_out_calls,
+)
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
@@ -149,6 +152,7 @@ from kiro_crew.messaging.dispatch import (
     stop_reason_landed,
 )
 from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.driver import _SteeringMarkerFilter  # noqa: F401 - read by the owners
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
@@ -167,6 +171,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
     trust_permitted,
 )
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
+from kiro_crew.mrkdwn_title import slack_title_text  # noqa: F401 - read by the owners
 from kiro_crew.parent_turns import note_turn_landed, settle_turn
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
@@ -353,6 +358,7 @@ from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     _read_thread_overrides,
     _recorded_selection,
     _set_default_agent,
+    adopt_dashboard_thread_agent,
     adopt_default_agent,
     channel_agent_mismatch,
     channel_pinned_agent,
@@ -716,6 +722,9 @@ _owner_id: str = ""
 
 # Tracked channel IDs for member_joined_channel monitoring.
 _tracking_channels: set[str] = set()
+# Ids with an owner's remove still saving, and how many: ``is_tracked_channel``
+# refuses them and an add that saved first leaves them out (interactions_settings).
+_removes_in_flight: dict[str, int] = {}
 _open_channels: set[str] = set()
 
 # Live reference to the orchestrator's config — set by events.py, reloaded

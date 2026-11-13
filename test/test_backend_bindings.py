@@ -49,7 +49,7 @@ SHARED_BINDINGS_CHECKS = ("the_class_only_scan_can_fail",)
 #: A dataclass field is "data" when it has a plain default (a class attribute) and
 #: "annotation" when it has none or a ``default_factory``.
 _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
-    "__init__": ("function", False, "5a1d3bbc33ff", "backend"),
+    "__init__": ("function", False, "b0b5bdb3423d", "backend"),
     "__post_init__": ("function", False, "b60c5fea256e", "backend"),
     "_apply_inflight_report": ("function", False, "44c5cabfd721", "backend_routing"),
     "_apps_declared_uris": ("annotation", False, "", ""),
@@ -71,6 +71,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_fail_unparseable_response": ("function", True, "3a5d34ab8233", "backend_routing"),
     "_fetch_and_deliver_ui": ("function", True, "7a07cdb6d3e6", "backend_mcp_apps"),
     "_forward_id_seq": ("data", False, "", ""),
+    "_gateway_ending": ("data", False, "", ""),
     "_gone_broadcast": ("data", False, "", ""),
     "_gone_replay_uris": ("annotation", False, "", ""),
     "_grant_callers": ("annotation", False, "", ""),
@@ -110,6 +111,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_rekey_generation": ("annotation", False, "", ""),
     "_release_upstream_subscriptions": ("function", True, "cc3d421ddfc2", "backend_leases"),
     "_reply_locally": ("function", True, "f8a4fcb66c0f", "backend_stubs"),
+    "_report_backend_exit": ("function", True, "4decff571a3a", "backend_liveness"),
     "_resource_subscriptions": ("annotation", False, "", ""),
     "_resource_update_targets": ("function", False, "0b53913c1bee", "backend_leases"),
     "_retry_after_rehandshake": ("function", True, "a4278c137cf6", "backend_handshake"),
@@ -119,6 +121,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "_settle": ("function", True, "54ff2e0a03d4", "backend_routing"),
     "_shutdown_lock": ("annotation", False, "", ""),
     "_spawn_metric_task": ("function", False, "13f007277a39", "backend_routing"),
+    "_stderr_tail": ("annotation", False, "", ""),
     "_stderr_task": ("data", False, "", ""),
     "_stdout_task": ("data", False, "", ""),
     "_stub_agents": ("annotation", False, "", ""),
@@ -145,6 +148,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "last_used_at": ("annotation", False, "", ""),
     "lifecycle_fields": ("function", False, "5e8e0b6328bb", "backend"),
     "outstanding_work": ("property", False, "fa6cfecd5574", "backend"),
+    "owner_port": ("data", False, "", ""),
     "pid": ("property", False, "fcad3a249a2d", "backend"),
     "pinned": ("data", False, "", ""),
     "pool_key": ("annotation", False, "", ""),

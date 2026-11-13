@@ -131,6 +131,11 @@ And never leave `agent` unset on a dispatch. An omitted `agent` inherits YOURS,
 so a leaf comes up as a second lead that dispatches instead of fixing, and the
 item reads as stalled rather than as misconfigured.
 
+A dispatch never passes `message` to `session_create`: the seed follows the
+bind. Where a `message` would be refused outright, your prompt says so:
+"`session_create`'s `message` is refused for this agent
+(`message_needs_send_approval`): create, then `session_send`."
+
 ## 5. Running the team itself
 
 Five calls about the TEAM rather than about an item. Each one is decided by a
@@ -191,6 +196,11 @@ queue, a deployer, a published artifact -- has exactly one child that lands it.
 Testing and review are their own item, dispatched to a different child than the
 author: an author grading its own work reports the result it already believes.
 
+**Fix a routine incident yourself when it fits one turn.** goal-conductor's
+Patrol lists the routine incidents a conductor handles without its manager. A
+conductor dispatches the fix. You may do it in this turn when it passes the
+do-it-yourself test in section 3.
+
 ## 6. When another conductor dispatched you
 
 Everything above still holds, and `goal-conductor`'s "When a conductor dispatched
@@ -210,7 +220,6 @@ Two lead-only additions:
 - The ledger nests two levels by default. Width is where the parallelism lives,
   not depth; an operator who wants more levels sets `work_ledger.max_depth` and
   accepts that each level multiplies sessions.
-- Run the evaluator and the budget check as the `accept_eval` and
-  `patrol_budget` tools; they do not prompt. `execute_bash` is never
+- Run the evaluator as the `accept_eval` tool; it does not prompt. `execute_bash` is never
   auto-approved, so the shell fallback costs one approval per run. Batch every
   `done` item into ONE call, as `goal-conductor` directs.

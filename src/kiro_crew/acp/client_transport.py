@@ -15,8 +15,8 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 
 Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
-``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
-``_turn_done``, ``memory_mode``.
+``_native_skill_projection``, ``_process``, ``_session_id``, ``_stderr_lines``,
+``_stderr_task``, ``_turn_done``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -78,7 +78,10 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     JsonRpcRequest,
 )
-from kiro_crew.agent_sdk.backends import ACP_BACKEND_FORBIDDEN_MODES
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
+)
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -835,13 +838,53 @@ async def _read_message(
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
         data = projection.frame(data)
-    return JsonRpcMessage(
+    msg = JsonRpcMessage(
         id=data.get("id"),
         method=data.get("method"),
         result=data.get("result"),
         error=data.get("error"),
         params=data.get("params"),
     )
+    if self.backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS:
+        self._note_advertised_commands(msg)
+    return msg
+
+
+def _note_advertised_commands(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Keep the newest command list the agent advertised, with the session it names.
+
+    Each ``available_commands_update`` replaces the whole list. The session id rides
+    along because ``new_conversation`` swaps the session on this same process. Both
+    strings go to the dashboard, so they get the same scrub as every other string the
+    harness reports back (``_scrub_observed``).
+    """
+    kind, update = _session_update_kind(msg)
+    commands = update.get("availableCommands")
+    if kind != UPDATE_AVAILABLE_COMMANDS or not isinstance(commands, list):
+        return
+    rows = []
+    for command in commands:
+        name = command.get("name") if isinstance(command, dict) else None
+        if isinstance(name, str) and name:
+            description = command.get("description")
+            text = description if isinstance(description, str) else ""
+            rows.append(
+                {
+                    "name": str(self._scrub_observed(name)),
+                    "description": str(self._scrub_observed(text)),
+                }
+            )
+    self._advertised_commands = (str(msg.params.get("sessionId") or ""), tuple(rows))
+
+
+def advertised_commands(self: AcpClient) -> list[dict[str, str]]:
+    """The commands this session last advertised: name and description, scrubbed.
+
+    Empty before the first ``available_commands_update``, and when the list names a
+    session other than the one this process runs.
+    """
+    session_id, rows = self._advertised_commands
+    return list(rows) if session_id and session_id == self._session_id else []
 
 
 async def _wait_for_response(
@@ -955,6 +998,9 @@ async def _wait_for_response(
         # Notification (has method, no id) — buffer for drain.
         if msg.method and msg.id is None:
             self._mcp_notifications.append(msg)
+            # No turn reads this buffer, and the frame may be the one that
+            # dropped the conversation's pictures (a late compaction or clear).
+            self._forget_sent_images()
             logger.debug("Buffered notification: %s (req=%d)", msg.method, req_id)
             continue
         # Server→client request (method AND id) or a foreign-id response
@@ -1094,8 +1140,9 @@ async def _drain_notifications(
             # process, so there is no co-tenant whose frame could arrive
             # here. Stated rather than defaulted so a transport that gains
             # tenants has to answer the question instead of inheriting a
-            # yes.
-            self._mcp_report.record_frame(msg, owned=True)
+            # yes. ``fold_frame`` is the owned fold, and tells the report's
+            # reader when this frame changed it.
+            self._mcp_report.fold_frame(msg)
         name = ""
         if isinstance(msg.params, dict):
             name = msg.params.get("name") or msg.params.get("serverName") or ""
@@ -1141,7 +1188,7 @@ async def _drain_notifications(
             _capture_oauth(read_msg)
             _capture_config_update(read_msg)
             _capture_agent_switched(read_msg)
-            self._mcp_report.record_frame(read_msg, owned=True)
+            self._mcp_report.fold_frame(read_msg)
             if "mcp" in (read_msg.method or ""):
                 name = ""
                 if isinstance(read_msg.params, dict):

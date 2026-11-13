@@ -9,6 +9,7 @@ AWS.
 from __future__ import annotations
 
 import builtins
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,7 @@ def fake_home(tmp_path, monkeypatch):
     # not spawn one, and `None` is the shape that means "could not ask".
     monkeypatch.setattr(cli_doctor, "_aws_profile_names", lambda: None)
     monkeypatch.setattr(cli_doctor, "_aws_auto_refreshes", lambda: None)
+    monkeypatch.setattr(cli_doctor, "_aws_cli_is_v1", lambda: False)
     return tmp_path
 
 
@@ -216,6 +218,40 @@ class TestCredentialsSection:
         assert "install the AWS CLI" not in out
         assert "no credential_process" not in out
 
+    def test_aws_cli_v1_is_named_rather_than_did_not_answer(self, tmp_path, monkeypatch, capsys):
+        """AWS CLI v1 refuses ``configure list-profiles`` on every call.
+
+        "did not answer" reads like a hiccup a re-run clears, so the line names the
+        version and what fixes it. Driven through the real probes against a fake
+        v1 CLI, without the ``fake_home`` stubs.
+        """
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setattr(cli_doctor, "_credential_vendor_line", lambda: "")
+        (tmp_path / ".aws").mkdir()
+        (tmp_path / ".aws" / "config").write_text("[profile p]\n")
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "aws_bin_declined_on_ownership", lambda: None
+        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_aws_bin", lambda: "/usr/bin/aws")
+
+        def _aws_v1(argv, **kw):
+            if argv[1:] == ["--version"]:
+                return subprocess.CompletedProcess(
+                    argv, 0, "aws-cli/1.44.87 Python/3.9.23 Linux/6.1 botocore/1.42.97\n", ""
+                )
+            return subprocess.CompletedProcess(
+                argv, 2, "", "aws: error: argument subcommand: Invalid choice\n"
+            )
+
+        monkeypatch.setattr(cli_doctor.subprocess, "run", _aws_v1)
+        issues: list[str] = []
+        cli_doctor._doctor_credentials(issues)
+        out = capsys.readouterr().out
+        assert "'/usr/bin/aws' is AWS CLI v1, which cannot list profiles" in out
+        assert "needs AWS CLI v2" in out
+        assert "did not answer, so the profile set is unknown" not in out
+        assert issues == []
+
     def test_credentials_file_alone_still_reports_a_profile(self, fake_home, monkeypatch, capsys):
         aws = fake_home / ".aws"
         aws.mkdir()
@@ -338,6 +374,7 @@ class _Proc:
     def __init__(self, returncode=0, stdout=""):
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = ""
 
 
 @pytest.fixture
@@ -482,7 +519,9 @@ class TestTheProbeDoesNotFollowARelocatedConfig:
         assert env["PATH"] == "/usr/bin", "the probe still has to be able to find aws"
 
     @pytest.mark.parametrize(
-        "probe", ["_aws_profile_names", "_aws_auto_refreshes"], ids=["profiles", "refresh"]
+        "probe",
+        ["_aws_profile_names", "_aws_auto_refreshes", "_aws_cli_is_v1"],
+        ids=["profiles", "refresh", "version"],
     )
     def test_neither_probe_passes_the_redirects_to_the_cli(self, monkeypatch, probe):
         for var in self.RELOCATORS:
@@ -510,6 +549,17 @@ class TestTheProbeDoesNotFollowARelocatedConfig:
                 assert var not in env, f"{probe} let the CLI follow {var}"
 
 
+def test_the_aws_probe_env_drops_the_gateway_python_env(monkeypatch):
+    """aws-cli v1 is Python: the gateway's PYTHONPATH/PYTHONHOME must not reach it."""
+    monkeypatch.setenv("PYTHONPATH", "<gw>")
+    monkeypatch.setenv("PYTHONHOME", "<gw>")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = cli_doctor._aws_probe_env()
+    assert "PYTHONPATH" not in env
+    assert "PYTHONHOME" not in env
+    assert env["PATH"] == "/usr/bin"
+
+
 class TestNeitherProbeResolvesThroughPath:
     """The probes run under an OPERATOR's ``kirocrew doctor``, outside the sandbox.
 
@@ -525,7 +575,9 @@ class TestNeitherProbeResolvesThroughPath:
     """
 
     @pytest.mark.parametrize(
-        "probe", ["_aws_profile_names", "_aws_auto_refreshes"], ids=["profiles", "refresh"]
+        "probe",
+        ["_aws_profile_names", "_aws_auto_refreshes", "_aws_cli_is_v1"],
+        ids=["profiles", "refresh", "version"],
     )
     def test_the_trusted_resolver_decides_the_executable(self, monkeypatch, probe):
         seen: list[str] = []

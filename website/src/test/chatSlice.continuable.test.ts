@@ -293,6 +293,18 @@ describe('selectContinuable', () => {
       messages: [msg('user'), msg('inject', '[Continue — requested by the user]\nresume')],
     }))).toBe(true)
   })
+
+  it("is true when a heartbeat prompt is the chat's only request and its turn failed", () => {
+    expect(selectContinuable(state({
+      messages: [msg('inject', '💓 Heartbeat\n\nreport', { injectKind: 'heartbeat' }), msg('error', 'session start timed out')],
+    }))).toBe(true)
+  })
+
+  it('is false when only a non-heartbeat inject row is present', () => {
+    expect(selectContinuable(state({
+      messages: [msg('inject', 'resume', { injectKind: 'recovery' })],
+    }))).toBe(false)
+  })
 })
 
 describe('selectTurnInterrupted', () => {

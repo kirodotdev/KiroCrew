@@ -18,12 +18,14 @@ import asyncio
 import functools
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
 from pathlib import Path
 from typing import Any, cast
 
+from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
+from kiro_crew.acp import session_provider_shared as _sp_shared
 from kiro_crew.acp import stale_compaction
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
@@ -51,6 +53,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_COMPACTION_REPORTED,
     ACP_BACKENDS_CONTEXT_RECYCLE,
 )
 from kiro_crew.acp.types import (
@@ -81,6 +84,8 @@ from kiro_crew.runtime_ownership import (
     release_runtime_tenancy,
 )
 from kiro_crew.session_token_sig import schedule_session_token_publish
+from kiro_crew.tracing import turn_anomalies
+from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import GrantDeadline
 
 logger = logging.getLogger(__name__)
@@ -132,6 +137,8 @@ class AcpSessionProvider(LLMProvider):
         runtime: AcpRuntime,
         *,
         owns_runtime: bool = False,
+        runtime_lease: str | None = None,
+        shared_runtime: bool = False,
         session_key: str = "",
         channel_id: str | None = None,
     ) -> None:
@@ -149,12 +156,33 @@ class AcpSessionProvider(LLMProvider):
         # non-owning killer -- the dashboard's reset-all fallback, a pid sweep --
         # be refused instead of taking a co-tenant's runtime with it.
         #
-        # Only an OWNING provider takes one. A session-sharing subagent is handed
-        # a runtime it did not spawn and must not kill, and at ``cap=1`` no entry
-        # holding a lease has room for a second, so having subagents acquire
-        # would either refuse them or change which process they land on. Their
-        # co-tenancy becomes a lease in the change that raises the cap.
-        self._runtime_lease: str | None = None
+        # A session-sharing SUBAGENT never takes one. It is handed a runtime it
+        # did not spawn and must not kill, and its co-tenancy is a TENANCY scoped
+        # to the turn (``_claim_shared_turn``), so it neither consumes the cap nor
+        # changes which process a chat session lands on.
+        #
+        # A shared CHAT session's lease arrives here already taken: the chat start
+        # decides whether to join a process before it spawns one, and that
+        # decision IS the acquisition (``providers.chat_share``). With the
+        # ``chat_runtime_sharing`` preview off nothing is handed in and
+        # ``acquire_runtime_lease`` takes the lease at registration, as before.
+        self._runtime_lease: str | None = runtime_lease
+        # Whether this session's runtime may be serving OTHER chat sessions, which
+        # neither value of ``_owns_runtime`` can express: the owning arm kills
+        # without evicting the session, the subagent arm evicts and never kills.
+        # A session leaving a shared process must evict itself, and kill only when
+        # the lease table hands the runtime back, which it does for the LAST
+        # holder alone (``_shutdown_shared``). True for the founder as well as a
+        # joiner: which one is last is only known at release time.
+        self._shared_runtime = shared_runtime
+        if shared_runtime:
+            # A handle starts unshared; only a shared one is marked, so the preview
+            # off writes nothing onto the handle.
+            handle.chat_shared = True
+        # The task holding this process's chat turn gate through THIS provider,
+        # for the reentrant acquire in ``_chat_turn_gate`` (a ``/compact`` turn
+        # holds the gate across the deferred compaction receipt).
+        self._chat_gate_holder: asyncio.Task[Any] | None = None
         self._resumed_flag: bool = False
         self._resume_session_id: str = ""
         # The session this provider serves. ``rekey()`` sets it on a warm-pool
@@ -333,7 +361,7 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
 
-    async def new_conversation(self) -> None:
+    async def new_conversation(self, *, member_session_key: str = "", channel_id: str = "") -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
 
         The cheap clean-slate reuse primitive a warm worker pool relies on for a
@@ -384,11 +412,16 @@ class AcpSessionProvider(LLMProvider):
         # Create the fresh session BEFORE destroying the old one so a failure
         # leaves the provider still pointing at a usable handle (no window where
         # self._handle references a terminated session).
+        # A member DM's dispatch mount and a channel session's channel ride every
+        # session start (``AcpProvider._member_session_key`` / ``_owning_channel_id``),
+        # so a chat's fresh conversation carries the ones its cold start passed.
         new_handle = await self._runtime.create_session(
             cwd=self._runtime._work_dir,
             agent=self._runtime._agent or None,
             memory_mode=self.memory_mode,
             session_key=self._session_key,
+            member_session_key=member_session_key,
+            channel_id=channel_id,
         )
         # Re-apply the configured non-default model to the fresh session. A new
         # session/new reverts to the agent-config default model, so a warm worker
@@ -422,6 +455,18 @@ class AcpSessionProvider(LLMProvider):
                         exc_info=True,
                     )
                 raise AcpError(f"failed to re-apply model {prior_model} to fresh session") from exc
+        elif isinstance(inherited := getattr(old, "inherited_model", ""), str) and inherited:
+            # An unpinned KAS session inherits kiro-cli's chat.defaultModel; the
+            # fresh session/new is back on KAS's own default, so re-apply it the
+            # same way. Not a pin, so a refusal leaves the default and is not fatal.
+            try:
+                await new_handle.set_model(inherited, inherit=True)
+            except Exception:
+                logger.warning(
+                    "new_conversation: failed to re-apply inherited model %s",
+                    inherited,
+                    exc_info=True,
+                )
         # Accumulated across the swap: the old session's KAS launch snapshots are
         # removed by this provider's shutdown, like the new one's.
         new_handle.kas_launch_snapshots = [
@@ -431,7 +476,17 @@ class AcpSessionProvider(LLMProvider):
         # The fresh conversation is the same worker's, so its record waits as long as
         # the previous one's did.
         new_handle.delete_delay_secs = getattr(old, "delete_delay_secs", 0.0)
+        # Still the session the keepalive route's registry holds, if it was.
+        new_handle.keepalive_routed = getattr(old, "keepalive_routed", False) is True
         self._handle = new_handle
+        old.mcp_session_report().hand_over(new_handle.mcp_session_report())  # its reader follows
+        # The fresh session/new restored nothing: a session/load observation from
+        # the old handle would make the next turn skip its history replay
+        # (``turn_dispatch_gates``) and run on an empty conversation. Same as
+        # ``AcpClient.new_conversation``; cleared only once the swap is committed.
+        self._resumed_flag = False
+        if getattr(self, "_shared_runtime", False):
+            new_handle.chat_shared = True
         # The fresh session launched fresh stubs carrying a fresh token, and
         # nothing has named it: an unnamed token is refused, not resolved from
         # the shared runtime's tree. Claim it now, against the session this
@@ -509,6 +564,12 @@ class AcpSessionProvider(LLMProvider):
         return value if isinstance(value, str) else ""
 
     @property
+    def kas_bundle_engine_version(self) -> str:
+        """See ``AcpSessionHandle.kas_bundle_engine_version``."""
+        value = getattr(self._handle, "kas_bundle_engine_version", "")
+        return value if isinstance(value, str) else ""
+
+    @property
     def kas_telemetry_notice(self) -> str:
         """See ``AcpSessionHandle.kas_telemetry_notice``."""
         value = getattr(self._handle, "kas_telemetry_notice", "")
@@ -518,6 +579,13 @@ class AcpSessionProvider(LLMProvider):
     def kas_withheld_credentials_notice(self) -> str:
         """See ``AcpSessionHandle.kas_withheld_credentials_notice``."""
         value = getattr(self._handle, "kas_withheld_credentials_notice", "")
+        return value if isinstance(value, str) else ""
+
+    @property
+    def zero_tool_ban_notice(self) -> str:
+        """See ``AcpSessionHandle.zero_tool_ban_notice``."""
+        read = getattr(self._handle, "zero_tool_ban_notice", None)
+        value = read() if callable(read) else ""
         return value if isinstance(value, str) else ""
 
     @property
@@ -563,6 +631,20 @@ class AcpSessionProvider(LLMProvider):
             self._handle.answer_elicitation(request_id, action, content, person=person)
         )
 
+    def set_mcp_sign_in_ended_hook(self, hook: Callable[[str], None]) -> None:
+        """See LLMProvider. Installed on the runtime for this provider's current session."""
+        self._runtime.set_mcp_sign_in_ended_hook(self._handle.session_id, hook)
+
+    def mcp_sign_in_ended(self, server_name: str) -> bool:
+        """See LLMProvider. The runtime holds a sign-in's slot until its attempt ends.
+
+        ``reattempts_mcp_servers`` is the live-host test ``begin_mcp_sign_in`` makes:
+        elsewhere Crew starts no sign-in, and a link is the engine's own.
+        """
+        return self._runtime.reattempts_mcp_servers and not self._runtime.mcp_sign_in_holds(
+            self._handle.session_id, server_name
+        )
+
     async def release_runtime_lease(self) -> None:
         """Give up this provider's lease on the runtime, if it holds one.
 
@@ -583,6 +665,13 @@ class AcpSessionProvider(LLMProvider):
             return
         self._runtime_lease = None
         await RUNTIME_OWNERSHIP.release(lease)
+
+    # A chat session on a SHARED runtime (``chat_runtime_sharing`` preview): its
+    # turn gate, the hold a ``/compact`` takes across its deferred receipt, and
+    # the teardown that leaves the process (``acp/session_provider_shared.py``).
+    _shutdown_shared = _sp_shared.shutdown_shared
+    _chat_turn_gate = _sp_shared.chat_turn_gate
+    hold_chat_turn_gate = _sp_shared.chat_turn_gate
 
     @property
     def turn_survives_disconnect(self) -> bool:
@@ -615,6 +704,9 @@ class AcpSessionProvider(LLMProvider):
                 await asyncio.to_thread(kas_env_launch.discard_batch, list(batch or []), written)
 
     async def _shutdown_session(self) -> None:
+        if getattr(self, "_shared_runtime", False):
+            await self._shutdown_shared()
+            return
         if self._owns_runtime:
             # A runtime kill cancels only its reader tasks, so the handle's own
             # in-flight hook executions are stopped here first.
@@ -733,6 +825,10 @@ class AcpSessionProvider(LLMProvider):
 
         return self.backend == ACP_BACKEND_KAS
 
+    @property
+    def reports_compaction(self) -> bool:
+        return self.backend in ACP_BACKENDS_COMPACTION_REPORTED
+
     def prompt_timeout_for_deadline(self, deadline: float) -> float:
         """Resolve the immutable transport budget this ACP session supports."""
         return resolve_prompt_timeout_for_deadline(deadline)
@@ -747,6 +843,33 @@ class AcpSessionProvider(LLMProvider):
         prompt_gate: Callable[[], None] | None = None,
     ) -> AsyncIterator[LLMEvent]:
         """Send a prompt and yield LLMEvent objects until the turn completes.
+
+        A shared chat session holds the per-process chat turn gate for the whole
+        turn (``_chat_turn_gate``); every other session runs it ungated.
+        """
+        async with self._chat_turn_gate():
+            async with aclosing(
+                self._stream_turn(
+                    message,
+                    timeout,
+                    allow_image=allow_image,
+                    sign_in_ask=sign_in_ask,
+                    prompt_gate=prompt_gate,
+                )
+            ) as events:
+                async for event in events:
+                    yield event
+
+    async def _stream_turn(
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        allow_image: bool = True,
+        sign_in_ask: str = "",
+        prompt_gate: Callable[[], None] | None = None,
+    ) -> AsyncGenerator[LLMEvent, None]:
+        """The turn :meth:`stream` runs, inside the chat turn gate when shared.
 
         ``prompt_gate`` goes to the handle, which has it called under the write
         lock, right before the prompt is written; whatever it raises ends the
@@ -804,7 +927,15 @@ class AcpSessionProvider(LLMProvider):
         emitted = False
         try:
             async with aclosing(
-                self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+                turn_anomalies.watched(
+                    self,
+                    trace_turns.traced(
+                        self,
+                        self.essential_delivery.stream(
+                            message, send, lambda: self.context_incarnation
+                        ),
+                    ),
+                )
             ) as events:
                 async for event in events:
                     emitted = True
@@ -955,26 +1086,29 @@ class AcpSessionProvider(LLMProvider):
         # status receipt is missing or arrives late.
         stale_compaction.sync_provider_compaction_delivery(self, self.essential_delivery)
         self.essential_delivery.prepare_command(command)
-        claim = self._claim_shared_turn()
-        try:
-            async with aclosing(
-                self.essential_delivery.stream(
-                    command,
-                    self._handle.stream_command,
-                    lambda: self.context_incarnation,
-                    # Native commands/execute makes no model request.
-                    requests_model=not self.command_is_native(command),
-                )
-            ) as events:
-                async for event in events:
-                    yield event
-        except AcpRuntimeDead as exc:
-            raise self._translate_dead(exc) from exc
-        except AcpRuntimeError as exc:
-            raise AcpError(str(exc)) from exc
-        finally:
-            await self._end_shared_turn(claim)
-            await record_live_children_after_turn(self)
+        # Same serialization as stream(): /compact and /clear are the ownerless
+        # control-frame producers the gate exists to disambiguate on kiro-cli.
+        async with self._chat_turn_gate():
+            claim = self._claim_shared_turn()
+            try:
+                async with aclosing(
+                    self.essential_delivery.stream(
+                        command,
+                        self._handle.stream_command,
+                        lambda: self.context_incarnation,
+                        # Native commands/execute makes no model request.
+                        requests_model=not self.command_is_native(command),
+                    )
+                ) as events:
+                    async for event in events:
+                        yield event
+            except AcpRuntimeDead as exc:
+                raise self._translate_dead(exc) from exc
+            except AcpRuntimeError as exc:
+                raise AcpError(str(exc)) from exc
+            finally:
+                await self._end_shared_turn(claim)
+                await record_live_children_after_turn(self)
 
     async def _connection_failure_is_signed_out(self, exc: AcpError) -> bool:
         """Whether a pre-output connection failure is really a missing sign-in.
@@ -1256,22 +1390,11 @@ class AcpSessionProvider(LLMProvider):
         proc = getattr(self._runtime, "_process", None)
         return proc.returncode if proc else None
 
-    def touch_activity(self) -> None:
-        """Refresh activity timestamp on the runtime, and stamp this session's handle.
-
-        The runtime half is PROCESS-level: the clock belongs to the runtime, so
-        one session's activity refreshes it for every session on it. An idle
-        co-tenant is therefore never idle while a neighbour talks, which is the
-        SAFE direction for anything that reaps on idleness (it defers, never
-        signals early) and the wrong one for anything that reports idle time
-        as a fact about a session.
-
-        The handle half is per-session: the tool-stall watchdog ignores the
-        runtime clock, so without it a blocking tool's keepalive pings
-        (``wait``, ``spawn_sub_agents``) would not keep its own turn alive.
-        """
-        self._runtime._last_activity = time.monotonic()
-        self._handle.note_keepalive()
+    # What the keepalive route stamps on this session, its touch and a tool's
+    # heartbeat: ``kiro_crew.acp.session_provider_keepalive``.
+    touch_activity = _sp_keepalive.touch_activity
+    note_tool_heartbeat = _sp_keepalive.note_tool_heartbeat
+    mark_keepalive_routed = _sp_keepalive.mark_keepalive_routed
 
     def rekey(
         self,

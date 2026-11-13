@@ -544,15 +544,14 @@ def _rebuild_locked(
             record = dataclasses.replace(record, generation=existing.generation)
         if existing.recorded_at:
             record = dataclasses.replace(record, recorded_at=existing.recorded_at)
-        # The goal's two caps and where its count starts ride no crew-log entry,
-        # so they are the cache's to keep -- but only while the cache holds no
-        # goal write the record lacks. A dirty cache, or one a goal write ahead
-        # of the record, may carry a refused write's caps and count start; those
+        # The goal's concurrency cap and where its count starts ride no crew-log
+        # entry, so they are the cache's to keep -- but only while the cache holds
+        # no goal write the record lacks. A dirty cache, or one a goal write ahead
+        # of the record, may carry a refused write's cap and count start; those
         # are dropped for the defaults below, as for a board with no cache header.
         if not cache_dirty(slot_key) and existing.goal_version == record.goal_version:
             record = dataclasses.replace(
                 record,
-                item_cap=existing.item_cap,
                 concurrency_cap=existing.concurrency_cap,
                 goal_items_base=existing.goal_items_base,
             )
@@ -1017,7 +1016,6 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_WAKE_AT_TOO_FAR,
     CONDUCTOR_ACTIONS,
     DEFAULT_GOAL_CONCURRENCY_CAP,
-    DEFAULT_GOAL_ITEM_CAP,
     DEFAULT_STALE_WINDOW_SECS,
     EVENT_KINDS,
     ITEM_STATES,
@@ -1031,7 +1029,6 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     MAX_EVENTS_PER_ITEM,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
-    MAX_GOAL_ITEM_CAP,
     MAX_ITEMS_PER_CONDUCTOR,
     MAX_PR,
     MAX_RECORD_BYTES,
@@ -1057,7 +1054,6 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     _now_iso,
     _settle_goal_base,
     _stored_concurrency_cap,
-    _stored_item_cap,
     logger,
 )
 from kiro_crew.work_ledger_remote import (  # noqa: E402, F401
@@ -1125,6 +1121,12 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _ITEM_ID_RE,
     _ITEMS_DIR,
     _KEY_FILE,
+    _LISTING_MEMO,
+    _LISTING_MEMO_BOARDS,
+    _LISTING_MEMO_ITEMS,
+    _LISTING_MEMO_LOCK,
+    _LISTINGS,
+    _LISTINGS_LOCK,
     _LOCK_FILE,
     _READ_MEMO,
     _READ_MEMO_LOCK,
@@ -1140,9 +1142,13 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _change_marks,
     _coalesce_progress,
     _commit_item_locked,
+    _copy_item,
     _existing_conductor_lock,
+    _item_from_record,
     _item_lock_path,
+    _json_copy,
     _last_mark,
+    _Listing,
     _mark_changed,
     _memo_read_bytes,
     _open_lock,
@@ -1156,6 +1162,7 @@ from kiro_crew.work_ledger_store import (  # noqa: E402, F401
     _serialize,
     _slot_key_is_shaped,
     _stored_item_ids,
+    _walk_items,
     _work_ledger_root,
     _write_record,
     binding_lock,

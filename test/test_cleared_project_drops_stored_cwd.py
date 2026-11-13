@@ -491,17 +491,26 @@ async def test_a_model_only_reset_on_a_chat_with_no_project_keeps_the_stored_cwd
 
 
 @pytest.mark.asyncio
-async def test_the_pending_reset_keeps_the_cwd_of_a_chosen_project(tmp_path):
+async def test_the_pending_reset_keeps_the_cwd_of_a_chosen_project(resumable, tmp_path):
     from chat_runner_coverage_helpers import _slot, _state
 
     from kiro_crew.dashboard import chat_runner
 
+    mgr, old, bound, _ = resumable
+    await mgr.get_or_create(KEY, cwd=None)
+    mgr.release(KEY)
+    assert bound == [old]
     state, slot = _state(tmp_path), _slot("test")
+    state.sessions = mgr
     state._slots[slot.key] = slot
-    slot.project = str(tmp_path)
-    state.sessions.reset = AsyncMock(return_value=True)
+    slot.project = old
     slot._pending_reset_history_key = KEY
+    slot._pending_reset_clears_cwd = True
 
-    await chat_runner._consume_pending_reset(state, slot)
+    try:
+        assert await chat_runner._consume_pending_reset(state, slot) is True
 
-    state.sessions.retract_cwd.assert_not_called()
+        assert not mgr.has_session(KEY)
+        assert mgr._session_map.get_cwd(KEY) == old
+    finally:
+        await mgr.close_all()

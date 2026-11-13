@@ -331,3 +331,24 @@ def test_stamp_returns_the_line_untouched_when_the_shape_resists_mutation():
     """
     hostile = json.dumps({"resource_metrics": [{"resource": {"attributes": "not-a-mapping"}}]})
     assert local_exporter._stamp_process_identity(hostile) == hostile
+
+
+@pytest.mark.parametrize(("cap", "value"), [("_retention_days", 30), ("_max_total_bytes", 1 << 20)])
+def test_a_cap_switched_off_mid_plan_never_widens_the_plan(tmp_path, cap, value):
+    """``set_caps`` can land between a cap's check and its use; the plan reads it once."""
+    reads = []
+
+    def switched_off_after_first_read(self):
+        reads.append(cap)
+        return value if len(reads) == 1 else 0  # a concurrent set_caps(0) after one read
+
+    other = "_max_total_bytes" if cap == "_retention_days" else "_retention_days"
+    exporter_cls = type(
+        "Exp", (JsonlMetricExporter,), {cap: property(switched_off_after_first_read), other: 0}
+    )
+    exp = exporter_cls.__new__(exporter_cls)  # no __init__: it would set the caps
+    exp._dir = tmp_path
+    _shard(tmp_path, "metrics-2000-01-01-1-1.jsonl", 10, age_days=5)
+    _shard(tmp_path, "metrics-2000-01-02-1-2.jsonl", 10, age_days=4)
+    # Neither shard breaks the cap that was in force when the plan read it.
+    assert exp._prune_plan() == []

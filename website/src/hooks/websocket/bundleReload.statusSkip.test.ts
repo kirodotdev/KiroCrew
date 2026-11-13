@@ -37,7 +37,6 @@ describe('useBundleReload status frames', () => {
     }
     expect(statusDispatches()).toBe(1)
     expect(store.getState().dashboard.status).toBe(held)
-    expect(store.getState().dashboard.connected).toBe(true)
   })
 
   it('stores a frame when a field a surface reads changes', () => {
@@ -50,13 +49,13 @@ describe('useBundleReload status frames', () => {
     expect(store.getState().dashboard.updateProgress).toEqual({ step: 'downloading', detail: '' })
   })
 
-  it('stores an unchanged frame after a disconnect, so the socket reads connected again', () => {
-    const { store, bundle, statusDispatches } = setup()
-    bundle.onDashboardStatus(frame())
+  it('leaves the connection flag to the socket helpers', () => {
+    const { store, bundle } = setup()
     store.dispatch(sseDisconnected())
-    bundle.onDashboardStatus(frame({ uptime_secs: 65 }))
-    expect(statusDispatches()).toBe(2)
-    expect(store.getState().dashboard.connected).toBe(true)
+    bundle.onDashboardStatus(frame())
+    bundle.onDashboardStatus(frame({ sessions: 4 }))
+    expect(store.getState().dashboard.status?.sessions).toBe(4)
+    expect(store.getState().dashboard.connected).toBe(false)
   })
 
   it('stores an unchanged frame after another writer replaced the status', () => {

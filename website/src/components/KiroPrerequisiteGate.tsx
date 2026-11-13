@@ -19,15 +19,16 @@ import {
   type AcpBackendProbe,
   type KiroPrerequisiteStatus,
 } from '../api/client'
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, KIRO_HARNESS_BACKENDS, acpBackendName, acpProbeConfirmsUse, agentChoiceSaved, configuredAcpBackend, setupMarkerErrorBody, setupMarkerErrorMessage } from '../api/acpBackend'
 import { clearCachedModels } from '../providers/adapters/acp'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { safeGetItem, safeRemoveItem, safeSetItem } from '../utils/safeStorage'
 import { Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
 import KasLoginGate from './KasLoginGate'
 import RelockNotice, { BARE_LOGIN_COMMAND } from './KiroPrerequisiteRelockNotice'
 import { KiroUnzipPrerequisite } from './KiroUnzipPrerequisite'
 import RemoteCrewSetupSkip from './RemoteCrewSetupSkip'
+import { AgentSpecsMissing, AgentSpecsRejected } from './KiroPrerequisiteAgentSpecs'
 import { LtsSignInRequired, SessionSignInRequired, SetupShell } from './KiroPrerequisiteSetupShell'
 import {
   AgentDetailActions,
@@ -43,12 +44,13 @@ const QUERY_KEY = ['kiro-prerequisite'] as const
 
 export function kiroPrerequisiteRefetchInterval(
   status: KiroPrerequisiteStatus | undefined,
+  kiroGated = false,
 ): number | false {
   // A closed LTS login gate keeps the fast poll even with `ready`: the
   // probe can latch ready a few seconds before the gate itself reopens.
   if (status?.ready && status.lts_login_required !== true) return 30_000
   if (status && status.setup_allowed === false) return 3_000
-  if (kiroPrerequisiteIsBlocking(status)) return 5_000
+  if (kiroPrerequisiteIsBlocking(status, kiroGated)) return 5_000
   return 30_000
 }
 
@@ -62,9 +64,11 @@ export function kiroPrerequisiteRefetchInterval(
 // explicit request, so a latch-reading poll can never observe them and the gate
 // would hold forever behind a Check again button. Bounded deliberately: it costs
 // two short `kiro-cli` spawns per interval, runs ONLY on this blocking screen,
-// and stops the moment `ready` flips. A returning user never reaches it.
+// and stops the moment `ready` flips. A returning user reaches it only through
+// the out-of-date card below.
 export function kiroPrerequisiteIsBlocking(
   status: KiroPrerequisiteStatus | undefined,
+  kiroGated = false,
 ): boolean {
   // An LTS gateway whose login gate is closed serves nothing else, so the
   // sign-in screen blocks and its poll must probe to notice the new sign-in.
@@ -72,6 +76,13 @@ export function kiroPrerequisiteIsBlocking(
   if (!status || status.ready) return false
   // A non-owner cannot probe and is shown the "owner must finish setup" screen.
   if (status.setup_allowed === false) return false
+  // The out-of-date card blocks an established install too, and its copy says
+  // the page continues once the CLI is updated: a terminal update touches no
+  // gateway, so only a probing poll can see it (the server clears a spawn-proven
+  // too-old latch only when the probe finds a different binary). Only when a
+  // loaded config runs a Kiro harness (*kiroGated*): another harness's user sees
+  // the dashboard, not this card, and must not drive host probes behind it.
+  if (status.acp_supported === false && kiroGated) return true
   return !status.initial_setup_complete
 }
 
@@ -160,6 +171,12 @@ const SETUP_COMPLETE_KEY = 'kirocrew:kiro-setup-complete'
 
 function rememberedSetupComplete(): boolean {
   return safeGetItem(SETUP_COMPLETE_KEY) === '1'
+}
+
+// The status read was refused for a lapsed dashboard sign-in, not by a proxy.
+// `isAuthExpiredError` inline: the gate's suites mock api/client wholesale.
+function dashboardSignInLapsed(error: unknown): boolean {
+  return error instanceof ApiError && error.authRequired && !error.edgeChallenge
 }
 
 function SetupStatusError({
@@ -655,183 +672,6 @@ function CliOutdated({
           </p>
         ) : null}
         {allowRemoteSetup && <RemoteCrewSetupSkip />}
-      </>
-    </SetupShell>
-  )
-}
-
-function AgentSpecsMissing({
-  specs,
-  repairError,
-  retrying,
-  onRepair,
-}: {
-  specs: string[]
-  repairError: string
-  retrying: boolean
-  onRepair: () => void
-}) {
-  return (
-    <SetupShell
-      asideHeadline={i18nT('components.kiroPrerequisiteGate.agent_specs_missing')}
-      asideBody={i18nT('components.kiroPrerequisiteGate.kiro_crew_installs_the_agent_specs_kiro_cli_load')}
-    >
-      <>
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger-text">
-          <AlertTriangle className="lucide-inline" />
-        </div>
-        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
-          {i18nT('components.kiroPrerequisiteGate.agent_specs_missing')}
-        </p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          {i18nT('components.kiroPrerequisiteGate.kiro_crew_s_agent_specs_are_not_installed')}
-        </h1>
-        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.kiro_crew_writes_its_own_agent_specs_where_kiro')}
-        </p>
-        <div className="mt-5 w-full max-w-lg text-left">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            {i18nT('components.kiroPrerequisiteGate.missing')}
-          </p>
-          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 text-xs text-muted">
-            {specs.join('\n')}
-          </pre>
-        </div>
-        {/* Verbatim and untranslated: it names the failing install step, which is
-            the one thing a support conversation actually needs. Its absence is
-            also informative — it means no repair has been attempted yet.
-            `role="alert"` because it appears in place after the button press with
-            no route change, so a screen reader would otherwise get nothing. */}
-        <ErrorNotice
-          className="mt-4 w-full max-w-lg text-left text-xs"
-          messageClassName="font-mono"
-          title={i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
-          message={repairError || null}
-          testId="kiro-gate-repair-error"
-          noHandoffReason="the agent specs kiro-cli refused are what the agent runs on, and this gate hides the chat the hand-off would open"
-        />
-        {/* Plain-language next step: the verbatim output above is for a bug
-            report, not something a user can act on by itself. */}
-        {repairError ? (
-          <p className="mt-2 max-w-lg text-left text-[13px] leading-relaxed text-muted">
-            {i18nT('components.kiroPrerequisiteGate.attempt_failed_remedy', { action: i18nT('components.kiroPrerequisiteGate.check_again') })}
-          </p>
-        ) : null}
-        {/* The self-diagnosis dead end: `kiro-cli diagnostic` is the first command
-            anyone reaches for, and it refuses with "Kiro CLI app is not running"
-            until the app is launched — which reads as the cause and is not. */}
-        <p className="mt-5 max-w-lg text-[13px] leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.if_you_are_diagnosing_this_from_a_terminal_kiro')}
-        </p>
-        <div className="mt-6">
-          <Btn type="button" disabled={retrying} onClick={onRepair}>
-            <RefreshCw className="lucide-inline" />
-            {i18nT('components.kiroPrerequisiteGate.check_again')}
-          </Btn>
-        </div>
-      </>
-    </SetupShell>
-  )
-}
-
-function AgentSpecsRejected({
-  specs,
-  reason,
-  repairError,
-  retrying,
-  onRepair,
-}: {
-  specs: string[]
-  reason: string
-  repairError: string
-  retrying: boolean
-  onRepair: () => void
-}) {
-  return (
-    <SetupShell
-      asideHeadline={i18nT('components.kiroPrerequisiteGate.agent_specs_rejected')}
-      asideBody={i18nT('components.kiroPrerequisiteGate.kiro_crew_installs_the_agent_specs_kiro_cli_load')}
-    >
-      <>
-        <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-danger/10 text-danger-text">
-          <AlertTriangle className="lucide-inline" />
-        </div>
-        <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-danger">
-          {i18nT('components.kiroPrerequisiteGate.agent_specs_rejected')}
-        </p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          {i18nT('components.kiroPrerequisiteGate.kiro_cli_will_not_load_kiro_crew_s_agent_specs')}
-        </h1>
-        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.the_files_are_on_disk_but_kiro_cli_refuses_them')}
-        </p>
-        <div className="mt-5 w-full max-w-lg text-left">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-            {i18nT('components.kiroPrerequisiteGate.rejected')}
-          </p>
-          <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 text-xs text-muted">
-            {specs.join('\n')}
-          </pre>
-        </div>
-        {/* Kiro CLI's own words, verbatim and untranslated. It names the file and
-            the construct it refused, which is the difference between "my agents
-            stopped working" and a report someone can act on. */}
-        {reason ? (
-          <div className="mt-4 w-full max-w-lg text-left">
-            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted">
-              {i18nT('components.kiroPrerequisiteGate.kiro_cli_s_reason')}
-            </p>
-            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words rounded-lg bg-bg p-3 text-xs text-muted">
-              {reason}
-            </pre>
-          </div>
-        ) : null}
-        <ErrorNotice
-          className="mt-4 w-full max-w-lg text-left text-xs"
-          messageClassName="font-mono"
-          title={i18nT('components.kiroPrerequisiteGate.the_repair_attempt_failed')}
-          message={repairError || null}
-          testId="kiro-gate-repair-error"
-          noHandoffReason="the agent specs kiro-cli refused are what the agent runs on, and this gate hides the chat the hand-off would open"
-        />
-        {/* Plain-language next step: the verbatim output above is for a bug
-            report, not something a user can act on by itself. */}
-        {repairError ? (
-          <p className="mt-2 max-w-lg text-left text-[13px] leading-relaxed text-muted">
-            {i18nT('components.kiroPrerequisiteGate.attempt_failed_remedy', { action: i18nT('components.kiroPrerequisiteGate.check_again') })}
-          </p>
-        ) : null}
-        {/* Deliberately does not promise a rewrite. The button re-asks kiro-cli
-            rather than regenerating the spec: the file is already on disk, and a
-            rebuild would discard a concurrent MCP toggle's tools/allowedTools
-            grant. The leading cause is a kiro-cli upgrade, which re-checking
-            cannot fix, so the two remedies get their own labelled lines rather
-            than sitting mid-sentence in a muted paragraph. The commands live in
-            <code> outside the catalog: a translator must not be able to alter a
-            string the user pastes into a shell, and prose cannot be copied. */}
-        <p className="mt-4 max-w-lg text-[13px] leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.repair_rewrites_the_specs_kiro_crew_owns')}
-        </p>
-        <ul className="mt-3 w-full max-w-lg list-none space-y-2 text-left">
-          <li className="text-sm leading-relaxed text-muted">
-            {i18nT('components.kiroPrerequisiteGate.remedy_spec_rejected_update')}
-          </li>
-          <li className="text-sm leading-relaxed text-muted">
-            {i18nT('components.kiroPrerequisiteGate.remedy_spec_rejected_rewrite')}
-            <CopyCommand>
-              <code>kirocrew setup --agent-only --clean</code>
-            </CopyCommand>
-          </li>
-        </ul>
-        {/* Tightened deliberately: the remedy lines and the copy block added
-            enough height to push this button under the fold at a 1280x800
-            viewport, and the card's primary action must stay on screen. */}
-        <div className="mt-4">
-          <Btn type="button" disabled={retrying} onClick={onRepair}>
-            <RefreshCw className="lucide-inline" />
-            {i18nT('components.kiroPrerequisiteGate.check_again')}
-          </Btn>
-        </div>
       </>
     </SetupShell>
   )
@@ -1400,7 +1240,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // background poll below reads latched state for free. A user-driven Refresh
   // must still hit the host, so it arms this flag for exactly one fetch.
   const forceProbe = useRef(false)
-  // Set once the app has rendered from a resolved status. An LTS relock
+  // Whether a loaded config runs a Kiro harness, for the poll below; written by
+  // an effect once the config query resolves.
+  const kiroGatedRef = useRef(false)
+  // Set once the app has rendered after a status answer. An LTS relock
   // then keeps the app mounted and adds RelockNotice beside it.
   const appShown = useRef(false)
   const statusQuery = useQuery({
@@ -1416,12 +1259,12 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       forceProbe.current = false
       const refresh = explicit
         ? 'explicit' as const
-        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY))
+        : kiroPrerequisiteIsBlocking(queryClient.getQueryData(QUERY_KEY), kiroGatedRef.current)
           ? 'auto' as const
           : false
       return api.kiroPrerequisite(refresh)
     },
-    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data),
+    refetchInterval: (query) => kiroPrerequisiteRefetchInterval(query.state.data, kiroGatedRef.current),
   })
   const updateStatus = (status: KiroPrerequisiteStatus) => {
     queryClient.setQueryData(QUERY_KEY, status)
@@ -1461,6 +1304,10 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
     ? configuredAcpBackend(configQuery.data)
     : undefined
   const otherBackendConfigured = configuredBackend !== undefined && configuredBackend !== KIRO_BACKEND
+  const kiroGated = configuredBackend !== undefined && KIRO_HARNESS_BACKENDS.includes(configuredBackend)
+  useEffect(() => {
+    kiroGatedRef.current = kiroGated
+  }, [kiroGated])
   const kiroBlocking = kiroPrerequisiteIsBlocking(statusQuery.data)
   // The harness probe Settings → Agent Harness reads. Needed for two things: to let a
   // configured non-Kiro agent through, and to fill the picker on the first-run
@@ -1529,9 +1376,15 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   const setupComplete = (!!statusQuery.data
     && (statusQuery.data.initial_setup_complete || statusQuery.data.ready))
     || otherBackendReady
+  // A status saying "not set up" (a reset data home) forgets it, unless another
+  // agent may still admit (first config/probe fetch) or an LTS lock or the
+  // sign-in-only app reports `initial_setup_complete: false` regardless.
+  const setupNotDone = !!statusQuery.data && !setupComplete && !ltsLocked && !signInOnly
+    && !configQuery.isLoading && !backendsQuery.isLoading
   useEffect(() => {
     if (setupComplete) safeSetItem(SETUP_COMPLETE_KEY, '1')
-  }, [setupComplete])
+    else if (setupNotDone) safeRemoveItem(SETUP_COMPLETE_KEY)
+  }, [setupComplete, setupNotDone])
 
   // An unresolved check is UNKNOWN — never "setup required", and never a reason
   // to withhold the dashboard OR to pause sessions. Readiness is latched at
@@ -1544,13 +1397,20 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // This also removes the first-run flash at its root: rendering the
   // setup-branded shell here would show first-run setup on every launch for as
   // long as the gateway's two kiro-cli subprocesses take to answer.
-  // Only an admission from a resolved status counts: the app also renders while
-  // the status is still unknown, and a lock found then must not leave it mounted.
+  // Any admission after the first status answer counts, a failed read included;
+  // a lock found before that answer must not leave the app mounted.
   const app = (extra?: ReactNode) => {
-    if (statusQuery.data) appShown.current = true
+    if (!statusQuery.isPending) appShown.current = true
     return <>{children}{extra}</>
   }
   if (statusQuery.isPending) {
+    // A browser that never finished setup gets the sign-in screen as soon as a
+    // first attempt is refused for its dashboard sign-in, not after the retry:
+    // an app mounted meanwhile paints every read it starts failing the same
+    // way. A retry that passes (a repaired cookie) still replaces this screen.
+    if (!rememberedSetupComplete() && dashboardSignInLapsed(statusQuery.failureReason)) {
+      return <SessionSignInRequired />
+    }
     return app()
   }
   const retrying = statusQuery.isFetching
@@ -1641,9 +1501,7 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
       return app()
     }
     // A check refused for a lapsed dashboard sign-in says nothing about Kiro CLI.
-    // `isAuthExpiredError` inline: the gate's suites mock api/client wholesale.
-    const error = statusQuery.error
-    if (error instanceof ApiError && error.authRequired && !error.edgeChallenge) {
+    if (dashboardSignInLapsed(statusQuery.error)) {
       return <SessionSignInRequired />
     }
     const message = statusQuery.isError
@@ -1755,10 +1613,13 @@ export default function KiroPrerequisiteGate({ children }: { children: ReactNode
   // through — so even once signed in it cannot start a single turn (it would
   // fail at session-create). The probe runs whether or not the CLI is signed
   // in, so this branch and its card make no claim about sign-in.
-  // `acp_supported === false` is a FRESH
-  // probe result, not a latch (a `false` default would hide the state on an older
-  // gateway that omits the field, so the strict `=== false` is deliberate), so it
-  // is safe to surface even on an established install — and its remedy is unique:
+  // `acp_supported === false` is either a probe
+  // result or a spawn-proven latch (a session start that rejected
+  // `--auth-method`), which an update, Check again, or a replaced binary clears (a
+  // `false` default would hide the state on an older gateway that omits the
+  // field, so the strict `=== false` is deliberate). Both prove the installed CLI
+  // cannot run a session, so it is safe to surface even on an established
+  // install — and its remedy is unique:
   // update the CLI in place, which Kiro Crew runs for the user here. Ordered
   // BEFORE the established-install bail-out for the same reason as the spec
   // branches: this is a total failure the chat error card cannot pre-empt, and

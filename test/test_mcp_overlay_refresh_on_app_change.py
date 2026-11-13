@@ -42,7 +42,9 @@ def _seed_store(**servers: tuple[list[str], dict[str, str] | None, dict[str, str
 
 def _spec(agents: Path, stem: str, servers: dict[str, dict]) -> None:
     agents.mkdir(parents=True, exist_ok=True)
-    (agents / f"{stem}.json").write_text(json.dumps({"name": stem, "mcpServers": servers}))
+    (agents / f"{stem}.json").write_text(
+        json.dumps({"name": stem, "tools": ["*"], "mcpServers": servers})
+    )
 
 
 def _srv(args: list[str] | None = None, env: dict[str, str] | None = None) -> dict:

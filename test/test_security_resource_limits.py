@@ -260,7 +260,7 @@ class TestApplyResourceLimits:
                 ).stdout.strip()
             )
             expected_nproc = min(expected_nproc, per_uid_cap)
-        cfg = {"resource_limits": {"max_processes": nproc_req, "max_open_files": 256}}
+        cfg = {"resource_limits": {"max_user_processes": nproc_req, "max_open_files": 256}}
         probe = (
             "import resource,json;"
             "print(json.dumps({"
@@ -361,7 +361,7 @@ class TestApplyResourceLimits:
         import sys
 
         inherited_nproc = _resource_mod.getrlimit(_resource_mod.RLIMIT_NPROC)[0]
-        cfg = {"resource_limits": {"max_processes": "lots", "max_open_files": -5}}
+        cfg = {"resource_limits": {"max_user_processes": "lots", "max_open_files": -5}}
         probe = (
             "import resource,json;"
             "print(json.dumps({"

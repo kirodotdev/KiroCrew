@@ -146,12 +146,20 @@ def _reconciled(env: SimpleNamespace) -> None:
 
 
 class _Count:
-    def __init__(self) -> None:
+    """Calls made through :meth:`wrap`; with *thread*, only those made on that thread.
+
+    A patched ``os.stat`` is process-wide, so threads other tests in the same worker
+    left running are counted too unless the count is held to the listing's thread.
+    """
+
+    def __init__(self, thread: int | None = None) -> None:
         self.calls: list = []
+        self._thread = thread
 
     def wrap(self, real):
         def counted(*args, **kwargs):
-            self.calls.append(args)
+            if self._thread is None or threading.get_ident() == self._thread:
+                self.calls.append(args)
             return real(*args, **kwargs)
 
         return counted
@@ -300,12 +308,17 @@ def test_steady_listing_op_budget(tmp_path, monkeypatch) -> None:
     os.utime(d, ns=(_BASE_NS, _BASE_NS))
     env = _attach(ConversationLog(base_dir=d))
     env.log.list_sessions_indexed()
-    stats, scans, rows = _Count(), _Count(), _Count()
+    stats, scans, rows = _Count(threading.get_ident()), _Count(), _Count()
     monkeypatch.setattr(os, "stat", stats.wrap(os.stat))
     monkeypatch.setattr(SessionListingIndex, "_scan", scans.wrap(SessionListingIndex._scan))
     monkeypatch.setattr(
         SessionCatalogProjection, "_listing_row", rows.wrap(SessionCatalogProjection._listing_row)
     )
+    # Another thread's stat, as a thread left behind by an earlier test in the same
+    # worker makes, is not the listing's work.
+    stray = threading.Thread(target=os.stat, args=(tmp_path,))
+    stray.start()
+    stray.join()
     for _ in range(3):
         assert len(env.log.list_sessions_indexed()) == 2000
     assert (len(stats.calls), len(scans.calls), len(rows.calls)) == (3, 0, 0)
@@ -935,3 +948,36 @@ async def test_the_app_path_reads_the_scan() -> None:
     log.list_sessions_indexed.side_effect = AssertionError("an app listing read the index")
     assert await _keys(_request(log, {"user_only": "1"}, app="someapp")) == []
     log.list_sessions.assert_called_once_with()
+
+
+@pytest.mark.parametrize("files", [600, 1200, 2400, 4704])
+def test_a_listing_after_an_in_process_write_reads_one_row_at_any_size(
+    tmp_path, monkeypatch, files: int
+) -> None:
+    """The callers moved to ``list_sessions_indexed`` pay for the file that changed only.
+
+    The scan's memo is keyed on this process's write epoch, so every write here makes
+    the next ``list_sessions()`` re-read a row per transcript: 4704 on the busy host the
+    switch was measured on. The index replays the write journal and re-reads one.
+    """
+    d = tmp_path / "sessions"
+    d.mkdir()
+    for i in range(files):
+        _write(d / f"dashboard_chat-{i}-{i}.jsonl", [{**_META, "title": f"t{i}"}], _stamp(i))
+    os.utime(d, ns=(_stamp(files + 1), _stamp(files + 1)))
+    env = _attach(ConversationLog(base_dir=d))
+    env.log.list_sessions_indexed()
+    env.log.list_sessions()
+    rows = _Count()
+    monkeypatch.setattr(
+        SessionCatalogProjection, "_listing_row", rows.wrap(SessionCatalogProjection._listing_row)
+    )
+
+    env.log.append("dashboard:chat-0-0", "user", "one more line")
+    assert len(env.log.list_sessions_indexed()) == files
+    indexed_rows = len(rows.calls)
+    rows.calls.clear()
+    env.log.append("dashboard:chat-0-0", "user", "and another")
+    assert len(env.log.list_sessions()) == files
+
+    assert (indexed_rows, len(rows.calls)) == (1, files)

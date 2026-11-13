@@ -875,9 +875,10 @@ function writeManifest(fs, path, stateRoot, manifestPath, state) {
     throw e;
   }
   const tmp = uniqueSidePath(manifestPath, "tmp");
-  fs.writeFileSync(tmp, body, { flag: "wx", mode: 0o600 });
   let committed = false;
   try {
+    // Inside the try so a write that fails part-way (ENOSPC) still unlinks tmp.
+    fs.writeFileSync(tmp, body, { flag: "wx", mode: 0o600 });
     syncPath(fs, tmp);
     fs.renameSync(tmp, manifestPath);
     committed = true;

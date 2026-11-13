@@ -256,7 +256,7 @@ leak operator-supplied text through a key. Two keys whose redaction collides mer
 which requires both to have carried a credential, so what is lost is already-redacted
 content.
 
-Two WebSocket frames, both `{type, data}` like every other broadcast and both classified owner-only in `ws_event_scope` (`MEMBER_LOG_EVENTS`). Owner-only here means the owner's dashboard socket alone, not every dashboard user: `WebSocketHub._ws_client_allowed` also refuses them to a non-owner dashboard session (a Telegram, Teams or Webex allowlist link), audited `owner_only`, and `ws.py` sends the `members_subscribed` baseline only on an owner connect. The REST reads that carry the same data, `GET /api/members`, `GET /api/members/{slug}/projections` and `GET /api/members/{slug}/activity`, apply the same boundary: after the app-caller guard and before any config or log read, `require_owner_dashboard_request` answers a non-owner 403 `owner_only`, and a granted read leaves an `allowed` SEL record (`members.list.read`, `members.projections.read`, `members.activity.read`), as the briefing and rules reads do:
+Two WebSocket frames, both `{type, data}` like every other broadcast and both classified owner-only in `ws_event_scope` (`MEMBER_LOG_EVENTS`). Owner-only here means the owner's dashboard socket alone, not every dashboard user: `WebSocketHub._ws_client_allowed` also refuses them to a non-owner dashboard session (a Telegram, Teams or Webex allowlist link), audited `owner_only`, and `ws.py` sends the `members_subscribed` baseline only on an owner connect. The REST reads that carry the same data, `GET /api/members`, `GET /api/members/{slug}/projections` and `GET /api/members/{slug}/activity`, apply the same boundary: after the app-caller guard and before any config or log read, `require_owner_dashboard_request` answers a non-owner 403 `owner_only`, and a granted read leaves an `allowed` SEL record (`members.list.read`, `members.projections.read`, `members.activity.read`), as the briefing and rules reads do. One non-owner reads `GET /api/members`: a team Crew teammate the Kiro relay verified (`routes_identity._relay_teammate`) gets the person-created Bots only, each row holding `name`, `slug`, `display_name`, `description`, `avatar`, `source` and `dashboard_created` and nothing of the owner's view (no slot, DM line, projections, recency, goals, star, workspace, model or settings), built from the config alone so the read reconciles and writes nothing (`members_roster._teammate_roster`). Every member write stays owner-only for them, and the Bots page words a thread open's `owner_only` refusal as who may chat rather than as a failure:
 
 | frame | data | client rule |
 |---|---|---|
@@ -544,11 +544,11 @@ bound does not silently shorten either read.
 
 **What that costs, measured.** The bounds above are per append and per value, so they
 say nothing about the cost of reading a log that has grown, and it is the read that
-grows. A changed file is reloaded WHOLE, and an append invalidates the cache and
-reloads, so an append's cost tracks the log's own length. Measured on `MemberLog`
-against a real log, median of fifty appends at each size:
+grows. A changed file is reloaded WHOLE, and that reload is a parse of every event.
+Measured on `MemberLog` against a real log, median of fifty appends that each
+reloaded:
 
-| events in the log | one append | of which the parse |
+| events in the log | one append with a reload | of which the parse |
 |---|---|---|
 | 0 | 3.0 ms | -- |
 | 1,000 | 9.1 ms | |
@@ -556,15 +556,46 @@ against a real log, median of fifty appends at each size:
 | 4,000 | 27.5 ms | |
 | 8,000 | 52.0 ms | 50.1 ms |
 
-So it is linear in the file, the parse is essentially all of it, and a doubling of the
-log doubles every later append. For scale, a patrol waking every thirty minutes writes
-about 17,500 events a year.
+So a reload is linear in the file and the parse is essentially all of it. For scale, a
+patrol waking every thirty minutes writes about 17,500 events a year.
 
-The reload is not where this can be fixed. The append needs the header before it can
-write, so dropping the reload and invalidating only moves the same parse to the next
-append: measured identical either way. Making an append cheap means reading the header
-without parsing the events, which changes what this class promises and is tracked
-separately rather than folded in here.
+An append therefore reloads only when it has to. `MemberLog.append` adds the event it
+wrote to the events it holds (`_adopt_own_append`) when the file proves it is those
+events followed by that one event, on four facts read from the file itself:
+
+- the stat sampled just before the write equals the stamp the events were loaded at
+  (size, modification time, change time, inode);
+- the newest record on disk is the event;
+- that record begins at the byte where the loaded file ended;
+- the record before it is the newest event held.
+
+`CrewLog.tail_records` answers the last three from one bounded read of the file's end,
+under the append lock. The new stamp is sampled before that read, so a record that
+lands after it leaves the file unequal to the stamp and the next read reloads. Any
+other case reloads the whole log: another process wrote ahead of the append, the file
+was rewritten or swapped, or the tail is not settled. The proof does not use the
+unit's cut counter, because a member log has no counter file. The fold that follows an
+append reads its gap from the events held (`MemberLog.iter_held_events_after`), and
+streams from the store only when the floor is below the retained window.
+
+Measured through `MemberEventLogService` (the append and its fold) on copies of real
+member logs, median of thirty appends, six rounds:
+
+| events in the log | one append, reloading every time | one append, adopted |
+|---|---|---|
+| 37 | 8.4 ms | 5.9 ms |
+| 140 | 9.3 ms | 6.2 ms |
+| 1,058 | 25.5 ms | 5.8 ms |
+| 3,323 | 64.0 ms | 6.8 ms |
+| 7,682 | 135.5 ms | 5.7 ms |
+| 19,930 | 334.7 ms | 6.2 ms |
+
+What still parses the whole log: the first load of a member in a process, a reload
+after the file changed under the instance, the first fold of a member after boot, and
+`append_if` (the closer path, once per ended patrol). Not seen by the proof, or by a
+read: an older record rewritten in place to the same length within the clock tick of
+the load stamp. On Windows the stat's change time is the file's creation time, so a
+same-length rewrite whose modification time is put back is not seen there either.
 
 The migration is resumable, per item. `ensure` returning early on `log.exists()`
 meant a process that died between `create` and the end of the migration left that

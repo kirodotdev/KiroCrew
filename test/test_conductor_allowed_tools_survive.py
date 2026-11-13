@@ -138,11 +138,15 @@ _FOLDER_TREE_AND_CREATE = frozenset(
     {"@kirocrew-dashboard/chat_folder_tree", "@kirocrew-dashboard/chat_folder_create"}
 )
 _FOLDER_FILE_SELF = frozenset({"@kirocrew-dashboard/chat_folder_file_self"})
+#: The patrol budget check, retired once a work-ledger patrol had no bound to
+#: check (rfc-permanent-patrol.md).
+_PATROL_BUDGET = frozenset({"@kirocrew-work/patrol_budget"})
 _VERIFIED_RETIREMENTS: dict[str, frozenset[str]] = {
     "kirocrew-conductor": frozenset({"@kirocrew-core"})
     | _FOLDER_TREE_AND_CREATE
-    | _FOLDER_FILE_SELF,
-    "kirocrew-ledger-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF,
+    | _FOLDER_FILE_SELF
+    | _PATROL_BUDGET,
+    "kirocrew-ledger-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF | _PATROL_BUDGET,
     "kirocrew-pipeline-conductor": _FOLDER_TREE_AND_CREATE,
     "kirocrew-security-conductor": _FOLDER_TREE_AND_CREATE | _FOLDER_FILE_SELF,
 }

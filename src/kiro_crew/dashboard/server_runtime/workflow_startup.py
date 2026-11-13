@@ -54,6 +54,9 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             def _auto_turn(slot: Any, snap: dict) -> None:
                 try:
                     from kiro_crew.dashboard.chat import _run_chat
+                    from kiro_crew.dashboard.chat_utils_injected_rows import (
+                        WORKFLOW_FOLLOWUP_KIND,
+                    )
 
                     raw_name = snap.get("name") or snap.get("run_id", run_id)
                     name, _ = redact_exfiltration_urls(str(raw_name))
@@ -79,7 +82,7 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                         prompt,
                         functools.partial(_run_chat, _synthetic_payload=True),
                         state,
-                        workflow_followup=True,
+                        gateway_prompt_kind=WORKFLOW_FOLLOWUP_KIND,
                     )
                     state.push_slots_update()
                     logger.info(

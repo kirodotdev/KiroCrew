@@ -80,5 +80,5 @@ def test_index_settings_table_uses_the_dashboard_tab_labels() -> None:
     # their own keys there; every other row must be a real tab label.
     unknown = names - labels - {"Privacy", "Webhooks", "Secrets"}
     assert not unknown, unknown
-    for label in ("Import / Export", "Agent Harness", "OAuth Apps"):
+    for label in ("Import / Export", "Agent Harness", "Connections"):
         assert label in names, label

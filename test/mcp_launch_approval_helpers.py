@@ -41,7 +41,7 @@ def _approval_module():
 
 def _write_agent(source: Path, servers: dict) -> None:
     source.mkdir(parents=True, exist_ok=True)
-    (source / "a.json").write_text(json.dumps({"name": "a", "mcpServers": servers}))
+    (source / "a.json").write_text(json.dumps({"name": "a", "tools": ["*"], "mcpServers": servers}))
 
 
 def _rewrite(tmp_path: Path, stub_servers: frozenset[str], approvals) -> dict[str, str]:
@@ -132,9 +132,13 @@ def toggle_home_fixture(tmp_path, monkeypatch):
 def _declare(agents: Path, where: str, command: str, args: list[str]) -> None:
     entry = {"command": command, "args": args}
     if where == "agent spec":
-        (agents / "a.json").write_text(json.dumps({"name": "a", "mcpServers": {"srv": entry}}))
+        (agents / "a.json").write_text(
+            json.dumps({"name": "a", "tools": ["*"], "mcpServers": {"srv": entry}})
+        )
     else:
-        (agents / "a.json").write_text(json.dumps({"name": "a", "mcpServers": {}}))
+        (agents / "a.json").write_text(
+            json.dumps({"name": "a", "mcpServers": {}, "tools": ["@srv"]})
+        )
         settings = agents.parent / "settings" / "mcp.json"
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_text(json.dumps({"mcpServers": {"srv": entry}}))

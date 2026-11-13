@@ -114,22 +114,20 @@ class _ResettingSessions(_FakeSessions):
 
 @pytest.mark.asyncio
 async def test_the_background_owner_is_pinned_before_the_call_not_after_it(monkeypatch):
-    """The spend must stay with the session that ordered the work.
+    """The spend stays charged to the session that ordered the work.
 
-    ``run_bg_oneliner`` writes its ledger entry in the teardown, and the resolver
-    answers which unit a slot's work is landing in NOW -- so resolving there would
-    file this call's cost against a successor session that never incurred it,
-    silently, in an append-only file. The registry double flips its answer between
-    the two moments, so only a pre-call resolution can pass.
+    The owner is resolved before the call. The registry double flips its answer
+    between the two moments, as a slot reset does, so the entry goes to the newest
+    unit: an older unit never grows.
     """
     from kiro_crew.crew_log import emit
 
     monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
-    recorded: list[str] = []
+    recorded: list[tuple[str, str]] = []
     monkeypatch.setattr(
         emit,
         "on_background_completed",
-        lambda session_id, **_kw: recorded.append(session_id),
+        lambda session_id, **kw: recorded.append((session_id, kw.get("newer_unit", False))),
     )
     session = _FakeSession(
         [
@@ -145,7 +143,9 @@ async def test_the_background_owner_is_pinned_before_the_call_not_after_it(monke
         crew_log_kind="title",
         crew_log_session_key="dashboard:chat-7",
     )
-    assert recorded == ["owner-sid"], "the entry must name the unit that ordered the work"
+    assert recorded == [
+        ("successor-sid", True)
+    ], "the entry goes to the newest unit, held until that unit's crew log exists"
 
 
 @pytest.mark.asyncio
@@ -795,7 +795,7 @@ async def test_the_suggestions_prompt_carries_no_image(attachment, monkeypatch):
         suggestions.ContextBuilder, "get_memory_for", MagicMock(side_effect=RuntimeError)
     )
     log = SimpleNamespace(
-        list_sessions=lambda: [{"key": "k", "title": "Screenshots"}],
+        list_sessions_indexed=lambda: [{"key": "k", "title": "Screenshots"}],
         derive_recent=lambda key, max_messages: [{"role": "user", "content": attachment}],
     )
     state = SimpleNamespace(conversation_log=log, crons=SimpleNamespace(list_jobs=lambda: []))

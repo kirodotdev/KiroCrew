@@ -30,6 +30,7 @@ import asyncio
 import logging
 import os
 import threading
+import unicodedata
 from typing import Any
 from urllib.parse import quote
 
@@ -59,7 +60,7 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
         inherited_falls_back,
         inherited_harness_source,
         refresh_worker_spec_verdicts,
-        worker_spec_kas_fields,
+        worker_spec_kas_detail,
     )
 
     # Off the loop: what each Crew bot's file needs is read into memory here, so the
@@ -96,7 +97,14 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
                 config, crew
             ):
                 continue
-            fields = ", ".join(worker_spec_kas_fields(config, crew))
+            kinds, items = worker_spec_kas_detail(config, crew)
+            fields = ", ".join(kinds)
+            fix = (
+                f" To move it to {inherited}, turn these tools back on or remove these "
+                f"entries in the bot's file or its Capabilities: {_items_line(items)}."
+                if items
+                else ""
+            )
             key = f"mate:{crew}:{source.harness}"
             holding.add(key)
             owed.append(
@@ -106,7 +114,7 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
                         "title": f"{crew} runs on {used}, not {inherited}",
                         "body": (
                             f"{crew} uses settings {inherited} cannot carry ({fields}), "
-                            f"so its chat and workers run on {used}. To choose another "
+                            f"so its chat and workers run on {used}.{fix} To choose another "
                             "harness, set " + ROUTE
                         ),
                         "url": f"/members?member={quote(crew)}",
@@ -123,6 +131,39 @@ def fallback_notes(config: Any) -> list[dict[str, str]]:
             _announced.add(key)
             notes.append({**note, "key": key})
     return notes
+
+
+#: How many exact entries the Bot note names before ``+N more``, and how long each may be.
+MAX_ITEMS = 5
+MAX_ITEM_CHARS = 60
+
+
+def _code(name: str) -> str:
+    """*name*, text from the Bot's own file, as a short inline code span.
+
+    The bell's detail panel renders markdown, so control characters and backticks
+    are dropped and the span is cut to :data:`MAX_ITEM_CHARS`: nothing in *name*
+    can close the span or become a link or markup.
+    """
+    text = "".join(
+        " " if ch.isspace() else ch
+        for ch in name
+        if ch.isspace() or (ch != "`" and not unicodedata.category(ch).startswith("C"))
+    )
+    text = " ".join(text.split()) or "?"
+    if len(text) > MAX_ITEM_CHARS:
+        text = text[: MAX_ITEM_CHARS - 1] + "…"
+    return f"`{text}`"
+
+
+def _items_line(items: tuple[tuple[str, str], ...]) -> str:
+    """``turned off: `a`, `b`; hooks: `c` (+N more)`` for the first :data:`MAX_ITEMS`."""
+    groups: dict[str, list[str]] = {}
+    for group, name in items[:MAX_ITEMS]:
+        groups.setdefault(group, []).append(_code(name))
+    line = "; ".join(f"{group}: {', '.join(names)}" for group, names in groups.items())
+    extra = len(items) - MAX_ITEMS
+    return f"{line} (+{extra} more)" if extra > 0 else line
 
 
 def _pin_fallback_notes(config: Any, holding: set[str]) -> list[tuple[str, dict[str, str]]]:

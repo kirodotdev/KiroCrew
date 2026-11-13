@@ -260,7 +260,7 @@ async function captureScheduleVariant(frame, file, expected) {
   if (PROFILE_ONLY) {
     await context.close()
     await captureScheduleVariant('ledger', '02c-card-schedules-patrol-running-light.png', [
-      'On its own', 'Watching its tasks', 'Running', 'Wakes when a task reports back, or every 15m',
+      'On its own', 'Watching its tasks', 'Running', 'Wakes when a task reports back, or every 15 min',
       'Last check 2m ago', 'Next in 1', '3 tasks open', 'Pause', 'Your schedules',
     ])
     await captureScheduleVariant('ledger-stopped', '02d-card-schedules-patrol-paused-light.png', [

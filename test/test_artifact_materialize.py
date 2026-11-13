@@ -31,6 +31,8 @@ class _FakeLog:
     def list_sessions(self):
         return [{"key": "dashboard_test", "modified": 1000.0, "title": "T"}]
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return [
             {
@@ -198,6 +200,8 @@ class _MalformedLog:
             {"key": "dashboard_ok", "modified": 5.0, "title": "ok"},
         ]
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key):
         return [
             "not-a-dict",
@@ -220,6 +224,8 @@ def test_scan_session_docs_prefers_lightweight_history_projection():
     class _ProjectedLog:
         def list_sessions(self):
             return [{"key": "dashboard_ok", "modified": 5.0, "title": "ok"}]
+
+        list_sessions_indexed = list_sessions
 
         def read_file_change_messages(self, key):
             assert key == "dashboard_ok"
@@ -276,6 +282,8 @@ class _BadTimestampLog:
             {"key": "s3", "modified": float("inf"), "title": "c"},
             {"key": "s4", "modified": 10.0, "title": "d"},
         ]
+
+    list_sessions_indexed = list_sessions
 
     def read_messages(self, key):
         return [{"meta": {"file_changes": [{"path": self._doc}]}}]

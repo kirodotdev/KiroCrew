@@ -50,6 +50,8 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_ipc_wire import (
+    BRIDGE_PICKUP_PREFIX,
+    BRIDGE_ROUTE,
     CAPABILITY_HEADER,
     REDEEM_PATH,
     SESSION_PATH,
@@ -396,6 +398,9 @@ async def agent_socket_gate(request: web.Request, *, internal: bool) -> web.Stre
     )
     if binding is None:
         return _refuse(request, code, f"peer_pid={peer_pid}")
+    if binding.server.startswith(BRIDGE_PICKUP_PREFIX) and request.path != BRIDGE_ROUTE:
+        # A Connection bridge reaches the Connection proxy and nothing else.
+        return _refuse(request, REFUSE_ROUTE, "a Connection bridge serves its proxy route only")
     session_key = await loop.run_in_executor(
         subprocess_executor(), partial(verify_session_token, binding.session_token)
     )

@@ -185,8 +185,8 @@ neither is "everything":
 Workers: the gate runs `-n auto` and caps it by setting
 `PYTEST_XDIST_AUTO_NUM_WORKERS` to `min(max(cpu_count // 3, 2), 12)` in the
 subprocess environment (a tighter cap already in the environment is kept). An
-explicit `-n <N>` would bypass the root `xdist_budget.py` hook and with it the
-live free-memory clamp and the flock slots shared between concurrent runs; going
+explicit `-n <N>` would bypass the root `xdist_budget.py` hook's live free-memory
+clamp (it still claims the flock slots shared between concurrent runs); going
 through xdist's own knob keeps those and adds the gate's cap on top. A human who
 wants the machine saturated runs a bare `python -m pytest` and gets the budget's
 default.

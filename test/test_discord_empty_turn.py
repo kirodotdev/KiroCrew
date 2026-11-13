@@ -206,6 +206,20 @@ class TestEmptyTurnIsNeverAFinishedReply:
         assert _rows(log, d)[-1]["content"] == body
 
     @pytest.mark.asyncio
+    async def test_a_notice_whose_edit_fails_is_sent_fresh(self, tmp_path: Path) -> None:
+        """The tool frame opened a live bubble, then the closing edit failed while
+        sends still work: the notice goes out as a new message, so the turn does
+        not end on the "🔧 tool…" frame and still counts as delivered."""
+        d, cli, sess, _log = _dispatcher(_ToolOnlyProvider(), tmp_path)
+        cli.edit_ok = False
+
+        await d.handle_message(_inbound("check the config"))
+
+        assert cli.edits, "the closing edit was never tried"
+        assert "without a closing reply" in _body(cli.sent[-1][0])
+        assert sess.successes and not sess.failures
+
+    @pytest.mark.asyncio
     async def test_a_steer_chip_does_not_mask_a_turn_that_died_without_text(self) -> None:
         cli = FakeClient()
         r = DiscordRenderer(cli, "chan1", DISCORD_CAPABILITIES, session_key="sk")  # type: ignore[arg-type]

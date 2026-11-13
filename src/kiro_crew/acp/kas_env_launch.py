@@ -26,11 +26,16 @@ refused) and on the agent file tools' read+write floor
 still read it; the same values are in the user's own agent file, which that shell
 could already read, so no new reader gains them.
 
-Every write gets a new random version, and the version is part of the file name,
-so each projection (new, resume, reload) writes files no other projection shares,
-even another provider's of the same session. Whoever holds the projected batch
-removes exactly the files it references when it shuts down
-(:func:`discard_batch`); there is no shared registry to keep in step. A snapshot
+A stdio launch and a header bridge are SHARED: KAS runs one MCP pool per
+process and restarts a server whose declaration changed, so the reference names
+no session (:data:`SHARED_SESSION`) and its version is an HMAC of the file's
+content under a per-process key (:func:`_shared_version`). Every session of the
+same agent then sends the same declaration and reads the same file; the gateway
+counts the projections holding it (:data:`_SHARED_HOLDS`) and
+:func:`discard_batch` removes it with the last. A Crew-owned Connection bridge
+keeps a random version per write, so each projection writes a file no other
+shares, and its holder removes exactly the files it references when it shuts
+down (:func:`discard_batch`). A snapshot
 nobody removed (a provider that never shut down, a batch a reload replaced) stays
 until the next gateway boot, whose background sweep removes those last written
 :data:`_STALE_AFTER_SECS` before that boot (:func:`sweep_stale`). Blocking file I/O throughout;
@@ -39,10 +44,15 @@ callers run it off the event loop.
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
+import hmac
 import json
 import logging
 import os
 import secrets
+import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
@@ -50,6 +60,7 @@ from urllib.parse import urlsplit, urlunsplit
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.kas_env_shim import (
+    BRIDGE_LEAF,
     SHIM_MODULE,
     SNAPSHOT_FORMAT,
     SNAPSHOT_LEAF,
@@ -66,11 +77,15 @@ logger = logging.getLogger(__name__)
 _STALE_AFTER_SECS = 7 * 24 * 3600
 
 
-def snapshot_dir() -> Path:
-    """The owner-only directory snapshots live in, under the crew data home."""
+def snapshot_dir(leaf: str = SNAPSHOT_LEAF) -> Path:
+    """The owner-only directory snapshots live in, under the crew data home.
+
+    Connection bridge snapshots use :data:`BRIDGE_LEAF`, which an enforced harness's
+    child may read; every other snapshot (env values) stays in the withheld leaf.
+    """
     from kiro_crew.config.paths import config_dir
 
-    return config_dir() / SNAPSHOT_LEAF
+    return config_dir() / leaf
 
 
 def launchable(entry: Mapping[str, Any]) -> bool:
@@ -168,17 +183,62 @@ def launch_through_shim(
         "args": [a for a in args if isinstance(a, str)] if isinstance(args, list) else [],
         "env": {**(inherited or {}), **_expand_env_map(dict(env), server=server)},
     }
-    version = _write_snapshot(launch, session_key=session_key, agent_id=agent_id, server=server)
-    return _shim_entry(projected, session_key, agent_id, server, version)
+    version = _write_snapshot(
+        launch, session_key=SHARED_SESSION, agent_id=agent_id, server=server, shared=True
+    )
+    return _shim_entry(projected, SHARED_SESSION, agent_id, server, version)
+
+
+#: The session part of a shared launch reference. KAS keeps one MCP pool
+#: per process, merges every session's declarations by server name and restarts a
+#: server whose declaration changed, so a per-session reference would make each
+#: new session on a shared runtime kill the server for all of them. A stdio launch or a
+#: header bridge holds only what the agent file says, the same for every session of
+#: that agent, so its reference names no session.
+SHARED_SESSION = "shared"
+#: The key a shared reference's version is an HMAC under. Per process, in memory
+#: only, never written or logged: the engine stores the reference in
+#: ``session.json``, and a plain digest of the launch would let anyone holding that
+#: file test guesses at the env values. A new process keys new versions, so two
+#: gateways on one data home never share a file.
+_SHARE_KEY = secrets.token_bytes(32)
+#: How many recorded projections hold each shared snapshot, by path. Written and
+#: released under :data:`_SHARE_LOCK`, which also covers the file write and the
+#: removal, so a release can never delete a file a concurrent projection rewrote.
+_SHARED_HOLDS: Counter[str] = Counter()
+_SHARE_LOCK = threading.Lock()
+
+
+def _shared_version(launch: Mapping[str, Any], leaf: str, agent_id: str, server: str) -> str:
+    """The version of a shared snapshot: an HMAC over everything the file holds."""
+    body = json.dumps(
+        {"leaf": leaf, "agent": agent_id, "server": server, "launch": launch}, sort_keys=True
+    )
+    return hmac.new(_SHARE_KEY, body.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
 
 
 def _write_snapshot(
-    launch: Mapping[str, Any], *, session_key: str, agent_id: str, server: str
+    launch: Mapping[str, Any],
+    *,
+    session_key: str,
+    agent_id: str,
+    server: str,
+    leaf: str = SNAPSHOT_LEAF,
+    shared: bool = False,
 ) -> str:
-    """Write one owner-only snapshot holding *launch* and its reference; its version."""
-    directory = snapshot_dir()
+    """Write one owner-only snapshot holding *launch* and its reference; its version.
+
+    A *shared* snapshot's version is :func:`_shared_version`, so every projection of
+    the same launch writes the same file; each write takes one hold on it, and
+    :func:`discard_batch` removes the file when the last hold is released. Any
+    other version is random per write.
+    """
+    directory = snapshot_dir(leaf)
     platform_compat.make_owner_only_dir(directory)
-    version = secrets.token_hex(16)
+    if shared:
+        version = _shared_version(launch, leaf, agent_id, server)
+    else:
+        version = secrets.token_hex(16)
     name = snapshot_name(session_key, agent_id, server, version)
     doc = {
         **launch,
@@ -188,13 +248,16 @@ def _write_snapshot(
         "server": server,
         "version": version,
     }
-    # Owner-only before any byte is written, and it raises if that lockdown fails.
-    atomic_write(
-        directory / name,
-        json.dumps(doc, sort_keys=True).encode("utf-8"),
-        fsync=True,
-        restrict_to_owner=True,
-    )
+    with _SHARE_LOCK if shared else contextlib.nullcontext():
+        # Owner-only before any byte is written, and it raises if that lockdown fails.
+        atomic_write(
+            directory / name,
+            json.dumps(doc, sort_keys=True).encode("utf-8"),
+            fsync=True,
+            restrict_to_owner=True,
+        )
+        if shared:
+            _SHARED_HOLDS[str(directory / name)] += 1
     return version
 
 
@@ -417,9 +480,10 @@ def relay_withheld_headers(
                 "url": bridge_url(projected["url"]),
                 "headers": dict(_expand_env_map(headers, server=server)),
             },
-            session_key=session_key,
+            session_key=SHARED_SESSION,
             agent_id=agent_id,
             server=server,
+            shared=True,
         )
     except OSError:
         logger.warning(
@@ -430,14 +494,15 @@ def relay_withheld_headers(
             exc_info=True,
         )
         return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION), False
-    return _shim_entry(stdio, session_key, agent_id, server, version), True
+    return _shim_entry(stdio, SHARED_SESSION, agent_id, server, version), True
 
 
-def crew_connection_slug(name: str, entry: Mapping[str, Any]) -> str:
+def crew_connection_slug(name: str, entry: Mapping[str, Any], backend: str) -> str:
     """The provider slug when Crew owns this server's OAuth, else ``""``.
 
-    Only a registry provider's own entry (slug AND url match), and only while
-    :func:`kiro_crew.connections.crew_oauth.manages` holds. Blocking: reads config.
+    Only a registry provider's own entry (slug AND url match), for a session on
+    *backend* while :func:`kiro_crew.connections.crew_oauth.custody_on` holds and
+    the backend is bridged. Blocking: reads config.
     """
     from kiro_crew.acp.kas_app_identity import gateway_bound_port
     from kiro_crew.connections import crew_oauth
@@ -447,16 +512,21 @@ def crew_connection_slug(name: str, entry: Mapping[str, Any]) -> str:
     # (``kirocrew chat``) keeps the entry's native path.
     if not gateway_bound_port():
         return ""
-    return crew_oauth.routed_slug(name, entry, provider_for_server)
+    return crew_oauth.routed_slug(name, entry, provider_for_server, backend=backend)
 
 
 def crew_entry(
-    projected: dict[str, Any], name: str, entry: Mapping[str, Any], session_key: str, agent_id: str
+    projected: dict[str, Any],
+    name: str,
+    entry: Mapping[str, Any],
+    session_key: str,
+    agent_id: str,
+    backend: str,
 ) -> dict[str, Any] | None:
     """*projected* rewritten as a Crew-owned Connection bridge, or ``None`` if not one."""
     from kiro_crew.acp.kas_app_identity import gateway_bound_port
 
-    slug = crew_connection_slug(name, entry)
+    slug = crew_connection_slug(name, entry, backend)
     if not slug:
         return None
     return relay_crew_connection(
@@ -468,6 +538,43 @@ def crew_entry(
         port=gateway_bound_port(),
         headers=entry.get("headers"),
     )
+
+
+def bridge_array(
+    elements: list[Any], *, backend: str, session_key: str, agent_id: str
+) -> tuple[list[Any], list[str]]:
+    """``(elements, written)``: an ACP ``mcpServers`` array with each Crew-owned
+    Connection replaced by the shim stdio element, and the snapshot names written.
+
+    The array-channel twin of the KAS projection's :func:`crew_entry`. The holder
+    hands *written* to :func:`discard_batch` when its process ends. Blocking.
+    """
+    if not session_key:
+        return elements, []
+    from kiro_crew.acp.session_mcp import acp_server_element
+
+    out: list[Any] = []
+    written: list[str] = []
+    for element in elements:
+        shim = None
+        if isinstance(element, dict) and element.get("type") in ("http", "sse"):
+            pairs = element.get("headers") or []
+            headers = {
+                p["name"]: p["value"]
+                for p in pairs
+                if isinstance(p, dict) and isinstance(p.get("name"), str)
+            }
+            url = element.get("url")
+            entry = {"url": url, "headers": headers, "type": element.get("type")}
+            name = str(element.get("name") or "")
+            crew = crew_entry({"url": url}, name, entry, session_key, agent_id, backend)
+            shim = acp_server_element(name, crew) if crew is not None else None
+        if shim is None:
+            out.append(element)
+            continue
+        out.append(shim)
+        written += batch_snapshot_names([{"mcpServers": {shim["name"]: crew}}])
+    return out, written
 
 
 def connection_asks(
@@ -532,6 +639,7 @@ def relay_crew_connection(
             session_key=session_key,
             agent_id=agent_id,
             server=server,
+            leaf=BRIDGE_LEAF,
         )
     except (OSError, ValueError):
         logger.warning(
@@ -559,7 +667,7 @@ def relay_crew_connection(
             agent_id,
             server,
         )
-        _remove([snapshot_dir() / name])
+        _remove([snapshot_dir(BRIDGE_LEAF) / name])
         return _shim_entry(stdio, session_key, agent_id, server, _UNWRITTEN_VERSION)
     return _shim_entry(stdio, session_key, agent_id, server, version)
 
@@ -587,21 +695,22 @@ def sweep_stale(boot_time: float) -> None:
     so one session's projection or shutdown never removes a file another live
     session's launcher still reads.
     """
-    try:
-        cutoff = boot_time - _STALE_AFTER_SECS
-        stale: list[Path] = []
-        for path in snapshot_dir().iterdir():
-            try:
-                if path.stat().st_mtime < cutoff:
-                    stale.append(path)
-            except FileNotFoundError:
-                continue
-        _remove(stale)
-    except FileNotFoundError:
-        return
-    except OSError:
-        # Pruning is housekeeping; a projection never fails for it.
-        logger.warning("could not prune KAS launch snapshots", exc_info=True)
+    cutoff = boot_time - _STALE_AFTER_SECS
+    for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF):
+        try:
+            stale: list[Path] = []
+            for path in snapshot_dir(leaf).iterdir():
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        stale.append(path)
+                except FileNotFoundError:
+                    continue
+            _remove(stale)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            # Pruning is housekeeping; a projection never fails for it.
+            logger.warning("could not prune KAS launch snapshots", exc_info=True)
 
 
 def _flag(args: list[Any], flag: str) -> str:
@@ -610,6 +719,32 @@ def _flag(args: list[Any], flag: str) -> str:
     except (ValueError, IndexError):
         return ""
     return value if isinstance(value, str) else ""
+
+
+def is_crew_bridge_launch(element: Any) -> bool:
+    """Whether *element* is exactly the launch :func:`relay_crew_connection` wrote.
+
+    The executable and the whole argv must be the launcher's, and its reference
+    must name a registered bridge of this session and server: a server whose args
+    merely mention the launcher is not one. Read before handing a bridge the
+    agent-socket pickup (``acp.ipc_pickup``).
+    """
+    from kiro_crew.connections import crew_oauth_proxy
+
+    if not isinstance(element, dict):
+        return False
+    args = element.get("args")
+    if not isinstance(args, list) or len(args) < 8:
+        return False
+    # The reference values sit in the last four flag slots; the launch is rebuilt
+    # from them the way the projection built it, and must match exactly.
+    session, agent, server, version = (str(v) for v in args[-7::2])
+    expected = _shim_entry({}, session, agent, server, version)
+    if (element.get("command"), args) != (expected["command"], expected["args"]):
+        return False
+    return server == element.get("name") and crew_oauth_proxy.bridge_matches(
+        version, session, server
+    )
 
 
 def batch_snapshot_names(custom_agents: Any) -> list[str]:
@@ -635,15 +770,39 @@ def discard_batch(custom_agents: Any, written: Any = ()) -> None:
     (``AcpSessionHandle.kas_launch_snapshots``); *custom_agents* is the batch
     registered now. Both are needed: a hoisted launcher entry is absent from the
     batch, and an older handle's batch is absent from the provider.
+
+    A shared snapshot (:data:`SHARED_SESSION`) is released, not removed, and goes
+    only with its last hold: once per recorded write in *written*, or once for a
+    name only the batch carries. shortcut: a projection nobody records (a failed
+    create) keeps its hold, so that file waits for the boot sweep, as an
+    unrecorded per-session file always has.
     """
     try:
-        directory = snapshot_dir()
-        names = list(batch_snapshot_names(custom_agents))
-        names += [n for n in written if isinstance(n, str)] if isinstance(written, list) else []
+        batch = list(batch_snapshot_names(custom_agents))
+        recorded = [n for n in written if isinstance(n, str)] if isinstance(written, list) else []
+        names = [*batch, *recorded]
         # Each Connection bridge lives exactly as long as its snapshot.
         from kiro_crew.connections import crew_oauth_proxy
 
         crew_oauth_proxy.unregister_snapshots(names)
-        _remove([directory / name for name in dict.fromkeys(names) if Path(name).name == name])
+        releases = Counter(recorded)
+        for name in batch:
+            releases[name] = max(releases[name], 1)
+        with _SHARE_LOCK:
+            gone: list[Path] = []
+            for name, count in releases.items():
+                if Path(name).name != name:
+                    continue
+                for leaf in (SNAPSHOT_LEAF, BRIDGE_LEAF):
+                    path = snapshot_dir(leaf) / name
+                    key = str(path)
+                    if key in _SHARED_HOLDS:
+                        _SHARED_HOLDS[key] -= count
+                        if _SHARED_HOLDS[key] > 0:
+                            continue
+                        del _SHARED_HOLDS[key]
+                    gone.append(path)
+            # Inside the lock: a projection rewriting this file waits for the removal.
+            _remove(gone)
     except OSError:
         logger.warning("could not remove KAS launch snapshots", exc_info=True)

@@ -58,6 +58,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _FRAMEWORK_OWNED_AGENT_KEYS,
         _RENDERED_AGENTS_DIRNAME,
         _TEMPLATE_PLACEHOLDER_RE,
+        _TEMPLATE_RECORD_SUFFIX,
         AGENT_MCP_POLICY_FILE,
         _agent_mcp_policy,
         _apply_agent_mcp_policy,
@@ -79,8 +80,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _render_shipped_agent,
         _shipped_builtin_placeholder_values,
         _strip_ungoverned_auto_approve,
+        _template_record,
         _unlink_unheld_app_lock,
         _unresolvable_tool_refs,
+        _user_owned_agent_keys,
         purge_uninstalled_agent_residue,
         snapshot_app_agent_configs,
     )
@@ -299,6 +302,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.executors import (  # noqa: F401
         maintenance_executor,
+    )
+    from kiro_crew.file_uri import (  # noqa: F401
+        file_uri_path_text,
     )
     from kiro_crew.gateway_lock import (  # noqa: F401
         GatewayLock,

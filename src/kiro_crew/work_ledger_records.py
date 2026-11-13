@@ -16,12 +16,13 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+# Read by no code here; the ``work_ledger`` facade serves it from this module.
+from kiro_crew.work_vocab import WORK_STORED_ITEM_LIMIT  # noqa: F401
 from kiro_crew.work_vocab import (
     WORK_BLOCKED_REASONS,
     WORK_ITEM_STATES,
     WORK_MAX_ARTIFACT_VALUE_CHARS,
     WORK_MAX_DEPTH_DEFAULT,
-    WORK_STORED_ITEM_LIMIT,
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
     coerce_retired_bindings,
@@ -133,15 +134,6 @@ DEFAULT_GOAL_CONCURRENCY_CAP = 6
 #: The highest ``concurrency_cap`` a goal write accepts: a cap past the store's open
 #: bound could never be reached.
 MAX_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
-#: How many items one GOAL is expected to create, every round and re-plan together,
-#: when the user set no budget. ADVISORY: a create past it is admitted and
-#: :attr:`ConductorRecord.cap_exceeded` turns true so the round report can say so.
-#: Refusing would stall a goal on its own finished history; the concurrency cap above
-#: bounds spend. Stored as :attr:`ConductorRecord.item_cap` (``work_ledger_record
-#: action=goal item_cap=N``), measured against :attr:`ConductorRecord.goal_items_used`.
-DEFAULT_GOAL_ITEM_CAP = 20
-#: The highest ``item_cap`` a goal write accepts.
-MAX_GOAL_ITEM_CAP = WORK_STORED_ITEM_LIMIT
 MAX_EVENTS_PER_ITEM = 200
 #: How many levels may CONDUCT: the root at depth 0 and the conductors below it, up
 #: to but not including depth :data:`MAX_DEPTH`. Depth ``MAX_DEPTH`` itself is the
@@ -273,10 +265,6 @@ class ConductorRecord:
     #: sets it to the count the log holds. Zero on records from before it; the
     #: first create on such a board seeds it from the records on the board.
     created_total: int = 0
-    #: How many items the current goal is expected to create --
-    #: :data:`DEFAULT_GOAL_ITEM_CAP` unless a ``goal`` write set it. Measured
-    #: against :attr:`goal_items_used` by :attr:`cap_exceeded`; advisory only.
-    item_cap: int = DEFAULT_GOAL_ITEM_CAP
     #: How many items the current goal may hold OPEN at once --
     #: :data:`DEFAULT_GOAL_CONCURRENCY_CAP` unless a ``goal`` write set it. The
     #: bound :func:`_create_item` refuses on, once the board has recorded a goal.
@@ -296,18 +284,6 @@ class ConductorRecord:
             return 0
         return max(0, self.created_total - self.goal_items_base)
 
-    @property
-    def cap_exceeded(self) -> bool:
-        """Whether the current goal has created more items than :attr:`item_cap`.
-
-        True from the first create past the cap, not at the cap: a goal at twenty
-        of twenty has spent what it was allowed. Advisory -- the read reports it beside
-        ``goal_items_used`` and the conductor tells the user once when it turns
-        true; nothing blocks on it. False on a board that never recorded a goal, which has no goal to
-        measure: a queue board's count is its whole history.
-        """
-        return self.goal_version > 0 and self.goal_items_used > self.item_cap
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
@@ -321,7 +297,6 @@ class ConductorRecord:
             "goal_version": self.goal_version,
             "recorded_at": self.recorded_at,
             "created_total": self.created_total,
-            "item_cap": self.item_cap,
             "concurrency_cap": self.concurrency_cap,
             "goal_items_base": self.goal_items_base,
         }
@@ -348,7 +323,6 @@ class ConductorRecord:
             goal_version=_as_int(raw.get("goal_version"), 0),
             recorded_at=_as_str(raw.get("recorded_at")),
             created_total=max(0, _as_int(raw.get("created_total"), 0)),
-            item_cap=_stored_item_cap(raw.get("item_cap")),
             concurrency_cap=_stored_concurrency_cap(raw.get("concurrency_cap")),
             goal_items_base=(
                 max(0, _as_int(raw.get("goal_items_base"), 0))
@@ -372,14 +346,6 @@ def _settle_goal_base(record: ConductorRecord) -> None:
     """
     if record.goal_items_base == LEGACY_GOAL_BASE:
         record.goal_items_base = record.created_total
-
-
-def _stored_item_cap(value: Any) -> int:
-    """A stored ``item_cap``, or the default when it is absent or out of range."""
-    number = _finite_int(value)
-    if number is None or not 1 <= number <= MAX_GOAL_ITEM_CAP:
-        return DEFAULT_GOAL_ITEM_CAP
-    return number
 
 
 def _stored_concurrency_cap(value: Any) -> int:

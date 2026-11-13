@@ -100,8 +100,10 @@ COMPONENT_CLAUDE_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CLAUDE]
 #: having one without the other is a real, distinguishable half-install.
 COMPONENT_CLAUDE_CODE_CLI = "claude"
 
-#: The codex-acp adapter. ONE component, not two: the adapter ships its own
-#: compatible Codex binary, so there is no second executable Crew resolves.
+#: The codex-acp adapter. ONE component, not two: the adapter bundles its own
+#: Codex, so a host with no ``codex`` is not a half-install. Crew hands the host's
+#: ``codex`` to the adapter as ``CODEX_PATH`` at spawn only when it is at least the
+#: bundled version (``acp/harness/codex.py``); the install probe does not look for it.
 COMPONENT_CODEX_ACP_ADAPTER = ACP_BACKEND_PROCESS_NAMES[ACP_BACKEND_CODEX]
 
 #: The component of a harness that serves ACP from its own binary is that binary, so

@@ -82,7 +82,7 @@ from pathlib import Path
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.config.loader import config_dir
 from kiro_crew.platform_compat import PinnedDirectory, pinned_directory
-from kiro_crew.work_root import _tree_newest_mtime
+from kiro_crew.work_root import _activity_time, _tree_newest_mtime
 
 logger = logging.getLogger(__name__)
 
@@ -274,10 +274,11 @@ def _reclaim_dir_if_idle(
         # tree is still idle. Fail-safe: an unreadable entry reads as active and keeps
         # the tree. ``os.stat(dir_fd=..., follow_symlinks=False)`` throughout, so no
         # path is re-resolved and a swap cannot substitute an old tree for a live one.
+        # Each entry is read through ``_activity_time``, as ``_tree_newest_mtime`` does.
         newest = 0.0
         stack = [(root_fd, False)]
         try:
-            newest = os.fstat(root_fd).st_mtime
+            newest = _activity_time(os.fstat(root_fd), reference)
             while stack:
                 fd, owned = stack.pop()
                 try:
@@ -285,8 +286,7 @@ def _reclaim_dir_if_idle(
                         listing = list(entries)
                     for entry in listing:
                         info = os.stat(entry.name, dir_fd=fd, follow_symlinks=False)
-                        if info.st_mtime > newest:
-                            newest = info.st_mtime
+                        newest = max(newest, _activity_time(info, reference))
                         if stat.S_ISDIR(info.st_mode):
                             sub = os.open(
                                 entry.name,

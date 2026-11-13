@@ -475,7 +475,26 @@ class TestLeafOnlyPopulationIsRecorded:
     #: replaceable. The marker is written by a create INSIDE the directory, so the
     #: directory's own inode stays the same; at the data-home root beside writable
     #: siblings, so leaf-only is the only hold, as for ``kirocrew-bin``.
-    EXPECTED: dict[str, int] = {"standard": 325, "cc": 332, "strict": 333}
+    #: One more root-level directory, two entries per tier: ``crew-oauth-bridge`` --
+    #: the Connection bridge snapshots (``kas_env_shim.BRIDGE_LEAF``), sealed read-only
+    #: and no-follow like ``kas-mcp-launch`` so an agent cannot choose what a later
+    #: bridge connects as. Each snapshot is written by a rename INSIDE it, so its own
+    #: inode stays the same; at the data-home root, so leaf-only is the only hold.
+    #: One more root-level file, ``update_next_start.json`` -- the update armed for the
+    #: next start, which the boot-time apply installs on. Sealed read-only so an agent
+    #: cannot arm one. It sits at the data-home root beside writable siblings and is
+    #: published by a rename, so leaf-only is the only hold, as for ``computer_use.json``.
+    #: One more root-level directory, three entries per tier: ``update-staging`` -- the
+    #: self-update engine's wheel download directory, masked whole so no sandboxed
+    #: writer can replace a wheel between its digest check and pip's install. It moved
+    #: out of the sandbox read-write ``trust/``; at the data-home root beside writable
+    #: siblings, so leaf-only is the only hold, as for ``web-push``.
+    #: One more root-level file, ``project_hooks_consent.json`` -- the owner's
+    #: per-folder choice to run a checkout's own agent-spec hooks on KAS, sealed
+    #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
+    #: the data-home root, so leaf-only is the only hold, as for
+    #: ``ssh_auth_sock_consent.json``.
+    EXPECTED: dict[str, int] = {"standard": 336, "cc": 343, "strict": 344}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

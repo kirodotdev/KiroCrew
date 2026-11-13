@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, Plus, GitFork, Loader2, Circle } from 'lucide-react'
+import { X, Plus, Split, Loader2, Circle } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import ErrorNotice from './ErrorNotice'
 import { api, ApiError } from '../api/client'
@@ -19,6 +19,7 @@ import { sessionDisplayTitle } from '../utils/sessionDisplayTitle'
 import { useAppDispatch } from '../store'
 import { requestSlotFolderOpen } from '../store/chatSlice'
 import { crewModeView } from '../lib/crewMode'
+import { isSplitChord } from '../hooks/splitChord'
 type Slot = {
   key: string
   /** Set on a Crew Mode worker: the root it works for. */
@@ -115,7 +116,7 @@ export default function SessionGridView({
   // browser tab (Chrome reserves it), so split-down is the on-pane ⬓ button only.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'd') return
+      if (!isSplitChord(e)) return
       const ids = grid.leaves.map((l) => l.id)
       const target = grid.focusedId && ids.includes(grid.focusedId) ? grid.focusedId : ids[0]
       if (!target) return
@@ -408,7 +409,7 @@ function PlaceholderPane({
           title={forkSourceSlot ? i18nT('components.sessionGridView.fork_child_session', { name: forkSourceTitle || forkSourceSlot }) : i18nT('components.sessionGridView.no_session_to_fork_yet')}
           className="flex-1 inline-flex items-center justify-center gap-1 text-[12px] font-semibold text-text border border-border rounded px-2 py-1.5 cursor-pointer bg-transparent hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
-          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <GitFork size={13} />} {i18nT('components.sessionGridView.fork')}
+          {forkSession.isPending ? <Loader2 size={13} className="animate-spin" /> : <Split size={13} />} {i18nT('components.sessionGridView.fork')}
         </button>
       </div>
 

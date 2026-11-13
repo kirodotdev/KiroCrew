@@ -14,8 +14,9 @@ and join the same frontend table. ``test/test_transient_notice_parity.py``
 discovers every ``*_NOTICE_*`` token in both modules and pins it against that
 table, so a token added on one side only fails there rather than silently
 rendering raw English. The compaction cards' own ``meta["notice"]`` markers
-(``session_recycled``, ``stuck_turn``) ride the same field on assistant rows and
-are drawn by the compaction card instead, so they are not in this table.
+(``session_recycled``, ``stuck_turn``, ``leftover_memory``) ride the same field on
+assistant rows and are drawn by the compaction card instead, so they are not in
+this table.
 
 A row appended with literal English and no token is copy the dashboard cannot
 localize. Give it a token here and a row in the frontend table.
@@ -148,6 +149,16 @@ GATEWAY_NOTICE_CAPABILITY_TOOL_LIMITS_UNSUPPORTED = "capability_tool_limits_unsu
 # ``host_auth.signed_out_message``; only the sentences ``host_auth.kas_signed_out_route``
 # recognises get it, with the route they name in ``notice_args["route"]``.
 GATEWAY_NOTICE_KAS_SIGNED_OUT = "kas_signed_out"
+
+# The Windows spawn a host policy refused (``AcpSpawnBlocked``). Its English is
+# ``spawn_blocked.spawn_blocked_message``; the file it names rides in
+# ``notice_args["binary"]``.
+GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
+
+# A session start whose managed MCP servers missed the KAS readiness deadline
+# (``mcp_readiness_timeout``). Fixed text; no args. The row's English stays the
+# timeout's own message, for the log and the channel mirrors.
+GATEWAY_NOTICE_TOOLS_NOT_READY = "tools_not_ready"
 
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).

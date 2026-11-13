@@ -44,11 +44,13 @@ can tell.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from kiro_crew.crew_log.emit import session_id_of
 
-__all__ = ["UNKNOWN", "unit_for_session_key"]
+__all__ = ["UNKNOWN", "ChildRecord", "child_record", "unit_for_session_key"]
 
 #: What every function here returns when the key has no live ACP session. The
 #: emitter's own no-op guard is ``not session_id``, so this value flows straight
@@ -150,3 +152,63 @@ def unit_holding_child(slot_key: str, agent_id: str) -> str:
         if agent_id in (rows.get("by_id") or {}):
             return unit
     return ""
+
+
+@dataclass(frozen=True)
+class ChildRecord:
+    """Where a slot's logs recorded one child's dispatch, as :func:`child_record` found it.
+
+    ``unit`` is ``""`` when no searched unit's fold state holds the child. ``omitted`` is
+    True when at least one searched unit's fold did not retain every dispatch, so a
+    child that was not found may still have been recorded there.
+    """
+
+    unit: str = ""
+    seq_spawned: int = 0
+    omitted: bool = False
+
+
+def child_record(slot_key: str, agent_id: str) -> ChildRecord:
+    """The unit of *slot_key* that recorded *agent_id*'s dispatch, for a READER.
+
+    The read-only sibling of :func:`unit_holding_child`, for a caller that shows a
+    child's history rather than writing a later fact about it. The units are resolved
+    the same way -- :func:`session_ledger.crew_log_units` with ``strict``, so the
+    permanent-delete exclusion list applies, searched newest first -- but each unit's
+    ``subagents`` fold STATE is searched instead of its render. The state keeps a row
+    the user dismissed; the render leaves it out because the panel draws only the
+    cards the user kept, and a child whose card was cleared still has a history.
+
+    A dispatch past the fold's retain cap has no row in either. The search reports that
+    through ``omitted`` instead of guessing a position in the log.
+
+    Raises :class:`UnitSearchFailed` when the units cannot be listed or a unit's fold
+    cannot be read, for the reason :func:`unit_holding_child` does.
+    """
+    from kiro_crew.crew_log.projection import fold_session
+    from kiro_crew.session_ledger import crew_log_units
+
+    if not agent_id or not slot_key:
+        return ChildRecord()
+    try:
+        units = tuple(reversed(crew_log_units(slot_key, strict=True)))
+    except Exception as exc:
+        raise UnitSearchFailed(f"slot {slot_key!r}'s units could not be listed") from exc
+    omitted = False
+    for unit in units:
+        try:
+            state = fold_session(unit, names=("subagents",)).checkpoints["subagents"].state
+        except Exception as exc:
+            raise UnitSearchFailed(f"unit {unit!r}'s subagents fold could not be read") from exc
+        omitted = omitted or _count(state.get("omitted")) > 0
+        row = (state.get("by_id") or {}).get(agent_id)
+        if isinstance(row, Mapping):
+            return ChildRecord(unit=unit, seq_spawned=_count(row.get("seq_spawned")))
+    return ChildRecord(omitted=omitted)
+
+
+def _count(value: Any) -> int:
+    """*value* when it is a positive integer, else 0."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return 0

@@ -12,7 +12,7 @@ import { selectContinuable, selectTrailingSendUnconfirmed, selectTurnInterrupted
 import type { ChatMessage } from '../../../types'
 import { KIRO_SIGN_IN_PATH } from '../../developer/kiroSignInLink'
 import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
-import { newestErrorOwnsRecovery } from '../transcriptRenderers'
+import { authRequiredIsNewest, newestErrorOwnsRecovery } from '../transcriptRenderers'
 
 /** A slot's repair-images state and the error row it was pressed for. */
 interface RepairImagesEntry { state: RepairImagesState; row: string }
@@ -141,6 +141,9 @@ export function useTurnRecovery({
   // Resume and hint yield too. Typing still works. One predicate spells the
   // set (`newestErrorOwnsRecovery`), and the panes read the same one.
   const cardOwnsRecovery = newestErrorOwnsRecovery(messages)
+  // A sign-in error keeps Resume (it works once the sign-in lands); only the
+  // composer's hint names the sign-in first. The panes read the same predicate.
+  const resumeAfterSignIn = authRequiredIsNewest(messages)
 
   // The fix on a `context_overflow` row: drop the native conversation so the
   // next message starts a fresh one from a text summary of this chat. One entry
@@ -262,7 +265,7 @@ export function useTurnRecovery({
   return {
     continuable, interrupted, sendUnconfirmed, continuing, handleContinue,
     openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting,
-    cardOwnsRecovery,
+    cardOwnsRecovery, resumeAfterSignIn,
     freshSession, handleFreshSession,
     repairImages, handleRepairImages,
   }

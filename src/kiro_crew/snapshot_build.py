@@ -22,9 +22,10 @@ from contextlib import ExitStack
 from datetime import timezone
 from pathlib import Path, PurePosixPath
 
-from kiro_crew import pinned_fs, platform_compat
+from kiro_crew import pinned_fs, platform_compat, sandbox_launch_mark
 from kiro_crew.member_memory_backup import hold_stores_for_read
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
+from kiro_crew.sandbox_leaves import _CREW_HIDDEN_LEAVES
 from kiro_crew.snapshot_archive import (
     MANIFEST_VERSION,
     _copy_database_consistently,
@@ -173,7 +174,7 @@ def _build_snapshot(
 
     def _record_skip(reason: str, path: str) -> None:
         try:
-            rel = str(Path(path).relative_to(mc))
+            rel = Path(path).relative_to(mc).as_posix()
         except ValueError:
             rel = Path(path).name
         skipped.append({"reason": reason, "path": rel})
@@ -279,9 +280,23 @@ def _build_snapshot(
                 for other in covered
             )
         ]
+        # Kiro Crew's sandbox masks every crew-hidden leaf from the processes it confines (a
+        # scheduled command cron, an agent's shell): Linux binds an empty stand-in over it
+        # and macOS denies the read. Staging that view would ship an empty tree as if it
+        # were the operator's, or record it as merely unreadable, so a masked tree is not
+        # read at all and its own reason says why it is missing.
+        masked = (
+            [PurePosixPath(leaf) for leaf in _CREW_HIDDEN_LEAVES]
+            if sandbox_launch_mark.launched_in_sandbox()
+            else []
+        )
         for comp, tree in staged_trees:
             src_dir = mc / tree
             dst_dir = stage / tree
+            tree_path = PurePosixPath(tree)
+            if any(tree_path == leaf or leaf in tree_path.parents for leaf in masked):
+                _record_skip(pinned_fs.SKIP_MASKED_BY_SANDBOX, str(src_dir))
+                continue
             # Explicit stat: `Path.is_dir()` answers False for an unreachable root too, which
             # would drop the whole tree with nothing in `skipped` and let `--keep` prune the
             # last complete archive. `safe_tree_root`'s `resolve(strict=False)` does not

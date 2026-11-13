@@ -19,13 +19,32 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
 
-const { initAutoUpdate } = require("../auto-update");
+const { initAutoUpdate: initAutoUpdateRaw } = require("../auto-update");
+const { FRESHNESS_CHECK_TIMEOUT_MS } = require("../runtime/update/freshness-gate");
 
 /** Let queued microtasks + the async install/quit bodies run to completion. */
 async function flush(times = 8) {
   for (let i = 0; i < times; i += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
+}
+
+/**
+ * The Install click only ARMS; the install runs from the user's quit. These
+ * contracts are about WHICH build installs, not about the click, so the lane's
+ * install() here is the click followed by the user's quit, and everything that
+ * follows is the quit-time install path.
+ */
+function initAutoUpdate(deps) {
+  const lane = initAutoUpdateRaw(deps);
+  if (typeof lane.install !== "function" || !deps.app || typeof deps.app.quit !== "function") return lane;
+  const arm = lane.install.bind(lane);
+  lane.install = async () => {
+    await arm();
+    deps.app.quit();
+    await flush(12);
+  };
+  return lane;
 }
 
 function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
@@ -213,25 +232,6 @@ function makeHarness({ appVersion = "1.0.0", autoDownload = true } = {}) {
 // Manual install (the About panel's "Install Update & Restart App")
 // --------------------------------------------------------------------------
 
-test("a SUPERSEDED stage is not installed — the newest build is fetched instead", async () => {
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-
-  h.feedServes("1.2.0"); // published while the user sat on the ready card
-  await u.install();
-
-  assert.strictEqual(
-    h.calls.quitAndInstall.length,
-    0,
-    "installed the stale 1.1.0 — this is the field bug: the app relaunches on a superseded build and re-downloads 1.2.0",
-  );
-  assert.strictEqual(h.calls.checks, 1, "the install must ask the feed whether the stage is still latest");
-  assert.strictEqual(h.calls.downloads, 1, "the newest build must be pursued, not just refused");
-  assert.strictEqual(h.calls.stops, 0, "nothing was installed, so the gateway must not have been stopped");
-  const found = h.calls.states.filter((s) => s.state === "found").map((s) => s.version);
-  assert.deepStrictEqual(found, ["1.2.0"], "the renderer must be told about the newer version");
-});
 
 test("a stage that is STILL the newest installs — the gate must not break the normal path", async () => {
   const h = makeHarness();
@@ -302,7 +302,7 @@ test("FAIL OPEN: a feed that never answers does not leave the install button dea
   const installPromise = u.install();
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 0, "the install must await the freshness answer first");
-  t.mock.timers.tick(8 * 1000); // the bound elapses
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the bound elapses
   await installPromise;
 
   assert.strictEqual(
@@ -550,7 +550,7 @@ test("FAIL OPEN on quit: a feed that never answers must not hold the app open", 
   h.fireQuit();
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 0, "the quit path must await the freshness answer first");
-  t.mock.timers.tick(8 * 1000); // the bound elapses
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the bound elapses
   await flush();
 
   assert.strictEqual(
@@ -594,7 +594,7 @@ test("an abandoned check FAILING after the dispatch must not fire the gateway re
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await installPromise;
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -614,40 +614,6 @@ test("an abandoned check FAILING after the dispatch must not fire the gateway re
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "and no second dispatch");
 });
 
-test("a GENUINE install failure inside the abandoned window is still reported", async (t) => {
-  // The twin of the test above, and the reason the suppression cannot be a bare
-  // flag test. `error` is the one event both the check and the installer are
-  // funnelled through, and the window is wide: the request was abandoned BECAUSE
-  // it gave no answer in 8s, so a hung socket holds it open for the OS TCP
-  // timeout while the install handoff it released takes about a second. Squirrel
-  // rejecting the bundle in there must still reach the host — the gateway was
-  // stopped on purpose and only onInstallFailed brings it back, or the app
-  // survives with a dead dashboard and the renderer sits on the installing
-  // overlay forever.
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const h = makeHarness();
-  h.feedDeferred(); // deliberately never landed: the request is still hanging
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-
-  const installPromise = u.install();
-  await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
-  await installPromise;
-  assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
-
-  // Not the feed's error — the installer's, arriving while the abandoned request
-  // is still outstanding.
-  h.emit("error", Object.assign(new Error("Could not get code signature for running application"), { code: "ERR_UPDATER_INVALID_SIGNATURE" }));
-  await flush();
-  t.mock.timers.tick(1);
-  await flush();
-
-  assert.strictEqual(h.calls.installFailures, 1, "the failure must reach the host's install-failure hook");
-  const failure = h.calls.states.filter((s) => s.state === "error").at(-1);
-  assert.ok(failure, "the renderer must be told the install failed, not left on the overlay");
-  assert.strictEqual(failure.phase, "install", "and it must be attributed to the install, not the check");
-});
 
 test("an abandoned check finding a NEWER build after the dispatch changes nothing", async (t) => {
   // Two hazards in one event: dropping the stage would invalidate a dispatch that
@@ -661,7 +627,7 @@ test("an abandoned check finding a NEWER build after the dispatch changes nothin
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await installPromise;
   assert.strictEqual(h.calls.quitAndInstall.length, 1);
 
@@ -684,7 +650,7 @@ test("an abandoned check reporting UP TO DATE after the dispatch does not pull t
 
   const installPromise = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await installPromise;
 
   feed.upToDate();
@@ -706,7 +672,7 @@ test("FAIL OPEN on quit: an abandoned check's late discovery does not fetch as t
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "the quit took over the exit; it must still install");
 
@@ -732,7 +698,7 @@ test("a check still running at the freshness bound is abandoned: the install pro
   await flush();
   const click = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "the staged build installs");
@@ -761,7 +727,7 @@ test("a genuine installer failure on the QUIT path inside the abandoned window i
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -866,7 +832,7 @@ test("the abandoned check's own failure stays inert when the rejection lands bef
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -895,7 +861,7 @@ test("an installer refusal and the abandoned check's own failure in one tick are
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -927,7 +893,7 @@ test("a second failure after the abandoned check's own is reported, not sheltere
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -969,7 +935,7 @@ test("a genuine install failure is reported even if the abandoned check answers 
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the WAIT ends; the request is still running
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the WAIT ends; the request is still running
   await flush();
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open must have installed the staged build");
 
@@ -1002,7 +968,7 @@ test("an ordinary check straddling the quit is abandoned at the bound, so the de
 
   h.fireQuit();
   await flush();
-  t.mock.timers.tick(8 * 1000); // the gate stops waiting for the poll
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the gate stops waiting for the poll
   await flush();
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "fail-open installs the deferred stage");
@@ -1030,7 +996,7 @@ test("a Download click on a feed that never answers still downloads after the bo
   const click = u.download();
   await flush();
   assert.strictEqual(h.calls.downloads, 0, "nothing is fetched while the gate waits");
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   assert.strictEqual(h.calls.downloads, 1, "past the bound the offered build downloads");
 
@@ -1060,7 +1026,7 @@ test("a download that fails while the gate's abandoned check is still running is
 
   const click = u.download();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
   t.mock.timers.tick(1);
@@ -1102,7 +1068,7 @@ test("a channel switch during a Download wait that timed out still asks the new 
   const click = u.download();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000); // the gate stops waiting; the old check still runs
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // the gate stops waiting; the old check still runs
   await click;
   await flush();
   assert.strictEqual(h.calls.downloads, 0, "the old lane's build is not fetched");
@@ -1119,177 +1085,11 @@ test("a channel switch during a Download wait that timed out still asks the new 
   assert.strictEqual(h.calls.checks, 2, "then the new lane is asked");
 });
 
-test("a channel switch during the freshness check does not install on the old lane's verdict", async () => {
-  // The check's answer describes the lane its feed was configured for. When the
-  // preference moves mid-check, installing on that answer lands a build from a lane
-  // the install no longer follows, and the next check updates again.
-  const h = makeHarness();
-  let channel = "";
-  h.deps.getChannelPreference = () => channel;
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedDeferred();
 
-  const click = u.install();
-  await flush();
-  channel = "insider"; // the user switches lanes while the gate asks the feed
-  feed.serves("1.1.0");
-  await click;
-  await flush();
 
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the old lane's verdict authorizes nothing");
-  assert.strictEqual(h.calls.checks, 2, "the new lane is asked instead");
-});
 
-test("an own freshness-check timeout after a channel switch refuses the old stage and queues the new lane", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const h = makeHarness({ autoDownload: false });
-  let channel = "";
-  h.deps.getChannelPreference = () => channel;
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedLikeElectronUpdater();
 
-  const click = u.install();
-  await flush();
-  channel = "insider";
-  t.mock.timers.tick(8 * 1000);
-  await click;
-  await flush();
 
-  assert.strictEqual(
-    h.calls.quitAndInstall.length,
-    0,
-    "a stage from the abandoned stable lane must not install",
-  );
-  assert.strictEqual(feed.requests.length, 1, "the insider check waits for the stable request to release");
-
-  feed.upToDate(0);
-  await flush();
-  assert.strictEqual(feed.requests.length, 2, "the selected insider lane is checked after the stable request settles");
-  feed.upToDate(1);
-  await flush();
-});
-
-test("a joined freshness-check timeout after a channel switch refuses the old stage and queues the new lane", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const h = makeHarness({ autoDownload: false });
-  let channel = "";
-  h.deps.getChannelPreference = () => channel;
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedLikeElectronUpdater();
-
-  const runningCheck = u.check();
-  await flush();
-  const click = u.install();
-  await flush();
-  channel = "insider";
-  t.mock.timers.tick(8 * 1000);
-  await click;
-  await flush();
-
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the joined stable check cannot authorize the install");
-  assert.strictEqual(feed.requests.length, 1, "the insider check waits for the joined request to release");
-
-  feed.upToDate(0);
-  await runningCheck;
-  await flush();
-  assert.strictEqual(feed.requests.length, 2, "the selected insider lane is checked after the joined request settles");
-  feed.upToDate(1);
-  await flush();
-});
-
-test("a refused stage reports `checking` at once while the new lane waits on a hung own check", async (t) => {
-  // The abandoned request's handlers are inert and the refused install emits
-  // nothing, so without this state the renderer keeps the clicked `downloaded`
-  // card and its install latch until the hung stable request lets go.
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const h = makeHarness({ autoDownload: false });
-  let channel = "";
-  h.deps.getChannelPreference = () => channel;
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedLikeElectronUpdater();
-
-  const click = u.install();
-  await flush();
-  const before = h.calls.states.length;
-  channel = "insider";
-  t.mock.timers.tick(8 * 1000);
-  await click;
-  await flush();
-
-  assert.deepStrictEqual(
-    h.calls.states.slice(before).map((s) => s.state),
-    ["checking"],
-    "the refusal replaces the stale `downloaded` before the hung request settles",
-  );
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the old lane's stage does not install");
-  assert.strictEqual(feed.requests.length, 1, "the stable request is still hung");
-
-  feed.upToDate(0);
-  await flush();
-  assert.strictEqual(feed.requests.length, 2, "the insider lane is asked once the stable request settles");
-  feed.upToDate(1);
-  await flush();
-});
-
-test("a refused stage reports `checking` at once while the new lane waits on a hung joined check", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
-  const h = makeHarness({ autoDownload: false });
-  let channel = "";
-  h.deps.getChannelPreference = () => channel;
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedLikeElectronUpdater();
-
-  const runningCheck = u.check();
-  await flush();
-  const click = u.install();
-  await flush();
-  const before = h.calls.states.length;
-  channel = "insider";
-  t.mock.timers.tick(8 * 1000);
-  await click;
-  await flush();
-
-  assert.deepStrictEqual(
-    h.calls.states.slice(before).map((s) => s.state),
-    ["checking"],
-    "the refusal reports `checking` before the joined request settles",
-  );
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the joined stable check cannot authorize the install");
-  assert.strictEqual(feed.requests.length, 1, "the joined stable request is still hung");
-
-  feed.upToDate(0);
-  await runningCheck;
-  await flush();
-  assert.strictEqual(feed.requests.length, 2, "the insider lane is asked once the joined request settles");
-  feed.upToDate(1);
-  await flush();
-});
-
-test("an own freshness-check failure after a channel switch refuses the old stage and asks the new lane", async () => {
-  const h = makeHarness({ autoDownload: false });
-  let channel = "";
-  h.deps.getChannelPreference = () => channel;
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedLikeElectronUpdater();
-
-  const click = u.install();
-  await flush();
-  channel = "insider";
-  feed.fails(0, new Error("stable feed unavailable"));
-  await click;
-  await flush();
-
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "a failed stable check cannot authorize the install");
-  assert.strictEqual(feed.requests.length, 2, "the selected insider lane is checked after the stable failure");
-  feed.upToDate(1);
-  await flush();
-});
 
 test("an own freshness-check timeout with an unchanged channel still installs fail-open", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval"] });
@@ -1300,7 +1100,7 @@ test("an own freshness-check timeout with an unchanged channel still installs fa
 
   const click = u.install();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
 
   assert.strictEqual(h.calls.quitAndInstall.length, 1, "an unreachable current lane must remain fail-open");
@@ -1309,35 +1109,6 @@ test("an own freshness-check timeout with an unchanged channel still installs fa
   await flush();
 });
 
-test("a versionless stage with a check in flight still refuses at the dispatch, on both paths", async () => {
-  // The gate has nothing to compare for a stage with no version, so it does not
-  // wait for (or abandon) the running check. The post-stopGateway guard is then
-  // what keeps that live check's outcome from landing in the swap.
-  const manual = makeHarness();
-  const u = initAutoUpdate(manual.deps);
-  manual.emit("update-downloaded", {});
-  const feed = manual.feedDeferred();
-  const check = u.check();
-  await flush();
-  await u.install();
-  assert.strictEqual(manual.calls.quitAndInstall.length, 0, "the manual install does not race a live check");
-  assert.strictEqual(manual.calls.installFailures, 1, "and the stopped gateway is restored");
-  assert.strictEqual(manual.calls.states.filter((s) => s.state === "error").at(-1).code, "check-in-flight");
-  feed.upToDate();
-  await check;
-
-  const quitting = makeHarness();
-  const v = initAutoUpdate(quitting.deps);
-  quitting.emit("update-downloaded", {});
-  quitting.feedDeferred();
-  v.check();
-  await flush();
-  quitting.fireQuit();
-  await flush();
-  assert.strictEqual(quitting.calls.quitAndInstall.length, 0, "the quit-time install does not race it either");
-  assert.strictEqual(quitting.calls.quits, 1, "and the quit still happens");
-  assert.match(quitting.calls.notifications.at(-1).body, /check was still running/i, "with the true reason");
-});
 
 test("a check already in flight at quit is WAITED for, so a poll that answers in time still lets the stage install", async () => {
   // Returning "unknown" without waiting would leave that poll live at the
@@ -1472,29 +1243,6 @@ test("a Download click's own re-check does not blank the card the user just clic
   assert.strictEqual(h.calls.downloads, 1, "and the click still downloads");
 });
 
-test("an Install click's own freshness check does not blank the ready card either", async () => {
-  // Same reason, other gate: this one runs before the "installing" state is
-  // emitted, so suppressing it is what keeps the ready card on screen for the
-  // whole wait instead of blanking the surface the user just acted on.
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-
-  const feed = h.feedDeferred();
-  const click = u.install();
-  await flush();
-  h.emit("checking-for-update");
-  await flush();
-
-  assert.ok(
-    !h.calls.states.some((s) => s.state === "checking"),
-    "the freshness gate's round trip must not be reported as the user's check",
-  );
-
-  feed.serves("1.1.0");
-  await click;
-  assert.strictEqual(h.calls.quitAndInstall.length, 1, "and the install still proceeds");
-});
 
 test("a Download click waits for a check already in flight instead of re-reading its state", async () => {
   // safeCheck refuses to re-enter a running check, so calling it here would be a
@@ -1550,37 +1298,6 @@ test("FAIL OPEN on quit: a STRADDLING check's late discovery does not fetch as t
   assert.strictEqual(h.calls.quits, 1, "the quit the user asked for still happens");
 });
 
-test("a quit during a manual install does not hand the installer a second dispatch", async () => {
-  // The manual path claims `installing` and then awaits stopGateway. A Cmd+Q in
-  // that window reaches the quit handler, whose own `checking` abort cannot see
-  // this state — so without an entry guard it runs the whole quit-time install:
-  // a second quitAndInstall() against the same install directory, a second
-  // gateway stop, and a second force-exit failsafe.
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-
-  h.feedServes("1.1.0");
-  const release = h.holdGatewayStop();
-  const click = u.install();
-  await flush();
-  assert.strictEqual(h.calls.stops, 1, "the install is parked on the gateway stop");
-
-  const prevented = h.fireQuit();
-  await flush();
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the quit must not dispatch an install of its own");
-  // It must PREVENT rather than stand down. The install underway does end in a quit
-  // of its own -- but not yet: it is parked on the gateway stop, so an unprevented
-  // quit lets Electron exit first and the user who asked to install and restart gets
-  // a plain quit with the stage uninstalled.
-  assert.ok(prevented.value, "the quit must be held, not obeyed, while the manual path owns the install");
-  assert.strictEqual(h.calls.quits, 0, "and nothing may quit before the handoff");
-
-  release();
-  await click;
-  assert.strictEqual(h.calls.quitAndInstall.length, 1, "exactly one handoff to the platform installer");
-  assert.strictEqual(h.calls.stops, 1, "and the gateway is stopped once, not twice");
-});
 
 test("an install click during a quit-time install does not hand the installer a second dispatch", async () => {
   // The mirror of the test above, and the same hazard from the other side. The quit
@@ -1614,99 +1331,8 @@ test("an install click during a quit-time install does not hand the installer a 
   );
 });
 
-test("a SECOND quit during the same manual install is still held, not obeyed", async () => {
-  // The listener is registered with `app.once`, so Electron unregisters it before
-  // invoking it. Every other exit from the handler quits or hands off, which makes
-  // being consumed correct for them -- but the defer branch returns with the app
-  // still running, so unless it RE-ARMS, a second Cmd+Q (the natural reaction to an
-  // app that did not quit) reaches only main.js's handler and Electron exits before
-  // quitAndInstall() runs. That is the exact outcome the defer branch exists to stop.
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
 
-  h.feedServes("1.1.0");
-  const release = h.holdGatewayStop();
-  const click = u.install();
-  await flush();
 
-  const first = h.fireQuit();
-  await flush();
-  assert.ok(first.value, "precondition: the first quit is held");
-
-  // Impatient second Cmd+Q. There must still be a handler to receive it.
-  const second = h.fireQuit();
-  await flush();
-  assert.ok(second.value, "the second quit must be held too, or Electron exits mid-install");
-  assert.strictEqual(h.calls.quits, 0, "and nothing may quit before the handoff");
-
-  release();
-  await click;
-  assert.strictEqual(h.calls.quitAndInstall.length, 1, "the install the user asked for still happens, exactly once");
-});
-
-test("the replayed quit is a plain quit, not a fresh quit-time install", async () => {
-  // `honorDeferredQuit` calls app.quit(), which fires before-quit again. The listener
-  // the defer branch re-armed is still registered at that point, and by then the
-  // failure has cleared `installing` -- so without removing it first, the replayed
-  // quit falls through to the quit-time install branch and dispatches again.
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  h.feedServes("1.1.0");
-
-  const release = h.holdGatewayStop();
-  const click = u.install();
-  await flush();
-  h.fireQuit(); // held: the manual path owns the install
-  await flush();
-
-  // The installer refuses while the gateway is stopping: the dispatch is dead, the
-  // stage is still valid, and the held quit is replayed.
-  h.emit("error", new Error("Code signature at URL ... did not pass validation"));
-  await flush();
-  release();
-  await click;
-  await flush();
-
-  assert.strictEqual(h.calls.quits, 1, "the held quit is honored");
-  assert.strictEqual(
-    h.calls.quitAndInstall.length,
-    0,
-    "and it must not become an install the failure just refused",
-  );
-});
-
-test("a quit held during a manual install is honored when that install aborts", async () => {
-  // The other half of holding the quit: if the install never happens, the request to
-  // leave must not vanish with it. An app that silently ignores Cmd+Q is worse than
-  // one that quits late, because nothing tells the user it was dropped.
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-
-  h.feedServes("1.1.0");
-  const release = h.holdGatewayStop();
-  const click = u.install();
-  await flush();
-
-  const prevented = h.fireQuit();
-  await flush();
-  assert.ok(prevented.value, "precondition: the quit is held");
-  assert.strictEqual(h.calls.quits, 0, "precondition: and not yet acted on");
-
-  // The stage is invalidated while the gateway is down, so the post-stopGateway
-  // abort runs instead of the handoff.
-  h.emit("update-not-available", {});
-  release();
-  await click;
-
-  assert.strictEqual(h.calls.quitAndInstall.length, 0, "the invalidated stage must not install");
-  assert.strictEqual(h.calls.quits, 1, "and the quit the user asked for must still happen");
-  const failure = h.calls.states.filter((s) => s.state === "error").at(-1);
-  assert.ok(failure, "with the abort reported before the window goes");
-  assert.strictEqual(failure.phase, "install", "as an install failure, which is what the user was watching");
-});
 
 // --------------------------------------------------------------------------
 // What the renderer is left showing after a gate, and how a gate's check
@@ -1732,24 +1358,6 @@ test("a quit-path gate whose check fails like electron-updater keeps the install
   assert.strictEqual(h.calls.states.at(-1).state, "installing");
 });
 
-test("a manual install's gate check that fails is not reported between the click and the install", async () => {
-  const h = makeHarness();
-  const u = initAutoUpdate(h.deps);
-  h.emit("update-downloaded", { version: "1.1.0" });
-  const feed = h.feedDeferred();
-
-  const click = u.install();
-  await flush();
-  feed.fails(Object.assign(new Error("getaddrinfo ENOTFOUND"), { code: "ENOTFOUND" }));
-  await click;
-
-  assert.strictEqual(h.calls.quitAndInstall.length, 1);
-  assert.deepStrictEqual(
-    h.calls.states.map((s) => s.state),
-    ["downloaded", "installing"],
-    "no check error, and no second `downloaded`, between the click and `installing`",
-  );
-});
 
 test("a Download click is acknowledged at once, and its own re-check does not restate the offer", async () => {
   // `update:download` resolves without awaiting the gate, so the click's only
@@ -1806,7 +1414,7 @@ for (const [label, answer] of [
 
     const click = u.download();
     await flush();
-    t.mock.timers.tick(8 * 1000);
+    t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
     await click;
     assert.strictEqual(h.calls.downloads, 1, "precondition: the download proceeded fail-open");
     h.emit("update-downloaded", { version: "1.1.0" });
@@ -1834,7 +1442,7 @@ test("the new-lane re-check after an abandoned Download wait sends a new request
   const click = u.download();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   feed.upToDate(0); // the abandoned stable check ends
   await flush();
@@ -1862,7 +1470,7 @@ async function abandonThenFailDownload(t, h, u) {
   const feed = h.feedDeferred();
   const click = u.download();
   await flush();
-  t.mock.timers.tick(8 * 1000);
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS);
   await click;
   await flush();
   t.mock.timers.tick(1);
@@ -1923,7 +1531,7 @@ test("a second Download click that wakes behind the new-lane re-check does not f
   const click = u.download();
   await flush();
   channel = "insider";
-  t.mock.timers.tick(8 * 1000); // abandoned; the re-check is queued behind it
+  t.mock.timers.tick(FRESHNESS_CHECK_TIMEOUT_MS); // abandoned; the re-check is queued behind it
   await click;
   await flush();
 

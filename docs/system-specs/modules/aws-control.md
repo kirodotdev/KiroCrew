@@ -166,7 +166,8 @@ canonical path. Missing, uncheckable, or refused fallback directories stay off
 the child `PATH`. This lets the CLI find a bare `credential_process` helper by
 name when a desktop-launched gateway's minimal `PATH` holds neither fallback.
 Per-user dirs such as `~/.local/bin` are reached only through the inherited
-`PATH`.
+`PATH`. The child gets none of the gateway's Python interpreter settings
+(`sandbox.without_python_env`), because aws-cli v1 is a Python program.
 
 ## Drive and destructive operations
 
@@ -2056,7 +2057,13 @@ ledger, the local profile scan) and every mutation whose error was never read
 A failed read must not fall through to the surface's empty state — a failed
 listing is not an empty folder, a failed profile scan is not "nothing left to
 add" — and the tests for each state assert the empty state's absence alongside
-the notice. Two states are deliberately NOT errors: a 403 whose code is
+the notice. A profile scan that fails because the gateway's `aws` is AWS CLI v1,
+which has no `configure list-profiles`, is answered 501 `unsupported_aws_cli_v1`
+by both the listing and the register route (`deploy.profiles.aws_cli_is_v1` asks
+`aws --version` once the scan failed), and its notice names the version and the
+remedy, AWS CLI v2 first on the gateway's PATH, with no Try again, because no
+retry clears it; `kirocrew doctor` names the same cause on its profiles line.
+Two states are deliberately NOT errors: a 403 whose code is
 `app_disabled` renders the disabled-app copy (any other 403 — a non-owner
 caller's `dashboard_owner_required` — is an error to diagnose and goes to the
 notice), and a costs 409 `aws_consent_required` is answered by the Cost Explorer

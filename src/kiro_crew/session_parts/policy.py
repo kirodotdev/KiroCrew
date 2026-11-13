@@ -102,6 +102,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_remote_environment",
         "bypass_backend_override",
         "bypass_effort",
+        "bypass_crew_oauth_bridge",
         "bypass_model_at_launch",
         "disabled",
         "other",
@@ -143,11 +144,9 @@ CONSOLIDATE_KEY = "_consolidate"
 # suffixed keys, so a prefix would only claim names it never uses.
 _STATELESS_KEYS = frozenset({CONSOLIDATE_KEY})
 
-# Kiro agent the background session runs as. Named once because it is needed in
-# TWO places — the provider factory call AND the ``_Session`` record — and when
-# only the factory got it, ``_Session.agent`` stayed at its "" default, so every
-# consumer reading ``sess.agent`` (e.g. ``runtime_pids``) saw the background
-# session as agent-less.
+# Kiro agent the background session runs as. Both the provider factory call and
+# the ``_Session`` record need it, or readers of ``sess.agent`` (``runtime_pids``)
+# see the background session as agent-less.
 BACKGROUND_AGENT = "kirocrew-lite"
 
 
@@ -231,17 +230,11 @@ _COMPACT_RESULT_WAIT_FLOOR_SECS = 5.0
 def _compact_result_wait_secs(elapsed: float, budget: float = COMPACT_WAIT_TIMEOUT_SECS) -> float:
     """Inner deadline for the async compaction-status wait.
 
-    The FULL remainder of the shared compaction ``budget`` after ``elapsed``
-    seconds — never less, so a compaction completing in the final seconds of
-    the budget is not abandoned early. The outer ``asyncio.wait_for`` carries
-    ``_COMPACT_RESULT_WAIT_MARGIN_SECS`` of headroom on top, keeping this
-    wait's graceful "no result" diagnostic reachable. Clamped to a floor so
-    the wait can never be zero or negative.
-
-    ``budget`` defaults to ``COMPACT_WAIT_TIMEOUT_SECS``; the automatic path
-    passes the effective budget (``_resolve_compact_wait_secs``), so a config
-    key raising the budget raises this inner wait with it rather than leaving
-    it clamped at the built-in default minus elapsed.
+    The FULL remainder of ``budget`` after ``elapsed``, so a compaction finishing
+    late is not abandoned, clamped to a floor so it is never zero or negative. The
+    outer ``asyncio.wait_for`` adds ``_COMPACT_RESULT_WAIT_MARGIN_SECS`` on top.
+    The automatic path passes ``_resolve_compact_wait_secs``, so a configured
+    budget raises this wait too.
     """
     return max(
         _COMPACT_RESULT_WAIT_FLOOR_SECS,
@@ -278,14 +271,10 @@ _COMPACT_MIN_EFFECT_PCT_POINTS = 5.0
 # _COMPACT_MIN_EFFECT_PCT_POINTS) while the confirmed reading is still AT OR
 # ABOVE this percentage has not restored usable headroom: the very next turn
 # re-crosses the trigger threshold, and on the task runner the next prompt
-# itself may not fit. Such a session is reset — with its native resume
-# sid cleared, so the overflowed conversation is not reloaded — instead of
-# limping through compact/cooldown cycles. Every compaction caller gets this,
-# not just the task runner's post-compaction verification.
-# The escalation rides the verdict settle (not a raw re-read after compact())
-# because only a settled reading has passed the measurability rules — a raw
-# re-read can be unknown (kiro zeroes + flags stats) or stale (a backend that
-# never reset them), and resetting on either would destroy a healthy session.
+# itself may not fit. Every compaction caller then resets the session with its
+# native resume sid cleared, so the overflowed conversation is not reloaded.
+# Decided on the settled verdict, not a raw re-read after compact(): a raw read can
+# be unknown or stale, and resetting on either would destroy a healthy session.
 _POST_COMPACT_RESET_PCT = 95.0
 
 
@@ -293,9 +282,8 @@ class _CompactCallback(Protocol):
     # Mirrors ``session_compaction.CompactCallback`` exactly, including ``outcome``:
     # this facade re-declares the shape so callers need not import the coordinator,
     # and a narrower copy here makes the two disagree about what a registration must
-    # accept. ``outcome`` says WHICH arm ran -- compacted or recycled -- because a
-    # recycle is equally "successful" to a caller that only needs headroom, and a
-    # surface told only ``success`` announced a summary that never happened.
+    # accept. ``outcome`` says WHICH arm ran (compacted or recycled): both count as
+    # ``success``, and a surface must not announce a summary after a recycle.
     async def __call__(  # noqa: E704
         self,
         key: str,
@@ -326,19 +314,14 @@ _GEN_SUFFIX_RE = re.compile(r"^gen\d+$")
 def _opt_out_key(key: str) -> str:
     """The key an automatic-mirroring refusal is stored under.
 
-    The durable BUCKET, never the generation-suffixed session key. The refusal is
-    a preference about the CONVERSATION, not about one session — the same reason
-    the per-route model choice is not keyed by session — and generations rotate
-    on ``/new`` and on the configured idle/daily reset. Keyed per generation, an
-    idle rotation would silently undo the user's "off" with no action on their
-    part, and every rotated generation would strand its own row that pruning is
-    forbidden to collect. Bucket-keyed, one conversation holds one such row.
+    The durable BUCKET, never the generation-suffixed session key: the refusal is
+    about the CONVERSATION, and generations rotate on ``/new`` and idle/daily
+    resets. Keyed per generation, a rotation would silently undo the user's "off"
+    and strand a row pruning may not collect.
 
-    The suffix is stripped textually rather than through the canonical parser,
-    because the shapes that most need it are the ones the parser rejects: a
-    ``dm_scope="unified"`` bucket is ``unified:{agent}``, which is too short for
-    the §9 grammar, so a parser-only rule would leave unified conversations keyed
-    per generation — exactly the bug this function exists to prevent.
+    Stripped textually, not through the canonical parser: a ``dm_scope="unified"``
+    bucket (``unified:{agent}``) is too short for the §9 grammar, so a parser-only
+    rule would key unified conversations per generation.
     """
     canon = canonical_key(key)
     head, sep, tail = canon.rpartition(":")

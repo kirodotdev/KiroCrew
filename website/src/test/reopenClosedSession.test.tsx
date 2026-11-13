@@ -221,7 +221,7 @@ describe('useKeyboardShortcuts — reopen closed session', () => {
     vi.mocked(api.deleteChatSlot).mockResolvedValue({ ok: true } as never)
     setup()
     act(() => { press('KeyW') })
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined))
     await act(async () => { await Promise.resolve() })
 
     let claimed = false
@@ -237,7 +237,7 @@ describe('useKeyboardShortcuts — reopen closed session', () => {
     vi.mocked(api.resumeChatSlot).mockResolvedValue({ ok: true, key: 'chat-1', messages: [] } as never)
     setup()
     act(() => { press('KeyW') })
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined))
 
     await act(async () => { await Promise.resolve() })
     let claimed = false
@@ -251,7 +251,7 @@ describe('useKeyboardShortcuts — reopen closed session', () => {
     vi.mocked(api.resumeChatSlot).mockResolvedValue({ ok: true, key: 'chat-1', messages: [] } as never)
     const store = setup()
     act(() => { press('KeyW') })
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined))
     await act(async () => { await Promise.resolve() })
     act(() => { press('KeyT') })
     await waitFor(() => expect(store.getState().chat.lastResumeActivation?.leaveSplit).toBe(true))
@@ -308,7 +308,7 @@ describe('useKeyboardShortcuts — reopen closed session', () => {
     vi.mocked(api.deleteChatSlot).mockReturnValue(new Promise(() => {}) as never)
     setup()
     act(() => { press('KeyW') })
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined))
     expect(takeRecentlyClosedSession(neverOpen)).toEqual({ key: 'chat-1', historyKey: 'dashboard:chat-1', title: 'Chat 1' })
   })
 
@@ -360,10 +360,10 @@ describe('useKeyboardShortcuts — reopen closed session', () => {
       { store },
     )
     act(() => { press('KeyW') })
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-1', undefined))
     act(() => { store.dispatch({ type: 'chat/setActiveSlot', payload: 'chat-2' }) })
     act(() => { press('KeyW') })
-    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2'))
+    await waitFor(() => expect(api.deleteChatSlot).toHaveBeenCalledWith('chat-2', undefined))
     // The second close finishes first; the first one finishes after it.
     await act(async () => { finishFirst({ ok: true }) })
     expect(takeRecentlyClosedSession(neverOpen)?.key).toBe('chat-2')

@@ -425,6 +425,12 @@ export interface ChatSlot extends TurnIdentityFields {
   /** The language `preparing_text` is written in (`en`, `zh`, ...). The client
    * shows the text only when this is its UI language. */
   preparing_lang?: string
+  /** The greeting the agent's spec carries (`welcomeMessage`), capped and
+   * redacted by the gateway, while the chat has no row: an unstarted chat
+   * writes none, so the welcome page draws it from here. "" from the first row
+   * on, when the transcript's welcome row (`meta.kind` `agent_welcome`) carries
+   * it; absent from an older gateway. Plain text, never markdown or HTML. */
+  welcome_message?: string
   /** A cooperative Stop was declined moments ago (compaction); the next press
    * escalates to the force stop. Read from the same window the backend uses. */
   stop_declined?: boolean
@@ -638,6 +644,8 @@ export interface SubagentActivity {
   stalledAt?: number
   retrying?: boolean      // transient-backend retry (or cancel auto-continue) in flight
   approval_id?: string
+  /** The coordinator request a pending spawn waits on (types/approvalTarget). */
+  approval_target?: CoordinatorApprovalTarget
   approving?: boolean
   /** The `approval_id` a resolve attempt found gone (`isTerminalApprovalRefusal`):
    *  decided or expired where this client could not see it. Scoped by id so a
@@ -680,6 +688,8 @@ export interface ToolActivity {
   execution_started_at?: number // when execution began (after approval); survives remount
   auto?: boolean        // auto-approved tool call
   approval_id?: string  // pending approval ID
+  /** The request a pending approval entry was raised for (types/approvalTarget). */
+  approval_target?: ApprovalTarget
   approval_type?: string // 'chat' or 'spawn'
   tool_call_id?: string  // for matching tool results
   rejected?: boolean     // true when approval was rejected
@@ -751,6 +761,9 @@ export interface Notification {
   /** Server-stamped on a replacement no more urgent than the note it replaced:
    *  it lands in the bell, but no sound, banner or OS notification announces it. */
   quiet?: boolean
+  /** Server-stamped on a keyed note that replaced an earlier note under the
+   *  same source and key; the feed marks the row as edited. */
+  replaced?: boolean
   /** The crewmate that published the note, stamped by the gateway from the
    *  publishing session. Persisted rows are untrusted: read it through
    *  `noteMember`, which checks the shape. */
@@ -772,10 +785,31 @@ export interface NotificationChannel {
   settings: { muted?: boolean; priority?: string; deliver_to?: string[]; deliver_min_priority?: string }
 }
 
+/** The one pending request a control decides, retires or adopts; built and
+ *  matched by types/approvalTarget. A coordinator target is bound by the
+ *  server-issued `instance` and its owning `slot` ('' when slotless), a native
+ *  target by the slot that holds the request and its permission row's `mid`.
+ *  `id` is carried for the route and for display only. */
+export interface CoordinatorApprovalTarget {
+  readonly origin: 'coordinator'
+  readonly id: string
+  readonly slot: string
+  readonly instance: string
+}
+
+export interface NativeApprovalTarget {
+  readonly origin: 'native'
+  readonly id: string
+  readonly slot: string
+  readonly mid: string
+}
+
+export type ApprovalTarget = CoordinatorApprovalTarget | NativeApprovalTarget
+
 export interface PendingApproval {
   origin?: 'native' | 'coordinator'
   request_mid?: string
-  /** A coordinator record's instance: pins a decision to that one record. */
+  /** A coordinator request's server-issued instance (see types/approvalTarget). */
   request_instance?: string
   tool_purpose?: string
   tool: string

@@ -50,7 +50,7 @@ Non-goals:
 | Field | Value |
 |---|---|
 | `watch` | `work-ledger`, gated |
-| interval | 600 s (inside the conductor's 300..900 s band) |
+| interval | 300 s (`PATROL_INTERVAL_SECS`; a conductor's own `watch="work-ledger"` arm is forced to it too) |
 | `max_cycles` | 300 |
 | `max_runtime_secs` | 86400 |
 | message | fixed gateway text: read the ledger compactly, verify `done` with `accept_eval.py`, answer `question` and `blocked` |

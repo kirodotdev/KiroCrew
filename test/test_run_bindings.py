@@ -68,12 +68,12 @@ _REPO_ROOT = _TEST_ROOT.parent
 _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_publish_identity": (
         "staticmethod",
-        "(agent_id: 'str', *, session_id: 'str' = '', provider: 'str' = '', cwd: 'str' = '', keep: 'bool | None' = None, conversation_key: 'str' = '') -> 'None'",
+        "(agent_id: 'str', *, session_id: 'str' = '', provider: 'str' = '', cwd: 'str' = '', keep: 'bool | None' = None, conversation_key: 'str' = '', codex_home: 'str' = '') -> 'None'",
         "subagent_persistence",
     ),
     "_remember_identity": (
         "staticmethod",
-        "(agent_id: 'str', *, session_id: 'str' = '', provider: 'str' = '', cwd: 'str' = '', keep: 'bool | None' = None, conversation_key: 'str' = '') -> 'None'",
+        "(agent_id: 'str', *, session_id: 'str' = '', provider: 'str' = '', cwd: 'str' = '', keep: 'bool | None' = None, conversation_key: 'str' = '', codex_home: 'str' = '') -> 'None'",
         "subagent_persistence",
     ),
     "_stop_in_progress": ("staticmethod", "(info: 'SubagentInfo') -> 'bool'", "run"),
@@ -124,7 +124,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     ),
     "_remember_identity_off_loop": (
         "coroutine",
-        "(self, info: 'SubagentInfo', *, session_id: 'str', provider: 'str', cwd: 'str' = '', keep: 'bool | None' = None, conversation_key: 'str' = '') -> 'None'",
+        "(self, info: 'SubagentInfo', *, session_id: 'str', provider: 'str', cwd: 'str' = '', keep: 'bool | None' = None, conversation_key: 'str' = '', codex_home: 'str' = '') -> 'None'",
         "run_records",
     ),
     "_await_identity_write": (
@@ -234,7 +234,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "_published_depth": ("function", "(self, parent_session_key: 'str') -> 'int'", "run"),
     "_publish_queue_depth": (
         "coroutine",
-        "(self, parent_session_key: 'str', depth: 'int', batch_id: 'str', *, forget_label: 'bool') -> 'None'",
+        "(self, parent_session_key: 'str', depth: 'int', batch_id: 'str') -> 'None'",
         "run",
     ),
     "_arm_queue_depth_retry": (

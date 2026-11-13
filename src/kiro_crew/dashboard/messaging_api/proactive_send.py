@@ -73,6 +73,56 @@ def _redact_all(value: str) -> str:
     return value
 
 
+def _reserved_action_refusal(blocks: Any) -> "web.Response | None":
+    """400 when agent-supplied blocks wear a gateway-reserved action id.
+
+    The code-channel buttons (Archive, Turn on hand-off) act on the owner's click;
+    a button an agent posted -- or edited onto a gateway message -- with one of
+    those ids would turn that click into consent to text the agent wrote. Both
+    agent block paths (send and update) refuse it, as they refuse remote media,
+    on the raw blocks and again on the sanitized tree they publish.
+    """
+    from kiro_crew.slack.client import BLOCKS_RESERVED_ACTION_ERROR, blocks_use_reserved_action
+
+    if not isinstance(blocks, list) or not blocks_use_reserved_action(blocks):
+        return None
+    return web.json_response(
+        {
+            "error": (
+                "agent-supplied Block Kit cannot use an action_id or block_id "
+                "starting with kc_code_channel_: those belong to the gateway's own "
+                "code-channel buttons"
+            ),
+            "code": BLOCKS_RESERVED_ACTION_ERROR,
+        },
+        status=400,
+    )
+
+
+def _published_blocks_refusal(blocks: Any) -> "web.Response | None":
+    """400 when the SANITIZED tree an agent path is about to publish breaks a
+    Block Kit guard (remote media, reserved action ids).
+
+    Both agent block paths check the raw blocks first and then sanitize, and
+    sanitizing rewrites keys and values (ANSI stripped): a key the raw check read
+    as ``image_url\\x1b[0m`` or ``action_id\\x1b[0m`` is published as the real one.
+    So every guard also runs here, on what Slack would receive.
+    """
+    if isinstance(blocks, list) and _blocks_request_remote_media(blocks):
+        return web.json_response(
+            {
+                "error": (
+                    "agent-supplied Block Kit cannot contain image/video blocks "
+                    "or image_url/thumbnail_url/video_url fields because Slack "
+                    "fetches that media without a recipient click"
+                ),
+                "code": BLOCKS_REMOTE_MEDIA_ERROR,
+            },
+            status=400,
+        )
+    return _reserved_action_refusal(blocks)
+
+
 def _sanitize_blocks(
     blocks: list[dict],
     *redactors: Any,
@@ -407,6 +457,8 @@ async def api_update_message(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    if (refused := _reserved_action_refusal(blocks)) is not None:
+        return refused
     if not text and not blocks:
         return web.json_response(
             {"error": "text or blocks required", "code": "content_required"}, status=400
@@ -489,6 +541,8 @@ async def api_update_message(request: web.Request) -> web.Response:
         blocks = _sanitize_blocks(
             blocks, redact_exfiltration_urls, redact_credentials, display_form=True
         )
+        if (refused := _published_blocks_refusal(blocks)) is not None:
+            return refused
     slack = state.slack_client
     if not slack:
         return web.json_response(
@@ -591,6 +645,8 @@ async def _read_send_message(
             {"error": 'format must be "plain" or "markdown"', "code": "format_unknown"},
             status=400,
         )
+    if (refused := _reserved_action_refusal(blocks)) is not None:
+        return refused
 
     # ── Channel-addressed leg ──
     # Handled before the Slack-shaped validation below, because a Webex room id is
@@ -906,7 +962,11 @@ async def _deliver_send_message_fallback(
 
     Each leg records what it reached on *outcome* as it goes.
     """
+    # Function-local like ``redact`` below: the facade rebinds this function
+    # onto ``handlers.messaging``'s globals, where a module-level import here
+    # would not exist.
     from kiro_crew.security import redact
+    from kiro_crew.slack.mrkdwn_markdown import mrkdwn_to_markdown
 
     # Snapshot before the suffix below: that sentence describes the BELL's
     # delivery, and a channel post is a real delivery, not the
@@ -926,10 +986,29 @@ async def _deliver_send_message_fallback(
     publisher = None if options else attribution_session or None
     # The link back to the sender stays even then: a question is where it is needed most.
     session_meta = _publishing_session_meta(state, attribution_session)
+    # Two grammars, one call: a Slack-bound ``text`` is written in Slack mrkdwn,
+    # while the bell renders Markdown, so Slack links (``<url|label>``) and
+    # emphasis arrive broken in the bell. Convert the BELL's copy only — the
+    # legs below must deliver exactly what the caller wrote. ``send_to_slack``
+    # is the gate: false whenever a ``channel_target``/``channel_type`` send
+    # carries another channel's format, true when the send is Slack-routed.
+    # The cron owner-DM default keeps it true even on an install with no Slack
+    # client, where the body may already be Markdown — accepted, because the
+    # converter leaves Markdown constructs and URL-shaped spans untouched and
+    # only single-delimiter emphasis (``*x*``, mrkdwn bold) changes weight.
+    bell_text = text
+    if send_to_slack:
+        bell_text = mrkdwn_to_markdown(text)
+        # Conversion is a rendering step AFTER the route's display scan: it
+        # removes characters (the sentinel strip) and collapses sigils the
+        # scan may have read as a split inside a secret, so the converted
+        # copy is re-scanned in its own settled form before it is stored.
+        # The legs below still send the already-scanned original bytes.
+        bell_text, _ = redact_for_display(bell_text, _redact_all)
     state.notify(
         "agent",
         title,
-        text,
+        bell_text,
         meta=session_meta,
         member=member,
         publisher_session=publisher,

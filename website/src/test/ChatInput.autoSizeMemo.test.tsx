@@ -1,8 +1,9 @@
 import React, { useState } from 'react'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { act, screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { sseDisconnected } from '../store/dashboardSlice'
 import { stubStripHeights } from './stripHeights'
 
 // Drag-to-resize is pointer-only, and the composer disregards the persisted
@@ -116,7 +117,9 @@ describe('composer auto-size measurement memo', () => {
     // other path can see it: the value effect's deps do not move and the width
     // observer returns early. Without this the box keeps the one-line height and
     // clips the sentence's second line, which is #9979 finding 4 all over again.
-    const { rerender } = renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />)
+    const { rerender, store } = renderWithProviders(<ChatInput value="" onChange={vi.fn()} onSend={vi.fn()} />)
+    // An outage, not the page's first socket still opening (#34947).
+    act(() => { store.dispatch(sseDisconnected()) })
     const ta = screen.getByRole('textbox') as HTMLTextAreaElement
     const state = countMeasures(ta)
 

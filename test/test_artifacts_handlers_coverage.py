@@ -147,6 +147,8 @@ class _FakeLog:
             raise RuntimeError("history dir corrupt")
         return self._sessions
 
+    list_sessions_indexed = list_sessions
+
     def read_messages(self, key: str) -> list[Any]:
         if key in self._unreadable:
             raise OSError("unreadable session")

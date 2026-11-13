@@ -113,3 +113,59 @@ def test_a_scalar_wildcard_is_kept_as_every_tool(tooling):
     finally:
         reset_context()
     assert config["tools"] == ["*"]
+
+
+def test_a_full_rebuild_and_a_member_cron_s_worker_keep_the_edition_refs(
+    tmp_path, monkeypatch, edition
+):
+    """End to end: the start's own ``rebuild_agent_config``, then a Bot's cron worker session."""
+    from kiro_crew import mate_worker
+    from kiro_crew.agent_files import AGENT_FILENAME
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT
+
+    monkeypatch.setattr(paths_mod, "_resolve_default_home", lambda: tmp_path / "default")
+    user = tmp_path / "home" / "agents"
+    mates = tmp_path / "home" / "mates" / "agents"
+    user.mkdir(parents=True)
+    mates.mkdir(parents=True)
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: user)
+    monkeypatch.setattr(paths_mod, "mate_agents_dir", lambda: mates)
+    monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", user)
+    monkeypatch.setattr(
+        "kiro_crew.kiro_cli.installed_kiro_cli_version", lambda: SPEC_PERMISSIONS_MIN_VERSION
+    )
+    launcher = tmp_path / "bin" / "kirocrew"
+    launcher.parent.mkdir()
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(agent, "_KIROCREW_BIN", str(launcher))
+    monkeypatch.setattr(agent, "_KIRO_MCP_JSON", tmp_path / "kiro-global-mcp.json")
+    monkeypatch.setattr(agent, "_DEFAULT_KIRO_HOOKS_DIR", tmp_path / "hooks")
+    monkeypatch.setattr("kiro_crew.apps.bridges._mcp_json_path", lambda: user / AGENT_FILENAME)
+
+    agent.rebuild_agent_config()
+
+    on_disk = json.loads((mates / MATE_WORKER_AGENT_FILENAME).read_text(encoding="utf-8"))
+    for name in EDITION_SERVERS:
+        assert on_disk["tools"].count(f"@{name}") == 1
+
+    own = {"name": "alpha", "prompt": "", "tools": ["@notes"]}
+    own["mcpServers"] = {"notes": {"command": "notes-mcp"}}
+    (mates / "alpha.json").write_text(json.dumps(own), encoding="utf-8")
+    monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member, config=None: member)
+    monkeypatch.setattr(mate_worker, "globally_disabled_refs", lambda names: [])
+    store = MemoryStoreRef("member-alpha", "alpha")
+    worker = mate_worker.cron_worker_execution(
+        ExecutionContext("alpha", store, "member", "kirocrew")
+    )
+    assert worker is not None and worker.template_id == MATE_WORKER_AGENT
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.read_session_execution",
+        lambda key: worker if key == "cron:hourly" else None,
+    )
+    spec = mate_worker.worker_session_spec(dict(on_disk), "cron:hourly")
+    for name in EDITION_SERVERS:
+        assert f"@{name}" in spec["tools"] and name in spec["mcpServers"]
+    assert "@notes" in spec["tools"]

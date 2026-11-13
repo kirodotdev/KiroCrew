@@ -2,7 +2,8 @@
 
 Covers ``useLegacyMcpJson`` (P1-17), glob ``disabledTools`` on the mcp.json
 servers KAS starts (P0-14), the undeclared ones a not-opted-in agent does not
-start (P0-13), and the 120 s default and ``mcp.initTimeout`` floor (P0-21, P1-37).
+start (P0-13), the 120 s default (300 s for a remote server) and the
+``mcp.initTimeout`` floor (P0-21, P1-37).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from kiro_crew.acp.kas_agents import KasAgentTranslationError, to_client_custom_
 from kiro_crew.acp.kas_permissions import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_settings_mcp import (
     finish_settings_mcp,
+    include_mcp_json,
     stamp_settings_mcp,
     without_excluded_stubs,
 )
@@ -58,16 +60,23 @@ def _agent(**over):
     return base
 
 
-def _finish(agent, work, session=(), declared=()):
-    (stamped,) = stamp_settings_mcp([agent], "a", work, declared=declared)
+def _finish(agent, work, session=(), declared=(), opted_in=False):
+    (stamped,) = stamp_settings_mcp([agent], "a", work, declared=declared, opted_in=opted_in)
     return finish_settings_mcp(stamped)
 
 
 class TestLegacySpelling:
     def test_use_legacy_mcp_json_travels_as_include_mcp_json(self):
+        spec = _spec(useLegacyMcpJson=False)
+        del spec["includeMcpJson"]
+        assert to_client_custom_agent("a", spec, "p")["includeMcpJson"] is False
+
+    def test_a_true_opt_in_under_the_alias_is_read_but_never_sent(self):
+        """KAS's ``true`` mounts every MCP tool past ``tools``, whichever key said it."""
         spec = _spec(useLegacyMcpJson=True)
         del spec["includeMcpJson"]
-        assert to_client_custom_agent("a", spec, "p")["includeMcpJson"] is True
+        assert include_mcp_json(spec) is True
+        assert "includeMcpJson" not in to_client_custom_agent("a", spec, "p")
 
     def test_include_mcp_json_wins_over_the_alias(self):
         out = to_client_custom_agent("a", _spec(includeMcpJson=False, useLegacyMcpJson=True), "p")
@@ -101,8 +110,22 @@ class TestUndeclaredFileServers:
             home / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["write_*", "exact", "de?"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work)
+        out = _finish(_agent(), work, opted_in=True)
         assert out["excludedTools"] == ["@extra/write_*", "@extra/de?"]
+
+    def test_a_wire_flag_is_not_the_opt_in(self, home, work):
+        """The opt-in is the stamp's: the projected entry never carries ``true``."""
+        _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
+        assert _finish(_agent(includeMcpJson=True), work)["excludedTools"] == ["@extra"]
+
+    def test_an_opted_in_spec_keeps_the_server_its_tools_names(self, home, work):
+        """Leaving ``true`` off the wire does not cost the agent its ``tools`` refs."""
+        _write(home / "mcp.json", {"mcpServers": {"notes-mcp": {}, "extra": {}}})
+        spec = _spec(includeMcpJson=True, tools=["fs_read", "@notes-mcp"])
+        entry = {**to_client_custom_agent("a", spec, "p"), "id": "a"}
+        assert "includeMcpJson" not in entry
+        out = _finish(entry, work, opted_in=include_mcp_json(spec) is True)
+        assert "@notes-mcp" not in out.get("excludedTools", [])
 
     def test_declared_and_session_level_servers_get_no_file_globs(self, home, work):
         _write(
@@ -133,7 +156,7 @@ class TestUndeclaredFileServers:
             work / ".kiro" / "settings" / "mcp.json",
             {"mcpServers": {"pooled": {"disabledTools": ["write_*"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work, [{"name": "pooled"}])
+        out = _finish(_agent(), work, [{"name": "pooled"}], opted_in=True)
         assert out["excludedTools"] == ["@pooled/write_*"]
 
     def test_an_unreadable_workspace_file_keeps_the_global_exclusions(
@@ -154,8 +177,9 @@ class TestUndeclaredFileServers:
         assert without_excluded_stubs([{"name": "pooled"}], stamped) == []
         assert finish_settings_mcp(stamped[0])["excludedTools"] == ["@pooled"]
 
-    def test_each_unreadable_file_gets_one_notice_line(self, home, work):
-        utf16 = b"\xff\xfe" + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
+    @pytest.mark.parametrize("mark", [b"\xff\xfe", b""], ids=["marked", "unmarked"])
+    def test_each_unreadable_file_gets_one_notice_line(self, home, work, mark):
+        utf16 = mark + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
         (home / "mcp.json").write_bytes(utf16)
         (work / ".kiro" / "settings").mkdir(parents=True)
         (work / ".kiro" / "settings" / "mcp.json").write_bytes(utf16)
@@ -178,7 +202,7 @@ class TestUndeclaredFileServers:
             work / ".kiro" / "settings" / "mcp.json",
             {"mcpServers": {"extra": {"disabledTools": ["b*"]}}},
         )
-        out = _finish(_agent(includeMcpJson=True), work)
+        out = _finish(_agent(), work, opted_in=True)
         assert out["excludedTools"] == ["@extra/b*"]
 
     def test_only_the_active_entry_is_stamped_and_an_unstamped_one_passes(self, home, work):
@@ -216,7 +240,7 @@ class TestUndeclaredFileServers:
     def test_an_opted_in_agent_keeps_its_pooled_stubs(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"pooled": {}}})
         session = [{"name": "pooled"}]
-        stamped = stamp_settings_mcp([_agent(includeMcpJson=True)], "a", work)
+        stamped = stamp_settings_mcp([_agent()], "a", work, opted_in=True)
         assert without_excluded_stubs(session, stamped) is session
 
 
@@ -248,7 +272,17 @@ class TestTimeout:
     def test_unset_timeout_gets_kiro_cli_default(self, home, work):
         out = _finish(_agent(mcpServers={"s": {"command": "x"}, "r": {"url": "https://h"}}), work)
         assert out["mcpServers"]["s"]["timeout"] == 120_000
-        assert out["mcpServers"]["r"]["timeout"] == 120_000
+        assert out["mcpServers"]["r"]["timeout"] == 300_000
+
+    def test_only_a_server_kas_reaches_by_url_gets_the_sign_in_wait(self, home, work):
+        # A remote entry Crew relays through a local launcher is a stdio server to
+        # KAS, and a longer ``mcp.initTimeout`` still raises the remote floor.
+        servers = {"r": {"url": "https://h"}, "bridged": {"url": "https://h", "command": "x"}}
+        out = _finish(_agent(mcpServers=servers), work)["mcpServers"]
+        assert out["bridged"]["timeout"] == 120_000
+        _write(home / "cli.json", {"mcp.initTimeout": 450_000})
+        out = _finish(_agent(mcpServers=servers), work)["mcpServers"]
+        assert out["r"]["timeout"] == 450_000
 
     def test_set_timeout_is_kept_and_alias_is_mapped(self, home, work):
         servers = {
@@ -342,7 +376,7 @@ class TestBraceGlobs:
 
     def test_a_file_server_brace_glob_is_carried_per_branch(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {"disabledTools": ["{a,b}_*"]}}})
-        out = _finish(_agent(includeMcpJson=True), work)
+        out = _finish(_agent(), work, opted_in=True)
         assert out["excludedTools"] == ["@extra/a_*", "@extra/b_*"]
 
     def test_a_file_server_glob_kas_cannot_match_keeps_it_running_with_a_notice(
@@ -353,9 +387,7 @@ class TestBraceGlobs:
             {"mcpServers": {"extra": {"disabledTools": ["ok_*", "fs_[rw]*"]}, "fine": {}}},
         )
         unmatched: set[tuple[str, str]] = set()
-        (stamped,) = stamp_settings_mcp(
-            [_agent(includeMcpJson=True)], "a", work, unmatched=unmatched
-        )
+        (stamped,) = stamp_settings_mcp([_agent()], "a", work, unmatched=unmatched, opted_in=True)
         out = finish_settings_mcp(stamped)
         assert "@extra" not in out["excludedTools"]
         assert out["excludedTools"] == ["@extra/ok_*", "@extra/fs_[rw]*"]

@@ -65,6 +65,21 @@ export interface StatusData {
    */
   update_channel?: string
   /**
+   * The advance notice of the next update, shown inline under About > Updates.
+   * `announced` is a published notice for a version the feed does not offer
+   * yet. `date` is `YYYY-MM-DD` or "" when unknown, `highlights` holds at most
+   * three lines taken from that version's notes, and `notes_url` is an `https://`
+   * link or "". `null` when there is no notice. Display only; optional because an
+   * older gateway does not send it.
+   */
+  update_upcoming?: {
+    state: 'announced'
+    version: string
+    date: string
+    highlights: string[]
+    notes_url: string
+  } | null
+  /**
    * Is the running build ahead of everything `update_channel` publishes? True
    * means that lane has never shipped these bytes, so the install is not on it
    * and only re-running the installer moves it — the state a channel switch
@@ -130,6 +145,21 @@ export interface StatusData {
   update_required?: boolean
   /** The floor that made the update mandatory (bare release, '' when none). */
   update_min_version?: string
+  /**
+   * "Update ready, restart to use it": a new version is installed beside the
+   * running one (`staged`, `installed`), or the served bundle is gone
+   * (`assets_gone`). The gateway never restarts itself for it; a person does.
+   */
+  update_restart_ready?: boolean
+  update_restart_ready_version?: string
+  update_restart_ready_reason?: 'staged' | 'assets_gone' | ''
+  /** The person armed an update (Update when I restart): the gateway applies it at its
+   *  next start, before it serves anything. `null` when nothing is armed. */
+  update_armed_version?: string | null
+  /** Unix seconds the armed update was armed; the desktop reads it to tell a fresh arm from a stale one. */
+  update_armed_at?: number | null
+  /** Why the last boot-time apply failed; the old version is running. */
+  pending_apply_error?: string | null
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**
@@ -219,6 +249,8 @@ export interface StatusData {
  * type-checks; consumers treat absence as "unknown", never as a verdict.
  */
 export interface UpdateCheckResult {
+  /** When this check finished, epoch seconds: the stamp the status frame carries as `update_last_checked_at`. */
+  last_checked_at?: number | null
   supported?: boolean
   managed_by?: string
   mode?: string
@@ -269,6 +301,10 @@ export interface UpdateCheckResult {
   auto_update?: boolean
   /** Whether config.local.json sets `auto_update`, so the switch cannot change it. */
   overlay_override?: boolean
+  /** Whose entry that is: the person's own (`user`) or a policy an edition enforces (`policy`). */
+  overlay_source?: 'user' | 'policy' | null
+  /** The policy keeping the entry in place, when `overlay_source` is `policy`. */
+  overlay_policy?: { label: string; detail: string } | null
   minimum_version_enforced?: string
   update_required?: boolean
   /** Legacy alias some older payloads carried; `latest_version` is authoritative. */

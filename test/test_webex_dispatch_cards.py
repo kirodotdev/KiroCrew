@@ -277,6 +277,7 @@ class TestOutboundRedaction:
 class TestApprovalCardPress:
     @staticmethod
     async def _pending(d: WebexDispatcher, key: str, request_id: int = 1):
+        webex_dispatch._APPROVALS.reserve(key, request_id)
         task = asyncio.create_task(
             webex_dispatch._APPROVALS.decide_with_cause(key, SimpleNamespace(request_id=request_id))
         )

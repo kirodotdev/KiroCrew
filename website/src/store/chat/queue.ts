@@ -4,8 +4,9 @@
 import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
+import { messageAuthor } from '../../api/sharedCrewUi'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryDecisionStrip, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** A queued row's paste blocks (`queueEntryPastes` put them there): what the
@@ -164,10 +165,14 @@ export const queueReducers = {
       // (no chat_message echo follows for a user row).
       if (drain_writes_row) return
       if (sendId) {
-        // A persisted steer row is not this drain's row: a requeued steer runs as
-        // its own new row. Matching it here would skip the rebuild, and with it
-        // the landed mark below. An optimistic steer bubble is still this send's
-        // placeholder, so it is matched and replaced as before.
+        // A steer row is never this drain's row: a requeued steer runs as its
+        // own NEW row, and the server marks the old one `superseded` once that
+        // row lands. Matching it here would skip the rebuild, and with it the
+        // landed mark below, and then hide the only copy, so the text would
+        // show zero times.
+        // An optimistic steer bubble IS still this send's placeholder (the
+        // steer raced the turn's end before any row was persisted), so it is
+        // matched and replaced as before.
         const existing = msgs.find(m => m.role === 'user' && m.meta?.sendId === sendId && !(m.meta?.steer && !m.meta?.optimistic))
         if (existing && !existing.meta?.optimistic) return
         if (existing) {
@@ -186,8 +191,11 @@ export const queueReducers = {
       // A peer's queued `session_send` names its sender (`meta.relay`) on the
       // frame, so the rebuilt row draws the incoming session-message card. Read
       // from the FRAME only: the gateway drops the sender when the entry is
-      // edited, and only the frame says so.
-      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryBanner(queued?.meta), ...queuedRowPastes(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryRelay(meta) }
+      // edited, and only the frame says so. The author follows the same rule.
+      // messageAuthor validates and normalizes the server-stamped principal
+      // before it reaches the rebuilt row.
+      const author = messageAuthor(meta)
+      const rowMeta: Record<string, unknown> = { ...queueEntryAttachments(queued?.meta), ...queueEntryQuote(queued?.meta), ...queueEntryBanner(queued?.meta), ...queuedRowPastes(queued?.meta), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntryDecisionStrip(meta), ...queueEntrySendId(meta), ...queueEntryRelay(meta), ...(author ? { author } : {}) }
       if (queue_id && sendId) rowMeta.queueId = queue_id
       if (at >= 0 && clientTs) rowMeta.clientTs = clientTs
       delete rowMeta.optimistic
@@ -236,13 +244,15 @@ export const queueReducers = {
    *  nothing from them. An empty object clears the lists (the frame carries
    *  no `meta` once every marker is gone). Omitted by the optimistic local
    *  edit, which cannot know how the server pruned them. */
-  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[] }>) {
-    const { slot, queue_id, content, attachments, pastes } = action.payload
+  editQueuedMessage(state: ChatState, action: PayloadAction<{ slot: string; queue_id: string; content: string; attachments?: QueueEntryAttachments; pastes?: PasteBlock[]; editRev?: number }>) {
+    const { slot, queue_id, content, attachments, pastes, editRev } = action.payload
     if (isUnsafeKey(slot)) return
     const msgs = slot === state.activeSlot ? state.messages : state.slotMessages[slot]
     if (!msgs) return
     const idx = msgs.findIndex(m => m.role === 'queued' && (m.meta?.queueId as string) === queue_id)
     if (idx < 0) return
+    const applied = msgs[idx].meta?.editRev
+    if (typeof editRev === 'number' && typeof applied === 'number' && editRev < applied) return
     if (msgs[idx].content !== content && msgs[idx].meta?.banner !== undefined) {
       // The server drops the label when an edit changes the text; so does the row.
       const { banner: _b, ...rest } = msgs[idx].meta ?? {}
@@ -274,6 +284,7 @@ export const queueReducers = {
       const { quote: _q, ...rest } = msgs[idx].meta ?? {}
       msgs[idx].meta = rest
     }
+    if (typeof editRev === 'number') msgs[idx].meta = { ...msgs[idx].meta, editRev }
   },
   /** Reorder queued messages to match the given queue-id sequence (from the
    *  backend queue_reorder WS event or an optimistic local update). Queued

@@ -11,8 +11,9 @@ it into every module holding the name.
 object per name, the manifest, owners never importing their facade, no shared global
 rebound). These tests pin what is particular to this facade: every name the test trees patch
 through it reaches every module holding it; the owners are exactly the ``knowledge_*.py``
-siblings, loaded lowest layer first; the route table still registers the handlers the facade
-serves; the family logs under the facade's name; and the facade still runs as ``python -m``.
+siblings, loaded lowest layer first; no module outside the family imports an owner; the
+route table still registers the handlers the facade serves; the family logs under the
+facade's name; and the facade still runs as ``python -m``.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from types import ModuleType
 from unittest.mock import MagicMock
 
 import facade_mirror_scan
+import owner_import_scan
 import pytest
 import source_corpus
 from aiohttp import web
@@ -148,6 +150,24 @@ def test_the_owners_are_every_knowledge_sibling_in_layer_order() -> None:
         if later:
             late[owner] = later
     assert late == {}
+
+
+def test_only_the_family_imports_an_owner() -> None:
+    """A module outside the family that imported an owner would hold bindings the
+    facade's mirror never indexes, so a patch through the facade would miss it."""
+    owners = frozenset(_index().owners)
+    family = {
+        f"{name.removeprefix('kiro_crew.').replace('.', '/')}.py" for name in (FACADE, *owners)
+    }
+    sources = source_corpus.iter_candidate_sources(
+        require_any=tuple(name.rpartition(".")[2] for name in owners)
+    )
+    importers = owner_import_scan.owner_importers(
+        sources, source_corpus.src_root(), lambda name: name in owners
+    )
+    # An owner importing a lower owner proves the scan reads real imports.
+    assert "dashboard/handlers/knowledge_lifecycle.py" in importers
+    assert importers - family == set()
 
 
 def test_the_facade_keeps_the_default_read_path_and_no_code_of_its_own() -> None:

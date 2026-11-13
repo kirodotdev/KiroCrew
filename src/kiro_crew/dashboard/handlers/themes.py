@@ -142,7 +142,7 @@ def _list_themes_sync() -> list[dict[str, Any]]:
         for d in sorted(
             p
             for p in themes_path.iterdir()
-            if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
+            if p.is_dir() and not is_link_or_junction(p) and not p.name.startswith(".")
         ):
             mpath = d / "theme.json"
             if not mpath.is_file():

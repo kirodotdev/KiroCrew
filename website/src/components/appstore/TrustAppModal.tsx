@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
+import { Code2, GitBranch, Loader2, MessagesSquare, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -65,6 +65,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   sessionApproval?: boolean
   /** The app declares `permissions.workerAutoApprove`: its own background sessions may auto-approve. */
   workerAutoApprove?: boolean
+  /** The `permissions.reachableByUserSessions` verbs: what your chats may do to the sessions it runs. */
+  reachableByUserSessions?: string[]
   /**
    * True when the manifest widens `sessionApproval` to the owner's member
    * threads (`permissions.memberThreads`). Shown only inside the session
@@ -619,6 +621,9 @@ export default function TrustAppModal({
   onConfirm: () => void
 }) {
   const name = app ? (app.displayName || app.name) : ''
+  // Only the verbs the gateway knows; anything else in a manifest grants nothing.
+  const reachVerbs = (Array.isArray(app?.reachableByUserSessions) ? app.reachableByUserSessions : [])
+    .filter(verb => verb === 'read' || verb === 'send')
   // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
   const localInstall = !app?._registry && app?.origin === 'local'
   const state = terminalState({ failed, granted, detail, detailCode })
@@ -658,6 +663,9 @@ export default function TrustAppModal({
     <Modal
       open={!!app}
       onClose={onCancel}
+      // Cancel is off while the grant and its install run; Escape, the backdrop
+      // and the X must be too, or the dialog a late failure renders in is gone.
+      dismissDisabled={pending}
       maxWidth={560}
       guideTrustRoot
       title={i18nT('components.appstore.trustAppModal.title', { app: name })}
@@ -772,6 +780,23 @@ export default function TrustAppModal({
               <p className="text-text leading-relaxed">
                 {i18nT('components.appstore.trustAppModal.worker_auto_approve_desc')}
               </p>
+            </div>
+          )}
+          {/* The other direction from session approval: the owner's chats reaching the
+              app's sessions, not the app reaching the owner's chats. */}
+          {reachVerbs.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <MessagesSquare size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.user_session_reach_heading')}</span>
+              </div>
+              {reachVerbs.includes('read') && (
+                <p className="text-text leading-relaxed">{i18nT('components.appstore.trustAppModal.user_session_reach_read')}</p>
+              )}
+              {reachVerbs.includes('send') && (
+                <p className="text-text leading-relaxed">{i18nT('components.appstore.trustAppModal.user_session_reach_send')}</p>
+              )}
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.user_session_reach_note')}</p>
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2 text-muted">

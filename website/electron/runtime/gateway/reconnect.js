@@ -1,6 +1,7 @@
 "use strict";
 
 const { decideGatewayAction } = require("../../instance-guard");
+const { readBakedEdition } = require("../../edition");
 const {
   classifyAdoptedGateway,
   waitForServiceRebind,
@@ -91,7 +92,7 @@ function createReconnect({
     const owner = await probeGatewayPortOwner(PORT);
     const health = await fetchHealthInfo();
     const decision = decideGatewayAction(app.getVersion(), health, {
-      localOwner: owner,
+      localOwner: owner, ownEdition: readBakedEdition(),
     });
     const readiness = await fetchGatewayReadiness();
     if (window.isDestroyed() || quitting()) return;
@@ -201,8 +202,9 @@ function createReconnect({
     if (!window || window.isDestroyed() || quitting()) return;
 
     if (getGatewayOwnership() === "reused-service") {
-      // A real manager may rebind after the socket release. Orphans share the
-      // same classification, so this is a bounded grace, never an exemption.
+      // A real manager may rebind after the socket release. Off macOS orphans
+      // share the same classification, so this is a bounded grace, never an
+      // exemption.
       glog("liveness: adopted gateway was service-managed — waiting a bounded grace for its manager to respawn it before spawning our own");
       sendStatus("Waiting for the gateway to restart…");
       const verdict = await waitForServiceRebind({

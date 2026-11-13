@@ -799,7 +799,17 @@ class TeamsDispatcher:
         # on a conversation's first turn.
         self._bind_origin_mirror(session_key, inbound)
 
-        self._active_renderers[session_key] = renderer
+        # Only an EMPTY slot here; the turn takes the slot once it holds its session
+        # (``_bind_provider``), so a message admitted mid-turn cannot steal it.
+        self._active_renderers.setdefault(session_key, renderer)
+        bound = False
+
+        def _bind_provider(provider: Any) -> None:
+            nonlocal bound
+            bound = True
+            self._active_renderers[session_key] = renderer
+            renderer.authorize_scratch_root(str(getattr(provider, "work_scratch_dir", None) or ""))
+
         try:
             await drive_turn(
                 ChannelTurn(
@@ -840,9 +850,7 @@ class TeamsDispatcher:
                     # The runtime's own `$KIROCREW_SCRATCH`, where the agent is
                     # told to stage screenshots, admitted beside the cwd root.
                     # Only the live provider knows it, so it is bound here.
-                    bind_provider=lambda p: renderer.authorize_scratch_root(
-                        str(getattr(p, "work_scratch_dir", None) or "")
-                    ),
+                    bind_provider=_bind_provider,
                     audit_caller=f"teams:{email}",
                     after_persist=_surface_new_session,
                 ),
@@ -861,8 +869,21 @@ class TeamsDispatcher:
             # are tapped after on_done, and without the renderer every tap reads as
             # stale. Bounded: one renderer per session, replaced by the next turn.
             # An approval card resolves while the turn still waits on the decider.
-            if not renderer.has_pending_choices:
-                self._active_renderers.pop(session_key, None)
+            # Identity-checked: a second message admitted before this turn acquired
+            # the session publishes its own renderer under the same key.
+            if (
+                not renderer.has_pending_choices
+                and self._active_renderers.get(session_key) is renderer
+            ):
+                del self._active_renderers[session_key]
+            elif (
+                renderer.has_pending_choices
+                and not bound
+                and not self.sessions.is_busy(session_key)
+            ):
+                # A reply that never held the session (an on_message hook answered
+                # it) still owns its chips; no running turn holds the slot.
+                self._active_renderers[session_key] = renderer
 
         # Answer anything that arrived mid-turn. Runs after the semaphore is
         # released so the drained turn can acquire it.

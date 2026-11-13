@@ -73,6 +73,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_FORK_AT_MESSAGE,
@@ -160,6 +161,9 @@ PROTOCOL_VERSION_CLAUDE = 1
 # H10): a divergence should be a one-line edit here, not a silent downgrade of
 # whichever harness moved first.
 PROTOCOL_VERSION_OPENCODE = launch_for(ACP_BACKEND_OPENCODE).protocol_version
+# MiMo Code answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
+# captured off 0.1.15's own wire; its own literal for the same H10 reason.
+PROTOCOL_VERSION_MIMOCODE = launch_for(ACP_BACKEND_MIMOCODE).protocol_version
 # pi-acp answers ``initialize`` with an integer ``protocolVersion`` of 1 as well,
 # verified off its own wire; its own literal for the same H10 reason.
 PROTOCOL_VERSION_PI = 1
@@ -534,7 +538,8 @@ async def _spawn(self: AcpClient) -> None:
             if adopt_outcome != "recorded":
                 logger.warning(
                     "agent-scratch: could not join the owner marker of %r (%s); the tree's "
-                    "work directory is left unowned and will not be swept",
+                    "work directory is left unowned and is moved into the quarantine only "
+                    "after a week with no write",
                     self._shared_scratch.name,
                     adopt_outcome,
                 )
@@ -566,10 +571,15 @@ async def _spawn(self: AcpClient) -> None:
         await _loop.run_in_executor(
             subprocess_executor(), _track_session_pid, self._pid, self._spawn_start_token
         )
-        await asyncio.sleep(0.3)
-        early_descendants = await _loop.run_in_executor(
-            subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
-        )
+        # The child was created a moment ago: it gets a moment to fork before
+        # its tree is read, where a walk can then see what it forked.
+        early_descendants: list[int] = []
+        if await runtime_process_tree.wait_for_descendants(
+            runtime_process_tree.EARLY_WALK_SETTLE_DELAY
+        ):
+            early_descendants = await _loop.run_in_executor(
+                subprocess_executor(), runtime_process_tree._get_child_pids, self._pid
+            )
         if early_descendants:
             self._child_pids = await _loop.run_in_executor(
                 subprocess_executor(),
@@ -653,6 +663,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
                 else []
             ),
             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
+            *(self._mimocode_session_mcp_servers() if self._is_mimocode else []),
             *(self._goose_session_mcp_servers() if self._is_goose else []),
             *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
             *(self._copilot_session_mcp_servers() if self._is_copilot else []),
@@ -737,6 +748,7 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
                 else []
             ),
             *(self._opencode_session_mcp_servers() if self._is_opencode else []),
+            *(self._mimocode_session_mcp_servers() if self._is_mimocode else []),
             *(self._goose_session_mcp_servers() if self._is_goose else []),
             *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
             *(self._copilot_session_mcp_servers() if self._is_copilot else []),
@@ -971,6 +983,7 @@ async def _initialize_session(self: AcpClient) -> None:
                             else []
                         ),
                         *(self._opencode_session_mcp_servers() if self._is_opencode else []),
+                        *(self._mimocode_session_mcp_servers() if self._is_mimocode else []),
                         *(self._goose_session_mcp_servers() if self._is_goose else []),
                         *(self._deepseek_session_mcp_servers() if self._is_deepseek else []),
                         *(self._copilot_session_mcp_servers() if self._is_copilot else []),

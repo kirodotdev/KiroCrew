@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         SlackClientOps,
         StreamRedactor,
         _convert_tables,
+        _SteeringMarkerFilter,
         ends_plain_sentence,
         is_control_tag_tail,
         is_wait_identity,
@@ -302,6 +303,9 @@ class _AnswerStream:
         self.rotated_ts: list[str] = []  # stream messages ``rotate`` replaced, oldest first
         self.thinking_ts: str | None = None  # 💭 reasoning placeholder, posted above the answer
         self.show_thinking = show_thinking
+        # kiro-cli's [STEERING steer-…] ack is protocol: held across chunks and
+        # dropped before it reaches Slack, ahead of redaction as TurnDriver does.
+        self.steer_filter = _SteeringMarkerFilter()
         self.had_redaction = False  # True when per-chunk redaction modified a streamed chunk
         self.delivered = False  # True once ANY real-text append is confirmed on the stream
         # Delivery debt: real answer text Slack refused for good — the append failed
@@ -743,6 +747,9 @@ class _AnswerStream:
         """Project one answer chunk: redact it, hold back what may be a trailer, and edit
         the message at most once per ``_EDIT_INTERVAL``."""
         self.take_carried()
+        event.text = "".join(
+            payload for kind, payload in self.steer_filter.feed(event.text) if kind == "text"
+        )
         if self.tool_gap and self.accumulated and self.accumulated[-1:] not in ("\n", " "):
             first = event.text[:1]
             if first and first not in ("\n", " "):

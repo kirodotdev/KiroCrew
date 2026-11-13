@@ -189,6 +189,19 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(container.querySelector('.tb-crew-active-chip')).not.toBeNull()
   })
 
+  it('titles a relayed crew with no machine without an empty "()" (#34698)', async () => {
+    // What a host from before #34698 relays for an SSM crew.
+    const store = createTestStore({
+      instances: {
+        warm: {}, activeId: null, mru: [], unread: {},
+        host: model({ activeId: null, tabs: [{ id: 'cd-1', name: 'ec2-ssm', sshHost: '', state: 'connected', unread: 0 }] }),
+      },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    expect(screen.getByRole('menuitemradio', { name: /ec2-ssm/ }).getAttribute('title')).toBe('ec2-ssm — connected')
+  })
+
   it('relays a pin toggle up to the parent instead of writing its own store', async () => {
     const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
     const store = createTestStore({

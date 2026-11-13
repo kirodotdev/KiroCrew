@@ -2,7 +2,7 @@
 // provider, the mint and its approval link, waiting for approval, relaying the
 // loopback return address, the authorization status feed and the approval tab.
 // ConnectionsPage.coverage.test.tsx covers the rest of the page, and its header
-// explains the seams. The api mock, the McpTab stub and the beforeEach below are
+// explains the seams. The api mock, the OAuthAppPanel stub and the beforeEach below are
 // copied from it word for word; the shared fixtures are in
 // ConnectionsPage.coverageTestUtils.tsx.
 import { describe, it, expect, vi, beforeEach } from 'vitest'
@@ -57,12 +57,12 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-// The MCP Servers sub-tab is a page in its own right; the only contract this
-// page has with it is the managed-provider deep link back into the gallery.
-vi.mock('../pages/overview/McpTab', () => ({
-  default: ({ onManagedProviderClick }: { onManagedProviderClick: (slug: string) => void }) => (
-    <button type="button" onClick={() => onManagedProviderClick('stripe')}>deep link to stripe</button>
-  ),
+// The OAuth app part a card opens is its own unit (OAuthAppPanel.test.tsx).
+vi.mock('../pages/connections/OAuthAppPanel', async () => ({
+  OAuthDraftsContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slug: string, dirty: boolean) => void>(() => {}),
+  OAuthClientWrittenContext: (await vi.importActual<typeof import('react')>('react')).createContext<(slugs: string[]) => void>(() => {}),
+  OAuthDraftValuesContext: (await vi.importActual<typeof import('react')>('react')).createContext({ get: () => undefined, set: () => {} }),
+  OAuthAppPanel: ({ settingSlug }: { settingSlug: string }) => <div data-testid={`oauth-app-${settingSlug}`} />,
 }))
 
 import {
@@ -214,6 +214,11 @@ describe('connecting a new provider', () => {
       reason: 'mint_server_absent',
       state: 'failed',
       expected: 'Action failed: The MCP server entry disappeared before authorization could start. Try connecting again.',
+    },
+    {
+      reason: 'mint_kiro_cli_missing',
+      state: 'failed',
+      expected: 'Action failed: Connect needs kiro-cli installed and signed in on this machine. Install kiro-cli, run kiro-cli login, then try connecting again.',
     },
     {
       reason: 'mint_url_rejected',
@@ -686,12 +691,19 @@ describe('relaying the loopback return address', () => {
     fireEvent.change(input, { target: { value: 'http://127.0.0.1:4321/?code=one-time' } })
     fireEvent.click(within(card('notion')).getByRole('button', { name: 'Complete' }))
 
+    // In flight the button stays FOCUSABLE (aria-disabled, not disabled) and the
+    // address field stays in the tab order (readOnly, not disabled), so a
+    // keyboard user who submitted it is not dropped to the page body (#32995);
+    // the press/Enter guards refuse a re-submit. Focus retention itself is
+    // asserted in ConnectionsPage.busyFocus.test.tsx.
     const sending = await screen.findByRole('button', { name: 'Sending…' })
-    expect(sending).toBeDisabled()
-    expect(relayInput()).toBeDisabled()
+    expect(sending).not.toBeDisabled()
+    expect(sending).toHaveAttribute('aria-disabled', 'true')
+    expect(relayInput()).not.toBeDisabled()
+    expect(relayInput()).toHaveAttribute('readonly')
 
     pending.resolve({ ok: true })
-    await waitFor(() => expect(relayInput()).toBeEnabled())
+    await waitFor(() => expect(relayInput()).not.toHaveAttribute('readonly'))
   })
 
   it('replaces the delivered line with the failure and leaves waiting when a reloaded attempt fails', async () => {

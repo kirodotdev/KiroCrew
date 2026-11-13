@@ -141,6 +141,7 @@ def _work_ledger(
     """A conductor ledger whose single item is closed (or left open)."""
     item_id = _work_item(conductor)
     if closed:
+        wl.apply_conductor_action(conductor, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(conductor, "close", item_id=item_id, state="accepted")
         path = wl.item_path(conductor, item_id)
         record = json.loads(path.read_text(encoding="utf-8"))
@@ -879,6 +880,31 @@ def test_the_unreadable_session_guard_reads_the_file_mtime_not_only_the_director
     assert {c.store for c in result.stale} == {directory.name}
 
 
+def test_an_old_session_store_with_no_state_file_is_listed_and_removable_with_the_flag():
+    """A store whose ``state.json`` is gone (a purge whose ``slot_key`` unlink
+    failed, or a writer that died before the first write) is aged by its
+    directory alone. A missing file has no mtime to read, so it cannot make the
+    store look brand new."""
+    directory = _session_ledger("chat-35-no-state", phase="done", age_days=90)
+    (directory / "state.json").unlink()
+    _backdate(directory / ".lock", 90)
+    _backdate(directory, 90)
+
+    report = sweep.scan(older_than_days=30)
+    listed = [c for c in report.candidates if c.store == directory.name]
+    assert listed, (
+        f"old store with no state file was not listed; kept={report.kept}, "
+        f"candidates={[(c.store, c.reason, c.age_days) for c in report.candidates]}"
+    )
+    assert listed[0].unreadable and listed[0].purgeable
+    assert "no state file" in listed[0].reason
+    assert listed[0].age_days >= 89
+
+    result = sweep.purge(report, include_unreadable=True)
+    assert {c.store for c in result.removed} == {directory.name}
+    assert not directory.exists()
+
+
 def test_a_lock_only_residue_is_listed_as_damage_and_removable_with_the_flag():
     """What a purge leaves when a lock file could not be unlinked -- on Windows a
     writer queued on the conductor lock holds its handle through the post-release
@@ -1257,6 +1283,7 @@ def test_the_newest_closed_at_is_chosen_as_an_instant_not_a_string():
         CONDUCTOR, "create", title="second", acceptance={"kind": "human_approval"}
     )["item"].item_id
     for item_id in (first, second):
+        wl.apply_conductor_action(CONDUCTOR, "verdict", item_id=item_id, verdict="pass")
         wl.apply_conductor_action(CONDUCTOR, "close", item_id=item_id, state="accepted")
     # Lexically "2026-01-10T09:00:00+02:00" > "2026-01-10T08:30:00-05:00", but
     # 07:00Z is EARLIER than 13:30Z.

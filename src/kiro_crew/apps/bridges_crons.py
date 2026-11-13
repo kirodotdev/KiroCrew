@@ -1133,7 +1133,63 @@ async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
             cron_owner_names.add(owner.removeprefix("app:"))
 
     disarmed: list[str] = []
-    for app_name in sorted(cron_owner_names - installed_names):
+
+    def _restore_denied(name: str) -> bool:
+        # Source resolution enumerates shipped app directories and reads manifests,
+        # so the whole admission decision runs off the event loop.
+        _, root = _registration_source(name)
+        return bool(_registration_denied(name, action="cron_boot_restore", app_root=root))
+
+    def _record_unreadable(name: str) -> bool:
+        from kiro_crew.apps.manager import app_enabled_state
+
+        return (
+            Path(name).name == name and not name.startswith(".") and app_enabled_state(name) is None
+        )
+
+    async def _pause_app_crons(name: str) -> int:
+        owner = f"app:{name}"
+        paused = 0
+        jobs = await cron_service.list_jobs_async(include_disabled=True)
+        cron_service.raise_if_store_unreadable()
+        for job in jobs:
+            if str(getattr(job, "created_by", "")) == owner and job.enabled:
+                if await cron_service.enable_job_async(job.id, False, expected_owner=owner):
+                    paused += 1
+        try:
+            sel().log_api_access(
+                caller="app_bridge",
+                operation="app_crons_execution_pause",
+                outcome="completed",
+                resources=f"app={name} paused={paused}",
+            )
+        except Exception:  # noqa: BLE001 - the pause must survive audit failure
+            logger.debug("app cron execution-pause audit failed", exc_info=True)
+        return paused
+
+    # An owner whose record is on disk but cannot be read is installed, just
+    # unlisted: never an orphan. Admission cannot be confirmed without the
+    # record, so a denied owner's jobs are paused rather than removed: nothing
+    # fires (the timer runs enabled jobs only, and a repaired record re-enables
+    # nothing) and the person's job settings survive. A readable record is an
+    # ordinary owner below.
+    candidates = sorted(cron_owner_names - installed_names)
+    unreadable = await asyncio.to_thread(lambda: {n for n in candidates if _record_unreadable(n)})
+    for app_name in candidates:
+        if app_name in unreadable:
+            if await asyncio.to_thread(_restore_denied, app_name):
+                paused = await _pause_app_crons(app_name)
+                logger.warning(
+                    "Boot: paused %d persisted cron(s) for app %s; its record could not " "be read",
+                    paused,
+                    app_name,
+                )
+                continue
+            logger.warning(
+                "App %s: keeping its persisted crons; its record exists but could not be " "listed",
+                app_name,
+            )
+            continue
         reason = "orphaned app cron owner has no installed app"
         logger.warning(
             "App %s: denying persisted cron restore (cron_boot_restore): %s",
@@ -1167,14 +1223,7 @@ async def reconcile_app_crons_for_execution(cron_service: Any) -> list[str]:
 
         should_disarm = not bool(app_info.get("enabled"))
         if not should_disarm:
-            _, app_root = _registration_source(app_name)
-            should_disarm = bool(
-                _registration_denied(
-                    app_name,
-                    action="cron_boot_restore",
-                    app_root=app_root,
-                )
-            )
+            should_disarm = await asyncio.to_thread(_restore_denied, app_name)
         if not should_disarm:
             continue
 

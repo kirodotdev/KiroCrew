@@ -590,6 +590,7 @@ class TestCommentWorkflow:
     def test_token_can_only_rerun(self, wf):
         assert wf["permissions"] == {
             "actions": "write",
+            "checks": "read",
             "contents": "read",
             "pull-requests": "read",
         }
@@ -643,6 +644,7 @@ class TestApprovalWorkflow:
         assert job["uses"] == "./.github/workflows/sensitive-change-review-comment.yml"
         assert wf["permissions"] == {
             "actions": "write",
+            "checks": "read",
             "contents": "read",
             "pull-requests": "read",
         }
@@ -867,3 +869,20 @@ def test_one_failed_pr_read_no_longer_fails_the_check(mod, gh_calls, monkeypatch
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     assert mod.main() == 0
     assert gh_calls["answers"] == []
+
+
+def test_a_write_sends_its_body_from_a_file_not_stdin(mod, monkeypatch) -> None:
+    # The job's rate-limit wrapper re-runs a rate-limited call; a body fed on
+    # stdin would be empty on that retry.
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["stdin"] = kwargs.get("input")
+        with open(cmd[-1], encoding="utf-8") as payload:
+            seen["body"] = json.load(payload)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+    mod._gh_write("POST", "repos/o/r/issues/1/comments", "hello")
+
+    assert seen == {"stdin": None, "body": {"body": "hello"}}

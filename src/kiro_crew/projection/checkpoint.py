@@ -75,7 +75,8 @@ is recorded here so the mapping is not rediscovered):
 
 A crew_log slot fold differs in four cells: its block also names its slot, units and
 marks; its watermark is the kernel ordinal, the newest unit's ordinal base plus the
-witness's ``seq``; its state rides JSON-encoded under ``state_json``; and its witness
+witness's ``seq``; its state rides JSON-encoded under ``state_json`` (zlib-compressed
+under ``state_zlib`` once large, ``crew_log.slot_state_codec``); and its witness
 is ``seq`` + ``prefix_cuts`` wherever the newest unit states a cut count, the digest
 form otherwise.
 

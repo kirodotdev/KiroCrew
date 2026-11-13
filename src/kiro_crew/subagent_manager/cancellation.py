@@ -703,6 +703,7 @@ class CancellationCoordinator(ManagerComponent):
         *,
         parent_session_key: str,
         verb: str = "",
+        reason: str = "",
         accepted_since: AbstractSet[str] | None = None,
         retry: bool = False,
     ) -> int:
@@ -862,7 +863,8 @@ class CancellationCoordinator(ManagerComponent):
                 if not info._reap_reason:
                     info._reap_reason = "parent_end"
                 if not info._stop_origin:
-                    info._stop_origin = f"parent conversation ended ({verb or 'unnamed'})"
+                    cause = f"{verb or 'unnamed'}: {reason}" if reason else verb or "unnamed"
+                    info._stop_origin = f"parent conversation ended ({cause})"
                 try:
                     if await self._manager.cancel(agent_id):
                         stopped += 1

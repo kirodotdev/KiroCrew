@@ -16,6 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.parse
+from collections.abc import Iterator
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -94,7 +95,8 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
     the test that left it. A hook rather than an autouse fixture because it must read
     the state after the test's ``monkeypatch`` has undone; autouse fixtures in one
     conftest are set up in alphabetical order and an earlier one already requests
-    ``monkeypatch``, so a fixture here would be torn down first.
+    ``monkeypatch``, so a fixture here would be torn down first. For the same reason
+    it empties the boot-checked caches (``forget_home_bound_caches``) here.
     """
     leaked: list[str] = []
     try:
@@ -105,6 +107,7 @@ def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None):
             if getattr(module, name, None) is not value:
                 setattr(module, name, value)
                 leaked.append(f"{module.__name__}.{name}")
+        forget_home_bound_caches()
     if leaked:
         pytest.fail(f"test left {', '.join(leaked)} rebound (restored)", pytrace=False)
     return result
@@ -265,6 +268,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     named_cron_caller,
     opened,
     plant_day_link,
+    rss_runtimes_read_under_ceiling,
     short_sock_dir,
 )
 
@@ -277,6 +281,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _drop_live_config_snapshot,
     _ensure_event_loop,
     _fake_computer_use_backend,
+    _forget_app_turn_approver,
     _forget_enterprise_profile_pin,
     _forget_legacy_auth_sweep_clean_roots,
     _forget_mount_source_sweep_pacing,
@@ -316,6 +321,7 @@ from conftest_resets import (  # noqa: E402,F401 -- bound for pytest and importe
     _session_memory_scope_sample_unshared,
     _shut_down_shared_pools_in_session,
     _small_default_host,
+    forget_home_bound_caches,
 )
 
 # The in-memory Slack client and the Slack state resets.
@@ -532,6 +538,11 @@ def _fresh_update_ownership(_floor_monkeypatch):
     _floor_monkeypatch.setattr(update_ownership, "_deferred_restart_until", None)
     _floor_monkeypatch.setattr(update_ownership, "_restart_refusal", None)
     _floor_monkeypatch.setattr(update_ownership, "_refusal_probe_clears", True)
+    from kiro_crew import update_restart_ready
+
+    # The "restart to use it" note is process-wide too: one test's staged update
+    # must not light the next test's status frame.
+    _floor_monkeypatch.setattr(update_restart_ready, "_current", None)
     yield
     open_steps = [entry.step.label for entry in registry]
     assert not open_steps, f"the test left update steps open: {open_steps}"
@@ -641,6 +652,27 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
+
+
+@pytest.fixture(autouse=True)
+def _tool_deferral_state_starts_empty(_floor_monkeypatch):
+    """Start every test with no tools-list refusal on record and no PATH probe answer.
+
+    Both are process slots that decide whether a kiro-cli spawn defers Kiro Crew's
+    own MCP servers: a refusal one test feeds the error classifier would keep
+    every later test's spawn on the full list, and the probe would run the
+    runner's own kiro-cli inside the sandbox on a thread. The boot hook that
+    warms the probe starts that thread from any test that boots a gateway, and it
+    would outlive the test, so it is off here too. The tests of each put their
+    own answer in with ``monkeypatch``.
+    """
+    from kiro_crew import kiro_cli, kiro_cli_path_probe
+
+    _floor_monkeypatch.setattr(kiro_cli, "_tools_list_refused_at", None)
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "_versions", {})
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "_in_flight", set())
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "_sandboxed_version", lambda _binary: None)
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "warm", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -826,6 +858,17 @@ def _isolate_aim_skills_dir(_floor_monkeypatch):
 #: eight times 37.5 s. A scan measured above 37.5 s carries its own larger timeout.
 #: ``test/test_tree_scan_budget.py`` pins this hook.
 TREE_SCAN_TIMEOUT_SECS = 300
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _drop_facade_scan_text_caches() -> Iterator[None]:
+    """Drop ``facade_mirror_scan``'s per-text caches after each module, so a corpus guard's
+    readings of the whole test tree are not held for the rest of the worker. Only clears
+    when a module has imported the scanner."""
+    yield
+    scan = sys.modules.get("facade_mirror_scan")
+    if scan is not None:
+        scan.clear_text_caches()
 
 
 def in_tree_scan_group(item: pytest.Item) -> bool:
@@ -1259,6 +1302,7 @@ _REAL_MCP_POST_MODULES = frozenset(
         "test_mcp_api_base_resolution",
         "test_mcp_core",
         "test_mcp_core_coverage",
+        "test_mcp_deploy_artifact_refusals",
         "test_mcp_internal_caller",
         "test_session_token_header_parity",
     }

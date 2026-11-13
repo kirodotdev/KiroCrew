@@ -52,9 +52,9 @@ def test_refused_share_is_reported_as_an_issue_with_the_approve_path(refused, ca
     assert "mcp sharing: ⚠ not shared, one copy per chat:" in out
     assert "alpha-mcp (not approved yet)" in out
     assert "beta-mcp (command changed since it was approved)" in out
-    assert "/capabilities?tab=mcp&view=mcp-servers" in out
+    assert "/mcp?view=sharing" in out
     flat = " ".join(out.split())
-    assert "Customize → Connections" in flat
+    assert "Open MCP Servers, the Sharing view" in flat
     assert "Developer Mode" not in flat
     # Unflattened on purpose: the command must stay on one line to be pasteable.
     assert "kirocrew restart" in out

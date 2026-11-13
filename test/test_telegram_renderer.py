@@ -36,6 +36,7 @@ from kiro_crew.telegram.renderer import (
     _seal_table_fallback,
     _strip_steering,
 )
+from kiro_crew.telegram.renderer_display import _utf16_len
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.testing.wait import async_wait_until, await_until
@@ -513,6 +514,27 @@ class TestRenderer:
             "```"
         ), f"synthetic closer retained in streaming tail: {tail[-40:]!r}"
 
+    def test_an_emoji_dense_reply_fits_telegrams_utf16_cap(self) -> None:
+        # Telegram caps a message in UTF-16 units, where each astral emoji costs two.
+        # Budgeting in code points sealed 3999 characters that are 4799 units.
+        cli = self._drive(
+            [
+                OutputEvent(kind=TEXT_CHUNK, text="🟢 ok\n" * 900),
+                OutputEvent(kind=DONE, stop_reason=""),
+            ]
+        )
+        landed = [t for t, _ in cli.sent] + [t for _, t, _ in cli.edits]
+        assert landed and max(_utf16_len(t) for t in landed) <= 4096
+
+    def test_a_degraded_emoji_table_row_is_cut_to_the_utf16_cap(self) -> None:
+        # One indivisible row reaches the splitter's floor, whose offender check
+        # must measure the same unit as the cap or the row ships whole.
+        r = TelegramRenderer(FakeClient(), 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        table = "| a | b |\n|---|---|\n| x | " + "🟢" * 2100 + " |\n| y | z |"
+        chunks = r._degraded_table_chunks(table)
+        cap = r._rendered_limit()
+        assert max(_utf16_len(_seal_table_fallback(c)) for c in chunks) <= cap
+
     def test_rotation_preserves_a_real_closing_fence(self) -> None:
         # Control for the above: when the source fence IS closed, the tail must
         # keep its genuine closer.
@@ -525,6 +547,21 @@ class TestRenderer:
         )
         assert closed_src.count("```") % 2 == 0
         r._buf = [closed_src]
+        asyncio.run(r._rotate_on_length())
+        assert "".join(r._buf).rstrip().endswith("```")
+
+    def test_rotation_keeps_a_real_closer_beside_an_inline_backtick_run(self) -> None:
+        # An inline ``` in prose makes the backtick count odd while every fence is
+        # closed, so a parity test would strip the genuine closer from the tail.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        src = (
+            "Wrap code in ``` fences.\n\n```python\n"
+            + "\n".join(f'    z{i} = a["k{i}"] & b<c>' for i in range(150))
+            + "\n```"
+        )
+        assert src.count("```") % 2 == 1, "fixture must carry an odd count"
+        r._buf = [src]
         asyncio.run(r._rotate_on_length())
         assert "".join(r._buf).rstrip().endswith("```")
 
@@ -750,6 +787,29 @@ class TestRenderer:
         assert len(markups) == 1
         labels = [b["text"] for row in markups[0]["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
+
+    def test_options_only_keyboard_is_sent_when_the_placeholder_edit_fails(self) -> None:
+        # The live bubble can be gone (deleted by the user) or uneditable (the edit
+        # budget). The keyboard must then arrive in a new message, as the text seal
+        # already does, rather than be lost with the failed edit.
+        cli = FakeClient()
+        cli.edit_ok = False  # type: ignore[attr-defined]
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TOOL_CALL, tool_call_id="t", title="fs_read"))
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text="[OPTIONS: A | B]"))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+
+        asyncio.run(_go())
+        frame_mid = next(mid for mid, _, m in cli.edits if m)
+        sent_markups = [m for _, m in cli.sent if m]
+        assert len(sent_markups) == 1
+        labels = [b["text"] for row in sent_markups[0]["inline_keyboard"] for b in row]
+        assert labels == ["A", "B"]
+        # The stale tool frame is replaced, not left above the new message.
+        assert cli.deleted == [frame_mid]
 
     def test_complete_options_straddling_length_cut_stays_intact(self) -> None:
         # Codex finding: a COMPLETE trailing [OPTIONS: A | B] whose text
@@ -1269,10 +1329,8 @@ class TestApprovalDecider:
 
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
-            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
-            await _until_decider_waits(task, "telegram:1:0:rq8")
             assert TelegramApprovalDecider.resolve_global("telegram:1:0:rq8", True) is False
-            TelegramApprovalDecider._REGISTRY["telegram:1:0:rq8"].set_result(False)
+            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
             return await await_until(task, what="the approval decider's verdict")
 
         assert asyncio.run(_go()) is False

@@ -354,8 +354,8 @@ byte, so the cache never holds a mutation the log never saw. The store's own
 validation still runs first on every accepted write; the entry is then appended
 with the COMMITTED values (an omitted `artifacts` clears the map, and the entry says
 so) and acknowledged: the route answers `200` only once the writer has appended the
-entry, and otherwise `503 crew_log_unrecorded`, carrying the committed `item_id` so
-a `create` is not repeated on retry. Before answering, the route undoes the unrecorded write from the snapshot it took
+entry, and otherwise `503 crew_log_unrecorded`, carrying the write's `item_id` unless
+the undo completed and so removed the item a `create` made, which makes that `create` safe to repeat. Before answering, the route undoes the unrecorded write from the snapshot it took
 of every file the write could touch (the conductor record, the item's record and
 event log, the worker's binding), and removes an item the write created -- an exact
 undo that needs no fold, so a board from before the projection is undone the same
@@ -716,6 +716,8 @@ are the conductor's own writes, and a gate that wakes on its owner's writes neve
 ### Verification stays the conductor's job
 
 A worker's `done` is a claim. The conductor's rule is unchanged from the skill: run `accept_eval.py` over the `accept_batch` and act on its verdict. `work_report` cannot write `verdict`, so a worker cannot mark itself accepted; the strongest thing it can do is assert `status: done`, which is the trigger for verification rather than a substitute for it.
+
+The `accept_eval` tool applies that rule without a copied document: called with no arguments it takes the `accept_batch` entries of the caller's own open items whose status is `done` (`work_verify.select_done`) and evaluates those, returning beside each answer what a read of that item shows (`work_verify.row_facts`: the worker's `summary` and claimed `pr` under `reported`, `fails`, the worker's session key, and `pending_overdue` with the conductor's `decision` and the stored `acceptance` when that flag is set; a bar that is not concrete comes back with its stored `acceptance`). That reply is fitted to the read budget: over it, the stored bars and then the other row facts are left out and the reply says so, and if it is still over, the last results are named under `omitted` for a call of their own. It still writes nothing. The conductor settles a pass with one `work_ledger_record` call, a `close` that carries the `verdict`; the tool sends the `verdict` write and then the `close` write, so the item keeps both events.
 
 When the conductor needs detail the summary does not carry, it uses `session_send` to ask and `session_read_message` to read the answer, exactly as today, and that path keeps its human approval prompt. The ledger removes the polling, not the conversation.
 

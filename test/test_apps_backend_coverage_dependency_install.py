@@ -1063,13 +1063,19 @@ class TestDependencyInstall:
         assert "Refusing requirements.txt" in err, err
         assert [e.get("outcome") for e in events] == ["deps_provision_failed"], events
 
+    @pytest.mark.parametrize("screen_misses", [False, True], ids=["screened", "after-screen"])
     def test_a_planted_stamp_symlink_reads_as_unprovisioned(
-        self, spawn_root: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+        self,
+        spawn_root: Any,
+        tmp_path: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        screen_misses: bool,
     ) -> None:
         """The stamp lives in the app-writable tree, so its read is
         no-follow-bound like the requirements read: a planted symlink at the
         stamp name must never make the gateway read an arbitrary path - it
-        reads as "unprovisioned" and pip simply runs (safe direction)."""
+        reads as "unprovisioned" and pip simply runs (safe direction). A link
+        planted after the pre-open screen ran is refused by the open itself."""
         import os as _os
 
         if not hasattr(_os, "symlink"):
@@ -1087,6 +1093,13 @@ class TestDependencyInstall:
             _os.symlink(target, deps_dir / bmod._DEPS_STAMP_NAME)
         except OSError:
             pytest.skip("symlink not permitted")
+        if screen_misses:
+            real = bmod.platform_compat.is_link_or_junction
+            monkeypatch.setattr(
+                bmod.platform_compat,
+                "is_link_or_junction",
+                lambda p: False if Path(p).name == bmod._DEPS_STAMP_NAME else real(p),
+            )
         runs = _record_runs(monkeypatch)
         _capture_popen(monkeypatch)
         with pytest.raises(_StopSpawn):

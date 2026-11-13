@@ -129,8 +129,11 @@ redacts again and masks `crew_key`.
 `work-kanban` declares none, because every number it shows has a fold. `goal-board`
 declares one, `asks`: the answers the conductor offers for an item waiting on the reader,
 keyed by item id. Its numbers are all folded; the options are a judgment no fold holds.
-Each needs-you row gets a Reply button whether or not `asks` has an entry, and every
-button posts `kirocrew-dashboard:act`, which only fills the reader's chat box.
+Each needs-you row gets a Reply button whether or not `asks` has an entry. Reply posts
+`kirocrew-dashboard:act`, which only fills the reader's chat box with a starter they
+finish. An option button is a finished answer and posts `kirocrew-dashboard:send`: the
+host sends it only when the reader turned "Send replies in one click" on, and otherwise
+fills the chat box exactly as `act` does.
 
 `goal-board` reads `workstreams` for one thing the `work` fold cannot hold: a worker that
 is itself a conductor records its own workers on its own ledger, so the `work` fold of
@@ -270,9 +273,10 @@ same epic-row progress bar -- so the family reads as one product. Every colour o
 theme variable: it draws no chart and no sunburst, so a literal here would paint a colour
 the product never serves.
 
-The two buttons on a review row put a line in the person's chat box and never send it:
-the page posts `kirocrew-dashboard:act`, the host fills the composer, and the person
-presses send.
+The two buttons on a review row are finished answers: the page posts
+`kirocrew-dashboard:send`, and the host sends the line only when the person turned "Send
+replies in one click" on. Otherwise, or on any refusal, the host fills the composer and
+the person presses send.
 
 `scripts/render_dashboard_builtin.py --no-head` drops the harness's own caption band
 (template, fold seq, theme, width) for a shot whose subject is how the page itself looks.

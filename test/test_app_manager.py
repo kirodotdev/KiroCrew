@@ -36,6 +36,7 @@ from kiro_crew.apps.manager import (
     uninstall_app,
     update_app,
 )
+from kiro_crew.dashboard.token_auth import read_app_secret
 
 # App-name admission contract
 
@@ -266,9 +267,9 @@ class TestInstall:
         assert (installed / "ui" / "leak.js").read_text(encoding="utf-8") == (
             "export const leak = 1;\n"
         )  # the link's target was never written to
-        secret = installed / ".app_secret"
-        assert not os.path.islink(secret) and secret.is_file()
-        assert secret.read_text(encoding="utf-8").strip()  # the gateway's own value
+        # The app's folder keeps no secret at all; the gateway's is in its own record.
+        assert not os.path.lexists(installed / ".app_secret")
+        assert read_app_secret("test-app")
         assert (src / "ui" / "leak.js").read_text(encoding="utf-8") == "export const leak = 1;\n"
 
     def test_a_shipped_app_secret_file_is_replaced_by_the_gateway_s_own(self, tmp_path, app_home):
@@ -278,9 +279,8 @@ class TestInstall:
         result = install_app(src)
 
         assert result.ok, result.error
-        secret = app_home / "apps" / "test-app" / ".app_secret"
-        assert secret.is_file()
-        assert secret.read_text(encoding="utf-8") != "the-author-s-choice\n"
+        assert not os.path.lexists(app_home / "apps" / "test-app" / ".app_secret")
+        assert read_app_secret("test-app") not in ("", "the-author-s-choice")
 
     @requires_symlinks
     def test_a_shipped_data_link_is_unlinked_before_preserved_data_is_put_back(

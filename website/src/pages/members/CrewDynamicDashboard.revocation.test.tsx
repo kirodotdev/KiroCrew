@@ -293,7 +293,7 @@ describe('a read that answers empty', () => {
  * two others open, both ending with `allow-scripts` on a document the record does not
  * have:
  *
- *  - the record's layout lock pins a `template_id` the catalog no longer holds, so the
+ *  - the record pins a `template_id` the catalog no longer holds, so the
  *    route resolves no package slug and composes nothing. The body carries neither
  *    `rendered_html` nor a `scripts` decision, and a guard that returned early on the
  *    missing page kept the held package frame -- its grant, its candidate and its

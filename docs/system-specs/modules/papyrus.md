@@ -539,7 +539,11 @@ half-written file can never read as a usable compiler.
 
 - **Clone** — the URL must match `GIT_URL_RE` (http/https/git/ssh/scp-like) and is
   passed **after `--`**, so a value like `--upload-pack=…` cannot be smuggled into
-  argv. A failed clone removes the partial directory.
+  argv. A failed clone removes the partial directory. The finished clone is moved
+  into place with `atomic_write.rename_with_retry`, which waits out a brief Windows
+  hold on a file in the fresh checkout; an occupied destination answers "a project
+  with that name already exists", and any other move failure answers "could not
+  move the clone into place" with the OS error in `output`.
 - **Pull** — rebase-pull with autostash, because a dirty tree (typically compiler
   artifacts not in `.gitignore`) would otherwise refuse the rebase outright. On a
   real conflict the rebase is aborted and the stash restored, so the tree returns

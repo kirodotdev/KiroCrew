@@ -532,6 +532,46 @@ def test_busy_session_folds_into_current_reply_when_steerable():
     assert any("folded" in t.lower() for _, t in transport.sent)
 
 
+@pytest.mark.parametrize("voice", [False, True], ids=["photo", "voice-note"])
+def test_a_busy_message_whose_text_names_its_media_is_not_steered(tmp_path, voice):
+    """The transport deletes the media once dispatch returns, before the running
+    turn reads a steer, so a steered path names a deleted file. A voice note's
+    text is its transcript and names no file, so it still folds in."""
+    from kiro_crew.messaging.attachments import IngestResult, append_attachment_context
+    from kiro_crew.whatsapp.transport_dispatch import BUSY_NOTE
+
+    class Steering(FakeProvider):
+        supports_steer = True
+
+        def __init__(self):
+            super().__init__()
+            self.steered: list[str] = []
+
+        def has_active_turn(self):
+            return True
+
+        async def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    # Built the way whatsapp/transport.py builds it from the ingest result.
+    if voice:
+        transcript = "[Voice memo transcription]\nuse the other one\n[End of transcription]"
+        result = IngestResult(audio_paths=[str(tmp_path / "note.ogg")], text_blocks=[transcript])
+    else:
+        result = IngestResult(image_paths=[str(tmp_path / "photo.jpg")])
+    text = append_attachment_context("" if voice else "see this", result)
+    inbound = _msg(text)
+    inbound.attachments = list(result.temp_paths)
+    provider = Steering()
+    d, _client, _sessions, transport = _make(provider=provider, busy=True)
+    asyncio.run(d.handle_message(inbound))
+    assert provider.steered == ([text] if voice else [])
+    assert [t for _, t in transport.sent] == (
+        ["Folded into the current reply."] if voice else [BUSY_NOTE]
+    )
+
+
 def test_busy_flips_free_reprocesses_the_message():
     """If the session frees between is_busy checks, the message is re-handled."""
     provider = FakeProvider("late reply")
@@ -652,6 +692,37 @@ def test_unprompted_group_silence_delivers_nothing_and_skips_cooldown():
 
     assert transport.sent == []  # sentinel suppressed
     assert transport.group_gate.recorded == []  # no cooldown started
+
+
+@pytest.mark.parametrize("bucket", ["own", "other"])
+def test_an_unprompted_group_message_during_a_turn_posts_no_busy_receipt(bucket):
+    # Nobody addressed the bot, so a "still working" note answers a question no
+    # one asked; an unprompted turn must stay invisible until it has something.
+    provider = FakeProvider()
+    d, _client, sessions, transport = _make(provider=provider)
+    transport._is_operator = False
+    busy_key = d._session_key(_GROUP, is_operator=bucket != "own")
+    sessions.is_busy = lambda key: key == busy_key  # type: ignore[method-assign]
+    inbound = _msg("anyone know python?", conv=_GROUP, user="447711111111")
+    transport.pending_verdicts[id(inbound)] = GroupVerdict(
+        respond=True, unprompted=True, rules="Help with python questions.", may_steer=False
+    )
+    asyncio.run(d.handle_message(inbound))
+    assert provider.prompts == []
+    assert transport.sent == []
+
+
+def test_the_operators_unprompted_follow_up_during_a_turn_still_reaches_the_busy_path():
+    # The operator may steer: an unaddressed follow-up while their own turn runs
+    # is folded in (or receipted), never silently dropped.
+    provider = FakeProvider()
+    d, _client, _sessions, transport = _make(provider=provider, busy=True)
+    inbound = _msg("also cover Y", conv=_GROUP, user="447700900000")
+    transport.pending_verdicts[id(inbound)] = GroupVerdict(
+        respond=True, unprompted=True, rules="Help with python questions.", may_steer=True
+    )
+    asyncio.run(d.handle_message(inbound))
+    assert len(transport.sent) == 1
 
 
 def test_group_command_from_non_operator_is_ignored():

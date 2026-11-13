@@ -65,6 +65,8 @@ export interface NormalizedUsage {
       toolCalls: number
       /** Credits billed that local day; absent when the provider does not report per-day spend. */
       credits?: number
+      /** Dollars a dollar-billed harness reported that local day; absent when there were none. */
+      costUsd?: number
     }[]
   }
   billing: {
@@ -93,6 +95,8 @@ export interface NormalizedUsage {
   tokenProviders?: string[]
   tokenModels?: string[]
   tokenProviderModels?: Record<string, string[]>
+  /** The gateway's local calendar day (`YYYY-MM-DD`), the key `tokenDailyHistory` files days under. */
+  localDay?: string
 }
 
 export interface NormalizedProviderHook {

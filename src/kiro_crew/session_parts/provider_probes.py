@@ -14,11 +14,9 @@ if TYPE_CHECKING:
     from kiro_crew.session import LLMProvider
 
 
-# There is no standalone ClaudeCodeProvider: Claude Code is driven through the
-# ACP adapter. The name is kept
-# (always None) so the legacy ``ClaudeCodeProvider is not None and
-# isinstance(...)`` guards below short-circuit cleanly. The live path is
-# ``_is_claude_backend``, on a harness the public build ships as selectable.
+# Claude Code is driven through the ACP adapter (``_is_claude_backend``), so this
+# name is always None and the ``ClaudeCodeProvider is not None and isinstance(...)``
+# guards below short-circuit.
 ClaudeCodeProvider = None  # type: ignore[assignment,misc]
 
 
@@ -91,13 +89,9 @@ def _provider_uses_kiro_identity_store(provider: Any) -> bool:
 def _provider_has_active_turn(provider: LLMProvider) -> bool:
     """True only if ``provider`` reports a real in-flight turn.
 
-    Real providers implement ``has_active_turn()`` as a synchronous method that
-    returns a plain ``bool``. This helper guards the shutdown-drain path against
-    (a) providers that don't implement it (warm-pool doubles, minimal stubs) and
-    (b) test doubles whose auto-generated attribute returns a coroutine
-    (``AsyncMock``) — calling that would otherwise leak an un-awaited coroutine
-    warning. Anything that is not exactly ``True`` is treated as "no active
-    turn", so the drain is a strict opt-in that can never mis-fire on a double.
+    Guards the shutdown drain against providers without the method (warm-pool
+    doubles, stubs) and ``AsyncMock`` doubles whose coroutine would leak an
+    un-awaited warning. Anything but exactly ``True`` means "no active turn".
     """
     fn = getattr(provider, "has_active_turn", None)
     if not callable(fn):
@@ -107,8 +101,7 @@ def _provider_has_active_turn(provider: LLMProvider) -> bool:
     except Exception:
         return False
     if inspect.isawaitable(res):
-        # A double returned an awaitable instead of a bool — close it to avoid
-        # a RuntimeWarning and treat as "no active turn".
+        # Close a double's awaitable to avoid a RuntimeWarning.
         close = getattr(res, "close", None)
         if callable(close):
             try:
@@ -158,12 +151,9 @@ def _provider_background_launch(provider: LLMProvider) -> tuple[float, str] | No
 def _context_pct_is_unknown(provider: LLMProvider) -> bool:
     """True only if ``provider`` reports its 0% context reading as unknown.
 
-    Mirrors :func:`_provider_has_active_turn`'s defensive shape: the probe is
-    optional (stubs and warm-pool doubles need not implement it), and an
-    ``AsyncMock``-style double that returns a coroutine is closed rather than
-    left to raise a RuntimeWarning. Anything that is not exactly ``True`` reads
-    as "the percentage is trustworthy", keeping the caller's recycle decision
-    fail-quiet on a double.
+    Same defensive shape as :func:`_provider_has_active_turn`. Anything but
+    exactly ``True`` reads as "the percentage is trustworthy", so the caller's
+    recycle decision stays fail-quiet on a double.
     """
     fn = getattr(provider, "context_usage_unknown", None)
     if not callable(fn):
@@ -188,18 +178,13 @@ def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
     done boundary — INDEPENDENT of cancel state (unlike
     :func:`_provider_has_active_turn`).
 
-    The shutdown drain filters on THIS, not ``has_active_turn``. A turn that has
-    already been ``session/cancel``'d but whose native turn-done ack has not yet
-    arrived reports ``has_active_turn() is False`` yet still holds kiro-cli's
-    native-session lock open; killing the process now reproduces the
-    empty-response-after-restart bug. Reporting it as "unfinished" keeps
-    it in the drain set so the ack is waited on before teardown.
+    The shutdown drain filters on THIS, not ``has_active_turn``: a cancelled turn
+    whose turn-done ack has not arrived reports ``has_active_turn() is False`` but
+    still holds kiro-cli's native-session lock, and killing the process then
+    leaves an empty response after restart. So the ack is waited on first.
 
-    Same defensive guard as :func:`_provider_has_active_turn`: providers that
-    don't implement the method (warm-pool doubles, minimal stubs) or doubles
-    whose auto-generated attribute returns a coroutine (``AsyncMock``) are
-    treated as "no unfinished turn", so the drain can never mis-fire on a
-    double.
+    Same defensive guard as :func:`_provider_has_active_turn`: anything but
+    exactly ``True`` means "no unfinished turn".
     """
     fn = getattr(provider, "has_unfinished_turn", None)
     if not callable(fn):
@@ -224,8 +209,8 @@ def _provider_turn_is_known_terminal(provider: LLMProvider) -> bool:
 
     Missing, raising, or awaitable stand-ins are unknown rather than terminal.
     The deadline path may treat ``no_turn`` as settled only with this independent
-    done-boundary proof; collapsing unknown to False would recreate the original
-    false-success race on minimal providers and test doubles.
+    done-boundary proof; reading unknown as terminal would report false success
+    on minimal providers and test doubles.
     """
     fn = getattr(provider, "has_unfinished_turn", None)
     if not callable(fn):

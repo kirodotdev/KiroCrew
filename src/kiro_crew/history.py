@@ -150,6 +150,7 @@ from kiro_crew.history_locks import (  # noqa: F401 - facade re-exports
     _FLOCK_POLL_INTERVAL_S,
     HistoryLockTimeout,
 )
+from kiro_crew.history_metadata_line import METADATA_READ_ATTEMPTS, METADATA_READ_RETRY_SECS
 from kiro_crew.history_offload import (  # noqa: F401 - facade re-exports
     _ON_LOOP_FALSY,
     _ON_LOOP_TRUTHY,
@@ -306,13 +307,10 @@ _SESSION_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 _SESSION_KEEP_LINES = 200
 
 
-# Metadata reads retry briefly before reporting "no metadata": on Windows a
-# just-written session file can be transiently unopenable while an indexer or AV
-# scanner holds it (ERROR_SHARING_VIOLATION -> PermissionError). Those holds are
-# measured in milliseconds, and the caller that matters here (the open-tab
-# restore) treats an empty result as "session never existed" and drops the tab.
-_METADATA_READ_ATTEMPTS = 3
-_METADATA_READ_RETRY_SECS = 0.02
+# How often, and how far apart, a metadata read retries before reporting "no
+# metadata". Defined with the line's reader; these names stay the patch seam.
+_METADATA_READ_ATTEMPTS = METADATA_READ_ATTEMPTS
+_METADATA_READ_RETRY_SECS = METADATA_READ_RETRY_SECS
 
 
 class ConversationLog:
@@ -713,6 +711,16 @@ class ConversationLog:
         """
         return self._listing_index.list_sessions()
 
+    def warm_listing_index(self, should_stop: Callable[[], bool] | None = None) -> bool:
+        """Build the :meth:`list_sessions_indexed` index now; True when it is built.
+
+        Blocking; the gateway runs it on a worker thread at boot. False without
+        waiting when a listing holds the index, and False when *should_stop* answered
+        True. A build that stops or raises leaves the index for the next listing to
+        build (``SessionListingIndex.warm``).
+        """
+        return self._listing_index.warm(should_stop)
+
     def list_sessions_status(self) -> tuple[list[dict], bool]:
         return self._catalog_projection.list_sessions_status()
 
@@ -723,9 +731,14 @@ class ConversationLog:
         return self._catalog_projection.agent_usage()
 
     def search_sessions(
-        self, query: str, limit: int = 50, *, keys: Container[str] | None = None
+        self,
+        query: str,
+        limit: int = 50,
+        *,
+        keys: Container[str] | None = None,
+        snippets: bool = True,
     ) -> list[dict]:
-        return self._catalog_projection.search_sessions(query, limit, keys=keys)
+        return self._catalog_projection.search_sessions(query, limit, keys=keys, snippets=snippets)
 
     def warm_search(self) -> None:
         self._catalog_projection.warm_search()

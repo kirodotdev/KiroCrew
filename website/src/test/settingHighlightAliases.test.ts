@@ -73,6 +73,7 @@ describe('resolveLegacyHighlightId', () => {
       'chat.pin-the-latest-prompt',
       'developer.remote-instance-sessions', 'developer.remote-crew-sessions',
       'about.auto-update-on-restart', 'about.update-notifications',
+      'notifications.show-a-banner-for-new-notifications',
     ]) {
       const target = resolveLegacyHighlightId(legacy)
       expect(ids.has(target), `${legacy} -> ${target} missing from registry`).toBe(true)

@@ -471,6 +471,13 @@ def display_safe(text: str) -> str:
     return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
+#: The host-written label that opens the echo of a message a person typed in
+#: the dashboard, on Slack (bold) and every other linked channel (plain). It
+#: says where the message came from, so a remote reader does not take it for
+#: the agent's own output next to the "Thinking…" placeholder.
+MIRROR_ECHO_LABEL = "Sent from Kiro Crew:"
+
+
 def credential_redaction_notice(count: int) -> str:
     """The notice a channel sends after delivering text redaction rewrote.
 

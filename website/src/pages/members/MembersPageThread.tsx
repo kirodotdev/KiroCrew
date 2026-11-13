@@ -26,7 +26,7 @@ import { Btn } from '../../components/ui'
 import { type CreatedCrewmate, type CrewmateDraft } from './NewCrewmateDialog'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow } from '../../api/client'
-import { ApiError } from '../../api/apiError'
+import { ApiError, isPermissionRefusal } from '../../api/apiError'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { hasOtherMates, isAssistantMember } from '../../lib/assistantMember'
 import { useFirstGreeting } from './useFirstGreeting'
@@ -287,6 +287,7 @@ export function useMembersPageThread({
       setThreadOutcome(m.name, (prev) => ({
         slot_key: prev?.slot_key ?? '',
         failed: true,
+        ...(isPermissionRefusal(error) ? { ownerOnly: true } : {}),
         errorReport: findReport(error instanceof Error ? error.message : undefined),
       }))
     },
@@ -623,7 +624,7 @@ export function MembersPageThreadColumn({
   const {
     openMemberSideChat, openCrewWorkLog, sessionRoster, retryThreadsFlag, threadsFlagFailed,
     threadsFlagRetrying, threadsOn, threadsQuery, threadHooks, actionError, setActionError, actionInfo,
-    openFileGuarded, openSessionGuarded,
+    openFileGuarded, openFolderGuarded, openSessionGuarded,
   } = sidePanel
   const { headerInset, betweenHeaderH, betweenHeaderRef } = threadView
   const { patrol } = rosterSignals
@@ -738,7 +739,12 @@ export function MembersPageThreadColumn({
                 {/* Same shape as the post-create roster notice: the plain retry
                     under the sentence, the hand-off link beside it as the second
                     option, never the only one. */}
-                <Btn onClick={() => void rosterQuery.refetch()} data-testid="member-column-load-retry">
+                <Btn
+                  onClick={() => { if (!rosterQuery.isFetching) void rosterQuery.refetch() }}
+                  aria-disabled={rosterQuery.isFetching || undefined}
+                  className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed"
+                  data-testid="member-column-load-retry"
+                >
                   {t('pages.membersPage.roster_load_retry')}
                 </Btn>
               </div>
@@ -1007,7 +1013,20 @@ export function MembersPageThreadColumn({
                     </Btn>
                   </div>
                 )}
-                {activeThreadFailed && (
+                {activeThreadFailed && threadOutcome?.ownerOnly && (
+                  /* An owner-only refusal (a relay teammate on a team Crew): the
+                     chat is not theirs to open, so the line says who may, with no
+                     retry or hand-off, like the Dashboard tab's owner notice. */
+                  <div className="px-4 py-2">
+                    <ErrorNotice
+                      message={t('pages.membersPage.thread_owner_only')}
+                      variant="inline"
+                      askAgent={false}
+                      testId="member-thread-owner-only"
+                    />
+                  </div>
+                )}
+                {activeThreadFailed && !threadOutcome?.ownerOnly && (
                   /* No hand-off while a cached thread is mounted under this line:
                      its DM composer still holds whatever the user typed (ChatPane
                      keeps that draft in local state), and the hand-off navigates
@@ -1109,6 +1128,7 @@ export function MembersPageThreadColumn({
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}
                         onFileOpen={openFileGuarded}
+                        onFolderOpen={openFolderGuarded}
                         onArtifactOpen={openArtifactInThread}
                         onSessionOpen={openSessionGuarded}
                         sessions={connected && slotsLoaded ? sessionRoster : undefined}

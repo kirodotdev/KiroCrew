@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 # fail mid-cycle. `import ... as` binds via sys.modules and defers attribute access to
 # call time, which also keeps tests' patches of ``handlers.<name>`` effective.
 import kiro_crew.dashboard.handlers as _h
+from kiro_crew.context import RECALL_ROLES
 from kiro_crew.dashboard.handlers._shared import (
     SESSION_SEARCH_TEXT_FIELDS,
     guard_owner_surface_routes,
@@ -567,6 +568,25 @@ def _wants_incognito_excluded(request: web.Request) -> bool:
     return request.query.get("exclude_incognito") in ("1", "true", "yes")
 
 
+#: The most rows a guarded transcript read answers when the caller names a count:
+#: the ceiling ``get_chat_session`` and the hub's ``/api/crew-sessions/read`` share.
+_GUARDED_TAIL_MAX_MESSAGES = 200
+
+
+def _guarded_tail_wanted(request: web.Request) -> int:
+    """How many of the newest recall rows a guarded read asked for; 0 for all of them.
+
+    ``max_messages`` is what the hub's crew read sends, since it keeps only that
+    many. A value that is absent or not a positive integer reads as "the whole
+    transcript", which is what a hub from before the parameter gets.
+    """
+    try:
+        wanted = int(request.query.get("max_messages", "0"))
+    except (TypeError, ValueError):
+        return 0
+    return min(wanted, _GUARDED_TAIL_MAX_MESSAGES) if wanted > 0 else 0
+
+
 def _search_excluding_incognito(log: ConversationLog, q: str, limit: int) -> SearchRows:
     """Ranked search rows with every restricted session excluded, judged under lock.
 
@@ -627,7 +647,13 @@ async def api_session_detail(request: web.Request) -> web.Response:
     get_chat_session also refuses (EB-7b). The dashboard's own click-through does
     NOT set it, so its behavior is unchanged.
 
-    That arm reads through the DERIVATION seam (``derive_messages``), like the
+    With ``max_messages=N`` that arm answers only the newest N rows a recall reads
+    (``RECALL_ROLES``, role and content), which is all the hub's crew read keeps.
+    It is then the read the local get_chat_session makes (``derive_recent``), so a
+    long transcript costs its last rows and not its whole length.
+
+    That arm reads through the DERIVATION seam (``derive_messages``, or
+    ``derive_recent`` for a counted read), like the
     local get_chat_session: the on-disk line is validated with the rows under one
     lock hold, so a writer tightening the line cannot land between the check and
     the read, and a restricted line answers ``[]``. A busy transcript lock, and a
@@ -662,8 +688,15 @@ async def api_session_detail(request: web.Request) -> web.Response:
         # all blocking file IO, and every other conversation_log read in this
         # module is already wrapped. Doing it inline stalled every other request
         # for the duration — on the one path a remote agent can reach.
+        tail = _guarded_tail_wanted(request)
         try:
-            guarded = await asyncio.to_thread(log.derive_messages, key)
+            if tail:
+                # The read the local get_chat_session makes: the newest recall rows
+                # from the end of the file, so the cost follows the count asked
+                # for and not the transcript's size.
+                guarded = await asyncio.to_thread(log.derive_recent, key, tail, RECALL_ROLES)
+            else:
+                guarded = await asyncio.to_thread(log.derive_messages, key)
         except TranscriptBusy:
             # Before TranscriptWithheld: Busy is its subclass, and a busy lock is
             # "cannot vouch right now", not a refusal.

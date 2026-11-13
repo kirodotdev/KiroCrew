@@ -175,6 +175,11 @@ async def _effective_prompt_timeout_async(timeout: float | None) -> float:
 
 _READ_TIMEOUT = 20.0
 _OPENCODE_PERMISSION_REFINEMENT_TIMEOUT = 2.0
+# How long a command-less MiMo Code shell request waits for the running update that
+# carries its command. Every 0.1.15 capture has the two frames adjacent
+# (``test/fixtures/acp_frames/mimocode``), so this only bounds a stalled harness; a
+# request still unpaired at the bound reaches the dispatcher without a command.
+_MIMOCODE_PERMISSION_REFINEMENT_TIMEOUT = 2.0
 # Steers sent as a second ``session/prompt`` (``ACP_BACKENDS_STEER_CONCURRENT_PROMPT``).
 # A steer the running loop read is answered at the same idle as the turn, so the
 # turn's clean end waits only this long for its answer.
@@ -226,6 +231,16 @@ _TOOL_STALL_TIMEOUT = 600.0
 # writing stderr must still be reaped.
 _COMPACTION_FAILED_TURN_BUDGET = 60.0
 _CANCEL_GRACE_SECS = 10.0  # grace window for cooperative cancel ack
+# How long a stop waits, after it closes the child's stdin, for the child to
+# exit on its own before the forced kill. EOF on stdin is how an ACP client
+# ends a session, and an agent tidies up on it: kiro-cli removes its session
+# lock (``~/.kiro/sessions/cli/<id>.lock``) or lease, which a SIGKILL leaves
+# behind for good. Measured on kiro-cli 3.2.1: the lock is gone 0.21-0.37 s
+# after EOF and the lease 0.57 s after, while the process itself needs 0.3 s,
+# or 3.2-3.4 s when no turn has finished yet. So this covers the tidy-up
+# several times over and is not sized to outlast the slow exit: a child still
+# running at the deadline is killed.
+_EOF_EXIT_GRACE_SECS = 2.0
 # Absolute safety cap for _wait_for_response's activity-based deadline. The
 # per-call deadline resets on every received frame (so a long session/load
 # replay that streams the whole transcript as notifications is not killed),

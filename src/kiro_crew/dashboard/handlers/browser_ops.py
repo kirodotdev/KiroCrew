@@ -385,7 +385,7 @@ class _StartStopped(RuntimeError):
 def _end_allow_wait(hub: LiveHub, key: str) -> None:
     """A start parked on Chrome's Allow sheet put the card in waiting_allow: end it."""
     sess = hub.get(key)
-    if sess is not None and sess.state == STATE_WAITING_ALLOW:
+    if sess is not None and STATE_WAITING_ALLOW in (sess.state, sess.queued_state):
         hub.set_state(key, STATE_ERROR)
 
 
@@ -720,8 +720,23 @@ async def api_browser_handback(request: web.Request) -> web.Response:
         # The parked op's own hand-back choices, shown on the card's hand-back bar.
         hub.set_handback_options(key, body.get("options"))
     released = await hub.wait_for_release(key, HANDBACK_WAIT_S)
+    if hub.hold_over(key):
+        # The hub's hold ended first: any hand-back since went to chat, so the op
+        # stops here instead of running behind what the person said there. A note
+        # given to this op before it was taken back again still reaches it here.
+        # The end is left in place, so every call parked in this session hears it.
+        said = hub.take_handback(key)
+        return web.json_response(
+            {
+                "released": False,
+                "hold_over": True,
+                "hold_timeout_s": HOLD_TIMEOUT_S,
+                "handed_back": said,
+            }
+        )
     answer: dict[str, Any] = {"released": released, "hold_timeout_s": HOLD_TIMEOUT_S}
     if released:
+        hub.handback_seen(key)
         # What the person said as they handed back: their own words, never page content.
         answer["handed_back"] = hub.take_handback(key)
     return web.json_response(answer)

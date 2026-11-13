@@ -76,6 +76,16 @@ _UPLOAD_CHUNK_BYTES = 256 * 1024
 _REDIAL_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 #: Pause before that one redial, so it does not land in the same blip.
 _REDIAL_DELAY_SECS = 0.2
+#: The whole body of the 403 a crew's CSRF barrier answers a write it refused
+#: (``dashboard/server_runtime/security_middleware.py``; every release sends
+#: this text). The crew refused the request's ``Origin``, which a fresh
+#: credential does not change, so it is reported as itself, never as a
+#: credential failure, and spends no re-mint.
+_CREW_ORIGIN_REFUSAL = b"CSRF check failed: request origin not allowed."
+_ORIGIN_REFUSED = (
+    "the crew's origin check refused the request, not the credential; "
+    "the crew's gateway log says why"
+)
 
 
 def _dropped_before_response(exc: BaseException) -> bool:
@@ -112,6 +122,26 @@ async def _read_transfer_reply(resp: Any) -> Any:
         return json.loads(b"".join(chunks))
     except Exception:
         return {}
+
+
+async def _origin_refused(resp: Any) -> bool:
+    """Whether *resp* is the crew's CSRF barrier refusing the request's ``Origin``.
+
+    Reads only a 403, and stops as soon as the body is longer than
+    :data:`_CREW_ORIGIN_REFUSAL`. No caller uses a 403's body afterwards, and a
+    body that cannot be read counts as some other 403.
+    """
+    if resp.status != 403:
+        return False
+    body = b""
+    try:
+        async for chunk in resp.content.iter_chunked(len(_CREW_ORIGIN_REFUSAL) + 1):
+            body += chunk
+            if len(body) > len(_CREW_ORIGIN_REFUSAL):
+                return False
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return False
+    return body == _CREW_ORIGIN_REFUSAL
 
 
 async def _upload_chunks(fh: Any, stall: asyncio.Timeout) -> Any:
@@ -560,7 +590,8 @@ async def proxy_request(
     follows :meth:`search_sessions_remote`'s credential rules: the token
     never leaves this object, it travels as the port-scoped cookie so it
     cannot land in the peer's access log, and a 401/403 gets exactly one
-    transparent re-mint retry.
+    transparent re-mint retry, except the crew's Origin refusal
+    (``proxy_origin_refused``), which a credential does not change.
 
     Yields the **un-buffered** ``aiohttp.ClientResponse`` so the caller can
     pump a streaming body (a proxied chat turn streams SSE for minutes);
@@ -649,8 +680,13 @@ async def proxy_request(
                 http_status=502,
             ) from None
         if resp.status in (401, 403):
-            resp.release()
-            await session.close()
+            try:
+                origin_refused = await _origin_refused(resp)
+            finally:
+                resp.release()
+                await session.close()
+            if origin_refused:
+                raise ProxyRequestError("proxy_origin_refused", _ORIGIN_REFUSED, http_status=502)
             # One re-mint, then it is a credential failure — never streamed
             # to the caller as a bare peer 401, which would read as "the
             # chat endpoint said no" instead of "the tunnel credential is
@@ -765,6 +801,8 @@ async def send_session_bundle(
                     data=_upload_chunks(body_file, stall),
                     headers={**headers, "Content-Type": "application/json"},
                 ) as resp:
+                    if await _origin_refused(resp):
+                        return False, {"error": _ORIGIN_REFUSED, "code": "transfer_origin_refused"}
                     payload = await _read_transfer_reply(resp)
                     if 200 <= resp.status < 300:
                         return True, payload if isinstance(payload, dict) else {}

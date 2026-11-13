@@ -132,9 +132,11 @@ def _planner_ctx(result: ToolHookResult) -> MagicMock:
     return ctx
 
 
-async def _run_step(provider, ctx, *, on_tool_approval=None, tmp_path: Path) -> bool:
+async def _run_step(
+    provider, ctx, *, on_tool_approval=None, tmp_path: Path, task: Task | None = None
+) -> bool:
     run = Project(spec_path="t.md", spec_content="s", status="running", task_id="tid")
-    task = Task(index=1, title="T", description="d")
+    task = task or Task(index=1, title="T", description="d")
     run.tasks = [task]
     with patch.object(task_executor.KiroCrewConfig, "load") as cfg:
         cfg.return_value.agent.provider = "acp"
@@ -299,6 +301,27 @@ async def test_audit_lands_before_the_steer(tmp_path, monkeypatch):
     assert order == ["audit", "steer", "reject"], order
     row = fake_sel.log_tool_invocation.call_args.kwargs
     assert row["outcome"] == "denied" and row["error"] == "hook_deny"
+
+
+class _AcknowledgingProvider(_Provider):
+    """kiro-cli folds the steered notice and has the model acknowledge it inline."""
+
+    async def stream(self, message: str):
+        yield LLMEvent(kind="permission_request", title="Run: git push", request_id="req-1")
+        yield LLMEvent(kind="text_chunk", text="Checking. [STEERING steer-83cc1f2a: The notice")
+        yield LLMEvent(kind="text_chunk", text=" named the rule.]I could not push the branch.")
+        yield LLMEvent(kind="complete")
+
+
+@pytest.mark.asyncio
+async def test_the_notices_steer_acknowledgement_is_not_in_the_steps_result(tmp_path):
+    """The ack is protocol: the step's recorded result is the answer."""
+    provider = _AcknowledgingProvider()
+    task = Task(index=1, title="T", description="d")
+    ctx = _ctx(ToolHookResult(action=TOOL_ALLOW))
+    assert await _run_step(provider, ctx, tmp_path=tmp_path, task=task) is True
+    assert provider.calls == ["steer", "reject"], provider.calls
+    assert task.result == "Checking. I could not push the branch."
 
 
 @pytest.mark.asyncio

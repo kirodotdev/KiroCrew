@@ -154,7 +154,7 @@ _PROMPT_AND_STOP_HOOKS = {
 _RUN_NOWHERE = "does not run an agent's hooks"
 
 
-@pytest.mark.parametrize("backend", [ACP_BACKEND_CODEX, ACP_BACKEND_PI])
+@pytest.mark.parametrize("backend", [ACP_BACKEND_PI])
 def test_a_new_session_where_nothing_runs_spec_hooks_names_their_events(
     backend, agents_dir, notices
 ):
@@ -276,7 +276,7 @@ def test_pi_spec_hooks_count_as_run_nowhere_until_crew_fires_them(monkeypatch):
 
 def test_an_unreadable_spec_renders_no_run_nowhere_notice(agents_dir, notices):
     (agents_dir / "a1.json").write_text("{not json", encoding="utf-8")
-    assert _prepare(_client(ACP_BACKEND_CODEX), "a1", is_new=True) == ([], False, None)
+    assert _prepare(_client(ACP_BACKEND_PI), "a1", is_new=True) == ([], False, None)
     assert notices == []
 
 
@@ -465,9 +465,19 @@ def test_conversion_stops_at_the_hook_cap():
     assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS
 
 
+def test_an_installed_agents_twenty_six_hooks_all_run():
+    """A packaged agent's ordinary set is not trimmed: 26 hooks across events run."""
+    hooks = {
+        "agentSpawn": [{"command": f"spawn-{i}"} for i in range(8)],
+        "preToolUse": [{"matcher": "fs_read", "command": f"pre-{i}"} for i in range(8)],
+        "postToolUse": [{"matcher": "fs_write", "command": f"post-{i}"} for i in range(10)],
+    }
+    assert len(spec_hooks.spec_script_hooks("a1", {"hooks": hooks})) == 26
+
+
 def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
-    # A spec ``hooks`` ARRAY of 21 runnable command documents: the first 20 are
-    # read, and the one past the cap is counted and named in one audit.
+    # A spec ``hooks`` ARRAY one runnable command document past the cap: the cap's
+    # worth are read, and the one past it is counted and named in one audit.
     import kiro_crew.agent as agent_mod
 
     reasons: list = []
@@ -478,10 +488,10 @@ def test_spec_array_over_the_cap_drops_the_remainder_and_audits(monkeypatch):
             "trigger": "UserPromptSubmit",
             "action": {"type": "command", "command": f"echo {n}"},
         }
-        for n in range(spec_hooks._MAX_SPEC_HOOKS + 1)  # 21
+        for n in range(spec_hooks._MAX_SPEC_HOOKS + 1)
     ]
     hooks = spec_hooks.spec_script_hooks("a1", {"hooks": docs})
-    assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS  # the 21st is dropped
+    assert len(hooks) == spec_hooks._MAX_SPEC_HOOKS  # the last one is dropped
     assert any(
         f"only the first {spec_hooks._MAX_SPEC_HOOKS} spec hooks run; 1 more" in r for r in reasons
     ), "the spec-array overflow must audit what it drops"

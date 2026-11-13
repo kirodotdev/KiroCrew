@@ -273,8 +273,9 @@ class TestMirrorLink:
 
         Weixin ships ``supports_proactive_send=True``, so it must LINK. Without
         this half the suite only ever proved the gate says no, and a gate that
-        refuses everything would pass it — including the day WeCom's declaration
-        flips and the endpoint is supposed to start accepting it.
+        refuses everything would pass it — including the day a channel's
+        declaration flips to proactive and the endpoint is supposed to start
+        accepting it.
         """
         state = _prep(tmp_path, monkeypatch)
         state.register_channel_transport(_real_caps_transport(channel))

@@ -15,24 +15,29 @@ import logging
 from dataclasses import replace
 from typing import Any
 
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
+from kiro_crew.apps.host_exec_grants import grant_host_exec
 from kiro_crew.apps.manager_builtins import _builtin_owns_install
 from kiro_crew.apps.manager_records import (
+    _AWAITING_MANIFEST_TEXT,
     APP_MANIFEST_FILENAME,
     INSTALLED_META_FILENAME,
     AppResult,
     InstalledApp,
     _approved_grants_after_manifest_change,
-    _approved_grants_path,
+    _approved_grants_snapshot,
     _declared_grant_entries,
     _effective_approved_grants,
     _held_back_entries,
     _now_iso,
     _pending_session_approval_after_manifest_change,
     _read_installed,
+    _restore_approved_grants,
     _session_control_widening,
     _write_approved_grants,
+    _write_awaiting_manifest,
     _write_installed,
     app_data_dir,
     app_dir,
@@ -297,15 +302,35 @@ def register_external_app(
     # widen, as with an install.
     new_permissions = grant_source(manifest_data) if isinstance(manifest_data, dict) else None
     prior_grants = _effective_approved_grants(name, existing) if existing else None
-    prior_grants_present = _approved_grants_path(name).is_file() if existing else False
+    # The stored set as it stands, for a rollback to put back exactly.
+    try:
+        prior_grants_text = _approved_grants_snapshot(name) if existing else None
+    except (OSError, ValueError) as exc:
+        # Before any write: nothing to put back yet.
+        return AppResult(
+            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+        )
+    prior_owner_disabled = protected_app_state.owner_disabled(name)
     approved_grants: dict[str, list[str]] | None
     if not manifest_data:
         if existing:
             approved_grants = _effective_approved_grants(name, existing)
-        elif (on_disk := get_app_manifest(name)) is not None:
-            approved_grants = _declared_grant_entries(grant_source(on_disk))
+        elif (stored_text := _approved_grants_snapshot(name)) is not None:
+            # A record the folder lost (renamed aside, recreated): the sealed set
+            # stands, a registration still awaiting its first manifest included. The
+            # folder's own app.json, which an agent can write, never decides it.
+            approved_grants = (
+                None
+                if stored_text == _AWAITING_MANIFEST_TEXT
+                else _effective_approved_grants(name, None)
+            )
         else:
             approved_grants = None
+    elif existing and prior_grants_text == _AWAITING_MANIFEST_TEXT:
+        # The first manifest of a registration that declared nothing, sent by this
+        # owner route: approved as declared, as a first registration with it would be.
+        # The sealed store, not the agent-writable app.json, says none came before.
+        approved_grants = _declared_grant_entries(new_permissions)
     elif existing:
         approved_grants = _approved_grants_after_manifest_change(
             existing_approved=prior_grants,
@@ -377,10 +402,12 @@ def register_external_app(
         except (OSError, ValueError) as exc:
             rollback_errors: list[str] = []
             try:
-                # The set first: the record write keeps the stored flag only
-                # while a set file is present.
+                # The set first, exactly as it was before this registration.
                 if manifest_data:
-                    _write_approved_grants(name, prior_grants if prior_grants_present else None)
+                    _restore_approved_grants(name, prior_grants_text)
+                # A widening write that turned the app off recorded a disable; the
+                # rollback puts the record back, so it puts that mark back too.
+                protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 if prior_meta_text is not None:
                     atomic_write(meta_path, prior_meta_text)
                 else:
@@ -420,6 +447,10 @@ def register_external_app(
         )
         if approved_grants is not None:
             _write_approved_grants(name, approved_grants)
+        else:
+            # Nothing declared yet: the first manifest this route sends is approved
+            # as declared; one written into the app's folder approves nothing.
+            _write_awaiting_manifest(name)
         _write_installed(name, meta)
         # Persist manifest if provided (so dashboard can show full info).
         if manifest_data:
@@ -432,13 +463,43 @@ def register_external_app(
     # Generate app secret only for new registrations — preserve existing secrets
     from kiro_crew.dashboard.token_auth import generate_app_secret, write_app_secret
 
-    secret_path = dest / ".app_secret"
-    is_new_secret = not (existing and secret_path.is_file())
+    # The stored record alone: a registration from before the gateway kept it gets a new
+    # secret IN ITS RESPONSE, the only channel a self-managed app has, rather than one
+    # replaced behind its back.
+    try:
+        has_secret = protected_app_state.read_secret(name) is not None
+    except (OSError, UnicodeDecodeError, ValueError):
+        has_secret = False
+    is_new_secret = not (existing and has_secret)
     if is_new_secret:
         secret = generate_app_secret()
         write_app_secret(name, secret)
+        if not existing and meta.enabled:
+            # A first registration is an owner-authenticated install+enable (the
+            # route requires an owner dashboard request), so it records the owner-
+            # enable marker the token exchange reads (``validate_app_secret``). A
+            # re-registration never does: it would read ``enabled`` back from the
+            # agent-writable installed.json.
+            if not grant_host_exec(name):
+                # The record is written; enabling it (the "already enabled" path)
+                # retries the marker, which a re-registration would not.
+                return AppResult(
+                    ok=False,
+                    name=name,
+                    error=(
+                        f"registered {name}, but could not record that the owner "
+                        "enabled it; free up space or fix the data folder's "
+                        "permissions, then enable the app in the App Store"
+                    ),
+                )
     else:
-        secret = ""
+        # Every caller is owner-authenticated, and the folder holds no copy, so the
+        # response is how a self-managed app gets its secret back, e.g. after a
+        # registry install registered it first.
+        try:
+            secret = protected_app_state.read_secret(name) or ""
+        except (OSError, UnicodeDecodeError, ValueError):
+            secret = ""
 
     action = "updated" if existing else "registered"
     logger.info(
@@ -466,7 +527,7 @@ def register_external_app(
                 f"requests {session_control_widening.words} -- review it on the app page "
                 "and enable it"
             ),
-            secret=secret if is_new_secret else "",
+            secret=secret,
             notice="session_approval_reconsent",
         )
     if widened_grants:
@@ -481,6 +542,6 @@ def register_external_app(
         ok=True,
         name=name,
         message=f"{action} {name} v{version}",
-        secret=secret if is_new_secret else "",
+        secret=secret,
     )
     return result

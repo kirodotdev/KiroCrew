@@ -250,6 +250,14 @@ vi.mock('../../components/ChatPane', async () => {
         <a href="https://elsewhere.example/members?create=1&name=evil" data-testid="chat-link-foreign">foreign</a>
         {/* What the transcript's renderer hands the host for a plain click on either
             staged-dashboard link form (see dashboardPreview.link.test.tsx). */}
+        {/* A folder chip in a reply, and a thread footer's Open: what the
+            transcript hands the host for each click. */}
+        {typeof rest.onFolderOpen === 'function' && (
+          <button data-testid="chat-open-folder" onClick={() => (rest.onFolderOpen as (path: string) => void)('/home/u/work/evidence/')}>folder</button>
+        )}
+        {(rest.threads as { onOpen?: (mid: string) => void } | undefined)?.onOpen && (
+          <button data-testid="chat-open-thread" onClick={() => (rest.threads as { onOpen: (mid: string) => void }).onOpen('m-1')}>thread</button>
+        )}
         {typeof rest.onArtifactOpen === 'function' && (
           <>
             <button data-testid="chat-open-preview-member" onClick={() => (rest.onArtifactOpen as (ref: string) => void)('dashboard-preview:member:oncall')}>preview by name</button>
@@ -357,6 +365,18 @@ describe('MembersPage roster', () => {
     await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
     await waitFor(() => expect(threadsSummary).toHaveBeenCalledWith('member-oncall'))
     await screen.findByTestId('member-threads-error-row', undefined, PANE_READY)
+  })
+
+  it('a folder chip opens the folder tab and closes an open reply thread that would cover it', async () => {
+    vi.mocked(api.kirocrewConfig).mockResolvedValue({ dashboard: { crewmate_threads: true } })
+    await renderPage([row()], 'kirocrew', { route: '/members?member=oncall' })
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    fireEvent.click(await screen.findByTestId('chat-open-thread', undefined, PANE_READY))
+    await screen.findByTestId('thread-panel', undefined, PANE_READY)
+    fireEvent.click(screen.getByTestId('chat-open-folder'))
+    // The folder tab is on the strip, and the opaque thread no longer covers it.
+    expect(await screen.findByText('evidence', undefined, PANE_READY)).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('thread-panel')).toBeNull())
   })
 
   it('a failed config read is said with a Retry, not rendered as threads off', async () => {
@@ -511,7 +531,9 @@ describe('MembersPage roster', () => {
 
   it('shows the load-failure state when the roster call rejects', async () => {
     ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
-    renderWithProviders(<MembersPage />)
+    // The roster read retries on its own (`retryThroughRestart`); no backoff,
+    // so the failure shows at once.
+    renderWithProviders(<MembersPage />, { queryDefaults: { retryDelay: 0 } })
     // Both columns say it: the roster's own notice, and — since no chat can
     // open and the hero is gated on a good read — the chat column's, so a
     // wide window is never half blank.
@@ -540,6 +562,35 @@ describe('MembersPage roster', () => {
     expect(screen.queryByTestId('member-column-load-error')).toBeNull()
     expect(await probeAddCrewmate()).toEqual({ held: false, reason: null })
   })
+
+  it.each(['member-roster-retry', 'member-column-load-retry'])(
+    'keeps the load-failure notices and a focused, inert %s up while the retry runs',
+    async (retryId) => {
+      ;(api.members as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'))
+      renderWithProviders(<MembersPage />, { queryDefaults: { retryDelay: 0 } })
+      const retry = await screen.findByTestId(retryId)
+      let answer!: (v: unknown) => void
+      ;(api.members as ReturnType<typeof vi.fn>).mockReturnValue(new Promise((r) => { answer = r }))
+      retry.focus()
+      fireEvent.click(retry)
+      await waitFor(() => expect(screen.getByTestId(retryId)).toHaveAttribute('aria-disabled', 'true'))
+      // The same node, still focused: the notice did not unmount for the retry.
+      expect(screen.getByTestId(retryId)).toBe(retry)
+      expect(retry).toHaveFocus()
+      expect(screen.getByTestId('member-roster-error')).toBeInTheDocument()
+      expect(screen.getByTestId('member-column-load-error')).toBeInTheDocument()
+      expect(screen.getByTestId('member-count')).toHaveTextContent('\u2014')
+      expect(await probeAddCrewmate()).toEqual({ held: true, reason: 'Could not load your bots.' })
+      // Inert, not disabled: a second press starts no second read.
+      const calls = (api.members as ReturnType<typeof vi.fn>).mock.calls.length
+      fireEvent.click(retry)
+      expect((api.members as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls)
+      answer({ members: [row()], default_agent: 'kirocrew' })
+      expect(await rosterRow('oncall')).toBeInTheDocument()
+      expect(screen.queryByTestId('member-roster-error')).toBeNull()
+      expect(screen.queryByTestId('member-column-load-error')).toBeNull()
+    },
+  )
 })
 
 /* The roster is a React Query read (issue #9418). These cases pin what that
@@ -681,7 +732,9 @@ describe('MembersPage roster cache (React Query)', () => {
     await act(async () => {
       await queryClient.invalidateQueries({ queryKey: ['kirocrew-agents'] })
     })
-    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(2))
+    // The re-read and the one retry an answered failure gets
+    // (`retryThroughRestart`).
+    await waitFor(() => expect(api.members).toHaveBeenCalledTimes(3))
     expect(roster().getByText('oncall')).toBeInTheDocument()
     expect(screen.queryByText(/Could not load your Bots/i)).toBeNull()
   })
@@ -694,6 +747,24 @@ describe('MembersPage thread', () => {
     renderWithProviders(<MembersPage />, { route: '/members?member=Review%20%26%20QA' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-review-qa')
     expect(api.memberThread).toHaveBeenCalledExactlyOnceWith('review-qa')
+  })
+
+  it('a relay teammate sees the Bots and is told plainly that only the owner can chat', async () => {
+    // A teammate's roster row carries no slot or preview (`_teammate_roster`), and
+    // the thread POST answers the owner gate's 403 `owner_only`.
+    localStorage.setItem(LAST_MEMBER_KEY, 'oncall')
+    const refusal = Object.assign(new Error('owner authorization required'), {
+      status: 403,
+      body: JSON.stringify({ error: 'owner authorization required', code: 'owner_only' }),
+    })
+    const teammateRow = { name: 'oncall', slug: 'oncall', dashboard_created: true, source: 'kirocrew' } as unknown as ReturnType<typeof row>
+    await renderPage([teammateRow], 'kirocrew', { thread: refusal })
+    expect(await rosterRow('oncall')).toBeInTheDocument()
+    const notice = await screen.findByTestId('member-thread-owner-only', undefined, PANE_READY)
+    expect(notice).toHaveTextContent("Only this bot's owner can chat with it.")
+    expect(screen.queryByTestId('member-thread-error')).toBeNull()
+    expect(screen.queryByText(/Could not load your bots/i)).toBeNull()
+    expect(screen.queryByText(/Could not open this bot's chat/i)).toBeNull()
   })
 
   it('shows the concrete private memory refusal when opening a member conversation fails', async () => {

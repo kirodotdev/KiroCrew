@@ -920,7 +920,9 @@ class TestPortAllocation:
         port, _ = rt.allocate_port(c, "mine")  # the real assertion: no traceback
         assert port == rt.derive_port(c, "mine")
 
-    @pytest.mark.parametrize("stem", ["-leading", "has space", "a" * 70, "", "..", "a/b"])
+    @pytest.mark.parametrize(
+        "stem", ["-leading", "has space", "a" * 70, "", "..", "a/b", "trailing-newline\n"]
+    )
     def test_only_legal_pod_names_are_treated_as_peers(self, tmp_path, monkeypatch, stem) -> None:
         # The precondition stated as a rule rather than as a list of crashes: peers are
         # pods, so a stem that `validate_name` would reject claims nothing.
@@ -1032,7 +1034,9 @@ class TestPortAllocation:
 
 
 class TestNameValidation:
-    @pytest.mark.parametrize("bad", ["", "../x", "a/b", "x" * 70, "-leading", "a b"])
+    @pytest.mark.parametrize(
+        "bad", ["", "../x", "a/b", "x" * 70, "-leading", "a b", "ok\n", "x" * 61 + "\n"]
+    )
     def test_rejects(self, bad: str) -> None:
         with pytest.raises(rt.PodError):
             rt.validate_name(bad)

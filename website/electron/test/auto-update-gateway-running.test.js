@@ -89,37 +89,7 @@ function stubSpawn(t) {
 
 const MANAGED = { managedBy: "m", updateCommand: "apply", checkCommand: "check" };
 
-test("the feed lane does not install while a bundled gateway is still running", async () => {
-  const { deps, calls, emit } = makeDeps();
-  const updater = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
 
-  await updater.install();
-
-  assert.strictEqual(calls.quitAndInstall, 0, "the bundle must not be handed to the installer");
-  assert.strictEqual(calls.installFailed, 1, "the host restores the gateway it disarmed");
-  const last = calls.states[calls.states.length - 1];
-  assert.strictEqual(last.state, "error");
-  assert.strictEqual(last.phase, "install");
-  assert.strictEqual(last.code, GATEWAY_STILL_RUNNING);
-  assert.strictEqual(last.stopCommand, "kirocrew stop --port 5476", "the refusal names the command that stops the gateway");
-});
-
-test("the feed lane retries the install once the gateway is gone", async () => {
-  const { deps, calls, emit } = makeDeps();
-  let stopped = false;
-  deps.stopGateway = async () => {
-    if (!stopped) throw gatewayStillRunningError(5476);
-  };
-  const updater = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
-
-  await updater.install();
-  stopped = true;
-  await updater.install();
-
-  assert.strictEqual(calls.quitAndInstall, 1, "the staged update survives the refusal");
-});
 
 test("the feed lane's deferred install quits without installing while a bundled gateway runs", async () => {
   const { deps, calls, emit, quitHooks } = makeDeps();
@@ -146,35 +116,7 @@ test("the feed lane's deferred install quits without installing while a bundled 
   );
 });
 
-test("a stop error that is not a running gateway keeps the feed lane's install going", async () => {
-  const { deps, calls, emit } = makeDeps();
-  deps.stopGateway = async () => { throw new Error("stop failed"); };
-  const updater = initAutoUpdate(deps);
-  emit("update-downloaded", { version: "1.1.0" });
 
-  await updater.install();
-
-  assert.strictEqual(calls.quitAndInstall, 1);
-});
-
-test("the managed lane does not run its update command while a bundled gateway is running", async (t) => {
-  const commands = stubSpawn(t);
-  const { deps, calls } = makeDeps({ externallyManaged: MANAGED });
-  const updater = initAutoUpdate(deps);
-  await updater.check();
-
-  await updater.install();
-
-  assert.deepStrictEqual(commands, ["check"], "the update command must not run");
-  assert.strictEqual(calls.relaunch, 0);
-  assert.deepStrictEqual(calls.exit, []);
-  assert.strictEqual(calls.installFailed, 1, "the host restores the gateway it disarmed");
-  const last = calls.states[calls.states.length - 1];
-  assert.strictEqual(last.state, "error");
-  assert.strictEqual(last.phase, "install");
-  assert.strictEqual(last.code, GATEWAY_STILL_RUNNING);
-  assert.strictEqual(last.stopCommand, "kirocrew stop --port 5476");
-});
 
 test("the managed lane's quit-time apply exits without applying while a bundled gateway runs", async (t) => {
   const commands = stubSpawn(t);

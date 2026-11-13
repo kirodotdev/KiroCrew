@@ -24,10 +24,16 @@
  *  cluster but forbids growing it (the "Pause all filters" row went into the
  *  menu for the same reason). The shelf already carries the list-level notices
  *  in the same `role="status"` grammar (`folderReorderHint`), so the row reads
- *  as one of them: a sentence with the count, and the one action beside it. */
+ *  as one of them: a sentence with the count, and the one action beside it.
+ *
+ *  The row has a close button for someone who does not want to resume what it
+ *  lists. It hides the row for those sessions (`lib/resumeAllDismissed`, kept in
+ *  the browser); a session that becomes interrupted afterwards brings it back
+ *  with that session alone. The sessions stay interrupted and keep their own
+ *  Resume. */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { RotateCcw } from 'lucide-react'
+import { RotateCcw, X } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
@@ -35,6 +41,7 @@ import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { Btn } from '../../components/ui'
 import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { crewModeEnabled } from '../../lib/crewMode'
+import { readResumeAllDismissed, writeResumeAllDismissed } from '../../lib/resumeAllDismissed'
 import { RESUME_ALL_DONE_EVENT } from '../../lib/resumeAllEvent'
 import { setResumeAllWaiting } from '../../lib/resumeAllWaiting'
 import { i18nT } from '../../i18n/t'
@@ -74,13 +81,16 @@ export function resumeAllPendingCeilingMs(total: number): number {
 export const RESUME_ALL_RUNNING_CODE = 'resume_all_running'
 
 /** The sessions the server will act on, read from the same slots payload the
- *  rows render: idle AND flagged interrupted by the transcript scan. Peer rows
+ *  rows render: idle AND flagged interrupted by the transcript scan, unless the
+ *  interruption is older than the server's bulk-Resume window
+ *  (`interrupted_stale`): such a session keeps its row cue and its own Resume
+ *  button but is not offered here. Peer rows
  *  (`peer_id`) belong to another gateway and never count -- the request goes to
  *  this one. A row still reporting live sub-agents is left out here and by the
  *  server's candidate set alike, so the count on the button is the `total` the
  *  server answers. */
 export function interruptedIdleSlots(slots: Slot[]): Slot[] {
-  return slots.filter(s => !!s.interrupted && !s.running && !s.subagents_running && !s.peer_id && s.executor !== 'remote')
+  return slots.filter(s => !!s.interrupted && !s.interrupted_stale && !s.running && !s.subagents_running && !s.peer_id && s.executor !== 'remote')
 }
 
 export type ResumeAllResult = {
@@ -182,8 +192,24 @@ type WaitedRun = { id: string; total: number; adopted: boolean }
 
 /** The row's state: the candidate count, the write, and the run it waits on. */
 export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; connected: boolean }) {
-  const candidates = useMemo(() => interruptedIdleSlots(localSlots), [localSlots])
+  // The sessions whose banner the user closed. They stay interrupted on the
+  // server and keep their own Resume; they only drop out of this row's count.
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => readResumeAllDismissed())
+  const candidates = useMemo(
+    () => interruptedIdleSlots(localSlots).filter(s => !dismissed.has(s.key)),
+    [localSlots, dismissed],
+  )
   const count = candidates.length
+  // A closed session that is no longer interrupted (resumed, or its turn
+  // answered) leaves the set, so interrupting it again announces it again.
+  useEffect(() => {
+    const settled = localSlots.filter(s => dismissed.has(s.key) && !s.interrupted)
+    if (settled.length === 0) return
+    const next = new Set(dismissed)
+    for (const s of settled) next.delete(s.key)
+    setDismissed(next)
+    writeResumeAllDismissed(next)
+  }, [localSlots, dismissed])
   const { confirm, confirmDialog } = useConfirm()
   // The sessions counted at the press that the run has not reached yet: the
   // rows that say they are waiting while the run is pending. A session leaves
@@ -199,6 +225,7 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
   // language even if the language switches while it is up.
   const [result, setResult] = useState<ResumeAllResult | null>(null)
   const [error, setError] = useState('')
+  const [dismissError, setDismissError] = useState(false)
   // The sessions the last run left for the owner to act on. Kept until
   // dismissed or the next press, not for the outcome line's six seconds.
   const [problems, setProblems] = useState<ResumeAllProblem[]>([])
@@ -341,6 +368,12 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
     requestOpenRef.current = true
     mutation.mutate(keys)
   }
+  const dismiss = () => {
+    const next = new Set(dismissed)
+    for (const s of candidates) next.add(s.key)
+    setDismissed(next)
+    setDismissError(!writeResumeAllDismissed(next))
+  }
   const titles = useMemo(() => new Map(localSlots.map(s => [s.key, s.title || s.key])), [localSlots])
   const titleOf = (key: string) => titles.get(key) ?? key
   // The sessions a press would resume, by name, in the order the count counts
@@ -352,12 +385,15 @@ export function useResumeAll({ localSlots, connected }: { localSlots: Slot[]; co
     result,
     error,
     setError,
+    dismissError,
+    dismissDismissError: () => setDismissError(false),
     problems,
     dismissProblems: () => setProblems([]),
     titleOf,
     pending,
     alreadyRunning: !!waited?.adopted,
     run: () => { void press() },
+    dismiss,
     connected,
     confirmDialog,
   }
@@ -408,10 +444,11 @@ function ResumeAllProblemsNotice({ text, onDismiss }: { text: string; onDismiss:
  *  status region would announce it twice. */
 export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
   const {
-    count, candidateTitles, result, error, setError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, connected, confirmDialog,
+    count, candidateTitles, result, error, setError, dismissError, dismissDismissError, problems, dismissProblems, titleOf, pending, alreadyRunning, run, dismiss, connected, confirmDialog,
   } = shell.resumeAll
-  if (count === 0 && !result && !error && !pending && problems.length === 0) return confirmDialog
+  if (count === 0 && !result && !error && !dismissError && !pending && problems.length === 0) return confirmDialog
   const label = i18nT('pages.chatSidebar.resume_all_sessions', { count })
+  const dismissLabel = i18nT('pages.chatSidebar.resume_all_dismiss')
   return (
     <>
       {(count > 0 || result || pending) && (
@@ -431,6 +468,19 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
                   ? i18nT('pages.chatSidebar.resume_all_already_running')
                   : i18nT('pages.chatSidebar.resume_all_interrupted', { count })}
             </span>
+            {/* Only while the row offers the press: a run in flight or its
+                outcome line is not something to hide. */}
+            {count > 0 && !result && !pending && (
+              <Btn
+                className="shrink-0 p-0 border-none bg-transparent rounded-none hover:bg-transparent text-muted hover:text-text active:scale-100"
+                data-testid="resume-all-dismiss"
+                aria-label={dismissLabel}
+                title={dismissLabel}
+                onClick={dismiss}
+              >
+                <X size={14} aria-hidden="true" />
+              </Btn>
+            )}
           </div>
           {/* Which sessions a press restarts, named before it does. Only up to
               the count a press resumes without asking: above it the
@@ -482,6 +532,21 @@ export function renderResumeAllRow(shell: SidebarScope): React.ReactNode {
             askAgent
             onDismiss={() => setError('')}
             testId="resume-all-error"
+          />
+        </div>
+      )}
+      {/* askAgent: closing the banner leaves the interrupted sessions and
+          their drafts unchanged, so the hand-off cannot lose anything. */}
+      {dismissError && (
+        <div className="mx-2 mt-2 shrink-0">
+          <ErrorNotice
+            variant="inline"
+            className="flex-wrap w-full"
+            title={i18nT('pages.chatSidebar.resume_all_dismiss_failed_title')}
+            message={i18nT('pages.chatSidebar.resume_all_dismiss_failed_message')}
+            askAgent
+            onDismiss={dismissDismissError}
+            testId="resume-all-dismiss-error"
           />
         </div>
       )}

@@ -42,7 +42,7 @@
 
 import { parseCssColor, relativeLuminance } from './iconContrast'
 import { TAILWIND_RUNTIME_PATH as TAILWIND_RUNTIME_PATH_ROOT } from './vendorPaths'
-import { withBase } from './basePath'
+import { BASE_PATH, withBase } from './basePath'
 /** The runtime's served path under this build's base (the bare path in the stock build). */
 const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
 import { sanitizeCssValue } from './cssSanitize'
@@ -719,7 +719,8 @@ const LINK_BRIDGE_SHIM_BODY = `(function(){
  * writes, holding the widget in an `AGENT_PAGE_SANDBOX` frame, so React and
  * `useFrameLinkBridge` are not there to answer the frame's open message. This
  * script is: the same checks (the message comes from the frame, the URL is an
- * absolute `http(s)` URL with no user name or password, the person just clicked
+ * `http(s)` URL with no user name or password, a dashboard path resolving
+ * against the dashboard as `webUrlOf` resolves it, the person just clicked
  * with the frame focused), then a `noopener,noreferrer` open, once per click,
  * when the click is tied to the frame: focus came into it from the tab, and no
  * click or key in the tab itself (a Tab into the frame) is still live. Otherwise
@@ -775,21 +776,26 @@ const POPOUT_LINK_BRIDGE_BODY = `(function(){
     var d = e.data;
     if (!d || typeof d !== 'object' || d.type !== T || typeof d.url !== 'string') return;
     if (!d.url) return;
+    // A dashboard path (/schedule) resolves against the dashboard, as in chat, and
+    // a dashboard URL takes its base, as the dashboard's window.open adds it (rebaseUrl).
     var u;
-    try { u = new URL(d.url); } catch (_) { return; }
+    try { u = new URL(d.url, ORIGIN); } catch (_) { return; }
     if (u.protocol !== 'http:' && u.protocol !== 'https:') return;
     if (u.username || u.password) return;
+    if (BASE && u.origin === ORIGIN && u.pathname !== BASE && u.pathname.indexOf(BASE + '/') !== 0) u.pathname = BASE + u.pathname;
     if (!clicked()) return;
     if (entered && Date.now() - last >= LIFE) go(f, u.href);
     else offer(u.href, u.host);
   });
 })();`
 
-/** The popped-out widget tab's link bridge: fixed first-party text and the
- * button's localized *label*, in which `%HOST%` stands for the link's host. No
- * widget content. */
-export function popoutLinkBridgeScript(label: string): string {
-  return `var LABEL = ${JSON.stringify(label).replace(/</g, '\\u003c')};\n${POPOUT_LINK_BRIDGE_BODY}`
+/** The popped-out widget tab's link bridge: fixed first-party text, the
+ * button's localized *label*, in which `%HOST%` stands for the link's host, and
+ * the *origin* and *base* of the dashboard that builds the tab. No widget
+ * content. */
+export function popoutLinkBridgeScript(label: string, origin: string = window.location.origin, base: string = BASE_PATH): string {
+  const literal = (s: string) => JSON.stringify(s).replace(/</g, '\\u003c')
+  return `var LABEL = ${literal(label)}, ORIGIN = ${literal(origin)}, BASE = ${literal(base)};\n${POPOUT_LINK_BRIDGE_BODY}`
 }
 
 /** In-iframe comment bridge. Vanilla JS string — no LLM/user

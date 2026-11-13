@@ -132,7 +132,28 @@ select, and it defaults a new session to `auto`. The pooled check asks that sele
 one question: is the session on an `auto` the select does not list? If so it moves
 to a listed id. The select never becomes the session's advertised list, so the
 picker's entitlement narrowing and the explicit-pick guard are unchanged for KAS,
-and a concrete current model is never judged against a list that may be incomplete.
+and a concrete model the session already runs is never moved off.
+
+The select answers one more question, at the wire: is the pin `set_model` is about
+to send listed? KAS accepts any id on `session/set_config_option` and then fails
+every prompt with `InvalidModelError` on one the account is not served, so
+`AcpSessionHandle.set_model` keeps the select's ids (`_kas_served_ids`) and, when
+they name a concrete model, withholds an unlisted pin: the session stays on its
+current model and the pin is recorded in `model_pin_refused`, the same read-back
+the cold start, the warm-pool re-apply and a live switch already use. A
+`<namespace>::` qualifier or case difference is folded first
+(`resolve_pin_spelling`). A select listing only `auto` is not judged. A live capture
+on kiro-cli 3.1.0 listed the same 34 ids as the v2 engine's `models` block, and
+the one `--list-models` row it left out failed the turn with `InvalidModelError`.
+
+Saving a pin is judged against the same select before any session sends it:
+with no `models` list on the newest live KAS session, the agent and role-pin
+validators (`dashboard/handlers/core_config_models.py`, `_kas_select_ids`) refuse
+an id the recorded select does not list, since the engine fails every prompt on
+such an id
+with `InvalidModelError`. They read it through `recorded_catalog_snapshot` with the
+vault identity the save read off the loop, so a select recorded for another
+account is no evidence and the pin is accepted as unknown.
 
 The same select IS the engine's catalog, and the shared-runtime driver records it
 as one (`agent_sdk/kas_model_catalog.py`, `record_catalog`, on a positive KAS
@@ -163,11 +184,16 @@ advertised-store persist), so after an account switch made anywhere on the host
 -- the dashboard's sign-in card, or `kirocrew kas login` / `kas logout` in a
 shell, which writes the same vault from another process -- it answers cold, and
 the rows serve again if the vault comes back to that account. No in-process
-notice from the vault's writer is needed, so there is none. Only the **bundle route** reads
-it — `agent.acp_backend == "kas"`
+notice from the vault's writer is needed, so there is none. The **bundle route** —
+`agent.acp_backend == "kas"`
 AND `agent.kas_bundle`, the positive two-fact test `agent_sdk.kas_bundle.kas_bundle_route`
-— because that route has no kiro-cli to print a catalog; the relay route's picker
-keeps reading `--list-models` exactly as below. The bundle route runs no
+— reads it, because that route has no kiro-cli to print a catalog; the relay route's picker
+keeps reading `--list-models` exactly as below, except on a relay that starts on
+Crew's sign-in alone (entered through `kiro-cli-chat`,
+`acp.kas_route.crew_sign_in_starts_spawn`) once kiro-cli's gate refuses:
+there `/api/models` serves the same recording and starts no cold probe, so a
+model-list read spawns nothing, and a cold read answers `auto` until the first
+chat spawns. The bundle route runs no
 entitlement narrowing on the recording: the select already lists what the
 signed-in account is served, and `_entitled_kiro_models` reads the newest live
 `acp`-namespace provider, which can be a retained kiro-cli session after a
@@ -266,6 +292,24 @@ the round-trip and is still rejected.
 vocabulary holds the id, excluding the session's own. The exclusion is
 load-bearing: two namespaces list one model family, so without it a harness is
 reported as foreign to itself.
+
+### A harness that accepts any model value
+
+The rule above sends an unclaimed id to the wire and lets the harness refuse it.
+That relies on the harness refusing. `ACP_BACKENDS_MODEL_SELECT_UNCHECKED`
+(`agent_sdk/backends_models.py`) names a harness that does not: MiMo Code 0.1.15
+stores any `model` value `session/set_config_option` hands it and then fails every
+prompt on one it cannot resolve, with an `end_turn` and no content (measured with an
+inherited `claude-opus-5.5` pin). On a member, `AcpClient` judges the value itself
+before it writes: with a warm advertised list it writes only
+`runtime_models.resolve_pin_spelling_on(pin, advertised, backend=...)`, and a value
+the list does not carry takes the refusal path without reaching the wire. A cold
+cache has nothing to judge against and keeps the ordinary ladder. This is a
+stricter wire check for that one harness, not a scoping rule: `model_scope` still
+decides first whether the pin applies to the session at all.
+
+Its labels read `<provider>/<model> (<variant>)`; the picker shows them without
+`<provider>/` unless two rows would then read alike (`mimocode_model_rows`).
 
 ### Scoping is a read, and every tier takes it
 
@@ -498,7 +542,12 @@ its own once the cache refreshes with a list that carries it.
   id. Live and cached rows pass the same admission: an id over 256 characters,
   or past the 512th, is refused, and a label's name and description are cut to
   400 characters (`ADVERTISED_LABEL_MAX_CHARS`). Claude shows the registry
-  unfiltered only when the cache is empty too. Other advertised-selection
+  unfiltered only when the cache is empty too. When the user's Claude settings
+  carry an `availableModels` list, the claude adapter advertises one row per
+  literal entry; Crew's session settings also name the newer models that the
+  user's own version-prefix entries cover and the user's own `modelOverrides`
+  routes, so those get a row too (see claude-code-provider.md, "Session-scoped
+  Claude settings"). Other advertised-selection
   backends preserve exact wire ids (including Pi provider/model ids) without
   substituting the Kiro CLI catalog. A cold cache offers `auto` and a scoped
   configured default until that backend advertises its choices.
@@ -586,6 +635,13 @@ its own once the cache refreshes with a list that carries it.
   pick (or waits for an effort write already on the wire) and sends the model
   after it; if the effort write is refused, the model pick aborts rather than
   resetting the owner's previous selection.
+- The model chip draws the session's harness mark (`HarnessLogo`) before the
+  model only when the capability read carries `models_backend`, which
+  `own_models_backend` sets only for a harness outside the install's model
+  namespace (Kiro CLI and KAS share one). The mark's tooltip and the chip's
+  accessible name say `Runs on <harness>` with the `acpBackendName` label. A
+  session on the install's harness, or one whose read has not loaded, shows no
+  mark.
 - The composer chip's marker (`modelChipMarker` in `website/src/lib/model.ts`)
   reads `default` only when the model shown is the Settings default and the slot
   takes it from there, and `auto` when the session was served a different model
@@ -603,14 +659,20 @@ its own once the cache refreshes with a list that carries it.
   (`_inherited_default_model`) only to know which default the slot inherits. Neither
   `slot.model` backfill site writes the provider's served model into such a slot,
   whatever that default is, Auto included (every tier deferring to the backend); the
-  composer chip reads it from `served_model`. The backfill writes only a slot whose
-  Bot pins a model. A settings change to the default
+  composer chip reads it from `served_model`. A Bot's thread with no pick of its own
+  is the same: it asks for the Bot's model on every turn and `slot.model` stays empty,
+  so `slot.model` holds only a person's pick. A settings change to the default or to
+  the Bot's model
   rebuilds the provider factory but leaves live sessions alone, so the next turn of an
   inheriting slot compares its live session's allocation stamp
-  (`allocation_requested_model`) with the default it inherits now. When they differ
+  (`allocation_requested_model`) with the model it inherits now (the Bot's model, else
+  the default). When they differ
   it queues the same reset a model pick queues, consumed with `skip_if_busy`, so a
   turn already streaming on that session is never cut. An empty stamp is unknown and
-  triggers nothing. A slot or Bot pin never triggers it. A `slot.model` an
+  triggers nothing. A slot pin never triggers it. An engine fallback moves the live
+  session without moving its stamp, so it triggers nothing either: the thread runs on
+  the engine's model until its next fresh start, then on its Bot's model again. A
+  `slot.model` an
   earlier backfill stored is indistinguishable from a person's pick, so nothing
   clears it on its own: it stays until the user picks Auto in that chat, or presses
   **Make my chats follow the default** under Settings > Chat > Model. That action
@@ -634,8 +696,8 @@ its own once the cache refreshes with a list that carries it.
   it on the fallback: the fallback's restore still moves it back. A chat
   `session_create` made (its line names a `created_by`), a Bot's own chat, and
   app, cron, channel and remote sessions are never counted. Neither is a chat on a
-  Bot whose config pins a model: that pin outranks the default, and the chat's
-  next turn would write it back. A slot kind a person does not start must set a
+  Bot whose config pins a model: that pin outranks the default, so a cleared chat
+  would land on the Bot's model, not the default. A slot kind a person does not start must set a
   non-person origin or a `created_by`: the origin check is the guard that keeps it
   out. Config pins are read, never written. An open chat's clear is saved at once
   and confirmed as a guarded write, so a close waits for it or refuses it. A
@@ -774,7 +836,10 @@ backend shares the `acp` namespace and `model_registry.lacks_acp_id` says the
 registry knows the model but gives it no kiro id, the pin is refused with no
 catalog, because nothing offline can confirm kiro-cli serves it (the registry has
 no kiro id to check against). A live catalog is still asked first and accepts the
-pin if it advertises it.
+pin if it advertises it. So a registry row for a model kiro-cli advertises must
+carry that id in `providers.acp` (Fable 5.1's row carries `claude-fable-5.1`):
+a row without one makes every kiro or KAS pin of that model fail whenever no
+live session has advertised a list, after a gateway restart for example.
 
 ## The one allowed concrete fallback
 

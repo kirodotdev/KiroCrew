@@ -7,7 +7,8 @@ exchange of a link for a distinct session cookie and the claims a session token
 carries, cookie names that keep two gateways on different ports apart, cookie-only
 session tokens that never register a nonce, the refresh chain a ``no_refresh`` link
 never gets, and the two ways a session ends: ``/api/logout`` and per-cookie revocation
-with its persisted, owner-only denylist. A topic of the ``test_token_auth`` family:
+with its persisted, owner-only denylist. The denylist and refresh-store checks the event
+loop makes must also answer while a write to either store is stuck. A topic of the ``test_token_auth`` family:
 ``test_token_auth.py`` keeps the token primitives and the middleware paths, and the
 other siblings are ``test_token_auth_signing_secret.py``,
 ``test_token_auth_spa_shell.py``, ``test_token_auth_credential_scope.py`` and
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import os
 import socket
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,6 +44,7 @@ from kiro_crew.dashboard.token_auth import (
     validate_token,
     validate_token_with_app,
 )
+from kiro_crew.testing.wait import default_timeout, wait_until
 
 
 def test_evict_expired_removes_old_entries() -> None:
@@ -539,6 +542,350 @@ def test_revoked_store_evicts_expired_entry() -> None:
     assert store.is_revoked("nonce-past") is False
 
 
+def test_is_revoked_answers_while_a_denylist_write_is_stuck(tmp_path, monkeypatch) -> None:
+    """A slow denylist write never holds up the cookie check, and loses no nonce.
+
+    ``is_revoked`` runs on the event loop for every cookie request; ``revoke``
+    writes the file on a worker thread. Where on-access antivirus scans the new
+    temp file, that write takes seconds, and a dict lock held across it would
+    park the loop until the loop watchdog kills the gateway. Here the write is held
+    inside its owner-only lockdown on an Event, so the check either answers while
+    the write is stuck or it does not. A second revoke during the stuck write
+    must still reach the file once the disk lets go.
+    """
+    import json
+
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard import token_auth as token_auth_mod
+
+    # A check gets half the lost-run bound and the stuck write all of it, so a
+    # check that waits on the write fails while the write is still held.
+    check_bound = default_timeout() / 2
+    in_write = threading.Event()
+    release = threading.Event()
+    real_restrict = platform_compat.restrict_to_owner
+
+    def _stuck_lockdown(path, **_kw) -> None:
+        in_write.set()
+        release.wait(default_timeout())
+        real_restrict(path)
+
+    monkeypatch.setattr(token_auth_mod.platform_compat, "restrict_to_owner", _stuck_lockdown)
+
+    state_path = tmp_path / "token_revoked_nonces.json"
+    store = RevokedNonceStore(state_path=state_path)
+
+    def _check(nonce: str) -> bool:
+        """``is_revoked`` on a thread, so a check that waits cannot hang the test."""
+        answer: list[bool] = []
+        reader = threading.Thread(
+            target=lambda: answer.append(store.is_revoked(nonce)), daemon=True
+        )
+        reader.start()
+        reader.join(check_bound)
+        assert not reader.is_alive(), "is_revoked waited for the stuck denylist write"
+        return answer == [True]
+
+    far_future = 4102444800.0  # 2100-01-01, so no entry expires during the test
+    first = threading.Thread(target=store.revoke, args=("nonce-a", far_future), daemon=True)
+    second = threading.Thread(target=store.revoke, args=("nonce-b", far_future), daemon=True)
+    first.start()
+    try:
+        assert in_write.wait(default_timeout()), "the denylist write never reached the disk"
+        assert _check("nonce-a")
+        second.start()
+        wait_until(lambda: _check("nonce-b"))
+    finally:
+        release.set()
+        for writer in (first, second):
+            if writer.is_alive():
+                writer.join(default_timeout())
+
+    assert not first.is_alive() and not second.is_alive()
+    persisted = json.loads(state_path.read_text(encoding="utf-8"))["revoked_nonces"]
+    assert sorted(entry["nonce"] for entry in persisted) == ["nonce-a", "nonce-b"]
+
+
+def test_refresh_checks_answer_while_a_rotation_write_is_stuck(tmp_path, monkeypatch) -> None:
+    """A slow refresh-store write never holds up the refresh checks, and loses no record.
+
+    ``validate_refresh_token`` calls ``degraded_reason`` and ``is_chain_revoked`` on the
+    event loop for every GET /api/auth/me and POST /api/auth/refresh, and the refresh
+    handler then calls ``chain_peer``, ``is_consumed`` and ``grace_replacement`` there too.
+    ``mark_consumed`` writes ``refresh_chains.json`` on a worker thread. Where on-access
+    antivirus scans the new staged file, that write takes seconds, and a dict lock held
+    across it would park the loop until the loop watchdog kills the gateway. Here the
+    rotation's write is held inside ``atomic_write`` on an Event, so the checks either
+    answer while it is stuck or they do not. A revocation queued behind the stuck write
+    must still reach the file once the disk lets go.
+    """
+    import json
+
+    from kiro_crew.dashboard import refresh_tokens as refresh_mod
+
+    # A check gets half the lost-run bound and the stuck write all of it, so a
+    # check that waits on the write fails while the write is still held.
+    check_bound = default_timeout() / 2
+    in_write = threading.Event()
+    release = threading.Event()
+    real_atomic_write = refresh_mod.atomic_write
+
+    def _stuck_write(path, payload, **kw) -> None:
+        in_write.set()
+        release.wait(default_timeout())
+        real_atomic_write(path, payload, **kw)
+
+    monkeypatch.setattr(refresh_mod, "atomic_write", _stuck_write)
+
+    state_path = tmp_path / "refresh_chains.json"
+    store = refresh_mod.RefreshStateManager(state_path=state_path)
+    far_future = 4102444800.0  # 2100-01-01, so no entry expires during the test
+
+    def _checks() -> tuple[str, bool, str, bool, str | None]:
+        """The loop's refresh checks on a thread, so a check that waits cannot hang the test."""
+        answer: list[tuple[str, bool, str, bool, str | None]] = []
+
+        def _read() -> None:
+            answer.append(
+                (
+                    store.degraded_reason(),
+                    store.is_chain_revoked("chain-a"),
+                    store.chain_peer("chain-a"),
+                    store.is_consumed("jti-a"),
+                    store.grace_replacement("chain-a", "jti-a", "127.0.0.1"),
+                )
+            )
+
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
+        reader.join(check_bound)
+        assert not reader.is_alive(), "a refresh check waited for the stuck rotation write"
+        return answer[0]
+
+    persisted: list[bool] = []
+
+    def _rotate() -> None:
+        persisted.append(
+            store.mark_consumed(
+                "jti-a",
+                chain_id="chain-a",
+                exp=far_future,
+                ip="127.0.0.1",
+                replacement='{"pair": "a"}',
+                peer_key="peer-a",
+            )
+        )
+
+    rotation = threading.Thread(target=_rotate, daemon=True)
+    revocation = threading.Thread(
+        target=lambda: persisted.append(store.revoke_chain("chain-b", far_future)),
+        daemon=True,
+    )
+    # The jti reads consumed and the peer bound at once; the replacement waits for the write.
+    in_flight = ("", False, "peer-a", True, None)
+    rotation.start()
+    try:
+        assert in_write.wait(default_timeout()), "the rotation write never reached the disk"
+        assert _checks() == in_flight
+        revocation.start()
+        assert _checks() == in_flight
+    finally:
+        release.set()
+        for writer in (rotation, revocation):
+            if writer.is_alive():
+                writer.join(default_timeout())
+
+    assert not rotation.is_alive() and not revocation.is_alive()
+    assert persisted == [True, True], "a write behind the stuck one did not land"
+    on_disk = json.loads(state_path.read_text(encoding="utf-8"))
+    assert [entry["jti"] for entry in on_disk["consumed_jtis"]] == ["jti-a"]
+    assert [entry["chain_id"] for entry in on_disk["revoked_chains"]] == ["chain-b"]
+
+
+def test_grace_replay_is_withheld_while_the_rotation_write_is_in_flight(
+    tmp_path, monkeypatch
+) -> None:
+    """A same-IP replay never receives a pair whose rotation write has not landed.
+
+    ``mark_consumed`` installs the chain's grace payload before its write and rolls it back
+    when the write fails, and its contract is that a failed write means no replacement was
+    ever delivered. With the write outside ``_lock`` a replay arriving in the window would be
+    handed the uncommitted pair, then the write fails and the rotation answers 503.
+    """
+    from kiro_crew.dashboard import refresh_tokens as refresh_mod
+
+    in_write = threading.Event()
+    release = threading.Event()
+
+    def _failing_write(path, payload, **kw) -> None:
+        in_write.set()
+        release.wait(default_timeout())
+        raise OSError("disk full")
+
+    monkeypatch.setattr(refresh_mod, "atomic_write", _failing_write)
+    store = refresh_mod.RefreshStateManager(state_path=tmp_path / "refresh_chains.json")
+    persisted: list[bool] = []
+    rotation = threading.Thread(
+        target=lambda: persisted.append(
+            store.mark_consumed(
+                "jti-a",
+                chain_id="chain-a",
+                exp=4102444800.0,
+                ip="127.0.0.1",
+                replacement='{"pair": "a"}',
+                peer_key="peer-a",
+            )
+        ),
+        daemon=True,
+    )
+    rotation.start()
+    served: list[str | None] = []
+    try:
+        assert in_write.wait(default_timeout()), "the rotation write never started"
+        served.append(store.grace_replacement("chain-a", "jti-a", "127.0.0.1"))
+    finally:
+        release.set()
+        rotation.join(default_timeout())
+    assert persisted == [False]
+    assert served == [None], "the replay was served a pair whose write had not landed"
+
+
+def _pending_rotation_probe(tmp_path, monkeypatch, *, fail: bool):
+    """Hold one rotation inside its write; yield the store, the release and the outcome.
+
+    Returns ``(store, in_write, release, rotation, persisted)`` with the rotation thread
+    started and parked in ``atomic_write``.
+    """
+    from kiro_crew.dashboard import refresh_tokens as refresh_mod
+
+    in_write = threading.Event()
+    release = threading.Event()
+    real_atomic_write = refresh_mod.atomic_write
+
+    def _held_write(path, payload, **kw) -> None:
+        in_write.set()
+        release.wait(default_timeout())
+        if fail:
+            raise OSError("disk full")
+        real_atomic_write(path, payload, **kw)
+
+    monkeypatch.setattr(refresh_mod, "atomic_write", _held_write)
+    store = refresh_mod.RefreshStateManager(state_path=tmp_path / "refresh_chains.json")
+    persisted: list[bool] = []
+    rotation = threading.Thread(
+        target=lambda: persisted.append(
+            store.mark_consumed(
+                "jti-a",
+                chain_id="chain-a",
+                exp=4102444800.0,
+                ip="127.0.0.1",
+                replacement='{"pair": "a"}',
+            )
+        ),
+        daemon=True,
+    )
+    rotation.start()
+    return store, in_write, release, rotation, persisted
+
+
+def _spy_on_pending_wait(store, chain_id: str = "chain-a") -> threading.Event:
+    """Swap the pending record's event for one that reports the moment a waiter blocks on it.
+
+    The waiter has already read the record by then, so releasing the held write afterwards
+    cannot let the rotation finish before the waiter looked, which is the order a bare
+    ``start()`` then ``release.set()`` leaves to the scheduler.
+    """
+    entered = threading.Event()
+
+    class _Spy:
+        def __init__(self, inner: threading.Event) -> None:
+            self._inner = inner
+
+        def wait(self, timeout=None) -> bool:
+            entered.set()
+            return self._inner.wait(timeout)
+
+    with store._lock:
+        jti, ip, inner = store._pending_rotations[chain_id]
+        store._pending_rotations[chain_id] = (jti, ip, _Spy(inner))
+    return entered
+
+
+def _wait_for_pending(store, ip: str, jti: str = "jti-a") -> bool:
+    """Run ``await_pending_rotation`` on a thread with a short bound; return its answer."""
+    answer: list[bool] = []
+    waiter = threading.Thread(
+        target=lambda: answer.append(store.await_pending_rotation("chain-a", jti, ip, 0.05)),
+        daemon=True,
+    )
+    waiter.start()
+    waiter.join(default_timeout())
+    assert not waiter.is_alive()
+    return answer[0]
+
+
+def test_a_matching_duplicate_waits_for_the_rotation_write_and_then_gets_the_pair(
+    tmp_path, monkeypatch
+) -> None:
+    """A same-address duplicate of the pending jti is told so, and the pair lands after."""
+    store, in_write, release, rotation, persisted = _pending_rotation_probe(
+        tmp_path, monkeypatch, fail=False
+    )
+    try:
+        assert in_write.wait(default_timeout()), "the rotation write never started"
+        assert _wait_for_pending(store, "127.0.0.1") is True
+        assert store.grace_replacement("chain-a", "jti-a", "127.0.0.1") is None
+        entered = _spy_on_pending_wait(store)
+        answer: list[bool] = []
+        waiter = threading.Thread(
+            target=lambda: answer.append(
+                store.await_pending_rotation("chain-a", "jti-a", "127.0.0.1", default_timeout())
+            ),
+            daemon=True,
+        )
+        waiter.start()
+        assert entered.wait(default_timeout()), "the duplicate never blocked on the rotation"
+        release.set()
+        waiter.join(default_timeout())
+        rotation.join(default_timeout())
+    finally:
+        release.set()
+    assert answer == [True] and persisted == [True]
+    assert store.grace_replacement("chain-a", "jti-a", "127.0.0.1") == '{"pair": "a"}'
+    assert store.await_pending_rotation("chain-a", "jti-a", "127.0.0.1", 0.01) is False
+
+
+def test_a_pending_rotation_does_not_cover_another_address_or_jti(tmp_path, monkeypatch) -> None:
+    """Only the same jti from the same address counts as the benign race; the rest is reuse."""
+    store, in_write, release, rotation, _persisted = _pending_rotation_probe(
+        tmp_path, monkeypatch, fail=False
+    )
+    try:
+        assert in_write.wait(default_timeout()), "the rotation write never started"
+        assert _wait_for_pending(store, "198.51.100.7") is False
+        assert _wait_for_pending(store, "127.0.0.1", jti="jti-other") is False
+    finally:
+        release.set()
+        rotation.join(default_timeout())
+
+
+def test_a_failed_rotation_write_clears_the_pending_record(tmp_path, monkeypatch) -> None:
+    """A rolled-back rotation leaves no pending marker and no consumed jti behind."""
+    store, in_write, release, rotation, persisted = _pending_rotation_probe(
+        tmp_path, monkeypatch, fail=True
+    )
+    try:
+        assert in_write.wait(default_timeout()), "the rotation write never started"
+        assert _wait_for_pending(store, "127.0.0.1") is True
+    finally:
+        release.set()
+        rotation.join(default_timeout())
+    assert persisted == [False]
+    assert store.is_consumed("jti-a") is False
+    assert store.grace_replacement("chain-a", "jti-a", "127.0.0.1") is None
+    assert store.await_pending_rotation("chain-a", "jti-a", "127.0.0.1", 0.01) is False
+
+
 def test_revoke_access_cookie_no_op_on_link_path() -> None:
     """The denylist only gates the cookie path (use_session_exp=True). The
     one-time LINK validation has its own nonce-set semantics and never consults
@@ -608,6 +955,25 @@ async def test_exchange_carries_owner_mint_claim_to_both_cookies(owner_minted) -
     assert cookie is not None and refresh is not None
     assert token_owner_minted_unverified(cookie.value) is owner_minted
     assert refresh_token_owner_minted(refresh.value) is owner_minted
+
+
+@pytest.mark.asyncio
+async def test_exchange_carries_embed_parent_port_onto_the_refresh_cookie() -> None:
+    """The refresh chain a framed pane's link opens remembers the embedding
+    parent, so the access token its first refresh mints still allows it."""
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_embed_parent_port
+
+    mw = token_auth_middleware()
+    url_token = generate_token(
+        "local-app",
+        ttl_seconds=MAX_SESSION_TTL_SECS,  # flake-ok: a token lifetime claim, not a wait
+        extra={"embed_parent_port": "5476"},
+    )
+    resp = await mw(_make_request(query={"token": url_token}, remote="10.0.0.4"), _ok_handler)
+    assert resp.status == 200
+    refresh = resp.cookies.get(refresh_cookie_name(5476))
+    assert refresh is not None
+    assert refresh_token_embed_parent_port(refresh.value) == "5476"
 
 
 @pytest.mark.asyncio

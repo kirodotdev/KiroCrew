@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.acp.client import AcpError
+from kiro_crew.acp.mcp_session_report import McpSessionReport
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -43,7 +44,10 @@ def _handle(**overrides: object) -> SimpleNamespace:
         memory_mode="persistent",
         child_fidelity_aware=False,
         delete_delay_secs=0.0,
+        keepalive_routed=False,
         set_model=AsyncMock(),
+        # Each handle has its own report, as each session/load does.
+        mcp_session_report=MagicMock(return_value=McpSessionReport()),
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -262,6 +266,7 @@ class TestTheApply:
                 memory_mode="ephemeral",
                 child_fidelity_aware=True,
                 delete_delay_secs=1800.0,
+                keepalive_routed=True,
             ),
         )
         provider.mark_mcp_config_changed()
@@ -274,6 +279,39 @@ class TestTheApply:
         # This turn's admission opted the OLD handle in; the new one must not fall
         # back to the fail-closed default mid-turn.
         assert runtime.new_handle.child_fidelity_aware is True
+        # The registry /api/session-keepalive reads still holds this provider, so the
+        # new handle keeps timing its calls on Kiro Crew's own servers.
+        assert runtime.new_handle.keepalive_routed is True
+
+    @pytest.mark.asyncio
+    async def test_a_handle_no_keepalive_reaches_stays_unrouted_across_the_swap(self) -> None:
+        runtime = _runtime()
+        provider = _provider(runtime, _handle(keepalive_routed=False))
+        provider.mark_mcp_config_changed()
+        await provider.apply_pending_mcp_reinjection()
+        assert runtime.new_handle.keepalive_routed is False
+
+    @pytest.mark.asyncio
+    async def test_whoever_follows_the_mcp_report_follows_the_reloaded_one(self) -> None:
+        # The load opens a new report for the same session. A reader that set
+        # its hook on the old one is moved to the new one and told at once: the
+        # server set the report describes has changed.
+        runtime = _runtime()
+        provider = _provider(runtime)
+        old_report = provider.mcp_session_report()
+        calls: list[int] = []
+        provider.set_mcp_report_changed_hook(lambda: calls.append(1))
+        provider.mark_mcp_config_changed()
+
+        await provider.apply_pending_mcp_reinjection()
+
+        new_report = provider.mcp_session_report()
+        assert new_report is runtime.new_handle.mcp_session_report()
+        assert new_report is not old_report
+        assert calls == [1]
+        assert old_report.on_change is None
+        new_report.on_change()
+        assert calls == [1, 1]
 
     @pytest.mark.asyncio
     async def test_a_pinned_model_is_re_applied(self) -> None:

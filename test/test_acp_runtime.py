@@ -50,6 +50,7 @@ from acp_runtime_helpers import (
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.kas_permissions import CREW_ONLY_ENTRY_KEYS
 from kiro_crew.acp.kas_settings_mcp import finish_settings_mcp
+from kiro_crew.acp.kas_start_agent import START_AGENT_ID, with_start_agent
 from kiro_crew.acp.runtime import AcpRuntimeError, AcpSessionHandle
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
@@ -193,6 +194,15 @@ def kas_readiness_wire(monkeypatch, tmp_path):
         # block (``hoist_servers_for_session``); everything else is byte-identical.
         projection = rt._kas_custom_agents.return_value.custom_agents
         sent_agents = request["params"]["_meta"]["kiro"]["customAgents"]
+        if not resume:
+            # A new session whose agent keeps servers in its block also registers
+            # the start agent, after the batch, and starts in it (kas_start_agent).
+            own = [a for a in sent_agents if a.get("id") != START_AGENT_ID]
+            held = with_start_agent(own) is not None
+            assert (sent_agents[-1]["id"] == START_AGENT_ID) == held
+            started_in = request["params"]["_meta"]["kiro"]["modeId"]
+            assert started_in == (START_AGENT_ID if held else own[0]["id"])
+            sent_agents = own
         assert len(sent_agents) == len(projection)
         wire_names = [entry["name"] for entry in request["params"]["mcpServers"]]
         assert len(wire_names) == len(set(wire_names)), "a name must appear once on the wire"

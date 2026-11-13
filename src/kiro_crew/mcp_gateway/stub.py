@@ -7,7 +7,9 @@ either side closes. On handshake failure it logs a structured fallback
 record to ``$KIROCREW_HOME/logs/stub_fallback.jsonl`` and hands the session
 to the real MCP backend, preserving per-session correctness: ``execvpe`` in
 place on POSIX, and on Windows -- which has no in-place exec -- a child
-inheriting this process's stdio (see :func:`_fallback_spawn_child`).
+inheriting this process's stdio (see :func:`_fallback_spawn_child`). A stub
+launched with ``--refuse`` does none of that: it answers kiro-cli as a server with
+no tools and never reaches the gateway (:func:`_serve_refusal`).
 
 Register fields match :meth:`PoolKey.from_register`; hashes use SHA-256
 (stdlib). Bridge phase is NOT wrapped in a timeout (learned correction
@@ -62,6 +64,7 @@ from kiro_crew.mcp_gateway.stub_link import (
     _reconnect_while_draining,
     _rejection_class,
     _serve_capacity_refusal,
+    _serve_refusal,
     _split_abandoned_ids,
     handshake,
     must_degrade_nonce_blind,
@@ -154,6 +157,17 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "connection its own backend -- the same process topology as no "
             "gateway at all, which is why absent is the safe default: a stub "
             "from an overlay predating this flag never silently starts sharing."
+        ),
+    )
+    p.add_argument(
+        "--refuse",
+        action="store_true",
+        dest="refuse",
+        help=(
+            "Start no target and never reach the gateway: answer kiro-cli as a "
+            "server with no tools until it hangs up. Written for a settings "
+            "server the agent's tools does not name whose env holds a secret:// "
+            "reference, so the host's own mcp.json merge cannot start it."
         ),
     )
     p.add_argument("--channel-id", default=None, dest="channel_id")
@@ -281,12 +295,15 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ENSURE_BACKEND_TIMEOUT_SECS,
         _HELD_FRAME_BYTES,
         _HELD_TOTAL_BYTES,
+        _METHOD_NOT_FOUND,
         _QUEUED_FAIL_MESSAGE,
         _QUEUED_GRACE_SECS,
         _RECONNECT_BACKOFF_MAX_SECS,
         _RECONNECT_BACKOFF_START_SECS,
         _RECONNECT_CRASH_LOOP_CYCLES,
         _RECONNECT_TOTAL_BUDGET_SECS,
+        _REFUSAL_EMPTY_LISTS,
+        _REFUSAL_PROTOCOL_VERSION,
         _REJECT_CLASS_COMPAT,
         _REJECT_CLASS_ISOLATION,
         _REPLAY_INIT_TIMEOUT_SECS,
@@ -309,6 +326,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _reconnect,
         _reconnect_now,
         _reconnect_wait,
+        _refusal_reply,
         _replay_initialize,
         _write_stdout_line,
     )
@@ -331,6 +349,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _split_target_args,
         binary_fingerprint,
         pool_binary_version,
+    )
+    from kiro_crew.start_priority import (  # noqa: F401
+        START_PRIORITY_ENV,
+        StartPriority,
+        priority_from_wire,
     )
 
 
@@ -451,6 +474,12 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
         stream=sys.stderr,
     )
     args = _parse_args(argv)
+    if args.refuse:
+        # Ahead of the read ceiling, which sizes a gateway connection and can read
+        # config, and of the Register payload, which hashes the target binary: a
+        # refusing stub opens no connection and names no target (``--refuse``).
+        logger.info("refusing: no tools for server %r agent %r", args.server, args.agent)
+        return await _serve_refusal(StubSession(), server=args.server)
     _adopt_read_ceiling(args)
     # build_register_payload -> _build_caller_block -> CallerContext.from_env
     # does a synchronous /proc ancestry walk + file reads (and _binary_version

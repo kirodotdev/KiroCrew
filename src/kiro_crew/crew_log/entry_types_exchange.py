@@ -402,6 +402,35 @@ TYPES: tuple[EntryType, ...] = (
             Field("cause", JSON_STRING, note="Host's reason code for an auto-decline."),
         ),
     ),
+    EntryType(
+        "approval/bridged",
+        "An action on an approval, taken from a chat app through the notification bridge.",
+        (
+            Field("turn", JSON_INT, note="The turn that asked; absent when unknown."),
+            Field("approval_id", JSON_STRING, required=True, note="Same id as the request."),
+            Field("transport", JSON_STRING, required=True, note="Chat transport id."),
+            Field(
+                "outcome",
+                JSON_STRING,
+                required=True,
+                enum=("approved", "denied", "expired", "refused"),
+                note="What the action did; approved and denied resolved the decision.",
+            ),
+            Field(
+                "reason",
+                JSON_STRING,
+                enum=("already_answered", "expired", "not_owner", "invalid_choice", "unknown"),
+                note="Why the action was not admitted; absent when it was.",
+            ),
+            Field("channel", JSON_STRING, note="Source notification channel, when known."),
+            Field("actor", JSON_STRING, note="Who took the action, on the transport."),
+            Field("owner", JSON_STRING, note="The verified owner the prompt was bridged to."),
+        ),
+        note=(
+            "Additive: an admitted action resolves the decision future, and the waiter "
+            "writes approval/decided as it does for any surface."
+        ),
+    ),
     # -- model, compaction, plan -------------------------------------------- #
     EntryType(
         "model/selected",

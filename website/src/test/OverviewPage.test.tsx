@@ -2,7 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { screen, fireEvent, act } from '@testing-library/react'
 import { i18next } from '../i18n/all'
 import { renderWithProviders, createTestStore } from './helpers'
+import { namedCeiling } from './namedCeiling'
 import OverviewPage from '../pages/OverviewPage'
+import { api } from '../api/client'
 import { KIRO_SIGN_IN_BACKEND } from '../pages/developer/kiroSignInLink'
 import type { RootState } from '../store'
 
@@ -37,6 +39,9 @@ vi.mock('../api/client', () => ({
 
 // The Today line's counts, which one test sets to the singular.
 const usageToday = vi.hoisted(() => ({ sessions: 3, messages: 42, toolCalls: 5 }))
+// The gateway's local day, the key of the token history bucket the Today line
+// reads; the report names it, so the browser's own clock and zone play no part.
+const todayKey = vi.hoisted(() => '2026-11-11')
 // Whether the provider reports usage; one test turns it off.
 const usageCaps = vi.hoisted(() => ({ usageBilling: true }))
 
@@ -56,8 +61,14 @@ vi.mock('../providers', () => ({
         dailyHistory: [],
       },
       billing: { plan: 'Pro', percentUsed: 42, unit: 'tokens' },
-      tokens: { total: 63_300 },
-      costUsd: 4.12,
+      // 30-day totals; the Today line reads today's bucket below instead.
+      tokens: { total: 900_000 },
+      costUsd: 99,
+      tokenDailyHistory: [
+        { date: '2000-01-01', input: 5, output: 5, cacheCreate: 0, cacheRead: 0, costUsd: 1 },
+        { date: todayKey, input: 60_000, output: 3_000, cacheCreate: 200, cacheRead: 100, costUsd: 4.12 },
+      ],
+      localDay: todayKey,
     }),
   }),
 }))
@@ -108,11 +119,27 @@ describe('OverviewPage — mission control', () => {
   })
 
   it('reads the Today line as one phrase with plural counts and a formatted cost', async () => {
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'claude' } })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(await screen.findByText('Today: 3 sessions · 42 messages · 63.3K tokens · $4.12')).toBeInTheDocument()
   })
 
+  it('leaves tokens and cost off the Today line on a credit-billed harness', async () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText('Today: 3 sessions · 42 messages')).toBeInTheDocument()
+  })
+
+  it('says so when the config read fails, and keeps the sessions on the Today line', async () => {
+    vi.mocked(api.kirocrewConfig).mockRejectedValueOnce(new Error('config unavailable'))
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    // The notice waits on the config read failing and the usage read landing.
+    const notice = await screen.findByTestId('overview-usage-harness-unread', {}, namedCeiling('CONFIG_FAIL_THEN_NOTICE', 5000))
+    expect(notice).toHaveTextContent('so today’s tokens and cost can’t be shown')
+    expect(await screen.findByText('Today: 3 sessions · 42 messages')).toBeInTheDocument()
+  })
+
   it('uses the singular for a count of one on the Today line', async () => {
+    vi.mocked(api.kirocrewConfig).mockResolvedValueOnce({ agent: { acp_backend: 'claude' } })
     usageToday.sessions = 1
     usageToday.messages = 1
     try {
@@ -296,5 +323,29 @@ describe('OverviewPage — whole-sentence lines', () => {
     const total = await screen.findByText('2h')
     expect(total).toHaveClass('font-mono')
     expect(total.parentElement).toHaveTextContent(/^Last 7 days 2h$/)
+  })
+})
+
+// The status tiles printed the raw JS number, so Bengali read Latin digits
+// beside translated labels (#33237).
+describe('OverviewPage — status tile counts', () => {
+  afterEach(async () => {
+    await act(async () => { await i18next.changeLanguage('en') })
+  })
+
+  it('writes the counts in the reader\'s digits and keeps an unknown count loading', async () => {
+    await act(async () => { await i18next.changeLanguage('bn') })
+    const store = createTestStore({
+      dashboard: {
+        status: { uptime: '2h', sessions: 3, messages: 42, cron_jobs: 1, subagents: 0, lessons: null, version: '0.1.0' },
+        connected: true,
+        slots: [],
+        refreshTrigger: 0,
+      } as RootState['dashboard'],
+    })
+    renderWithProviders(<OverviewPage />, { store })
+    // Uptime comes from the mocked hook; lessons is unknown, so it stays a skeleton.
+    expect(screen.getAllByTestId('stat-card-value').map(v => v.textContent)).toEqual(['2h 30m', '৩', '৪২', '১', '০'])
+    expect(screen.getAllByTestId('stat-card-skeleton')).toHaveLength(1)
   })
 })

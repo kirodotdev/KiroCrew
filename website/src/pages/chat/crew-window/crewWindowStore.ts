@@ -118,16 +118,18 @@ export function writeCrewDraft(target: CrewWindowTarget, text: string) {
  *  window was closed, or switched between draft and rewind, mid-transcription.
  *  The text lands in that session's own crew draft, where the window reads it
  *  on reopen (or at once, through `subscribeCrewDraft`, while open). Returns
- *  false for any other key, so the caller's own routing still applies. */
-export function deliverCrewWindowTranscript(slot: string, append: (base: string) => string): boolean {
-  if (!slot.startsWith('crew-window:')) return false
+ *  the voice key of the draft box that received the text (the key without
+ *  `:rewind`), or null for any other key, so the caller's own routing still
+ *  applies. */
+export function deliverCrewWindowTranscript(slot: string, append: (base: string) => string): string | null {
+  if (!slot.startsWith('crew-window:')) return null
   const body = slot.slice('crew-window:'.length).replace(/:rewind$/, '')
   let parsed: unknown
-  try { parsed = JSON.parse(body) } catch { return false }
-  if (!Array.isArray(parsed) || parsed.length !== 2 || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string') return false
+  try { parsed = JSON.parse(body) } catch { return null }
+  if (!Array.isArray(parsed) || parsed.length !== 2 || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string') return null
   const target = { instanceId: parsed[0], key: parsed[1] }
   writeCrewDraft(target, append(readCrewDraft(target)))
-  return true
+  return 'crew-window:' + body
 }
 
 /** Follow one session's draft, so a recovery landing after a reopen shows. */

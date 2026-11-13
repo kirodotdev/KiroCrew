@@ -843,6 +843,12 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacting it would overwrite the user's own file with markers.",
     ),
     (
+        "Per-chat steering list",
+        "dashboard/handlers/chat_steering.py",
+        "Display paths in the /api/chat/slots/{slot}/steering listing, through the "
+        "Steering tab's _redact_meta. No document body leaves this route.",
+    ),
+    (
         "Telemetry spend ranking",
         "dashboard/handlers/telemetry.py",
         "Session titles attached to the conversations-by-spend rows of "
@@ -904,5 +910,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "only, as a test: a string it would alter is withheld from the diff and "
         "the row is marked redacted, as is any value under a credential-like key, "
         "an env or headers section, an over-long string or a nested value.",
+    ),
+    (
+        "Session reload failure notice",
+        "dashboard/system_notices.py",
+        "The error a reload's failed respawn raised, as `session_reload_failed_notice` "
+        "writes it into the chat row that closes the reload's notice. That row is kept "
+        "in the slot's transcript and broadcast to every connected browser, so the "
+        "whole error passes `redact_and_truncate` before it is cut to the row's bound.",
+    ),
+    (
+        "Worktree create refusals",
+        "dashboard/handlers/worktree.py",
+        "git's own line saying why it cannot open a project as a work tree, returned "
+        "as the `detail` of the 400 a follow-up card's worktree create gets and shown "
+        "under the suggestion. The line can echo a `gitdir:` path from a `.git` file "
+        "whoever can write the folder chose, so it passes `redact_via_context` "
+        "before it leaves the gateway.",
     ),
 )

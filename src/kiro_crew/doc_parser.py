@@ -35,6 +35,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover — exercised via monkeypatch
     _xml_fromstring = None  # type: ignore[assignment]
 
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.zip_vet import (
@@ -246,7 +247,7 @@ def _read_zip_entry(
     if max_size is None:
         max_size = _MAX_ZIP_ENTRY
     with zf.open(name) as f:
-        data = f.read(max_size + 1)
+        data = bounded_read(f, max_size + 1)
         if len(data) > max_size:
             logger.warning("ZIP entry too large (actual): %s", name)
             return None

@@ -3,7 +3,7 @@
 RFC crew-lts-edition, appendix rows "Update channel", "Auto-approval duration"
 and "Slack channels". Each key parses (and a bad value fails the load), folds across
 tiers, and is enforced where its feature reads it. With no policy an ``oss`` build
-behaves as before; an LTS build follows ``stable``, caps a grant at the
+behaves as before; an LTS build follows ``lts`` (D11), caps a grant at the
 shortest duration and admits no Slack channel.
 """
 
@@ -48,7 +48,8 @@ class TestUpdateChannel:
     def test_the_pin_parses_and_an_unknown_channel_fails_the_load(self) -> None:
         assert parse_policy(_doc(updates={"channel": "Insider"})).updates.channel == "insider"
         assert parse_policy(_doc()).updates.channel == ""
-        for bad in ("beta", 3, False):
+        # ``lts`` is the LTS edition's own channel (D11): no policy pins it.
+        for bad in ("beta", "lts", 3, False):
             with pytest.raises(PlatformCompositionError):
                 parse_policy(_doc(updates={"channel": bad}))
 
@@ -76,8 +77,20 @@ class TestUpdateChannel:
         (tmp_path / "channel").write_text("nightly\n", encoding="utf-8")
         monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
         _install(monkeypatch, _doc(updates={"channel": pin}) if pin else None)
-        expected = pin or ("stable" if lts else "nightly")
+        # D11: an LTS build follows lts whatever the policy pins.
+        expected = "lts" if lts else (pin or "nightly")
         assert update_layout.release_channel() == expected
+
+    def test_an_oss_install_cannot_pick_the_lts_channel(self, monkeypatch, tmp_path) -> None:
+        from kiro_crew.platform import update_layout
+
+        _set_edition(monkeypatch, "oss")
+        monkeypatch.setattr(update_layout, "data_home", lambda: tmp_path)
+        _install(monkeypatch, None)
+        with pytest.raises(ValueError):
+            update_layout.set_release_channel("lts")
+        (tmp_path / "channel").write_text("lts\n", encoding="utf-8")
+        assert update_layout.release_channel() == "stable"
 
     @pytest.mark.parametrize("requested", ["nightly", "insider"])
     def test_the_switch_api_refuses_another_channel_than_the_pin(
@@ -620,7 +633,7 @@ class TestLtsTiers:
         }
         ceiling = self._compose(monkeypatch, central, home)
         assert ceiling.yolo_max_seconds == 1800
-        assert ceiling.updates.channel == "stable"
+        assert ceiling.updates.channel == "lts"
         _install(monkeypatch, None)
         from kiro_crew.platform import context as pc
 
@@ -633,7 +646,8 @@ class TestLtsTiers:
         central = _doc(yolo_max_seconds=3600, updates={"channel": "insider"})
         ceiling = self._compose(monkeypatch, central, _doc(yolo_max_seconds=600))
         assert ceiling.yolo_max_seconds == 600
-        assert ceiling.updates.channel == "insider"
+        # D11: not even the central policy moves the edition off lts.
+        assert ceiling.updates.channel == "lts"
 
 
 class TestSessionRenewalCap:

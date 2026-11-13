@@ -20,6 +20,7 @@ import re
 import stat
 import sys
 import sys as _sys
+import threading
 import time
 from email.utils import formatdate
 from functools import partial
@@ -48,7 +49,6 @@ from kiro_crew.apps.bridges import (
     deregister_app_crons_reporting_failures,
     register_app,
     register_app_crons_with_service,
-    snapshot_app_agent_configs,
 )
 from kiro_crew.apps.builtin_unavailable import mark_unavailable as _mark_unavailable
 from kiro_crew.apps.builtin_unavailable import unavailable_builtins as _unavailable_builtins
@@ -120,7 +120,9 @@ from kiro_crew.apps.registry import (
     _blob_cache_dir,
     _blob_cache_key,
     _context_clone_sandbox_mode,
+    _effective_registries,
     _entry_git_url,
+    _external_registry_fetch_status,
     _git_fetch_branch,
     _git_target_is_unsupported,
     _git_url_host,
@@ -128,6 +130,7 @@ from kiro_crew.apps.registry import (
     _manifest_shell_platform_refusal,
     _owner_designated_repo_target,
     _pinned_registries,
+    _public_registry_name,
     _registry_identity_key,
     _registry_trust_tier_of,
     _repo_key_owner_count,
@@ -222,7 +225,9 @@ def register_app_routes(app: web.Application) -> None:
     """Register all app management routes on an aiohttp Application."""
 
     async def _start_proxy_session(app: web.Application) -> None:
-        app["_proxy_session"] = aiohttp.ClientSession()
+        # No auto-decompress: the relay copies the backend's Content-Encoding and
+        # Content-Length, so the body must stay the bytes those headers describe.
+        app["_proxy_session"] = aiohttp.ClientSession(auto_decompress=False)
 
     async def _close_proxy_session(app: web.Application) -> None:
         session = app.get("_proxy_session")
@@ -314,6 +319,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.point_grants import (  # noqa: F401
         point_grant_families,
     )
+    from kiro_crew.apps.registry_pipeline.checkout import (  # noqa: F401
+        _mkdtemp_settled,
+    )
     from kiro_crew.apps.routes_art import (  # noqa: F401
         _BLOB_FETCH_SEMAPHORE,
         _BLOB_FETCH_TIMEOUT,
@@ -331,7 +339,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_enable import (  # noqa: F401
         _BUILTIN_SERVICE_APPS,
         _OPEN_COMMAND_DESKTOP_ENV_KEYS,
-        _client_install_manifest,
         _notify_builtin_service,
         _sync_builtin_config,
     )
@@ -345,14 +352,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _awaits_consent,
         _backend_platform_refusal,
         _check_min_version,
+        _client_install_manifest,
         _deregister_app_off_loop,
+        _note_on_enable_failed_after_update,
+        _prune_dropped_resources,
         _read_app_record,
         _redact_warning,
         _refuse_while_startup_hook_runs,
         _register_app_off_loop,
         _reinstall_from_registry,
+        _rerun_on_enable_after_update,
         _restore_app_after_failed_update,
-        _snapshot_agent_configs_off_loop,
+        _run_on_enable_script,
         _start_backend_after_install,
         _stop_backend_and_observe,
         _suspend_app_for_session_approval_reconsent,
@@ -373,6 +384,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PROXY_STRIP_QUERY_PARAMS,
         _PROXY_TIMEOUT,
         _app_secret_cache,
+        _app_secret_generation,
+        _app_secret_lock,
         _end_relay_midbody,
         _forwarded_query,
         _get_app_secret,
@@ -384,6 +397,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     from kiro_crew.apps.routes_registry import (  # noqa: F401
         _announce_app_updates,
         _derive_registry_name,
+        _registry_fetch_failures,
         _write_registries_config,
     )
     from kiro_crew.apps.routes_static import (  # noqa: F401
@@ -410,4 +424,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,
+    )
+    from kiro_crew.user_json import (  # noqa: F401
+        loads_user_json,
     )

@@ -61,21 +61,6 @@ test("lastState mirrors the most recent pushed payload", async () => {
   assert.strictEqual(u.getInfo().lastState.version, "1.1.0");
 });
 
-test("an install failure survives into lastState — the renderer-reload scenario", async () => {
-  const { deps, emit } = makeDeps();
-  const u = initAutoUpdate(deps);
-  await u.check();
-  emit("update-available", { version: "1.1.0" });
-  await u.download();
-  emit("update-downloaded", { version: "1.1.0" });
-  await u.install(); // dispatch succeeds; the Squirrel handoff then fails:
-  emit("error", new Error("ShipIt could not replace the application bundle"));
-  const last = u.getInfo().lastState;
-  assert.strictEqual(last.state, "error");
-  assert.strictEqual(last.phase, "install");
-  // The failure class travels too, so the renderer can pick localized copy.
-  assert.strictEqual(typeof last.code, "string");
-});
 
 test("lastState is remembered even when the UI push throws", async () => {
   const { deps } = makeDeps();

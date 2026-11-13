@@ -4,7 +4,7 @@ import { settingsPath } from '../../../components/settingsPath'
 import { stageToMainComposer } from '../../../store/chatSlice'
 import type { ComposerHandle, ComposerVoiceOptions } from '../../../chat-core/composer/Composer'
 import { createComposerDraftStore, useComposerDraftSelector, type ComposerDraftStore, useComposerDraft } from '../../../chat-core/composer/draftStore'
-import { mergeIntoDraft, chatPageShouldConsumeHandoff, setDraft } from '../../../utils/chatDrafts'
+import { mergeIntoDraft, mergeReplyIntoDraft, chatPageShouldConsumeHandoff, setDraft } from '../../../utils/chatDrafts'
 import { focusComposer } from '../composerFocus'
 import { deliverCrewWindowTranscript } from '../crew-window/crewWindowStore'
 import { hasUrlToken } from '../../../lib/urlToken'
@@ -80,10 +80,10 @@ export function useComposerDraftState({
   // re-renders only when that fact changes.
   const composerDraft = useState(() => createComposerDraftStore(activeSlot ? drafts.current[activeSlot] ?? '' : ''))[0]
   const setInput = composerDraft.set
-  // A dashboard page's reply lands in this chat's composer, merged after anything
-  // already typed; the person reviews and sends it.
+  // A dashboard page's reply lands in this chat's composer, added after anything
+  // already there (not again when already a paragraph); the person reviews and sends it.
   const insertDashboardReply = useCallback((text: string) => {
-    setInput(prev => mergeIntoDraft(prev, text))
+    setInput(prev => mergeReplyIntoDraft(prev, text))
     focusComposer()
   }, [setInput])
   const inputNonBlank = useComposerDraftSelector(composerDraft, isNonBlank)
@@ -265,7 +265,8 @@ export function useComposerVoiceHost({
     // A crew window's key is not a local slot: its text goes to that crew
     // session's own draft, which the window reads, not to a local draft
     // nothing ever shows.
-    if (deliverCrewWindowTranscript(target, append)) return
+    const crewDraftKey = deliverCrewWindowTranscript(target, append)
+    if (crewDraftKey) return crewDraftKey
     const next = append(drafts.current[target] ?? '')
     setDraft(drafts.current, target, next)
     // Mid-switch guard: if the composer still belongs to `target` (activeSlot

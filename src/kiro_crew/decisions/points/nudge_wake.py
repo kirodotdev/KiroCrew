@@ -133,7 +133,7 @@ OUTCOME_OPTIONS = (
 #: leave the loop armed: a judge reading prose must not be able to end a watch,
 #: because one hostile or mistaken comment in a watched transcript would then buy
 #: permanent silence. Only a typed probe -- a pull request actually merged or
-#: closed, a work ledger with every item closed -- may end a loop.
+#: closed -- may end a loop.
 TERMINAL_OUTCOMES = frozenset({OUTCOME_FINISHED, OUTCOME_BROKEN})
 
 #: The two outcomes that need the owning session even when ``needs_owner`` answered
@@ -579,7 +579,7 @@ def map_answers(answers: Answers | None) -> irq.Verdict:
 
     **The judge never returns ``TERMINAL``.** This judge reads PROSE, and one hostile
     or mistaken comment must not buy permanent silence, so only a TYPED probe may end
-    a loop (a pull request merged or closed, a work ledger with every item closed).
+    a loop (a pull request merged or closed).
     :data:`TERMINAL_MIN_P` decides only how the body is WORDED ("is finished" versus
     "may be"); either way the loop stays armed.
 

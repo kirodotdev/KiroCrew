@@ -40,7 +40,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import AsyncIterator, Final
+from typing import Any, AsyncIterator, Final
 
 # Concrete publish providers are NOT imported here. In the public edition no
 # provider is registered (the registry stays empty → get_provider() raises
@@ -60,9 +60,12 @@ from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.publish_provider import (
     DEFAULT_PROVIDER,
     NON_TEXT_KINDS,
+    PROVIDER_DEFAULT_EXPIRY,
     Capability,
     DriveNotFound,
+    ExpiryRequest,
     NotPublishedError,
+    PublishConflictError,
     PublishError,
     PublishProvider,
     PublishUnavailableError,
@@ -595,8 +598,14 @@ async def publish(
     shared_with: list[str] | None = None,
     actor: str = "user",
     provider_name: str = DEFAULT_PROVIDER,
+    expires_in_days: ExpiryRequest = PROVIDER_DEFAULT_EXPIRY,
 ) -> dict[str, object]:
     """Publish an artifact (or re-publish if already published).
+
+    ``expires_in_days`` applies to a first publish only, and only to a destination
+    whose sharing model declares expiry choices; a value it does not offer is refused
+    with ``ArtifactValidationError``, and any expiry on a re-publish with
+    ``PublishConflictError``, both before anything is uploaded.
 
     Returns the publication summary dict. Raises ``PublishError`` subclasses on
     failure (the handler maps these to HTTP status codes). ``ArtifactNotFound``
@@ -617,7 +626,28 @@ async def publish(
             shared_with=shared_with,
             actor=actor,
             provider_name=provider_name,
+            expires_in_days=expires_in_days,
         )
+
+
+def _first_publish_expiry(provider: PublishProvider, requested: ExpiryRequest) -> dict[str, Any]:
+    """The ``publish()`` keywords that carry a first publish's expiry.
+
+    A destination with no declared choices gets no keyword, so a provider written
+    before the keyword existed keeps working, and an explicit request to it is refused.
+    """
+    sm = provider.sharing_model()
+    if not sm.offers_expiration_choice:
+        if requested != PROVIDER_DEFAULT_EXPIRY:
+            raise ArtifactValidationError(
+                f"{provider.display_name} does not offer an expiry choice"
+            )
+        return {}
+    try:
+        days = sm.resolve_expiration(requested)
+    except ValueError as exc:
+        raise ArtifactValidationError(str(exc)) from exc
+    return {"expires_in_days": days}
 
 
 async def _publish_unlocked(
@@ -627,6 +657,7 @@ async def _publish_unlocked(
     shared_with: list[str] | None = None,
     actor: str = "user",
     provider_name: str = DEFAULT_PROVIDER,
+    expires_in_days: ExpiryRequest = PROVIDER_DEFAULT_EXPIRY,
 ) -> dict[str, object]:
     """The body of :func:`publish`. Call it through ``publish`` and NOT directly:
     on its own it carries the first-publish race this module serializes against.
@@ -650,6 +681,17 @@ async def _publish_unlocked(
     provider = _resolve_provider(
         art.publication.provider if art.publication is not None else provider_name
     )
+    # The destination fixes a publication's lifetime when it is created, so a re-publish
+    # cannot apply one. A request that still names an expiry comes from a panel that saw
+    # the artifact unpublished (two first publishes racing): refuse it, before any
+    # content moves, rather than report a lifetime that was never applied.
+    if art.publication is not None and expires_in_days != PROVIDER_DEFAULT_EXPIRY:
+        raise PublishConflictError(
+            "this artifact is already published, so its expiry can no longer be chosen"
+        )
+    expiry_kwargs: dict[str, Any] = {}
+    if art.publication is None:
+        expiry_kwargs = _first_publish_expiry(provider, expires_in_days)
     if not await provider.ensure_ready():
         raise PublishUnavailableError(provider.install_hint)
 
@@ -708,6 +750,7 @@ async def _publish_unlocked(
             tags=[_redact_untrusted(t, art.source) for t in art.tags],
             visibility=visibility,
             shared_with=shared_with,
+            **expiry_kwargs,
         )
     finally:
         await asyncio.to_thread(_safe_unlink, path)
@@ -879,7 +922,11 @@ async def push_version_by_slug(slug: str, *, force: bool = False) -> None:
 
 
 def _sharing_fields(
-    art: Artifact, provider: PublishProvider, visibility: str, shared_with: list[str]
+    art: Artifact,
+    provider: PublishProvider,
+    visibility: str,
+    shared_with: list[str],
+    notice: tuple[str, str] | None = None,
 ) -> dict[str, object]:
     """The publication patch for a visibility change, including a late-derived link.
 
@@ -894,14 +941,15 @@ def _sharing_fields(
     cleared. A destination that returned its own url at publish time keeps exactly that
     url, so this cannot corrupt a link it did not create.
     """
+    notice_text, notice_code = notice or ("", "")
     fields: dict[str, object] = {
         "visibility": visibility,
         "shared_with": shared_with,
         "last_error": "",
-        # A successful visibility change settles the rollout question, so a
-        # stale "still rolling out" notice must not persist.
-        "notice": "",
-        "notice_code": "",
+        # A successful visibility change settles any old notice. A provider can return a
+        # new one when the change completed but the resulting link needs a warning.
+        "notice": notice_text,
+        "notice_code": notice_code,
     }
     pub = art.publication
     if pub is not None and not pub.view_url and (visibility or "").strip().lower() == "public":
@@ -924,14 +972,14 @@ async def update_sharing(
     provider = _resolve_provider(art.publication.provider)
     if not await provider.ensure_ready():
         raise PublishUnavailableError(provider.install_hint)
-    await provider.update_sharing(
+    notice = await provider.update_sharing(
         external_id=art.publication.artifact_id,
         visibility=visibility,
         shared_with=shared_with,
     )
     updated = await asyncio.to_thread(
         lambda: store.update_publication(
-            slug, **_sharing_fields(art, provider, visibility, shared_with)
+            slug, **_sharing_fields(art, provider, visibility, shared_with, notice)
         )
     )
     assert updated.publication is not None  # just set above

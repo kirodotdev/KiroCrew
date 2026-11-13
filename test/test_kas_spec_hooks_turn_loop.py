@@ -328,3 +328,40 @@ async def test_a_post_tool_use_matcher_meets_an_auto_approved_shell_call(tmp_pat
     _set_stream(client, _shell_call(with_request=False))
     await _drive(state, slot)
     assert [cmd for _, cmd in fired] == ["post"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_kas_session_keeps_its_agent_spawn_output(tmp_path, fired):
+    """The first turn's agentSpawn output is kept for the turn after a compaction."""
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=True)
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert [cmd for _, cmd in fired] == ["spawn"]
+    state.sessions.remember_agent_spawn_context.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_the_turn_after_a_compaction_resends_agent_spawn_output_unrun(tmp_path, fired):
+    """kiro-cli sends agentSpawn output with every request; on KAS a compaction
+    drops it, so the first turn after one sends the kept output again, and the
+    hook does not run a second time."""
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False, context_builder=_context_builder())
+    state.sessions.consume_needs_reinjection = MagicMock(return_value=True)
+    state.sessions.agent_spawn_context = MagicMock(return_value=("SPAWN-CONTEXT",))
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert fired == []
+    sent = str(client.stream.call_args_list[0])
+    assert "[Hook context]\\nSPAWN-CONTEXT\\n[End hook context]" in sent
+
+
+@pytest.mark.asyncio
+async def test_a_warm_turn_without_a_compaction_does_not_resend_it(tmp_path, fired):
+    _write_spec(tmp_path, {"agentSpawn": [{"command": "spawn"}]})
+    state, client, slot = _kas_turn(tmp_path, is_new=False, context_builder=_context_builder())
+    state.sessions.agent_spawn_context = MagicMock(return_value=("SPAWN-CONTEXT",))
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
+    await _drive(state, slot)
+    assert "SPAWN-CONTEXT" not in str(client.stream.call_args_list[0])

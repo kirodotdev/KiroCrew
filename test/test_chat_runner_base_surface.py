@@ -301,7 +301,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_mark_steer_row_state",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', new_state: 'str', siblings: 'list[str] | None' = None) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', new_state: 'str', siblings: 'list[str] | None' = None) -> 'str'",
         ),
         ("_queue_entry_is_orchestration", "function", "(item: 'dict') -> 'bool'"),
         (
@@ -312,7 +312,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_settle_consumed_steers",
             "function",
-            "(slot: \"'_ChatSlot'\", snapshot: 'str', state: \"'DashboardState | None'\" = None) -> 'None'",
+            "(slot: \"'_ChatSlot'\", snapshot: 'str', state: \"'DashboardState | None'\" = None)"
+            " -> \"'tuple[str, int] | None'\"",
         ),
     ),
     "tool_approval": (
@@ -374,7 +375,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_begin_local_turn_marker",
             "async function",
-            "(state: 'DashboardState', slot: '_ChatSlot', generation: 'int') -> 'None'",
+            "(state: 'DashboardState', slot: '_ChatSlot', generation: 'int', opener: "
+            "\"'dict[str, Any] | None'\" = None) -> 'None'",
         ),
         (
             "_clear_local_turn_marker",
@@ -386,7 +388,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_local_turn_opening_row",
             "function",
-            "(slot: '_ChatSlot') -> \"'dict[str, Any] | None'\"",
+            "(slot: '_ChatSlot', opener: \"'dict[str, Any] | None'\" = None) "
+            "-> \"'dict[str, Any] | None'\"",
         ),
         (
             "_retire_local_turn_marker",
@@ -399,7 +402,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_attach_turn_stats",
             "function",
-            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, retries: 'int' = 0) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", elapsed_ms: 'int', credits: 'float', cost_usd: 'float', turn_boundary: 'int' = 0, model: 'str' = '', ttft_ms: 'int' = 0, turn_start_mid: 'str | None' = None, retries: 'int' = 0, cache_rewrite: 'bool' = False) -> 'bool'",
         ),
         (
             "_context_usage_payload",
@@ -429,7 +432,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "turn_stats_meta",
             "function",
-            "(elapsed_ms: 'int', credits: 'float', cost_usd: 'float', model: 'str' = '') -> 'dict[str, Any] | None'",
+            "(elapsed_ms: 'int', credits: 'float', cost_usd: 'float', model: 'str' = '', *, cache_rewrite: 'bool' = False) -> 'dict[str, Any] | None'",
         ),
         ("_MAX_MODEL_ID_LEN", "value", "int"),
         (
@@ -441,7 +444,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_persist_abnormal_turn_usage",
             "async function",
-            "(slot: \"'_ChatSlot'\", client: 'object', session_key: 'str', *, elapsed_ms: 'int', stop_reason: 'str', since: 'object' = <object object>, usage: 'TurnUsage | None' = None) -> 'bool'",
+            "(slot: \"'_ChatSlot'\", client: 'object', session_key: 'str', *, elapsed_ms: 'int', stop_reason: 'str', since: 'object' = <object object>, usage: 'TurnUsage | None' = None, delivered: 'bool | None' = None) -> 'bool'",
         ),
     ),
     "turn_failures": (
@@ -695,7 +698,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "schedule_eager_spawn",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> \"'asyncio.Task | None'\"",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None) -> \"'asyncio.Task | None'\"",
         ),
         (
             "_slot_binding",
@@ -705,7 +708,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_eager_spawn",
             "async function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, signal_generation: 'float | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", *, allow_resume: 'bool' = False, signal_generation: 'float | None' = None, start_priority: 'StartPriority' = <StartPriority.BACKGROUND: 'bg'>, on_ended: 'Callable[[Exception | None], None] | None' = None) -> 'None'",
         ),
         (
             "_spawn_admitted_prefetch",

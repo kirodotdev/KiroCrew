@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
 from functools import partial
@@ -806,6 +807,38 @@ async def add_source(request: web.Request) -> web.Response:
     if existing:
         return _source_exists_response(source_type, existing["id"])
 
+    # A folder typed with a trailing separator or a "." segment names the same
+    # directory as its plain spelling, but the check above matches spellings
+    # exactly. When a row already holds one of those spellings, answer with that
+    # row instead of adding a second one that would ingest the folder again.
+    # The new row keeps the spelling it was given, as before. Lexical only: ".."
+    # is never collapsed, since that can change which directory a symlinked
+    # path names.
+    if source_type in ("local_folder", "obsidian_vault") and probe is not None and probe.is_dir:
+        plain = str(Path(uri))
+        for spelling in dict.fromkeys((plain, plain + os.sep, plain + os.sep + ".")):
+            if spelling == uri:
+                continue
+            same = await asyncio.to_thread(store.get_source_by_uri, spelling)
+            if same:
+                logger.warning(
+                    "Folder source %s is already registered as %s; not adding it again",
+                    uri,
+                    spelling,
+                )
+                # The row's id under "id" too, the key every caller reads: the
+                # md-notebook app confirms the id it gets back, as it does for a
+                # 409, and the Knowledge tab's follow-up sync is a no-op for a
+                # folder (its connector never reports changes; the watcher
+                # scans it).
+                return web.json_response(
+                    {
+                        "id": same["id"],
+                        "status": "exists",
+                        "warning": f"This folder is already a source ({spelling}).",
+                    }
+                )
+
     # The name every insert below stores, resolved once the uri is final; a
     # blank name falls back to the uri. Only a bedrock_kb name is cut, and it
     # is cut rather than refused: the search reads those rows through
@@ -1251,9 +1284,10 @@ async def list_source_files(request: web.Request) -> web.Response:
         }
         for r in rows
     ]
-    # Also count totals
+    # Also count totals. A deduped file was read; its text lives in the copy it
+    # matched, so it is finished work and counts as done.
     total = len(files)
-    done = sum(1 for f in files if f["status"] == "done")
+    done = sum(1 for f in files if f["status"] in ("done", "deduped"))
     failed = sum(1 for f in files if f["status"] == "failed")
     skipped = sum(1 for f in files if f["status"] == "skipped")
     return web.json_response(

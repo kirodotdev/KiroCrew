@@ -38,11 +38,14 @@ def install(slack_provider: Callable[[], Any]) -> WorkspaceService:
     if _SERVICE is not None:
         return _SERVICE
     from kiro_crew.slack.code_channels import hooks
-    from kiro_crew.slack.code_channels.client import CodeChannelsClient
     from kiro_crew.slack.code_channels.routing import _dashboard_state
+    from kiro_crew.slack.code_channels.surface_client import SurfaceClient
 
     service = WorkspaceService(
-        lambda: CodeChannelsClient.from_slack(slack_provider()),
+        # The surface client: its calls meet the per-channel policy at write
+        # time, so the bar (which carries the agent's own items) and the diff
+        # view never reach a channel the policy refuses, whoever starts them.
+        lambda: SurfaceClient.from_slack(slack_provider()),
         set_project=dashboard_project_setter(_dashboard_state),
         project_of=dashboard_project_reader(_dashboard_state),
     )

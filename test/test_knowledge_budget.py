@@ -9,6 +9,7 @@ Covers:
 """
 import asyncio
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -16,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config.loader import KnowledgeConfig
+from kiro_crew.knowledge.ingestion import FileTooLargeError
 
 # Config defaults
 
@@ -76,6 +78,64 @@ class TestEmbedRateLimiter:
         # The fast path must still consume exactly one token, proving
         # acquire() did real work rather than returning early.
         assert limiter._tokens == tokens_before - 1.0
+
+    def test_concurrent_waiters_get_one_token_each(self):
+        """Callers that wait together on an empty bucket are let through one per
+        refill, not all at once after the first wait."""
+        from types import SimpleNamespace
+
+        import kiro_crew.knowledge.ingestion as ing_mod
+        from kiro_crew.knowledge.ingestion import EmbedRateLimiter
+
+        # A fake clock and a fake sleep that only the driver below wakes, at
+        # the earliest deadline, so the waiters' sleeps overlap as real ones do.
+        clock = [0.0]
+        fake_time = SimpleNamespace(monotonic=lambda: clock[0])
+        sleepers: list[tuple[float, asyncio.Future]] = []
+
+        async def fake_sleep(secs):
+            fut = asyncio.get_running_loop().create_future()
+            sleepers.append((clock[0] + secs, fut))
+            await fut
+
+        async def turn():
+            fut = asyncio.get_running_loop().create_future()
+            asyncio.get_running_loop().call_soon(fut.set_result, None)
+            await fut
+
+        times: list[float] = []
+
+        async def one(limiter):
+            await limiter.acquire()
+            times.append(clock[0])
+
+        async def main():
+            with patch.object(ing_mod, "_time", fake_time):
+                limiter = EmbedRateLimiter(rate_limit=60)  # one token per second
+                limiter._tokens = 0.0
+                with patch(
+                    "kiro_crew.knowledge.ingestion.asyncio.sleep",
+                    fake_sleep,  # flake-ok: a driver-woken future, no wall clock is read
+                ):
+                    tasks = [asyncio.ensure_future(one(limiter)) for _ in range(5)]
+                    for _ in range(20):
+                        # Advance the clock only once every unfinished waiter is
+                        # parked in its sleep (bounded, so a bug fails, not hangs).
+                        for _ in range(1000):
+                            if len(sleepers) == sum(not t.done() for t in tasks):
+                                break
+                            await turn()
+                        if all(t.done() for t in tasks):
+                            break
+                        wake = min(deadline for deadline, _ in sleepers)
+                        clock[0] = wake
+                        for item in [s for s in sleepers if s[0] == wake]:
+                            sleepers.remove(item)
+                            item[1].set_result(None)
+                    assert all(t.done() for t in tasks)
+
+        asyncio.run(main())
+        assert sorted(times) == [1.0, 2.0, 3.0, 4.0, 5.0]
 
     def test_rate_limit_setter_resets_bucket(self):
         from kiro_crew.knowledge.ingestion import EmbedRateLimiter
@@ -997,7 +1057,13 @@ class TestBackgroundDeferralStaysRetryable:
             exporter.close()
             importer.close()
 
-    def test_local_file_ingest_still_errors_on_a_real_failure(self, tmp_path):
+    @pytest.mark.parametrize("exc, logs_error", [
+        (RuntimeError("disk gone"), True),
+        # The pipeline already warned about an oversized file: no second ERROR.
+        (FileTooLargeError("raise knowledge.max_ingest_file_mb in config to ingest it"), False),
+    ], ids=["read_error", "oversized"])
+    def test_local_file_ingest_failure_ends_in_error(
+            self, tmp_path, caplog, exc, logs_error):
         from types import SimpleNamespace
 
         from kiro_crew.dashboard.handlers import knowledge as kh
@@ -1005,11 +1071,14 @@ class TestBackgroundDeferralStaysRetryable:
         doc = tmp_path / "doc.md"
         doc.write_text("body", encoding="utf-8")
         store = self._recording_store()
-        pipeline = SimpleNamespace(ingest_file=AsyncMock(side_effect=RuntimeError("disk gone")))
+        pipeline = SimpleNamespace(ingest_file=AsyncMock(side_effect=exc))
 
-        asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
+        with caplog.at_level(logging.ERROR, logger=kh.logger.name):
+            asyncio.run(kh._ingest_local_file_task(pipeline, store, str(doc), "src-1"))
 
         assert self._states(store) == ["error"], store.db.statements
+        errors = [r for r in caplog.records if r.name == kh.logger.name]
+        assert bool(errors) is logs_error
 
 
 class TestUploadRefusesBeforeAccepting:

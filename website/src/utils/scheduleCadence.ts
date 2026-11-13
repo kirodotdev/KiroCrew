@@ -1,4 +1,4 @@
-import { fmtTime, fmtUnit, fmtWeekday } from '../i18n/format'
+import { fmtList, fmtTime, fmtUnit, fmtWeekday } from '../i18n/format'
 import { i18nT } from '../i18n/t'
 import { surfaceMachineValue } from '../surfaces/registry'
 
@@ -52,7 +52,8 @@ const WEEKDAY_RANGE = new Set<string>([
 export function formatCadence(prefill: CronPrefill): string {
   if (prefill.schedMode === 'interval' && prefill.intVal && prefill.intUnit) {
     const unit = prefill.intUnit === 'minutes' ? 'minute' : prefill.intUnit === 'hours' ? 'hour' : 'day'
-    return i18nT('utils.scheduleCadence.every_amount', { amount: fmtUnit(prefill.intVal, unit) })
+    // `short`, not fmtUnit's narrow default: inside a sentence ja reads `6 時間ごと`, not `6hごと`.
+    return i18nT('utils.scheduleCadence.every_amount', { amount: fmtUnit(prefill.intVal, unit, { unitDisplay: 'short' }) })
   }
 
   if (prefill.schedMode === 'weekly' && prefill.weekDays?.length && prefill.weekTime) {
@@ -62,7 +63,7 @@ export function formatCadence(prefill: CronPrefill): string {
       return i18nT('utils.scheduleCadence.weekly_on_day', { day: fmtWeekday(days[0], 'long'), time })
     }
     return i18nT('utils.scheduleCadence.weekly_on_days', {
-      days: days.map(d => fmtWeekday(d, 'short')).join(', '),
+      days: fmtList(days.map(d => fmtWeekday(d, 'short')), { style: 'narrow' }),
       time,
     })
   }

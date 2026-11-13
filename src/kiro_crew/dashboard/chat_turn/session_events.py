@@ -15,6 +15,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.platform import redact_log_via_context
+from kiro_crew.runtime_ownership import is_shared_chat_runtime
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -77,10 +78,14 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
     # notice row, and _flush_segment's cleanup walks back only to the
     # first non-chunk/non-tool row — so flushing after the notice
     # would stop at it and strand this segment's chunk rows as a
-    # duplicate in-memory bubble. Only a segment a cut was deferred
-    # over is finalized here, whether or not its construct has closed
-    # since: that is the text a deferred cut leaves unflushed, and any
-    # other pre-compaction text keeps the plain reset below. The
+    # duplicate in-memory bubble. Any text streamed before the terminal
+    # is finalized here: a harness that compacts on its own can do so
+    # AFTER the model answered (KAS streams the reply, then summarizes,
+    # then its own continuation says the request is done), so that text
+    # is the reply to the prompt, and resetting it would leave the prompt
+    # unanswered. A segment a cut was deferred over is finalized whether or
+    # not its construct has closed since; text that does not start with
+    # that deferred segment keeps the plain reset below. The
     # redactor's withheld tail is emitted first so the wire stream
     # carries the whole segment before the reset discards the
     # buffer. The leaked-call scan reads the accumulator here too,
@@ -88,7 +93,7 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
     if (
         not event.synthesized
         and event.text in ("completed", "failed")
-        and _deferred_cut_text
+        and turn.assistant_text.strip()
         and turn.assistant_text.startswith(_deferred_cut_text)
     ):
         _compaction_dropped_leak = _compaction_dropped_leak or has_leaked_tool_call(
@@ -143,8 +148,24 @@ async def _on_compaction_status(turn: _ChatTurn, event) -> None:
             turn.assistant_text = _cleared_segment_text(slot)
 
 
+def _foreign_shared_clear(turn: _ChatTurn, event) -> bool:
+    """A co-tenant's /clear fanned out by a shared chat runtime, so not ours.
+
+    ``chat_runtime_sharing`` preview: kiro-cli's clear frame names no session,
+    so a shared runtime fans it to every co-tenant marked ``runtime_global``.
+    Unless THIS turn typed /clear, the frame came from a peer.
+    """
+    return (
+        getattr(event, "runtime_global", False)
+        and not turn._this_turn_is_clear
+        and is_shared_chat_runtime(turn.client)
+    )
+
+
 async def _on_clear_status(turn: _ChatTurn, event) -> None:
     """A native clear the session confirms."""
+    if _foreign_shared_clear(turn, event):
+        return
     _replay_accepted_this_turn = turn._replay_accepted_this_turn
     _replay_pending = turn._replay_pending
     _this_turn_is_clear = turn._this_turn_is_clear
@@ -352,7 +373,14 @@ async def _on_agent_switched(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | N
         turn.needs_session_reset = needs_session_reset
         turn._produced_visible_output = True
         return _Flow.BREAK
-    elif new_agent:
+    elif new_agent and (
+        not getattr(event, "runtime_global", False) or not is_shared_chat_runtime(client)
+    ):
+        # The vetoes above stay unconditional: a frame fanned out by a shared
+        # chat runtime (``chat_runtime_sharing`` preview) may still be this
+        # session's own switch, and a pinned thread must never run on as a
+        # foreign agent. Recording the switch is gated: a co-tenant's switch
+        # names no session and must not move this slot's agent.
         # A live provider event can change a template selection.
         # Restore cannot infer that authority from a different
         # transcript name, including a partially persisted switch.

@@ -21,8 +21,11 @@ A file is removed only when all of these hold:
 
 * its name is exactly ``cron_<8 hex>_<8 hex>.jsonl``;
 * its metadata carries ``cron_run="ephemeral"``, recorded when the run starts
-  (after the fire-time gate and admission, once the key is active);
-  untagged legacy transcripts and durable sequence keys are retained;
+  (after the fire-time gate and admission, once the key is active), OR it carries
+  no ``cron_run`` tag and holds nothing besides its metadata line. Builds before
+  the tag wrote one such file per fire and nothing ever drained them; a durable
+  sequence transcript, or any untagged file someone wrote a message into, holds
+  rows and is retained, as is a ``tab``-tagged one;
 * no live or retained run holds the key (``CronService.active_session_keys``);
 * it has not been written for :data:`RUN_TRANSCRIPT_TTL_SECS`, or the same job
   has at least :data:`RUN_TRANSCRIPT_KEEP_PER_JOB` newer run files;
@@ -102,18 +105,33 @@ def prune_stale_run_transcripts(
             key = f"cron:{job_id}:{run_id}"
             if key in active_keys:
                 continue
-            removed += _remove_if_ephemeral(log, key)
+            removed += _remove_if_finished_run(log, key, active_keys)
     if removed:
         logger.info("Pruned %d finished cron run transcript(s)", removed)
     return removed
 
 
-def _remove_if_ephemeral(log: ConversationLog, key: str) -> int:
-    """Delete one tagged, unpinned run transcript; return 1 when it was removed."""
+def _remove_if_finished_run(log: ConversationLog, key: str, active_keys: Container[str]) -> int:
+    """Delete one finished, unpinned run transcript; return 1 when it was removed.
+
+    The verdict and the delete share one hold of the transcript lock, so a row
+    written between them cannot be deleted with the file. *active_keys* is asked
+    again inside that hold: a sequence step can register its stable key while the
+    pass runs, and it writes its execution record under the same lock.
+    """
     try:
-        if log.get_metadata(key).get("cron_run") != "ephemeral":
-            return 0
-        return 1 if log.delete_session(key, skip_pinned=True) else 0
+        with log._locked(key):
+            if key in active_keys or not _is_finished_run(log, key):
+                return 0
+            return 1 if log.delete_session(key, skip_pinned=True) else 0
     except Exception:
         logger.debug("cron run transcript prune failed for %s", key, exc_info=True)
         return 0
+
+
+def _is_finished_run(log: ConversationLog, key: str) -> bool:
+    """Whether *key*'s transcript is a run file nobody reads: tagged, or legacy and empty."""
+    tag = log.get_metadata(key).get("cron_run")
+    if tag == "ephemeral":
+        return True
+    return tag is None and not log.has_messages(key)

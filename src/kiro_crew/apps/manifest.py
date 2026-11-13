@@ -191,6 +191,7 @@ from kiro_crew.apps.manifest_sections import (  # noqa: F401
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS  # noqa: F401
+from kiro_crew.user_json import loads_user_json
 
 # This module is the facade of the app manifest: every name is reached through it as
 # ``kiro_crew.apps.manifest.<name>``. It keeps ``AppManifest`` itself, the cron grant rule
@@ -1306,7 +1307,7 @@ class AppManifest:
     @classmethod
     def from_json_file(cls, path: Path) -> AppManifest:
         """Parse from an ``app.json`` file."""
-        data = json.loads(read_bytes_with_retry(path).decode("utf-8"))
+        data = loads_user_json(read_bytes_with_retry(path).decode("utf-8"))
         if not isinstance(data, dict):
             raise ValueError(f"app.json must be a JSON object, got {type(data).__name__}")
         return cls.from_dict(data)

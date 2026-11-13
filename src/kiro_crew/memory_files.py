@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Iterator, List, Optional
 
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.hooks import (
     FileTooLargeError,
     is_unc_shape,
@@ -564,7 +565,7 @@ class LocalMemoryFiles:
             if actual != expected or os.path.commonpath([actual, root]) != root:
                 raise OSError("Opened manual profile file is outside its expected bound path")
             with os.fdopen(descriptor, "rb", closefd=False) as handle:
-                data = handle.read(self._HISTORY_SNAPSHOT_MAX_BYTES + 1)
+                data = bounded_read(handle, self._HISTORY_SNAPSHOT_MAX_BYTES + 1)
             if len(data) > self._HISTORY_SNAPSHOT_MAX_BYTES:
                 raise FileTooLargeError("Manual profile file exceeds the 8 MiB read limit")
             return data

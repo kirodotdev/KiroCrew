@@ -12,11 +12,14 @@ failure) is honoured here per slot and reported back by code instead of
 aborting the whole run.
 
 Candidates are the slots the sidebar itself counts: idle (``slot.turn_running``
-is False, the fact the projection serializes as ``running``), ``is_turn_interrupted`` on the transcript, no live sub-agents, not
+is False, the fact the projection serializes as ``running``), ``is_turn_interrupted``
+on the transcript, not ``is_interruption_stale`` (a turn cut short more than a
+week ago is left to the session's own Resume button), no live sub-agents, not
 under construction, not a relay archive, and no Crew Mode worker whose root is
 listed (the sidebar's ``crewModeView`` drop) -- the facts the slots projection
-feeds into the row's ``interrupted`` and ``subagents_running`` fields, so the
-count on the button and the ``total`` the server answers are the same number.
+feeds into the row's ``interrupted``, ``interrupted_stale`` and
+``subagents_running`` fields, so the count on the button and the ``total`` the
+server answers are the same number.
 
 Owner-only. ``require_owner_dashboard_request`` refuses app tokens AND
 non-owner dashboard sessions: a Slack-allowlisted ``!dashboard`` user carries
@@ -67,6 +70,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -82,6 +86,7 @@ from kiro_crew.dashboard.relay_archive import is_relay_archive
 from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.dashboard.state import (
     _log_task_exception,
+    is_interruption_stale,
     is_turn_interrupted,
     load_window_off_loop,
 )
@@ -145,14 +150,16 @@ def collect_interrupted_idle(
 
     The same facts the slots projection serializes for the row: a slot under
     construction is not in the payload at all, ``running`` (``turn_running``)
-    and ``subagents_running`` must both be false, and ``interrupted`` is
-    ``is_turn_interrupted`` on the transcript. Relay archives are skipped
+    and ``subagents_running`` must both be false, ``interrupted`` is
+    ``is_turn_interrupted`` on the transcript and ``interrupted_stale`` is
+    ``is_interruption_stale``. Relay archives are skipped
     first: they never run, and the sidebar leaves remote rows out of its count.
 
     *crew_mode* is whether the pressing tab has the Crew Mode preview on
     (``crewModeEnabled``). Only then does the sidebar's ``crewModeView`` drop a
     worker whose root is listed, so only then is that worker left out here.
     """
+    now = time.time()
     subs = getattr(state, "subagents", None)
     under_construction = getattr(state, "_slots_under_construction", None) or ()
     picked: list[tuple[str, _ChatSlot]] = []
@@ -192,7 +199,12 @@ def collect_interrupted_idle(
         # window is still pending answers from its tail and nothing is read from
         # disk on the loop here. Each candidate's window loads off the loop in
         # its own dispatch, before its Continue.
-        if not is_turn_interrupted(summary_rows(slot)):
+        rows = summary_rows(slot)
+        if not is_turn_interrupted(rows):
+            continue
+        # An interruption older than the bulk-Resume window is left to the
+        # session's own Resume button: the sidebar's ``interrupted_stale``.
+        if is_interruption_stale(rows, now):
             continue
         picked.append((name, slot))
     return picked

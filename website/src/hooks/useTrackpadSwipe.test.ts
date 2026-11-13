@@ -24,8 +24,11 @@ function tail(dx: number, n: number, at: number): WheelSample[] {
 
 const yes = () => true
 
-function feedAll(samples: WheelSample[], wants: (d: TrackpadSwipeDir, f: boolean) => boolean = yes) {
-  const reader = createTrackpadSwipeReader(wants)
+function feedAll(
+  samples: WheelSample[], wants: (d: TrackpadSwipeDir, f: boolean) => boolean = yes,
+  reveals?: (d: TrackpadSwipeDir) => boolean,
+) {
+  const reader = createTrackpadSwipeReader(wants, undefined, reveals)
   const verdicts: WheelVerdict[] = samples.map((s) => reader.feed(s))
   return {
     reader,
@@ -308,6 +311,49 @@ describe('createTrackpadSwipeReader', () => {
     expect(asked).toEqual([['right', true]])
   })
 
+  it('a reveal moves nothing until its run has gone SWIPE_THRESHOLD_PX its way, then follows from there', () => {
+    const reveals = (d: TrackpadSwipeDir) => d === 'left'
+    // A mouse's thumb wheel turning on its own: fine steps, about 28px in all.
+    const creep = [1.67, 0.83, 1.67, 6.67, 1.67, 1.67, 1.67, ...Array<number>(15).fill(0.83)]
+    const stray = feedAll(creep.map((dx, i) => ({ dx, dy: 0, mode: 0, ctrl: false, owned: false, at: i * 45 })), yes, reveals)
+    expect(stray.starts).toEqual([])
+    expect(stray.moves).toEqual([])
+    // Still the page's run, so the browser's own swipe does not start under it.
+    expect(stray.consumed).toBe(creep.length)
+    // A swipe starts at the event that reaches 80px, moves from that point, and
+    // hands over the fingers' sums before it, relative to it, for the release.
+    const swipe = feedAll(run(10, 0, 12, 0), yes, reveals)
+    expect(swipe.verdicts.findIndex((v) => v.start)).toBe(7)
+    expect(swipe.verdicts[7].move).toBe(0)
+    expect(swipe.verdicts[7].lead).toEqual([-70, -60, -50, -40, -30, -20, -10].map((sum, i) => ({ sum, at: i * 16 })))
+    expect(swipe.moves).toEqual([0, 10, 20, 30, 40])
+    // A step that crosses 80px moves the drag by what lies past it.
+    expect(feedAll([...run(30, 0, 2, 0), ...run(30, 0, 1, 32)], yes, reveals).verdicts[2]).toMatchObject({ start: 'left', move: 10 })
+    // The other way is no reveal: it starts at its first event, with no lead.
+    const back = feedAll(run(-12, 0, 2, 0), yes, reveals)
+    expect(back.moves).toEqual([-12, -24])
+    expect(back.verdicts[0].lead).toBeUndefined()
+  })
+
+  it("a reveal whose fingers stop short of SWIPE_THRESHOLD_PX is never started by what follows them", () => {
+    const reveals = () => true
+    const at = (dx: number[], t0 = 0) => dx.map((d, i) => ({ dx: d, dy: 0, mode: 0, ctrl: false, owned: false, at: t0 + i * 16 }))
+    // 65px of fingers, then a geometric momentum tail that would sum past 80.
+    const flick = feedAll([...at([20, 25, 20]), ...tail(20, 12, 2 * 16)], yes, reveals)
+    expect(flick.starts).toEqual([])
+    expect(flick.moves).toEqual([])
+    // 60px fast, then the creeping tail of a light lift (2, 2, 1, 0, 1...).
+    const creeping = feedAll(at([30, 30, 2, 2, 1, 0, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1]), yes, reveals)
+    expect(creeping.starts).toEqual([])
+    // The desktop shell's lift-off at 65px: the momentum after it is held.
+    let down = true
+    const reader = createTrackpadSwipeReader(yes, () => down, reveals)
+    at([20, 25, 20]).forEach((s) => reader.feed(s))
+    down = false
+    expect(reader.lift()).toBe(false)
+    expect(at([22, 20, 18, 30, 30], 48).map((s) => reader.feed(s)).filter((v) => v.start || v.move !== undefined)).toEqual([])
+  })
+
   it('a gap ends a drag left open and decides the next run afresh', () => {
     const reader = createTrackpadSwipeReader(yes)
     run(20, 0, 3, 0).forEach((s) => reader.feed(s))
@@ -468,7 +514,7 @@ describe('useTrackpadSwipe: the shell\'s finger phases', () => {
     document.body.replaceChildren()
   })
 
-  function mount() {
+  function mount(reveals?: (d: TrackpadSwipeDir) => boolean) {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'requestAnimationFrame', 'cancelAnimationFrame', 'performance'] })
     const root = document.createElement('div')
     document.body.appendChild(root)
@@ -476,7 +522,7 @@ describe('useTrackpadSwipe: the shell\'s finger phases', () => {
     const onDragMove = vi.fn()
     const onDragEnd = vi.fn()
     const hook = renderHook(() => useTrackpadSwipe({ current: root }, {
-      enabled: true, wants: () => true, onDragStart, onDragMove, onDragEnd, onSwipe: () => {},
+      enabled: true, wants: () => true, reveals, onDragStart, onDragMove, onDragEnd, onSwipe: () => {},
     }))
     /** One wheel now, on the (fake) event clock. */
     const wheel = (dx: number) => {
@@ -497,7 +543,7 @@ describe('useTrackpadSwipe: the shell\'s finger phases', () => {
     const { swipe, wheel, onDragStart, onDragMove, onDragEnd } = mount()
     bridge.emit!('begin')
     swipe(20, 4)
-    expect(onDragStart).toHaveBeenCalledWith('left')
+    expect(onDragStart).toHaveBeenCalledWith('left', undefined)
     // The fingers rest for 400ms: far past the gap, still one drag.
     vi.advanceTimersByTime(400)
     vi.advanceTimersToNextFrame()
@@ -522,7 +568,45 @@ describe('useTrackpadSwipe: the shell\'s finger phases', () => {
     expect(document.documentElement.style.overscrollBehaviorX).toBe('')
     wheel(-20)
     expect(onDragStart).toHaveBeenCalledTimes(2)
-    expect(onDragStart).toHaveBeenLastCalledWith('right')
+    expect(onDragStart).toHaveBeenLastCalledWith('right', undefined)
+  })
+
+  it('a reveal short of its distance survives a pause with the fingers down, and starts at 80px in all', () => {
+    const bridge = installBridge()
+    const { swipe, wheel, onDragStart, onDragMove, onDragEnd } = mount((d) => d === 'left')
+    bridge.emit!('begin')
+    swipe(10, 5)
+    // The fingers rest past the gap but inside the hold cap; the quiet check runs.
+    vi.advanceTimersByTime(300)
+    vi.advanceTimersToNextFrame()
+    expect(onDragStart).not.toHaveBeenCalled()
+    expect(onDragEnd).not.toHaveBeenCalled()
+    swipe(10, 2)
+    expect(onDragStart).not.toHaveBeenCalled()
+    wheel(10)
+    expect(onDragStart).toHaveBeenCalledTimes(1)
+    // It starts at 80px, with the moves before it (the pause included) handed over.
+    const [dir, lead] = onDragStart.mock.calls[0] as [TrackpadSwipeDir, { sum: number; at: number }[]]
+    expect(dir).toBe('left')
+    expect(lead.map((l) => l.sum)).toEqual([-70, -60, -50, -40, -30, -20, -10])
+    expect(lead[5].at - lead[4].at).toBeGreaterThan(300)
+    expect(onDragMove.mock.calls).toEqual([[0, expect.any(Number)]])
+    vi.advanceTimersByTime(16)
+    wheel(10)
+    expect(onDragMove.mock.calls).toEqual([[0, expect.any(Number)], [10, expect.any(Number)]])
+  })
+
+  it('a reveal lifted short of its distance never starts: the momentum after the lift is held', () => {
+    const bridge = installBridge()
+    const { wheel, onDragStart, onDragEnd } = mount((d) => d === 'left')
+    bridge.emit!('begin')
+    for (const dx of [20, 25, 20]) { wheel(dx); vi.advanceTimersByTime(16) }
+    bridge.emit!('end')
+    vi.advanceTimersToNextFrame()
+    // Momentum-like wheels that would take the run past 80px.
+    for (const dx of [22, 20, 18, 30, 30]) { expect(wheel(dx)).toBe(true); vi.advanceTimersByTime(16) }
+    expect(onDragStart).not.toHaveBeenCalled()
+    expect(onDragEnd).not.toHaveBeenCalled()
   })
 
   it('a lost end still releases at the hold cap', () => {

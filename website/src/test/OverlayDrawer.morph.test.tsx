@@ -16,6 +16,8 @@
  *      negative inset.
  *  (4) Reduced motion, a zero width, or a missing morphTarget disables the clip
  *      path entirely rather than emitting a broken one.
+ *  (5) A card face tracks the clip's rect, and the content fades out on collapse
+ *      and in on open, so the window never shows a hard-edged slab of sliced rows.
  */
 import { describe, it, expect, vi } from 'vitest'
 import { render } from '@testing-library/react'
@@ -31,10 +33,10 @@ let morphing = false
 interface MotionMockProps {
   [prop: string]: unknown
   children?: React.ReactNode
-  initial?: { clipPath?: string } | false
-  animate?: { clipPath?: string }
+  initial?: ({ clipPath?: string } & Record<string, unknown>) | false
+  animate?: { clipPath?: string } & Record<string, unknown>
   exit?: { clipPath?: string } | string
-  variants?: Record<string, (custom: boolean) => { clipPath?: string; transition?: { duration?: number } }>
+  variants?: Record<string, (custom: boolean) => { clipPath?: string; transition?: { duration?: number } } & Record<string, unknown>>
   transition?: unknown
 }
 
@@ -55,6 +57,10 @@ vi.mock('framer-motion', async () => {
         'data-animate-clip': animate?.clipPath ?? '',
         'data-exit-clip': typeof resolved?.clipPath === 'string' ? resolved.clipPath : '',
         'data-exit-duration': resolved?.transition?.duration ?? '',
+        // Every non-clip target, for the card face and the content fade.
+        'data-initial': initial === false ? 'none' : JSON.stringify(initial ?? null),
+        'data-animate': JSON.stringify(animate ?? null),
+        'data-exit': JSON.stringify(resolved ? { ...resolved, transition: undefined } : null),
       }, children)
     })
   // One component per tag: a fresh type on every read would remount the subtree.
@@ -173,6 +179,63 @@ describe('OverlayDrawer morph clip', () => {
       expect(view.getByTestId('panel')).toBeTruthy()
       view.unmount()
     }
+    reduceMotion = false
+  })
+})
+
+describe('OverlayDrawer morph edge and content', () => {
+  const edge = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-testid="drawer-morph-edge"]')
+  const content = (c: HTMLElement) => c.querySelector<HTMLElement>('[data-testid="drawer-morph-content"]')!
+  const json = (el: Element, attr: string) => JSON.parse(el.getAttribute(attr)!)
+
+  it('gives the window a card edge that tracks the clip from the button to the panel and back', () => {
+    reduceMotion = false
+    const { container } = mount()
+    const el = edge(container)!
+    expect(el.className).toContain('rounded-xl')
+    expect(el.className).toContain('border-border')
+    expect(json(el, 'data-initial')).toEqual({ top: 9, left: 8, width: 28, height: 28 })
+    expect(json(el, 'data-animate')).toEqual({ top: 0, left: 0, width: 260, height: 600 })
+    expect(json(el, 'data-exit')).toEqual({ top: 9, left: 8, width: 28, height: 28 })
+  })
+
+  it('starts the card edge on the flyout rect when the open came from it', () => {
+    reduceMotion = false
+    const { container } = mount({ expandFrom: { x: 8, y: 9, w: 244, h: 300 } })
+    expect(json(edge(container)!, 'data-initial')).toEqual({ top: 9, left: 8, width: 244, height: 300 })
+  })
+
+  it('fades the content out on collapse and in on open, instead of slicing it', () => {
+    reduceMotion = false
+    const { container } = mount()
+    const el = content(container)
+    expect(json(el, 'data-initial')).toEqual({ opacity: 0 })
+    expect(json(el, 'data-animate')).toEqual({ opacity: 1 })
+    expect(json(el, 'data-exit')).toEqual({ opacity: 0 })
+    expect(el.querySelector('[data-testid="panel"]')).toBeTruthy()
+  })
+
+  it('skips both during a form switch', () => {
+    reduceMotion = false
+    morphing = true
+    document.documentElement.dataset.layoutMorph = 'unfold'
+    try {
+      const { container } = mount()
+      expect(edge(container)!.getAttribute('data-initial')).toBe('none')
+      expect(edge(container)!.getAttribute('data-exit-duration')).toBe('0')
+      expect(content(container).getAttribute('data-initial')).toBe('none')
+      expect(content(container).getAttribute('data-exit-duration')).toBe('0')
+    } finally {
+      morphing = false
+      delete document.documentElement.dataset.layoutMorph
+    }
+  })
+
+  it('adds neither when the morph is off', () => {
+    reduceMotion = true
+    const { container } = mount()
+    expect(edge(container)).toBeNull()
+    expect(container.querySelector('[data-testid="drawer-morph-content"]')).toBeNull()
     reduceMotion = false
   })
 })

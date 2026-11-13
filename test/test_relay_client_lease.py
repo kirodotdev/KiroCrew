@@ -38,6 +38,7 @@ from relay_client_helpers import (
     valid_message,
 )
 
+from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.relay_client import lease as lease_module
 from kiro_crew.relay_client.client import RelayClient
@@ -907,7 +908,7 @@ def saved_version(home: Path) -> Optional[int]:
     path = home / LEASE_VERSION_PATH
     if not path.exists():
         return None
-    saved_for, _, version = path.read_text("ascii").partition(" ")
+    saved_for, _, version = read_bytes_with_retry(path).decode("ascii").partition(" ")
     assert saved_for == crew_instance_id(home)
     return int(version)
 
@@ -957,7 +958,9 @@ async def test_every_versioned_renewal_with_no_token_holds_until_the_next_one(
             clock.elapse()
             await calls(lease, 3)
             assert lease.requests[2]["body"]["leaseVersion"] == 8
-            await async_wait_until(lambda: saved_version(tmp_path) == 9)
+            # The client saves 9 on a thread: read off the loop, where a Windows read
+            # that meets its replace is retried.
+            await async_wait_until(lambda: saved_version(tmp_path) == 9, off_loop=True)
             await assert_retry_later(source.current())
             assert len(lease.requests) == 3
             assert not source.stopped_reason

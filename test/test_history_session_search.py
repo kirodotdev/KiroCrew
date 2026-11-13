@@ -11,6 +11,11 @@ import json
 import os
 
 import pytest
+from session_search_rank_helpers import (
+    RARE_WORD_QUERY,
+    write_rare_word_corpus,
+    write_session,
+)
 
 from kiro_crew import history, history_search
 from kiro_crew.history import ConversationLog
@@ -528,6 +533,26 @@ class TestSearchSessions:
         assert results[0]["snippet"], "expected a non-empty snippet"
         assert "contention" in results[0]["snippet"].casefold()
 
+    def test_a_short_term_inside_an_earlier_word_does_not_take_the_snippet(self, tmp_path):
+        """``ai`` sits inside ``maintain``; the snippet comes from the message about the query."""
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "please maintain the release notes")
+        log.append("hit", "assistant", "we started tracking ai usage per team")
+
+        snippet = log.search_sessions("ai usage tracking")[0]["snippet"].casefold()
+
+        assert "tracking" in snippet
+        assert "maintain" not in snippet
+
+    def test_a_query_of_short_terms_alone_still_snips_its_first_hit(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the s3 bucket for ai models")
+        log.append("hit", "assistant", "s3 ai")
+
+        snippet = log.search_sessions("s3 ai")[0]["snippet"].casefold()
+
+        assert "bucket" in snippet
+
     def test_whitespace_only_query_matches_nothing_and_reads_no_file(self, tmp_path):
         """A whitespace-only query returns [] *and* reads no session file.
 
@@ -883,6 +908,15 @@ class TestParseSearchQuery:
 
         assert needles == ["beta alphabet gamma", "beta", "alphabet", "gamma"]
 
+    def test_short_ascii_terms_anchor_a_snippet_last(self):
+        assert history_search.snippet_needle_tiers("ai usage tracking") == [
+            ["ai usage tracking", "usage", "tracking"],
+            ["ai"],
+        ]
+
+    def test_a_query_of_short_terms_alone_keeps_one_snippet_tier(self):
+        assert history_search.snippet_needle_tiers("s3 ai") == [["s3 ai", "s3", "ai"]]
+
 
 class TestNeedlesMatchText:
     """Single-text gate shared with title-only fallbacks (Discord resume)."""
@@ -970,3 +1004,274 @@ class TestRecencyBoost:
         results = log.search_sessions("apollo")
 
         assert [s["key"] for s in results] == ["stale", "fresh"]
+
+    def test_a_year_old_content_only_match_with_three_hits_still_wins(self, tmp_path, clock):
+        """Both titles are ``notes``, so only the content's hit count can win."""
+        log = ConversationLog(base_dir=tmp_path)
+        now = int(clock.time())
+        write_session(tmp_path, "stale", "apollo apollo apollo deployment notes", mtime=now)
+        write_session(tmp_path, "fresh", "apollo filler filler deployment notes", mtime=now)
+        self._set_age(tmp_path, clock, "stale", 365)
+        self._set_age(tmp_path, clock, "fresh", 0)
+
+        results = log.search_sessions("apollo")
+
+        assert [s["key"] for s in results] == ["stale", "fresh"]
+
+
+class TestRareWordWeighting:
+    """A word few sessions hold outweighs one every session holds, however often repeated."""
+
+    def test_the_rare_word_decides_over_the_repeated_common_one(self, tmp_path):
+        write_rare_word_corpus(tmp_path)
+
+        results = ConversationLog(base_dir=tmp_path).search_sessions(RARE_WORD_QUERY)
+
+        assert [s["key"] for s in results] == ["focused", "chatty"]
+
+    def test_private_sessions_do_not_weigh_the_words(self, tmp_path):
+        """Private sessions holding the rare word would make it common and flip the order."""
+        write_rare_word_corpus(tmp_path, private_sessions=6)
+
+        results = ConversationLog(base_dir=tmp_path).search_sessions(RARE_WORD_QUERY)
+
+        assert [s["key"] for s in results][:2] == ["focused", "chatty"]
+
+    def test_repeating_a_word_still_ranks_above_saying_it_once(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        write_session(tmp_path, "once", "the uploader timeout notes", mtime=1_700_000_000)
+        write_session(
+            tmp_path, "thrice", "the uploader timeout uploader uploader", mtime=1_700_000_000
+        )
+
+        assert [s["key"] for s in log.search_sessions("uploader")] == ["thrice", "once"]
+
+
+class TestRankingWeights:
+    def test_idf_falls_as_more_sessions_hold_the_needle_and_stays_positive(self):
+        weights = [history_search.inverse_document_frequency(n, 100) for n in (1, 10, 50, 100)]
+
+        assert weights == sorted(weights, reverse=True)
+        assert weights[-1] > 0
+
+    def test_saturated_frequency_rises_with_hits_and_levels_off(self):
+        factors = [history_search.saturated_frequency(n, 4000, 4000.0) for n in (0, 1, 3, 1000)]
+
+        assert factors[0] == 0.0
+        assert factors == sorted(factors)
+        assert factors[-1] < history_search._BM25_K1 + 1
+
+    def test_a_longer_session_needs_more_hits_for_the_same_factor(self):
+        short = history_search.saturated_frequency(2, 2000, 8000.0)
+        long = history_search.saturated_frequency(2, 32000, 8000.0)
+
+        assert short > long
+
+
+def _keys(results: list[dict]) -> list[str]:
+    return sorted(row["key"] for row in results)
+
+
+class TestQueryOperators:
+    """``"exact phrase"`` must appear as typed; ``-term`` leaves a session out."""
+
+    def test_a_quoted_phrase_needs_its_words_together_and_in_order(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("together", "user", "the tabs are not loading again")
+        log.append("apart", "user", "loading is slow, are the tabs not cached")
+
+        assert _keys(log.search_sessions('"tabs are not loading"')) == ["together"]
+        assert _keys(log.search_sessions("tabs are not loading")) == ["apart", "together"]
+
+    def test_a_quoted_reference_stays_exact_when_repeated_bare(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("bare", "user", "issue 4411 needs review")
+        log.append("quoted", "user", "issue #4411 needs review")
+
+        assert _keys(log.search_sessions('"#4411" issue 4411')) == ["quoted"]
+
+    def test_a_quoted_reference_keeps_the_bounded_forge_needle(self):
+        needles, _phrase, _floor = history_search.parse_search_query('"#4411" issue 4411')
+        required = [needle for needle in needles if needle.required]
+
+        assert [(needle.text, needle.quoted) for needle in required] == [
+            ("#4411", True),
+            ("#4411", False),
+        ]
+        assert required[1].digit_bounded
+        assert required[1].alts
+
+    def test_a_quoted_reference_rejects_a_longer_reference_number(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("longer", "user", "issue #44110 needs review")
+        log.append("exact", "user", "issue #4411 needs review")
+
+        assert _keys(log.search_sessions('"#4411" issue 4411')) == ["exact"]
+
+    def test_a_plain_duplicate_of_a_quoted_phrase_stays_deduplicated(self):
+        needles, _phrase, _floor = history_search.parse_search_query('"deploy" deploy')
+
+        assert [(needle.text, needle.quoted) for needle in needles if needle.required] == [
+            ("deploy", True)
+        ]
+
+    def test_a_quoted_phrase_does_not_span_two_messages(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("split", "user", "the tabs are")
+        log.append("split", "assistant", "not loading")
+
+        assert log.search_sessions('"tabs are not loading"') == []
+
+    def test_an_excluded_word_leaves_out_a_session_holding_it(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("plain", "user", "deploy the gateway")
+        log.append("vinod", "user", "deploy the gateway for vinod")
+
+        assert _keys(log.search_sessions("deploy -vinod")) == ["plain"]
+
+    def test_an_excluded_word_in_the_title_leaves_the_session_out(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("titled", "user", "deploy the gateway")
+        log.update_metadata("titled", {"title": "Vinod rollout"})
+        log.append("plain", "user", "deploy the gateway")
+
+        assert _keys(log.search_sessions("deploy -vinod")) == ["plain"]
+
+    def test_an_excluded_phrase_leaves_out_only_sessions_holding_it_whole(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("dry", "user", "deploy as a dry run first")
+        log.append("both", "user", "deploy, then run it dry")
+
+        assert _keys(log.search_sessions('deploy -"dry run"')) == ["both"]
+
+    def test_a_flag_and_a_negative_number_stay_literal_text(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("flag", "user", "git push --force failed with -32603")
+        log.append("other", "user", "git push failed")
+
+        assert _keys(log.search_sessions("push --force -32603")) == ["flag"]
+
+    def test_a_short_command_flag_is_searched_not_excluded(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("ran", "user", "ran pytest -k flaky on the suite")
+        log.append("other", "user", "the build is green")
+
+        assert _keys(log.search_sessions("pytest -k flaky")) == ["ran"]
+
+    def test_a_half_typed_exclusion_still_excludes(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("dry", "user", "deploy as a dry run first")
+        log.append("plain", "user", "deploy now")
+
+        assert _keys(log.search_sessions('deploy -"dry run')) == ["plain"]
+
+    def test_a_quoted_long_flag_is_searched_as_text(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("find", "user", "find . -name '*.py'")
+        log.append("other", "user", "find the file")
+
+        assert _keys(log.search_sessions('find "-name"')) == ["find"]
+        assert _keys(log.search_sessions("find -name")) == ["other"]
+
+    def test_a_query_of_exclusions_alone_matches_nothing(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("one", "user", "anything at all")
+
+        assert log.search_sessions("-vinod") == []
+
+    def test_a_half_typed_phrase_searches_its_words(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "the tabs are not loading")
+
+        assert _keys(log.search_sessions('"tabs are')) == ["hit"]
+
+    def test_a_phrase_ends_a_plain_word_run_before_a_number(self):
+        needles, _phrase, _floor = history_search.parse_search_query(
+            'issue "connection reset" 50051'
+        )
+        required = [needle for needle in needles if needle.required]
+
+        assert [needle.text for needle in required] == ["connection reset", "issue", "50051"]
+        assert not any(needle.digit_bounded and needle.required for needle in required)
+
+    def test_a_phrase_between_a_reference_word_and_number_preserves_both_terms(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("no-issue", "user", "connection reset on port 50051")
+        log.append("issue", "user", "issue: connection reset, run 150051")
+
+        assert _keys(log.search_sessions('issue "connection reset" 50051')) == ["issue"]
+
+    def test_an_exclusion_ends_a_plain_word_run_before_a_number(self):
+        needles, _phrase, _floor = history_search.parse_search_query("issue -vinod 42")
+        required = [needle for needle in needles if needle.required]
+
+        assert [needle.text for needle in required] == ["issue", "42"]
+        assert not any(needle.digit_bounded and needle.required for needle in required)
+
+    def test_an_operator_after_a_reference_does_not_break_its_lead_in(self):
+        needles, _phrase, _floor = history_search.parse_search_query('issue 42 "connection reset"')
+        required = [needle for needle in needles if needle.required]
+
+        assert [(needle.text, needle.quoted) for needle in required] == [
+            ("connection reset", True),
+            ("#42", False),
+        ]
+        assert required[1].digit_bounded
+
+    def test_the_snippet_centres_on_the_quoted_phrase(self, tmp_path):
+        log = ConversationLog(base_dir=tmp_path)
+        log.append("hit", "user", "loading screens appear for a while")
+        log.append("hit", "assistant", "yes, the tabs are not loading at all")
+
+        snippet = log.search_sessions('"tabs are not loading" loading')[0]["snippet"]
+
+        assert "tabs are not loading" in snippet.casefold()
+
+
+class TestSplitQueryOperators:
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "ack contention hypotheses",
+            "member-vinod-builder",
+            "pr 4411",
+            "a  b\tc",
+            "--force -5 -",
+            "rm -rf build -k",
+        ],
+    )
+    def test_a_query_without_operators_splits_on_whitespace_alone(self, query):
+        operators = history_search.split_query_operators(query)
+
+        assert operators.words == tuple(query.split())
+        assert operators.phrases == operators.excluded == ()
+        assert operators.word_run_starts == ()
+
+    def test_phrases_and_exclusions_are_separated_in_typed_order(self):
+        operators = history_search.split_query_operators('deploy "dry  run" -vinod -"big bang" now')
+
+        assert operators.words == ("deploy", "now")
+        assert operators.phrases == ("dry run",)
+        assert operators.excluded == ("vinod", "big bang")
+        assert operators.positive == ("deploy", "dry run", "now")
+
+    def test_phrases_and_exclusions_start_new_plain_word_runs(self):
+        operators = history_search.split_query_operators('issue "connection reset" 50051 -vinod 42')
+
+        assert operators.words == ("issue", "50051", "42")
+        assert operators.word_run_starts == (1, 2)
+
+    def test_excluded_needles_neither_gate_nor_anchor_a_snippet(self):
+        needles, _phrase, _floor = history_search.parse_search_query("deploy -vinod")
+
+        assert [(n.text, n.required, n.excluded) for n in needles] == [
+            ("deploy", True, False),
+            ("vinod", False, True),
+        ]
+        assert history_search.snippet_needle_tiers("deploy -vinod") == [["deploy"]]
+
+    def test_needles_match_text_rejects_an_excluded_term(self):
+        needles, _phrase, floor = history_search.parse_search_query("deploy -vinod")
+
+        assert history_search.needles_match_text(needles, "deploy plan", floor)
+        assert not history_search.needles_match_text(needles, "deploy for vinod", floor)

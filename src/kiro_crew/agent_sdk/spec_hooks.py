@@ -20,10 +20,10 @@ Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
 capabilities say Crew owns the job.
 
-claude is a member of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` alone. Its
-harness is handed no spec, so Crew fires the events that cannot refuse a call
-(:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
-(:func:`observer_spec_hooks`): claude approves some calls without asking, so a
+claude and codex are members of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS``
+alone. Neither harness is handed the spec, so Crew fires the events that cannot
+refuse a call (:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
+(:func:`observer_spec_hooks`): each approves some calls without asking, so a
 gating hook would be skipped on exactly those. Nothing there gates on the spec, so
 a spec that cannot be read costs its hooks, never a tool call.
 
@@ -72,6 +72,28 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.kas_project_hooks import (  # noqa: F401,E402 - re-exported
+    CRON_SESSION_KEY_PREFIX,
+    KasProjectHooks,
+    _consented_kas_project_hooks,
+    _live_bot_owns,
+    kas_hook_checkout,
+    kas_project_hooks_state,
+)
+
+# Re-exported for the modules that import these from spec_hooks; they live in a
+# sibling only to keep this module under its line cap. The sibling imports this
+# module's seams lazily, so the two load in either order.
+from kiro_crew.agent_sdk.spec_hooks_reproject import (  # noqa: E402,F401
+    ClaimToken,
+    UnattendedClaim,
+    acquire_with_token,
+    close_reprojection_gap,
+    live_session_entry,
+    make_claim_token,
+    reproject_claimed_session,
+    reproject_unattended_claim,
+)
 from kiro_crew.hooks import (
     _HOOK_STREAM_CAP_BYTES,
     HOOK_EVENT_AGENT_SPAWN,
@@ -114,9 +136,9 @@ OBSERVER_HOOK_EVENTS = frozenset(
 #: so a matcher on any other event is dropped rather than applied to the context.
 _TOOL_EVENTS = frozenset({HOOK_EVENT_PRE_TOOL_USE, HOOK_EVENT_POST_TOOL_USE})
 
-#: Bound on the hooks taken from one spec, the same total the materialized spec is
-#: capped at, so a hand-written spec cannot make every turn spawn without limit.
-_MAX_SPEC_HOOKS = 20
+#: Bound on the hooks taken from one spec, so a runaway spec cannot make every turn
+#: spawn without limit, set high enough that an installed agent's set runs whole.
+_MAX_SPEC_HOOKS = 64
 
 #: Bound on a retained command: the longest command the shell gate scans, so a
 #: spec hook is held to the same ceiling as a shell tool call's command and every
@@ -467,8 +489,11 @@ def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: 
     command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
     kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
 
-    claude names its shell call the same way: its frames carry no tool id, and a
-    call of kind ``execute`` is its Bash tool.
+    claude names its shell call the same way, as its frames carry no tool id. A codex
+    ``tool_call`` event carries its own id (``codex#exec_command``, ``codex#apply_patch``,
+    :func:`kiro_crew.acp._dispatch_parts.tool_call_identity.codex_tool_name`), so the
+    fallback names only a codex call that event left unnamed; a codex MCP call is
+    kind ``execute`` too, but its MCP marker classifies it not shell.
 
     "" on a backend whose harness runs the spec's hooks itself, and for a call
     nothing names, which keeps the title matching it had.
@@ -647,14 +672,21 @@ def _overlong_commands(spec: dict[str, Any]) -> list[OverlongHookCommand]:
 
 
 def overlong_spec_hook_commands(
-    agent_id: str, project_dir: str | None = None, *, session_key: str = ""
+    agent_id: str,
+    project_dir: str | None = None,
+    *,
+    session_key: str = "",
+    kas_checkout: str | None = None,
 ) -> list[OverlongHookCommand]:
     """The active spec's hooks that do not run because their command is too long.
 
     For the session-start notice. Reads the spec :func:`crew_fired_spec_hooks`
-    reads; raises when it cannot be read.
+    reads, *kas_checkout* included (a KAS session's folder agent's own hooks when
+    the folder's choice lets them run); raises when it cannot be read.
     """
-    return _overlong_commands(_agent_spec(agent_id, project_dir, session_key))
+    return _overlong_commands(
+        _agent_spec(agent_id, project_dir, session_key, kas_checkout=kas_checkout)
+    )
 
 
 def _hook(
@@ -1129,7 +1161,11 @@ def _convert(agent_id: str, spec: dict[str, Any]) -> tuple[tuple[ScriptHook, ...
 
 
 def _agent_spec(
-    agent_id: str, project_dir: str | None = None, session_key: str = ""
+    agent_id: str,
+    project_dir: str | None = None,
+    session_key: str = "",
+    *,
+    kas_checkout: str | None = None,
 ) -> dict[str, Any]:
     """*agent_id*'s spec, or ``{}`` when it has none on disk.
 
@@ -1152,12 +1188,20 @@ def _agent_spec(
     session's merged spec (``mate_worker.mate_service_scope_spec``), the one its
     projection was handed, so the hooks its crewmate's file carries are the ones
     that fire.
+
+    *kas_checkout* is a KAS session's own folder (:func:`kas_hook_checkout`): a
+    project-only agent's ``hooks`` are read from it when the folder's project-hooks
+    choice is on (:func:`_consented_kas_project_hooks`).
     """
-    return _agent_spec_with_origin(agent_id, project_dir, session_key)[0]
+    return _agent_spec_with_origin(agent_id, project_dir, session_key, kas_checkout=kas_checkout)[0]
 
 
 def _agent_spec_with_origin(
-    agent_id: str, project_dir: str | None = None, session_key: str = ""
+    agent_id: str,
+    project_dir: str | None = None,
+    session_key: str = "",
+    *,
+    kas_checkout: str | None = None,
 ) -> tuple[dict[str, Any], str]:
     """:func:`_agent_spec` and where it came from: ``"project"`` or ``"user"``."""
     # circular import: the ACP layer imports the config loader, which sits below
@@ -1187,6 +1231,10 @@ def _agent_spec_with_origin(
             return spec, "project"
     agents_dir = spec_dir_for(agent_id)
     if agent_spec_absent(agents_dir, agent_id):
+        if kas_checkout:
+            consented = _consented_kas_project_hooks(agent_id, kas_checkout)
+            if consented is not None:
+                return consented, "project"
         return {}, "user"
     return load_agent_spec(agents_dir, agent_id), _user_dir_origin(agents_dir)
 
@@ -1290,6 +1338,10 @@ def crew_fired_spec_hooks(
     translates_tools_settings: bool = False,
     session_key: str = "",
     discards_mcp_oauth: bool = False,
+    withholds_oauth_secret: bool = False,
+    governance_session_key: str = "",
+    governance_app: str | None = None,
+    kas_checkout: str | None = None,
 ) -> tuple[list[ScriptHook], list[str], int]:
     """The active agent spec's hooks as script hooks, the keys nothing carries, and
     how many ``confirm: true`` hooks are skipped.
@@ -1301,20 +1353,31 @@ def crew_fired_spec_hooks(
     cannot be read; the caller fails PreToolUse closed on that. *project_dir* is
     :func:`spec_project_dir` of the session. *translates_tools_settings* is true
     only for a KAS session, the one backend that receives ``toolsSettings`` as
-    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session too,
-    the backend that drops a remote MCP server's ``oauth`` block. *session_key*
+    ``permissions`` rules. *discards_mcp_oauth* is true only for a KAS session whose
+    engine Crew knows drops a remote MCP server's ``oauth`` block.
+    *withholds_oauth_secret* is true for every KAS session: its projection sends
+    nothing, on any engine, from a block that names a ``clientSecret`` or keeps no
+    key it can send. *session_key*
     reads a crewmate's worker as that session's merged spec (:func:`_agent_spec`).
+    *governance_session_key* and *governance_app* are the session and app the KAS
+    projection judged a ``trustedAgents`` allow for, so the notice judges it alike.
+    *kas_checkout* is :func:`kas_hook_checkout` of the session.
     """
     # circular import: the ACP layer imports the config loader, which sits below
     # this module; resolved at call time like the other driver seams here.
     from kiro_crew.acp.kas_agents import spec_keys_without_carrier
 
-    spec, origin = _agent_spec_with_origin(agent_id, project_dir, session_key)
+    spec, origin = _agent_spec_with_origin(
+        agent_id, project_dir, session_key, kas_checkout=kas_checkout
+    )
     hooks, unconfirmable = _convert(agent_id, spec)
     lost = spec_keys_without_carrier(
         spec,
         translates_tools_settings=translates_tools_settings,
         discards_mcp_oauth=discards_mcp_oauth,
+        withholds_oauth_secret=withholds_oauth_secret,
+        session_key=governance_session_key,
+        governance_app=governance_app,
     )
     # Copies, so the cached conversion keeps no origin: the same hooks can come
     # from a user-level spec in one session and a project spec in another.
@@ -1330,9 +1393,9 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     field and Crew does not fire it (``backend_mcp_ability._broker_only_dispositions``).
     False where the harness runs the field itself (kiro-cli), where Crew fires it
     (``crew_fires_spec_hooks``) or all of it but ``preToolUse``
-    (``crew_fires_spec_observer_hooks``, claude, whose ``preToolUse`` entries get
-    their own notice), and for a backend with no ruling, about which nothing is
-    established.
+    (``crew_fires_spec_observer_hooks``, claude and codex, whose ``preToolUse``
+    entries get their own notice), and for a backend with no ruling, about which
+    nothing is established.
     """
     caps = capabilities_of(provider)
     if caps.crew_fires_spec_hooks or caps.crew_fires_spec_observer_hooks:
@@ -1367,8 +1430,9 @@ def spec_steering_read_nowhere(provider: object) -> bool:
 
     True where the backend's mirror rules ``resources`` ``withheld`` or
     ``no-channel``: the harness is handed no spec, and Crew's own steering load
-    serves only the ``provider=claude_code`` seam's default agent
-    (``providers.mirrors.base.RESOURCES_NO_READER``). False for a backend with no
+    serves only the default agent, on Claude Code and Codex
+    (``ACP_BACKENDS_CREW_LOADS_SPEC_STEERING``,
+    ``providers.mirrors.base.RESOURCES_NO_READER``). False for a backend with no
     mirror (kiro-cli and KAS read ``resources`` themselves) and for one whose
     rulings cannot be read, about which nothing is established.
     """
@@ -1444,8 +1508,8 @@ def spec_hook_events(agent_id: str, project_dir: str | None = None) -> list[str]
 def _fires_observer_spec_hooks_only(provider: object) -> bool:
     """Whether Crew fires *provider*'s spec hooks on :data:`OBSERVER_HOOK_EVENTS` only.
 
-    True on claude: its harness is handed no spec, and it approves some calls
-    without a permission request, so a ``preToolUse`` hook could not gate them.
+    True on claude and codex: neither is handed the spec, and each approves some
+    calls without a permission request, so a ``preToolUse`` hook could not gate them.
     """
     caps = capabilities_of(provider)
     return caps.crew_fires_spec_observer_hooks and not caps.crew_fires_spec_hooks
@@ -1456,8 +1520,66 @@ def observer_spec_hooks(hooks: list[ScriptHook]) -> list[ScriptHook]:
     return [hook for hook in hooks if hook.event in OBSERVER_HOOK_EVENTS]
 
 
+def post_tool_matchers_no_builtin_meets(provider: object, hooks: Sequence[ScriptHook]) -> list[str]:
+    """The ``postToolUse`` matchers of *hooks* that no built-in tool on *provider* meets.
+
+    codex only. Its built-in calls are named through its row in
+    ``harness_tool_names.HARNESS_TOOL_TABLES``, so a matcher that names a kiro-cli
+    built-in outside that row (``fs_read``, ``grep``, ``glob``, ``web_fetch``,
+    ``use_subagent``, ``code``), by its key or by the name kiro-cli's stdin gives it
+    (:data:`KIRO_CLI_BUILTIN_HOOK_NAMES`), meets no built-in codex call. It still
+    meets an MCP tool with the same name, because ``hooks.pre_tool_match_names``
+    adds an MCP call's bare tool name, so the notice says the hook runs only there
+    (:func:`unmet_post_tool_matchers_sentence`). A pattern or an MCP matcher is not
+    listed. Empty on every other backend.
+    """
+    # circular import: see spec_hook_tool_names.
+    from kiro_crew.acp.harness_tool_names import CODEX_TOOL_IDS_BY_KIRO_TOOL
+    from kiro_crew.acp_backends import ACP_BACKEND_CODEX
+
+    if capabilities_of(provider).backend == ACP_BACKEND_CODEX:
+        codex_names = {n for ids in CODEX_TOOL_IDS_BY_KIRO_TOOL.values() for n in ids}
+        unmet = {
+            name
+            for kiro_name, (stdin_name, _tags) in KIRO_CLI_BUILTIN_HOOK_NAMES.items()
+            if kiro_name not in CODEX_TOOL_IDS_BY_KIRO_TOOL
+            for name in (kiro_name, stdin_name)
+            if name not in codex_names
+        }
+        matchers = [h.matcher for h in hooks if h.event == HOOK_EVENT_POST_TOOL_USE]
+        return list(dict.fromkeys(m for m in matchers if m in unmet))
+    return []
+
+
+#: The prefix of a :func:`unmet_post_tool_matcher_key`.
+_UNMET_POST_TOOL_KEY_PREFIX = "hooks.postToolUse["
+
+
+def unmet_post_tool_matcher_key(matcher: str) -> str:
+    """The spec key that names a ``postToolUse`` *matcher* no built-in tool meets.
+
+    For :attr:`TurnSpecHooks.lost`, so a subagent, task-runner or cron turn names
+    it in the notice it already gives for such keys (:func:`spec_keys_notice`),
+    which says it with :func:`unmet_post_tool_matchers_sentence`.
+    """
+    return f"{_UNMET_POST_TOOL_KEY_PREFIX}{matcher}]"
+
+
+def unmet_post_tool_matchers_sentence(agent: str, matchers: Sequence[str]) -> str:
+    """The notice sentence for ``postToolUse`` *matchers* no built-in tool meets.
+
+    The hooks are not said to have no effect: an MCP tool with the same name still
+    meets them (:func:`post_tool_matchers_no_builtin_meets`).
+    """
+    return (
+        f"Agent {agent} has postToolUse hooks for {', '.join(matchers)}. No built-in "
+        "tool on this backend has that name, so these hooks run only after a call to "
+        "an MCP tool with the same name."
+    )
+
+
 class TurnSpecHooks(NamedTuple):
-    """What a subagent or task-runner turn needs to gate its permission requests."""
+    """What a subagent, task-runner, cron or channel turn needs to gate its permission requests."""
 
     #: The agent spec's own hooks, as script hooks.
     hooks: list[ScriptHook]
@@ -1472,9 +1594,106 @@ class TurnSpecHooks(NamedTuple):
     #: False for a backend that runs the spec's hooks itself. The Hooks page's
     #: hooks gate a permission request either way.
     gated: bool
+    #: The spec keys nothing carries to this backend, for :func:`spec_keys_notice`.
+    lost: tuple[str, ...] = ()
 
 
 _NOT_GATED = TurnSpecHooks([], None, False, False)
+
+
+def spec_keys_notice(agent: str, keys: list[str]) -> str:
+    """The session-start notice for spec keys this backend never receives.
+
+    A remote MCP server's ``oauth`` block (``mcpServers.<name>.oauth``) gets one
+    more sentence, because what it costs is sign-in, not a setting. So do a refused
+    ``permissions`` block and an ``allow`` it leaves out (``permissions.rules[<i>]``),
+    since what they grant keeps asking, and, last, each unreadable ``allowedCommands``
+    entry (``<key>.allowedCommands: <entry> (<reason>)``): the other entries apply
+    unless the list is also named whole. A ``hooks.postToolUse[<matcher>]`` key
+    gets :func:`unmet_post_tool_matchers_sentence` instead of "no effect". The
+    entries past the bound Kiro Crew applies get their own sentence
+    (``kas_unread_commands.over_limit_notice``).
+    """
+    from kiro_crew.acp.kas_spec_denies import GATE_JUDGED_MARK
+    from kiro_crew.acp.kas_unread_commands import over_limit_notice
+    from kiro_crew.agent_sdk.kas_tool_view import allow_exclude_limit
+    from kiro_crew.agent_sdk.tools_settings_reach import GATE_READ_MARK as GATE
+    from kiro_crew.mcp_oauth_projection import oauth_servers_in
+    from kiro_crew.platform.allowed_commands import UNREADABLE_ENTRY_MARK as MARK
+
+    over_limit, keys = over_limit_notice(agent, keys)
+    unread = [key for key in keys if MARK in key]
+    keys = [key for key in keys if MARK not in key]
+    whole = {key.partition(MARK)[0] + ".allowedCommands" for key in unread} & {
+        key.removesuffix(GATE) for key in keys
+    }
+    others = "" if whole or over_limit else "; the agent's other entries still apply"
+    entries = (
+        f"Agent {agent} has allowedCommands entries Kiro Crew cannot read: {'; '.join(unread)}. "
+        "Each allows nothing, so a command only it matches asks for approval, or is refused "
+        f"when denyByDefault is set{others}. Run kirocrew doctor to list them."
+    )
+    named = ([entries] if unread else []) + ([over_limit] if over_limit else [])
+    if named and not keys:
+        return "ℹ️ " + " ".join(named)
+    # Crew's own gate still refuses what a marked allowlist leaves out, so it is
+    # never said to have no effect.
+    allowlists = [k.removesuffix(GATE) for k in keys if k.endswith(GATE)]
+    # A deny Crew's gate refuses is not "no effect" either.
+    judged = [k.removesuffix(GATE_JUDGED_MARK) for k in keys if k.endswith(GATE_JUDGED_MARK)]
+    rest = [k for k in keys if not k.endswith(GATE) and not k.endswith(GATE_JUDGED_MARK)]
+    # A postToolUse matcher no built-in tool meets still runs on an MCP tool with
+    # the same name, so it is not said to have no effect.
+    unmet = [k for k in rest if k.startswith(_UNMET_POST_TOOL_KEY_PREFIX) and k.endswith("]")]
+    rest = [k for k in rest if k not in unmet]
+    sentences = []
+    if rest:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(rest)}, which this backend does not "
+            "receive, so they have no effect in this session."
+        )
+    if allowlists:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(allowlists)}, which this backend does not "
+            "receive. Kiro Crew's own approval gate still enforces them: it refuses what "
+            "they do not cover, and what they cover may ask for approval."
+        )
+    if judged:
+        sentences.append(
+            f"Agent {agent} sets {' and '.join(judged)}, which this backend does not "
+            "receive. Kiro Crew's own approval gate refuses a plain command they name, "
+            "and each command of a plain chain (&&, ||, ;, |). It does not judge any "
+            "other command, such as one with $(...), a backtick, a redirect, a newline, "
+            "a trailing &, a tab, a ( ) group, or a quote, # or [[ in a chain, so such "
+            "a command runs without a refusal."
+        )
+    if unmet:
+        matchers = [k[len(_UNMET_POST_TOOL_KEY_PREFIX) : -1] for k in unmet]
+        sentences.append(unmet_post_tool_matchers_sentence(agent, matchers))
+    notice = "ℹ️ " + " ".join(sentences)
+    servers = oauth_servers_in(keys)
+    if servers:
+        noun = "server" if len(servers) == 1 else "servers"
+        notice += f" Sign-in to MCP {noun} {', '.join(servers)} will not work on this backend yet."
+    if "permissions" in keys:
+        notice += (
+            " A permissions block is not sent at all when it names a policies bundle "
+            "or is malformed or too large. With a policies bundle, the agent's shell "
+            "and file tools also ask for approval even where allowedTools grants them."
+        )
+    if any(key.startswith("permissions.rules[") for key in keys):
+        notice += (
+            f" An allow rule whose exclude list has more than {allow_exclude_limit()} "
+            "patterns is not sent, so what it allows asks for approval."
+        )
+    if any(".deniedCommands: " in key for key in rest):
+        notice += (
+            " Kiro Crew does not check those deniedCommands entries, so a command only they "
+            "name is not refused on this backend."
+        )
+    for sentence in named:
+        notice += f" {sentence}"
+    return notice
 
 
 def session_agent(provider: object, agent_id: str) -> str:
@@ -1504,7 +1723,9 @@ def provider_session_key(provider: object) -> str:
     return ""
 
 
-async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
+async def turn_spec_hooks(
+    provider: object, agent_id: str, *, project_hooks: bool = True
+) -> TurnSpecHooks:
     """The spec hooks a subagent or task-runner turn gates on, and how.
 
     *provider* and *agent_id* are the turn's OWN: a subagent runs its own agent on
@@ -1513,9 +1734,12 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     resolved through :func:`session_agent`; when none can be named, every
     permission request is refused, since whose hooks apply is unknown.
 
-    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude) the turn
+    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude, codex) the turn
     is not gated: it gets those hooks, and an agent that cannot be named or a
     spec that cannot be read leaves it with none.
+
+    *project_hooks* false (a cron turn) never reads a KAS folder agent's own
+    hooks, whatever the folder's choice; the user-level spec's hooks still fire.
     """
     if _fires_observer_spec_hooks_only(provider):
         return await _observer_turn_spec_hooks(provider, agent_id)
@@ -1529,13 +1753,22 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
         return TurnSpecHooks([], work_dir, True, True)
     # A crewmate's worker fires its session's merged spec, as the chat turn does.
     session_key = provider_session_key(provider)
+    # The keys the session runs without, read as the chat turn reads them.
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.agent_sdk.kas_engine import discards_mcp_oauth
+
+    on_kas = capabilities_of(provider).backend == ACP_BACKEND_KAS
     try:
-        hooks, _lost, _unconfirmable = await asyncio.to_thread(
+        hooks, lost, _unconfirmable = await asyncio.to_thread(
             functools.partial(
                 crew_fired_spec_hooks,
                 agent_id,
                 spec_project_dir(provider),
+                translates_tools_settings=on_kas,
+                discards_mcp_oauth=on_kas and discards_mcp_oauth(provider),
+                withholds_oauth_secret=on_kas,
                 session_key=session_key,
+                kas_checkout=kas_hook_checkout(provider) if project_hooks else None,
             )
         )
     except Exception:  # noqa: BLE001 - the caller fails permission requests closed
@@ -1553,7 +1786,7 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
         hooks = await asyncio.to_thread(merge_user_hook_files, provider, hooks)
     except Exception:  # noqa: BLE001 - a hook-file read must never fail the turn
         logger.debug("user hook files could not be merged for this turn", exc_info=True)
-    return TurnSpecHooks(hooks, work_dir, False, True)
+    return TurnSpecHooks(hooks, work_dir, False, True, tuple(lost))
 
 
 async def _observer_turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
@@ -1579,10 +1812,17 @@ async def _observer_turn_spec_hooks(provider: object, agent_id: str) -> TurnSpec
             exc_info=True,
         )
         return _NOT_GATED
-    return TurnSpecHooks(observer_spec_hooks(hooks), work_dir, False, False)
+    observed = observer_spec_hooks(hooks)
+    # A postToolUse matcher no built-in tool on this backend meets is named with
+    # the keys the turn's notice lists (``spec_keys_notice``).
+    unmet = post_tool_matchers_no_builtin_meets(provider, observed)
+    lost = tuple(unmet_post_tool_matcher_key(m) for m in unmet)
+    return TurnSpecHooks(observed, work_dir, False, False, lost)
 
 
-async def hook_projection_stale(provider: object, agent_id: str) -> bool:
+async def hook_projection_stale(
+    provider: object, agent_id: str, *, project_hooks: bool = True
+) -> bool:
     """Whether *provider*'s live session auto-approves a capability a PreToolUse hook
     now covers.
 
@@ -1594,12 +1834,19 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
     with no spec on disk (a KAS built-in mode) has no spec hooks, so only the Hooks
     page's hooks count; a spec that exists but cannot be read answers True:
     re-projecting is the safe direction. A crewmate's worker is read
-    as the provider's own session's merged spec (:func:`_agent_spec`).
+    as the provider's own session's merged spec (:func:`_agent_spec`). Each entry
+    of the batch is checked on its own, a registered sub-agent target's included:
+    its calls run inside this agent's turn under its own entry's permissions.
     """
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return False
     approved = getattr(provider, "kas_auto_approved_capabilities", None)
-    if not approved:
+    if approved is None:
+        return False
+    from kiro_crew.acp.kas_subagent_targets import registered_unprompted
+
+    parts = registered_unprompted(approved, getattr(provider, "kas_registered_agents", None))
+    if not parts:
         return False
     agent_id = session_agent(provider, agent_id)
     if not agent_id:
@@ -1618,13 +1865,18 @@ async def hook_projection_stale(provider: object, agent_id: str) -> bool:
         )
 
         # A built-in mode with no spec: only the Hooks page's hooks count.
-        spec = _agent_spec(agent_id, None, session_key)
-        covered = hook_gated_capabilities(
-            pre_tool_hook_matchers(agent_id, spec),
-            mcp_servers=approved_mcp_servers(approved),
-            mcp_tool_names=cached_mcp_tool_names,
-        )
-        return hook_gated_auto_approved(covered, approved)
+        checkout = kas_hook_checkout(provider) if project_hooks else None
+        spec = _agent_spec(agent_id, None, session_key, kas_checkout=checkout)
+        matchers = pre_tool_hook_matchers(agent_id, spec)
+        still: set[str] = set()
+        for part in parts:
+            covered = hook_gated_capabilities(
+                matchers,
+                mcp_servers=approved_mcp_servers(part),
+                mcp_tool_names=cached_mcp_tool_names,
+            )
+            still |= hook_gated_auto_approved(covered, part)
+        return still
 
     try:
         still_approved = await asyncio.to_thread(_covered)
@@ -1713,47 +1965,6 @@ async def invalidate_stale_kas_session(sessions: Any, session_key: str, agent_id
         logger.warning("re-projection reset for %s failed", session_key, exc_info=True)
         return PROJECTION_BUSY
     return PROJECTION_RESET if reset else PROJECTION_BUSY
-
-
-async def reproject_claimed_session(
-    sessions: Any,
-    session_key: str,
-    agent_id: str,
-    claimed: tuple[Any, bool, bool],
-    claim: Callable[[], Awaitable[tuple[Any, bool, bool]]],
-) -> tuple[Any, bool, bool]:
-    """The claim to run the turn on, re-projected when the claimed session is stale.
-
-    Called with the lease held, so no other turn can change what the session
-    runs between this check and the tools. A session that went stale while this
-    turn waited for it (the pre-claim reset was declined because another turn
-    held it) is reset here, under the lease, and *claim* registers a fresh batch.
-    Raises :class:`StaleProjectionError` when the session is still stale after
-    :data:`_MAX_REPROJECTIONS` resets, rather than running the turn on a batch
-    that would auto-approve a call a hook covers.
-    """
-    for _ in range(_MAX_REPROJECTIONS):
-        if not await hook_projection_stale(claimed[0], agent_id):
-            return claimed
-        logger.info(
-            "agent %r: the claimed session auto-approves a capability a PreToolUse "
-            "hook now covers; re-projecting it before the turn runs",
-            agent_id,
-        )
-        await sessions.reset(session_key)
-        claimed = await claim()
-        # The reset recorded this task as the holder of the permit it popped; this
-        # claim's permit is the one its release is for (a claim that allocated has
-        # already said so, and saying it again changes nothing).
-        adopt = getattr(sessions, "adopt_turn", None)
-        if callable(adopt):
-            adopt(session_key)
-    if await hook_projection_stale(claimed[0], agent_id):
-        raise StaleProjectionError(
-            f"agent {agent_id!r}: the session could not be re-projected for the "
-            "PreToolUse hooks now in place; the turn was not run"
-        )
-    return claimed
 
 
 async def replace_stale_shared_session(

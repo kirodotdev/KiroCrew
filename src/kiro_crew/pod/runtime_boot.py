@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from kiro_crew import pinned_fs
-from kiro_crew.pod import launchd
+from kiro_crew.pod import env_overrides, launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import runtime, runtime_attestation, runtime_home, runtime_ports
 from kiro_crew.pod import windows as win_backend
@@ -204,6 +204,7 @@ def pod_context(cfg: PodConfig, name: str) -> tuple[Path, dict[str, str]]:
         checkout,
         skip_model_download=runtime.embeddings_disabled(env_data),
     )
+    env.update(env_overrides.overrides_from_env_data(env_data)[0])
     return bin_path, env
 
 
@@ -275,7 +276,8 @@ _POD_SAFE_VERBS = frozenset(
 # The pod-native equivalent to suggest for the verbs users are most likely to try.
 _POD_EQUIVALENT: dict[str, str] = {
     "stop": "kirocrew pod down {name}",
-    "restart": "kirocrew pod down {name} && kirocrew pod up {name}",
+    # The hint wraps the value in backticks, so this closes and reopens them.
+    "restart": "kirocrew pod down {name}`, then `kirocrew pod up {name}",
     "gateway": "kirocrew pod up {name}",
     "logs": "kirocrew pod logs {name}",
 }
@@ -407,7 +409,7 @@ def target_supports_flag(checkout: Path, flag: str) -> bool:
 _CHILD_VIABILITY_TIMEOUT_SECS = 20.0
 
 
-def _probe_pod_child_bootstrap(pod_env: dict[str, str]) -> None:
+def _probe_pod_child_bootstrap(pod_env: dict[str, str], *, test_double: bool = False) -> None:
     """Refuse the boot when the pod's kiro-cli child cannot bootstrap.
 
     Raises :class:`PodError`, which ``boot``'s guard turns into a RECORDED
@@ -459,6 +461,16 @@ def _probe_pod_child_bootstrap(pod_env: dict[str, str]) -> None:
         print(
             "kirocrew-pod: child bootstrapped but is signed out; "
             f"sign in inside the pod. Child said: {result.detail}"
+        )
+        return
+    if result.verdict == PROBE_DEAD and test_double:
+        # The operator chose this binary as a pod env override (`pod up --env`) to
+        # reproduce an agent failure, so a child that cannot start is the state
+        # under test. Booting anyway lets the dashboard show the error; refusing
+        # would hide it.
+        print(
+            f"kirocrew-pod: the {env_overrides.KIRO_BIN_KEY} test double {result.detail}; "
+            "booting anyway because it is a pod env override"
         )
         return
     if result.verdict == PROBE_DEAD:
@@ -662,6 +674,14 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
     print(f"kirocrew-pod: name={name} port={port} home={home_dir} checkout={checkout}")
     embedless = runtime.embeddings_disabled(env_data)
     pod_env = runtime.build_pod_env(cfg, home_dir, port, checkout, skip_model_download=embedless)
+    # Applied after the scrub, which is safe because only allowlisted test-seam
+    # keys are read; a hand-edited value that fails the check is named and dropped.
+    overrides, refused_overrides = env_overrides.overrides_from_env_data(env_data)
+    for reason in refused_overrides:
+        print(f"kirocrew-pod: ignoring env override: {reason}")
+    pod_env.update(overrides)
+    for key, val in overrides.items():
+        print(f"kirocrew-pod: env override {key}={val}")
     if pod_env.get(runtime.SKIP_MODEL_DOWNLOAD_ENV) == "1":
         # Keyed on the env the pod will RUN with, not on the env file: a switch the
         # service manager's environment already exports is inherited by build_pod_env
@@ -686,7 +706,7 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
     # bootstrap answers /health 200 while every agent turn fails, so it must
     # refuse HERE rather than present itself as up. Raises PodError, which
     # ``boot``'s guard records as a terminal refusal.
-    _probe_pod_child_bootstrap(pod_env)
+    _probe_pod_child_bootstrap(pod_env, test_double=env_overrides.KIRO_BIN_KEY in overrides)
     # Everything this function printed is still sitting in Python's block-buffered
     # stdout (the journal is a pipe, not a tty), and the exec below REPLACES the
     # process image, discarding that buffer. A refusal survives because it returns

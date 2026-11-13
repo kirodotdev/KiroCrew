@@ -47,6 +47,7 @@ import NoticeCard from './NoticeCard'
 import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
+import TrustResetNoticeCard, { type LostMode } from './TrustResetNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -57,6 +58,7 @@ import { FileCard } from '../../components/FileCard'
 import { parseFileRecord } from '../../lib/fileRecord'
 import { isModelUnavailable } from '../../lib/modelUnavailable'
 import UserMessage from './UserMessage'
+import { continuesAuthorRun } from '../../api/sharedCrewUi'
 import SessionMessageCard from './SessionMessageCard'
 import { isSessionSendTool, parseSessionSend } from './sessionRelay'
 import { i18nT } from '../../i18n/t'
@@ -357,16 +359,32 @@ function capabilityRefusalIsNewest(messages: readonly ChatMessage[]): boolean {
   return capabilityRefusal(messages[idx]) !== undefined
 }
 
-/** True when the newest error row is one of the five above: its card has
+/** True when the newest error row is one of the ones above: its card has
  *  withheld Resume (a retry replays the rejection) and names a remedy of its
  *  own, so the composer must not urge the press beneath it either. The one
  *  place that spells the set for the composer: ChatPage's and every pane's
  *  (`useChatPaneContinue`) both read this, so another remedy card joins the
- *  composer's gate by joining it here. Typing still works. */
+ *  composer's gate by joining it here. Typing still works. A sign-in error
+ *  is not in the set: see `authRequiredIsNewest`. */
 export function newestErrorOwnsRecovery(messages: readonly ChatMessage[]): boolean {
   return featureRequestRefusalIsNewest(messages) || sessionStartRepeatIsNewest(messages)
     || contextOverflowIsNewest(messages) || imageRepairIsNewest(messages) || appAgentRefusalIsNewest(messages)
     || capabilityRefusalIsNewest(messages)
+}
+
+/** True when the newest error row is a sign-in error (`auth_required`) and
+ *  nothing after it opens a new turn. The card withholds its own Continue, but
+ *  the composer keeps Resume: once the sign-in lands, the same press works
+ *  (Continue is not readiness-gated), and it is the one-press way back. So the
+ *  composer only words its hint to name the sign-in first. */
+export function authRequiredIsNewest(messages: readonly ChatMessage[]): boolean {
+  const idx = lastErrorIndex(messages)
+  if (idx < 0) return false
+  for (let j = idx + 1; j < messages.length; j++) {
+    const row = messages[j]
+    if (row.role === 'assistant' || opensTurn(row)) return false
+  }
+  return isAuthRequired(messages[idx])
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -435,6 +453,18 @@ export function createTranscriptRenderers(
       match: m => m.meta?.kind === 'crew_paused_notice',
       render: (m, ctx) => ctx.row(
         <CrewPausedNoticeCard key={ctx.key} stopped={Number(m.meta?.stopped) || 0} />,
+      ),
+    },
+    {
+      // The row a restart leaves on a chat it took Trust or Reads from, with
+      // the one-click re-pick. A crew window's peer rows keep it out
+      // (crewWindowRenderers' PEER_SAFE_ROWS): the pick goes to this gateway.
+      id: 'trust_reset_notice',
+      roles: ['system'],
+      match: m => m.meta?.kind === 'trust_reset_notice'
+        && (m.meta?.approval_mode === 'trust' || m.meta?.approval_mode === 'trust_reads'),
+      render: (m, ctx) => ctx.row(
+        <TrustResetNoticeCard key={ctx.key} slot={o.slot} mode={m.meta?.approval_mode as LostMode} />,
       ),
     },
     // ── Shape-matched rows, ahead of anything keyed only by role ──
@@ -876,6 +906,7 @@ export function createTranscriptRenderers(
                   content: c,
                   meta: mt,
                   onFileOpen: ctx.onFileOpen,
+                  onFolderOpen: ctx.onFolderOpen,
                   onSessionOpen: o.onSessionOpen,
                   sessions: o.sessions,
                   activeSession: o.activeSession,
@@ -887,6 +918,7 @@ export function createTranscriptRenderers(
                 // (#17839); a host that hides the steer badge without a
                 // crewmate keeps the neutral surface.
                 tone={crewmate ? 'accent' : 'default'}
+                continuesRun={continuesAuthorRun(ctx.messages, ctx.index)}
                 onReplyInThread={replyInThreadFor(m, ctx)}
                 onQuoteMessage={quoteMessageFor(m, ctx, 'user')}
               />

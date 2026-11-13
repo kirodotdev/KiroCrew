@@ -11,7 +11,11 @@ requires its enclosing function to call ``bind_transcript``.
 from __future__ import annotations
 
 import ast
+import unicodedata
+from collections.abc import Iterable, Iterator
 from pathlib import Path
+
+import source_corpus
 
 _SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 _FIELDS = {"linked_session_key", "channel_origin"}
@@ -48,11 +52,30 @@ def _calls_bind(fn: ast.AST) -> bool:
     return False
 
 
-def _unjoined_sites(root: Path) -> list[str]:
-    found = []
+def _package_trees() -> Iterator[tuple[str, ast.Module]]:
+    """``(path under src/kiro_crew, tree)`` for each package file that names a field.
+
+    An assignment to ``x.linked_session_key`` or ``x.channel_origin`` spells the
+    attribute name in the source, so a file that names neither cannot hold a site.
+    Parsing only those keeps the scan to about a hundred files instead of the whole
+    package, whose full parse can outrun the 120 s per-test timeout on a loaded shard.
+    """
+    root = source_corpus.src_root()
+    for path, _text, tree in source_corpus.parsed_candidates(
+        require_any=sorted(_FIELDS), skip_syntax_errors=False
+    ):
+        yield path.relative_to(root).as_posix(), tree
+
+
+def _dir_trees(root: Path) -> Iterator[tuple[str, ast.Module]]:
+    """``(path under root, tree)`` for every ``*.py`` under *root*, for a planted tree."""
     for path in sorted(root.rglob("*.py")):
-        rel = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        yield path.relative_to(root).as_posix(), ast.parse(path.read_text(encoding="utf-8"))
+
+
+def _unjoined_sites(trees: Iterable[tuple[str, ast.Module]]) -> list[str]:
+    found = []
+    for rel, tree in trees:
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -64,7 +87,26 @@ def _unjoined_sites(root: Path) -> list[str]:
 
 
 def test_every_history_key_change_joins_the_alias_group():
-    assert _unjoined_sites(_SRC) == []
+    assert _unjoined_sites(_package_trees()) == []
+
+
+def test_the_scan_parses_only_files_that_name_a_field(monkeypatch):
+    """A file that names no field cannot hold a site, so it is never parsed."""
+    parsed: list[str] = []
+    real_parse = ast.parse
+
+    def counting_parse(source, *args, **kwargs):
+        parsed.append(source)
+        return real_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", counting_parse)
+    test_every_history_key_change_joins_the_alias_group()
+
+    assert parsed, "the scan parsed nothing, so it checked nothing"
+    # NFKC-fold as the parser and the corpus filter do, so a homoglyph spelling counts.
+    folded = [unicodedata.normalize("NFKC", s) for s in parsed]
+    no_field = [s for s in folded if not any(field in s for field in _FIELDS)]
+    assert no_field == [], f"{len(no_field)} of {len(parsed)} parsed files name no field"
 
 
 def test_the_exemptions_still_exist():
@@ -83,7 +125,7 @@ def test_the_scan_can_fail(tmp_path):
         "def ok(state, slot):\n    slot.channel_origin = True\n    bind_transcript(state, slot)\n",
         encoding="utf-8",
     )
-    assert _unjoined_sites(tmp_path) == ["m.py:2 join"]
+    assert _unjoined_sites(_dir_trees(tmp_path)) == ["m.py:2 join"]
 
 
 def test_a_rebound_channel_tab_joins_its_live_alias(tmp_path, monkeypatch):

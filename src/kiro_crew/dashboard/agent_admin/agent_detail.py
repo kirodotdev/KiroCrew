@@ -16,6 +16,7 @@ if TYPE_CHECKING:
         DASHBOARD_AUTHOR_AGENT_FILENAME,
         MAX_AGENT_SKILLS,
         TEMPLATE_DEFINITION_KEYS,
+        TEMPLATE_READ_ONLY_KEYS,
         CapabilityError,
         ControlPlaneNotDeclarable,
         DashboardState,
@@ -184,6 +185,20 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         # -> HTTP 500. Reject the shape once, here, rather than per-field.
         if not isinstance(patch_body, dict):
             return web.json_response({"error": "body must be a JSON object"}, status=400)
+        # A key this PATCH never writes is refused before any file is read, so a
+        # caller is told nothing was saved instead of getting a 200 that dropped it.
+        read_only_keys = sorted(TEMPLATE_READ_ONLY_KEYS & patch_body.keys())
+        if read_only_keys:
+            return web.json_response(
+                {
+                    "error": (
+                        f"{' and '.join(read_only_keys)} cannot be edited here; nothing was saved"
+                    ),
+                    "code": "definition_key_read_only",
+                    "keys": read_only_keys,
+                },
+                status=400,
+            )
 
     state: DashboardState = request.app["state"]
     # The directory walk and the per-file parse run in a thread: a large agents

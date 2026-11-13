@@ -103,10 +103,9 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        79,
+        78,
         "slash and text command replies: fixed status and help text, the"
-        " channel-agent link refusal, the !channel config-save refusal, and"
-        " the transport path's fixed !voice text-only reply",
+        " channel-agent link refusal, and the !channel config-save refusal",
     ),
     "slack/handler_runtime/delivery.py": (
         5,

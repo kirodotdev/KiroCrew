@@ -192,9 +192,13 @@ def monitor_start(name: str, args: dict[str, Any]) -> str:
         max_cycles = int(raw_max)
     else:
         max_cycles = 0 if gated is not None else _MONITOR_DEFAULT_MAX_CYCLES
-    # A work-ledger patrol takes no bound from the model at all: no cycle cap, and
-    # the runtime ceiling as its one backstop (rfc-permanent-patrol.md).
+    # A work-ledger patrol takes no bound or cadence from the model at all: the one
+    # patrol interval, no cycle cap, and the runtime ceiling as its one backstop
+    # (rfc-permanent-patrol.md), so a self-armed patrol matches the default one.
     if watch == "work-ledger":
+        from kiro_crew.conductor_patrol import PATROL_INTERVAL_SECS
+
+        interval_secs = PATROL_INTERVAL_SECS
         max_cycles, max_runtime_secs = 0, runtime_ceiling_secs()
     # Before the payload is built, so the emitted dict is byte-identical to what
     # it was (its shape is asserted by exact equality in the contract test) and a

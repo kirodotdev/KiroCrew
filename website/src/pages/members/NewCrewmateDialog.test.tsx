@@ -423,7 +423,11 @@ describe('NewCrewmateDialog', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       expect(vi.mocked(api.createKirocrewAgent).mock.calls[0][0]).toMatchObject({ name: 'Scout', kiro_agent: 'kirocrew' })
-      await waitFor(() => expect(screen.getByTestId('crewmate-create-submit')).toBeDisabled())
+      // Held, not `disabled`: the button a reader pressed keeps focus while the
+      // POST is out (a native disable would blur it to <body>), and a second
+      // press is refused by the form's busy guard, not by the browser.
+      await waitFor(() => expect(screen.getByTestId('crewmate-create-submit')).toHaveAttribute('aria-disabled', 'true'))
+      expect(screen.getByTestId('crewmate-create-submit')).not.toBeDisabled()
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     })
@@ -434,9 +438,13 @@ describe('NewCrewmateDialog', () => {
       const dialog = await screen.findByRole('dialog')
       typeName('Scout')
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
+      // The toggle and the look cannot be the control a create started from, so
+      // they keep the native lock. Create is HELD with aria-disabled instead:
+      // the pressed control stays focusable rather than blurring to <body>.
       await waitFor(() => expect(toggle()).toBeDisabled())
       expect(screen.getByTestId('crewmate-create-look')).toBeDisabled()
-      expect(screen.getByTestId('crewmate-create-submit')).toBeDisabled()
+      expect(screen.getByTestId('crewmate-create-submit')).toHaveAttribute('aria-disabled', 'true')
+      expect(screen.getByTestId('crewmate-create-submit')).not.toBeDisabled()
       // The one way out — the modal's own X — is locked too, so an in-flight
       // create cannot be abandoned mid-POST.
       expect(within(dialog).getByRole('button', { name: 'Close' })).toBeDisabled()

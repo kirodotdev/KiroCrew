@@ -184,10 +184,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         AuditWriter,
         _audited_identity_probe,
         _audited_probe,
+        _binary_stamp,
+        _drop_too_old_off_relay,
         _latch_login_only,
         _probe,
         _probe_acp_support,
         _probe_failure_text,
+        _relay_route_configured,
         _run_auth_command,
         _set_terminal_audit,
         _stamp_probe,
@@ -199,6 +202,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.kiro_prerequisite_process import (  # noqa: F401
         _MAX_CAPTURED_OUTPUT,
+        _NOT_IN_CREW_SANDBOX_ERROR,
         _PROCESS_GROUP_SUPERVISOR,
         _PROCESS_GROUP_SUPERVISOR_CODE,
         _PROCESS_GROUP_SUPERVISOR_ERROR,
@@ -225,11 +229,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SETUP_COMPLETE_FILENAME,
         _WARM_UP_DELAY_SECS,
         KiroPrerequisiteService,
+        _configured_backend_is_kas,
         _established_installation,
         _resolve_config_set_hints,
         _turn_auth_service,
         kiro_signed_out_confirmed,
         logger,
+        mark_registered_cli_too_old,
         register_turn_auth_service,
     )
     from kiro_crew.kiro_prerequisite_spawn_identity import (  # noqa: F401
@@ -359,6 +365,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         resource_limit_supervisor_argv,
         sandboxed_spawn_argv,
         shielded_prepare_off_loop,
+        wrapped_by_crew_sandbox,
     )
     from kiro_crew.security import (  # noqa: F401
         redact,

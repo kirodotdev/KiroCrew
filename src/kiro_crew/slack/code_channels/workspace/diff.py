@@ -16,6 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from kiro_crew import pinned_fs
+from kiro_crew.bounded_read import bounded_read
 
 #: Slack's setView content ceiling, in bytes of the UTF-8 body.
 MAX_VIEW_BYTES = 1_000_000
@@ -437,7 +438,7 @@ def _read_leaf(root: str, rel: str, budget: int) -> tuple[str, bytes, int] | Non
             return None
         with os.fdopen(fd, "rb") as handle:
             fd = -1
-            data = handle.read(budget + 1)
+            data = bounded_read(handle, budget + 1)
     except OSError:
         return None
     finally:

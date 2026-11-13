@@ -64,7 +64,7 @@ export const SHORTCUTS_ENABLED_EVENT = 'mc-keyboard-shortcuts-changed'
 export const MAC_CTRL_DIGITS_KEY = 'mc-mac-ctrl-digits'
 
 /** True on macOS where Option+number produces characters (UK: ⌥3→#, ⌥2→€). */
-function isMacPlatform(): boolean {
+export function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad/.test(navigator?.platform ?? '') || /Macintosh/.test(navigator?.userAgent ?? '')
 }
 // Frozen at module load for the chord-shape decisions (modifier choice, gate
@@ -277,10 +277,12 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   'nav-notifications': 'hooks.useKeyboardShortcuts.notifications_panel',
   'nav-projects': 'hooks.useKeyboardShortcuts.projects_panel',
   'nav-schedule': 'hooks.useKeyboardShortcuts.schedule_panel',
-  // Reused: the same commands as the top-bar arrows, so the reference list and
-  // the buttons cannot drift apart.
-  'history-back': 'app.nav_back',
-  'history-forward': 'app.nav_forward',
+  // Same commands as the top-bar arrows, but list-only keys: the handler leaves
+  // ⌘/Ctrl+←/→ to a focused text field (line start/end or word-jump), so the
+  // rows name that rule the way the Alt+arrow rows do. The buttons keep the
+  // plain `app.nav_back` / `app.nav_forward`, because a click works anywhere.
+  'history-back': 'hooks.useKeyboardShortcuts.back_outside_text_fields',
+  'history-forward': 'hooks.useKeyboardShortcuts.forward_outside_text_fields',
   'focus-input': 'hooks.useKeyboardShortcuts.focus_text_input',
   'focus-approval': 'hooks.useKeyboardShortcuts.focus_pending_approval',
   'reject-approval': 'hooks.useKeyboardShortcuts.reject_pending_approval',
@@ -305,6 +307,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
+  // Reused: the "+" menu tile this chord opens.
+  'upload-file': 'components.chatInput.upload_file',
   'list-indent': 'hooks.useKeyboardShortcuts.indent_list_line',
   'list-outdent': 'hooks.useKeyboardShortcuts.outdent_list_line',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',

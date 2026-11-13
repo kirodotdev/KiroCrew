@@ -109,6 +109,13 @@ describe('startFromInitialPrompt with a project to carry', () => {
     expect(mocks.chatSlotProject).toHaveBeenLastCalledWith(NEW_KEY, '/work/repo')
   })
 
+  it('rolls back a failed setup by naming the instance it created', async () => {
+    mocks.createChatSlot.mockImplementation(() => Promise.resolve({ ...created, incarnation: 'inc-new' }))
+    mocks.chatSlotAgent.mockRejectedValue(new Error('agent refused'))
+    await expect(start(source)).rejects.toThrow('agent refused')
+    expect(mocks.deleteChatSlot).toHaveBeenCalledWith(NEW_KEY, 'inc-new')
+  })
+
   // The request is numbered by its create's `pending`. Opening with that
   // number, not the one before it, orders it after a fork clicked earlier, so
   // that fork finishing later does not take the view back (`forkMayOpen`).

@@ -36,7 +36,6 @@ from kiro_crew.work_ledger_records import (
     MAX_EVENT_TEXT_CHARS,
     MAX_GOAL_CHARS,
     MAX_GOAL_CONCURRENCY_CAP,
-    MAX_GOAL_ITEM_CAP,
     MAX_ITEMS_PER_CONDUCTOR,
     MAX_SUMMARY_CHARS,
     MAX_TITLE_CHARS,
@@ -241,7 +240,6 @@ def apply_conductor_action(
     goal: Any = None,
     round_number: Any = None,
     fails: Any = None,
-    item_cap: Any = None,
     concurrency_cap: Any = None,
     new_goal: Any = None,
 ) -> dict[str, Any]:
@@ -257,9 +255,10 @@ def apply_conductor_action(
     ``bind``    ``item_id``, ``worker_session_key`` — writes the binding file.
     ``decide``  ``item_id``, ``decision``, optional ``round_number``.
     ``verdict`` ``item_id``, ``verdict``, optional ``fails``.
-    ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``.
-    ``goal``    ``goal``, optional ``round_number``, ``item_cap``,
-                ``concurrency_cap`` and ``new_goal`` — the conductor record only.
+    ``close``   ``item_id``, ``state``, optional ``decision`` — stamps ``closed_at``;
+                ``accepted`` only on an item whose ``verdict`` is ``pass``.
+    ``goal``    ``goal``, optional ``round_number``, ``concurrency_cap`` and
+                ``new_goal`` — the conductor record only.
 
     Returns ``{"conductor", "item", "event"}``; ``item`` and ``event`` are ``None``
     for ``goal``. Raises :class:`WorkLedgerError` with a ``code`` from the ``CODE_*``
@@ -283,7 +282,6 @@ def apply_conductor_action(
                 record,
                 goal,
                 round_number,
-                item_cap,
                 new_goal,
                 concurrency_cap=concurrency_cap,
             ),
@@ -341,7 +339,6 @@ def _write_goal(
     record: ConductorRecord,
     goal: Any,
     round_number: Any,
-    item_cap: Any = None,
     new_goal: Any = None,
     *,
     concurrency_cap: Any = None,
@@ -358,13 +355,6 @@ def _write_goal(
     """
     checked_goal = None if goal is None else _require_text(goal, MAX_GOAL_CHARS, "goal")
     checked_round = None if round_number is None else _require_count(round_number, "round")
-    checked_cap = None if item_cap is None else _require_count(item_cap, "item_cap")
-    if checked_cap is not None and not 1 <= checked_cap <= MAX_GOAL_ITEM_CAP:
-        raise WorkLedgerError(
-            f"item_cap must be between 1 and {MAX_GOAL_ITEM_CAP}; got {checked_cap}",
-            code=CODE_INVALID_VALUE,
-            field="item_cap",
-        )
     checked_concurrency = (
         None if concurrency_cap is None else _require_count(concurrency_cap, "concurrency_cap")
     )
@@ -402,8 +392,6 @@ def _write_goal(
             current.goal_items_base = current.created_total
         if checked_round is not None:
             current.round = checked_round
-        if checked_cap is not None:
-            current.item_cap = checked_cap
         if checked_concurrency is not None:
             current.concurrency_cap = checked_concurrency
         current.goal_version += 1
@@ -420,10 +408,8 @@ def _create_item(
 ) -> dict[str, Any]:
     """Mint one item under the conductor lock.
 
-    The caps are checked by :func:`_admit_create_locked`. The goal's
-    :attr:`ConductorRecord.item_cap` refuses nothing (it is reported as
-    :attr:`ConductorRecord.cap_exceeded`), and nothing bounds a board's lifetime
-    creates, since the ``work`` fold forgets old closed items.
+    The caps are checked by :func:`_admit_create_locked`. Nothing bounds a
+    board's lifetime creates, since the ``work`` fold forgets old closed items.
 
     The header (with ``created_total`` bumped) is written FIRST, then the item, and
     restored if the item write raises. A failure between them over-counts, the safe
@@ -693,6 +679,15 @@ def _write_item_action(
             event = _commit_item_locked(slot_key, item, "verdict", checked_verdict)
         else:
             assert checked_state is not None
+            if checked_state == "accepted" and item.verdict != "pass":
+                raise WorkLedgerError(
+                    f"item {checked_id!r} cannot close accepted: its verdict is "
+                    f"{item.verdict or 'not recorded'}, and only a pass verdict closes it "
+                    "accepted. Record accept_eval's verdict (for a human_approval bar, the "
+                    "person's answer) with action=verdict, or close it rejected or abandoned",
+                    code=CODE_INVALID_VALUE,
+                    field="state",
+                )
             item.state = checked_state
             if checked_decision is not None:
                 item.decision = checked_decision

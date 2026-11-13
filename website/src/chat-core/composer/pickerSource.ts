@@ -35,6 +35,9 @@ export interface SlashCommand {
 /** A saved workflow as the `/workflow ` picker lists it. */
 export interface PickerWorkflow {
   slug: string
+  id?: string
+  /** Refs this read found reaching another record (or none); never offered. */
+  shadowed_refs?: string[]
   name?: string
   description?: string
 }
@@ -78,7 +81,8 @@ export interface ComposerPickerSource {
   /** Prefix for every picker query key, so two sources never share a cache
    *  entry. Empty for the dashboard, whose keys other code invalidates. */
   scope: string
-  slashCommands?: (signal?: AbortSignal) => Promise<SlashCommand[]>
+  /** `slot` is the chat the menu is for, when the host knows it. */
+  slashCommands?: (signal?: AbortSignal, slot?: string) => Promise<SlashCommand[]>
   fileSearch?: (q: string, project: string | undefined, signal?: AbortSignal) => Promise<FileSearchResponse>
   pathComplete?: (project: string, dir: string, q: string, signal?: AbortSignal) => Promise<FileSearchResponse>
   /** The raw `/api/skills` payload (a bare array or the agent-scoped envelope). */

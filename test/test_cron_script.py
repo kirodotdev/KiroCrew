@@ -34,7 +34,6 @@ from kiro_crew.cron_script import (
     run_command_sandboxed,
     run_script_sandboxed,
 )
-from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
 
 class TestScriptContext:
@@ -765,11 +764,11 @@ class TestScriptContextCallTool:
             with pytest.raises(RuntimeError, match="not found"):
                 ctx.call_tool("nonexistent", "tool", {})
 
-    def test_an_argument_redacted_whole_is_refused_by_path_and_a_span_is_still_sent(
+    def test_an_argument_the_scan_would_change_whole_or_in_part_is_refused_by_path(
         self, monkeypatch
     ):
-        """An opaque id the scan would replace whole never reaches the server as the tag."""
-        # A padded base64 id, the shape mail APIs hand out; the scan leaves its "=" after the tag.
+        """An argument the scan would rewrite never reaches the server, whole or in part."""
+        # Random padded base64: no opaque-id shape, so even under an id key it reads as a key.
         rng = random.Random(26246)
         opaque_id = base64.b64encode(rng.randbytes(61)).decode()
         token = "gh" + "p_" + "".join(rng.choices("abcdefghijkmnpqrstuvwxyzABCDEFGH23456789", k=36))
@@ -800,9 +799,10 @@ class TestScriptContextCallTool:
         # The base64-encoding pass writes its own tag.
         with pytest.raises(ValueError, match=r"args\.cursor reads as a credential"):
             ctx.call_tool("mail", "list", {"cursor": base64.b64encode(token.encode()).decode()})
+        with pytest.raises(ValueError, match=r"args\.text reads as a credential") as e:
+            ctx.call_tool("mail", "send", {"text": f"see {opaque_id} here"})
+        assert opaque_id not in str(e.value)
         assert sent == []
-        ctx.call_tool("mail", "send", {"text": f"see {opaque_id} here"})
-        assert sent == [{"text": f"see {REDACTED_CREDENTIAL_TAG}== here"}]
 
 
 class TestScriptContextKeepsServers:
@@ -1179,6 +1179,27 @@ class TestMcpToolClientProtocol:
         result = client.call_tool("search", {})
         assert result == "=== UNTRUSTED CONTENT BOUNDARY ===\n" + payload
         assert json.loads(result.splitlines()[-1]) == {"AuthorEmail": "someone@example.com"}
+
+    def test_call_tool_returns_a_structured_only_payload_as_json(self):
+        """A server that answers ``content: []`` beside ``structuredContent``."""
+        from kiro_crew.cron_script import McpToolClient
+
+        client = object.__new__(McpToolClient)
+        client._proc = MagicMock()
+        client._proc.stdin = MagicMock()
+        client._proc.stdout = MagicMock()
+        client._req_id = 0
+        client._proc.stdout.readline.return_value = (
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "result": {"content": [], "structuredContent": {"bases": ["b1"]}},
+                }
+            )
+            + "\n"
+        )
+        assert json.loads(client.call_tool("list_bases", {})) == {"bases": ["b1"]}
 
     def test_call_tool_is_error_joins_every_text_block(self):
         from kiro_crew.cron_script import McpToolClient

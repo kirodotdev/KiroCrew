@@ -258,6 +258,16 @@ describe('mc-sidebar-lane, with the legacy mc-sidebar-flat-view it replaces', ()
     expect(laneInView()).toBe('conductor')
   })
 
+  it('opens in the tree, rather than crashing, when storage refuses either lane read', () => {
+    for (const key of ['mc-sidebar-lane', 'mc-sidebar-flat-view']) {
+      const spy = throwOnGetItem(key)
+      const view = renderSidebar()
+      expect(laneInView()).toBe('tree')
+      view.unmount()
+      spy.mockRestore()
+    }
+  })
+
   it('writes the next lane AND mirrors the legacy boolean on every press of the toggle', () => {
     renderSidebar()
     const toggle = () => screen.getByTestId('flat-view-toggle')
@@ -525,6 +535,16 @@ describe('mc-session-{unread,running,pinned,recent}-only', () => {
       expect(localStorage.getItem(storageKey)).toBe('0')
     }
   })
+
+  it('renders with no chip, rather than crashing, when storage refuses a filter read', () => {
+    for (const { storageKey, label } of FILTERS) {
+      const spy = throwOnGetItem(storageKey)
+      const view = renderSidebar({ slots: ROWS, folders: [], unreadSlots: ['k-1'] })
+      expect(screen.queryByRole('button', { name: `Clear ${label} filter` })).toBeNull()
+      view.unmount()
+      spy.mockRestore()
+    }
+  })
 })
 
 describe('mc-history-height', () => {
@@ -558,6 +578,13 @@ describe('mc-history-height', () => {
       view.unmount()
     }
   })
+
+  it('sizes the pane at the 240 default, rather than crashing, when storage refuses the read', () => {
+    throwOnGetItem('mc-history-height')
+    window.history.replaceState({}, '', '/chat?history=1')
+    renderSidebar({ slots: [], folders: [] })
+    expect(scroller()?.style.height).toBe('240px')
+  })
 })
 
 describe('mc-sidebar-width', () => {
@@ -585,6 +612,12 @@ describe('mc-sidebar-width', () => {
       expect(separator()).toHaveAttribute('aria-valuenow', expected)
       view.unmount()
     }
+  })
+
+  it('opens at the 260 default, rather than crashing, when storage refuses the read', () => {
+    throwOnGetItem('mc-sidebar-width')
+    renderSidebar({ slots: [], folders: [] })
+    expect(separator()).toHaveAttribute('aria-valuenow', '260')
   })
 
   it('keeps a width wider than 1400 as saved and paints it at 1400 in list view', () => {

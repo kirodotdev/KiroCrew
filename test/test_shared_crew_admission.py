@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from shared_crew_host_isolation import host_isolation  # noqa: F401
 
 from kiro_crew.config import sections_shared_crew
 from kiro_crew.config.sections_shared_crew import (
@@ -20,7 +21,9 @@ from kiro_crew.config.sections_shared_crew import (
     effective_limits,
     shared_crew_config_from,
 )
+from kiro_crew.dashboard.kiro_relay.caller import RelayCaller, RelayCallerKind
 from kiro_crew.shared_crew import admission_gate as ag
+from kiro_crew.shared_crew import owner
 from kiro_crew.shared_crew.admission import (
     Liveness,
     OperationKind,
@@ -36,6 +39,7 @@ from kiro_crew.shared_crew.contracts import (
     Principal,
     Transport,
 )
+from kiro_crew.shared_crew.identity import local_operator_principal, relay_principal
 from kiro_crew.shared_crew.work_store import WorkStore
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.testing.clock import ManualClock
@@ -539,6 +543,27 @@ async def test_unknown_callers_share_one_bucket_and_automation_is_bounded(tmp_pa
     )
     known = _Req({ACTOR_REQUEST_KEY: actor})
     assert ag.actor_budget(known) == actor.principal.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("host_isolation")
+@pytest.mark.parametrize("owner_id", ["", "U0OWNER"])
+async def test_the_owners_local_and_relayed_tabs_share_one_budget(tmp_path, clock, owner_id):
+    owner.set_owner_subject(owner_id)
+    svc = _service(_open(tmp_path / "t.db", clock), clock, principal_concurrency=1)
+
+    def budget(principal: Principal) -> str:
+        actor = ActorContext(principal=principal, request_id="r", transport=Transport.HTTP)
+        return ag.actor_budget({ACTOR_REQUEST_KEY: actor})
+
+    caller = RelayCaller(kiro_user_id="kiro-user.owner-0001", kind=RelayCallerKind.OWNER)
+    tabs = [local_operator_principal(s) for s in ("local-startup", "local-app", owner_id) if s]
+    tabs.append(relay_principal(caller, "local-startup"))
+    assert {budget(p) for p in tabs} == {local_operator_principal(owner.owner_subject()).id}
+    assert (await _admit(svc, who=budget(tabs[0]), session="startup-tab")).admitted
+    assert (await _admit(svc, who=budget(tabs[1]), session="app-tab")).queued
+    someone = local_operator_principal("someone-else")
+    assert budget(someone) == someone.id
 
 
 @pytest.mark.asyncio

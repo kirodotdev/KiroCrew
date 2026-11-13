@@ -6,17 +6,23 @@ made a 136,880 byte body. `split-manifest.py` cuts the regular files into parts
 and `sign.sh` signs the parts first, copies their signed bytes into the app, and
 signs the app once more over that tree.
 
+A task's time follows the tree it unpacks, signs and seals, not the length of
+its list, so each part is signed from its own input: the app minus every backend
+file the part does not list. Only the final request reads the whole app.
+
 The fake service below answers like the real one in the four ways that matter
 here: it rejects an over-limit body, it signs exactly the listed paths of the
 input it was pointed at, its app pass fails on a framework whose nested
 executables are still unsigned, and the pass seals whatever tree it was given.
 So a merge that drops, repeats or reorders a file shows up as a missing marker,
 a doubled marker or a wrong seal, and a part request without the shell fails
-the way the real one did.
+the way the real one did. It also records the files of each input it read, so a
+part whose input carries the whole backend shows up too.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
@@ -82,11 +88,16 @@ PLIST = (
 
 
 def _make_app(root: Path, files: int) -> Path:
-    """An app with `files` backend binaries and the Electron-like shell."""
+    """An app with `files` backend binaries and the Electron-like shell.
+
+    Beside its binaries the backend carries the kind of files a real one is
+    mostly made of (Python sources, a symlink), none of which the manifest
+    lists, and Contents/Resources carries the app's own files next to it."""
     app = root / APP
     contents = app / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "MacOS" / "Demo").write_bytes(MACHO + b"main")
+    (contents / "PkgInfo").write_bytes(b"APPL????")
     helper = contents / "Frameworks" / "Demo Helper.app" / "Contents"
     (helper / "MacOS").mkdir(parents=True)
     (helper / "MacOS" / "Demo Helper").write_bytes(MACHO + b"helper")
@@ -99,10 +110,18 @@ def _make_app(root: Path, files: int) -> Path:
     shipit = contents / "Frameworks" / "Squirrel.framework" / "Versions" / "A" / "Resources"
     shipit.mkdir(parents=True)
     (shipit / "ShipIt").write_bytes(MACHO + b"shipit")
+    resources = contents / "Resources"
+    (resources / "en.lproj").mkdir(parents=True)
+    (resources / "en.lproj" / "locale.pak").write_bytes(b"locale")
+    (resources / "app.asar").write_bytes(b"asar")
+    (resources / "backend" / "bin").mkdir(parents=True)
+    (resources / "backend" / "bin" / "python3.12").write_bytes(b"#!launcher\n")
+    (resources / "backend" / "bin" / "python3").symlink_to("python3.12")
     for i in range(files):
-        pkg = contents / "Resources" / "backend" / "lib" / "python3.12" / "site-packages"
+        pkg = resources / "backend" / "lib" / "python3.12" / "site-packages"
         pkg = pkg / f"crypto_pkg_{i:04d}"
         pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_bytes(f"# package {i}\n".encode())
         binary = pkg / f"_native_{i:04d}.cpython-312-darwin.so"
         binary.write_bytes(MACHO + f"payload {i}".encode())
         binary.chmod(0o755 if i % 2 else 0o644)
@@ -138,7 +157,12 @@ def test_an_over_limit_manifest_is_split_into_requests_under_the_part_limit(
     assert len(body) > SERVICE_LIMIT, "the synthetic app must reproduce the failure"
 
     parts, final = splitter.split_manifest(
-        json.loads(body), str(app), PART_LIMIT, "signed/p.part-", "pre-signed/p.merged.tar.gz"
+        json.loads(body),
+        str(app),
+        PART_LIMIT,
+        "signed/p.part-",
+        "pre-signed/p.merged.tar.gz",
+        "pre-signed/p.part-",
     )
 
     assert len(parts) > 1
@@ -157,7 +181,7 @@ def test_every_request_carries_the_shell_and_each_backend_file_is_in_one_part(
     # A tiny limit forces parts even for 100 files.
     limit = PART_LIMIT if files > 100 else 20_000
 
-    parts, final = splitter.split_manifest(doc, str(app), limit, "k.part-", "m.tar.gz")
+    parts, final = splitter.split_manifest(doc, str(app), limit, "k.part-", "m.tar.gz", "in.part-")
 
     assert len(parts) > 1
     backend = Counter()
@@ -223,7 +247,9 @@ def test_a_manifest_in_the_shape_of_the_failed_run_plans_two_parts_and_a_final(s
     shell = [rel for rel in entries if not rel.startswith("Contents/Resources/")]
     assert len(shell) == 8
 
-    parts, final = splitter.split_manifest(doc, str(tmp_path), PART_LIMIT, "k.part-", "m.tar.gz")
+    parts, final = splitter.split_manifest(
+        doc, str(tmp_path), PART_LIMIT, "k.part-", "m.tar.gz", "in.part-"
+    )
 
     assert len(parts) == 2
     assert len(splitter.encode(final)) < 5_000
@@ -239,12 +265,17 @@ def test_each_request_reads_and_writes_the_keys_the_flow_expects(splitter, tmp_p
     app = _make_app(tmp_path, 340)
     doc = json.loads(_manifest(app))
 
-    parts, final = splitter.split_manifest(doc, str(app), PART_LIMIT, "k.part-", "m.tar.gz")
+    parts, final = splitter.split_manifest(
+        doc, str(app), PART_LIMIT, "k.part-", "m.tar.gz", "in.part-"
+    )
 
     assert [p["s3ArtifactLocations"]["outputKey"] for p in parts] == [
         f"k.part-{n}.zip" for n in range(1, len(parts) + 1)
     ]
-    assert {p["s3ArtifactLocations"]["inputKey"] for p in parts} == {ENV["INPUT_KEY"]}
+    # Each part reads its own input, never the upload of the whole app.
+    assert [p["s3ArtifactLocations"]["inputKey"] for p in parts] == [
+        f"in.part-{n}.tar.gz" for n in range(1, len(parts) + 1)
+    ]
     assert final["s3ArtifactLocations"]["inputKey"] == "m.tar.gz"
     assert final["s3ArtifactLocations"]["outputKey"] == ENV["OUTPUT_KEY"]
     for request in [*parts, final]:
@@ -256,7 +287,153 @@ def test_a_file_that_cannot_fit_a_request_fails_the_plan(splitter, tmp_path):
     app = _make_app(tmp_path, 3)
     doc = json.loads(_manifest(app))
     with pytest.raises(ValueError, match="alone does not fit"):
-        splitter.split_manifest(doc, str(app), 400, "k.part-", "m.tar.gz")
+        splitter.split_manifest(doc, str(app), 400, "k.part-", "m.tar.gz", "in.part-")
+
+
+# ── a part's own input ──────────────────────────────────────────────────────
+
+BACKEND = f"{APP}/Contents/Resources/backend"
+
+
+def _package(root: Path, files: int) -> "tuple[Path, Path]":
+    """sign.sh's package dir: the app plus SIGNING_METADATA, with the layout
+    details a part input has to keep: framework symlinks, a read-only
+    directory, and a backend binary directly under Contents/Resources, outside
+    the backend directory."""
+    package = root / "package"
+    package.mkdir()
+    app = _make_app(package, files)
+    framework = app / "Contents" / "Frameworks" / "Demo Framework.framework"
+    (framework / "Versions" / "Current").symlink_to("A")
+    (framework / "Helpers").symlink_to("Versions/Current/Helpers")
+    (app / "Contents" / "Resources" / "en.lproj").chmod(0o555)
+    (app / "Contents" / "Resources" / "loose.so").write_bytes(MACHO + b"loose")
+    (package / "SIGNING_METADATA").mkdir()
+    (package / "SIGNING_METADATA" / "Entitlements.entitlements").write_bytes(b"<plist/>")
+    return package, app
+
+
+def _tree(root: Path) -> dict:
+    """Every path under root: a symlink's target, a file's bytes and mode, or a
+    directory's mode."""
+    out = {}
+    for top, dirs, files in os.walk(root):  # never follows a directory symlink
+        for name in dirs + files:
+            path = Path(top) / name
+            rel = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                out[rel] = ("link", os.readlink(path))
+            elif path.is_dir():
+                out[rel] = ("dir", path.stat().st_mode & 0o7777)
+            else:
+                out[rel] = ("file", path.read_bytes(), path.stat().st_mode & 0o7777)
+    return out
+
+
+def _is_backend_path(rel: str, backend: "set[str]") -> bool:
+    return rel.startswith(BACKEND + "/") or rel == BACKEND or rel in backend
+
+
+def _staged_parts(splitter, tmp_path: Path, files: int, limit: int = PART_LIMIT):
+    package, app = _package(tmp_path, files)
+    doc = json.loads(_manifest(app))
+    parts, _ = splitter.split_manifest(doc, str(app), limit, "k.part-", "m.tar.gz", "in.part-")
+    staged = []
+    for number, part in enumerate(parts, 1):
+        stage = tmp_path / f"stage-{number}"
+        splitter.stage_part_input(doc, part, str(package), str(stage))
+        staged.append(stage)
+    return package, doc, parts, staged
+
+
+def test_a_part_input_is_the_app_with_only_that_parts_backend_files(splitter, tmp_path):
+    package, doc, parts, staged = _staged_parts(splitter, tmp_path, 340)
+    assert len(parts) > 1
+    full = _tree(package)
+    entries = doc["manifest"]["app"]["embedded_requirements"]
+    backend = {f"{APP}/{rel}" for rel in entries if rel.startswith("Contents/Resources/")}
+    assert f"{APP}/Contents/Resources/loose.so" in backend
+
+    seen = Counter()
+    for part, stage in zip(parts, staged):
+        tree = _tree(stage)
+        listed = {f"{APP}/{rel}" for rel in part["manifest"]["app"]["embedded_requirements"]}
+        mine = backend & listed
+        assert mine, "every part signs some backend files"
+        # Everything the app pass works on, byte for byte: the main executable,
+        # the frameworks with their symlinks, the app's own resources, the
+        # entitlements the request points at.
+        shell = {rel: v for rel, v in full.items() if not _is_backend_path(rel, backend)}
+        assert {rel: tree[rel] for rel in shell if rel in tree} == shell
+        for rel in (
+            f"{APP}/Contents/Resources/app.asar",
+            f"{APP}/Contents/Resources/en.lproj/locale.pak",
+            f"{APP}/Contents/Frameworks/Demo Framework.framework/Versions/Current",
+            "SIGNING_METADATA/Entitlements.entitlements",
+        ):
+            assert rel in tree, rel
+        # Of the backend, this part's binaries and the directories above them,
+        # nothing else: no other part's binary, no source, no symlink.
+        files = {rel for rel, v in tree.items() if v[0] != "dir"}
+        assert {rel for rel in files if _is_backend_path(rel, backend)} == mine
+        for rel in mine:
+            assert tree[rel] == full[rel]
+            assert os.path.samefile(stage / rel, package / rel), "staged by hard link"
+        seen.update(mine)
+    assert seen == Counter({rel: 1 for rel in backend})
+
+
+def test_a_part_input_leaves_the_package_as_it_was_and_starts_from_nothing(splitter, tmp_path):
+    package, app = _package(tmp_path, 20)
+    doc = json.loads(_manifest(app))
+    parts, _ = splitter.split_manifest(doc, str(app), 6_000, "k.part-", "m.tar.gz", "in.part-")
+    assert len(parts) > 1
+    before = _tree(package)
+    stage = tmp_path / "stage"
+
+    splitter.stage_part_input(doc, parts[0], str(package), str(stage))
+
+    assert _tree(package) == before
+    # A leftover input must never leak one part's files into the next.
+    with pytest.raises(FileExistsError):
+        splitter.stage_part_input(doc, parts[1], str(package), str(stage))
+
+
+def test_a_part_input_copies_a_file_it_cannot_link(splitter, tmp_path):
+    package, app = _package(tmp_path, 4)
+    doc = json.loads(_manifest(app))
+    parts, _ = splitter.split_manifest(doc, str(app), PART_LIMIT, "k.part-", "m.tar.gz", "in.part-")
+    stage = tmp_path / "stage"
+
+    def refuse(src, dst, **kwargs):
+        raise OSError(errno.EXDEV, "Invalid cross-device link", src)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(splitter.os, "link", refuse)
+        count, _ = splitter.stage_part_input(doc, parts[0], str(package), str(stage))
+
+    full, tree = _tree(package), _tree(stage)
+    files = [rel for rel, v in tree.items() if v[0] == "file"]
+    assert len(files) == count > 4
+    for rel in files:
+        assert tree[rel] == full[rel], rel
+        assert not os.path.samefile(stage / rel, package / rel)
+
+
+def test_a_part_input_keeps_a_listed_path_that_is_not_a_backend_file(splitter, tmp_path):
+    """A listed entry under Contents/Resources that is not a regular file is in
+    every request, so every part input carries it whole."""
+    package, app = _package(tmp_path, 20)
+    doc = json.loads(_manifest(app))
+    kept = "Contents/Resources/backend/bin/python3"
+    doc["manifest"]["app"]["embedded_requirements"][kept] = {"full_identifier": "org.example.py"}
+    parts, _ = splitter.split_manifest(doc, str(app), 6_000, "k.part-", "m.tar.gz", "in.part-")
+    assert len(parts) > 1
+
+    for number, part in enumerate(parts, 1):
+        stage = tmp_path / f"stage-{number}"
+        splitter.stage_part_input(doc, part, str(package), str(stage))
+        assert os.readlink(stage / APP / kept) == "python3.12"
 
 
 # ── the merge ───────────────────────────────────────────────────────────────
@@ -275,7 +452,7 @@ def _signed_zip(path: Path, part: dict, app: Path, sign) -> None:
 
 def _one_part(splitter, app: Path) -> dict:
     doc = json.loads(_manifest(app))
-    parts, _ = splitter.split_manifest(doc, str(app), PART_LIMIT, "k.part-", "m.tar.gz")
+    parts, _ = splitter.split_manifest(doc, str(app), PART_LIMIT, "k.part-", "m.tar.gz", "in.part-")
     return parts[0]
 
 
@@ -371,6 +548,8 @@ with tarfile.open(os.path.join(BUCKET, where["inputKey"])) as tar:
     for member in tar.getmembers():
         if member.isfile():
             tree[member.name] = (tar.extractfile(member).read(), member.mode)
+os.makedirs(os.path.join(D, "inputs"), exist_ok=True)
+json.dump(sorted(tree), open(os.path.join(D, "inputs", f"{number}.json"), "w"))
 signed = set()
 for rel in embedded:
     prefix = f"{app}/{rel}"
@@ -485,6 +664,18 @@ def _check_signed_once(work: Path, app: Path, embedded: dict) -> None:
             assert tree[name] == path.read_bytes() + b"\0SIGNED", name
 
 
+def _inputs(tmp_path: Path) -> "list[set[str]]":
+    """The files of each input the fake service read, in submission order."""
+    found = sorted((tmp_path / "inputs").glob("*.json"), key=lambda p: int(p.stem))
+    return [set(json.loads(p.read_text())) for p in found]
+
+
+def _app_files(app: Path) -> "set[str]":
+    """The regular files of the app and its entitlements, named as in the tar."""
+    files = {f"{APP}/{rel}" for rel, v in _tree(app).items() if v[0] == "file"}
+    return files | {"SIGNING_METADATA/Entitlements.entitlements"}
+
+
 def test_a_manifest_under_the_limit_is_still_one_request_byte_for_byte(tmp_path):
     done, app, work, bodies = _sign(tmp_path, 100)
 
@@ -492,6 +683,9 @@ def test_a_manifest_under_the_limit_is_still_one_request_byte_for_byte(tmp_path)
     expected = _manifest(app)
     assert len(expected) < 100_000
     assert bodies == [expected]
+    assert _inputs(tmp_path) == [_app_files(app)]
+    pre_signed = tmp_path / "bucket" / "pre-signed" / "nightly" / "1.0.0"
+    assert sorted(p.name for p in pre_signed.iterdir()) == ["Demo.tar.gz"]
     assert not (tmp_path / "bucket" / "signed" / "nightly" / "1.0.0" / "Demo.part-1.zip").exists()
     _check_signed_once(work, app, _entries(expected))
 
@@ -512,6 +706,28 @@ def test_an_over_limit_manifest_is_signed_in_parts_then_as_an_app(tmp_path, file
     assert json.loads(bodies[-1])["s3ArtifactLocations"]["outputKey"] == ENV["OUTPUT_KEY"]
     assert list(_entries(bodies[-1])) == SHELL
     _check_signed_once(work, app, original)
+
+    # Each part is signed from its own input: the app without the backend files
+    # the part does not list.
+    inputs = _inputs(tmp_path)
+    assert len(inputs) == len(bodies)
+    every = _app_files(app)
+    backend = {name for name in every if name.startswith(f"{BACKEND}/")}
+    assert len(backend) > 2 * files, "sources and binaries"
+    pre_signed = "pre-signed/nightly/1.0.0"
+    for number, (body, names) in enumerate(zip(bodies[:-1], inputs[:-1]), 1):
+        assert json.loads(body)["s3ArtifactLocations"]["inputKey"] == (
+            f"{pre_signed}/Demo.part-{number}.tar.gz"
+        )
+        listed = {f"{APP}/{rel}" for rel in _entries(body) if rel not in SHELL}
+        assert names == (every - backend) | listed
+    # The final request still signs the whole app, merged.
+    assert json.loads(bodies[-1])["s3ArtifactLocations"]["inputKey"] == (
+        f"{pre_signed}/Demo.merged.tar.gz"
+    )
+    assert inputs[-1] == every
+    # Nothing reads the upload of the whole unsigned app, so it is not made.
+    assert not (tmp_path / "bucket" / pre_signed / "Demo.tar.gz").exists()
 
 
 def test_a_rejected_part_fails_the_job_and_prints_the_service_answer(tmp_path):

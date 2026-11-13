@@ -113,8 +113,9 @@ docker run -d --name kirocrew \
   ghcr.io/kirodotdev/kirocrew:stable
 ```
 
-See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags, and
-the container security model.
+See the [Docker guide](docs/guides/docker.md) for first-run login, channel tags,
+[upgrades](docs/guides/docker.md#state-and-upgrades), and the container security
+model.
 
 ### Build from source
 
@@ -221,8 +222,9 @@ use [SECURITY.md](SECURITY.md) for private vulnerability reporting.
 
 The [install guide](docs/guides/install.md) owns every install path, first-run
 step, optional dependency, upgrade, uninstall, and recovery procedure. User data
-lives under `~/.kiro/crew` by default and moves with `KIROCREW_HOME`; configuration
-keys and precedence are canonical in the
+lives under `~/.kiro/crew` by default and moves with `KIROCREW_HOME`, except some
+[folders that stay under `~/.kiro`](docs/guides/install.md#folders-beside-the-data-home);
+configuration keys and precedence are canonical in the
 [config spec](docs/system-specs/modules/config.md).
 
 For a new source or wheel install:
@@ -262,19 +264,22 @@ app catalog, it also sends one anonymous per-app receipt. Both signals are
 enabled by default, but first egress waits until the first-run privacy disclosure
 has been shown; they use the same controls below.
 
-To turn it off, flip **Settings → Privacy → Send anonymous usage heartbeat** in
-the dashboard (the same switch appears on the last step of first-run
-onboarding). Or from a terminal:
+To turn it off, click **Turn off** on the Privacy screen of first-run
+onboarding, or flip **Settings > Privacy > Send anonymous usage heartbeat** in
+the dashboard. Or from a terminal:
 
 ```bash
-kirocrew telemetry disable        # persists to config.json
-export KIROCREW_TELEMETRY_DISABLED=1   # or per-shell / per-container
-kirocrew telemetry status         # print exactly what would be sent
+kirocrew telemetry disable        # local metrics and the heartbeat; persists to config.json
+export KIROCREW_TELEMETRY_DISABLED=1   # heartbeat only, per-shell / per-container
+export DO_NOT_TRACK=1             # everything: local metrics and the heartbeat
+kirocrew telemetry status         # print both switches and exactly what would be sent
 ```
 
-The toggle and `kirocrew telemetry disable` write the same setting, so either
-one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` overrides
-both — when it is set, the dashboard toggle is disabled and says so.
+Turn off and `kirocrew telemetry disable` write the same settings, so either
+one sticks across restarts and upgrades. `KIROCREW_TELEMETRY_DISABLED` and
+`DO_NOT_TRACK` override them: when one is set, the dashboard toggle is disabled
+and says so. When the Privacy screen's text changes, existing users see it once
+more at their next dashboard load while local recording is on.
 
 **Exactly these five fields are sent, at most once per day, and nothing else:**
 
@@ -1153,6 +1158,7 @@ make this tool possible:
 <a href="https://github.com/rjullien" title="Rene Jullien"><img src="https://github.com/rjullien.png?size=64" width="64" height="64" alt="Rene Jullien" /></a>
 <a href="https://github.com/rkeely" title="Rkee"><img src="https://github.com/rkeely.png?size=64" width="64" height="64" alt="Rkee" /></a>
 <a href="https://github.com/rlunar" title="Roberto Luna-Rojas"><img src="https://github.com/rlunar.png?size=64" width="64" height="64" alt="Roberto Luna-Rojas" /></a>
+<a href="https://github.com/rmartin" title="Roy Martin"><img src="https://github.com/rmartin.png?size=64" width="64" height="64" alt="Roy Martin" /></a>
 <a href="https://github.com/rmkumari0704" title="rmkumari0704"><img src="https://github.com/rmkumari0704.png?size=64" width="64" height="64" alt="rmkumari0704" /></a>
 <a href="https://github.com/rnoack1" title="Robert Noack"><img src="https://github.com/rnoack1.png?size=64" width="64" height="64" alt="Robert Noack" /></a>
 <a href="https://github.com/robchahin" title="robchahin"><img src="https://github.com/robchahin.png?size=64" width="64" height="64" alt="robchahin" /></a>

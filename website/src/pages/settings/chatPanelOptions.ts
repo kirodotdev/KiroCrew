@@ -94,6 +94,13 @@ export const TITLE_REFRESH_PATH = 'dashboard.title_refresh_every_turns'
 export const TITLE_REFRESH_MIN = 4
 export const TITLE_REFRESH_MAX = 1000
 
+/** `session.max_per_creator` bounds and default, mirroring
+ *  config/sections_limits.py MAX_PER_CREATOR_MIN / _MAX and the field default. */
+export const SESSIONS_PER_CREATOR_PATH = 'session.max_per_creator'
+export const SESSIONS_PER_CREATOR_MIN = 10
+export const SESSIONS_PER_CREATOR_MAX = 450
+export const SESSIONS_PER_CREATOR_DEFAULT = 50
+
 /** The loader's own reading of a cadence: zero or below is the built-in schedule,
  *  1-3 rises to the minimum, anything above the ceiling is capped. A save sends
  *  this value, so what the row shows after a save is what the loader runs: the
@@ -187,7 +194,7 @@ export type ClampNotice = { requested: number; stored: number; min: number; max:
 
 /** Shape of the kirocrewConfig query payload this panel reads and patches. */
 export type KirocrewConfigShape = {
-  session?: { autocompact_pct?: number; compact_wait_secs?: number }
+  session?: { autocompact_pct?: number; compact_wait_secs?: number; max_per_creator?: number }
   session_summary?: { enabled?: boolean }
   agent?: {
     acp_backend?: string

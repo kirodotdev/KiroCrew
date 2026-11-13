@@ -16,6 +16,7 @@ import argparse
 import json
 import sys
 
+from kiro_crew.cloud import aws
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import login as login_mod
@@ -182,9 +183,10 @@ def _cloud_status(args: argparse.Namespace) -> int:
         return 0
     ui.note(f"{ui.BOLD}{tag}{ui.RESET}")
     ui.detail(f"stack:    {st.get('stack_name', '')} ({st.get('stack_status', '')})")
-    ui.detail(
-        f"instance: {st.get('instance_id') or '(id unknown)'} [{st.get('instance_state', '?')}]"
-    )
+    instance_id = st.get("instance_id", "")
+    # No InstanceId output yet (still creating, or rolled back): the stack status says why.
+    state = (st.get("instance_state") or "gone") if instance_id else st.get("stack_status", "")
+    ui.detail(f"instance: {instance_id or '(id unknown)'} [{state}]")
     ui.detail(f"region:   {st.get('region', region)}")
     return 0
 
@@ -390,15 +392,16 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
     tag = _resolve_tag(args)
 
+    # Before the dry run too, so it never offers to delete a stack the real run cannot find.
+    st = ec2.describe(tag, profile, region)
+    if not st.get("exists"):
+        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
+        return 0
+
     if getattr(args, "dry_run", False):
         res = ec2.destroy(tag, profile, region, dry_run=True)
         ui.info("Dry run — would run:")
         ui.detail("aws " + " ".join(res["argv"]))
-        return 0
-
-    st = ec2.describe(tag, profile, region)
-    if not st.get("exists"):
-        ui.info(f"No instance found for tag '{tag}' — nothing to remove.")
         return 0
 
     ui.warn(f"This will PERMANENTLY delete the '{tag}' stack and everything in it:")
@@ -487,7 +490,9 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
 
     stdout stays one JSON document either way, so it can be piped straight into
     ``aws iam create-policy``. When the edition adds host policies, the plain form
-    says on stderr that a second policy is needed and how to print it.
+    says on stderr that a second policy is needed and how to print it, and the
+    ``--host-policies`` form says there when the addendum had no room for the read
+    a launch uses to check that the account holds them.
     """
     want_addendum = getattr(args, "host_policies", False)
     if not want_addendum:
@@ -505,6 +510,15 @@ def _cloud_iam_policy(args: argparse.Namespace) -> int:
             ui.fail("This build adds no host policies, so there is no second policy to apply.")
             return 1
         print(json.dumps(addendum, indent=2))
+        if not iam.grants_host_policy_read(addendum):
+            print(
+                "This build's host policy ARNs are too long for this policy to also let "
+                "the launcher read them within IAM's policy size limit, so it grants only "
+                "the attach. A launch therefore cannot check first that the account holds "
+                "them, and CloudFormation's attach still fails if one is missing. To get "
+                "that check, grant iam:GetPolicy on exactly these ARNs in a separate policy.",
+                file=sys.stderr,
+            )
         return 0
     if addendum is not None:
         print(
@@ -629,6 +643,9 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
 
     profile, region = _resolve(args)
     ui.note(f"{ui.BOLD}KiroCrew cloud — diagnostics{ui.RESET}")
+    # Every ✗ line sets this, so a script can gate on the exit code. A service
+    # that is not reachable stays a ⚠: the launch still tries it.
+    failed = False
     # Client prerequisites. Probe the exact binary resolved spawn sites execute
     # (the shared deploy-engine resolver), so the doctor's verdict agrees with
     # what `kirocrew cloud` commands actually run under a GUI-launched
@@ -638,14 +655,17 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         ui.ok("aws CLI found")
     elif (cli_refusal := ssm.aws_cli_refusal()) is not None:
         # Found but refused: the install link would put the same refused file back.
+        failed = True
         ui.fail(f"aws CLI found at {cli_refusal.path} but refused: {cli_refusal.reason}")
         ui.detail(ssm.REFUSAL_NEXT_STEP.get(cli_refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
+        failed = True
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")
     if ssm.session_manager_plugin_installed():
         ui.ok("session-manager-plugin found")
     elif (refusal := ssm.session_manager_plugin_refusal()) is not None:
-        ui.warn(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
+        failed = True
+        ui.fail(f"session-manager-plugin found at {refusal.path} but refused: {refusal.reason}")
         if refusal.remedy_command:
             # Making the tree root-owned turns whatever binary is in it into an
             # accepted credential receiver, so the user confirms it is AWS's first.
@@ -659,18 +679,38 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
         else:
             ui.detail(ssm.REFUSAL_NEXT_STEP.get(refusal.code, ssm.REFUSAL_NEXT_STEP[""]))
     else:
-        ui.warn("session-manager-plugin not found — needed to connect over SSM")
-        ui.detail(ssm.session_manager_plugin_install_hint())
+        failed = True
+        ui.fail("session-manager-plugin not found — `kirocrew cloud launch` needs it")
+        if install := ssm.session_manager_plugin_install_command():
+            ui.detail(f"Install it with: {install}")
+            ui.detail("Then rerun `kirocrew cloud doctor`.")
+        else:
+            ui.detail(
+                ssm.session_manager_plugin_install_hint(retry="rerun `kirocrew cloud doctor`")
+            )
     # AWS reachability.
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:
         ui.ok(f"AWS reachable — account {reach['account']} · {region}")
+        # Only an unchosen default: --region, or a crew the last launch left there, chose it.
+        if (
+            not getattr(args, "region", "")
+            and region == DEFAULT_REGION
+            and not LaunchState.load().last_tag
+        ):
+            configured = aws.configured_region(profile)
+            if configured and configured != region:
+                ui.warn(
+                    f"Your AWS profile sets Region {configured}; Kiro Crew uses its default "
+                    f"{region} unless you pass --region {configured}."
+                )
         for svc in ("ec2", "cloudformation", "ssm"):
             key = f"{svc}_reachable"
             (ui.ok if reach[key] else ui.warn)(
                 f"{svc}: {'reachable' if reach[key] else 'not reachable'}"
             )
     else:
+        failed = True
         ui.fail("AWS not reachable")
         # With the CLI refused, the profile was never checked: the note's
         # credential or helper advice would send the user to the wrong fix.
@@ -679,7 +719,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
             if cli_refusal is not None
             else reach.get("note", "")
         )
-    return 0
+    return 1 if failed else 0
 
 
 def _ensure_session_manager_plugin() -> bool:
@@ -691,17 +731,21 @@ def _ensure_session_manager_plugin() -> bool:
         ui.fail(ssm.session_manager_plugin_unavailable_message())
         return False
     ui.warn("session-manager-plugin is required for SSM dashboard tunnels.")
-    ui.detail("KiroCrew can install AWS's official Session Manager plugin locally.")
-    if not ui.confirm("Install session-manager-plugin now?", default=True):
-        ui.detail("Install it later with: kirocrew cloud doctor")
-        return False
-    ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
-    result = ssm.install_session_manager_plugin()
-    if result.ok:
-        ui.ok(result.message or "session-manager-plugin installed")
-        return True
-    ui.fail("Could not install session-manager-plugin.")
-    ui.detail(result.message)
+    if not ssm.session_manager_plugin_can_install():
+        ui.detail("Kiro Crew has no built-in install for it on this system.")
+    else:
+        ui.detail("Kiro Crew can install AWS's official package. It needs admin rights.")
+        if ui.confirm("Install session-manager-plugin now?", default=True):
+            ui.info("Installing session-manager-plugin locally. Sudo may ask for your password.")
+            result = ssm.install_session_manager_plugin()
+            if result.ok:
+                ui.ok(result.message or "session-manager-plugin installed")
+                return True
+            ui.fail("Could not install session-manager-plugin.")
+            ui.detail(result.message)
+    ui.fail("Cannot connect: it needs session-manager-plugin.")
+    for line in ssm.session_manager_plugin_next_step("kirocrew cloud connect"):
+        ui.detail(line)
     return False
 
 

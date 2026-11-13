@@ -13,9 +13,9 @@ of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_session_start_timeout``, ``_start_collect_timeout``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_bound_workspace_fd``,
-``_child_env_names``, ``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
-``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
-``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
+``_child_env_names``, ``_expect_mcp_reports``, ``_governance_scope``, ``_kiro_native_spec_lookup``,
+``_launch_agent``, ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``,
+``_member_context``, ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
 ``_native_skill_projection``, ``_session_queues``, ``_ssh_auth_sock_forwarded``, ``_start_launch_name``,
 ``_tool_search_wire``, ``_wire_mode_id``, ``_work_dir``.
 """
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew import member_essential_context
-from kiro_crew.acp import kas_engine_features, runtime_start
+from kiro_crew.acp import kas_engine_features, kas_env_launch, runtime_start
 from kiro_crew.acp.harness import SessionExtras
 from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
@@ -52,6 +52,7 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_MCP_ARRAY,
     overlay_project_scope,
 )
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_OAUTH_BRIDGE
 from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.agent_sdk.tool_search import spec_grants_tool_search
 from kiro_crew.config import live
@@ -248,6 +249,12 @@ class _MirroredSessionMcp(NamedTuple):
     agent_spec: Any = None
     """The parsed spec the array was built from. A member session's loaded-check
     compares THIS, never a later read of the file, against its saved intent."""
+    crew_bridged: list[str] = []
+    """The Connection bridge snapshots the array wrote, for the handle's shutdown."""
+    zero_tools: bool = False
+    """Whether the spec declares ``"tools": []``, from the same parse as the array.
+    The handle refuses every permission request of such a session
+    (``AcpSessionHandle._deny_zero_tools``)."""
 
 
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
@@ -305,7 +312,13 @@ def _refuse_if_loader_unreachable(self: AcpRuntime, active_agent: str, kas_agent
     wire = getattr(self, "_tool_search_wire", {}).get("toolSearch")
     if not (isinstance(wire, dict) and wire.get("enabled")) or not kas_agents:
         return
-    if any(spec_grants_tool_search(a) for a in kas_agents if isinstance(a, dict)):
+    # The session's own entry only: a sub-agent registered beside it
+    # (``kas_subagent_targets``) lends the session none of its tools.
+    if any(
+        spec_grants_tool_search(a)
+        for a in kas_agents
+        if isinstance(a, dict) and a.get("id") == active_agent
+    ):
         return
     raise AcpToolSurfaceBindingError(
         f"agent {active_agent!r} grants no tool_search loader, but this process "
@@ -396,10 +409,17 @@ async def _kas_custom_agents(
     only when it is one (a KAS crewmate worker), so every other host's call is
     unchanged. *session_cwd* is the session's own directory, for a host that reads
     workspace settings beside the session.
+
+    The governance app goes down only for the session this runtime was built to
+    serve (``_governance_scope``). Any other session on the same process, such as
+    a subagent sharing its parent's or one a pooled process starts after a claim,
+    gets ``None``, an app not known, for which every app-bound profile counts.
     """
     worker: dict[str, Any] = (
         {} if worker_stub_names is None else {"worker_stub_names": worker_stub_names}
     )
+    scope = getattr(self, "_governance_scope", None)
+    governance_app = scope[1] if scope is not None and scope[0] == session_key else None
     extras = await self._harness.session_extras(
         agent,
         work_dir=getattr(self, "_work_dir", None),
@@ -410,6 +430,7 @@ async def _kas_custom_agents(
         engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
         session_cwd=session_cwd,
         ssh_auth_sock_forwarded=getattr(self, "_ssh_auth_sock_forwarded", False),
+        governance_app=governance_app,
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
@@ -697,6 +718,18 @@ async def _mirrored_session_mcp(
 
     projection, ref_spec = await asyncio.to_thread(_project_and_snapshot)
     servers = projection.params.get("mcpServers") or []
+    servers = list(servers) if isinstance(servers, list) else []
+    crew_bridged: list[str] = []
+    if self.acp_backend in ACP_BACKENDS_CREW_OAUTH_BRIDGE:
+        # The AcpClient twin is in ``client_mcp_array``. Before the pickups below,
+        # so a bridge element gets its agent-socket pickup too.
+        servers, crew_bridged = await asyncio.to_thread(
+            kas_env_launch.bridge_array,
+            servers,
+            backend=self.acp_backend,
+            session_key=session_key or "",
+            agent_id=active_agent or "",
+        )
     runtime_ref = weakref.ref(self)
 
     def _own_root_pid() -> int | None:
@@ -709,7 +742,7 @@ async def _mirrored_session_mcp(
     # credential mask, so its element gets an agent-socket pickup bound to this
     # session's stub token and this runtime's process tree (acp/ipc_pickup.py).
     servers = with_ipc_pickups(
-        list(servers) if isinstance(servers, list) else [],
+        servers,
         backend=self.acp_backend,
         session_token=stub_token,
         runtime_pid=_own_root_pid,
@@ -722,6 +755,8 @@ async def _mirrored_session_mcp(
         derived_spec_snapshot=projection.derived_spec_snapshot,
         ref_spec=ref_spec,
         agent_spec=projection.agent_spec,
+        crew_bridged=crew_bridged,
+        zero_tools=projection.zero_tools,
     )
 
 
@@ -1134,6 +1169,8 @@ def _guard_unresolved_mcp_refs(
         # So it waits only for the spec servers one of the two delivered: one
         # Crew held back from both would never report, and every run would wait
         # out the bound. Other hosts declare nothing.
+        if self._expect_mcp_reports:
+            handle.mcp_session_report().record_switched_off(spec)
         if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
             handle.mcp_session_report().record_declared(spec, mcp_json)
         elif self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KAS:

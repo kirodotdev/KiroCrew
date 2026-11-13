@@ -26,7 +26,12 @@ from typing import Any
 
 from kiro_crew import mate_capability_catalog as _mate_catalog
 from kiro_crew import member_goals as _goals
-from kiro_crew.config.sections import FEATURE_PREVIEW_FLAGS, MEMBER_APPROVAL_MODES
+from kiro_crew.config.sections import (
+    FEATURE_PREVIEW_FLAGS,
+    MAX_PER_CREATOR_MAX,
+    MAX_PER_CREATOR_MIN,
+    MEMBER_APPROVAL_MODES,
+)
 from kiro_crew.terminal_safe import _is_invisible
 
 KIND_SETTING_CHANGE = "setting.change"
@@ -160,13 +165,15 @@ _TEMPLATE_LIST_FIELDS = ("tools", "allowedTools", "skills")
 #: Settings page: a template name (``validation.TEMPLATE_NAME_RE``) and an app
 #: grant name (``apps.execution.APP_NAME_RE``). Crewmate names follow
 #: ``members.validate_member_name`` (free text, any script); stored-credential
-#: names follow ``POST /api/secrets`` (any non-empty text).
+#: names follow ``POST /api/secrets`` (any non-empty text). A config path segment
+#: after the first also takes a capital and ``-``, so one may name a Bot
+#: (``validation._AGENT_NAME_RE``) or an app (``apps.<name>.model``).
 _TEMPLATE_NAME_RE = re.compile(r"^(?:[A-Za-z0-9][A-Za-z0-9_.-]{0,61}[A-Za-z0-9]|[A-Za-z0-9])$")
 _APP_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _MCP_NAME_RE = re.compile(r"^[@a-zA-Z0-9][@a-zA-Z0-9/_.:-]*$")
-_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+_CONFIG_PATH_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[A-Za-z0-9_-]+)+$")
 _SETTING_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 _CRON_EXPR_RE = re.compile(r"^[0-9*/,\- A-Za-z?#LW]{1,100}$")
 
@@ -207,6 +214,9 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, a conductor may run sessions on a connected remote crew (``crew=``) and
     # this crew answers its headroom and takes bound work items.
     "work_ledger.remote_dispatch": (False, True),
+    # How many live sessions one creator may hold: a higher number lets an agent
+    # that opens sessions hold more of them without asking.
+    "session.max_per_creator": tuple(range(MAX_PER_CREATOR_MIN, MAX_PER_CREATOR_MAX + 1)),
 }
 
 #: Card-editable config paths (``_EDITABLE_CONFIG``) that no value can widen

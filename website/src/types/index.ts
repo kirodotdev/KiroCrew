@@ -59,9 +59,11 @@ export type {
   McpCustomSpecResponse,
   McpScopePresence,
   McpTempRefusal,
+  McpKasChatSignIn,
   McpServer,
   McpApplyChange,
   McpGlobalScope,
+  McpUnreadableFile,
 } from './index.capabilities'
 export type {
   TodoTask,
@@ -90,6 +92,9 @@ export type {
   ContentBlock,
   Notification,
   NotificationChannel,
+  CoordinatorApprovalTarget,
+  NativeApprovalTarget,
+  ApprovalTarget,
   PendingApproval,
   SubagentInfo,
   SessionInfo,
@@ -118,6 +123,11 @@ export type {
   IssueLinkedChange,
   IssueReactions,
   IssueSource,
+  IssueSearchProvider,
+  IssueSearchRequest,
+  IssuePerson,
+  IssueSummary,
+  IssueSearchResponse,
   AppContributor,
   PullRequestSource,
 } from './index.sources'

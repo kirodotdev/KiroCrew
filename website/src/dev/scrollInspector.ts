@@ -22,6 +22,8 @@
  *  `inspectorOn()` so the disabled path does not even build the text.
  */
 
+import { LOCKED_DEBUG_TOOLS, controlLocked } from '../utils/editionLocks'
+
 const ENABLED_KEY = 'mc-scroll-inspector'
 const ENABLED_EVENT = 'mc-scroll-inspector-changed'
 const POS_KEY = 'mc-scroll-inspector-pos'
@@ -74,6 +76,8 @@ let watchedMsgs = -1
 let watchedTotal = -1
 
 function readFlag(): boolean {
+  // An LTS build hides Debug tools, and its overlays stay off (RFC D12).
+  if (controlLocked(LOCKED_DEBUG_TOOLS)) return false
   try {
     return typeof localStorage !== 'undefined' && localStorage.getItem(ENABLED_KEY) === '1'
   } catch {
@@ -325,7 +329,7 @@ if (typeof window !== 'undefined') {
   enabled = readFlag()
   window.addEventListener(ENABLED_EVENT, (e) => {
     const detail = (e as CustomEvent<unknown>).detail
-    setInspectorEnabled(typeof detail === 'boolean' ? detail : readFlag())
+    setInspectorEnabled(typeof detail === 'boolean' ? detail && !controlLocked(LOCKED_DEBUG_TOOLS) : readFlag())
   })
   // Another tab toggling it should not leave this one running.
   window.addEventListener('storage', (e) => {

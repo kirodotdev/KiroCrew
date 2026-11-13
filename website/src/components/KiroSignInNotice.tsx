@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 import { ArrowRight } from 'lucide-react'
 
 import { api } from '../api/client'
-import type { AcpBackendConfig } from '../api/acpBackend'
+import { ACP_BACKEND_KAS, configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/acpBackend'
 import { i18nT } from '../i18n/t'
 import { useOutageFailure } from '../hooks/useOutageFailure'
 import { useAppSelector } from '../store'
@@ -13,7 +13,7 @@ import { reportForError } from '../utils/errorReport'
 import { useGuardedLeave } from './NavigationLeaveGuard'
 import { Btn } from './ui'
 import { settingsPath } from './settingsPath'
-import { AGENT_HARNESS_SETTINGS_TAB, KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
+import { AGENT_HARNESS_SETTINGS_TAB, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { signInLapsed } from '../pages/developer/kiroSignInState'
 
 // Same cache key the sign-in flow and card read status under
@@ -65,9 +65,13 @@ export const KIRO_SIGN_IN_NOTICE_POLL_MS = 60_000
  * - The stored sign-in EXPIRED with nothing to renew it with: every agent's
  *   credential request is now refused, the same outcome as a refusal, so it
  *   has no agent hand-off either.
- * Nothing at all while KAS is not the selected backend (the one backend that
- * runs agents as this identity), with no stored sign-in, or while it works. A
- * gateway on another backend never reads the status.
+ * Where the main harness is not KAS and only Bots run on it, both lapsed shapes
+ * name the Bots instead of "agents" and keep the hand-off: the main agent runs
+ * on another credential, so the chat it opens still works.
+ * Nothing at all while nothing here runs on KAS (the one backend that runs
+ * agents as this identity, for the main harness or for Bots: `kasInUse`), with
+ * no stored sign-in, or while it works. A gateway with nothing on KAS never
+ * reads the status.
  *
  * The lapsed and status-failure shapes carry the "Open sign-in settings"
  * button in their footer: signing in again is the fix the user can make.
@@ -94,7 +98,7 @@ export default function KiroSignInNotice() {
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
-  const kas = cfgQuery.data?.agent?.acp_backend === KIRO_SIGN_IN_BACKEND
+  const kas = cfgQuery.data !== undefined && kasInUse(cfgQuery.data)
   // The shell's own outage surfaces: the offline capsule, and the banner that
   // asks for a token. Same event pair shell/appShell.tsx subscribes to, seeded from the
   // banner element (as in KiroPrerequisiteGate) rather than from api/client.
@@ -211,17 +215,28 @@ export default function KiroSignInNotice() {
   // much as an issuer's refusal is, so it is not dressed down to a warning --
   // a yellow "agents cannot run" under a red "will stop" read backwards.
   // The text says which one happened.
+  // Where the main harness is not KAS only the Bots run as this sign-in, so the
+  // text says Bots and the main agent, which still runs, keeps its hand-off.
+  const botsOnly = configuredAcpBackend(cfgQuery.data ?? {}) !== ACP_BACKEND_KAS
   let title = i18nT('components.kiroSignInNotice.sign_in_expired')
-  let detail = i18nT('components.kiroSignInNotice.expired_detail')
+  let detail = botsOnly
+    ? i18nT('components.kiroSignInNotice.expired_detail_bots')
+    : i18nT('components.kiroSignInNotice.expired_detail')
   if (cause !== 'expired') {
     // The renewal tick only asks Kiro inside the refresh margin, so by the time
     // a refusal is recorded the access token is usually `expired` too: the
     // agents have already stopped, and "will stop" would be wrong. `usable`
     // cannot tell the two apart (a stored refresh token keeps it true).
     title = i18nT('components.kiroSignInNotice.refused_title')
-    detail = cause === 'refresh_rejected_expired'
-      ? i18nT('components.kiroSignInNotice.refused_expired_detail')
-      : i18nT('components.kiroSignInNotice.refused_detail')
+    if (cause === 'refresh_rejected_expired') {
+      detail = botsOnly
+        ? i18nT('components.kiroSignInNotice.refused_expired_detail_bots')
+        : i18nT('components.kiroSignInNotice.refused_expired_detail')
+    } else {
+      detail = botsOnly
+        ? i18nT('components.kiroSignInNotice.refused_detail_bots')
+        : i18nT('components.kiroSignInNotice.refused_detail')
+    }
   }
   const lapsed = {
     className: 'mx-3 md:mx-6 mt-4 mb-2',
@@ -235,7 +250,7 @@ export default function KiroSignInNotice() {
   } as const
   // A refusal whose access token still works leaves the agents running until
   // it expires, so one can still look into it.
-  if (cause === 'refresh_rejected') return <ErrorNotice {...lapsed} askAgent />
+  if (cause === 'refresh_rejected' || botsOnly) return <ErrorNotice {...lapsed} askAgent />
   return (
     <ErrorNotice
       {...lapsed}

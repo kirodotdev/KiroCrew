@@ -215,6 +215,48 @@ def test_each_added_row_removes_the_stored_row_it_names(monkeypatch):
     assert remove[("skills", "listed-skill")] == {"section": "skills", "id": "listed-skill"}
 
 
+def test_a_file_resource_the_worker_loads_is_listed_and_an_added_one_removes(monkeypatch):
+    """Add abilities copies a ``file://`` resource into the file and the worker
+    loads it, so the summary lists it: ``local`` with a Remove of its stored
+    ``resources`` row when the file adds it, ``inherited`` with none when the
+    base carries it. Applying that Remove takes it off the file, the worker and
+    the list; a ``skill://`` resource stays a skills row."""
+    from kiro_crew.agent_capabilities import _materialize, _rows
+
+    steering = "file://.kiro/steering/**/*.md"
+    notes = "file:///home/x/kit/kit-notes.md"
+    skill = "skill:///home/x/skills/release-notes/SKILL.md"
+    base = {"name": "kirocrew-mate-worker", "mcpServers": {}, "tools": [], "resources": [steering]}
+    state = {"file": {"name": "ben", "mcpServers": {}, "tools": [], "resources": [notes, skill]}}
+
+    def worker_spec(member):
+        additions = mate_worker.worker_additions(base, state["file"])
+        return mate_worker.merge_worker_spec(base, additions)
+
+    assert notes in worker_spec("ben")["resources"]
+    monkeypatch.setattr(mate_worker, "member_worker_spec", worker_spec)
+    monkeypatch.setattr(mate_capabilities, "_load_spec", lambda member: (None, state["file"]))
+    _patch_base(monkeypatch, base)
+
+    summary = mate_capabilities.worker_summary("ben", CATALOG)
+    resources = {r["id"]: r for r in summary["rows"] if r["section"] == "resources"}
+    assert set(resources) == {steering, notes}
+    assert resources[notes]["state"] == "local"
+    assert resources[notes]["remove"] == {"section": "resources", "id": notes}
+    assert resources[steering]["state"] == "inherited"
+    assert resources[steering]["remove"] is None
+    assert skill in _ids(summary, "skills")
+
+    stored = _rows(state["file"], CATALOG)
+    remove = {**resources[notes]["remove"], "action": "remove"}
+    mate_capabilities._apply_operations(stored, [remove], CATALOG)
+    state["file"] = _materialize(state["file"], stored, CATALOG)
+    assert state["file"]["resources"] == [skill]
+    assert notes not in worker_spec("ben")["resources"]
+    summary = mate_capabilities.worker_summary("ben", CATALOG)
+    assert _ids(summary, "resources") == [steering]
+
+
 def test_stored_wildcard_prevents_removing_any_tool_row(monkeypatch):
     base = {"mcpServers": {"platform": {"command": "plat"}}, "tools": ["@platform"]}
     file_spec = {

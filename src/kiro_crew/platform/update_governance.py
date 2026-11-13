@@ -63,10 +63,10 @@ def is_primary_branch(branch: str) -> bool:
 
     Membership in :data:`PRIMARY_BRANCHES` is the entire test. That is a design
     constraint, not an omission: this gate gates the most privileged path in the
-    product — a boot-time ``git reset --hard`` + ``pip install`` + ``execv`` with
-    no auth and no click — and it is also the path the enterprise ``min_version``
-    floor drives (``_auto_apply_update`` is what a mandatory update calls on a
-    checkout). So the decision must not read any state a local process can write.
+    product: a ``git reset --hard`` + ``pip install`` + ``execv`` with no auth,
+    run at the start after a click armed it (``kiro_crew.update_boot_apply``),
+    and it is also the path the enterprise ``min_version`` floor reaches on a
+    checkout. So the decision must not read any state a local process can write.
 
     ``refs/remotes/<remote>/HEAD`` is exactly such state: one
     ``git remote set-head`` repoints it. Consulting it fails in BOTH directions,

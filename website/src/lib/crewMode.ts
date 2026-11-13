@@ -98,8 +98,8 @@ export function busySlotKeys(
  *  (`mate_root`) that waits on the person marks its mate too, as a Crew Mode crew
  *  member's prompt badges its conductor: the mate chat is where it is answered.
  *  Keyed by the mate thread whether or not that tab is live, because the server
- *  keeps stamping a closed mate thread's sessions. The Mates page rows and the
- *  dock's mate rows both read this one map. */
+ *  keeps stamping a closed mate thread's sessions. The Mates page rows read
+ *  this map. */
 export function mateNeedsYouByKey(
   rows: readonly { key: string; mode?: string; mate_root?: string | null; running?: boolean; pending_approval?: boolean; needs_input?: boolean }[],
 ): Readonly<Record<string, boolean>> {

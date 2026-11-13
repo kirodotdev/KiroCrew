@@ -117,6 +117,15 @@ _reported: set[str] = set()
 #: logged, so a pending file logs once per version per process, not on every load.
 _writeback_refusals_logged: set[tuple[str, str]] = set()
 
+#: Endorsed copies a rollback could not put back, keyed by the copy's path:
+#: ``(what the copy file still holds, the copy it should hold)``. While the file still
+#: holds the first, :func:`endorsed_bytes` answers the second, so a failed publish whose
+#: restore also failed leaves this process where a good restore would have.
+#: shortcut: in-process only; a restart or another process (the CLI, an in-sandbox
+#: loader) reads the stale file and shows the leaf as pending until the next save
+#: endorses it. Persist it beside the copies if that ever matters.
+_unrestored: dict[str, tuple[bytes | None, bytes | None]] = {}
+
 
 #: This process's answer to "can the namespace sandbox be built here", set once by
 #: :func:`prime_host_verdict`. ``None`` until then.
@@ -293,6 +302,7 @@ def record(leaf: str, content: bytes, *, strict: bool = False) -> None:
         (config_dir() / RECORD_DIR_LEAF).mkdir(mode=_DIR_MODE, exist_ok=True)
         _endorsed_dir().mkdir(mode=_DIR_MODE, exist_ok=True)
         atomic_write(_endorsed_path(leaf), content, mode=_FILE_MODE)
+        _unrestored.pop(str(_endorsed_path(leaf)), None)
     except Exception:
         if strict:
             raise
@@ -378,18 +388,7 @@ def endorsing(
         yield
     except BaseException:
         if enforcing:
-            try:
-                if prior is None:
-                    _endorsed_path(leaf).unlink(missing_ok=True)
-                else:
-                    record(leaf, prior, strict=True)
-            except Exception:
-                logger.warning(
-                    "loosening provenance: could not restore the endorsed copy for %s "
-                    "after a failed write",
-                    leaf,
-                    exc_info=True,
-                )
+            _restore_endorsed(leaf, prior, "after a failed write")
             # A load inside the window served the attempted copy and cached it under
             # the unchanged on-disk fingerprint; drop it as a successful write does.
             # Function-local: loader_document imports this module.
@@ -407,15 +406,60 @@ def endorsed_bytes(leaf: str) -> bytes | None:
     read error would silently drop the content check. Every reader already maps an
     ``OSError`` to its unreadable-file path (defaults, refuse the write, disabled).
     """
+    path = _endorsed_path(leaf)
     try:
-        return _endorsed_path(leaf).read_bytes()
+        held: bytes | None = path.read_bytes()
     except FileNotFoundError:
-        return None
+        held = None
     except OSError:
         if enforcement_active():
             raise
         logger.debug("loosening provenance: endorsed copy for %s unreadable", leaf, exc_info=True)
         return None
+    stuck = _unrestored.get(str(path))
+    if stuck is None:
+        return held
+    left, intended = stuck
+    if held == left:
+        return intended
+    # Something has written the copy since; it holds the current endorsement.
+    _unrestored.pop(str(path), None)
+    return held
+
+
+def _restore_endorsed(leaf: str, prior: bytes | None, when: str) -> None:
+    """Put *prior* back as the endorsed copy of *leaf* (``None``: no copy).
+
+    When that write fails too, the copy file is left holding bytes that were never
+    published, and the next save would read the leaf as edited outside Kiro Crew. So
+    :func:`endorsed_bytes` is told to answer *prior* for as long as the file still holds
+    those bytes.
+    """
+    path = _endorsed_path(leaf)
+    try:
+        if prior is None:
+            path.unlink(missing_ok=True)
+            _unrestored.pop(str(path), None)
+        else:
+            record(leaf, prior, strict=True)
+        return
+    except Exception:
+        logger.warning(
+            "loosening provenance: could not restore the endorsed copy for %s %s; "
+            "this process keeps using the previous copy",
+            leaf,
+            when,
+            exc_info=True,
+        )
+    try:
+        left: bytes | None = path.read_bytes()
+    except FileNotFoundError:
+        left = None
+    except OSError:
+        logger.debug("loosening provenance: endorsed copy for %s unreadable", leaf, exc_info=True)
+        return
+    if left != prior:
+        _unrestored[str(path)] = (left, prior)
 
 
 def reconcile(leaf: str, disk_bytes: bytes) -> bytes:
@@ -512,18 +556,7 @@ def endorsements_restored_on_error() -> Iterator[None]:
         yield
     except BaseException:
         for leaf, content in prior.items():
-            try:
-                if content is None:
-                    _endorsed_path(leaf).unlink(missing_ok=True)
-                else:
-                    record(leaf, content, strict=True)
-            except Exception:
-                logger.warning(
-                    "loosening provenance: could not restore the endorsed copy for %s "
-                    "after a failed restore",
-                    leaf,
-                    exc_info=True,
-                )
+            _restore_endorsed(leaf, content, "after a failed restore")
         raise
 
 

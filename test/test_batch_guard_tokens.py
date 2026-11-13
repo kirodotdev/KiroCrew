@@ -134,6 +134,21 @@ def test_a_token_the_write_shares_with_its_peers_arguments_is_not_unseen():
     assert window.refusal_for("w", guard.WRITE) is None
 
 
+def test_a_creators_minted_keys_leave_out_a_key_of_its_own_argument():
+    # The argument is a short sha; the result prints the full sha. The full sha is
+    # a different token, but its 7-character key is the argument: that key is the
+    # input, not a minted value. A sha the call never took still mints its keys.
+    guard = _guard()
+    other = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c"
+    window = guard.BatchWindow()
+    window.dispatched("c", guard.WRITE, text=json.dumps({"ref": _SHA[:7]}), creator=True)
+    window.settled("c", f"created {_SHA} and {other}")
+    minted = guard._keys_of(window._members["c"])
+    assert _SHA[:7] not in minted
+    assert other[:7] in minted
+    assert other in minted
+
+
 def test_create_then_bind_with_the_new_id_in_one_batch_is_refused():
     guard = _guard()
     window = guard.BatchWindow()
@@ -284,6 +299,33 @@ def test_a_resumed_session_passes_a_minted_id_its_resumed_text_showed():
     window.dispatched("r", guard.READ, "gh pr view 7")
     window.dispatched("s", guard.WRITE, text="send to chat-4046-1793158739")
     assert window.refusal_for("s", guard.WRITE) is None
+
+
+@pytest.mark.parametrize("tool", ["session_create", "session_fork", "work_dispatch"])
+def test_a_resumed_session_refuses_a_session_key_guessed_next_to_a_session_creator(tool):
+    # The same rule as for a ledger create: after a resume the restored history
+    # may hold any key, but a key the resumed text never showed, named in the
+    # batch of a tool that returns a new one, is still a guess.
+    guard = _guard()
+    create = _event(
+        tool_call_id="c",
+        tool_name=tool,
+        mcp_server_name="kirocrew-dashboard",
+        mcp_identity_trusted=True,
+        tool_input=json.dumps({"title": "reviewer"}),
+    )
+    window = guard.BatchWindow()
+    guard.mark_resumed(window)
+    guard.note_dispatched(window, create)
+    window.dispatched("s", guard.WRITE, text="send to chat-4046-1793158739")
+    assert window.refusal_for("s", guard.WRITE) is not None
+
+    shown = guard.BatchWindow()
+    guard.mark_resumed(shown)
+    guard.note_prompt(shown, "Your worker is chat-4046-1793158739.")
+    guard.note_dispatched(shown, create)
+    shown.dispatched("s", guard.WRITE, text="send to chat-4046-1793158739")
+    assert shown.refusal_for("s", guard.WRITE) is None
 
 
 def test_a_resumed_session_still_needs_proof_for_a_sha():
@@ -449,9 +491,9 @@ def test_an_envelope_naming_another_tool_is_not_unwrapped():
             tool_input=json.dumps({"action": "bind", "item_id": "it_9fc6cc99"}),
         ),
         _event(tool_name="work_report", mcp_server_name="kirocrew-work", mcp_identity_trusted=True),
-        # Not write-class on main, so never a creator.
+        # A session tool that returns no new key.
         _event(
-            tool_name="session_create",
+            tool_name="session_status",
             mcp_server_name="kirocrew-dashboard",
             mcp_identity_trusted=True,
         ),
@@ -460,6 +502,14 @@ def test_an_envelope_naming_another_tool_is_not_unwrapped():
 )
 def test_a_call_that_mints_nothing_is_not_a_creator(event):
     assert _guard().is_creator(event) is False
+
+
+@pytest.mark.parametrize("tool", ["session_create", "session_fork", "work_dispatch"])
+def test_a_session_tool_that_returns_a_new_key_is_a_creator_and_stays_unjudged(tool):
+    event = _event(tool_name=tool, mcp_server_name="kirocrew-dashboard", mcp_identity_trusted=True)
+    assert _guard().is_creator(event) is True
+    # Not write-class: the guard never refuses the create itself.
+    assert _guard().classify(event) == ""
 
 
 @pytest.mark.parametrize(
@@ -813,3 +863,63 @@ def test_a_proof_refusal_counts_the_peer_that_printed_the_value():
     reason = window.refusal_for("w", guard.WRITE)
     assert reason is not None
     assert "1 of them able to return" in reason
+
+
+# -- a session with the guard on from its start keeps its seen set complete --
+
+
+def _gated_window_on_from_start(monkeypatch):
+    """A transport's gated window for a session that was never resumed, with
+    ``hooks.batch_write_guard`` on when its first prompt is sent."""
+    import asyncio
+
+    guard = _guard()
+    monkeypatch.setattr(guard, "guard_settings", lambda: (True, ()))
+    window = guard.BatchWindow(gated=True)
+    asyncio.run(guard.refresh_feeding(window))
+    return guard, window
+
+
+def _run_gated_batch(guard, window, n: int) -> None:
+    """One normal batch: three reads and a write, each with a small result."""
+    for i in range(3):
+        call = f"read-{n}-{i}"
+        window.dispatched(call, guard.READ, f"gh pr view {1000 + n * 10 + i}")
+        window.settled(call, f"PR #{1000 + n * 10 + i} head {n:02x}{i:02x}" + "ab" * 19)
+    window.dispatched(f"write-{n}", guard.WRITE, text=_report(f"progress on item it_{n:08x}"))
+    window.settled(f"write-{n}", "ok")
+
+
+def test_a_guard_on_from_the_session_start_keeps_the_set_complete_after_one_batch(monkeypatch):
+    guard, window = _gated_window_on_from_start(monkeypatch)
+    guard.note_prompt(window, "please look at PR #1500 and report")
+    _run_gated_batch(guard, window, 1)
+    window.reset()  # the batch ends: its arguments and results join the seen set
+    assert window.seen.dropped is False
+    assert window.seen.resumed is False
+    assert window.seen.complete is True
+    assert len(window.seen) > 0
+
+
+def test_a_guard_on_from_the_session_start_keeps_the_set_complete_over_three_batches(monkeypatch):
+    guard, window = _gated_window_on_from_start(monkeypatch)
+    guard.note_prompt(window, "please look at PR #1500 and report")
+    for n in range(1, 4):
+        _run_gated_batch(guard, window, n)
+        # The next batch's first call ends this one.
+        assert window.seen.dropped is False
+        assert window.seen.complete is True
+    window.reset()
+    assert window.seen.dropped is False
+    assert window.seen.complete is True
+    assert "1010" in window.seen and "1030" in window.seen
+
+
+def test_a_batch_past_the_seen_bound_drops_tokens_and_marks_the_set_incomplete(monkeypatch):
+    guard, window = _gated_window_on_from_start(monkeypatch)
+    monkeypatch.setattr(guard, "MAX_SEEN_TOKENS", 4)
+    guard.note_prompt(window, "please look at PR #1500 and report")
+    _run_gated_batch(guard, window, 1)
+    window.reset()
+    assert window.seen.dropped is True
+    assert window.seen.complete is False

@@ -121,6 +121,7 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_disconnect,
     api_connections_mint,
     api_connections_mint_state,
+    api_connections_oauth_callback,
     api_connections_oauth_client_delete,
     api_connections_oauth_client_put,
     api_connections_oauth_clients,
@@ -272,6 +273,7 @@ from kiro_crew.dashboard.handlers.mcp import (  # noqa: E402, F401
     api_mcp_toggle,
     api_mcp_toggle_all,
     api_mcp_toggle_tool,
+    api_mcp_unreadable_files,
 )
 
 # ── Crew Members (handlers/members.py) ──
@@ -371,6 +373,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_pins,
     api_slack_profile,
     api_slack_reactions,
+    api_slack_reconnect,
     api_spawn,
     api_spawn_continue,
     api_spawn_delete,
@@ -576,6 +579,12 @@ async def api_task_detail(request):
     return await handler(request)
 
 
+async def api_task_timeline(request):
+    from kiro_crew.dashboard.handlers.tasks import api_task_timeline as handler
+
+    return await handler(request)
+
+
 async def api_tasks_list(request):
     from kiro_crew.dashboard.handlers.tasks import api_tasks_list as handler
 
@@ -665,6 +674,9 @@ from kiro_crew.dashboard.handlers.usage import (  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.usage_series import api_usage_series  # noqa: E402, F401
 from kiro_crew.dashboard.handlers.wakatime import (  # noqa: E402, F401
     api_wakatime_export,
+    api_wakatime_oauth_authorize,
+    api_wakatime_oauth_callback,
+    api_wakatime_oauth_disconnect,
     api_wakatime_stats,
 )
 
@@ -1130,6 +1142,12 @@ from kiro_crew.dashboard.handlers.portability import (  # noqa: E402, F401
     api_portability_export,
     api_portability_import,
     api_portability_preview,
+)
+
+# The per-folder project-hooks choice (see ``kiro_crew.project_hooks_consent``).
+from kiro_crew.dashboard.handlers.project_hooks_consent import (  # noqa: E402, F401
+    api_project_hooks_consent_get,
+    api_project_hooks_consent_put,
 )
 
 # Owner reveal of a removed credential -- the ONE reader of the in-memory

@@ -116,7 +116,7 @@ class TestSettingsInjection:
         source_dir = tmp_path / "agents"
         source_dir.mkdir()
         (source_dir / "kirocrew.json").write_text(
-            json.dumps({"name": "kirocrew", "mcpServers": {}}), encoding="utf-8"
+            json.dumps({"name": "kirocrew", "mcpServers": {}, "tools": ["*"]}), encoding="utf-8"
         )
         settings_dir = tmp_path / "settings"
         settings_dir.mkdir()
@@ -143,14 +143,16 @@ class TestSettingsInjection:
         assert not (overlay_dir.parent / "settings").exists()
         assert (settings_dir / "mcp.json").read_bytes() == settings_before
 
+    @pytest.mark.parametrize("opt_out_key", ["includeMcpJson", "useLegacyMcpJson"])
     def test_an_agent_that_opts_out_of_the_global_file_gets_only_its_own_servers(
-        self, tmp_path: Path
+        self, tmp_path: Path, opt_out_key: str
     ) -> None:
         """``includeMcpJson: false`` means the overlay must not add global servers as stubs.
 
         Every wrapped entry is sent at ACP ``session/new``, so an injected stub would
         reach the session anyway and could clash with the agent's own tool names. The
         agent's own servers are kept; an agent without the opt-out still gets the stub.
+        kiro-cli reads ``useLegacyMcpJson`` as the deprecated alias of the same flag.
         """
         from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
@@ -162,7 +164,7 @@ class TestSettingsInjection:
             json.dumps(
                 {
                     "name": "solo",
-                    "includeMcpJson": False,
+                    opt_out_key: False,
                     "mcpServers": {"remote": remote, "own-mcp": own},
                     "tools": ["@remote", "@own-mcp"],
                 }
@@ -170,7 +172,7 @@ class TestSettingsInjection:
             encoding="utf-8",
         )
         (source_dir / "kirocrew.json").write_text(
-            json.dumps({"name": "kirocrew", "mcpServers": {}}), encoding="utf-8"
+            json.dumps({"name": "kirocrew", "mcpServers": {}, "tools": ["*"]}), encoding="utf-8"
         )
         settings_dir = tmp_path / "settings"
         settings_dir.mkdir()
@@ -189,23 +191,30 @@ class TestSettingsInjection:
         assert set(solo["mcpServers"]) == {"remote", "own-mcp"}
         assert solo["mcpServers"]["remote"] == remote
         assert solo["mcpServers"]["own-mcp"].get(_WRAPPER_MARKER) is True
-        assert solo["includeMcpJson"] is False
+        assert solo[opt_out_key] is False
         other = json.loads((overlay_dir / "kirocrew.json").read_text(encoding="utf-8"))
         assert other["mcpServers"]["beta-mcp"].get(_WRAPPER_MARKER) is True
 
     @pytest.mark.parametrize(
-        ("flag", "injected"),
-        [(None, True), (True, True), (False, False)],
-        ids=["absent", "true", "false"],
+        ("key", "flag", "injected"),
+        [
+            ("includeMcpJson", None, True),
+            ("includeMcpJson", True, True),
+            ("includeMcpJson", False, False),
+            ("useLegacyMcpJson", True, True),
+            ("useLegacyMcpJson", False, False),
+        ],
+        ids=["absent", "true", "false", "legacy-true", "legacy-false"],
     )
     def test_injection_follows_the_include_mcp_json_flag(
-        self, tmp_path: Path, flag: bool | None, injected: bool
+        self, tmp_path: Path, key: str, flag: bool | None, injected: bool
     ) -> None:
         """kiro-cli reads an absent ``includeMcpJson`` as true, so only a literal
-        ``false`` opts the agent out of the injected globals."""
-        spec: dict = {"name": "agent-a", "mcpServers": {}}
+        ``false`` opts the agent out of the injected globals. ``useLegacyMcpJson``
+        is the deprecated alias kiro-cli reads in its place."""
+        spec: dict = {"name": "agent-a", "mcpServers": {}, "tools": ["*"]}
         if flag is not None:
-            spec["includeMcpJson"] = flag
+            spec[key] = flag
         inject = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
         new_spec, wrapped = _rewrite_single_spec(
             spec,
@@ -219,6 +228,51 @@ class TestSettingsInjection:
         )
         assert ("beta-mcp" in new_spec["mcpServers"]) is injected
         assert wrapped == (1 if injected else 0)
+
+    @pytest.mark.parametrize(
+        ("flags", "injected"),
+        [
+            ({"includeMcpJson": "x", "useLegacyMcpJson": False}, False),
+            ({"includeMcpJson": None, "useLegacyMcpJson": False}, False),
+            ({"includeMcpJson": "x", "useLegacyMcpJson": True}, True),
+            ({"includeMcpJson": False, "useLegacyMcpJson": True}, False),
+            ({"includeMcpJson": True, "useLegacyMcpJson": False}, True),
+            ({"includeMcpJson": "x"}, True),
+        ],
+        ids=[
+            "junk-then-false",
+            "null-then-false",
+            "junk-then-true",
+            "false-wins",
+            "true-wins",
+            "junk",
+        ],
+    )
+    def test_injection_reads_the_opt_in_the_kas_projection_reads(
+        self, tmp_path: Path, flags: dict, injected: bool
+    ) -> None:
+        """The rewriter and the KAS projection read one opt-in, so they agree on it.
+
+        ``kas_settings_mcp.include_mcp_json`` reads a non-bool ``includeMcpJson`` as
+        unstated and lets ``useLegacyMcpJson`` decide; the rewriter opts out exactly
+        when that reader answers ``False``.
+        """
+        from kiro_crew.acp.kas_settings_mcp import include_mcp_json
+
+        spec: dict = {"name": "agent-a", "mcpServers": {}, "tools": ["*"], **flags}
+        inject = _injectable_settings_servers(self._spec(), frozenset(["beta-mcp"]))
+        new_spec, _wrapped = _rewrite_single_spec(
+            spec,
+            stubs_dir=tmp_path / "stubs",
+            socket_path=tmp_path / "gw.sock",
+            work_dir=tmp_path / "wd",
+            sandbox_mode="auto",
+            approval_mode="interactive",
+            stub_servers=frozenset(["beta-mcp"]),
+            inject_servers=inject,
+        )
+        assert ("beta-mcp" in new_spec["mcpServers"]) is injected
+        assert injected is (include_mcp_json(spec) is not False)
 
 
 def _rewrite(
@@ -247,6 +301,7 @@ def test_disabled_poolable_server_is_not_wrapped(tmp_path: Path) -> None:
     ``disabled`` intact and is NOT wrapped into a running stub."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "muted": {"command": "some-mcp", "poolable": True, "disabled": True},
         },
@@ -270,6 +325,7 @@ def test_a_non_boolean_mute_is_not_wrapped_either(tmp_path: Path, value: object)
     """
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"muted": {"command": sys.executable, "disabled": value}},
     }
     new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"muted"}))
@@ -288,6 +344,7 @@ def test_a_registry_governed_server_is_not_wrapped(tmp_path: Path) -> None:
     """
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"governed": {"command": sys.executable, "type": "registry"}},
     }
     new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"governed"}))
@@ -303,6 +360,7 @@ def test_a_plain_type_does_not_block_pooling(tmp_path: Path) -> None:
     """Guard against over-correction: ``type: stdio`` is not a registry marker."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"live": {"command": sys.executable, "type": "stdio"}},
     }
     _, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"live"}))
@@ -313,12 +371,45 @@ def test_an_explicit_false_is_not_a_mute(tmp_path: Path) -> None:
     """Fail-closed must not swallow the spelling that means "enabled"."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"live": {"command": sys.executable, "disabled": False}},
     }
     new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"live"}))
 
     assert wrapped == 1
     assert new_spec["mcpServers"]["live"].get(_WRAPPER_MARKER) is True
+
+
+def test_only_a_server_the_tools_allowlist_names_is_wrapped(tmp_path: Path) -> None:
+    """The session mounts every stub it is sent, whatever ``tools`` says, while
+    kiro-cli offers a declared server's tools only when ``tools`` names it. A stub
+    for the server the author left out would offer it anyway."""
+    tickets = {"command": sys.executable, "args": ["-t"]}
+    spec = {
+        "name": "agent-a",
+        "tools": ["read", "@notes-mcp"],
+        "mcpServers": {"notes-mcp": {"command": sys.executable}, "tickets-mcp": tickets},
+    }
+    new_spec, wrapped = _rewrite(
+        spec, tmp_path, stub_servers=frozenset({"notes-mcp", "tickets-mcp"})
+    )
+
+    assert wrapped == 1
+    assert new_spec["mcpServers"]["notes-mcp"].get(_WRAPPER_MARKER) is True
+    assert new_spec["mcpServers"]["tickets-mcp"] == tickets
+
+
+def test_a_left_out_server_with_a_secret_reference_gets_a_refusing_stub(tmp_path: Path) -> None:
+    """Its raw entry would start it with the literal ``secret://`` text, so a server
+    ``tools`` leaves out gets a stub that starts nothing and offers no tools."""
+    vault = {"command": sys.executable, "env": {"API_KEY": "secret://VAULT_TOKEN"}}
+    spec = {"name": "agent-a", "tools": ["read"], "mcpServers": {"vault-mcp": vault}}
+    new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"vault-mcp"}))
+
+    assert wrapped == 1
+    stub = new_spec["mcpServers"]["vault-mcp"]
+    assert stub.get(_WRAPPER_MARKER) is True
+    assert "--refuse" in expand_stub_flags(stub["args"])
 
 
 class TestTheRegistryPredicate:
@@ -368,6 +459,7 @@ def test_enabled_listed_server_is_still_wrapped(tmp_path: Path) -> None:
     denylisted is still wrapped into a stub."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "live": {"command": sys.executable},
         },
@@ -389,6 +481,7 @@ def test_unstubbed_server_is_left_for_the_session_to_launch(
     """
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "stateful": {"command": "some-mcp"},
         },
@@ -406,6 +499,7 @@ def test_unstubbed_server_is_left_for_the_session_to_launch(
 def test_allowlisted_server_gets_the_poolable_flag(tmp_path: Path) -> None:
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "shareable": {"command": sys.executable},
         },
@@ -425,6 +519,7 @@ def test_private_server_with_declared_env_is_not_warned_about(tmp_path: Path, ca
 
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "needs-env": {
                 "command": sys.executable,
@@ -456,6 +551,7 @@ def test_shared_server_with_declared_env_is_still_warned_about(tmp_path: Path, c
 
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "needs-env": {"command": sys.executable, "env": {"REGION": "us-west-2"}},
         },
@@ -476,6 +572,7 @@ def test_unresolvable_bare_command_is_not_stubbed(tmp_path: Path, caplog) -> Non
 
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "ghost": {
                 "command": "kirocrew-test-definitely-missing-cmd",
@@ -502,6 +599,7 @@ def test_resolvable_bare_command_lands_absolute_in_the_stub(tmp_path: Path) -> N
     exe_dir, exe_name = str(Path(sys.executable).parent), Path(sys.executable).name
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "bare": {"command": exe_name, "env": {"PATH": exe_dir}},
         },
@@ -526,6 +624,7 @@ def test_env_declaring_server_is_declassified_when_forwarding_is_off(
 
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "needs-env": {
                 "command": sys.executable,
@@ -564,6 +663,7 @@ def test_secret_env_server_is_declassified_even_with_forwarding_on(
     crash-loop, so it must be declassified like the forwarding-off case."""
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "needs-secret": {
                 "command": sys.executable,
@@ -670,6 +770,7 @@ def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None
     """
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "declared": {"command": sys.executable, "poolable": True},
             "listed": {"command": sys.executable},
@@ -709,6 +810,7 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
     source_dir.mkdir()
     spec = {
         "name": "test-agent",
+        "tools": ["*"],
         "mcpServers": {
             "myserver": {
                 "command": sys.executable,
@@ -885,6 +987,7 @@ def _spec_with_env(source_dir: Path) -> None:
     source_dir.mkdir(parents=True, exist_ok=True)
     spec = {
         "name": "test-agent",
+        "tools": ["*"],
         "mcpServers": {
             "myserver": {
                 "command": sys.executable,
@@ -1040,6 +1143,7 @@ def test_stub_fingerprint_is_the_module_on_the_launch_line(tmp_path: Path) -> No
         json.dumps(
             {
                 "name": "test-agent",
+                "tools": ["*"],
                 "mcpServers": {"myserver": {"command": sys.executable, "args": ["hello"]}},
             }
         ),
@@ -1127,6 +1231,7 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
     monkeypatch.delenv("MISSING", raising=False)
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {
             "srv": {
                 "command": sys.executable,
@@ -1142,6 +1247,51 @@ def test_rewriter_writes_resolved_env_to_sidecar(tmp_path: Path, monkeypatch) ->
     assert written["OTHER"] == "${MISSING}"  # unresolved stays literal
 
 
+def _configure_agent_env(monkeypatch, mapping: dict[str, str]) -> None:
+    """Serve *mapping* as the configured ``agent.env``."""
+    from types import SimpleNamespace
+
+    loaded = SimpleNamespace(agent=SimpleNamespace(env=dict(mapping)))
+    monkeypatch.setattr(
+        "kiro_crew.config.KiroCrewConfig.load", staticmethod(lambda: loaded), raising=True
+    )
+
+
+def test_the_sidecar_resolves_a_variable_set_only_in_agent_env(tmp_path: Path, monkeypatch) -> None:
+    """kiro-cli fills ``${VAR}`` from its child env, which ``agent.env`` feeds; so does the sidecar.
+
+    A secret-named ``agent.env`` key stays a literal, as it does from ``os.environ``.
+    """
+    monkeypatch.delenv("KC33089_URL", raising=False)
+    monkeypatch.delenv("OAUTH_KC33089", raising=False)
+    _configure_agent_env(
+        monkeypatch, {"KC33089_URL": "https://jira.example/rest", "OAUTH_KC33089": "k-1"}
+    )
+    spec = {
+        "name": "agent-a",
+        "tools": ["*"],
+        "mcpServers": {
+            "srv": {
+                "command": sys.executable,
+                "env": {"BASE": "${KC33089_URL}", "KEY": "${env:OAUTH_KC33089}"},
+            },
+        },
+    }
+    _rewrite(spec, tmp_path, stub_servers=frozenset({"srv"}), forward_env=True)
+
+    sidecar = env_sidecar_dir_for_stubs(tmp_path / "stubs") / env_sidecar_name("agent-a", "srv")
+    written = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert written["BASE"] == "https://jira.example/rest"
+    assert written["KEY"] == "${OAUTH_KC33089}"
+    assert "k-1" not in sidecar.read_text(encoding="utf-8")
+
+
+def test_agent_env_wins_over_the_gateway_env_as_in_the_kiro_cli_child(monkeypatch) -> None:
+    monkeypatch.setenv("KC33089_URL", "https://gateway.example")
+    _configure_agent_env(monkeypatch, {"KC33089_URL": "https://agent-env.example"})
+    assert _expand_env_placeholders("${KC33089_URL}") == "https://agent-env.example"
+
+
 def test_two_agents_declaring_one_server_alike_share_its_sidecar(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1155,6 +1305,7 @@ def test_two_agents_declaring_one_server_alike_share_its_sidecar(
     for agent in ("gpu-dev", "kirocrew"):
         spec = {
             "name": agent,
+            "tools": ["*"],
             "mcpServers": {
                 "srv": {"command": sys.executable, "env": {"AUTH": "${env:MYVAR}"}},
             },
@@ -1180,6 +1331,7 @@ def test_a_rotating_secret_alone_still_splits_the_sidecars(tmp_path: Path, monke
     for agent, token in (("gpu-dev", "token-a"), ("kirocrew", "token-b")):
         spec = {
             "name": agent,
+            "tools": ["*"],
             "mcpServers": {
                 "srv": {
                     "command": sys.executable,
@@ -1289,7 +1441,7 @@ def test_wrapped_argv_is_cmd_safe_under_a_spaced_interpreter_path(
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
     monkeypatch.setattr("kiro_crew.platform_compat.short_path_name", lambda p: short)
 
-    spec = {"name": "agent-a", "mcpServers": {"svc": {"command": exe}}}
+    spec = {"name": "agent-a", "tools": ["*"], "mcpServers": {"svc": {"command": exe}}}
     new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"svc"}))
     entry = new_spec["mcpServers"]["svc"]
 
@@ -1315,6 +1467,7 @@ def test_wrapped_command_kept_and_warned_when_no_short_form_exists(
 
     spec = {
         "name": "agent-a",
+        "tools": ["*"],
         "mcpServers": {"svc": {"command": exe}, "svc2": {"command": exe}},
     }
     with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.rewriter"):

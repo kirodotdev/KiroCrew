@@ -146,6 +146,7 @@ class _Slot:
         self._queue: list[Any] = []
         self._pending_steers: list[str] = []
         self._pending_synthesis = False
+        self._deferred_notes: list[dict] = []
         self.queued: list[str] = []
 
     def queue_append(self, message: str, *, meta=None, directive_user_origin: bool) -> None:

@@ -61,11 +61,16 @@ describe('SettingsModal error surface', () => {
 
     await waitFor(() => expect(saveButton()).toBeEnabled())
     fireEvent.click(saveButton())
-    await waitFor(() => expect(screen.getByRole('button', { name: /saving/i })).toBeDisabled())
+    // Save and Cancel read aria-disabled while the write runs (busy), not native
+    // disabled, so the pressed control keeps keyboard focus (#32999). The host X
+    // stays natively disabled -- the Modal owns it, and it is not focused on press.
+    await waitFor(() => expect(screen.getByRole('button', { name: /saving/i })).toHaveAttribute('aria-disabled', 'true'))
+    expect(screen.getByRole('button', { name: /saving/i })).not.toBeDisabled()
 
     // Every dismissal path is refused while the write is in flight, and the
     // refusal is visible on both explicit controls.
-    expect(screen.getByRole('button', { name: /^cancel$/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /^cancel$/i })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('button', { name: /^cancel$/i })).not.toBeDisabled()
     expect(screen.getByRole('button', { name: /close/i })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
     fireEvent.click(screen.getByRole('button', { name: /close/i }))

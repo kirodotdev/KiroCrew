@@ -230,6 +230,12 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
 
     async def _run() -> None:
         try:
+            # A kiro-cli found only through PATH has its version read inside the
+            # sandbox, on a thread of its own. Started here, with the other
+            # boot-time kiro-cli probes, so the first session finds the answer.
+            from kiro_crew import kiro_cli_path_probe
+
+            kiro_cli_path_probe.warm()
             main_default, member_default = await asyncio.to_thread(_kas_floor_gates_spawns, cfg)
             kas_floor_wait.release_kas_floor_wait(
                 task, main=not main_default, member=not member_default

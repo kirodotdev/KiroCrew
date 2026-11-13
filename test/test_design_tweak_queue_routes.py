@@ -1178,3 +1178,69 @@ class TestThreadEntryCap:
         saved = json.loads(server._request_file(isolated_queue, "reqcap4").read_text())
         assert resp.code == 200, "a text-free status update appends nothing and must be allowed"
         assert saved["comments"][0]["status"] == "done"
+
+
+class TestTrailingNewlineIsNotAnId:
+    """Python's ``$`` also matches before a trailing newline, so a ``$``-anchored
+    check would pass ``req1\n`` as a second spelling of ``req1``. Every id a client
+    sends is judged by the same pattern, so each route answers a newline-ended id
+    with the 400 it gives any other malformed id. Nothing here creates a file named
+    with a newline.
+    """
+
+    def test_the_request_file_lookup_refuses_an_id_ending_in_a_newline(self, tmp_path):
+        assert server._request_file(tmp_path, "req1").name == "req1.json"
+        with pytest.raises(server._PathEscape):
+            server._request_file(tmp_path, "req1\n")
+
+    def _seed(self, queue):
+        c1 = _make_comment("c1", index=1)
+        _seed_request(queue, "req1", _make_draft("req1", comments=[c1]))
+
+    @pytest.mark.parametrize(
+        "route,handler",
+        [("/send", "_h_send"), ("/delivered", "_h_delivered"), ("/clear", "_h_clear")]
+        + [("/delete", "_h_delete")],
+    )
+    def test_a_request_id_ending_in_a_newline_is_refused(self, isolated_queue, route, handler):
+        self._seed(isolated_queue)
+        h, resp = _make_handler("POST", route)
+        getattr(h, handler)({"id": ["req1\n"]})
+
+        assert resp.code == 400
+        assert server._request_file(isolated_queue, "req1").is_file()
+
+    def test_a_comment_id_ending_in_a_newline_is_refused_on_delete(self, isolated_queue):
+        self._seed(isolated_queue)
+        h, resp = _make_handler("POST", "/delete-comment")
+        h._h_delete_comment({"id": ["req1"], "cid": ["c1\n"]})
+
+        assert resp.code == 400
+
+    def test_a_comment_id_ending_in_a_newline_is_refused_on_thread(self, isolated_queue):
+        self._seed(isolated_queue)
+        h, resp = _make_handler("POST", "/thread", {"role": "agent", "text": "Note"})
+        h._h_thread({"id": ["req1"], "cid": ["c1\n"]})
+
+        assert resp.code == 400
+
+    def test_a_follow_up_id_ending_in_a_newline_is_not_stored(self, isolated_queue, monkeypatch):
+        monkeypatch.setitem(
+            server._CFG, "projects", [{"id": "proj1", "path": "/tmp/fake", "name": "fake"}]
+        )
+        body = {
+            "type": "visual_edit_request",
+            "selection": {"elements": [{"tag": "div", "id": "hero"}]},
+            "comment": "Also fix the padding",
+            "followUpTo": "prev-comment-id\n",
+            "projectId": "proj1",
+        }
+        h, resp = _make_handler("POST", "/submit", body)
+
+        with patch.object(server, "_resolve_project", return_value=("proj1", "/tmp/fake", "")):
+            with patch.object(server, "_sanitize_selection_sources"):
+                h._h_submit()
+
+        assert resp.code == 200
+        saved = json.loads(server._request_file(isolated_queue, resp.payload["id"]).read_text())
+        assert saved["comments"][-1]["followUpTo"] == ""

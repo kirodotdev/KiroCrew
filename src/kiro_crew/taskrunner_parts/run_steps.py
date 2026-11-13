@@ -197,7 +197,12 @@ async def _execute_tasks(self: TaskRunner, run: Project, history_key: str) -> No
                         pass
             failed_task = None
             for task, result in zip(resolved, results):
-                if isinstance(result, Exception) or not result:
+                # A step passed only when it returned True. gather(..., return_exceptions=True)
+                # captures BaseException too, so a cancelled step arrives as a CancelledError,
+                # which is not an Exception and is truthy -- an `isinstance(result, Exception) or
+                # not result` test would read it as success and let the run continue past a step
+                # that never finished. Anything that is not True is a failed step.
+                if result is not True:
                     failed_task = task
                     break
         if failed_task is not None:

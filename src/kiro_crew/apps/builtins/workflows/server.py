@@ -34,6 +34,7 @@ from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.platform import boot_platform, redact_via_context
+from kiro_crew.strict_json import json_plain
 from kiro_crew.workflows.runner import WorkflowRunner
 from kiro_crew.workflows.validate import validate
 
@@ -115,7 +116,7 @@ def handle_run(body: dict, *, runner: WorkflowRunner | None = None) -> dict:
     )
     return {
         "ok": res.ok,
-        "result": res.result,
+        "result": json_plain(res.result),
         "error": res.error,
         "events": [e.to_json() for e in res.events],
     }

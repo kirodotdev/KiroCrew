@@ -44,7 +44,6 @@ from kiro_crew.cron import (
     validate_managed_by,
 )
 from kiro_crew.cron_script import resolve_script_path
-from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.history import ConversationLog
 from kiro_crew.mcp_cron import _vet_cron_capability_governance, _vet_script_file, _vet_shell_command
 from kiro_crew.platform import redact_log_via_context
@@ -99,6 +98,25 @@ def _cron_add_bounds(field_name: str) -> tuple[int, int]:
     spec = next(s for s in CRON_ADD_SCHEMA.fields if s.name == field_name)
     assert spec.min_val is not None and spec.max_val is not None, field_name
     return int(spec.min_val), int(spec.max_val)
+
+
+def _cron_model(model: str) -> str:
+    """A ``--model`` value as it is stored, or ``ValueError`` naming the format rule.
+
+    ``""`` stays ``""`` (no override). The "auto" inherit sentinel resolves to no
+    pinned provider id and is stored as unset, as the dashboard and ``cron_add`` do.
+    """
+    if not model:
+        return ""
+    if len(model) > MAX_SHORT_STRING:
+        raise ValueError(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
+    if not _MODEL_NAME_RE.match(model):
+        # Read here, not at module level: the facade mirrors every module-level
+        # import of its owners, and its import inventory is frozen.
+        from kiro_crew.validation import MODEL_NAME_HINT
+
+        raise ValueError(f"invalid model format ({MODEL_NAME_HINT})")
+    return "" if model_registry.to_provider_id(model, "claude_code") == "" else model
 
 
 def _cron_update_not_found(job_id: str) -> NoReturn:
@@ -359,19 +377,10 @@ def _cron_add(svc: CronService, args: argparse.Namespace) -> None:
     # ── Fields validated up front so an invalid value never strands a job ──
     if channel and (len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel)):
         _cron_add_fail(f"invalid channel ID format (expected {CHANNEL_ID_RE.pattern.strip('^$')})")
-    if model:
-        if len(model) > MAX_SHORT_STRING:
-            _cron_add_fail(f"invalid model format (expected at most {MAX_SHORT_STRING} characters)")
-        if not _MODEL_NAME_RE.match(model):
-            # Read here, not at module level: the facade mirrors every module-level
-            # import of its owners, and its import inventory is frozen.
-            from kiro_crew.validation import MODEL_NAME_HINT
-
-            _cron_add_fail(f"invalid model format ({MODEL_NAME_HINT})")
-        # Same normalisation as the dashboard and cron_add: the "auto" inherit
-        # sentinel resolves to no pinned provider id and is stored as unset.
-        if model_registry.to_provider_id(model, "claude_code") == "":
-            model = ""
+    try:
+        model = _cron_model(model)
+    except ValueError as e:
+        _cron_add_fail(str(e))
     if script:
         kind = "script"
     elif command:
@@ -608,9 +617,24 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
     from kiro_crew.cron import job_zone_name
 
+    action = getattr(args, "cron_action", None)
+    if action not in (
+        "list",
+        "adopt",
+        "add",
+        "update",
+        "remove",
+        "pause",
+        "resume",
+        "trigger",
+        "preview",
+    ):
+        # Before the service below, which creates cron-history/ on a fresh data home.
+        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        return
+
     svc = CronService(base_dir=config_dir())
 
-    action = getattr(args, "cron_action", None)
     if action == "list":
         # Read-only on folders: the filter resolves an EXISTING folder and never
         # creates one, and an unknown or ambiguous reference is an error rather
@@ -771,6 +795,10 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             "timeout_secs",
             "auto_pause_after_failures",
             "alert_after_failures",
+            "persistent_session",
+            "minimal_context",
+            "hide_in_chat",
+            "silent",
         ):
             val = getattr(args, field, None)
             if val is not None:
@@ -800,6 +828,15 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             kwargs["approval_mode"] = "" if args.approval_mode == "default" else args.approval_mode
         if getattr(args, "project_path", None) is not None:
             kwargs["project_path"] = args.project_path.strip()
+        if getattr(args, "model", None) is not None:
+            try:
+                kwargs["model"] = _cron_model(args.model.strip())
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
+        # The store validates the zone; "" resets it to the default, as on cron_update.
+        if getattr(args, "timezone", None) is not None:
+            kwargs["timezone"] = args.timezone.strip()
         # ``--every 0`` and a blank ``--cron`` name no schedule, and the store
         # treats an empty schedule value as "unchanged". Say so instead of
         # reporting an update that did not happen; the other fields still apply.
@@ -941,7 +978,11 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         # paired credential would let that sibling run the job.
         port, _evidence_backed = resolve_client_port_ex(None)
         secret_path = config_dir() / ".local_secret"
-        ok, msg = trigger_cron_job(args.job_id, port, secret_path)
+        # Local: a module-level name here would be served by the ``cli_commands``
+        # facade, whose name set is pinned.
+        from kiro_crew.cron_trigger import ALREADY_RUNNING_STATUS, trigger_cron_job_status
+
+        ok, msg, http_status = trigger_cron_job_status(args.job_id, port, secret_path)
         # The success line is the command's output; a failure reason goes to
         # stderr like every other cron refusal.
         print(msg, file=sys.stdout if ok else sys.stderr)
@@ -953,13 +994,12 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             resources=f"job_id={args.job_id}",
         )
         if not ok:
-            sys.exit(1)
+            # A busy job is worth retrying later, unlike a real failure, so it
+            # gets its own code, 75 (EX_TEMPFAIL), a script can test without the text.
+            sys.exit(75 if http_status == ALREADY_RUNNING_STATUS else 1)
 
     elif action == "preview":
         _cron_preview(args)
-
-    else:
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
 
 
 def _cron_preview(args: argparse.Namespace) -> None:
@@ -1005,7 +1045,23 @@ def _cron_preview(args: argparse.Namespace) -> None:
     # Registered before exec, as the production child does: dataclasses resolves
     # a postponed annotation through sys.modules[cls.__module__].
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        # A script that fails to import (a syntax error, a missing module) is the
+        # common case while debugging one: report it like the function-error path
+        # below, not as a traceback through the CLI, and still audit the run.
+        sys.modules.pop(spec.name, None)
+        print(f"Error: cannot load {script_path}: {type(e).__name__}: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sel().log_api_access(
+            caller="cli",
+            operation="cron.preview",
+            outcome="error",
+            source="cli",
+            resources=f"script={script_path}:{func_name}",
+        )
+        sys.exit(1)
     func = getattr(module, func_name, None)
     if func is None:
         print(f"Error: function '{func_name}' not found in {script_path}", file=sys.stderr)

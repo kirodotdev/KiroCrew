@@ -490,7 +490,8 @@ class NudgeLoop:
     # nobody answered within the window. Set by ``notify_approval_stalled`` and
     # read by ``_timer`` as a HOLD: the loop stays active but fires no cycle, spending
     # neither its cycle cap nor its runtime budget. Set only on proof, never on
-    # prediction. Cleared by ``release_approval_hold`` once a person is back, and on
+    # prediction. Cleared by ``release_approval_hold`` once a person is back or a
+    # new turn starts in the session, and on
     # every revival. Persisted, because the cause usually outlives a restart.
     approval_stalled: bool = False
     # When the current hold began (0 = not held, or a legacy row). On release the
@@ -783,8 +784,7 @@ def budget_elapsed(loop: "NudgeLoop", now: float | None = None) -> bool:
 
 
 #: Share of a loop's cycle or runtime cap at or under which the nudge header
-#: says ``10% or less left``. Mirrors ``RENEW_THRESHOLD`` in goal-conductor's
-#: ``patrol_budget.py``, which re-checks it before it renews.
+#: says ``10% or less left``.
 NUDGE_RENEW_DUE_SHARE = 0.10
 
 

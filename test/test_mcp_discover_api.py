@@ -469,6 +469,30 @@ class TestDiscoverInstall:
         finally:
             await client.close()
 
+    async def test_install_into_a_store_that_does_not_parse_is_refused(
+        self, sandbox, fake_sel, reset_registry
+    ):
+        """Nothing is written to a store cut off mid-write, so nothing is reported installed."""
+        raw = b'{"mcpServers": {"github": {"command": "gh-mcp"}'
+        sandbox.kirocrew_json.write_bytes(raw)
+        client = await _client(FakeOfficialProvider())
+        try:
+            resp = await client.post(
+                "/api/mcp/discover/install",
+                json={"provider": "official", "id": _WEATHER_ID},
+            )
+            assert resp.status == 500
+            assert await resp.json() == {
+                "error": "cannot parse the Kiro Crew mcp.json",
+                "code": "config_corrupt",
+            }
+            assert sandbox.kirocrew_json.read_bytes() == raw
+            assert not sandbox.rebuild.called
+            outcomes = [c.kwargs.get("outcome") for c in fake_sel.log_api_access.call_args_list]
+            assert outcomes == ["error"]
+        finally:
+            await client.close()
+
     async def test_install_reports_a_declined_rebuild(self, sandbox, fake_sel, reset_registry):
         """The shared-home guard refused the write: saved, but not live yet."""
         sandbox.rebuild.side_effect = lambda **_: Path("/dev/null")
@@ -765,6 +789,31 @@ class TestDiscoverInstall:
             assert synced == [("SomeBundleMCP", True)]
         finally:
             await client.close()
+
+    async def test_capability_install_failure_redacts_before_the_cut(
+        self, sandbox, fake_sel, reset_registry, monkeypatch
+    ):
+        """Redact, then cut: cutting first splits a credential so no pattern
+        matches it, and its first part reaches the browser."""
+        from kiro_crew.dashboard.handlers import _shared as shared_mod
+        from kiro_crew.dashboard.handlers import mcp_discover as mod
+        from kiro_crew.platform.interfaces import CapabilityResult
+
+        token = "ghp_" + "a1B2c3D4e5" * 3 + "F6g7H8"
+
+        class _FailingManager:
+            async def install_mcp(self, server_id):
+                # The token spans char 500.
+                return CapabilityResult(ok=False, message="x" * 490 + " " + token + " tail")
+
+        monkeypatch.setattr(shared_mod, "_capability_manager", lambda: _FailingManager())
+        capability = MagicMock(is_available=lambda: True)
+        monkeypatch.setattr(mod, "_get_registry", lambda: MagicMock(get=lambda _: capability))
+        resp = await mod._install_via_capability(MagicMock(), "SomeBundleMCP")
+        assert resp.status == 500
+        error = json.loads(resp.body)["error"]
+        assert "ghp_" not in error
+        assert len(error) <= 500
 
     async def test_capability_install_rejects_unsafe_id_400(
         self, sandbox, fake_sel, reset_registry

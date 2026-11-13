@@ -37,6 +37,7 @@ from kiro_crew.dashboard.state import (
     DashboardState,
     _ChatSlot,
     build_refusal_recovery_prompt,
+    row_mid,
 )
 from kiro_crew.dashboard.turn_dispatch import format_approval_no_budget_card
 from kiro_crew.hooks import HOOK_EVENT_PRE_TOOL_USE, ScriptHookResult, ToolHookResult
@@ -1217,6 +1218,7 @@ class TestHostPreDeclinedRowIsBornResolved:
         # the Slack card's durable-Trust proof must be readable off that same
         # row (``_linked_trust_grantable``).
         seen_at_post: dict[str, object] = {}
+        passed: dict[str, asyncio.Future] = {}
 
         async def _mirror(_slack, _chan, _ts, request_id, *_a, **_k):
             await asyncio.sleep(0.01)
@@ -1225,6 +1227,10 @@ class TestHostPreDeclinedRowIsBornResolved:
             )
             seen_at_post["frames"] = len(self._permission_frames(timeline))
             seen_at_post["pending_pushed"] = ("push", True) in timeline
+            # The card a click settles is this slot's own request, not any one
+            # holding the same id.
+            seen_at_post["slot_key"] = _k["slot_key"]
+            passed["future"] = _k["future"]
             if failure == "delivery-raises":
                 raise RuntimeError("slack down")
             return None
@@ -1234,11 +1240,19 @@ class TestHostPreDeclinedRowIsBornResolved:
             await _run_chat(state, slot, "hello")
 
         mirror.assert_awaited_once()
-        assert seen_at_post == {"proof": "1", "frames": 1, "pending_pushed": True}, (
+        assert seen_at_post == {
+            "proof": "1",
+            "frames": 1,
+            "pending_pushed": True,
+            "slot_key": slot.key,
+        }, (
             "while the Slack post was in flight the dashboard must already hold the "
             "row (one frame out), the Board its pending state, and the mirror its "
-            "Trust proof"
+            "Trust proof and the slot that asked"
         )
+        # The future handed to the mirror is the one the turn parked on: the
+        # failed delivery declined it.
+        assert passed["future"].result() == "rejected"
         (frame,) = self._permission_frames(timeline)
         assert frame["request_id"] == "req-1"
         # The accepted residual: the frame went out before the delivery outcome
@@ -1250,7 +1264,15 @@ class TestHostPreDeclinedRowIsBornResolved:
             for i, t in enumerate(timeline)
             if t[:2] == ("ws", "approval_resolved") and t[2].get("id") == "req-1"
         )
-        assert timeline[retire_at][2] == {"id": "req-1", "approved": False, "slot": slot.key}
+        (permission_row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        assert timeline[retire_at][2] == {
+            "id": "req-1",
+            "approved": False,
+            "slot": slot.key,
+            # The runner's own request, named by the row it wrote.
+            "origin": "native",
+            "mid": row_mid(permission_row),
+        }
         denied_at = next(i for i, t in enumerate(timeline) if t[:2] == ("row", "tool"))
         assert retire_at < denied_at, (
             "the failed post did not retire the card before the turn moved on to "
@@ -1317,9 +1339,10 @@ class TestHostPreDeclinedRowIsBornResolved:
             m.get("role") == "error" and m.get("content") == no_budget_card for m in slot.messages
         ), "the no-budget card was rendered for a prompt the user had already approved"
         retire = [t for t in timeline if t[:2] == ("ws", "approval_resolved")]
-        assert retire == [
-            ("ws", "approval_resolved", {"id": "req-1", "approved": True, "slot": slot.key})
-        ]
+        (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        # The runner's own request, named by the row it wrote.
+        resolved = {"id": "req-1", "approved": True, "slot": slot.key, "origin": "native"}
+        assert retire == [("ws", "approval_resolved", {**resolved, "mid": row_mid(row)})]
         (stored,) = [m for m in slot.messages if m.get("role") == "permission"]
         assert json.loads(stored["cls"])["resolved"] == "approved"
         # The posted Slack card is cleaned up now that the decision is in.
@@ -1368,9 +1391,10 @@ class TestHostPreDeclinedRowIsBornResolved:
         client.approve_tool.assert_awaited_once_with("req-1")
         client.reject_tool.assert_not_awaited()
         retire = [t for t in timeline if t[:2] == ("ws", "approval_resolved")]
-        assert retire == [
-            ("ws", "approval_resolved", {"id": "req-1", "approved": True, "slot": slot.key})
-        ]
+        (row,) = [m for m in slot.messages if m.get("role") == "permission"]
+        # The runner's own request, named by the row it wrote.
+        resolved = {"id": "req-1", "approved": True, "slot": slot.key, "origin": "native"}
+        assert retire == [("ws", "approval_resolved", {**resolved, "mid": row_mid(row)})]
         (stored,) = [m for m in slot.messages if m.get("role") == "permission"]
         assert json.loads(stored["cls"])["resolved"] == "approved"
         # Nothing was posted, so nothing is cleaned up on the Slack side.

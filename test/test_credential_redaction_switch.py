@@ -114,6 +114,18 @@ class TestSwitchedOffInsideOwnerView:
         assert state.enabled is False
         assert json.loads(_isolated_switch.read_text())["enabled"] is False
 
+    def test_a_save_rewrites_the_existing_record_in_place(self, _isolated_switch):
+        # A running Linux sandbox bind-mounts this inode read-only; a rename over it
+        # would detach that mount and leave the new file writable inside the sandbox.
+        _isolated_switch.write_text("{}", encoding="utf-8")
+        inode = _isolated_switch.stat().st_ino
+        _off()
+        assert _isolated_switch.stat().st_ino == inode
+        assert redaction_switch.read_state().enabled is False
+        redaction_switch.set_enabled(True, changed_at="2026-09-24T23:01:00+00:00")
+        assert _isolated_switch.stat().st_ino == inode
+        assert redaction_switch.read_state().enabled is True
+
     def test_owner_view_passes_credentials_through_when_off(self):
         _off()
         key, url = _synth_aws_key(), _synth_token_url()

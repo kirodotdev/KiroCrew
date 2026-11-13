@@ -659,6 +659,25 @@ describe('SessionStorageScreen (inventory)', () => {
     expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('keeps keyboard focus on the pager when Next or Prev goes disabled', async () => {
+    inventory = manyForeground(40)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('FG 001')).toBeTruthy())
+    const next = screen.getByRole('button', { name: 'Next' })
+    const prev = screen.getByRole('button', { name: 'Previous' })
+    // Next onto the last page disables Next, so focus moves to Previous.
+    next.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByText('Page 2 of 2')).toBeTruthy()
+    expect(next).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(prev))
+    // Previous back onto the first page disables it, so focus moves to Next.
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByText('Page 1 of 2')).toBeTruthy()
+    expect(prev).toBeDisabled()
+    await waitFor(() => expect(document.activeElement).toBe(next))
+  })
+
   /**
    * Page 3 of a one-page result is an empty screen, which is what a kept cursor
    * produces the moment a search narrows the list.

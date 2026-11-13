@@ -16,6 +16,7 @@ from discord_helpers import _drop_live_config_snapshot  # noqa: F401
 from discord_helpers import FakeClient
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES
+from kiro_crew.constants import DENY_CAUSE_APPROVAL_UNDELIVERABLE
 from kiro_crew.discord import renderer as discord_renderer
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
 from kiro_crew.discord.renderer import (
@@ -525,9 +526,9 @@ class TestApprovalDecider:
         decider = DiscordApprovalDecider(session_key="sk")
         ev = SimpleNamespace(request_id="r1")
         key = DiscordApprovalDecider.key("sk", "r1")
+        nonce = DiscordApprovalDecider.register_nonce(key)
         task = asyncio.ensure_future(decider(ev))
         await _registered(task, key)
-        nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce)
         assert await await_until(task, what="the decider returning the approval") is True
 
@@ -538,9 +539,9 @@ class TestApprovalDecider:
         decider = DiscordApprovalDecider(session_key="sk")
         ev = SimpleNamespace(request_id="r1")
         key = DiscordApprovalDecider.key("sk", "r1")
+        DiscordApprovalDecider.register_nonce(key)  # current prompt's nonce
         task = asyncio.ensure_future(decider(ev))
         await _registered(task, key)
-        DiscordApprovalDecider.register_nonce(key)  # current prompt's nonce
         # Press carries an OLD nonce (from a prompt before a restart).
         assert not DiscordApprovalDecider.resolve_global(key, True, nonce="deadbeefdeadbeef")
         assert not task.done()  # still pending — stale press had no effect
@@ -577,8 +578,31 @@ class TestApprovalDecider:
 
         decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
         ev = SimpleNamespace(request_id="r-timeout")
+        DiscordApprovalDecider.register_nonce(
+            DiscordApprovalDecider.key("discord:a:direct:7", "r-timeout")
+        )
         assert await finished(decider(ev), "the approval window expiring") is False
 
+        assert recorded == ["discord:a:direct:7"], "the stall was not recorded"
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_prompt_records_the_stall_too(self, monkeypatch) -> None:
+        """A muted conversation's prompt is never posted, so nobody can press:
+        a loop bound to it is held at once, as an expiry would hold it."""
+        from kiro_crew import autonudge as _an
+
+        recorded: list[str] = []
+        monkeypatch.setattr(
+            _an,
+            "get_instance",
+            lambda: SimpleNamespace(notify_approval_stalled=recorded.append),
+        )
+
+        decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
+        ev = SimpleNamespace(request_id="r-muted")
+        assert await finished(decider(ev), "the unreserved request being denied") is False
+
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
         assert recorded == ["discord:a:direct:7"], "the stall was not recorded"
 
     @pytest.mark.asyncio
@@ -600,9 +624,9 @@ class TestApprovalDecider:
         decider = DiscordApprovalDecider(session_key="discord:a:direct:7")
         ev = SimpleNamespace(request_id="r-deny")
         key = DiscordApprovalDecider.key("discord:a:direct:7", "r-deny")
+        nonce = DiscordApprovalDecider.register_nonce(key)
         task = asyncio.ensure_future(decider(ev))
         await _registered(task, key)
-        nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, False, nonce=nonce)
 
         assert await await_until(task, what="the decider returning the denial") is False
@@ -781,8 +805,9 @@ class TestWindowStillFailsClosed:
         """Re-arming keeps the future the waiter is blocked on."""
         decider = DiscordApprovalDecider(session_key="sk")
         key = DiscordApprovalDecider.key("sk", "r7")
+        DiscordApprovalDecider.register_nonce(key)
         task = asyncio.ensure_future(decider(SimpleNamespace(request_id="r7")))
-        await _registered(task, key)
+        await asyncio.sleep(0)  # the waiter adopts the first arm's future
         nonce = DiscordApprovalDecider.register_nonce(key)
         assert DiscordApprovalDecider.resolve_global(key, True, nonce=nonce) is True
         assert await await_until(task, what="the decider returning the approval") is True

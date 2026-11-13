@@ -6,9 +6,9 @@ import SchedulePage from '../pages/SchedulePage'
 import type { CronJob } from '../types'
 
 /**
- * A job row's Run and Cancel buttons while their request is out. They took a
- * native `disabled` and the label "...": the keyboard press that started the
- * request blurred focus to the page, so a failed run left the reader nowhere,
+ * A job row's Run, Cancel and Delete buttons while their request is out. They
+ * took a native `disabled` and the label "...": the keyboard press that started
+ * the request blurred focus to the page, so a failed run left the reader nowhere,
  * and a screen reader announced the busy button as dots. They stay focusable,
  * keep their name (the fixed Actions column has no room for a longer one),
  * say they are busy through `aria-busy`, and ignore a second press instead.
@@ -54,7 +54,7 @@ function held<T>() {
   return { promise, answer }
 }
 
-describe('SchedulePage row Run and Cancel while busy', () => {
+describe('SchedulePage row Run, Cancel and Delete while busy', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
@@ -119,6 +119,41 @@ describe('SchedulePage row Run and Cancel while busy', () => {
     await act(async () => { cancel.answer({ error: 'nothing to cancel' }) })
     expect(await screen.findByText('nothing to cancel')).toBeInTheDocument()
     expect(button).toHaveAccessibleName('Cancel')
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('keeps focus on a confirmed Delete, keeps its name, and ignores a second press', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob()] })
+    let refuse: (e: Error) => void = () => {}
+    vi.mocked(api).deleteCron.mockReturnValue(new Promise((_, reject) => { refuse = reject }) as never)
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Nightly report')).toBeInTheDocument())
+    const button = within(rowOf('Nightly report')).getByRole('button', { name: 'Delete' })
+
+    button.focus()
+    await userEvent.keyboard('{Enter}')
+    expect(button).toHaveAccessibleName('Delete?')
+    await userEvent.keyboard('{Enter}')
+    expect(api.deleteCron).toHaveBeenCalledTimes(1)
+    expect(button).toHaveAccessibleName('Delete')
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    expect(button).not.toBeDisabled()
+    expect(document.activeElement).toBe(button)
+    expect(button.querySelector('svg')).not.toBeNull()
+
+    // A press while it is pending neither re-arms nor sends a second delete.
+    await userEvent.keyboard('{Enter}')
+    expect(api.deleteCron).toHaveBeenCalledTimes(1)
+    expect(button).toHaveAccessibleName('Delete')
+
+    // A refused delete keeps the row, and the reader where they were.
+    await act(async () => { refuse(new Error('job is locked')) })
+    expect(await screen.findByText('job is locked')).toBeInTheDocument()
+    expect(button).toHaveAccessibleName('Delete')
+    expect(button).not.toHaveAttribute('aria-busy')
     expect(document.activeElement).toBe(button)
   })
 

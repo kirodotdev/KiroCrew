@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from config_pending_helpers import dashboard_refusal_layer, make_config_json_pending
 from dashboard_owner_helpers import as_owner
 
 from kiro_crew.connections.oauth_clients import client_id_env_name, client_secret_env_name
@@ -72,8 +73,8 @@ def refreshed(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
-async def _client() -> TestClient:
-    app = web.Application()
+async def _client(*middlewares) -> TestClient:
+    app = web.Application(middlewares=list(middlewares))
     app.router.add_get(BASE, connections.api_connections_oauth_clients)
     app.router.add_put(BASE + "/{slug}", connections.api_connections_oauth_client_put)
     app.router.add_delete(BASE + "/{slug}", connections.api_connections_oauth_client_delete)
@@ -129,7 +130,9 @@ async def test_get_lists_every_preregistered_provider_unconfigured(home):
         assert record["client_secret_set"] is False
         assert record["client_secret_source"] is None
         assert record["redirect_uri"] == f"http://127.0.0.1:{port}/callback"
-        assert record["registration_guide"] == f"oauth-app-registration/{slug}.md"
+        # The six Google cards share one app, so they share one guide.
+        guide = "google" if slug == "gmail" or slug.startswith("google-") else slug
+        assert record["registration_guide"] == f"oauth-app-registration/{guide}.md"
         assert "client_secret" not in record
 
 
@@ -726,6 +729,37 @@ async def test_delete_restores_the_secret_when_the_config_drop_fails(home, monke
 
     held = vault.get(GITHUB_VAULT_NAME)
     assert held is not None and held.reveal() == "keep-me"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["put", "delete"])
+async def test_a_pending_config_json_restores_the_secret_and_answers_the_pending_code(
+    home, monkeypatch, method
+):
+    """config.json has a change pending owner review: the config half is refused, the
+    secret goes back to what it was, and the dashboard chain answers 409 with the code
+    the UI translates instead of the route's own 500."""
+    vault = SecretVault(home)
+    vault.set_sync(GITHUB_VAULT_NAME, "old-secret")
+    record = {"connections": {"oauth_clients": {"github": {"client_id": "Iv1.old"}}}}
+    (home / "config.json").write_text(json.dumps(record) + "\n", encoding="utf-8")
+    make_config_json_pending(monkeypatch)
+
+    client = await _client(dashboard_refusal_layer())
+    try:
+        if method == "put":
+            resp = await client.put(
+                f"{BASE}/github", json={"client_id": "Iv1.new", "client_secret": "new-secret"}
+            )
+        else:
+            resp = await client.delete(f"{BASE}/github")
+        assert resp.status == 409
+        assert (await resp.json())["code"] == "file_pending_review"
+    finally:
+        await client.close()
+
+    held = vault.get(GITHUB_VAULT_NAME)
+    assert held is not None and held.reveal() == "old-secret"
 
 
 @pytest.mark.asyncio

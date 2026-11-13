@@ -9,6 +9,7 @@ change lands in the chat as one ``self`` row the user can undo through
 
 from __future__ import annotations
 
+import asyncio
 import re
 from typing import Any
 
@@ -19,7 +20,7 @@ from kiro_crew import crewmate_prompts, mcp_mate
 from kiro_crew import members as members_mod
 from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, ASSISTANT_MEMBER_NAME
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, _invalidate_config_cache
-from kiro_crew.dashboard import chat_cards, member_self_changes
+from kiro_crew.dashboard import chat_cards, mate_folders, member_self_changes
 from kiro_crew.dashboard.handlers import guide as guide_routes
 from kiro_crew.dashboard.handlers import member_self as self_routes
 from kiro_crew.dashboard.mate_welcome import NOTE_CONFIDENTIALITY, welcome_kickoff
@@ -653,6 +654,20 @@ def test_the_row_names_the_crewmate_by_its_display_name_not_its_key() -> None:
     assert row["meta"]["card"]["name"] == "Scout"
 
 
+def test_the_row_names_an_unnamed_first_crewmate_bot_not_mate() -> None:
+    # The first crewmate's key is `mate`, so the key is the one label that must
+    # never reach the row; with no display name it reads what every other
+    # surface reads.
+    _seed()
+    state = FakeState()
+    slot = _thread(state, ASSISTANT_MEMBER_NAME)
+    status, body = _update(state, {"description": "I keep the lights on."})
+    assert status == 200, body
+    assert body["name"] == ASSISTANT_DEFAULT_DISPLAY_NAME
+    (row,) = _self_rows(slot)
+    assert row["meta"]["card"]["name"] == ASSISTANT_DEFAULT_DISPLAY_NAME
+
+
 def test_the_crewmate_hears_about_an_undo_once_on_its_next_turn() -> None:
     from kiro_crew.context_blocks import render_self_change_undos
 
@@ -808,6 +823,98 @@ def test_an_oversized_display_name_keeps_no_undo_record_either(monkeypatch) -> N
     assert status == 200, body
     assert body["undoable"] is False
     assert member_self_changes.get(body["change_id"]) is None
+
+
+# ── the home folder ──
+
+
+def _home(state: FakeState, name: str, store: str = "default") -> str:
+    """The crewmate's home folder, as the first chat it opened would leave it."""
+    principal = mate_folders.mate_principal(store)
+    return asyncio.run(mate_folders.ensure_mate_home(state, principal, name))
+
+
+def _home_name(state: FakeState, home_id: str) -> str:
+    return next(f["name"] for f in state.folders if f["id"] == home_id)
+
+
+def test_a_rename_from_the_crewmates_own_chat_renames_its_home_folder() -> None:
+    """The defect: the folder kept the old label while every other surface moved."""
+    _seed()
+    state = FakeState()
+    _thread(state, ORDINARY)
+    home = _home(state, "Scout")
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert body["changed"] == ["display_name"]
+    assert _home_name(state, home) == "Pebble"
+    # The sidebar is told, the way the crew editor's own save tells it.
+    assert state.slots_pushed == 1
+
+
+def test_taking_a_rename_back_renames_the_home_folder_too() -> None:
+    _seed()
+    state = FakeState()
+    _thread(state, ORDINARY)
+    home = _home(state, "Scout")
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    # The precondition this undo takes back, asserted so a folder that never
+    # followed the rename cannot pass the restored check by having never moved.
+    assert _home_name(state, home) == "Pebble"
+    status, undone = _undo(state, members_mod.member_slug(ORDINARY), body["change_id"])
+    assert status == 200, undone
+    assert undone["changed"] == ["display_name"]
+    assert _home_name(state, home) == "Scout"
+    assert state.slots_pushed == 2
+
+
+def test_taking_the_first_crewmates_rename_back_names_its_folder_bot() -> None:
+    # The undo counterpart of the unnamed-first-crewmate row: an undo restores
+    # an empty display name, so the label it answers with is the only thing
+    # keeping the `mate` key out of the sidebar in that direction. The undo
+    # route answers with no label of its own, so the folder it renames is where
+    # the restored label is observable.
+    _seed()
+    state = FakeState()
+    _thread(state, ASSISTANT_MEMBER_NAME)
+    home = _home(state, ASSISTANT_DEFAULT_DISPLAY_NAME)
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert _home_name(state, home) == "Pebble"
+    status, undone = _undo(state, members_mod.member_slug(ASSISTANT_MEMBER_NAME), body["change_id"])
+    assert status == 200, undone
+    assert undone["changed"] == ["display_name"]
+    assert _home_name(state, home) == ASSISTANT_DEFAULT_DISPLAY_NAME
+
+
+def test_a_change_that_is_not_a_rename_leaves_the_home_folder_alone() -> None:
+    _seed()
+    state = FakeState()
+    _thread(state, ORDINARY)
+    home = _home(state, "Scout")
+    writes = state.folder_writes
+    status, body = _update(state, {"description": "I watch builds."})
+    assert status == 200, body
+    assert body["changed"] == ["description"]
+    assert _home_name(state, home) == "Scout"
+    assert (state.folder_writes, state.slots_pushed) == (writes, 0)
+
+
+def test_a_folder_store_that_cannot_be_written_does_not_fail_the_rename() -> None:
+    """The record is already saved: a folder-store failure is logged, not raised."""
+    _seed()
+
+    class _Broken(FakeState):
+        async def mutate_folders(self, mutate):
+            raise OSError("folders.json is not writable")
+
+    state = _Broken()
+    _thread(state, ORDINARY)
+    status, body = _update(state, {"display_name": "Pebble"})
+    assert status == 200, body
+    assert _labels()[ORDINARY] == "Pebble"
+    assert state.slots_pushed == 0
 
 
 # ── the shim ──

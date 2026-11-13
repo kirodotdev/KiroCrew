@@ -33,6 +33,7 @@ from typing import Any
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.bounded_read import bounded_read
 from kiro_crew.pod import _windows_job as jobs
 from kiro_crew.pod.config import PodConfig
 
@@ -112,7 +113,7 @@ def read(cfg: PodConfig, name: str) -> dict[str, Any] | None:
     """Validate a bounded record. Only ENOENT returns None; all other faults raise."""
     try:
         with path(cfg, name).open("rb") as stream:
-            raw = stream.read(_MAX_RECORD_BYTES + 1)
+            raw = bounded_read(stream, _MAX_RECORD_BYTES + 1)
     except FileNotFoundError:
         return None
     if len(raw) > _MAX_RECORD_BYTES:

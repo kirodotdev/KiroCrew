@@ -1,6 +1,6 @@
 ---
 title: The goal conductor keeps its item total out of round reports and says it once past the cap
-status: implemented
+status: superseded
 author: kirocrew agent session, directed by adlio
 created: 2026-10-20
 last-audited: 2026-10-27
@@ -9,12 +9,17 @@ doc-pr: 22427
 implementation-prs: [22417]
 tracking-issues: [22415]
 supersedes: []
-superseded-by: []
+superseded-by: [rfc-drop-goal-item-cap.md]
 ---
 
 # RFC: The goal conductor keeps its item total out of round reports and says it once past the cap
 
-Status: implemented. adlio (repository admin) made the decision in the
+Status: superseded on 2026-11-09 by
+[`rfc-drop-goal-item-cap.md`](rfc-drop-goal-item-cap.md), which removes
+`item_cap`, `cap_exceeded` and the `item_cap_notice` rule. It was implemented
+before that; the record below is kept as written.
+
+adlio (repository admin) made the decision in the
 conductor chat on 2026-10-20; it was accepted when
 [#22427](https://github.com/kirodotdev/KiroCrew/pull/22427) merged on
 2026-10-21, and

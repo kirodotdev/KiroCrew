@@ -442,7 +442,6 @@ from kiro_crew.constants import (  # noqa: F401 - loader namespace compatibility
     SUBAGENT_TIMEOUT_SECS,
 )
 from kiro_crew.effort import is_valid_effort, model_supports_effort  # noqa: F401
-from kiro_crew.mcp_gateway.rewriter import default_overlay_dir, default_socket_path  # noqa: F401
 
 # The memory-store shape rule, applied to store NAMES at load. Leaf module:
 # stdlib only at module scope (it imports this one lazily), so no cycle.
@@ -689,6 +688,18 @@ _OWNERS = (
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
 
+#: The MCP gateway's two path defaults, which this module has always served. Read on
+#: first use (:func:`__getattr__`) instead of imported: the rewriter that owns them loads
+#: the gateway manager and the sandbox, which a process that only reads config never uses.
+_GATEWAY_PATH_DEFAULTS = frozenset({"default_overlay_dir", "default_socket_path"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _GATEWAY_PATH_DEFAULTS:
+        return getattr(_importlib.import_module("kiro_crew.mcp_gateway.rewriter"), name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 #: Owner-bound name this module does not bind -> the owner that answers a read of it.
 _EXPORTS: dict[str, str] = {}
 _EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
@@ -701,6 +712,11 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 # public name of the family, as it was when the family was one module.
 __all__ = sorted(name for name in set(globals()) | set(_EXPORTS) if not name.startswith("_"))
 
+if TYPE_CHECKING:  # the names ``__getattr__`` reads on first use, for type checkers
+    from kiro_crew.mcp_gateway.rewriter import (  # noqa: F401
+        default_overlay_dir,
+        default_socket_path,
+    )
 if TYPE_CHECKING:  # every owner-defined name this module forwards, for type checkers
     from kiro_crew.config.loader_agents import (  # noqa: F401
         _crew_autocompact_pct,
@@ -730,9 +746,11 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _crew_mode_agent_or_default,
         _default_memory_mode_from,
         _default_session_folder_or_empty,
+        _dict_or_default,
         _feature_previews,
         _folder_sort_from,
         _jira_auth_entry,
+        _lane_weights_from,
         _load_background_hold_secs,
         _load_idle_exempt_keys,
         _log_config_clamp_event,
@@ -743,6 +761,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _otlp_endpoint_rows,
         _read_backend_choice,
         _registry_entry,
+        _resolved_kas_bundle,
         _restore_stored_harness_fields,
         _restore_stored_stt_provider,
         _session_folder_root_or_empty,
@@ -782,6 +801,8 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         CRED_SLACK_BOT_TOKEN,
         CRED_TELEGRAM_BOT_TOKEN,
         CRED_WAKATIME_API_KEY,
+        CRED_WAKATIME_OAUTH_CLIENT_SECRET,
+        CRED_WAKATIME_OAUTH_TOKENS,
         CRED_WEBEX_BOT_TOKEN,
         CRED_WECOM_BOT_ID,
         CRED_WECOM_SECRET,
@@ -842,6 +863,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
     )
     from kiro_crew.config.loader_document import (  # noqa: F401
         _ABSENT_AGENT_KEY,
+        _RESOLVED_DEFAULT_AGENT_KEYS,
         _SIDECAR_AGENTS_REPAIRED,
         _SIDECAR_BASE_SHADOW,
         _SIDECAR_BASE_UNREADABLE,
@@ -880,13 +902,16 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         acp_backend_declared,
         acp_backend_overlay_owned,
         acp_backend_stored_as_kiro,
+        acp_backend_stored_runs_kas,
         coerce_config_field,
         coerce_dict_section,
         config_content_stamp,
+        kas_bundle_build_default,
         member_acp_backend_declared,
         read_config_for_update,
         refresh_config_meta_stamp,
         stamp_config_meta,
+        strip_undeclared_resolved_defaults,
         unsandboxed_exec_declared,
         unsandboxed_exec_platform_default,
         update_config_locked,
@@ -912,7 +937,9 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         normalize_workspace_path,
         oauth_endpoints_path,
         outbox_dir,
+        overlay_entry,
         overlay_pins,
+        project_hooks_consent_path,
         read_config_text,
         read_endorsed_config_text,
         read_local_secret,

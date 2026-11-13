@@ -100,13 +100,17 @@ class _CleanupIdentitySweepReader:
         """:func:`_agent_dir` against this sweep's registry root."""
         return _agent_dir_under(self._subagents_root, self._subagents_root_resolved, agent_id)
 
+    def record_file(self, agent_id: str) -> str:
+        """Where *agent_id*'s protected record lives, as a string. Joins only, no I/O."""
+        return os.path.join(self._records_root, agent_id, _CLEANUP_IDENTITIES_FILE)
+
     def read(self, agent_id: str) -> list[dict[str, object]]:
         self.agent_dir(agent_id)
         if not self._shared_locked:
             for protected_dir in (self._records_root.parent, self._records_root):
                 _lock_down_cleanup_dir(protected_dir)
             self._shared_locked = True
-        path = self._records_root / agent_id / _CLEANUP_IDENTITIES_FILE
+        path = Path(self.record_file(agent_id))
         _lock_down_cleanup_dir(path.parent)
         _lock_down_cleanup_file(path)
         return _parse_cleanup_identities_file(path)
@@ -139,12 +143,15 @@ def _parse_cleanup_identities_file(path: Path) -> list[dict[str, object]]:
         record: dict[str, object] = {"session_id": sid}
         provider = item.get("provider")
         cwd = item.get("cwd")
+        codex_home = item.get("codex_home")
         keep = item.get("keep")
         conversation_key = item.get("conversation_key")
         if "provider" in item and (not isinstance(provider, str) or not provider):
             raise ValueError("invalid protected cleanup identity provider")
         if "cwd" in item and (not isinstance(cwd, str) or not cwd):
             raise ValueError("invalid protected cleanup identity CWD")
+        if "codex_home" in item and (not isinstance(codex_home, str) or not codex_home):
+            raise ValueError("invalid protected cleanup identity Codex store")
         if "keep" in item and not isinstance(keep, bool):
             raise ValueError("invalid protected cleanup identity retention")
         if "conversation_key" in item and (
@@ -155,6 +162,8 @@ def _parse_cleanup_identities_file(path: Path) -> list[dict[str, object]]:
             record["provider"] = provider
         if isinstance(cwd, str):
             record["cwd"] = cwd
+        if isinstance(codex_home, str):
+            record["codex_home"] = codex_home
         if isinstance(keep, bool):
             record["keep"] = keep
         if isinstance(conversation_key, str):
@@ -180,12 +189,15 @@ def _merge_cleanup_identity_records(
             record = by_sid.setdefault(sid, {"session_id": sid})
             provider = item.get("provider")
             cwd = item.get("cwd")
+            codex_home = item.get("codex_home")
             keep = item.get("keep")
             conversation_key = item.get("conversation_key")
             if isinstance(provider, str) and provider:
                 record["provider"] = provider
             if isinstance(cwd, str) and cwd:
                 record["cwd"] = cwd
+            if isinstance(codex_home, str) and codex_home:
+                record["codex_home"] = codex_home
             if isinstance(keep, bool):
                 record["keep"] = keep
             if isinstance(conversation_key, str) and conversation_key:
@@ -200,12 +212,16 @@ def _cleanup_identity_record(
     cwd: str,
     keep: bool | None,
     conversation_key: str,
+    codex_home: str = "",
 ) -> dict[str, object]:
     record: dict[str, object] = {"session_id": session_id}
     if provider:
         record["provider"] = provider
     if cwd:
         record["cwd"] = cwd
+    if codex_home:
+        # The store a Codex child wrote under; its cleanup deletes nothing without it.
+        record["codex_home"] = codex_home
     if isinstance(keep, bool):
         record["keep"] = keep
     if conversation_key:
@@ -221,6 +237,7 @@ def publish_live_cleanup_identity(
     cwd: str = "",
     keep: bool | None = None,
     conversation_key: str = "",
+    codex_home: str = "",
 ) -> None:
     """Publish one generation in memory without waiting or filesystem I/O."""
     if not session_id:
@@ -231,6 +248,7 @@ def publish_live_cleanup_identity(
         cwd=cwd,
         keep=keep,
         conversation_key=conversation_key,
+        codex_home=codex_home,
     )
     # list.append is atomic under the interpreter lock. Deliberately do not
     # acquire _CLEANUP_IDENTITY_LOCK: its owner may be blocked in fsync, while
@@ -249,6 +267,7 @@ def remember_live_cleanup_identity(
     cwd: str = "",
     keep: bool | None = None,
     conversation_key: str = "",
+    codex_home: str = "",
 ) -> None:
     """Durably append one complete live session generation for later cleanup."""
     if not session_id:
@@ -260,6 +279,7 @@ def remember_live_cleanup_identity(
         cwd=cwd,
         keep=keep,
         conversation_key=conversation_key,
+        codex_home=codex_home,
     )
     with _CLEANUP_IDENTITY_LOCK:
         durable = _read_cleanup_identities_file(agent_id)

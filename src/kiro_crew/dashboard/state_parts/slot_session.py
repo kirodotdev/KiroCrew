@@ -11,8 +11,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_created_by_sid``, ``_crew_log_opened_sid``, ``_crew_log_pending_channel``,
 ``_crew_log_previous_from_mapping``, ``_crew_log_previous_sid``,
 ``_crew_log_previous_undecided``, ``_detail_render_lock``, ``_eager_spawn_failures``,
-``_eager_spawn_retry_at``, ``_eager_spawn_task``, ``_effort_pick_gen``, ``_fork_lock``,
-``_fork_title_spent``,
+``_eager_spawn_reported_resume``, ``_eager_spawn_retry_at``, ``_eager_spawn_task``,
+``_effort_pick_gen``, ``_fork_lock``, ``_fork_title_spent``,
 ``_hidden_scratch_notice_shown``, ``_human_seen``, ``_last_stop_reason``, ``_lineage_minted``,
 ``_mcp_banner_shown``, ``_mcp_report``,
 ``_mcp_report_session_id``, ``_memory_assignment_from_history``, ``_model_pick_gen``,
@@ -23,13 +23,13 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_reports_to_creator``, ``_revived_by``, ``_saved_created_by``,
 ``_session_requested_model``,
 ``_slack_channel``, ``_slack_linked``, ``_slack_thread_ts``, ``_summary_in_flight``,
-``_summary_turn_mark``, ``_tab_id``, ``_title_epoch``, ``_title_in_flight``,
+``_summary_turn_mark``, ``_tab_id``, ``_telemetry_notice_shown``, ``_title_epoch``, ``_title_in_flight``,
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
-``_title_retry_pending``, ``_title_task``, ``_titled``, ``_turn_timeout_hydrated``,
-``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
+``_title_retry_pending``, ``_title_task``, ``_titled``,
+``_welcome_preview``, ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
 ``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
-``remote_slot``, ``served_model``, ``turn_timeout_secs``.
+``remote_slot``, ``served_model``.
 Reads only: ``model``.
 
 A function whose first parameter is ``self`` is a ``_ChatSlot`` method: the
@@ -133,6 +133,11 @@ def init_session_fields(self: _ChatSlot) -> None:
     # itself is, and a re-emit after a gateway restart costs one duplicated
     # notice rather than a per-turn repeat.
     self._welcomed_agent = ""
+    # The greeting the welcome page shows before the first message, as
+    # ``(agent, agent_kind, project, text)`` for the binding it was read for
+    # (``dashboard/agent_welcome.py``). Not persisted: it is read again at the
+    # next create or pick, and from the first row on the row carries it.
+    self._welcome_preview = ("", "", "", "")
     # Whether the owner asked Jev to pick this turn's model tier
     # (`decisions.points.model_route`), set by the picker's "Auto (Jev)" entry
     # and cleared by any concrete pick. A FLAG beside `model`, never a
@@ -207,13 +212,6 @@ def init_session_fields(self: _ChatSlot) -> None:
     # choice landed even when that choice returned to the level it saw.
     self._effort_pick_gen = 0
     self._reasoning_effort = ""
-    # Per-session turn time limit (seconds). None = follow the global
-    # agent.chat_turn_timeout_secs. Persisted with the slot; read by the turn
-    # dispatch (turn_dispatch.resolve_turn_limit) when each turn starts.
-    self.turn_timeout_secs = None
-    # False while a reopened tab's own limit is still unread from its
-    # transcript: its saves carry the on-disk value forward meanwhile.
-    self._turn_timeout_hydrated = True
     # The crew's memory silo, or "" for the global store. Held on the slot
     # rather than re-resolved per save because it is SLOT-OWNED metadata:
     # absence retracts it, so a save that could not name it would drop the
@@ -360,6 +358,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # memory only and bounded; see dashboard.mcp_banner_dedupe.
     self._mcp_banner_shown = {}
     self._hidden_scratch_notice_shown = False
+    self._telemetry_notice_shown = ""
     # Set by api_chat_slot_project; consumed in _run_chat instead of
     # inline because the endpoint can be reached from inside the kiro-cli
     # process group via the set_project MCP tool.
@@ -391,6 +390,10 @@ def init_session_fields(self: _ChatSlot) -> None:
     # At most one per slot: scheduling a new one cancels the previous, so
     # rapid signals (create + project set) collapse into a single spawn.
     self._eager_spawn_task = None
+    # Whether that task is a resume start whose signal waits on its end (a
+    # reload's respawn, armed with on_ended): a focus frame keeps such a task
+    # rather than re-arm the same load.
+    self._eager_spawn_reported_resume = False
     # Consecutive failed background starts, and the monotonic time before
     # which the next one waits (chat_runner._note_eager_spawn_failure).
     self._eager_spawn_failures = 0
@@ -401,6 +404,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     self._slack_linked = False  # True when linked to a Slack thread
     self._slack_channel = ""
     self._slack_thread_ts = ""
+    self._pending_thread_parent = None
     # Explicit model-pick generation. Bumped ONLY by the explicit set-model
     # surfaces (single-slot pick, bulk switch, provider-switch clear) —
     # never by the automatic provider backfill — so the fallback restore

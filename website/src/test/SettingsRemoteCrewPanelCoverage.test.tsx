@@ -732,7 +732,8 @@ describe('RemoteCrewPanel — AWS prerequisites', () => {
 
     expect(await screen.findByText('Credentials for this profile have expired.')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'Launch' })).toBeDisabled())
-    expect(screen.getByText(/Finish the AWS setup above/i)).toBeInTheDocument()
+    // Every row fails; the hint names the first one in checklist order.
+    expect(screen.getByText('Fix “AWS credentials” above to enable this.')).toBeInTheDocument()
   })
 
   it('offers a re-check when the preflight request itself fails', async () => {

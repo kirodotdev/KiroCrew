@@ -46,6 +46,23 @@ def _tar_bytes(entries: list[tarfile.TarInfo], payloads: dict[str, bytes]) -> by
     return buf.getvalue()
 
 
+#: The ``mcp-local/uv.lock`` every tree built here carries.
+_LOCK = b'version = 1\n[[package]]\nname = "mcp"\nversion = "1.26.0"\n'
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_test_lock(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the lock pin at `_LOCK`; the real one hashes the real engine's lock."""
+    _floor_monkeypatch.setattr(
+        engine_source, "ENGINE_LOCK_SHA256", hashlib.sha256(_LOCK).hexdigest(), raising=False
+    )
+
+
+def _write_lock(root: Path, data: bytes = _LOCK) -> None:
+    (root / "mcp-local").mkdir(parents=True, exist_ok=True)
+    (root / "mcp-local" / "uv.lock").write_bytes(data)
+
+
 def _benign_engine_tar() -> bytes:
     """A tarball shaped like the real one: one wrapper dir containing mcp-local."""
     buf = io.BytesIO()
@@ -58,11 +75,14 @@ def _benign_engine_tar() -> bytes:
         mcp.type = tarfile.DIRTYPE
         mcp.mode = 0o755
         tar.addfile(mcp)
-        payload = b"[project]\nname = 'sdpm-mcp-local'\n"
-        f = tarfile.TarInfo("repo-abc123/mcp-local/pyproject.toml")
-        f.size = len(payload)
-        f.mode = 0o644
-        tar.addfile(f, io.BytesIO(payload))
+        for name, payload in (
+            ("pyproject.toml", b"[project]\nname = 'sdpm-mcp-local'\n"),
+            ("uv.lock", _LOCK),
+        ):
+            f = tarfile.TarInfo(f"repo-abc123/mcp-local/{name}")
+            f.size = len(payload)
+            f.mode = 0o644
+            tar.addfile(f, io.BytesIO(payload))
     return buf.getvalue()
 
 
@@ -456,6 +476,7 @@ class TestSourceMarker:
     on disk?" probe — so nothing but a verified install may write it."""
 
     def test_a_written_marker_reads_back_as_installed(self, tmp_path: Path):
+        _write_lock(tmp_path)
         engine_source.write_source_marker(tmp_path)
         assert engine_source.is_installed(tmp_path) is True
         assert engine_source.installed_tag(tmp_path) == engine_source.ENGINE_TAG
@@ -680,14 +701,27 @@ class TestInstallEngine:
     def test_an_already_pinned_tree_is_left_alone_with_no_network_call(self, tmp_path: Path):
         """Idempotence — re-provisioning must not re-download 3MB."""
         root = tmp_path / "vendor" / "sdpm"
-        root.mkdir(parents=True)
-        (root / "mcp-local").mkdir()
+        _write_lock(root)
         engine_source.write_source_marker(root)
         log: list[str] = []
         with mock.patch.object(engine_source, "download_archive") as download:
             assert engine_source.install_engine(root, log) is True
         assert not download.called
         assert any("already at" in line for line in log)
+
+    def test_a_pinned_tree_with_a_rewritten_lock_is_fetched_again(self, tmp_path: Path):
+        """A `uv run` without `--frozen` rewrote the lock of an install that
+        already carries the marker. `--frozen` then installs that rewritten lock,
+        so the tree must read as not installed and the next provision restore it."""
+        root = tmp_path / "vendor" / "sdpm"
+        _write_lock(root, b'version = 1\n[[package]]\nname = "mcp"\nversion = "2.0.0"\n')
+        engine_source.write_source_marker(root)
+        assert engine_source.is_installed(root) is False
+
+        with self._patch_fetch(_benign_engine_tar()):
+            assert engine_source.install_engine(root, []) is True
+        assert (root / "mcp-local" / "uv.lock").read_bytes() == _LOCK
+        assert engine_source.is_installed(root) is True
 
     def test_a_refused_digest_keeps_the_previous_tree(self, tmp_path: Path):
         """Degrade to "still on the old version", never to "broken": a user with

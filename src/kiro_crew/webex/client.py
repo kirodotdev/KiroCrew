@@ -49,8 +49,8 @@ _API_BASE = "https://webexapis.com/v1"
 _DEVICE_BASE = "https://wdm-a.wbx2.com/wdm/api/v1"
 # User-to-Capabilities: maps a token to the service hosts for ITS org's cluster.
 _U2C_CATALOG = "https://u2c.wbx2.com/u2c/api/v1/catalog?format=hostmap"
-# Default Hydra cluster, used only when an activity carries no usable target URL
-# to derive the real one from.
+# Default Hydra cluster, used until an activity's target id (``target.globalId``)
+# names the real one.
 _DEFAULT_CLUSTER = "us"
 
 # Webex caps a message's text/markdown at 7439 BYTES; stay comfortably under.
@@ -64,8 +64,8 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
     The implementation is the shared one in ``messaging.split``; this wrapper
     exists only to keep ``WEBEX_MAX_TEXT`` as the default for this module's three
     call sites. It loses the tail, so it is the last-resort guard for a SINGLE
-    send — multi-message content is split losslessly first, by the shared
-    ``messaging.split.chunk_utf8_bytes`` at the renderer's answer path.
+    send — multi-message content is split first, by the fence-aware byte path of
+    ``messaging.renderer.chunk_for_transport`` at the renderer's answer path.
     """
     return _truncate_utf8(text, max_bytes)
 
@@ -74,29 +74,24 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
 # the reconnect backoff. A connect->immediate-close (bad token) stays on the
 # backoff curve so it cannot hot-loop with zero delay. Mirrors WeComClient.
 _MIN_HEALTHY_CONN_SECS = 5.0
+#: Floor between retries of a bot identity lookup that failed, so a lookup that
+#: keeps failing costs one request per window rather than one per message.
+_IDENTITY_RETRY_SECS = 30.0
 
-# Minimum quiet time between unparseable-frame WARNINGs on one connection
-# (repeats inside the window log at DEBUG; a reconnect starts a fresh window —
-# bounded to roughly one WARNING per _MIN_HEALTHY_CONN_SECS in the worst
-# close-and-reconnect case, and reconnect churn is already surfaced by
-# _run_loop's own disconnect warnings). A peer interleaving non-JSON frames
-# must not flood WARNING at socket rate, while the window re-arms so genuine
-# corruption later on a long-lived connection still surfaces.
+# Minimum quiet time between unparseable-frame WARNINGs on one connection;
+# repeats inside the window log at DEBUG and a reconnect starts a fresh window.
+# Non-JSON frames must not flood WARNING at socket rate, but later corruption on
+# a long-lived connection still surfaces.
 _UNPARSEABLE_WARN_INTERVAL_SECS = 60.0
 
 # Seam for tests: patching time.monotonic itself would perturb asyncio's own
 # loop.time() process-wide.
 _monotonic = time.monotonic
 
-# How many recently-dispatched message ids to remember for deduplication.
-#
-# The device WebSocket redelivers an activity that was not acknowledged, and a
-# reconnect can replay one the previous connection already handed off. Without a
-# dedup memory the same user message starts a SECOND turn, or — worse — arrives
-# while the first is still running and gets folded in as a mid-turn steer, so the
-# agent is steered by an echo of the instruction it is already following.
-# Bounded FIFO: only the recent window can plausibly be redelivered, and an
-# unbounded set on a long-lived gateway is a leak.
+# How many recently-dispatched message ids to remember for deduplication. The
+# device WebSocket redelivers unacknowledged activities and a reconnect can replay
+# one, which would start a second turn or fold an echo in as a mid-turn steer.
+# Bounded FIFO: only the recent window can be redelivered.
 _DEDUP_WINDOW = 512
 
 # Activity verbs this client accepts, as a POSITIVE set rather than a widened
@@ -247,8 +242,9 @@ def hydra_id(raw_id: str, resource_type: str = "MESSAGE", cluster: str = _DEFAUL
     The CLUSTER is part of the id, and getting it wrong is a silent failure: the
     REST fetch simply returns nothing, so an org that does not live in ``us``
     sees every inbound message vanish behind a green badge. Callers pass the
-    cluster read off the activity's own target URL (:func:`cluster_of`) and fall
-    back to this default only when the frame carries none.
+    cluster decoded from the activity's own target id (:func:`cluster_of` on
+    ``target.globalId``); a frame that carries none gets the last cluster seen,
+    and this default only before any has been.
     """
     if not raw_id:
         return ""
@@ -351,6 +347,9 @@ class WebexClient:
         # Display name, for stripping the bot's own @mention out of a group
         # message — Webex leaves it in the text.
         self.bot_name: str = ""
+        # When the identity lookup was last tried, so a failed one is retried on a
+        # later message at most every ``_IDENTITY_RETRY_SECS``.
+        self._identity_tried_at: float = float("-inf")
         # Set once the WS is connected + authorized (cleared while
         # disconnected/reconnecting). ``wait_ready`` gates "connected" status.
         self.ready: asyncio.Event = asyncio.Event()
@@ -368,7 +367,7 @@ class WebexClient:
         self._handler_tasks: set[asyncio.Task[None]] = set()
         # Recently dispatched message ids, oldest first (see _DEDUP_WINDOW).
         self._seen: dict[str, None] = {}
-        # Hydra cluster for this org, learned from the wire on first activity.
+        # Hydra cluster for this org, learned from the wire (see _cluster_for).
         self._cluster = _DEFAULT_CLUSTER
         # person id -> email, for authorizing an Adaptive Card press.
         self._person_emails: dict[str, str] = {}
@@ -663,14 +662,36 @@ class WebexClient:
 
     # ── Identity ──
 
-    async def _fetch_me(self) -> None:
-        """Resolve the bot's own identity once (self-message filtering)."""
+    async def _fetch_me(self) -> bool:
+        """Resolve the bot's own identity (self-message filtering, @mention strip).
+
+        False when the lookup failed; :meth:`_ensure_identity` retries it later.
+        """
+        self._identity_tried_at = time.monotonic()
         me = await self._api("GET", "/people/me", None)
-        if isinstance(me, dict):
-            emails = me.get("emails") or []
-            self.bot_email = (emails[0] if emails else "").lower()
-            self.bot_person_id = me.get("id", "")
-            self.bot_name = str(me.get("displayName") or me.get("nickName") or "")
+        if not isinstance(me, dict):
+            return False
+        emails = me.get("emails") or []
+        self.bot_email = (emails[0] if emails else "").lower()
+        self.bot_person_id = me.get("id", "")
+        self.bot_name = str(me.get("displayName") or me.get("nickName") or "")
+        # An empty or unreadable 2xx body names nobody, so it is a failure too.
+        return bool(self.bot_email)
+
+    async def _ensure_identity(self) -> None:
+        """Retry an identity lookup that failed, throttled, before a message is read.
+
+        A connection is served even when the lookup failed, so
+        a lookup that fails for good never keeps the bot offline. Until it lands,
+        group @mentions stay unstripped and self-echoes rely on the person-id and
+        allow-list checks.
+        """
+        if self.bot_email or self._identity_tried_at == float("-inf"):
+            # Known, or never tried yet: the connect is what looks it up first.
+            return
+        if time.monotonic() - self._identity_tried_at < _IDENTITY_RETRY_SECS:
+            return
+        await self._fetch_me()
 
     # ── WebSocket serve loop ──
 
@@ -711,8 +732,9 @@ class WebexClient:
     async def _connect_and_serve(self) -> None:
         """Single connection lifecycle: register device, connect, authorize, serve."""
         session = await self._ensure_session()
-        if not self.bot_email:
-            await self._fetch_me()
+        if not self.bot_email and not await self._fetch_me():
+            # Served anyway: the lookup is retried on a later message.
+            logger.warning("Webex: could not resolve the bot's identity; retrying later")
 
         ws_url = await self._get_websocket_url()
         if not ws_url:
@@ -728,14 +750,9 @@ class WebexClient:
             }
             await ws.send_json(auth_frame)
             logger.info("Webex WS connected and authorized")
-            # cast, and deliberately to the UNPARAMETERIZED type: aiohttp makes
-            # ClientWebSocketResponse generic over its autoping flag, so
-            # ``ws_connect`` yields ``[bool]`` while the attribute's bare
-            # annotation resolves to the default ``[Literal[True]]``. Which
-            # parameter it carries is irrelevant here — the socket only ever sends
-            # an ack frame — and the versions differ between the two
-            # Python lanes, so subscripting the annotation would fix one and break
-            # the other.
+            # Cast to the UNPARAMETERIZED type: aiohttp's generic autoping
+            # parameter differs between the two Python lanes' versions, so
+            # subscripting the annotation would fix one lane and break the other.
             self._ws = cast("aiohttp.ClientWebSocketResponse", ws)
             self.ready.set()
             self.last_error = ""
@@ -743,60 +760,51 @@ class WebexClient:
             last_warn = float("-inf")  # rate-limits the unparseable-frame WARNING
             try:
                 async for msg in ws:
-                    if msg.type in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
-                        # Mercury delivers activity events as BINARY frames whose
-                        # payload is UTF-8 encoded JSON; TEXT frames carry the
-                        # same shape. Decode explicitly so a malformed BINARY
-                        # frame hits the same guarded drop path as malformed TEXT.
-                        try:
-                            raw = (
-                                msg.data.decode("utf-8")
-                                if isinstance(msg.data, (bytes, bytearray))
-                                else msg.data
-                            )
-                            frame = json.loads(raw)
-                        except (ValueError, RecursionError):
-                            # ValueError covers JSONDecodeError and
-                            # UnicodeDecodeError (both subclasses) AND the
-                            # plain ValueError json.loads raises for an
-                            # over-long integer literal (int()'s digit limit,
-                            # Python 3.10.7+/3.11+) — well-formed JSON syntax,
-                            # so no JSONDecodeError precedes it. RecursionError:
-                            # json.loads recurses per nesting level, so a
-                            # deeply nested frame is unparseable input, not a
-                            # handler bug. The log is content-free (byte
-                            # length only, never the frame) and rate-limited:
-                            # a peer interleaving non-JSON frames must not
-                            # amplify into WARNING at socket rate, while a
-                            # quiet period re-arms the WARNING so later
-                            # corruption on a long-lived connection surfaces.
-                            size = (
-                                len(msg.data)
-                                if isinstance(msg.data, (bytes, bytearray))
-                                else len(msg.data.encode("utf-8", "replace"))
-                            )
-                            now = _monotonic()
-                            if now - last_warn >= _UNPARSEABLE_WARN_INTERVAL_SECS:
-                                last_warn = now
-                                logger.warning("Webex WS: unparseable frame (%d bytes)", size)
-                            else:
-                                logger.debug("Webex WS: unparseable frame (%d bytes)", size)
-                        else:
-                            # Dispatch OUTSIDE the parse guard: an exception
-                            # raised by the handler (even a JSONDecodeError
-                            # from some nested parse) is a handler bug and
-                            # must keep its traceback, not be misreported as
-                            # an unparseable frame.
-                            try:
-                                self._handle_frame(frame)
-                            except Exception:
-                                logger.exception("Webex WS: frame handler error; dropping frame")
-                    elif msg.type in (
+                    if msg.type in (
                         aiohttp.WSMsgType.CLOSED,
                         aiohttp.WSMsgType.CLOSING,
                         aiohttp.WSMsgType.ERROR,
                     ):
                         break
+                    if msg.type not in (aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY):
+                        continue
+                    # Mercury delivers activity events as BINARY frames whose
+                    # payload is UTF-8 encoded JSON; TEXT frames carry the same
+                    # shape. Decode explicitly so a malformed BINARY frame hits
+                    # the same guarded drop path as malformed TEXT.
+                    try:
+                        raw = (
+                            msg.data.decode("utf-8")
+                            if isinstance(msg.data, (bytes, bytearray))
+                            else msg.data
+                        )
+                        frame = json.loads(raw)
+                    except (ValueError, RecursionError):
+                        # ValueError covers JSONDecodeError, UnicodeDecodeError and
+                        # the over-long integer literal (int()'s digit limit);
+                        # RecursionError a deeply nested frame. The log is
+                        # content-free (byte length only) and rate-limited (see
+                        # _UNPARSEABLE_WARN_INTERVAL_SECS).
+                        size = (
+                            len(msg.data)
+                            if isinstance(msg.data, (bytes, bytearray))
+                            else len(msg.data.encode("utf-8", "replace"))
+                        )
+                        now = _monotonic()
+                        if now - last_warn >= _UNPARSEABLE_WARN_INTERVAL_SECS:
+                            last_warn = now
+                            logger.warning("Webex WS: unparseable frame (%d bytes)", size)
+                        else:
+                            logger.debug("Webex WS: unparseable frame (%d bytes)", size)
+                        continue
+                    # Dispatch OUTSIDE the parse guard: an exception raised by the
+                    # handler (even a JSONDecodeError from some nested parse) is a
+                    # handler bug and must keep its traceback, not be misreported
+                    # as an unparseable frame.
+                    try:
+                        self._handle_frame(frame)
+                    except Exception:
+                        logger.exception("Webex WS: frame handler error; dropping frame")
             finally:
                 self._ws = None
 
@@ -931,20 +939,10 @@ class WebexClient:
             if verb == VERB_CARD_ACTION
             else self._hydrate_and_dispatch(public_id)
         )
-        # The dedup mark goes in BEFORE the fetch and the ack goes out AFTER it,
-        # and the two together are what make a message neither lost nor doubled.
-        #
-        # Acking first (the obvious order, since the ack stops redelivery) means a
-        # transient REST failure during hydration silently drops the message for
-        # good: the activity is acknowledged, so Webex never sends it again, and
-        # the dedup mark would refuse it if it did. Marking-but-not-acking is the
-        # inverse: the mark absorbs a redelivery that races the fetch, while the
-        # missing ack leaves Webex free to try again once the fetch has actually
-        # failed and released the id.
-        #
-        # A failure downstream of hydration — the TURN itself — is deliberately
-        # NOT retried. It has already been dispatched, so a redelivery would fold
-        # into the running turn as a steer rather than answering anything.
+        # Dedup mark BEFORE the fetch, ack AFTER it, so a message is neither lost
+        # nor doubled: acking first would drop it for good on a transient fetch
+        # failure, while the mark absorbs a redelivery that races the fetch. A
+        # failed TURN is not retried: a redelivery would fold into it as a steer.
         task = asyncio.create_task(self._ack_after(activity.get("id"), public_id, coro))
         self._handler_tasks.add(task)
         task.add_done_callback(self._handler_tasks.discard)
@@ -976,11 +974,12 @@ class WebexClient:
     def _public_id(self, activity: dict, object_id: str, resource: str) -> str:
         """The public ("Hydra") id for an activity's object.
 
-        The cluster is read from the activity's own ``target.url`` when it has
-        one, because that URL is issued by the org's own conversation service and
-        therefore names the right cluster. Synthesising ``us`` instead is what
-        makes a non-US org silently drop every message: the REST fetch resolves
-        nothing and the failure surfaces as no reply at all.
+        The cluster is decoded from the activity's own target id
+        (``target.globalId``) when it has one, because that id is issued by the
+        org's own conversation service and therefore names the right cluster.
+        Synthesising ``us`` instead is what makes a non-US org silently drop
+        every message: the REST fetch resolves nothing and the failure surfaces
+        as no reply at all.
         """
         if not object_id:
             return ""
@@ -989,8 +988,9 @@ class WebexClient:
     def _cluster_for(self, activity: dict) -> str:
         """The Hydra cluster to build ids in for this activity.
 
-        Prefers a cluster observed on the wire (learned once per connection from
-        a target id the service issued), then the configured default.
+        Prefers the cluster decoded from this activity's target id, which is also
+        kept for the frames that follow; a frame without one gets the last cluster
+        kept, which starts as ``_DEFAULT_CLUSTER``.
         """
         target = activity.get("target")
         if isinstance(target, dict):
@@ -1035,6 +1035,8 @@ class WebexClient:
         msg = await self._fetch_for_dispatch(message_id)
         if msg is None:
             return
+        # Before the message is read: its @mention strip and self filter need it.
+        await self._ensure_identity()
         try:
             person_id = msg.get("personId", "")
             # Belt-and-braces self filter: the WS actor email can be absent.
@@ -1147,8 +1149,15 @@ class WebexClient:
         if cached is not None:
             return cached
         person = await self._api("GET", f"/people/{person_id}", None)
+        if person is None:
+            # A failed lookup (5xx, timeout, rate limit) is not an answer: caching
+            # its "" would refuse every later press by this person until restart.
+            return ""
         emails = (person.get("emails") or []) if isinstance(person, dict) else []
         email = str(emails[0]).lower() if emails else ""
+        if not email:
+            # Nor is a reply that names no email (an unreadable 2xx body included).
+            return ""
         # Bounded: a room's membership is small, but a long-lived gateway seeing
         # many rooms should not accumulate without limit.
         if len(self._person_emails) >= _PERSON_CACHE_MAX:
@@ -1310,13 +1319,10 @@ def _retry_after(headers: Any) -> float:
 async def _write_stream(resp: Any, dest: str) -> None:
     """Stream a response body to *dest* without holding it in memory.
 
-    Every filesystem touch here is a blocking syscall, so all three run in a
-    worker thread — the OPEN and the CLOSE as much as the writes. The gateway
-    shares one event loop with every other conversation and the liveness
-    heartbeat: a 100 MB write on it would stall all of them, and on a
-    network-backed or FUSE temp directory an open or a close (which flushes)
-    stalls just as long for the same reason. Off-loading only the middle of the
-    three leaves the cheapest-looking calls holding the loop.
+    The open, the writes and the close all run in a worker thread: the gateway
+    shares one event loop with every conversation and the liveness heartbeat, and
+    on a network-backed or FUSE temp directory an open or a flushing close stalls
+    as long as a large write.
     """
     handle = await asyncio.to_thread(open, dest, "wb")
     try:

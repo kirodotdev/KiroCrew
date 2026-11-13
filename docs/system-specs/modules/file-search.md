@@ -35,6 +35,21 @@ tooltip. With `pathTail` (`ChatEmbed`) rows show their folder cut from the
 start instead, and this rule does not apply.
 `website/src/test/FilePickerMenu.sameName.test.tsx` pins the rule.
 
+**A spec pick lists the spec folders, not a fuzzy search.** An `@` query of
+`.kiro/specs/` or `.kiro/specs/<partial>` (`matchSpecQuery` in
+`website/src/components/composerTokens.ts`) asks for a spec, which is a folder
+under the project's `.kiro/specs/`. A fuzzy search would rank every spec's
+`tasks.md` above the spec folders and cut most of them off, so `FilePickerMenu`
+instead reads one listing of `./.kiro/specs/` from `/api/path-complete`, with the
+typed partial as the prefix. The listing puts folders first, so the specs lead
+and a loose file under `.kiro/specs/` stays reachable below them. Each row's second
+line names the project folder, as Kiro's own spec menu does, instead of a path
+every row would share. A picked row
+inserts the same `@.kiro/specs/<name>/` folder mention as any `@` folder, so it
+reaches the agent as a folder reference (see "Folder references" below). A query
+that goes inside a spec, or a host with no listing read or no project, stays an
+ordinary fuzzy search. `website/src/test/FilePickerMenu.specs.test.tsx` pins it.
+
 ## API
 
 ### `GET /api/file-search`
@@ -469,6 +484,7 @@ shows literally — the same trade-off inline file mentions make.
 | `test/test_file_index.py` | Index build, refresh, registry refcounting |
 | `test/test_file_search_dirs.py` | Directory results, `kinds` filter, independent scan budgets, dirs-visited ceiling, symlink security |
 | `website/src/test/FilePickerMenu.dirs.test.tsx` | Folder rows, selection payloads, trailing slash |
+| `website/src/test/FilePickerMenu.specs.test.tsx` | Spec pick: lists `.kiro/specs/` (folders first, a loose file still pickable), names the project on each row, passes the typed prefix, inserts a folder mention, falls back to fuzzy search inside a spec or without a project |
 | `website/src/test/FilePickerMenu.sameName.test.tsx` | Same-named rows: shortest distinguishing parent, head-anchored cut, separator awareness, unique-named rows unchanged |
 | `website/src/test/ChatInput.dirStripHeight.test.tsx` | Preview-strip height compensation for a folders-only strip |
 | `website/src/test/fileTokens.dirs.test.ts` | Token parse/serialize/resolve units, label widening, lossless spaced paths |

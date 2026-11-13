@@ -81,7 +81,8 @@ Current status:
   real progress. At 100% it reopens Kiro Crew and closes automatically. A
   persistent message on that progress page warns that the handoff can take
   several minutes; a Windows notification tells the user to reopen Kiro Crew
-  from the Start menu if the relaunch does not happen. New clients call
+  from the Start menu if the relaunch does not happen (after Restart now it says
+  Kiro Crew will reopen after installing, since the app comes back on its own). New clients call
   `quitAndInstall(false, true)` so NSIS is visible;
   the installer also converts a legacy `/S --updated` launch back to this same
   visible path, which covers the first upgrade from clients that predate the
@@ -144,14 +145,15 @@ Current status:
   that import closure beside its sources, plus the `lark_oapi` closure the Feishu
   channel imports on the gateway loop. Windows consumes those caches directly,
   avoiding the thousand-file cache-population burst that otherwise overlaps
-  Defender's post-install scanning. macOS and Linux still redirect bytecode out
-  of the signed/read-only app tree. The Windows caches are **unchecked**-hash,
+  Defender's post-install scanning. Linux redirects bytecode out of its
+  read-only app tree, and macOS forbids writing any into its signed one. The Windows caches are **unchecked**-hash,
   not checked. Both modes ignore mtime, which is the property that survives
   extraction restamping the sources, but a checked-hash pyc makes the loader read
   and hash each `.py` in *addition* to reading the `.pyc`, which costs many
   extra cold file opens and seconds of boot time on a cold file cache.
-  The macOS whole-tree caches remain checked-hash: a separate mechanism that does
-  not show this cost. The loading screen retains its extended
+  The macOS caches (its own traced closure, plus the standard library and the
+  `kiro_crew` package whole) are checked-hash: a codesigned bundle that does not
+  show this cost. The loading screen retains its extended
   Windows handoff window as a slow-machine fallback; a child exit or spawn error
   still fails immediately and includes the launch-log cause.
   `.github/scripts/test-windows-installer.ps1` starts the just-installed
@@ -390,6 +392,7 @@ while the other 503s. Concretely:
 | Vector memory / embeddings | works — embeddings run **in-process** through the vendored llama-cpp-python (`_vendor/llama_cpp_libs/win_amd64`), which loads the Qwen3-Embedding-0.6B GGUF from `~/.kiro/crew/models`. No remote endpoint, no Docker and no Ollama server is involved on any platform |
 | STT (whisper / optional cloud transcription) | works |
 | Voice reply | works out of the box on the default `system` provider: it drives `System.Speech` through Windows PowerShell 5.1, needs no install, and deliberately does NOT route through `wrap_argv`, so the missing sandbox backend does not block it. `polly` DOES route through `wrap_argv` and therefore runs unconfined under this platform's default; declare `sandbox_allow_unsandboxed_exec=false` and synthesis returns no audio, with the log naming that setting |
+| Launching a cloud crew | `kirocrew cloud launch` works. The dashboard's **Set up a new one** launcher does not: it needs a Linux or macOS gateway, and the tab says so instead of checking AWS. See [Launch a cloud crew from Windows](#launch-a-cloud-crew-from-windows) |
 | `kirocrew cloud` tunnel (remote dashboard) | works — `kirocrew cloud connect` (alias `tunnel`) forwards the dashboard over an AWS Systems Manager session, not OpenSSH, so there is no SSH client requirement. It needs the AWS [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) on the machine you run `kirocrew cloud connect` from. The built-in installer covers macOS/Linux only, so on Windows install the plugin from AWS's page yourself |
 | Instances SSH tunnel (`ssh -N -L` transport) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP server tool listing (dashboard MCP page, `kirocrew doctor`) | **built-in servers work, no opt-in** — `kirocrew-core` / `-cron` / `-computer` are probed for real: their command line is derived entirely inside the package (never user-config text), so the first-party carve-out spawns the handshake probe unconfined (env-scrubbed, SEL-audited as `unconfined`) even with no sandbox backend. When that probe cannot run (a transient sandbox failure, a governance sandbox floor, or a customized command for the server), the listing falls back to reading the package's own tool declaration and logs a WARNING noting that `ok` then means "declared" rather than "handshake succeeded". A **third-party** server has no declaration to read and never gets the carve-out, so its listing needs the `agent.sandbox_allow_unsandboxed_exec` opt-in — its binary is named by config and spawning it is what the sandbox exists to confine. The third-party server itself is unaffected: kiro-cli launches it from the agent config without this probe, so its tools still work in chat |
@@ -401,22 +404,99 @@ while the other 503s. Concretely:
 
 The not-yet items are tracked as Windows feature-parity follow-ups.
 
+## Launch a cloud crew from Windows
+
+The dashboard's cloud launcher (**Settings → Remote Crew → Set up a new one**)
+needs a Linux or macOS gateway. On a Windows gateway that tab says so and runs no
+AWS check, so it never reports your AWS profile as wrong. There are two ways to
+launch from a Windows PC.
+
+**From PowerShell, without WSL.** `kirocrew cloud launch` is the same launcher as
+a terminal wizard, and it runs on Windows. It needs the AWS CLI v2 and the AWS
+[Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+on this PC. From a clone, `install.ps1` installs both and then starts the wizard.
+The AWS CLI installer is a per-machine install, so adding it usually needs
+administrator rights; with both already installed, the launch itself needs none.
+The desktop installer does not add `kirocrew` to `PATH`, so from a desktop install
+call the bundled shim by its full path:
+
+```powershell
+& "<install dir>\resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd" cloud launch
+```
+
+The crew it launches joins your Remote Crew list like one launched from the
+dashboard.
+
+**From the dashboard, inside WSL.** This runs a second, Linux install of Kiro Crew
+next to the Windows one. The Windows install, its data and its saved crews stay as
+they are.
+
+1. In PowerShell run as administrator, run `wsl --install`, then restart Windows.
+   This installs WSL 2 with Ubuntu, and it is the step that needs administrator
+   rights and a restart.
+2. Open **Ubuntu** from the Start menu and create the Linux user it asks for.
+3. Inside Ubuntu, install the AWS CLI v2 and the Session Manager plugin for Linux,
+   then set up your profile there with `aws configure sso` or `aws configure`.
+   Ubuntu has its own `~/.aws` and does not read the Windows one.
+4. Install Kiro Crew inside Ubuntu with the
+   [one-line installer](install.md#a-one-line-install-fastest), install Kiro CLI
+   as [First run](install.md#first-run) describes, then run `kirocrew setup` and
+   `kirocrew gateway`.
+5. Open the dashboard URL the gateway prints in your Windows browser. WSL 2
+   forwards `localhost` to Windows by default. Then open **Settings → Remote Crew
+   → Set up a new one**.
+
+The WSL gateway listens on port 5476, the same default as the Windows desktop
+app. Quit the desktop app first, or start the WSL gateway on another port with
+`KIROCREW_PORT=5477 kirocrew gateway`.
+
 ## Secret-at-rest posture on Windows
 
-Files under `%USERPROFILE%\.kiro\crew` that hold auth material — the token
-signing key, refresh-token state, per-app secrets, snapshot tarballs, and the
-cron internal-secret temp file — are locked down to the current user via an
-owner-only NTFS DACL (inheritance stripped, `S-1-3-4:F` = Owner Rights full
-control). This is applied through `platform_compat.restrict_to_owner`, which
-routes to `os.chmod(..., 0o600)` on POSIX and, on Windows, builds the descriptor
-in-process through `advapi32` (`SetNamedSecurityInfoW` with
-`PROTECTED_DACL_SECURITY_INFORMATION`, the equivalent of
-`icacls /inheritance:r /grant:r "*S-1-3-4:F"`). It is a direct API call rather
-than a subprocess, far cheaper than spawning `icacls`, so it is safe to call on the gateway's event loop. Failure is
-fail-loud (raises `OSError`) so the
-security-warning handlers in each caller fire — a naive `if IS_POSIX: os.chmod`
-guard would silently no-op on Windows, leaving secrets group/world-readable
-under NTFS.
+Files that hold auth material are locked down to the current user with an
+owner-only NTFS DACL: inheritance stripped, and two full-control grants. Owner
+Rights (`S-1-3-4`) covers the file's current owner. The invoking user's own SID
+keeps the file readable by that user when another principal created it (an
+elevated first run, a backup restore, a `SYSTEM` service); with Owner Rights
+alone, that user would be locked out of their own file (the token signing key,
+for example).
+
+The user's SID is read from the process's own access token. When it cannot be
+read, the lockdown raises `OSError` and applies nothing; it never falls back to
+Owner Rights alone.
+
+Which files get it is a rule, not a list: every file passed to
+`platform_compat.restrict_to_owner` or written by
+`atomic_write(restrict_to_owner=True)`, which `.env`'s writer
+`hidden_leaf_staging.publish_env` uses. Under `%USERPROFILE%\.kiro\crew` that
+includes the token signing key, refresh-token state, per-app secrets, snapshot
+tarballs, `.env` (chat-channel tokens), and the vault's key `.vault\.vault_key`
+and store `.vault\secrets.enc`. The cron internal-secret temp file gets it
+too, in `%TEMP%` (`kirocrew_secret_*`, there only while a script cron runs).
+The remote-workspace relay token file (`<name>.relay`, in the session's scratch
+directory) gets the same two grants, applied directly rather than through those
+helpers.
+
+`restrict_to_owner` routes to `os.chmod(..., 0o600)` on POSIX and, on Windows,
+builds the descriptor in-process through `advapi32` (`SetNamedSecurityInfoW` with
+`PROTECTED_DACL_SECURITY_INFORMATION`), replacing the file's whole DACL. For a
+new file, whose entries are all inherited, the equivalent command, with your SID
+from `whoami /user`, is:
+
+```text
+icacls <file> /inheritance:r /grant:r "*S-1-3-4:F" /grant:r "*<your-user-SID>:F"
+```
+
+On a file that already carries an explicit entry for another account, that
+command keeps the entry, while the in-process lockdown removes it.
+`icacls <file>` on a locked-down file lists two `(F)` entries, Owner Rights
+(`OWNER RIGHTS` on an English system, `S-1-3-4` or a translated name elsewhere)
+and your own account, and no inherited `(I)` entry.
+
+The lockdown is a direct API call rather than a subprocess, far cheaper than
+spawning `icacls`, so it is safe to call on the gateway's event loop. Failure
+is fail-loud so the security-warning handlers in each caller fire — a naive
+`if IS_POSIX: os.chmod` guard would silently no-op on Windows, leaving secrets
+group/world-readable under NTFS.
 
 `restrict_to_owner` is file-shaped by design: its grants are deliberately
 non-inheritable (inheritance flags mean nothing on a file). A **directory**
@@ -615,8 +695,9 @@ budget as `TasksMax` and `JobMemoryLimit` against `MemoryMax`, and
 `sandbox.apply_windows_resource_ceiling` reads the **same** `resource_limits`
 config as the cgroup path, but the Job object enforces only two of its keys:
 `max_processes` and `max_memory_mb`. The others — `cpu_weight`,
-`max_cpu_percent`, `max_cpu_seconds`, `max_open_files`, `max_total_memory_mb`,
-`max_total_processes`, `scope_memory_high_pct` and `slice_reclaim_trigger_pct` — are accepted but inert on Windows, and the gateway
+`max_address_space_mb`, `max_cpu_percent`, `max_cpu_seconds`, `max_open_files`,
+`max_total_memory_mb`,
+`max_total_processes`, `max_user_processes`, `scope_memory_high_pct` and `slice_reclaim_trigger_pct` — are accepted but inert on Windows, and the gateway
 logs one warning naming each one that is set. The memory limits are equivalent; the process limits are not one-for-one, because
 `TasksMax` counts every thread while `ActiveProcessLimit` counts processes — the
 same number is therefore a looser bound here, though it still bounds a fork
@@ -708,7 +789,8 @@ POSIX fleet too, where the Windows branches never execute.
 ## The RSS-recycle ceiling measures real trees on Windows
 
 `session.watchdog_rss_max_mb` (default `4096`) recycles a
-non-busy session whose process tree exceeds the ceiling. Its measurement is
+non-busy session whose process tree grows past the ceiling; a tree found
+already over it is held at its own size. Its measurement is
 `/proc`-based on POSIX. On Windows `get_session_rss_mb` delegates to
 `platform_compat.proc_rss_tree_mb_for_pid`; a `/proc` read there would measure
 every tree as 0 MiB, so the ceiling could never be reached.
@@ -891,15 +973,16 @@ supervision is a separate piece of work, proposed in
   (`--disable-features=RendererCodeIntegrity`) has been a no-op since Chromium
   118 even though the Chrome enterprise *policy* of the same name still works.
 
-  If instead the symptom is the agent's **`git`/`cr` commands** being killed
-  ("A process was blocked because malicious behavior was detected") while the
-  app window itself is fine, that is a different case: read the detection entry
-  in your security console to find the exact image path and detection id, then
-  ask whoever administers endpoint security to scope an exception to that pair.
-  The spawn mechanism described in
+  If instead the symptom is the agent's **commands** (`git`, `cr`, a build, a
+  test run) being blocked, or failing with `EPERM`, while the app window itself
+  is fine, that is a different case. On the default backend (KAS) the agent's
+  shell is started by the KAS engine's `node.exe`, not by Kiro Crew's Python, so
+  a rule against a script host starting PowerShell matches every shell call.
+  Read the detection entry in your security console for the exact image path and
+  detection id, then ask whoever administers endpoint security to scope an
+  exception to that pair.
   [endpoint-security-blocking-spawned-tools.md](endpoint-security-blocking-spawned-tools.md)
-  is macOS/Linux-specific, so use that guide's "durable fix" steps for scoping
-  the exception, not its explanation of the cause.
+  names which `node.exe` that is for each KAS route.
 - **Desktop gateway recovery refuses to force-stop the port** - the Electron
   launcher uses `netstat -ano` to identify the listener, PowerShell
   (`Get-CimInstance`) with a WMIC fallback to read its command line, and

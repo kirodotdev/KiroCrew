@@ -26,6 +26,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -34,6 +35,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_COMPACTION_REPORTED,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
@@ -52,6 +54,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MARKDOWN_AGENT_SPECS,
     ACP_BACKENDS_MATE_WORKER_KIT,
     ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
+    ACP_BACKENDS_MATE_WORKER_NATIVE_TOOL_LIMITS,
     ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT,
     ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS,
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
@@ -63,6 +66,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_MEMBER_TOOL_LIMITS,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
@@ -71,6 +75,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_REPORT_USAGE,
     ACP_BACKENDS_RESUME_WITHOUT_LOAD,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
+    ACP_BACKENDS_SENT_IMAGE_RECORD,
     ACP_BACKENDS_SERIAL_SESSION_STARTS,
     ACP_BACKENDS_SESSION_EVICTION,
     ACP_BACKENDS_SESSION_MCP_ARRAY,
@@ -82,6 +87,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_STEERING_REQUEST,
     ACP_BACKENDS_STRUCTURED_REFUSAL,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
+    ACP_BACKENDS_TOOL_SILENCE_TIMER,
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
@@ -451,6 +457,7 @@ PROVIDER_LABEL_GOOSE = "goose"
 PROVIDER_LABEL_DEEPSEEK = "deepseek"
 PROVIDER_LABEL_COPILOT = "copilot"
 PROVIDER_LABEL_STRANDS = "strands"
+PROVIDER_LABEL_MIMOCODE = "mimocode"
 
 #: Backend id -> its label. The mapping is what ``provider_label`` resolves
 #: through, so a harness's label and the answer a session persists under are one
@@ -468,6 +475,7 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
     ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
     ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
     ACP_BACKEND_OPENCODE: PROVIDER_LABEL_OPENCODE,
+    ACP_BACKEND_MIMOCODE: PROVIDER_LABEL_MIMOCODE,
     ACP_BACKEND_PI: PROVIDER_LABEL_PI,
     ACP_BACKEND_GOOSE: PROVIDER_LABEL_GOOSE,
     ACP_BACKEND_DEEPSEEK: PROVIDER_LABEL_DEEPSEEK,
@@ -1137,6 +1145,11 @@ class AcpEvent:
     #: fails CLOSED (identity not counted as verified) instead of silently
     #: passing on non-emptiness alone.
     mcp_identity_trusted: bool = False
+    #: connection_mcp_identity: ``(server, tool)`` Kiro Crew's own pi gate extension
+    #: named in its nonce-bound envelope, from its registration table. Read ONLY by
+    #: the Crew-owned Connection approval (``crew_oauth_proxy.connection_identity``);
+    #: it never sets ``mcp_identity_trusted``, which other auto-approve gates read.
+    connection_mcp_identity: tuple[str, str] | None = None
     #: mcp_identity_unreadable: the frame PRESENTED an MCP identity half the
     #: name bound refused (``tool_surface.mcp_identity_unreadable``) -- on the
     #: preceding tool_call frame (carried per scoped toolCallId) or on this
@@ -1145,6 +1158,11 @@ class AcpEvent:
     #: deny that name is under cannot be checked, and every site that answers a
     #: permission request refuses it outright instead of judging it by title.
     mcp_identity_unreadable: bool = False
+    #: mcp_identity_unreadable_reason: which check set ``mcp_identity_unreadable``,
+    #: a key of ``deny_notice.UNREADABLE_IDENTITY_REASONS`` (the first that fired);
+    #: empty when the identity is readable. The refusal names it in its log line,
+    #: its audit row and the notice steered to the model.
+    mcp_identity_unreadable_reason: str = ""
     #: kas_builtin_ids: this permission event was built for a member of
     #: ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL`` (KAS), so a bare built-in
     #: ``tool_name`` is a KAS id (``read_file``) that ``platform.tool_names``
@@ -1165,6 +1183,12 @@ class AcpEvent:
     #: tier and governance, and approves only a host-identified built-in it names.
     #: Empty everywhere else, which grants nothing.
     spec_granted_builtins: frozenset[str] = frozenset()
+    #: spec_hook_held: on the same requests, the ``@server/tool`` grants a
+    #: PreToolUse hook kept at ``ask`` (``AcpSessionHandle.kas_hook_held``), written
+    #: the same way. The gate's ``batch-guard-grant`` row approves one only for a
+    #: surface that says it fires the PreToolUse hooks on the request. Empty
+    #: everywhere else, which grants nothing.
+    spec_hook_held: frozenset[str] = frozenset()
     #: spec_granted_commands: on the same requests, the agent's
     #: ``toolsSettings.shell.allowedCommands`` as Python regexes
     #: (``AcpSessionHandle.kas_crew_answered_commands``), written the same way. The

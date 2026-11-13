@@ -53,6 +53,11 @@ class FakeState:
     def __init__(self) -> None:
         self._slots: dict[str, _ChatSlot] = {}
         self.frames: list[tuple[str, dict[str, Any]]] = []
+        #: The folder store, over a plain list, for the routes that keep a
+        #: crewmate's home folder in step with its record (``mate_folders``).
+        self.folders: list[dict[str, Any]] = []
+        self.folder_writes = 0
+        self.slots_pushed = 0
 
     def open_slot(self, key: str) -> _ChatSlot:
         slot = in_dashboard_turn(_ChatSlot(key))
@@ -65,6 +70,17 @@ class FakeState:
     async def deliver_ws_owners(self, kind: str, payload: dict[str, Any]) -> int:
         self.frames.append((kind, payload))
         return 1
+
+    async def mutate_folders(self, mutate):
+        changed, value = mutate(self.folders)
+        self.folder_writes += int(bool(changed))
+        return value
+
+    async def read_folders(self, read):
+        return read(self.folders)
+
+    def push_slots_update(self) -> None:
+        self.slots_pushed += 1
 
 
 @web.middleware

@@ -1231,7 +1231,10 @@ class TestKasMcpServedIdentity:
             assert event is not None and event.mcp_identity_unreadable is True
             assert await handle._refuse_unreadable_mcp_identity(event) is True, backend
             assert sent == [(49, {"outcome": {"outcome": "selected", "optionId": "reject"}})]
-            assert audits and audits[0][0][1:3] == ("mcp__unreadable", "mcp_identity_unreadable")
+            assert audits and audits[0][0][1:3] == (
+                "mcp__unreadable",
+                "mcp_identity_unreadable:tool_call_identity",
+            )
             # Readable: not refused by this.
             handle._handle_update(
                 JsonRpcMessage(

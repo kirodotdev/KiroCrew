@@ -15,7 +15,7 @@ import { lookPreviewSlotDetail, lookPreviewSlots } from '../../utils/lookPreview
 import { resolveDefaultMemoryMode } from '../queryClient'
 import { TAB_ID } from '../tabId'
 import { takeSessionFolderNotice } from '../../lib/sessionFolderNotice'
-import { noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
+import { clearCrewSteerNotice, noteCrewSteerReceipt } from '../../lib/crewSteerNotice'
 import { activeLocale } from '../../i18n/format'
 import type { ClientTransport } from './transport'
 
@@ -104,12 +104,15 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-timeline').then(j),
     /** Type into one of a root's workers as the person: cuts into its running
      *  turn, or queues for its next one (`POST .../crew-workers/{worker}/steer`). */
-    crewWorkerSteer: (root: string, worker: string, message: string): Promise<{ ok: boolean; steered: boolean; queued: boolean; started: boolean; ledger_event?: string | null; ledger_error?: string | null }> =>
-      fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/steer', {
+    crewWorkerSteer: (root: string, worker: string, message: string): Promise<{ ok: boolean; steered: boolean; queued: boolean; started: boolean; ledger_event?: string | null; ledger_error?: string | null }> => {
+      // The old note goes on submit, so this send's own failure frame stays.
+      clearCrewSteerNotice(worker)
+      return fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers/' + encodeURIComponent(worker) + '/steer', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message }),
-      }).then(j).then(receipt => { noteCrewSteerReceipt(worker, receipt); return receipt }),
+      }).then(j).then(receipt => { noteCrewSteerReceipt(worker, receipt); return receipt })
+    },
     /** Decide one of a root's workers' pending tool approvals from the root's
      *  approval card: Approve or Reject once, or Trust this worker
      *  (`POST .../crew-workers/{worker}/approve`, the per-slot approve route on the
@@ -179,7 +182,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     },
     /** Create a chat slot on this machine. A session on a connected crew is
      *  created on that crew and opened through its window, never here. */
-    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean) => {
+    createChatSlot: async (name?: string, agent?: string, model?: string, mode?: string, memory_mode?: string, title?: string, artifact?: string, folder_id?: string, agent_kind?: 'member' | 'template', no_session_folder?: boolean, app_agent_owner?: string, default_folder?: boolean, project_from_slot?: string) => {
       const resolvedMemoryMode = memory_mode ?? await resolveDefaultMemoryMode(
         () => fetch('/api/dashboard/config').then(j),
       )
@@ -204,13 +207,21 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         // The server decides whether one is set and still exists; an explicit
         // folder_id always wins there.
         ...(default_folder && !folder_id ? { default_folder: true } : {}),
+        // The chat this one replaces: the server resolves the agent in that
+        // chat's project, where a project-folder agent lives.
+        ...(project_from_slot ? { project_from_slot } : {}),
       }).then(j).then(takeSessionFolderNotice) as Promise<ChatSlot>
     },
     /** Inject silent background context into a slot — consumed on the next user
      * message. Used by the artifact companion chat to name the bound artifact so
      * the user's first message needs no slug boilerplate. */
     chatSlotContext: (slot: string, content: string, opts?: { source?: string; ephemeral?: boolean; maxAge?: number }) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/context', { content, ...(opts?.source ? { source: opts.source } : {}), ...(opts?.ephemeral !== undefined ? { ephemeral: opts.ephemeral } : {}), ...(opts?.maxAge !== undefined ? { maxAge: opts.maxAge } : {}) }).then(j),
-    deleteChatSlot: (slot: string) => del('/api/chat/slots/' + encodeURIComponent(slot)).then(j),
+    /** Close a slot. `incarnation` NAMES the instance the caller meant: a key is
+     * reusable, so a key-only close cannot tell the row the user dismissed from a
+     * replacement that took the key before the request arrived. Optional on the
+     * wire — the server revalidates whichever naming it is given, and answers 409
+     * `target_replaced` when the named instance no longer holds the key. */
+    deleteChatSlot: (slot: string, incarnation?: string) => del('/api/chat/slots/' + encodeURIComponent(slot) + (incarnation ? '?incarnation=' + encodeURIComponent(incarnation) : '')).then(j),
     /** Close a session nothing was written in and delete its history row; 409 when it is not empty. */
     discardChatSlot: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/discard').then(j),
     cleanupSessions: (maxInactiveDays: number, activeSlot?: string, dryRun?: boolean) => post('/api/chat/slots/cleanup', { max_inactive_days: maxInactiveDays, active_slot: activeSlot || '', dry_run: !!dryRun }).then(j) as Promise<{ ok: boolean; archived: number; keys: string[]; failed: string[]; dry_run?: boolean; count?: number; active_is_stale?: boolean }>,
@@ -270,7 +281,8 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
     switchVariant: (slot: string, index: number) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/switch-variant', { index }).then(j),
     editResend: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/edit-resend', { ts, content }).then(j),
     rewind: (slot: string, ts: string, content: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/rewind', { ts, content }).then(j),
-    slackLink: (slot: string, channel?: string, threadTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}) } : undefined).then(j),
+    /** `msgTs` is the Slack message that sent the user here; when it is a reply inside `threadTs`, the server reads the thread's first message for the session's first turn. */
+    slackLink: (slot: string, channel?: string, threadTs?: string, msgTs?: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-link', (channel || threadTs) ? { ...(channel ? { channel } : {}), ...(threadTs ? { thread_ts: threadTs } : {}), ...(threadTs && msgTs ? { msg_ts: msgTs } : {}) } : undefined).then(j),
     unlinkSlack: (slot: string) => post('/api/chat/slots/' + encodeURIComponent(slot) + '/slack-unlink').then(j),
     // Sets whether turns reach the linked Slack thread. One call for both
     // directions: a session born in its thread has no binding to re-establish, so
@@ -296,7 +308,9 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
   }
 
   const send = {
-    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean, race?: SendRaceFields) => {
+    sendChat: (message: string, slot?: string, colorTheme?: string, signal?: AbortSignal, meta?: Record<string, unknown>, steer?: boolean | 'auto', responsive?: boolean, race?: SendRaceFields, origin?: 'dashboard_card') => {
+      // `origin: 'dashboard_card'` is sent only by a Dashboard-tab button's one-click reply
+      // (`pages/members/sendCardReply`); the gateway re-checks it and refuses what a card may not do.
       // theme_consent_sha is the WIRE TOKEN (two-tier consent). The client just
       // TRANSMITS the raw stored grant (see themeConsentSha) — the server verifies
       // content-binding, injecting the persona only when this token equals sha256
@@ -340,7 +354,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       // gateway never steers it), and the per-send Idempotency-Key a retry
       // reuses so the host answers it once.
       const raceHeaders: Record<string, string> = race?.idempotencyKey ? { 'Idempotency-Key': race.idempotencyKey } : {}
-      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk, ...raceHeaders }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer && !race?.sendNow ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}), ...(race?.baseRevision !== undefined ? { base_revision: race.baseRevision } : {}), ...(race?.sendNow ? { send_now: true } : {}) }), signal }).then(sendResponseAuthRecovery)
+      return fetch('/api/chat?ws=1', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Guide-Tab': TAB_ID, 'X-UI-Lang': activeLocale(), ..._sk, ...raceHeaders }, body: JSON.stringify({ message, slot, ...(colorTheme ? { color_theme: colorTheme } : {}), ...(themeConsent ? { theme_consent_sha: themeConsent } : {}), ...(meta ? { meta } : {}), ...(steer && !race?.sendNow ? { steer: steer === 'auto' ? 'auto' : true } : {}), ...(responsive ? { responsive: true } : {}), ...(race?.baseRevision !== undefined ? { base_revision: race.baseRevision } : {}), ...(race?.sendNow ? { send_now: true } : {}), ...(origin ? { origin } : {}) }), signal }).then(sendResponseAuthRecovery)
     },
   }
 

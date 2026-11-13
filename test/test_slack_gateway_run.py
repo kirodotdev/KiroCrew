@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gc
+import io
 import logging
 import threading
 import time
@@ -543,6 +544,124 @@ class TestRunFreezesBootHeap:
         orch = _make_orchestrator(no_dashboard=True)
         freezes = await self._run_and_record_freezes(orch, monkeypatch)
         assert freezes == [(0, 1, False)]
+
+
+class TestRunGcWarmFreeze:
+    """``KIROCREW_GC_WARM_FREEZE``: off changes nothing; on, gen-2 threshold 100 and one warm freeze."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_gc(self):
+        import gc
+
+        from kiro_crew import gc_tuning
+
+        before = gc.get_threshold()
+        gc_tuning.reset_for_tests()
+        try:
+            yield
+        finally:
+            gc.set_threshold(*before)
+            gc_tuning.reset_for_tests()
+
+    @staticmethod
+    async def _boot(monkeypatch, *, switch: str | None) -> tuple[asyncio.Event, list[bool]]:
+        """Drive run() past the bind-time freeze; return the warm-up event and the freezes.
+
+        Each recorded freeze is ``gc.isenabled()`` at the call. run() is stopped at the
+        step right after the GC block (``slot_backfill_child.enable``), so nothing past
+        it needs a fake.
+        """
+        import gc
+
+        import kiro_crew
+        from kiro_crew import gc_tuning
+
+        if switch is None:
+            monkeypatch.delenv(gc_tuning.SWITCH_ENV, raising=False)
+        else:
+            monkeypatch.setenv(gc_tuning.SWITCH_ENV, switch)
+        gc.set_threshold(700, 10, 10)
+        orch = _make_orchestrator()
+        for name in ("_init_services", "_start_embeddings", "_auto_migrate_memory", "_init_cron"):
+            setattr(orch, name, AsyncMock())
+        orch._init_mcp_discovery = MagicMock()
+        orch._init_subagents = MagicMock()
+        orch._init_task_runner = MagicMock()
+        orch._init_dashboard = AsyncMock()
+        orch._announce_cron_quarantine = MagicMock()
+        warm = asyncio.Event()
+        # What a started dashboard leaves behind; the mocked _init_dashboard builds none.
+        orch.dashboard_state = SimpleNamespace(startup_tabs_rebuilt=warm)
+        freezes: list[bool] = []
+        # A spy, not the real freeze: freezing would park this worker's whole heap.
+        monkeypatch.setattr(gc, "freeze", lambda: freezes.append(gc.isenabled()))
+        was_enabled = gc.isenabled()
+        gc.disable()
+        kiro_crew.shutdown_event.set()
+        loop = asyncio.get_running_loop()
+        try:
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(loop, "add_signal_handler"))
+                for target in (
+                    "kiro_crew.platform_compat.raise_nofile_soft_limit",
+                    "kiro_crew.slack.events.init_socket_mode",
+                    "kiro_crew.slack.interactions.init",
+                    "kiro_crew.slack.events.SeenCache",
+                    "kiro_crew.session.cleanup_orphaned_sessions",
+                    "os._exit",
+                ):
+                    stack.enter_context(patch(target))
+                stack.enter_context(
+                    patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+                )
+                stack.enter_context(
+                    patch(
+                        "kiro_crew.crew_log.slot_backfill_child.enable",
+                        side_effect=_BootMovedOn(),
+                    )
+                )
+                with pytest.raises(_BootMovedOn):
+                    await orch.run()
+        finally:
+            kiro_crew.shutdown_event.clear()
+            if was_enabled:
+                gc.enable()
+        return warm, freezes
+
+    @pytest.mark.asyncio
+    async def test_switch_off_freezes_only_at_bind_and_keeps_thresholds(self, monkeypatch):
+        import gc
+
+        warm, freezes = await self._boot(monkeypatch, switch=None)
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert freezes == [False]
+        assert gc.get_threshold() == (700, 10, 10)
+
+    @pytest.mark.asyncio
+    async def test_switch_on_sets_threshold_and_freezes_once_after_warm_up(self, monkeypatch):
+        import gc
+
+        from kiro_crew import gc_tuning
+
+        warm, freezes = await self._boot(monkeypatch, switch="1")
+        assert gc.get_threshold() == (700, 10, gc_tuning.GEN2_THRESHOLD)
+        # Warm-up has not finished: only the bind-time freeze so far.
+        assert freezes == [False]
+
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        # The warm-up freeze runs with GC already back on, after the bind-time one.
+        assert freezes == [False, True]
+
+        # A second warm-up signal does not freeze again.
+        warm.clear()
+        warm.set()
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert freezes == [False, True]
 
 
 class _BootStopsHere(BaseException):
@@ -1299,6 +1418,99 @@ class TestBgSessionDashboardBranch:
         with contextlib.suppress(asyncio.CancelledError):
             await await_until(task, what="the cancelled warm task")
         assert task not in orch._background_tasks
+
+    @pytest.mark.parametrize(
+        "tty", [pytest.param(False, id="service_log"), pytest.param(True, id="terminal")]
+    )
+    @pytest.mark.asyncio
+    async def test_the_login_link_is_printed_to_a_terminal_only(self, tty, monkeypatch):
+        """A stdout that is not a terminal is a log a service manager keeps (the
+        journal, the launchd file), where a reader could redeem a login link.
+        """
+        orch = _make_orchestrator(no_dashboard=False, no_open=False)
+        for name in (
+            "_init_services",
+            "_start_embeddings",
+            "_auto_migrate_memory",
+            "_init_cron",
+            "_init_heartbeat",
+            "_init_autonudge",
+            "_check_for_updates",
+            "_shutdown",
+        ):
+            setattr(orch, name, AsyncMock())
+        for name in ("_init_mcp_discovery", "_init_subagents", "_init_task_runner"):
+            setattr(orch, name, MagicMock())
+        orch.sessions = MagicMock()
+        orch.sessions.start_pool = AsyncMock()
+
+        async def _init_dash():
+            orch._local_only = True
+            orch._configured_host = None
+            orch._dashboard_port = 6779
+
+        orch._init_dashboard = _init_dash
+        real_open, opened = orch._auto_open_dashboard, asyncio.Event()
+
+        async def _open(*args, **kwargs):  # the real auto-open, then a signal
+            await real_open(*args, **kwargs)
+            opened.set()
+
+        orch._auto_open_dashboard = _open
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        stdout = io.StringIO()
+
+        fresh_event = asyncio.Event()
+        fresh_event.set()
+        loop = asyncio.get_running_loop()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(loop, "add_signal_handler"))
+            stack.enter_context(patch("kiro_crew.shutdown_event", fresh_event))
+            stack.enter_context(patch("kiro_crew.slack.gateway.shutdown_event", fresh_event))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
+            )
+            # The real formatter, kept off the host's own name and proxy.
+            stack.enter_context(
+                patch("kiro_crew.dashboard.urls.machine_hostname", return_value="localhost")
+            )
+            stack.enter_context(
+                patch("kiro_crew.dashboard.urls.devspaces_proxy_url", return_value=None)
+            )
+            stack.enter_context(patch("kiro_crew.slack.events.init_socket_mode"))
+            stack.enter_context(patch("kiro_crew.slack.interactions.init"))
+            stack.enter_context(patch("kiro_crew.slack.events.SeenCache"))
+            stack.enter_context(patch("kiro_crew.session.cleanup_orphaned_sessions"))
+            stack.enter_context(
+                patch("kiro_crew.dashboard.handlers._bg_mcp_probe", new_callable=AsyncMock)
+            )
+            stack.enter_context(patch("os._exit"))
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.platform_compat.raise_nofile_soft_limit")
+            )
+            stack.enter_context(patch.object(stdout, "isatty", return_value=tty))
+            stack.enter_context(patch("sys.stdout", stdout))
+            # Raising TimeoutError takes the branch the 5 s bound takes, with no wait.
+            browser = stack.enter_context(patch("webbrowser.open", side_effect=TimeoutError))
+            # The boot's subprocess-pool jobs, the browser open among them, run on the
+            # test loop's own executor, which teardown joins, so no shared
+            # kiro_crew.executors pool is left busy.
+            stack.enter_context(
+                patch("kiro_crew.slack.gateway.subprocess_executor", return_value=None)
+            )
+            await finished(orch.run(), "the gateway boot")
+            await await_until(opened, what="the browser auto-open")
+
+        printed = stdout.getvalue()
+        assert "👻 Dashboard:\n" in printed
+        assert "?token=" in browser.call_args.args[0]
+        if tty:
+            assert printed.count("   http://127.0.0.1:6779?token=") == 2
+        else:
+            assert "?token=" not in printed
+            assert printed.count("   http://127.0.0.1:6779\n") == 2
+            assert "👻 Sign in:   run kirocrew token for a sign-in link\n" in printed
 
 
 class TestInitServicesLoopResponsiveness:

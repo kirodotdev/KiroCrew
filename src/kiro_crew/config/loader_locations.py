@@ -260,6 +260,15 @@ def overlay_pins(*key_path: str) -> bool:
     either way. One helper rather than one per key: the shadowing mechanism is
     the overlay, not the key.
     """
+    return overlay_entry(*key_path)[0]
+
+
+def overlay_entry(*key_path: str) -> tuple[bool, object]:
+    """``(sets, value)``: whether ``config.local.json`` sets the key at *key_path*, and to what.
+
+    :func:`overlay_pins` with the value the overlay holds there, read the same
+    best-effort way; ``value`` is ``None`` when the overlay does not set the key.
+    """
     try:
         path = config_local_path()
         # Read as the load reads it, with no is_file() check first: a deleted
@@ -269,12 +278,14 @@ def overlay_pins(*key_path: str) -> bool:
         # saved in a non-UTF-8 code page raises.
         node: object = json.loads(read_endorsed_config_text(path))
     except (OSError, ValueError):
-        return False
+        return False, None
     for key in key_path[:-1]:
         if not isinstance(node, dict):
-            return False
+            return False, None
         node = node.get(key)
-    return isinstance(node, dict) and key_path[-1] in node
+    if isinstance(node, dict) and key_path[-1] in node:
+        return True, node[key_path[-1]]
+    return False, None
 
 
 def config_local_path() -> Path:
@@ -457,14 +468,28 @@ def ssh_auth_sock_consent_path() -> Path:
     the keystone read-only for the agent's shell, so the consent is
     un-flippable from inside the sandbox.
 
-    Holds ``{"enabled": bool, "granted_at": str}``; every read fails soft to
-    DISABLED (see ``ssh_auth_sock_consent.is_granted``). The only writer is the
-    authenticated, OWNER-gated dashboard handler, which opens the path directly
-    rather than through this gate. There is deliberately NO CLI verb -- a
-    terminal command that records the grant on request is a grant an automated
-    caller can take. Respects ``KIROCREW_HOME``.
+    Holds ``{"enabled": bool, "mcp_gateway_backends": [str]}``; every read fails
+    soft to DISABLED (see ``ssh_auth_sock_consent``). The operator writes it by
+    hand from outside the agent sandbox; Kiro Crew only reads it. There is
+    deliberately NO CLI verb -- a terminal command that records the grant on
+    request is a grant an automated caller can take. Respects
+    ``KIROCREW_HOME``.
     """
     return config_dir() / "ssh_auth_sock_consent.json"
+
+
+def project_hooks_consent_path() -> Path:
+    """Return path to project_hooks_consent.json -- the per-folder project-hooks choice.
+
+    Same KEYSTONE reasoning as :func:`ssh_auth_sock_consent_path`: the record
+    decides whether the hooks in a checkout's own agent spec run as commands, so
+    it is an authorization, not a preference, and lives on
+    ``security._CREW_SECRET_LEAVES`` where neither the agent's file tools nor its
+    sandboxed shell can write it. The only writers are the OWNER-gated dashboard
+    handler and the gateway's own once-per-folder notice mark
+    (``project_hooks_consent``). Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "project_hooks_consent.json"
 
 
 def read_local_secret(port: int, dial_host: str | None = None) -> str:

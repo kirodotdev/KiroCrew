@@ -17,6 +17,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     ConfigReadError,
     ConfigWriteRefused,
+    ResourceLimitsConfig,
     config_local_path,
     config_path,
     read_config_text,
@@ -63,7 +64,7 @@ _SEALED_CONFIG_ERRNOS = frozenset({errno.EPERM, errno.EACCES, errno.EROFS, errno
 
 
 def _names_sealed_config(exc: OSError) -> bool:
-    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or its record.
+    """Whether *exc* was raised against ``config.json``, ``config.local.json`` or their provenance.
 
     The publishing ``os.replace(tmp, path)`` reports the temp as ``filename`` and the
     destination as ``filename2``; an in-place ``open(path, "w")`` reports only
@@ -71,12 +72,15 @@ def _names_sealed_config(exc: OSError) -> bool:
     neither -- ``config edit``'s ``execvp`` of an editor, a temp the data home itself
     refused -- is the caller's to report as what it is.
     """
-    # The config writer records each save in the publication record first, and that
-    # record is sealed the same way, so a sandboxed save is refused there.
-    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path(), record_path())}
+    # Before it publishes, the config writer stores the endorsed copy and the publication
+    # record inside the ``config-provenance`` directory, which is sealed the same way, so
+    # a sandboxed save is refused there first, against a temp file of its own.
+    sealed = {os.path.realpath(p) for p in (config_path(), config_local_path())}
+    provenance = Path(os.path.realpath(record_path().parent))
     for name in (exc.filename, exc.filename2):
         if isinstance(name, (str, bytes, os.PathLike)):
-            if os.path.realpath(os.fsdecode(name)) in sealed:
+            resolved = os.path.realpath(os.fsdecode(name))
+            if resolved in sealed or Path(resolved).is_relative_to(provenance):
                 return True
     return False
 
@@ -88,11 +92,12 @@ def _sandboxed_config_write_hint(exc: OSError) -> str | None:
     (``sandbox._CREW_READONLY_LEAVES``) because they carry the switches that loosen
     confinement. Without this the refusal surfaces as a bare errno, which reads like a
     broken install. Decided from the failure itself -- a denial errno against one of
-    the two sealed files -- and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()``
-    pops that marker before dispatch so an inherited value can never buy a sandbox
-    bypass, which means it is never set by the time this runs. ``None`` for any other
-    failure, so the caller's own error path still reports a genuinely read-only or
-    full data home, or an editor the sandbox would not exec.
+    the two sealed files or a path in their sealed ``config-provenance`` directory --
+    and not from ``KIROCREW_SANDBOX_ACTIVE``: ``cli.main()`` pops that marker before
+    dispatch so an inherited value can never buy a sandbox bypass, which means it is
+    never set by the time this runs. ``None`` for any other failure, so the caller's
+    own error path still reports a genuinely read-only or full data home, or an editor
+    the sandbox would not exec.
     """
     if exc.errno not in _SEALED_CONFIG_ERRNOS:
         return None
@@ -175,6 +180,61 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
         )
 
 
+_ADDRESS_SPACE_KEY = "resource_limits.max_address_space_mb"
+
+
+def _warn_if_address_space_capped(key: str, parsed: object) -> None:
+    """Warn when a write turns on the ``RLIMIT_AS`` cap, ``max_address_space_mb``.
+
+    The cap is on VIRTUAL memory, applied soft == hard to every spawned tool, so
+    a number that reads like a generous memory ceiling stops Node/V8 and GraalVM
+    native binaries from starting at all. The resident cap most writers mean is
+    ``max_memory_mb``. Covers the leaf write and a whole ``resource_limits``
+    object. Advice only: the write itself already succeeded.
+    """
+    if key == "resource_limits":
+        section = parsed
+    elif key == _ADDRESS_SPACE_KEY:
+        section = {"max_address_space_mb": parsed}
+    else:
+        return
+    if not ResourceLimitsConfig.from_raw(section).max_address_space_mb:
+        return
+    print(
+        f"⚠️  {_ADDRESS_SPACE_KEY} caps VIRTUAL address space (RLIMIT_AS) on every "
+        "spawned tool, not resident memory. Node/V8 (kiro-cli, npx MCP servers) and "
+        "GraalVM native binaries reserve far more than they use and can fail to "
+        "start below about 64 GiB (65536). To cap resident memory, set "
+        "resource_limits.max_memory_mb instead.",
+        file=sys.stderr,
+    )
+
+
+#: The dotted key whose names the gateway shares only once their launch is approved.
+_SHARE_LIST_KEY = "mcp_gateway.stub_servers"
+
+
+def _warn_unapproved_share_names(key: str, parsed: object) -> None:
+    """Name each server written to the share list whose launch nobody approved.
+
+    The share list names servers, but what a shared server runs is approved by
+    content in MCP Management. The next gateway start refuses a listed server
+    with no approved launch, and only the dashboard says so; the ``✅`` line
+    alone reads as if sharing were on. The write itself still succeeded, so
+    this is advice, not a refusal.
+    """
+    if key != _SHARE_LIST_KEY or not isinstance(parsed, list):
+        return
+    from kiro_crew.mcp_gateway.launch_approval import unapproved_share_names
+
+    for name in unapproved_share_names(parsed):
+        print(
+            f"⚠️  {name} has no approved launch, so the gateway will not share it until "
+            "you approve it in MCP Servers.",
+            file=sys.stderr,
+        )
+
+
 def _config_cmd(args: argparse.Namespace) -> None:
     """Get or set config values."""
     try:
@@ -221,7 +281,18 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         if encoded is not None and file_path:
             print("❌ --value-base64 cannot be combined with --file", file=sys.stderr)
             sys.exit(1)
+        if file_path and args.key is not None:
+            # ``--file`` replaces the whole document, so a positional key/value
+            # alongside it has nothing well-defined to apply to. Keep the
+            # ``--file`` write (the behaviour today) and say the key/value was
+            # ignored, rather than silently dropping it.
+            print(
+                f"⚠️  ignoring the key/value ({args.key}) given with --file: "
+                "--file replaces the whole document",
+                file=sys.stderr,
+            )
         if file_path:
+            use_local = getattr(args, "local", False)
             fp = Path(file_path).expanduser().resolve()
 
             try:
@@ -243,17 +314,57 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 )
                 sys.exit(1)
 
+            local_warnings: list[str] = []
+
             def _mutate_from_file(cur: dict) -> dict:
-                _refuse_missing_workspace_dirs(data, cur)
+                local_warnings.clear()
+                # Every new or changed workspace dir must exist, as on a base write.
+                # The overlay wins over config.json, so for ``--local`` an entry is
+                # "unchanged" against what is in force now: the base with this
+                # overlay over it. An overlay entry with no ``dir`` keeps the base dir.
+                if not use_local:
+                    _refuse_missing_workspace_dirs(data, cur)
+                else:
+                    try:
+                        base = json.loads(read_endorsed_config_text(config_path()))
+                    except (OSError, ValueError):
+                        base = {}
+                    if not isinstance(base, dict):
+                        base = {}
+                    base_ws = base.get("workspaces")
+                    over_ws = cur.get("workspaces")
+                    current = {
+                        "workspaces": {
+                            **(base_ws if isinstance(base_ws, dict) else {}),
+                            **(over_ws if isinstance(over_ws, dict) else {}),
+                        }
+                    }
+                    # Per workspace: an entry the base already binds to this dir
+                    # passes the base-only check, so save it and warn rather than refuse.
+                    workspaces = data.get("workspaces")
+                    entries = workspaces.items() if isinstance(workspaces, dict) else ()
+                    for name, entry in entries:
+                        one = {"workspaces": {name: entry}}
+                        try:
+                            _refuse_missing_workspace_dirs(one, current)
+                        except ConfigWriteRefused as e:
+                            _refuse_missing_workspace_dirs(one, base)
+                            local_warnings.append(str(e))
                 for key, value in data.items():
                     _ack_explicit_config_write(key, value)
                 return data
 
+            # ``--local`` writes the overlay (config.local.json), whose values win
+            # over config.json, instead of replacing the base. The overlay is a
+            # partial document and is not meta-stamped, the same as the keyed
+            # ``config set --local`` path above.
+            target = config_local_path() if use_local else config_path()
             try:
                 update_config_locked(
-                    config_path(),
+                    target,
                     mutate=_mutate_from_file,
                     on_corrupt="reset",
+                    stamp_meta=not use_local,
                 )
             except ConfigWriteRefused as e:
                 # Third writer behind the publish floor, same report as the keyed
@@ -264,12 +375,21 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 sys.exit(1)
             sel().log_api_access(
                 caller="cli",
-                operation="config_set_file",
+                operation="config_set_local_file" if use_local else "config_set_file",
                 outcome="allowed",
                 source="cli",
                 resources=str(fp),
             )
-            print(f"✅ Config loaded from {file_path}")
+            dest = "config.local.json" if use_local else file_path
+            if use_local:
+                print(f"✅ Overlay loaded from {file_path} (saved to {dest})")
+                for warning in local_warnings:
+                    print(f"⚠  {warning}", file=sys.stderr)
+            else:
+                print(f"✅ Config loaded from {file_path}")
+            gateway_section = data.get("mcp_gateway")
+            if isinstance(gateway_section, dict):
+                _warn_unapproved_share_names(_SHARE_LIST_KEY, gateway_section.get("stub_servers"))
         else:
             key = args.key
             value = args.value
@@ -442,6 +562,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 if dropped:
                     _print_dropped_overlay_keys(key, dropped)
                 _warn_if_bot_name_altered(key, parsed)
+                _warn_if_address_space_capped(key, parsed)
+                _warn_unapproved_share_names(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -486,6 +608,8 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     # A shadowed name never loads, so its sanitized spelling
                     # would name a value that does not apply either.
                     _warn_if_bot_name_altered(key, parsed)
+                _warn_if_address_space_capped(key, parsed)
+                _warn_unapproved_share_names(key, parsed)
     elif action == "edit":
 
         p = config_path()

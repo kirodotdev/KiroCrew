@@ -671,6 +671,18 @@ class TestAppPromptPathIsContained:
         merged, _ = self._call(tmp_path, f"file://{prompt}")
         assert merged["prompt"] == f"file://{prompt.resolve()}"
 
+    def test_a_file_uri_spelled_path_inside_the_app_root_is_kept(self, tmp_path, monkeypatch):
+        """``file:///C:/...``, what ``Path.as_uri()`` writes on Windows, is an absolute path."""
+        from kiro_crew.apps import bridges, manager
+
+        monkeypatch.setattr(manager, "app_data_dir", lambda n: tmp_path / "data")
+        monkeypatch.setattr(bridges, "app_data_dir", lambda n: tmp_path / "data")
+        (tmp_path / "app").mkdir(exist_ok=True)
+        prompt = tmp_path / "app" / "persona.md"
+        prompt.write_text("you are")
+        merged, _ = self._call(tmp_path, "file:///" + prompt.as_posix().lstrip("/"))
+        assert merged["prompt"] == f"file://{prompt.resolve()}"
+
     def test_a_symlink_escaping_the_app_is_refused(self, tmp_path, monkeypatch):
         from kiro_crew.apps import bridges, manager
 
@@ -1391,12 +1403,33 @@ class TestRefreshAppAgentsReportsIoFailures:
 
 
 class TestRenderFailureIsClassifiedByCause:
-    """`_render_shipped_agent` returns None for three reasons; one is retryable.
+    """`_render_shipped_agent` returns None for four reasons; two are retryable.
 
     An unresolved placeholder and invalid rendered JSON are properties of the template
     and fail identically forever — reporting them to a caller that retries would spin
-    without converging. Only the write failure can succeed later.
+    without converging. Only the read and write failures can succeed later.
     """
+
+    def test_a_read_failure_registers_nothing_even_if_the_next_read_succeeds(
+        self, monkeypatch, tmp_path, app_env
+    ):
+        root, manifest = _installed_templated_app(tmp_path, app_env["home"], _HOST_TEMPLATE)
+        template = root / "agents" / "my-agent.json"
+        real_read_text = Path.read_text
+        failed: list[Path] = []
+
+        def _locked_once(self, *args, **kwargs):
+            if self == template and not failed:
+                failed.append(self)
+                raise PermissionError("sharing violation")
+            return real_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", _locked_once)
+
+        collected: list[str] = []
+        assert _register_agents("test-app", manifest, root, io_failures=collected) == []
+        assert collected == [str(template)]
+        assert not (app_env["kiro_agents"] / "test-app--my-agent.json").exists()
 
     def _template(self, tmp_path, body: str):
         src = tmp_path / "agent.json"

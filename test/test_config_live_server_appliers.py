@@ -354,6 +354,31 @@ class TestServerAppliers:
         )
         state.push_refresh.assert_called_once_with("config")
 
+    @pytest.mark.asyncio
+    async def test_a_failed_stale_wake_job_sync_reaches_the_watcher(self) -> None:
+        """The stale-wake applier lets a cron store failure raise, so ConfigWatch
+        records it as stale and retries, instead of reading a swallowed error as
+        applied."""
+
+        class _BrokenCrons:
+            async def list_jobs_async(self, include_disabled: bool = False) -> list[Any]:
+                raise OSError("cron store is read-only")
+
+        state = SimpleNamespace(workflow_service=None, channel_manager=None, crons=_BrokenCrons())
+        apply = self._register(state)["dashboard.stale_wake"].callback()
+        cfg = KiroCrewConfig()
+        with (
+            patch("kiro_crew.dashboard.stale_wake.enabled", lambda: True),
+            pytest.raises(OSError, match="cron store is read-only"),
+        ):
+            await apply(
+                ConfigChange(
+                    old=cfg,
+                    new=cfg,
+                    changed=frozenset({"dashboard.feature_previews.dashboard_stale_wake"}),
+                )
+            )
+
     def test_an_app_mute_change_tells_every_dashboard_to_refresh(self) -> None:
         """An app muted from one dashboard is muted in the other open ones too.
 
@@ -523,6 +548,7 @@ class TestServerAppliers:
             "browser.settings",
             "agent.crew_mode_agent",
             "dashboard.feature_previews",
+            "dashboard.stale_wake",
             "apps",
             "dashboard.terminal.enabled",
             "crewmate.harness_fallback",

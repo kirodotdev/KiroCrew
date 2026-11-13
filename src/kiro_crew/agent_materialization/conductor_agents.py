@@ -200,14 +200,16 @@ _HISTORY_WORK_VERBS: frozenset[str] = frozenset(
         "@kirocrew-work/work_report",
     }
 )
-#: The goal conductor's two fixed checks (``mcp_work.CHECK_TOOLS``).
+#: The goal conductor's fixed checks: ``accept_eval`` (``mcp_work.CHECK_TOOLS``)
+#: and the retired ``patrol_budget``, kept here so an existing install drops it
+#: (rfc-permanent-patrol.md: a work-ledger patrol has no bound to check).
 _HISTORY_CHECK_VERBS: frozenset[str] = frozenset(
     {"@kirocrew-work/accept_eval", "@kirocrew-work/patrol_budget"}
 )
 #: Spec name -> every ``allowedTools`` grant any release has shipped on it. Retired
-#: today: the goal conductor's bare ``@kirocrew-core``. Beyond each spec's current
-#: tuple the table holds exactly that entry (pinned by test), so an entry can join
-#: it only as a grant some release is shown to have shipped. The pipeline
+#: today: the goal conductor's bare ``@kirocrew-core`` and ``patrol_budget``. Beyond
+#: each spec's current tuple the table holds exactly those entries (pinned by test),
+#: so an entry can join it only as a grant some release is shown to have shipped. The pipeline
 #: conductor's two work-ledger verbs were shipped for one release, retired, and are
 #: shipped again as the base every conductor holds.
 _SHIPPED_GRANT_HISTORY: dict[str, frozenset[str]] = {

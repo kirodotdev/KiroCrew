@@ -11,6 +11,7 @@ is how ``gh``/``curl`` stderr reaches this adapter.
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from collections.abc import Mapping
@@ -66,6 +67,26 @@ def header(headers: Any, name: str) -> str | None:
     return None
 
 
+# A server time further out than this is no retry hint anyone can wait for; past
+# it, the status-based retry stands instead of a wait that never ends.
+_MAX_RETRY_HORIZON_SECS = 366 * 24 * 3600.0
+
+
+def _usable_retry_at(retry_at: float, now: float) -> float | None:
+    if not math.isfinite(retry_at) or retry_at - now > _MAX_RETRY_HORIZON_SECS:
+        return None
+    return retry_at
+
+
+def delay_retry_at(digits: str, now: float) -> float | None:
+    """``now`` plus a delay given as a digit string, or None if it is too large."""
+    try:
+        delay = float(int(digits))
+    except (OverflowError, ValueError):
+        return None
+    return _usable_retry_at(now + delay, now)
+
+
 def parse_retry_after(value: str | None, now: float) -> float | None:
     """``Retry-After`` -> absolute epoch seconds; delay-seconds or an HTTP date."""
     if value is None:
@@ -74,9 +95,9 @@ def parse_retry_after(value: str | None, now: float) -> float | None:
     if not raw:
         return None
     if raw.isdigit():
-        return now + float(int(raw))
+        return delay_retry_at(raw, now)
     try:
-        return parsedate_to_datetime(raw).timestamp()
+        return _usable_retry_at(parsedate_to_datetime(raw).timestamp(), now)
     except (TypeError, ValueError, IndexError, OverflowError):
         return None
 
@@ -92,10 +113,12 @@ def parse_reset_epoch(value: str | None) -> float | None:
         reset = float(raw)
     except ValueError:
         return None
+    if not math.isfinite(reset):
+        return None  # "inf", "nan" or a number too large to be a time
     # Some APIs send milliseconds; anything past year 5138 is not seconds.
     if reset > 1e11:
         reset /= 1000.0
-    return reset
+    return _usable_retry_at(reset, time.time())
 
 
 def status_of(exc: BaseException) -> int | None:
@@ -159,11 +182,14 @@ def retry_at_from(exc: BaseException, now: float) -> float | None:
     if retry_at is None:
         explicit = getattr(exc, "retry_after", None)
         if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
-            retry_at = now + float(explicit)
+            try:
+                retry_at = _usable_retry_at(now + float(explicit), now)
+            except OverflowError:
+                retry_at = None
     if retry_at is None:
         match = _RE_RETRY_AFTER_TEXT.search(str(exc))
         if match is not None:
-            retry_at = now + float(int(match.group(1)))
+            retry_at = delay_retry_at(match.group(1), now)
     return retry_at
 
 

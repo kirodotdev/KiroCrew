@@ -92,6 +92,8 @@ class TestTheMeasurement:
     def test_the_select_carries_a_price_and_no_window(self):
         (row,) = catalog.catalog_rows_from_session(_bundle_session_new())
         assert row["rate_multiplier"] == 1.0
+        # The routing entry's name comes from the model service, not the engine
+        # bundle: the 0.66.103 capture read `auto`, the 0.66.104 one `Auto`.
         assert row["display_name"] == "Auto"
         assert "context_window_tokens" not in row
         assert "context_window" not in row

@@ -31,6 +31,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKENDS_MEMBER_DISPATCH,
@@ -125,6 +126,7 @@ class TestCapabilitySet:
                 ACP_BACKEND_KAS,
                 ACP_BACKEND_CODEX,
                 ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_MIMOCODE,
                 ACP_BACKEND_GOOSE,
                 ACP_BACKEND_DEEPSEEK,
                 ACP_BACKEND_PI,
@@ -857,6 +859,7 @@ class TestRuntimeMemberThreading:
             prompt_unread_out=None,
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append(member_dispatch)
             return [{"id": agent}]
@@ -939,6 +942,7 @@ class TestMemberServerJoinsSubtraction:
             prompt_unread_out=None,
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
@@ -982,6 +986,7 @@ class TestMemberServerJoinsSubtraction:
             prompt_unread_out=None,
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
+            governance_app=None,
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]

@@ -38,12 +38,21 @@ class DeniedCommandRule:
     ``pattern`` is a Python regex string matched via ``re.search`` with
     ``re.IGNORECASE`` (NOT an fnmatch glob).  ``id`` is a stable slug used as
     the opt-out key in config and as the SEL audit ``rule_id``.
+
+    ``note`` is optional guidance for the AGENT that was refused: what to do
+    instead. ``description`` is written for the Settings reader, so it is not
+    reused here. When a rule has a note, :func:`kiro_crew.deny_guidance.remediation_for`
+    returns it in place of the category's remediation prose. It changes only
+    the refusal text, never what the rule matches. Every built-in row leaves it
+    empty. It is the field an edition rule uses to name the edition's own
+    sanctioned route, which the core must not name.
     """
 
     id: str
     pattern: str
     category: str
     description: str
+    note: str = ""
 
 
 # Variable-name words that make an AWS variable secret-BEARING, i.e. printing it

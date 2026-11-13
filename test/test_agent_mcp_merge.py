@@ -417,6 +417,36 @@ class TestRebuildReconcileRetainsEnabledAppServers:
         assert "if _k not in on_disk_app:" not in src
 
 
+class TestRebuildKeepsAGlobalColonKeyedServer:
+    """A global ``mcp.json`` server keyed ``npm:foo`` is the user's, not an app's.
+
+    The locked kirocrew.json reconcile must not read the colon as an app prefix:
+    with no ``npm`` app that would delete the entry, and on an existing spec pin
+    the copy already on disk. Run through the real ``is_kirocrew_json`` branch by
+    pointing the bridges' agents dir at the same directory.
+    """
+
+    def _rebuild(self, tmp_path: Path, monkeypatch, args: list[str]) -> dict:
+        from kiro_crew.apps import bridges_sources
+
+        monkeypatch.setattr(bridges_sources, "KIRO_AGENTS_DIR", tmp_path / "kiro_agents")
+        servers = {
+            "npm:foo": {"command": "python3", "args": args},
+            "plainsrv": {"command": "python3"},
+        }
+        return _run_install_mcp_merge(tmp_path, self._cfg, cc_servers={}, kiro_servers=servers)
+
+    def test_the_server_is_mounted_and_follows_its_source(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        self._cfg = _bundled_defaults(tmp_path)
+        first = self._rebuild(tmp_path, monkeypatch, ["old.py"])
+        assert "plainsrv" in first["mcpServers"]
+        assert first["mcpServers"]["npm:foo"]["args"] == ["old.py"]
+        second = self._rebuild(tmp_path, monkeypatch, ["new.py"])
+        assert second["mcpServers"]["npm:foo"]["args"] == ["new.py"]
+
+
 class TestMcpMergePriority:
     def test_the_authorship_marker_never_reaches_the_rendered_spec(self, tmp_path: Path):
         """A shared-file marker is provenance, not configuration.

@@ -195,6 +195,51 @@ describe('FolderConfigModal', () => {
     expect(screen.queryByText(/not installed/i)).toBeNull()
   })
 
+  it.each(['typed', 'inherited'])('lists the agents of the %s project directory', async how => {
+    // #10106: the picker listed the active chat's roster, so the agents in the
+    // folder's own `<project>/.kiro/agents` were never offered.
+    const loadProjectAgents = vi.fn().mockResolvedValue([{ name: 'kirocrew' }, { name: 'repo-helper' }])
+    const folders = [folder('a', { name: 'Repo', project_dir: '/repo' })]
+    open({ loadProjectAgents, ...(how === 'inherited' ? { folders, parentId: 'a' } : {}) })
+    if (how === 'typed') {
+      fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: ' /repo ' } })
+    }
+    await waitFor(() => expect(loadProjectAgents).toHaveBeenCalledWith('/repo'))
+    await openAgentPopup()
+    await screen.findByRole('option', { name: 'repo-helper' })
+    expect(screen.queryByRole('option', { name: 'kirocrew-dev' })).toBeNull()
+  })
+
+  it('says when the project directory roster fails to load, and retries it', async () => {
+    const loadProjectAgents = vi.fn()
+      .mockRejectedValueOnce(new Error('gateway restarting'))
+      .mockResolvedValue([{ name: 'repo-helper' }])
+    open({ loadProjectAgents })
+    fireEvent.change(screen.getByTestId('folder-config-project-dir'), { target: { value: '/repo' } })
+    fireEvent.click(await screen.findByTestId('folder-config-agents-retry'))
+    await waitFor(() => expect(screen.queryByTestId('folder-config-agents-error')).toBeNull())
+    expect(loadProjectAgents).toHaveBeenCalledTimes(2)
+    await openAgentPopup()
+    await screen.findByRole('option', { name: 'repo-helper' })
+  })
+
+  it('drops a directory load error once that directory loads', async () => {
+    const loadProjectAgents = vi.fn()
+      .mockRejectedValueOnce(new Error('gateway restarting'))
+      .mockResolvedValue([{ name: 'repo-helper' }])
+    open({ loadProjectAgents })
+    const dir = screen.getByTestId('folder-config-project-dir')
+    fireEvent.change(dir, { target: { value: '/repo' } })
+    await screen.findByTestId('folder-config-agents-error')
+    fireEvent.change(dir, { target: { value: '/other' } })
+    await waitFor(() => expect(loadProjectAgents).toHaveBeenCalledWith('/other'))
+    fireEvent.change(dir, { target: { value: '/repo' } })
+    await waitFor(() => expect(loadProjectAgents).toHaveBeenCalledTimes(3))
+    await openAgentPopup()
+    await screen.findByRole('option', { name: 'repo-helper' })
+    expect(screen.queryByTestId('folder-config-agents-error')).toBeNull()
+  })
+
   describe('orphan agent notice', () => {
     // Item 1: a disabled/misconfigured control that does not say why IS the
     // defect. An orphan selection is round-tripped (Save is NOT blocked — that

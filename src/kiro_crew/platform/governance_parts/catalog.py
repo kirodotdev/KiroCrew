@@ -134,6 +134,16 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "folders.read": ScopeSpec(RULESET, matcher="path"),
     "folders.write": ScopeSpec(RULESET, matcher="path"),
     "network.egress": ScopeSpec(RULESET, matcher="host"),
+    # Which skill and MCP discovery registries the Discover surfaces (and the
+    # agent's ``skill_discover``, which goes through the same endpoint) may query,
+    # by the host of the provider's ``api_base``:
+    #   {"external_access.registry_hosts": {"mode": "allow", "allow": ["skills.sh"]}}
+    # One list covers both catalogs, so an allow list that names only skill hosts
+    # also drops the official MCP registry. Asked by
+    # ``extension_governance.registry_host_denied`` from
+    # ``_shared_access.admits_registry``, where the edition's ``external_access``
+    # policy must admit too. RFC LTS edition, appendix row "Extension sources".
+    "external_access.registry_hosts": ScopeSpec(RULESET, matcher="host"),
     "channels": ScopeSpec(SCOPEDMAP),
     "approval_mode": ScopeSpec(ORDINAL, ordinal_scale="approval"),
     "sandbox.min_level": ScopeSpec(ORDINAL, ordinal_scale="sandbox"),
@@ -206,9 +216,14 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # (RFC crew-lts-edition, appendix row "Hook trigger events"). Queried as
     # ``events:<event>`` by ``hook_runtime.governance_gate`` before a hook runs, and
     # for each event of the user's kiro hooks before they are installed. An unnamed
-    # ruleset permits every event.
+    # ruleset permits every event. Inner ``hooks`` ruleset (``identifier``): which
+    # hooks may run, by ``hook_event_governance.hook_policy_name`` -- an agent
+    # spec's hook as ``<agent>/<Event>/<n>``, a Hooks-page hook by its name.
+    # Queried as ``hooks:<name>``; an unnamed ruleset permits every hook.
     "capabilities.script_hooks": ScopeSpec(
-        CAPABILITY, capability_default=False, scope_matchers={"events": "identifier"}
+        CAPABILITY,
+        capability_default=False,
+        scope_matchers={"events": "identifier", "hooks": "identifier"},
     ),
     "capabilities.cron": ScopeSpec(CAPABILITY, capability_default=False),
     "capabilities.messaging": ScopeSpec(CAPABILITY, capability_default=False),

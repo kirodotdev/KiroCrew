@@ -6,7 +6,7 @@ const path = require("path");
 const { createTokenRetryHandler, dashboardRetryPath, loadDashboardWithToken } = require("./token-retry");
 const { createRendererRecovery, withSafeReload, hasSafeReload } = require("./renderer-recovery");
 const { createRendererExhaustedNotice } = require("./renderer-exhausted-notice");
-const { createHangRecovery } = require("./hang-recovery");
+const { createHangRecovery, endHungRenderer } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { armSwipeHistory, browserPanelUnderCursor } = require("./swipe-history");
 const { armScrollTouch } = require("./scroll-touch");
@@ -33,6 +33,7 @@ const { attachContextMenu } = require("./context-menu");
 const {
   TUNNEL_OPTION_LABEL,
   parseRemoteCrewFields,
+  remoteCrewDraft,
   saveRemoteCrewConfig,
   tunnelOptionHint,
 } = require("./remote-crew-setup");
@@ -302,23 +303,31 @@ function createWindowLifecycle(options) {
   function setupWindowContents(win, windowBackendUrl) {
     const windowPort = defaultedPort(windowBackendUrl);
     let customName = null;
-    // isGatewayLocalForWindow reads this, and the preload argument below needs
-    // it. The argument is fixed for the view's life.
+    // isGatewayLocalForWindow reads this.
     win._mcBackendUrl = windowBackendUrl;
-    const remoteGateway = !isGatewayLocalForWindow(win);
 
     const view = new WebContentsView({
       webPreferences: {
         preload: path.join(__dirname, "preload.js"),
         contextIsolation: true,
         nodeIntegration: false,
-        // Launch-time decisions the preload reads: frameless Linux reserves
-        // caption-control space; a remote gateway withholds local-only bridges.
-        additionalArguments: [
-          ...(LINUX_FRAMELESS ? ["--kc-linux-frameless"] : []),
-          ...(remoteGateway ? ["--kc-remote-gateway"] : []),
-        ],
+        // Frameless Linux is a launch-time decision, not a platform constant.
+        // The preload reads this argument to reserve caption-control space.
+        additionalArguments: LINUX_FRAMELESS ? ["--kc-linux-frameless"] : [],
       },
+    });
+    // The preload asks this on every load, so a crew configured or cleared for
+    // the port applies from the next load. The ask is synchronous: the listener
+    // is on this view's own WebContents before anything loads, and every path
+    // answers, so the renderer never waits on a reply that does not come.
+    view.webContents.ipc.on("dashboard:is-remote-gateway", (event) => {
+      let remote = true;
+      try {
+        remote = !isGatewayLocalForWindow(win);
+      } catch (err) {
+        glog(`dashboard:is-remote-gateway: ${err && err.message}`);
+      }
+      event.returnValue = remote;
     });
     view.setBackgroundColor("#00000000");
     win.contentView.addChildView(view);
@@ -924,7 +933,10 @@ function createWindowLifecycle(options) {
       log: glog,
       forceCrash: () => {
         if (mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
-        mainWindow.webContents.forcefullyCrashRenderer();
+        const outcome = endHungRenderer(mainWindow.webContents, {
+          underTranslation: process.platform === "darwin" && app.runningUnderARM64Translation === true,
+        });
+        if (outcome !== "force-crashed") glog(`hung renderer under Rosetta: ${outcome} by pid`);
       },
     });
     mainWindow.webContents.on("unresponsive", () => hangRecovery.handleUnresponsive());
@@ -1120,12 +1132,12 @@ function createWindowLifecycle(options) {
     const currentBin = config?.binPath || DEFAULT_REMOTE_BIN;
     const currentRemotePort = config?.remotePort || "";
     const currentRemotePath = config?.remotePath || "";
-    const currentManageTunnel = config?.manageTunnel === true;
     // The app keeps a tunnel only for the port it launched on, so this form
     // offers the option there alone; for any other tab it carries the stored
     // choice over unchanged.
     const isLaunchPort = String(focusedPort) === String(port);
     const offerTunnel = isLaunchPort && !IS_WINDOWS;
+    const currentManageTunnel = remoteCrewDraft(config || {}, { tunnelByDefault: offerTunnel }).manageTunnel;
 
     const css = await getModalCSS();
     const esc = (value) => value
@@ -1173,7 +1185,8 @@ function createWindowLifecycle(options) {
           window.close();
         }
         document.addEventListener('keydown', event => {
-          if (event.key === 'Enter') save();
+          // Enter on a focused button is that button's own press: Cancel must not save.
+          if (event.key === 'Enter' && !(event.target instanceof HTMLButtonElement)) save();
           if (event.key === 'Escape') window.close();
         });
       </script>

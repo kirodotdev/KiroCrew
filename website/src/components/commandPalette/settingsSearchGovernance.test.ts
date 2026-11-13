@@ -29,7 +29,7 @@ import { updateInfoQuery } from '../../api/updateInfoQuery'
 import { useUpdateSubscription } from '../../hooks/useUpdateSubscription'
 import { sseStatus } from '../../store/dashboardSlice'
 import type { ResourceProvider } from './types'
-import { PREVIEW_CREW_MODE, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_EXPLORE, setPreviewFlag } from '../../utils/previewFlags'
 
 import { createSettingsProvider, useSettingsProvider } from './providers/settingsProvider'
 import { SETTINGS_REGISTRY } from './settingsRegistry.gen'
@@ -123,6 +123,16 @@ describe('settingEntryOffered', () => {
     setPreviewFlag(PREVIEW_CREW_MODE, true)
     expect(settingEntryOffered(entry, ON)).toBe(true)
     localStorage.removeItem(PREVIEW_CREW_MODE)
+  })
+
+  it('offers the stale-wake switch only while the stale-fields mark draws it', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake')
+    if (!entry) throw new Error('the stale-wake switch is missing from the registry')
+    localStorage.removeItem(PREVIEW_DASHBOARD_STALE_FIELDS)
+    expect(settingEntryOffered(entry, ON)).toBe(false)
+    setPreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS, true)
+    expect(settingEntryOffered(entry, ON)).toBe(true)
+    localStorage.removeItem(PREVIEW_DASHBOARD_STALE_FIELDS)
   })
 
   it('the two governed answers do not leak into each other', () => {
@@ -524,6 +534,18 @@ describe('the Kiro sign-in entry follows the selected harness', () => {
   it('offers it while the harness is unknown (no answer in the cache)', async () => {
     const { result } = await renderWithConfig(undefined)
     expect(offersSignIn(result.current)).toBe(true)
+  })
+
+  // The gateway's `kas_in_use` covers Bots: a Kiro CLI or Claude main harness
+  // whose Bots run on KAS (an unset or KAS Bot harness, or a Bot pinned to KAS).
+  it.each(['kiro', 'claude'])('offers it on the %s harness when Bots run on KAS', async backend => {
+    const { result } = await renderWithConfig({ ...harness(backend), kas_in_use: true })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(true))
+  })
+
+  it('withholds it on a KAS-named main harness the gateway says nothing runs on', async () => {
+    const { result } = await renderWithConfig({ ...harness('kas'), kas_in_use: false })
+    await waitFor(() => expect(offersSignIn(result.current)).toBe(false))
   })
 })
 

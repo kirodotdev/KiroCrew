@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_STALLED,
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
+    continue_timed_out_calls,
 )
 from kiro_crew.agent_sdk.mcp_problems import (
     UNATTENDED_MCP_WAIT_SECS,
@@ -39,6 +40,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     refuse_stale_switch,
     reproject_claimed_session,
     running_agent,
+    spec_keys_notice,
     turn_spec_hooks,
 )
 from kiro_crew.config.loader import KiroCrewConfig
@@ -61,6 +63,7 @@ from kiro_crew.messaging.dispatch import (
     rearm_reinjection,
     rollback_skill_bodies,
 )
+from kiro_crew.messaging.driver import strip_steering_markers
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.parent_turns import note_turn_landed
 from kiro_crew.providers.base import (
@@ -385,6 +388,10 @@ async def execute_single_task(
             run=run,
         )
         if on_approval:
+            # The callback keeps its one-argument contract; the task names
+            # its run, so a gate can say WHICH run's task it holds (up to three
+            # runs execute at once and their task indexes overlap).
+            task.run_task_id = run.task_id
             approved = await on_approval(task)
             if approved and task.force_approval:
                 sel().log_api_access(
@@ -667,6 +674,8 @@ def _step_permission_policy(
             event.title,
             session_key=session_key,
             agent=agent,
+            # The ladder's SpecHooks floor fired the PreToolUse hooks first.
+            pre_tool_hooks_fire=True,
             **hook_gate_kwargs(event),
         )
         return verdict
@@ -780,6 +789,8 @@ async def execute_task(
     # The MCP problem line this step already told the operator about, so a retry
     # on the same broken servers does not repeat the notice every attempt.
     mcp_noticed = ""
+    # Whether this step already said which agent spec keys its session lacks.
+    spec_keys_noticed = False
 
     # ``attempt`` is the TURN ordinal (the re-run prompt reads it), and
     # ``MAX_RETRIES`` bounds the LOGIC failures only: an in-place stall recovery
@@ -898,9 +909,20 @@ async def execute_task(
             # the spec the session's projection gated.
             # The agent this session runs NOW: a retry on a session an earlier
             # attempt switched runs the switched-to agent, so its hooks gate.
-            _spec = await turn_spec_hooks(
-                client, running_agent(client, switched_agent or agent or "kirocrew")
-            )
+            _spec_agent = running_agent(client, switched_agent or agent or "kirocrew")
+            _spec = await turn_spec_hooks(client, _spec_agent)
+            if _spec.lost and not spec_keys_noticed:
+                # Once per step, whose session is its own: the notice a dashboard
+                # chat shows at session start.
+                spec_keys_noticed = True
+                try:
+                    await on_notify(
+                        f"\u2139\ufe0f Task {task.index}: agent settings not applied",
+                        spec_keys_notice(_spec_agent, list(_spec.lost)),
+                        run=run,
+                    )
+                except Exception:
+                    logger.debug("spec keys notice failed", exc_info=True)
             # The step's permission ladder, rebuilt when a mode switch changes
             # whose spec hooks gate the requests that follow.
             _policy_for = functools.partial(
@@ -924,7 +946,10 @@ async def execute_task(
             # build and episodic-query embed above are turn setup, not the turn,
             # and this loop re-runs per attempt so each row measures its own turn.
             _turn_t0 = _time.monotonic()
-            async for event in client.stream(full_prompt):
+            # A call whose own silence timer ends the prompt is handed back to the
+            # model on this session (``acp.timed_out_continuation``), so the step
+            # goes on with what it already did instead of re-running from the top.
+            async for event in continue_timed_out_calls(client.stream, full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text
@@ -985,6 +1010,8 @@ async def execute_task(
                     _complete_event = event
                     break
 
+            # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
+            result_text = strip_steering_markers(result_text)
             final_result = result_prefix + result_text
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the

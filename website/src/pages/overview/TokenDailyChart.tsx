@@ -198,7 +198,7 @@ export function TokenDailyChart({
                 *  and this tooltip is the only place those numbers appear. */}
               <div className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden [.group:hover_&]:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
                 <div className="font-medium">{d.date}</div>
-                <div>{i18nT('pages.overview.tokenDailyChart.in')} {fmtCompact(d.input)} {i18nT('pages.overview.tokenDailyChart.out')} {fmtCompact(d.output)}</div>
+                <div>{i18nT('pages.overview.tokenDailyChart.in_out', { input: fmtCompact(d.input), output: fmtCompact(d.output) })}</div>
                 {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtCompact(d.cacheRead)}</div>}
                 {d.cacheCreate > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_create')} {fmtCompact(d.cacheCreate)}</div>}
                 {d.costUsd > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cost')} {formatCost(d.costUsd)}</div>}

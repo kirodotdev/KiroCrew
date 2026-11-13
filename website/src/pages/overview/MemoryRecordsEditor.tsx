@@ -10,11 +10,12 @@ import { Badge, Btn, Card, EmptyState, Input, PanelSectionHeader, Skeleton } fro
 import ErrorNotice from '../../components/ErrorNotice'
 import Modal from '../../components/Modal'
 import SegmentedControl from '../../components/SegmentedControl'
-import { fmtDateTimeNumeric, fmtNumber } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtNumber } from '../../i18n/format'
 import type { MemoryEditOperation, MemoryEditPreview, MemoryRecord, MemoryRecordQuery, MemoryRecordRevision, MemoryRecordSelection } from '../../types/memoryEditing'
 import { MEMORY_QUERY_PREFIXES, MemoryStoreAvatar, memoryQueryRetry, useMemoryStores } from './MemoryStoreCard'
 import { semanticWriteErrorMessage } from './embeddingStatusText'
 import { queryReadFailed } from '../../utils/queryReadFailed'
+import { usePagerFocus } from '../../hooks/usePagerFocus'
 
 const PAGE_SIZE = 50
 const MANUAL_LIMIT = 500
@@ -112,7 +113,7 @@ function RecallEvidence({ data }: { data: RecallResult }) {
     <details className="mt-3 text-[13px]">
       <summary className="min-h-11 cursor-pointer py-3 text-muted">{t('memoryV2.provenance')}</summary>
       <ul className="space-y-3">{groups.flatMap(group => group.rows.map((item, index) => <li key={`${group.kind}:${item.id || item.key || index}`} className="space-y-2 border-t border-border pt-3">
-        {item.retrieval?.matched_terms?.length ? <p>{t('memoryV2.matched_terms', { terms: item.retrieval.matched_terms.join(', ') })}</p> : null}
+        {item.retrieval?.matched_terms?.length ? <p>{t('memoryV2.matched_terms', { terms: fmtList(item.retrieval.matched_terms, { style: 'narrow' }) })}</p> : null}
         <RecordProvenance row={item} />
       </li>))}</ul>
       {/* Exact model context, including rules, remains inspectable without becoming the main reading surface. */}
@@ -179,6 +180,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
   const [kind, setKind] = useState<MemoryRecordQuery['kind']>(saved.kind)
   useEffect(() => { safeSetSessionItem(FILTER_KEY_PREFIX + store, JSON.stringify({ q: search, kind })) }, [store, search, kind])
   const [page, setPage] = useState(0)
+  const pager = usePagerFocus()
   const [selected, setSelected] = useState<Map<string, MemoryRecord>>(new Map())
   const [all, setAll] = useState<QuerySelection | null>(null)
   const [intent, setIntent] = useState<Intent | null>(null)
@@ -197,6 +199,13 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
   const [recallQuery, setRecallQuery] = useState('')
   const [reviewedPreview, setReviewedPreview] = useState<MemoryEditPreview | null>(null)
   const [previewPageOffset, setPreviewPageOffset] = useState(0)
+  // Retained across the retry: `previewPage.mutate` clears its own error the
+  // moment it re-enters pending, so a Retry gated on `previewPage.error` alone
+  // would unmount -- and drop its keyboard focus -- for the whole retry. Set on
+  // a failed page read, cleared on success (below) or when the mutation is
+  // reset back to idle anywhere (adjust, apply, a new intent): the effect
+  // covers every `previewPage.reset()` call site at once.
+  const [previewPageFailed, setPreviewPageFailed] = useState(false)
   useEffect(() => { if (input.trim() === search) return; const timer = setTimeout(() => { setSearch(input.trim()); setPage(0) }, 250); return () => clearTimeout(timer) }, [input, search])
   const query = useMemo<MemoryRecordQuery>(() => ({ q: search, kind }), [search, kind])
   const records = useQuery({ queryKey: ['memory-records', store, query, page], queryFn: () => api.memoryRecords(store, query, page * PAGE_SIZE, PAGE_SIZE), retry: memoryQueryRetry })
@@ -213,7 +222,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
     return all ? { query: all.query, exclude: [...all.exclude.values()].map(({ kind, id }) => ({ kind, id })) }
       : { items: [...selected.values()].map(({ kind, id, revision }) => ({ kind, id, revision })) }
   }
-  const previewPage = useMutation({ mutationFn: ({ previewId, offset }: { previewId: string; offset: number }) => api.memoryEditPreviewPage(store, previewId, offset), onSuccess: result => setReviewedPreview(result) })
+  const previewPage = useMutation({ mutationFn: ({ previewId, offset }: { previewId: string; offset: number }) => api.memoryEditPreviewPage(store, previewId, offset), onSuccess: result => { setPreviewPageFailed(false); setReviewedPreview(result) }, onError: () => setPreviewPageFailed(true) })
   const preview = useMutation({ mutationFn: ({ row, operation: chosen }: { row?: MemoryRecord; operation?: MemoryEditOperation }) => {
     let operation: MemoryEditOperation
     if (row) return api.memoryEditPreview(store, { items: [{ kind: row.kind, id: row.id, revision: row.revision }] }, chosen || replacement(row, memoryRecordBody(row)))
@@ -261,6 +270,10 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
   const applyConflict = !!apply.error && typeof apply.error === 'object' && 'status' in apply.error && (apply.error.status === 409 || apply.error.status === 400)
   const previewPageConflict = !!previewPage.error && typeof previewPage.error === 'object' && 'status' in previewPage.error && previewPage.error.status === 409
   const busy = preview.isPending || previewPage.isPending || apply.isPending || refreshSelection.isPending
+  // A `previewPage.reset()` anywhere (adjust, apply, a new intent) returns the
+  // mutation to idle; drop the retained failed flag with it so the Retry does
+  // not linger past a reset.
+  useEffect(() => { if (previewPage.isIdle) setPreviewPageFailed(false) }, [previewPage.isIdle])
   const dirty = !!intent || !!all || selectedCount > 0 || (canSetGlobalFact && (!!newKey || !!newValue || setGlobalFact.isPending))
   useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
   const begin = (next: Intent) => { preview.reset(); previewPage.reset(); setReviewedPreview(null); setPreviewPageOffset(0); apply.reset(); refreshSelection.reset(); setSelectionNotice(''); setMissingRecord(false); setIntent(next); setDetail(null); if (next.type === 'set') setDraft(memoryRecordBody(next.row)) }
@@ -301,7 +314,7 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
           { key: 'all', label: t('memoryV2.filter_all'), icon: <ListFilter className="lucide-inline" />, disabled: !!all },
           { key: 'fact', label: t('memoryV2.facts_label'), disabled: !!all }, { key: 'directive', label: t('memoryV2.rules_label'), disabled: !!all }, { key: 'episode', label: t('memoryV2.experiences_label'), disabled: !!all },
         ]} /></div>
-        {privateMemory && search && <Btn className="min-h-11" disabled={recall.isFetching || searching} onClick={() => { setRecallQuery(search); if (recallQuery === search) void recall.refetch() }}><Search className="lucide-inline" />{t('memoryV2.recall')}</Btn>}
+        {privateMemory && search && <Btn busy={recall.isFetching || searching} className="min-h-11" onClick={() => { setRecallQuery(search); if (recallQuery === search) void recall.refetch() }}><Search className="lucide-inline" />{t('memoryV2.recall')}</Btn>}
       </div>
       <p className="text-[12px] leading-relaxed text-muted">{t('memoryV2.memory_kinds_explanation')}</p>
     </div>
@@ -332,11 +345,11 @@ export default function MemoryRecordsEditor({ store, privateMemory = false, onDi
         <div className="mt-auto flex justify-between gap-2 border-t border-border pt-3"><Btn className="min-h-11" onClick={() => setDetail(row)}>{t('memoryV2.view_details')}<ArrowUpRight className="lucide-inline" /></Btn><Btn className="min-h-11" disabled={!row.revision} onClick={() => begin({ type: 'set', row })}><Pencil className="lucide-inline" />{editAction}</Btn></div>
       </Card>
     </motion.div> })}</div>
-    {!searching && !records.error && currentTotal > 0 && <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[12px] text-muted">{t('memoryEditing.page_range', { from: fmtNumber(page * PAGE_SIZE + 1), to: fmtNumber(page * PAGE_SIZE + rows.length), total: fmtNumber(currentTotal) })}</span><div className="flex gap-2"><Btn aria-label={t('memoryEditing.previous')} className="min-h-11 min-w-11 justify-center" disabled={page === 0} onClick={() => setPage(value => value - 1)}><ChevronLeft className="lucide-inline" /></Btn><Btn aria-label={t('memoryEditing.next')} className="min-h-11 min-w-11 justify-center" disabled={!records.data?.has_more} onClick={() => setPage(value => value + 1)}><ChevronRight className="lucide-inline" /></Btn></div></div>}
+    {!searching && !records.error && currentTotal > 0 && <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[12px] text-muted">{t('memoryEditing.page_range', { from: fmtNumber(page * PAGE_SIZE + 1), to: fmtNumber(page * PAGE_SIZE + rows.length), total: fmtNumber(currentTotal) })}</span><div className="flex gap-2"><Btn ref={pager.prevRef} aria-label={t('memoryEditing.previous')} className="min-h-11 min-w-11 justify-center" disabled={page === 0} onClick={() => { setPage(value => value - 1); pager.pressedPrev() }}><ChevronLeft className="lucide-inline" /></Btn><Btn ref={pager.nextRef} aria-label={t('memoryEditing.next')} className="min-h-11 min-w-11 justify-center" disabled={!records.data?.has_more} onClick={() => { setPage(value => value + 1); pager.pressedNext() }}><ChevronRight className="lucide-inline" /></Btn></div></div>}
     {detail && <Modal open title={t('memoryV2.detail_title')} onClose={() => setDetail(null)} footer={<div className="flex flex-wrap gap-2"><Btn className="min-h-11" onClick={() => begin({ type: 'set', row: detail })}>{editAction}</Btn><Btn danger className="min-h-11" onClick={() => begin({ type: 'forget', row: detail })}>{t('memoryV2.forget')}</Btn></div>}><div className="space-y-4"><Badge variant="muted">{t(MEMORY_RECORD_LABELS[detail.kind])}</Badge><p className="whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">{memoryRecordBody(detail)}</p>{privateMemory && detail.key && <dl className="space-y-1 text-[12px]"><dt className="text-muted">{t('memoryV2.memory_key')}</dt><dd className="break-words [overflow-wrap:anywhere]"><code>{detail.key}</code></dd></dl>}<PanelSectionHeader label={t('memoryV2.provenance')} /><RecordProvenance row={detail} /><RecordHistory store={store} row={detail} onRestore={revisionId => { begin({ type: 'restore', row: detail, revisionId }); preview.mutate({ row: detail, operation: { type: 'restore', revision_id: revisionId } }) }} onKeepCurrent={() => { begin({ type: 'set', row: detail }); preview.mutate({ row: detail }) }} onProposal={(proposal, operation) => { begin(operation === 'forget' ? { type: 'forget', row: detail } : { type: 'set', row: detail }); if (operation === 'set') setDraft(memoryRecordBody(proposal)) }} /></div></Modal>}
     {intent && <Modal open title={title} guardAccidentalDismiss onClose={busy ? () => {} : () => setIntent(null)} footer={<div className="flex flex-wrap justify-end gap-2">{(intent.type === 'forget' || intent.type === 'restore') && <Btn className="min-h-11" disabled={busy} onClick={() => setIntent(null)}>{t('components.confirmDialog.cancel')}</Btn>}{reviewedPreview && intent.type !== 'forget' && intent.type !== 'restore' && <Btn className="min-h-11" disabled={busy} onClick={() => { preview.reset(); previewPage.reset(); setReviewedPreview(null); setPreviewPageOffset(0); apply.reset() }}>{t('memoryEditing.adjust')}</Btn>}{reviewedPreview && !applyConflict ? <Btn primary={intent.type !== 'forget'} danger={intent.type === 'forget'} className="min-h-11" disabled={busy || !!previewPage.error || reviewedPreview.changed_count === 0} onClick={() => apply.mutate()}>{apply.isPending ? t('memoryEditing.applying') : intent.type === 'forget' ? t('memoryEditing.forget_count', { count: fmtNumber(reviewedPreview.changed_count) }) : intent.type === 'restore' && !apply.error ? t('memoryEditing.restore_version', { value: shortBody(reviewedPreview.entries[0]?.after ? memoryRecordBody(reviewedPreview.entries[0].after) : '') }) : apply.error ? t('memoryEditing.retry_apply') : t('memoryEditing.apply', { count: fmtNumber(reviewedPreview.changed_count) })}</Btn> : <Btn primary className="min-h-11" disabled={busy || missingRecord || (!('row' in intent && intent.row) && selectedCount === 0) || (intent.type === 'set' && !draft.trim()) || (intent.type === 'replace_text' && !find)} onClick={() => { apply.reset(); refreshSelection.reset(); preview.mutate({}) }}>{preview.isPending ? t('memoryEditing.preparing') : t('memoryEditing.preview')}</Btn>}</div>}>
       <div className="space-y-4">
-        {/* No hand-off: preserve the correction, selected records and reviewed preview. */}<ErrorNotice message={errorText(refreshSelection.error || preview.error || previewPage.error || apply.error)} />{selectionNotice && <p role="status" className="text-[13px] text-muted">{selectionNotice}</p>}{(applyConflict || preview.error || previewPageConflict || missingRecord) && <Btn className="min-h-11" disabled={busy} onClick={() => refreshSelection.mutate()}>{t('memoryEditing.refresh_selection')}</Btn>}{previewPage.error && !previewPageConflict && <Btn className="min-h-11" disabled={busy} onClick={() => previewPage.mutate({ previewId: preview.data!.preview_id, offset: previewPageOffset })}>{t('memoryEditing.retry_preview_page')}</Btn>}
+        {/* No hand-off: preserve the correction, selected records and reviewed preview. */}<ErrorNotice message={errorText(refreshSelection.error || preview.error || previewPage.error || apply.error)} />{selectionNotice && <p role="status" className="text-[13px] text-muted">{selectionNotice}</p>}{(applyConflict || preview.error || previewPageConflict || missingRecord) && <Btn className="min-h-11" disabled={busy} onClick={() => refreshSelection.mutate()}>{t('memoryEditing.refresh_selection')}</Btn>}{(previewPage.error || previewPageFailed) && !previewPageConflict && <Btn busy={busy} className="min-h-11" onClick={() => previewPage.mutate({ previewId: preview.data!.preview_id, offset: previewPageOffset })}>{t('memoryEditing.retry_preview_page')}</Btn>}
         {intent.type === 'forget' && <p className="text-[13px]">{t('memoryV2.forget_explanation')}</p>}
         {intent.type === 'restore' && <p className="text-[13px]">{t('memoryEditing.restore_hint')}</p>}
         {apply.error && <p className="text-[13px] text-muted">{t(applyConflict ? 'memoryEditing.conflict_hint' : 'memoryEditing.unconfirmed_hint')}</p>}

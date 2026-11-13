@@ -463,6 +463,12 @@ class Project:
     derived_from_revision: int = 0
 ```
 
+When a step's stream runs to its end, `Task.result` holds its answer without kiro-cli's
+complete `[STEERING steer-…]` acks (`messaging.driver.strip_steering_markers`): the line
+acknowledges a steer the host sent, such as a deny's reason, and is protocol, not the
+answer (#32476). The snapshot taken while the turn runs stays raw, so a step whose stream
+raises (a dead process, a context overflow) keeps that snapshot as it is.
+
 ## Concurrent Tasks
 
 - `_runs: dict[str, TaskRun]` — keyed by task_id
@@ -473,7 +479,7 @@ class Project:
 - Step, review and decompose sessions are opened through `sessions.open_task_session(..., agent=...)` so the task runs with the run's explicit `run.agent`, or, when there is none, the template its own captured carrier names, resolved per run as each session opens (`inherited_step_agent`, § Module Architecture); `get_or_create()` is only the lesson-extraction fallback when there is no runtime key
 - Each step gets its own session: `taskrunner:{task_id}:task{N}` (fresh per step, reset after)
 - Each task gets its own work dir: `{work_dir}/{spec_stem}/`
-- `cancel(task_id)` cancels specific task; `cancel()` cancels all
+- `cancel(task_id)` cancels specific task; `cancel()` cancels all. A cancel sent while a pause is still in progress (`pausing`) wins: the run ends `cancelled` with its unfinished steps cancelled, as a cancel on a running run does. A stop-frozen run whose pause `_settle_stopped_run` is already writing keeps that pause
 - Completed cron runs are pruned on new start; other completed runs retain bounded history.
 - `_tasks` cleaned in `finally` block (no leaks)
 - `start_background()` and `execute_plan()` enforce `_MAX_CONCURRENT_TASKS` before changing run state, so rejected admission cannot leave a partially started run. With a task admission attached (below) the guard is skipped: the lane meters the steps, so an over-limit run queues instead of being refused.
@@ -545,7 +551,12 @@ Inside a step (`task_executor.execute_task(..., taskq=handle)`):
   releases the lane slot, waits `_recovery_delay(delay)` (a module seam), then
   `reclaim`s the row under a NEW generation -- the interrupted turn's late
   writes are fenced as `stale_result` -- and re-runs the turn with a prompt that
-  names the stall. `execute_task` is a coroutine on the gateway loop, so every
+  names the stall. A turn that ends because a call's own silence timer ran
+  out never reaches this arm while its continuation budget lasts: the step's
+  stream runs through `continue_timed_out_calls`, which tells the same session
+  the call timed out and goes on with the model's answer inside the same turn,
+  at most `STOP_RECOVERY_MAX_RETRIES` times, the completion's usage summed over
+  both prompts. `execute_task` is a coroutine on the gateway loop, so every
   handle write it makes goes through an `*_async` seam (`recovering_async`,
   `running_async`) and every answer read through `recorded_answer_async` /
   `consume_answer_async`: the DB half runs on the store's writer thread, the
@@ -679,6 +690,7 @@ A graceful gateway stop or restart ends active runs the same way a crash does. `
 `task_executor.execute_single_task()` evaluates task-level approval before agent execution.
 
 - With an `on_approval` callback, either `requires_approval` or `force_approval` prompts the owning surface; a denial pauses the project for editing.
+- `on_approval` is called as `on_approval(task)`. Before the call the executor sets `task.run_task_id` to its run's `task_id`, so a gate can name which run it holds: up to three runs execute at once and their task indexes overlap.
 - Without that callback, `requires_approval` logs a warning and continues, while `force_approval` fails closed and prevents replanning around the gate: it fails the run, and `_try_replan` plans nothing for a run that is already `failed`.
 - `cli_server.py` constructs the standalone `kirocrew run TASK.md` runner without an approval callback. Use `force_approval`, not `requires_approval`, for an action that must not execute unattended.
 - The dashboard supplies the callback and renders Approve/Deny controls in the project detail view.
@@ -823,7 +835,7 @@ workspace is never removed.
 | POST | `/api/taskrunner/{task_id}/retry` | Retry from step N (`{from_step}` in body) |
 | POST | `/api/taskrunner/{task_id}/pause` | Pause a running project |
 | POST | `/api/taskrunner/{task_id}/execute` | Execute or resume a planned project |
-| POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a chat slot for manual review: `task-review-<token>`, linked to the `taskrunner:<task_id>:chat:<token>` session minted for it and owned by the app the task ran for, which passes the per-slot checkpoint on it ([App Kit platform §13](app-kit-platform.md)); export and rewind still refuse an app any slot with a linked session, this one included. The first POST for a completion appends the run summary (`Plan: <task_id>` for a planned run, `# Task Review` otherwise) and starts an agent turn on it. A completion is one run attempt in one state, keyed on the task id, the run's start time, its status and the branch (plan or review). A status the run settles out of during cleanup (`cancelling`, `pausing`) counts as the one it settles on, and the finish time is left out because the runner stamps it again after announcing the completion. An in-memory map on the dashboard state records the slot each one opened. While that slot is open, a repeat POST returns it with no second summary and no new turn; a concurrent POST waits for the first one's slot. Executing, resuming or retrying a run stamps a new start time and opens a new slot, as does the run reaching its outcome after a POST while it was going, and a POST after the slot was closed or the gateway restarted |
+| POST | `/api/taskrunner/{task_id}/to-chat` | Open task results in a chat slot for manual review: `task-review-<token>`, linked to the `taskrunner:<task_id>:chat:<token>` session minted for it and owned by the app the task ran for, which passes the per-slot checkpoint on it ([App Kit platform §13](app-kit-platform.md)); export and rewind still refuse an app any slot with a linked session, this one included. Reopened from History by the dashboard user, its transcript comes back as a tab named by its transcript stem and bound to that session (`metadata_codec.slot_args`), so new turns keep landing in it; an incognito or temporary transcript's mode is admitted for that session key (`_read_memory_mode`), so the tab keeps that mode's limits. An app's resume stays unbound. The first POST for a completion appends the run summary (`Plan: <task_id>` for a planned run, `# Task Review` otherwise) and starts an agent turn on it. A completion is one run attempt in one state, keyed on the task id, the run's start time, its status and the branch (plan or review). A status the run settles out of during cleanup (`cancelling`, `pausing`) counts as the one it settles on, and the finish time is left out because the runner stamps it again after announcing the completion. An in-memory map on the dashboard state records the slot each one opened. While that slot is open, a repeat POST returns it with no second summary and no new turn; a concurrent POST waits for the first one's slot. Executing, resuming or retrying a run stamps a new start time and opens a new slot, as does the run reaching its outcome after a POST while it was going, and a POST after the slot was closed or the gateway restarted |
 | GET | `/api/taskrunner/{task_id}/plan-context` | Return plan text for chat pre-fill |
 | GET | `/api/taskrunner/{task_id}/plan.yaml` | Export the plan as YAML |
 | POST | `/api/taskrunner/refine` | Start background user-input → task-spec refinement; progress arrives via `refine` WS events or GET polling |
@@ -844,10 +856,15 @@ loop): a traversal, a missing file or a UNC/laundered link answers
 Starting is refused while the `projects` app (the Task Runner page) is
 switched off in Library: `POST /api/taskrunner` answers 409 `app_disabled`
 ("Task Runner is disabled. Enable it in Library to start tasks.") before any
-inline spec is written. `POST /api/taskrunner/plan`, `/{task_id}/execute` and
-`/{task_id}/retry` answer the same before a plan is made or a run admitted
-(`_task_runner_disabled`). The `task_run` MCP tool relays the start refusal, and
-the chat command `task run <spec>` replies with that sentence. Only an
+inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
+`/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
+made, a refine session started or a run admitted (`_task_runner_disabled`).
+The `task_run` MCP tool relays the start refusal, and
+the chat command `task run <spec>` replies with that sentence. A saved
+`task-plan` workflow is refused the same way before it is planned:
+`POST /api/workflows/definitions/{ref}/run` answers 409 `app_disabled`,
+`/workflow <name>` replies with that sentence and the `workflow_run` MCP tool
+relays it. Saved Python workflows do not read the switch. Only an
 explicit `enabled: false` install record counts as disabled
 (`apps.manager.app_disabled`); a host with no record runs tasks.
 
@@ -1337,7 +1354,10 @@ only job is to produce a better-written spec from the user's input.
 **WS events**: `refine` type with `{status, text, error}` fields. A refine whose turn the
 backend never finished (stop reason `timeout` or `stale_recover`) ends with status `error`
 and an error that names the stop reason, with the partial text still sent beside it, so it
-cannot pass for a finished spec.
+cannot pass for a finished spec. However the turn ends, the final `refine` event and the GET
+status carry the text without kiro-cli's complete `[STEERING steer-…]` acks
+(`messaging.driver.strip_steering_markers`): the line acknowledges the deny's steer and is
+not the spec (#32476).
 
 ## Dashboard UI (Projects Page)
 

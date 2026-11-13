@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         _parent_runs_remotely,
         _shared_start_price_gb,
         _spawn_memory_floor_and_cost,
+        _spawning_agents,
         _startup_memory_reserve_gb,
         _validate_agent,
         _validate_app_agent_ownership,
@@ -129,6 +130,7 @@ class _GateMixin(ManagerComponent):
         _memory_reading: "tuple[float, str] | None" = None,
         _depth: int | None = None,
         _root_session_key: str | None = None,
+        _card_turn: bool = False,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | MemoryReadPoint | None":
         """Spawn a subagent for *task*.
 
@@ -189,6 +191,54 @@ class _GateMixin(ManagerComponent):
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
         agent_id: str = _preassigned_id or self._manager._mint_agent_id()
+        # A Dashboard card's turn starts no sub-agent. Its words are a page's, and a child
+        # would take the approval path of its own (the gateway's sub-agent approver reads
+        # the parent thread's trust), a queued start could read a later turn's policy, and
+        # its completion would run as a new turn nobody marked as a card's. Refusing here
+        # closes all three, and the refusal costs the card reply one delegation.
+        #
+        # Decided BEFORE the batch accounting, and answered as a NON-batch rejection (no
+        # ``batch_id``): a batch member's rejection is announced to the gateway, whose wave
+        # digest starts a turn on the parent that nobody marked as a card's. The caller
+        # still gets the error synchronously in the returned info, one per task.
+        #
+        # Only on the FIRST entry: a row a typed turn queued earlier and the pump drains
+        # later (``_from_queue``), or one ``spawn_async`` already accepted, was admitted
+        # before the card turn and is not failed by it.
+        from kiro_crew.dashboard import card_send
+
+        if (
+            parent_session_key
+            and not _from_queue
+            and _claimed is None
+            and not _store_accepted
+            and _memory_reading is None
+            # ``_card_turn``: the caller saw a card turn when its request arrived
+            # (card_send.card_turn_seen), so a Stop during the handler's awaits does
+            # not let the request through unmarked.
+            and (_card_turn or card_send.card_turn_running(parent_session_key))
+        ):
+            try:
+                sel().log_tool_invocation(
+                    session_key=parent_session_key,
+                    source="subagent",
+                    tool_name="spawn_run",
+                    outcome="rejected_card_origin_turn",
+                    metadata={"agent": agent},
+                )
+            except Exception:
+                logger.debug("SEL audit failed for card-turn spawn rejection", exc_info=True)
+            return self._manager._announce_rejection(
+                SubagentInfo(
+                    id=agent_id,
+                    task=redact_credentials(redact_exfiltration_urls(task or "")[0])[0],
+                    agent=agent,
+                    parent_session_key=parent_session_key,
+                    done=True,
+                    error="spawn refused: a turn started by a Dashboard card cannot start a sub-agent",
+                )
+            )
+
         # Submission accounting: count this member as
         # submitted BEFORE any rejection or queue/registration branching. A
         # member refused below (empty task, low memory, bad cwd, governance)
@@ -524,7 +574,22 @@ class _GateMixin(ManagerComponent):
         # to named agents (capabilities.spawn.scopes.agents).  Resolved against
         # the PARENT surface so a per-app/per-surface profile contains what it
         # can spawn — even if the kiro side would allow it.
-        gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app) if _gate else None
+        # A sub-agent parent started as a named agent is judged by that agent's
+        # own profile, the one its tool calls are judged by. Each spawning run
+        # must be permitted; with none named, the parent's surface decides.
+        gov_spawn_err = None
+        if _gate:
+            for _parent_agent in _spawning_agents(
+                self._manager._agents.values(), parent_session_key or ""
+            ) or ("",):
+                gov_spawn_err = _vet_spawn_governance(
+                    parent_session_key,
+                    agent,
+                    app=app,
+                    **({"parent_agent": _parent_agent} if _parent_agent else {}),
+                )
+                if gov_spawn_err:
+                    break
         if gov_spawn_err:
             if _persistent_diagnostics:
                 logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
@@ -630,6 +695,12 @@ class _GateMixin(ManagerComponent):
             )
 
             _crew_log_asked = crew_log_asking_origin(self._manager._sessions, parent_session_key)
+        if not _from_queue:
+            # Where this child's turns go in the parent's trace, read while the
+            # spawn tool call is still open (tracing/subagents.py).
+            from kiro_crew.tracing import subagents as trace_subagents
+
+            trace_subagents.pin_origin(agent_id, self._manager._sessions, parent_session_key)
         queue_params: dict = {
             "task": task,
             "parent_session_key": parent_session_key,

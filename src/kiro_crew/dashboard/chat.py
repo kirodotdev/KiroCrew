@@ -93,6 +93,7 @@ from kiro_crew.dashboard.chat_handlers import (  # noqa: F401
     api_chat_slot_summary,
     api_chat_slot_summary_generate,
     api_chat_slot_turn_timeout,
+    api_chat_slot_ultracode,
     api_chat_slot_workspace,
     api_chat_slots,
     api_chat_slots_cleanup,

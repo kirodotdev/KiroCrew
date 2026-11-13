@@ -47,6 +47,7 @@ from typing import Any
 
 from kiro_crew.dashboard.crash_dump_store import current_process_identity, pid_identity_alive
 
+from ..spine.candidate_admission import parse_command
 from . import clone_setup, deps, store
 
 logger = logging.getLogger(__name__)
@@ -727,6 +728,7 @@ class RunSupervisor:
         """The body of :meth:`_build_driver`, which owns the clone lock. Split out so the
         lock acquisition is a single visible statement rather than an indent over 100
         lines — and so a future edit cannot add an early ``return`` that skips it."""
+        candidate_admission = parse_command(config.get("candidateAdmissionCommand"))
         _refuse_without_gate_pytest()
 
         # Put the clone on the CONFIGURED branch BEFORE building the profile. A fresh
@@ -840,6 +842,7 @@ class RunSupervisor:
             # target whose suite genuinely cannot force a measurable win.
             canary_advisory=_as_bool(config.get("canaryAdvisory"), False),
             direct_commit=_as_bool(config.get("directCommit"), False),
+            candidate_admission=candidate_admission,
         )
 
     def _in_flight(self) -> bool:
