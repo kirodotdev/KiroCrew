@@ -110,7 +110,11 @@ def _list_tools() -> list[dict[str, Any]]:
                 "'schedule'. Requires name + message, plus one of: every "
                 "(seconds), cron_expr, at (unix timestamp), delay (seconds "
                 "from now), or at_time (human string like '5pm', "
-                "'tomorrow 9am', 'in 2 hours')."
+                "'tomorrow 9am', 'in 2 hours'). A Bot's scheduled agent turn "
+                "runs on its worker, cannot message other sessions, and comes "
+                "back to the Bot's chat as a worker report; to hand work to "
+                "another session at a time, have the turn report back and send "
+                "the message from the Bot's own chat when the report arrives."
             ),
             "inputSchema": {
                 "type": "object",
