@@ -276,7 +276,7 @@ class TestHandshakeNeverDefer:
         wire = self._caps(monkeypatch, spec, agent=agent, backend=backend)
         assert wire["enabled"] is True
         assert wire["neverDefer"] == sorted(JOB_TOOLS[agent])
-        assert "kirocrew-core::memory_recall" not in wire["neverDefer"]
+        assert "kirocrew-core::learn_add" not in wire["neverDefer"]
 
     def test_an_operators_spec_under_a_shipped_name_takes_that_agents_row(self, monkeypatch):
         """The declaration is keyed by agent name. A spec an operator saved under

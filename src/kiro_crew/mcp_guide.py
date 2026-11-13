@@ -73,12 +73,8 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.mcp_core import (
-    _get,
-    _post,
-    _resolve_session_key,
-    require_strict_session_key,
-)
+from kiro_crew.mcp_core_parts.gateway import _get, _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_guide_tool_list import (  # noqa: F401
     _ACTION_ITEM_SCHEMA,
     _FIND_UI_AREAS,

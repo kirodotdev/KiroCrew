@@ -376,7 +376,7 @@ job record and returns.
 
 This is the opposite of `wait` in every dimension that matters:
 
-| | `wait` (`mcp_core.py:758`, dispatch `:4517`) | `agent_sleep` |
+| | `wait` (`mcp_tools/control.py`, `wait`) | `agent_sleep` |
 |---|---|---|
 | Turn | stays open — the tool call blocks | ends |
 | Mechanism | in-process loop to a `time.monotonic()` deadline, pinging `/api/session-keepalive` every `WAIT_PING_SECS` (5s) so the gateway does not reap the ACP subprocess | writes `at_ts` to `crons.json`; nothing runs in between |

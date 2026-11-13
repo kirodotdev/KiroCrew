@@ -8,10 +8,11 @@ the ones before it, never the facade:
 
 * ``identity`` -- which session is calling: the lenient and the strict resolvers, the
   fail-closed gate and its diagnosis, the reflexive-module registry;
-* ``gateway`` -- where a call goes: target resolution, its caches, the refused-target
-  recovery, the internal secret, the identity headers and ``_send``'s retry schedule,
-  failure text and error body, and the inbound redaction of a forwarded JSON body
-  (``_send`` and the verbs stay in the facade);
+* ``gateway`` -- where a call goes and the call itself: target resolution, its caches,
+  the refused-target recovery, the internal secret, the identity headers, ``_send`` with
+  its retry schedule, failure text and error body, the five verbs built on it, and the
+  inbound redaction of a forwarded JSON body. The other own servers import the verbs
+  from here, so they never load the core server;
 * ``governance`` -- channel-agent containment and the governance vets;
 * ``crew`` -- Crew Mode's ``route_crew`` and ``select_crew``;
 * ``history`` -- the chat-history search helpers.
