@@ -1854,6 +1854,11 @@ DENY_CAUSE_BATCH_CASCADE = "batch_cascade"
 #: so the model re-issues the same call next step instead of looking for an
 #: alternative.
 DENY_CAUSE_BATCH_READ_WRITE = "batch_read_write"
+#: The batch guard refused a shell command on KAS while a file write announced
+#: before it in the same batch had not finished: KAS runs a batch's calls
+#: unordered, so the command could run before the file exists. Timing only, like
+#: ``DENY_CAUSE_BATCH_READ_WRITE``: the model runs the same command next step.
+DENY_CAUSE_BATCH_WRITE_RUN = "batch_write_run"
 DENY_CAUSE_APPROVAL_TIMEOUT = "approval_timeout"
 DENY_CAUSE_APPROVAL_NO_BUDGET = "approval_no_budget"
 DENY_CAUSE_APPROVAL_UNDELIVERABLE = "approval_undeliverable"
