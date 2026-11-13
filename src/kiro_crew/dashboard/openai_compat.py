@@ -25,10 +25,13 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
-from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
+from kiro_crew.dashboard.chat_handlers import _retract_failed_newborn, write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, _sync_dashboard_slots
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.kiro_readiness import (
+    reject_if_kiro_unverified,
+    rerun_signs_in_via_kiro_cli,
+)
 from kiro_crew.dashboard.relay_archive import (
     RELAY_ARCHIVE_CODE,
     RELAY_ARCHIVE_ERROR,
@@ -157,24 +160,31 @@ def _foreign_slot_response() -> web.Response:
     )
 
 
+def _slot_busy_response(request: web.Request, slot_id: str) -> web.Response:
+    """The 409 for a slot whose turn is already running."""
+    sel().log_api_access(
+        caller=request.remote or "",
+        operation="openai_compat.chat",
+        outcome="denied",
+        source="openai_compat",
+        resources=f"slot={slot_id}",
+        error="slot busy",
+    )
+    return web.json_response(
+        {
+            "error": {
+                "message": f"slot {slot_id!r} is busy",
+                "type": "slot_busy",
+                "code": "slot_busy",
+            },
+            "code": "slot_busy",
+        },
+        status=409,
+    )
+
+
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
-    # Unlike the dashboard, this endpoint has no transcript the caller reads. A
-    # turn that ends on its `error` card answers the generic `turn_failed`
-    # (`_TurnOutcome`); a missing sign-in is refused here first, so the caller
-    # gets the code that names its fix instead of a failed turn.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return web.json_response(
-            {
-                "error": {
-                    "message": "Kiro CLI setup or sign-in is required before starting a session.",
-                    "type": "service_unavailable_error",
-                    "code": "kiro_prerequisite_required",
-                }
-            },
-            status=503,
-        )
     state: DashboardState = request.app["state"]
 
     try:
@@ -442,25 +452,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             )
         # Busy check — prevent concurrent writes to the same slot.
         if slot.running is True:
-            sel().log_api_access(
-                caller=request.remote or "",
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="openai_compat",
-                resources=f"slot={slot_id}",
-                error="slot busy",
-            )
-            return web.json_response(
-                {
-                    "error": {
-                        "message": f"slot {slot_id!r} is busy",
-                        "type": "slot_busy",
-                        "code": "slot_busy",
-                    },
-                    "code": "slot_busy",
-                },
-                status=409,
-            )
+            return _slot_busy_response(request, slot_id)
         # Member DM threads are pinned to their crew — the specific refusal
         # (with its machine-readable code) must fire BEFORE the generic
         # mismatch below, or a member mismatch surfaces as an ordinary
@@ -567,6 +559,7 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 status=403,
             )
         slot_name = f"oai-{completion_id}"
+        freshly_created = True
         slot = state.get_or_create_slot(slot_name)
         # One request's slot, popped when it returns: nobody views its card.
         slot._dashboard_card_exempt = True
@@ -622,6 +615,43 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
                 error="app does not own the session or transcript this slot uses",
             )
             return _foreign_slot_response()
+
+    # Unlike the dashboard, this endpoint has no transcript the caller reads. A
+    # turn that ends on its `error` card answers the generic `turn_failed`
+    # (`_TurnOutcome`). When the turn runs on a harness that signs in through
+    # kiro-cli, a missing kiro-cli sign-in is refused here first, so the caller
+    # gets the code that names its fix. Any other harness is its own sign-in
+    # authority, as for a send. Asked only after the caller is authorized for
+    # the slot, so the answer says nothing about a slot it cannot reach.
+    if await rerun_signs_in_via_kiro_cli(state.sessions, slot, reuses_live=True):
+        blocked = await reject_if_kiro_unverified(request)
+        if blocked is not None:
+            if freshly_created:
+                # The probe awaited: a slot another request took up stays.
+                _retract_failed_newborn(state, slot)
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Kiro CLI setup or sign-in is required before starting a "
+                        "session.",
+                        "type": "service_unavailable_error",
+                        "code": "kiro_prerequisite_required",
+                    }
+                },
+                status=503,
+            )
+    # The checks above can yield: the slot may have been closed, replaced, or
+    # taken by another turn meanwhile. Nothing below awaits before dispatch.
+    if state._slots.get(slot.key) is not slot or slot.is_closing:
+        return web.json_response(
+            {
+                "error": {"message": "not found", "type": "invalid_request_error"},
+                "code": "not_found",
+            },
+            status=404,
+        )
+    if slot.running is True:
+        return _slot_busy_response(request, slot_id or slot.key)
 
     # Drain stale pending from prior turns whose reader disconnected
     slot.drain()

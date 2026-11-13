@@ -216,6 +216,7 @@ def _make_slot():
     slot.task = None
     slot.running = False
     slot.turn_running = False
+    slot.is_closing = False
     slot.event = asyncio.Event()
     slot._pending = []
 
@@ -313,7 +314,11 @@ class TestApiCompletionsBlocking:
         assert await service.session_ready() is False
         request.app["kiro_prerequisite_service"] = service
 
-        response = await api_completions(request)
+        # The turn runs on a harness that signs in via kiro-cli.
+        with patch.object(
+            openai_compat, "rerun_signs_in_via_kiro_cli", new=AsyncMock(return_value=True)
+        ):
+            response = await api_completions(request)
         body = json.loads(response.text)
 
         assert response.status == 503

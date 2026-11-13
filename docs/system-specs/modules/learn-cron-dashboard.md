@@ -2527,15 +2527,19 @@ specified compatibility change.
   already rewritten durable history by then, and a regenerate would end empty
   and keep the reply it was asked to replace; and `POST /v1/chat/completions` has no transcript, so an error card
   would surface as a successful empty completion. A missing or invalid service
-  fails closed in all three. The reruns ask only when a fresh session for the
-  slot would start on a harness that signs in from kiro-cli's own store
+  fails closed in all three. The reruns and `/v1/chat/completions` ask only
+  when a fresh session for the slot would start on a harness that signs in from kiro-cli's own store
   (`kiro_readiness.rerun_signs_in_via_kiro_cli`: the provider factory's
   member-aware selection for the slot's session, read from the session manager's
   applied config, the one that factory was built from, not `config.json`, which
   runs ahead of it until the watcher applies a write; positive membership in
   `backends_retired_by_host_logout()`; no slot, no session manager or an
   unreadable selection keeps the gate). On any other harness the turn is its own
-  sign-in authority, as for a send, and edit-resend and rewind are refused under
+  sign-in authority, as for a send. `/v1/chat/completions` asks after the caller
+  is authorized for the slot, so its answer says nothing about a slot the caller
+  cannot reach; its turn reuses the slot's live session, so a provider already
+  registered for it that is kiro-cli's, or names no backend, also keeps the gate
+  (`reuses_live=True`; edit-resend and rewind discard that provider). Edit-resend and rewind are refused under
   the slot lock, before the cut, with `harness_sign_in_required` 503 while the
   last turn this process ran on the slot ended signed out
   (`_last_turn_auth_required`, in memory only).
