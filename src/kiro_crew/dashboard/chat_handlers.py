@@ -477,6 +477,8 @@ from kiro_crew.dashboard.chat_summary import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_tags import (  # noqa: F401
     _bump_slot_tags_revision,
+    _persisted_tag_write,
+    _tag_vocabulary,
     tags_write_lock,
     validate_folder_tag_ids,
 )

@@ -6907,17 +6907,17 @@ rename. The upper bound on a rejected name is therefore a hook that does not run
 a row to rename by hand, not lost work. What such a row cannot be is ARMED, which is
 what the refusals above buy.
 
-**The emit sites, and the ones that stay silent.** Two writers dispatch, both of
+**The emit sites, and the ones that stay silent.** Three writers dispatch, all of
 them under a dashboard request, which is what `_lane_dispatch_is_permitted`
-checks: `api_chat_slot_tags` and `api_chat_slot_drop` (`dashboard/chat_tags.py`).
-
-**A KNOWN GAP, not a deferral by design: folder-tag inheritance does not fire.**
-The inheritance in `_read_folder_tags` reached from `api_chat_slot_create`
-(`dashboard/chat_api/slot_create.py`) is the site a two-handler design misses,
-because `validate_folder_tag_ids` screens a folder tag id's shape and vocabulary
-but not its `status` field, so an inherited folder status tag puts a session into
-a lane with nothing firing. Its emitter is written and held back only to keep this
-change a reviewable size; it follows once this one lands.
+checks: `api_chat_slot_tags` and `api_chat_slot_drop` (`dashboard/chat_tags.py`),
+and the folder-tag inheritance in `api_chat_slot_create`
+(`dashboard/chat_api/slot_create.py`). The third is the site a two-handler design
+misses: `validate_folder_tag_ids` screens a folder tag id's shape and vocabulary
+but not its `status` field, so a new session filed into a folder whose tags include
+a lane enters that lane with neither tag route running. It fires once the create
+has passed its last refusal, with the tags the session held before the inheritance
+as `before`; an already-open session addressed by name inherits nothing, so it
+fires nothing.
 
 Each dispatch runs AFTER its write has CONFIRMED persisted, and two failure shapes
 are kept silent rather than one. A refusal without writing (the session was deleted
@@ -6925,8 +6925,9 @@ or rebound) rolls `slot.tags` back and answers 409 before the dispatch is reache
 lock timeout or I/O error is the shape a return value cannot report:
 `save_slot_off_loop`'s default `best_effort=True` catches it, marks the slot dirty
 for the periodic flush and returns `True`, a return its own docstring says "does NOT
-prove a committed write" -- so both handlers take the confirming mode through
-`_persisted_tag_write` and re-arm that flush themselves. The acknowledged edit is
+prove a committed write" -- so the tag handlers, and the create when it inherited a
+tag, take the confirming mode through `_persisted_tag_write` and re-arm that flush
+themselves. The acknowledged edit is
 still retried and the response unchanged; what changes is that the handler can tell
 a committed lane move from a lost one, and holds the hook back for the second.
 
