@@ -302,7 +302,14 @@ async def _yield_for_dependency_impl(
     # the wait is written or the wait is refused. The provider answered, so the
     # run also leaves startup: the startup watchdog must not reap it while parked.
     self._manager._leave_startup(info)
-    verdict = await self._dependency_verdict(coordinator, info, signal)
+    # A live waiter from before the report is queued, so a pump pass that ticks
+    # behind it delegates the wake. No await follows until ``yield_slot`` below,
+    # so the run goes straight from this mark to ``_slot_released``.
+    info._dependency_parking = True
+    try:
+        verdict = await self._dependency_verdict(coordinator, info, signal)
+    finally:
+        info._dependency_parking = False
     if verdict.outcome != "wait":
         info._resume_event = None
         logger.warning(

@@ -31,6 +31,7 @@ What is pinned here:
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -909,6 +910,87 @@ async def test_a_refused_resume_grant_asks_the_pump_for_the_slot_again(monkeypat
     assert refused == [info.id], "this pin never reached a refused grant"
     assert granted is True and info._slot_released is False and info._resume_pending is False
     assert mgr._running_count == 1  # the slot is charged again exactly once
+
+
+@pytest.mark.asyncio
+async def test_a_park_reported_inside_a_pump_pass_is_woken_through_admission(monkeypatch):
+    """The park's report reaches the writer thread between a pump pass's expire
+    write and its ``tick``, with the provider's ``retry_at`` already due.
+
+    The pass snapshots ``live_waiters`` on the loop in that gap, while the park
+    still awaits its report and has not yielded its slot. A run missing from the
+    snapshot is woken down the ROW path: ``WaitLedger.wake`` moves its row to
+    ``retry_wait`` under a new generation and nothing asks for the resume the run
+    is parked on, so it stays running until its wait deadline. Each writer-thread
+    step here waits for the loop-side step that order needs, so every run takes it.
+    """
+    from kiro_crew.subagent_manager import admission as admission_mod
+
+    monkeypatch.setattr(admission_mod.SpawnAdmissionCoordinator, "pump_off_loop", True)
+    mgr = await _ready_manager(_mock_sessions(lambda *a, **k: None))
+    coordinator = _fast_coordinator(mgr)
+    store = mgr._admission.taskq_store()
+    info = SubagentInfo(id="parked-inside-a-pass", task="t")
+    info._taskq_generation = _live_row(mgr, info.id)
+    mgr._agents[info.id] = info
+    mgr._running_count = 1
+
+    expire_started = threading.Event()
+    report_queued = threading.Event()
+    tick_queued = threading.Event()
+    real_expire = mgr._admission.taskq_expire_waits_store
+    real_report = coordinator.report
+    real_run = store.run
+
+    def _expire_once_the_report_is_queued(_admission: Any) -> Any:
+        expire_started.set()
+        assert report_queued.wait(_LOST_RUN_CEILING_SECS), "the park never queued its report"
+        return real_expire()
+
+    def _report_once_the_tick_is_queued(*args: Any, **kwargs: Any) -> Any:
+        assert tick_queued.wait(_LOST_RUN_CEILING_SECS), "the pass never queued its tick"
+        return real_report(*args, **kwargs)
+
+    async def _run(fn: Any, *args: Any, **kwargs: Any) -> Any:
+        if fn == coordinator.tick:
+            tick_queued.set()
+        return await real_run(fn, *args, **kwargs)
+
+    monkeypatch.setattr(
+        type(mgr._admission), "taskq_expire_waits_store", _expire_once_the_report_is_queued
+    )
+    monkeypatch.setattr(coordinator, "report", _report_once_the_tick_is_queued)
+    monkeypatch.setattr(store, "run", _run)
+    signal = dep_mod.DependencySignal(
+        kind=dep_mod.KIND_RATE_LIMITED,
+        dependency_scope="provider:acp",
+        source="acp_provider",
+        retry_at=coordinator.now(),
+    )
+
+    with patch("kiro_crew.subagent.sel"):
+        mgr._taskq_pump()
+        pump = mgr._taskq_tick_task
+        await async_wait_until(
+            expire_started.is_set, describe=lambda: "the pump pass never reached its expire"
+        )
+        park = asyncio.ensure_future(mgr._yield_for_dependency(info, signal))
+        try:
+            # Set right before the report is queued, with no await in between.
+            await async_wait_until(
+                lambda: info._taskq_running_marked, describe=lambda: "the park never reported"
+            )
+            report_queued.set()
+            await asyncio.wait_for(pump, timeout=_LOST_RUN_CEILING_SECS)
+            wakes = [ev.data for ev in store.events(info.id) if ev.kind == dep_mod.EVENT_WAKE]
+            assert [(w["to"], w.get("via")) for w in wakes] == [(RUNNING, "admission")], wakes
+            assert await asyncio.wait_for(park, timeout=_LOST_RUN_CEILING_SECS) is True
+        finally:
+            park.cancel()
+        await _drain_posted(mgr)
+
+    assert info._slot_released is False and mgr._running_count == 1
+    assert _row(mgr, info.id).state == RUNNING
 
 
 @pytest.mark.asyncio
