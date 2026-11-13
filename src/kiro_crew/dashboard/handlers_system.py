@@ -769,10 +769,12 @@ def _collect_system_metrics() -> dict[str, object]:
         if _prev_net["ts"] > 0:
             dt = now - _prev_net["ts"]
             if dt > 0.1:
-                _net_speed["rx_kbs"] = round(((rx_mb - _prev_net["rx"]) * 1024) / dt, 1)
-                _net_speed["tx_kbs"] = round(((tx_mb - _prev_net["tx"]) * 1024) / dt, 1)
-        _prev_net["rx"] = rx_mb
-        _prev_net["tx"] = tx_mb
+                # Raw byte counts, not the rounded MB totals: a 0.1 MB step
+                # would hide any rate below 0.1 MB per poll interval.
+                _net_speed["rx_kbs"] = round((rx_total - _prev_net["rx"]) / 1024 / dt, 1)
+                _net_speed["tx_kbs"] = round((tx_total - _prev_net["tx"]) / 1024 / dt, 1)
+        _prev_net["rx"] = rx_total
+        _prev_net["tx"] = tx_total
         _prev_net["ts"] = now
         data["net_rx_kbs"] = max(0, _net_speed["rx_kbs"])
         data["net_tx_kbs"] = max(0, _net_speed["tx_kbs"])
