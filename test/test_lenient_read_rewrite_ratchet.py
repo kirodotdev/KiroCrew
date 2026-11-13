@@ -57,6 +57,12 @@ import functools
 import re
 from pathlib import Path
 
+import pytest
+
+#: One worker runs the tree-wide tests and pays for the scan once per run (testing
+#: conventions, "A module-cached walk that is still paid once per worker").
+pytestmark = pytest.mark.xdist_group(name="tree_scan_lenient_read_rewrite_ratchet")
+
 _SRC = Path(__file__).resolve().parent.parent / "src"
 
 #: Caught by a handler, these mean "a read error other than a missing file".
