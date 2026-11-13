@@ -177,6 +177,14 @@
       "hint": "Azure AD UPNs/emails OR object ids permitted to DM the bot. Teams activities reliably carry the object id (email is often absent), so object ids work out of the box. Empty = nobody (fail closed)."
     },
     {
+      "id": "channels.always-use-conductor-mode-slack",
+      "label": "Always use conductor mode (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_defaults.conductor_mode",
+      "hint": "Channels already running keep their agent. A conductor hands work to helper agents, so turn on “Let code channels start helper agents” too.",
+      "configKey": "slack.code_channel_defaults.conductor_mode"
+    },
+    {
       "id": "channels.answer-in-group-spaces-webex",
       "label": "Answer in group spaces (Webex)",
       "tab": "channels",

@@ -314,17 +314,17 @@ async def test_bot_messages_never_open_a_channel(env: Env) -> None:
 # ── Session settings for a new channel ───────────────────────────────────────
 
 
-async def test_zero_config_files_into_code_channels_led_by_the_conductor(env: Env) -> None:
+async def test_zero_config_files_into_code_channels_on_the_default_agent(env: Env) -> None:
     env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
     assert await _open(env) is True
     spec = env.created_sessions[0]["spec"]
-    # No default folder: "Code channels" is created with the conductor as its
-    # agent, and the folder's agent applies (nothing set explicitly).
+    # No default folder: "Code channels" is created with no agent of its own, so
+    # the owner's default agent runs (not the conductor).
     assert env.folders_created == ["Code channels"]
     assert env.state is not None
     [folder] = env.state.folders
-    assert folder["default_agent"] == "kirocrew-conductor"
-    assert spec.folder_id == folder["id"] and spec.agent == "kirocrew-conductor"
+    assert not folder["default_agent"]
+    assert spec.folder_id == folder["id"] and spec.agent == "slack-default"
     assert spec.model == "" and spec.reasoning_effort == "" and spec.project_dir == ""
 
 
@@ -343,14 +343,14 @@ async def test_an_explicit_default_agent_still_wins_over_the_code_channels_folde
 
 
 async def test_a_saved_default_agent_that_is_gone_is_skipped(env: Env) -> None:
-    """Its spec was removed after it was saved: the channel runs the folder's
-    agent (here the auto folder's conductor), as the settings preview says."""
+    """Its spec was removed after it was saved: the channel runs the next agent
+    in the order (here the owner's default), as the settings preview says."""
     env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
     env.defaults.update(agent="retired-template")
     env.missing_agents.add("retired-template")
     assert await _open(env) is True
     spec = env.created_sessions[0]["spec"]
-    assert spec.agent == "kirocrew-conductor" and spec.agent_kind == ""
+    assert spec.agent == "slack-default" and spec.agent_kind == "template"
 
 
 async def test_the_picked_default_is_resolved_as_a_template(env: Env) -> None:
@@ -382,9 +382,9 @@ async def test_no_default_folder_files_at_top_level_when_the_folder_cannot_be_ma
     env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
     assert await _open(env) is True
     spec = env.created_sessions[0]["spec"]
-    # Unfiled, but still the agent the auto folder would have carried: the
-    # resolver answers for a not-yet-created auto folder as if it existed.
-    assert spec.folder_id == "" and spec.agent == features.AUTO_FOLDER_AGENT
+    # Unfiled, on the agent the auto folder would have given it: none of its
+    # own, so the owner's default.
+    assert spec.folder_id == "" and spec.agent == "slack-default"
 
 
 async def test_defaults_choose_folder_agent_model_and_effort(env: Env) -> None:

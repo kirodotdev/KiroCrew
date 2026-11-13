@@ -36,7 +36,8 @@ class CodeChannelDefaultsConfig:
     :func:`kiro_crew.slack.features.resolve_code_channel_session`):
 
     * agent / model / effort: the explicit value here, else the folder's own
-      ``default_agent``, else the agent Slack already uses;
+      ``default_agent``, else the agent Slack already uses; with ``conductor_mode``
+      on (where conductor mode is offered) the agent is the conductor mode agent;
     * project: the folder's ``project_dir``, else the project bound to the thread
       the channel was opened from, else none.
     """
@@ -94,6 +95,20 @@ class CodeChannelDefaultsConfig:
             "and sessions it spawns inherit that. The mode can still be changed on "
             "the session afterwards.",
             enum=list(CODE_CHANNEL_APPROVAL_MODES),
+            tags=["slack"],
+        ),
+    )
+    conductor_mode: bool | None = field(
+        default=None,
+        metadata=_meta(
+            "Always use conductor mode",
+            "Run every new code channel in conductor mode, on the conductor mode agent "
+            "(agent.crew_mode_agent). It overrides the code-channel default agent "
+            "and the folder's agent for new code channels; a session already "
+            "running keeps its agent. Applies only where conductor mode is "
+            "offered (every build but LTS). A conductor hands work to helper agents, so "
+            "slack.code_channel_dispatch should be on too. Off when unset; a "
+            "missing or malformed value reads as off.",
             tags=["slack"],
         ),
     )

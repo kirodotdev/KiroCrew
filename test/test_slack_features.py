@@ -121,6 +121,64 @@ class TestDefaultsNormalization:
         slack = _build_slack_config({"code_channel_defaults": {"agent": "a" * 257}})
         assert features.code_channel_defaults(slack).agent is None
 
+    @pytest.mark.parametrize("raw", [False, "true", 1, None, [True]])
+    def test_conductor_mode_other_than_a_real_true_reads_off(self, raw: object) -> None:
+        slack = _build_slack_config({"code_channel_defaults": {"conductor_mode": raw}})
+        assert features.code_channel_defaults(slack).conductor_mode is False
+
+    def test_conductor_mode_true_reads_on_and_is_not_empty(self) -> None:
+        slack = _build_slack_config({"code_channel_defaults": {"conductor_mode": True}})
+        got = features.code_channel_defaults(slack)
+        assert got.conductor_mode is True and not got.is_empty
+
+
+def _conductor_cfg(*, on: object, agent: str = "") -> SimpleNamespace:
+    return SimpleNamespace(
+        slack=_build_slack_config({"code_channel_defaults": {"conductor_mode": on}}),
+        agent=SimpleNamespace(crew_mode_agent=agent),
+    )
+
+
+def _as_lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    from kiro_crew import edition
+
+    monkeypatch.setattr(edition, "is_lts", lambda: True)
+    # The lock logs its first use process-wide; restore that record.
+    from kiro_crew import edition_locks
+
+    monkeypatch.setattr(edition_locks, "_logged", set())
+
+
+class TestConductorAgent:
+    @pytest.fixture(autouse=True)
+    def _keep_remembered_agent(self, _floor_monkeypatch: pytest.MonkeyPatch) -> None:
+        # ``crew_mode.crew_mode_agent(cfg)`` remembers *cfg*'s agent process-wide.
+        from kiro_crew import crew_mode
+
+        _floor_monkeypatch.setattr(crew_mode, "_configured", crew_mode._configured)
+
+    def test_on_runs_the_conductor_mode_agent(self) -> None:
+        assert features.conductor_mode_offered() is True
+        cfg = _conductor_cfg(on=True)
+        assert features.code_channel_conductor_agent(cfg) == "kirocrew-conductor"
+
+    def test_a_configured_conductor_mode_agent_is_kept(self) -> None:
+        cfg = _conductor_cfg(on=True, agent="kirocrew-team-lead")
+        assert features.code_channel_conductor_agent(cfg) == "kirocrew-team-lead"
+
+    def test_a_stored_on_is_inert_where_conductor_mode_is_not_offered(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _as_lts(monkeypatch)
+        assert features.conductor_mode_offered() is False
+        assert features.code_channel_conductor_agent(_conductor_cfg(on=True)) is None
+
+    def test_the_switch_off_reads_as_off(self) -> None:
+        assert features.code_channel_conductor_agent(_conductor_cfg(on=False)) is None
+
+    def test_an_unreadable_config_reads_as_off(self) -> None:
+        assert features.code_channel_conductor_agent(object()) is None
+
 
 class TestFindFolder:
     def test_by_id(self) -> None:
@@ -186,16 +244,79 @@ class TestResolution:
         )
         assert (got.project_dir, got.project_source) == ("/repo/origin", "origin")
 
-    def test_nothing_configured_runs_the_conductor_in_the_auto_folder(self) -> None:
+    def test_nothing_configured_runs_the_default_agent_in_the_auto_folder(self) -> None:
         got = features.resolve_code_channel_session(
             features.CodeChannelDefaults(), [], slack_agent="slackbot"
         )
         assert got.folder_id is None
         assert got.folder_path == features.AUTO_FOLDER_NAME == "Code channels"
         assert got.folder_auto_create is True
-        assert (got.agent, got.agent_source) == ("kirocrew-conductor", "folder")
-        assert features.AUTO_FOLDER_AGENT == "kirocrew-conductor"
+        # The auto folder is created with no agent: the owner's default runs.
+        assert (got.agent, got.agent_source) == ("slackbot", "slack")
         assert (got.project_dir, got.folder_missing) == (None, False)
+
+    def test_nothing_configured_and_no_default_agent_leaves_the_built_in_default(self) -> None:
+        got = features.resolve_code_channel_session(features.CodeChannelDefaults(), [])
+        assert (got.agent, got.agent_source) == (None, "")
+
+    def test_the_legacy_conductor_on_the_auto_folder_reads_as_unset(self) -> None:
+        legacy = {
+            "id": "cccccccccccc",
+            "name": "Code channels",
+            "parent_id": "",
+            "default_agent": features.LEGACY_AUTO_FOLDER_AGENT,
+        }
+        assert features.LEGACY_AUTO_FOLDER_AGENT == "kirocrew-conductor"
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(), [legacy], slack_agent="slackbot"
+        )
+        assert got.folder_id == "cccccccccccc"
+        assert (got.agent, got.agent_source) == ("slackbot", "slack")
+
+    def test_the_legacy_conductor_reads_as_unset_when_the_auto_folder_is_named_by_id(
+        self,
+    ) -> None:
+        # The runtime files into the auto folder by id once it exists.
+        legacy = {
+            "id": "cccccccccccc",
+            "name": "Code channels",
+            "parent_id": "",
+            "default_agent": "kirocrew-conductor",
+        }
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(folder="cccccccccccc"), [legacy], slack_agent="slackbot"
+        )
+        assert (got.agent, got.agent_source) == ("slackbot", "slack")
+
+    def test_another_folder_naming_the_conductor_keeps_it(self) -> None:
+        # Not the auto folder: its agent is the owner's, whatever it is.
+        folder = {
+            "id": "cccccccccccc",
+            "name": "Goals",
+            "parent_id": "",
+            "default_agent": "kirocrew-conductor",
+        }
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(folder="cccccccccccc"), [folder], slack_agent="slackbot"
+        )
+        assert (got.agent, got.agent_source) == ("kirocrew-conductor", "folder")
+
+    def test_conductor_mode_wins_over_the_default_and_the_folder_agent(self) -> None:
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(folder="bbbbbbbbbbbb", agent="builder"),
+            _FOLDERS,
+            slack_agent="slackbot",
+            conductor_agent="kirocrew-team-lead",
+        )
+        assert (got.agent, got.agent_source) == ("kirocrew-team-lead", "conductor")
+        # Only the agent changes: the folder and project still resolve.
+        assert (got.project_dir, got.project_source) == ("/repo/dev", "folder")
+
+    def test_no_conductor_agent_keeps_the_usual_order(self) -> None:
+        got = features.resolve_code_channel_session(
+            features.CodeChannelDefaults(agent="builder"), [], conductor_agent=""
+        )
+        assert (got.agent, got.agent_source) == ("builder", "default")
 
     def test_an_existing_auto_folder_is_used_and_not_recreated(self) -> None:
         folders = [

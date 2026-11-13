@@ -2401,7 +2401,8 @@ resumed-session path opens nothing.
 A Slack code channel runs in ONE dashboard slot the code-channel runtime created and
 recorded in `slack-code-channels.json`. Its turns are mirrored into the channel, so every
 caller-side channel refusal above (`mirrored_caller`) and the work-ledger gate
-(`channel_session`) refuse it, and its default agent -- a conductor, which writes nothing
+(`channel_session`) refuse it, and a conductor bound there (**Always use conductor mode**,
+or a pick) -- which writes nothing
 itself -- could do nothing there. `session_control_parts/code_channel_exemption.py`
 (`judge_code_channel`) is the second exemption beside owner-DM, consulted by the same three
 gates (`_refuse_ineligible_creator`, `refuse_caller_surface`, `handlers/work_ledger.caller_admission_with_route`

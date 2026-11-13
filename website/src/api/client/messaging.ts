@@ -61,9 +61,14 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
   code_channel_effective?: SlackCodeChannelEffective
   /** Saved defaults that no longer resolve: "folder_missing", "agent_missing". */
   code_channel_warnings?: string[]
-  /** What an unset default folder means: the auto folder (top level), the agent
-   *  it is created with, and its id once it exists. */
+  /** What an unset default folder means: the auto folder (top level), its id
+   *  once it exists, and the agent an earlier release created it with. */
   code_channel_auto_folder?: SlackCodeAutoFolder
+  /** The conductor mode agent (`agent.crew_mode_agent`) "Always use conductor mode" runs. */
+  code_channel_conductor_agent?: string
+  /** Whether `config.local.json` sets `slack.code_channel_defaults.conductor_mode`:
+   *  `pinned` or `unreadable` disables the switch (the PUT refuses a change). */
+  code_channel_conductor_mode_overlay_state?: 'pinned' | 'unreadable' | 'absent'
   /** The agents the code-channel default-agent picker offers; null when they
    *  could not be listed. */
   code_channel_agents?: string[] | null
@@ -71,7 +76,9 @@ export interface SlackConfigData extends SlackCodeSwitchFields {
 
 export interface SlackCodeAutoFolder {
   name: string
-  agent: string
+  /** The `default_agent` earlier releases created the folder with: still on the
+   *  auto folder, it reads as no folder agent (the folder was never edited). */
+  legacy_agent: string
   id: string | null
   /** Two top-level folders share the name: neither is used and none is created. */
   ambiguous?: boolean
@@ -94,13 +101,15 @@ export interface SlackCodeChannelDefaults {
   reasoning_effort: string | null
   /** "trust_reads" | "trust"; null is "ask" (Normal). */
   approval_mode?: string | null
+  /** "Always use conductor mode": true when on; null/absent is off. */
+  conductor_mode?: boolean | null
 }
 
 /** The effective start state of a new code-channel session. */
 export interface SlackCodeChannelEffective {
   folder: { id: string; path: string; project_dir: string; default_agent: string } | null
   agent: string | null
-  /** "default" | "folder" | "slack" | "" */
+  /** "conductor" | "default" | "folder" | "slack" | "" */
   agent_source: string
   model: string | null
   reasoning_effort: string | null
