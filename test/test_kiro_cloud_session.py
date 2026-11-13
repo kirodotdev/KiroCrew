@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -212,6 +213,34 @@ class TestCloudSessionWire:
         assert params["mcpServers"] == []
         # Crew's agent is not registered there, so it is never activated.
         assert _requests(stub, "session/set_mode") == []
+
+    @pytest.mark.asyncio
+    async def test_a_member_session_records_no_global_steering_as_native(
+        self, stub, crew_agent, tmp_path, monkeypatch
+    ):
+        """The sandbox never reads this machine's steering, so the snapshot keeps its body."""
+        home = tmp_path / "host-home"
+        steering = home / ".kiro" / "steering"
+        steering.mkdir(parents=True)
+        (steering / "shared.md").write_text(
+            "---\ninclusion: always\n---\nGLOBAL_ALWAYS_BODY", encoding="utf-8"
+        )
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws",
+            agent="kirocrew",
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+            member_context=True,
+        )
+        runtime.set_cloud_sandbox(("acme/web",))
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "ws", agent="kirocrew")
+        finally:
+            await runtime.kill()
+        assert str(steering / "shared.md") not in handle.native_context_documents
 
     @pytest.mark.asyncio
     async def test_no_repositories_opens_an_empty_workspace(self, stub, crew_agent, tmp_path):
