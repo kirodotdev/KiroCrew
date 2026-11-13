@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent, TurnUsage
+from kiro_crew.testing.wait import await_until, finished, until_parked
 from kiro_crew.tracing import correlation, ids, provider, runs, turns
 from kiro_crew.tracing import workflows as trace_workflows
 from kiro_crew.workflows.runner import WorkflowRunner
@@ -183,12 +184,22 @@ async def test_a_phase_another_branch_ends_keeps_the_spend_of_its_calls_in_fligh
         "    return await ctx.parallel([one, two])\n"
     )
 
-    async def slow(prompt, opts):
-        await asyncio.sleep(0.01)  # still in flight when the other branch opens its phase
+    y_called = asyncio.Event()
+
+    async def ordered(prompt, opts):
+        # x is held until y is called, which branch two does only after ctx.phase('b'),
+        # so x is still in flight when the other branch opens its phase.
+        if prompt == "x":
+            await await_until(y_called, what="branch two's call")
+        else:
+            y_called.set()
         return await _agent(prompt, opts)
 
-    res = await WorkflowRunner(agent_fn=slow, audit=lambda *a, **k: None).run(
-        script, run_id="wf_000113", now=NOW, session_key=ORIGIN
+    res = await finished(
+        WorkflowRunner(agent_fn=ordered, audit=lambda *a, **k: None).run(
+            script, run_id="wf_000113", now=NOW, session_key=ORIGIN
+        ),
+        "the overlapping run",
     )
     assert res.ok, res.error
     phases = {s.name: s for s in _named(spans, "phase ")}
@@ -196,6 +207,25 @@ async def test_a_phase_another_branch_ends_keeps_the_spend_of_its_calls_in_fligh
     assert phases["phase b"].attributes["kirocrew.usage.credits_total"] == 1.0
     # Still ended where the other branch's phase began, not when its call settled.
     assert phases["phase a"].end_time <= phases["phase b"].start_time
+
+
+@pytest.mark.asyncio
+async def test_an_authored_run_puts_its_authoring_turn_under_the_authoring_phase(spans):
+    async def author(intent, *, on_progress):
+        await _agent("author", {})  # the author streams its turn in the task it is given
+        return {"ok": True, "source": THREE_PHASES}
+
+    res = await _runner().run(
+        "", run_id="wf_000116", now=NOW, session_key=ORIGIN, intent="triage", author_fn=author
+    )
+    assert res.ok, res.error
+    (authoring,) = _named(spans, "phase Authoring")
+    (turn,) = _named(spans, "invoke_agent Authoring")
+    assert turn.context.trace_id == authoring.context.trace_id
+    assert _parent(turn) == _hex(authoring.context.span_id, 16)
+    assert authoring.attributes["kirocrew.usage.credits_total"] == 1.0
+    (outcome,) = _named(spans, "workflow outcome")
+    assert outcome.attributes["kirocrew.usage.turns_total"] == 5
 
 
 @pytest.mark.asyncio
@@ -264,17 +294,16 @@ async def test_a_cancelled_run_says_so_and_still_ends_its_phase(spans):
         "    ctx.phase('wait')\n"
         "    return await ctx.agent('x', label='x')\n"
     )
-    started = asyncio.Event()
+    never = asyncio.Event()
 
     async def hang(prompt, opts):
-        started.set()
-        await asyncio.sleep(60)
+        await never.wait()
 
     runner = WorkflowRunner(agent_fn=hang, audit=lambda *a, **k: None)
     task = asyncio.create_task(runner.run(script, run_id="wf_000115", now=NOW, session_key=ORIGIN))
-    await asyncio.wait_for(started.wait(), 5)
+    await until_parked(never)  # the call is in flight
     task.cancel()
-    res = await asyncio.wait_for(task, 5)
+    res = await await_until(task, what="the cancelled run")
     assert res.error == "cancelled"
     assert _named(spans, "workflow outcome cancelled")
     assert _named(spans, "phase wait")

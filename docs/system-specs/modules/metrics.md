@@ -2047,6 +2047,9 @@ named by the script's `META["name"]`, and the outcome: `finished`, `failed` or
   to the run's outcome.
 - A call replayed from a prior run's results (`replay_before`) streams no turn, so a
   resumed run emits no span for it. A rerun is a new `run_id`, so a new trace.
+- A run authored from an intent (`start_from_intent`) has an `Authoring` phase first;
+  the author's model turns are one call under it, `invoke_agent Authoring:author`,
+  bound in the task the runner starts for the author.
 - `WorkflowRunner.run_background` pins the turn open for the launching session
   (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled.
 - The completion turn: `workflow_startup`'s auto-turn starts it inside

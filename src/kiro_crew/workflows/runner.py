@@ -1159,13 +1159,25 @@ class WorkflowRunner:
             def _auth_progress(msg: str) -> None:
                 emit(stream.log(now, message=msg))
 
+            async def _author() -> Any:
+                # Bound here, in the task that streams the author's turns: a root
+                # bound by this task would be refused there, and the turns would
+                # root unrelated traces.
+                call = trace_workflows.bind_agent(
+                    run_id, "author", "author", "Authoring", stream.phase_index
+                )
+                try:
+                    return await author_fn(intent, on_progress=_auth_progress)
+                finally:
+                    trace_workflows.release_agent(call)
+
             # Authoring runs under the run's deadline with the same guard and the
             # same cancellation handling the script gets in _exec_validated: a
             # hung author ends at the ceiling, and a caller cancel is answered
             # with a result instead of escaping run().
             author_task: Optional["asyncio.Future[Any]"] = None
             try:
-                author_task = asyncio.ensure_future(author_fn(intent, on_progress=_auth_progress))
+                author_task = asyncio.ensure_future(_author())
                 done, _pending = await asyncio.wait(
                     {author_task}, timeout=max(0.0, deadline - time.monotonic())
                 )

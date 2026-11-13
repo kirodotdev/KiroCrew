@@ -830,8 +830,10 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     prompt = slot.enqueue_or_run_prompt.call_args.args[0]
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
     # The gateway's words: an inject row, run as a synthetic payload.
+    # A queued turn names the run it reports, so its trace joins that run's.
     assert slot.enqueue_or_run_prompt.call_args.kwargs == {
-        "gateway_prompt_kind": "workflow_followup"
+        "gateway_prompt_kind": "workflow_followup",
+        "extra_meta": {"workflow_run_id": "run-1"},
     }
     assert slot.enqueue_or_run_prompt.call_args.args[1].keywords == {"_synthetic_payload": True}
     state.push_slots_update.assert_called_once_with()
