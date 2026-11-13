@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from kiro_crew import __version__, code_fingerprint, platform_compat, release_channel
-from kiro_crew.cloud import aws, sizes
+from kiro_crew.cloud import aws, github_tag_probe, sizes
 from kiro_crew.deploy import profiles as profiles_mod
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.validation import FieldSpec, ValidationError, validate_field
@@ -99,7 +99,7 @@ _REF_SPEC = FieldSpec(name="ref", type=str, max_len=128, pattern=_REF_RE)
 #: too because the release-tag probe below must ask the SAME remote the
 #: instance will clone (``test_cloud_ec2.py`` pins the two spellings together).
 PUBLIC_REPO_URL = "https://github.com/kirodotdev/KiroCrew.git"
-#: Budget for one ``git ls-remote`` round trip to that remote. A launch already
+#: Budget for one tag-probe round trip to that remote. A launch already
 #: waits minutes on CloudFormation, so a slow answer costs little; a hung one
 #: must not hang the launch, and a miss is never worse than today's ``main``.
 _REF_PROBE_TIMEOUT_SECONDS = 15.0
@@ -694,19 +694,17 @@ def release_tag_exists(ref: str, repo: str = "") -> bool:
     :func:`platform_compat.trusted_git_bin`, never a bare ``PATH`` lookup: the
     gateway's ``PATH`` can lead with an agent-writable directory, and a shim
     there would run with the gateway's privileges on every packaged launch.
-    Any way of not getting a definite "yes" — no trusted ``git`` on this
-    machine, no network, a 128 from the remote, a timeout — answers ``False``:
-    the caller then keeps the template default rather than asking the instance
-    to clone a tag that may not be there, which would fail the boot inside the
-    stack.
+    With no trusted ``git`` the default public repo is asked over HTTPS instead
+    (:func:`github_tag_probe.public_tag_exists`, no spawn); a fork cannot be. Any other
+    way of not getting a definite "yes" (no network, a 128 from the remote, a timeout)
+    answers ``False``: the caller then keeps the template default rather than asking the
+    instance to clone a tag that may not be there, which would fail the boot in the stack.
     """
     git = platform_compat.trusted_git_bin()
     if git is None:
-        logger.warning(
-            "no trusted git on this machine; cannot probe %s for tag %s",
-            repo or PUBLIC_REPO_URL,
-            ref,
-        )
+        if repo in ("", PUBLIC_REPO_URL):
+            return github_tag_probe.public_tag_exists(ref, _REF_PROBE_TIMEOUT_SECONDS)
+        logger.warning("no trusted git on this machine; cannot probe %s for tag %s", repo, ref)
         return False
     argv = [
         git,
@@ -768,7 +766,8 @@ def resolve_public_ref(repo: str = "") -> str:
         if release_tag_exists(ref, repo):
             return ref
     logger.warning(
-        "no release tag %s for Kiro Crew %s; the instance will run main",
+        "could not confirm release tag %s for this Kiro Crew %s, so the cloud crew will install"
+        " the development build from main, which this Kiro Crew may refuse to pair with",
         " / ".join(refs),
         __version__,
     )
