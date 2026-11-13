@@ -356,6 +356,31 @@ describe('App in a relay Crew window — a calm reconnecting view while it retri
     await shellSettled(queryClient)
   })
 
+  it('gives focus back to the element the retry made inert once it reconnects', async () => {
+    const { store, queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    act(() => { store.dispatch(sseConnected()) })
+    const composer = document.createElement('textarea')
+    document.getElementById('main-content')!.appendChild(composer)
+    composer.focus()
+    act(() => { store.dispatch(sseDisconnected()) })
+    // jsdom has no inert focus fixup; stand in for the browser dropping focus to <body>.
+    composer.blur()
+    expect(document.activeElement).toBe(document.body)
+    act(() => { store.dispatch(sseConnected()) })
+    expect(document.activeElement).toBe(composer)
+    // Focus the user moved elsewhere during the retry is left where they put it.
+    const elsewhere = document.createElement('button')
+    document.body.appendChild(elsewhere)
+    act(() => { store.dispatch(sseDisconnected()) })
+    composer.blur()
+    elsewhere.focus()
+    act(() => { store.dispatch(sseConnected()) })
+    expect(document.activeElement).toBe(elsewhere)
+    composer.remove()
+    elsewhere.remove()
+    await shellSettled(queryClient)
+  })
+
   it.each([
     ['refused', en.app.relay_access_refused],
     ['session_ended', en.app.relay_session_ended],

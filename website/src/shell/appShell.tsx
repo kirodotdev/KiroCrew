@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -226,6 +226,23 @@ export function useAppShell() {
   const relayRetrying = relayCrewWindow && !connected && !gatewayConnecting && !authRequired
     && isRelayRetrying(offlineCause, relayCrewWindow)
   const gatewayStatusAnnounce = relayRetrying ? '' : gatewayStatusMsg
+  // The retry makes <main> and the docked terminal inert, which drops their
+  // focused element (usually the composer) to <body>. Remember it as the retry
+  // starts and give it focus back when the connection returns, unless the user
+  // has focused something else meanwhile. A layout effect, like focus mode's
+  // hand-off, so the read lands before the browser's focus fixup for inert.
+  const relayFocusReturn = useRef<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    if (relayRetrying) {
+      const active = document.activeElement
+      relayFocusReturn.current = active instanceof HTMLElement && active !== document.body ? active : null
+      return
+    }
+    const el = relayFocusReturn.current
+    relayFocusReturn.current = null
+    const focusLost = !document.activeElement || document.activeElement === document.body
+    if (el && el.isConnected && focusLost) el.focus({ preventScroll: true })
+  }, [relayRetrying])
   // The chord that turns focus mode off, as the user has it bound RIGHT NOW. In
   // focus mode the top bar (and its toggle) is inert, so this chord is the only
   // keyboard route back; it is spoken when focus mode turns on and declared on
