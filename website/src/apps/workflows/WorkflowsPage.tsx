@@ -25,16 +25,11 @@ import { Btn, PageHeader } from '../../components/ui'
 import SegmentedControl from '../../components/SegmentedControl'
 import SimpleSelect from '../../components/SimpleSelect'
 import ErrorNotice from '../../components/ErrorNotice'
-import WorkflowsRuns from './WorkflowsRuns'
-import WorkflowRunTree from './WorkflowRunTree'
-import { groupByPhase, latestBudget, type WfEvent, type AgentRow, type PhaseGroup } from './runModel'
+import WorkflowsRuns from '../../components/workflows/WorkflowsRuns'
+import WorkflowRunTree from '../../components/workflows/WorkflowRunTree'
+import { latestBudget, type WfEvent } from '../../components/workflows/runModel'
 
 import { i18nT } from '../../i18n/t'
-// Re-export the pure event-stream helpers and types from the shared runModel
-// so the existing test imports (`from '../apps/workflows/WorkflowsPage'`) keep
-// working without touching test code.
-export { groupByPhase, latestBudget }
-export type { WfEvent, AgentRow, PhaseGroup }
 
 // Proxied base for the workflows builtin-app backend (KiroCrew reverse-proxies
 // /apps/workflows/api/* to the app's HTTP server). A refusal throws the shared

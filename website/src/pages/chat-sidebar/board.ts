@@ -17,7 +17,7 @@ import { useDocumentImeLatch } from '../../hooks/useImeGuard'
 import { errMessage } from '../../utils/thunkError'
 import { i18nT } from '../../i18n/t'
 import { SESSION_LANES, inferLane, type LaneExtras } from '../chat/sessionLane'
-import { normalizeRunSessionKey } from '../../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../../components/workflows/runModel'
 import type { Slot } from './types'
 import { loadBoardFolderCollapse, boardCollapseKey, persistBoardOverride, clearFolderOverrides, persistClearFolderOverrides } from '../../utils/boardFolderCollapse'
 

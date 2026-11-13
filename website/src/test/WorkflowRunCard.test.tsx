@@ -20,10 +20,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../api/client', () => ({
   api: { promoteWorkflowRun: mocks.promoteWorkflowRun },
 }))
-vi.mock('../apps/workflows/useRunSnapshot', () => ({
+vi.mock('../components/workflows/useRunSnapshot', () => ({
   useRunSnapshot: () => mocks.snapshot,
 }))
-vi.mock('../apps/workflows/WorkflowSourceCode', () => ({
+vi.mock('../components/workflows/WorkflowSourceCode', () => ({
   default: ({ source, ariaLabel }: { source: string; ariaLabel: string }) => (
     <pre aria-label={ariaLabel} data-language="python" data-line-numbers="true">
       {source}

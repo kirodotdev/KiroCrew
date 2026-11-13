@@ -54,7 +54,7 @@ import { makeSidebarSearchView, SearchFailedNotice, SearchFolderHits, SearchPend
 import { openCrewWindow, useCrewWindow } from './chat/crew-window/crewWindowStore'
 import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { isPeerRow, sessionRowIdentity } from './chat-sidebar/rowIdentity'
-import { normalizeRunSessionKey } from '../apps/workflows/runModel'
+import { normalizeRunSessionKey } from '../components/workflows/runModel'
 import { buildSidebarRows, guideStepOnRowControl, opensElsewhereOf, type RowScene, type RowShell, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
 import { crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnable } from './chat-sidebar/CrewGroups'

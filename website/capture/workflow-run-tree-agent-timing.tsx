@@ -39,7 +39,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
-import WorkflowRunTree from '../src/apps/workflows/WorkflowRunTree'
+import WorkflowRunTree from '../src/components/workflows/WorkflowRunTree'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)

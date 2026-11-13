@@ -171,7 +171,7 @@ const CONVERTED = [
   'apps/crew-companion/SettingsSection.tsx',
   'apps/issue-radar/components/CrewEditor.tsx',
   'apps/spec-builder/components/NewSpecView.tsx',
-  'apps/workflows/WorkflowsRuns.tsx',
+  'components/workflows/WorkflowsRuns.tsx',
   'components/FileRenderers.tsx',
   'components/FolderConfigModal.tsx',
   'components/OnboardingFlow.tsx',

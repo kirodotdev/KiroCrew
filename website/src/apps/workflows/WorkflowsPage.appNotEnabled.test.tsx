@@ -10,16 +10,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
-import { i18nT } from '../i18n/t'
+import { i18nT } from '../../i18n/t'
 
-vi.mock('../apps/workflows/WorkflowsRuns', () => ({
+vi.mock('../../components/workflows/WorkflowsRuns', () => ({
   default: () => <div data-testid="zzq-runs-stub" />,
 }))
-vi.mock('../apps/workflows/WorkflowRunTree', () => ({
+vi.mock('../../components/workflows/WorkflowRunTree', () => ({
   default: () => <div data-testid="zzq-tree-stub" />,
 }))
 
-import WorkflowsPage from '../apps/workflows/WorkflowsPage'
+import WorkflowsPage from './WorkflowsPage'
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })

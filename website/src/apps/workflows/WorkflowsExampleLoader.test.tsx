@@ -15,7 +15,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import WorkflowsPage from '../apps/workflows/WorkflowsPage'
+import WorkflowsPage from './WorkflowsPage'
 
 const EXAMPLES = [
   { name: 'fan-out', description: 'parallel agents', source: '# fan-out source' },

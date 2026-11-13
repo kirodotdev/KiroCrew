@@ -12,12 +12,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
-import { i18nT } from '../i18n/t'
+import { i18nT } from '../../i18n/t'
 
-vi.mock('../apps/workflows/WorkflowsRuns', () => ({
+vi.mock('../../components/workflows/WorkflowsRuns', () => ({
   default: () => <div data-testid="zzq-runs-stub" />,
 }))
-vi.mock('../apps/workflows/WorkflowRunTree', () => ({
+vi.mock('../../components/workflows/WorkflowRunTree', () => ({
   default: ({ events, status, error }: { events: unknown[]; status: string; error?: string | null }) => (
     <div data-testid="zzq-tree-stub">
       <span>events:{events.length}</span>
@@ -28,7 +28,7 @@ vi.mock('../apps/workflows/WorkflowRunTree', () => ({
 }))
 // Radix Select needs pointer geometry happy-dom does not provide; a native
 // select keeps the assertion on the page's onChange contract.
-vi.mock('../components/SimpleSelect', () => ({
+vi.mock('../../components/SimpleSelect', () => ({
   default: ({ options, onChange, 'aria-label': ariaLabel }: {
     options: string[]
     onChange: (v: string) => void
@@ -41,7 +41,7 @@ vi.mock('../components/SimpleSelect', () => ({
   ),
 }))
 
-import WorkflowsPage from '../apps/workflows/WorkflowsPage'
+import WorkflowsPage from './WorkflowsPage'
 
 const EXAMPLE = { name: 'zzq-example', description: 'zzq desc', source: 'ZZQ_EXAMPLE_SOURCE' }
 

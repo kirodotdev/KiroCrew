@@ -30,7 +30,7 @@ import { AlertTriangle, X, XCircle } from 'lucide-react'
 // English-only), as the shared entry contract requires of every capture.
 import { initI18n } from '../src/i18n/all'
 import ErrorNotice from '../src/components/ErrorNotice'
-import WorkflowRunTree from '../src/apps/workflows/WorkflowRunTree'
+import WorkflowRunTree from '../src/components/workflows/WorkflowRunTree'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)

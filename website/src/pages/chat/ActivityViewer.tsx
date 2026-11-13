@@ -26,7 +26,7 @@ import SegmentedControl from '../../components/SegmentedControl'
 import { Btn, PanelSectionHeader, ContentSkeleton } from '../../components/ui'
 import SideChat from './SideChat'
 import WorkflowSidebarRow, { type WfRunRow } from './WorkflowSidebarRow'
-import { runBelongsToSlot } from '../../apps/workflows/runModel'
+import { runBelongsToSlot } from '../../components/workflows/runModel'
 import { workflowRunsPollInterval } from './workflowRunsPoll'
 
 import { ContextBreakdownTab } from '../ContextBreakdownPanel'
