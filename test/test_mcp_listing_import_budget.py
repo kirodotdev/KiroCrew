@@ -225,3 +225,45 @@ def test_the_live_hint_readers_are_inside_cores_budget(
     record. Were one of these readers not loaded here, the bounds would not be holding it."""
     _frames, modules = listed["mcp-core"]
     assert sorted(set(LIVE_HINT_READERS) - modules) == []
+
+
+#: command -> the most ``kiro_crew`` modules its HANDLER module may load. The listing
+#: bounds above stop at the list; these hold what loads right after it, in every chat,
+#: whether or not a tool of that server is ever called. The three small servers reach the
+#: gateway through ``mcp_core_parts`` and never load the core server: importing
+#: ``kiro_crew.mcp_core`` for its HTTP helpers took each of them to about 970 modules.
+#: Same rules as the listing ceiling: room for a platform's extras, lowered when a change
+#: brings a count down.
+HANDLER_MODULE_CEILING = {
+    "mcp-cron": 500,
+    "mcp-guide": 380,
+    "mcp-mate": 380,
+}
+
+_HANDLER_PROBE = f"""
+import importlib, json, sys
+importlib.import_module(sys.argv[1])
+sys.stderr.write({_MARK!r} + json.dumps(sorted(sys.modules)) + "\\n")
+"""
+
+
+@pytest.mark.parametrize("command", sorted(HANDLER_MODULE_CEILING))
+def test_a_small_servers_handlers_do_not_load_the_core_server(command: str, tmp_path: Path) -> None:
+    handler_module, _ = mcp_entry.SLIM_SERVERS[command]
+    (tmp_path / "home").mkdir()
+    done = subprocess.run(
+        [sys.executable, "-c", _HANDLER_PROBE, handler_module],
+        env=_child_env(tmp_path, KIROCREW_PROJECT_DIR=str(tmp_path)),
+        cwd=str(tmp_path),
+        capture_output=True,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+        **UTF8_TEXT,
+    )
+    marked = [line for line in done.stderr.splitlines() if line.startswith(_MARK)]
+    assert done.returncode == 0 and marked, done.stderr[-4000:]
+    modules = set(json.loads(marked[-1][len(_MARK) :]))
+    assert handler_module in modules
+    assert "kiro_crew.mcp_core" not in modules
+    package = sorted(name for name in modules if name.split(".")[0] == "kiro_crew")
+    assert len(package) <= HANDLER_MODULE_CEILING[command], (len(package), package)

@@ -54,11 +54,8 @@ import json
 import logging
 from typing import Any
 
-from kiro_crew.mcp_core import (
-    _post,
-    _resolve_session_key,
-    require_strict_session_key,
-)
+from kiro_crew.mcp_core_parts.gateway import _post
+from kiro_crew.mcp_core_parts.identity import _resolve_session_key, require_strict_session_key
 from kiro_crew.mcp_mate_tool_list import (  # noqa: F401
     _CARD_NOTE,
     _ONLY_WHEN_ASKED,

@@ -54,7 +54,7 @@ from kiro_crew.cron_script import (
 )
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
-from kiro_crew.mcp_core import (
+from kiro_crew.mcp_core_parts.identity import (
     _resolve_session_key,
     require_strict_session_key,
     strict_identity_diagnosis,
@@ -150,7 +150,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     if current_caller() is not None or _resolve_session_key():
         # The gateway authenticates the request and resolves its captured session
         # execution before opening the cron store.
-        from kiro_crew.mcp_core import _post
+        from kiro_crew.mcp_core_parts.gateway import _post
 
         session_key, refusal = require_strict_session_key(
             "Cannot identify this cron caller. Reopen the conversation.",

@@ -567,10 +567,11 @@ def test_the_decide_budget_fits_inside_the_record_tools_timeout():
     import ast
     import inspect
 
-    from kiro_crew import mcp_core
+    from kiro_crew.mcp_core_parts import gateway
 
-    # From the source: the suite stubs ``mcp_core._post`` for every test.
-    tree = ast.parse(inspect.getsource(mcp_core))
+    # From the source of the module that defines it: the suite stubs
+    # ``mcp_core._post`` for every test.
+    tree = ast.parse(inspect.getsource(gateway))
     post = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_post")
     names = [a.arg for a in post.args.kwonlyargs]
     client_timeout = ast.literal_eval(post.args.kw_defaults[names.index("timeout")])

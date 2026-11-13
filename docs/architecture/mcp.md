@@ -3528,7 +3528,7 @@ silently escape every such patch. `mcp_core._HANDLER_SURFACE` names the bindings
 that exist only for this purpose, so an import cleanup cannot quietly delete one.
 
 `mcp_core.py` keeps the server itself — `tools/list`, the call path and its call
-context, directive capture, the knowledge cache, `_send` and the five verbs — and is a
+context, directive capture and the knowledge cache — and is a
 mirror facade (`kiro_crew._facade_mirror`) over the owners in `mcp_core_parts/`, so
 every name they define still reads and patches as `mcp_core.<name>`. New plumbing goes
 to the owner of its responsibility:
@@ -3536,10 +3536,18 @@ to the owner of its responsibility:
 | Owner | Owns |
 |---|---|
 | `identity` | which session is calling: the lenient and strict resolvers, `require_strict_session_key` and its diagnosis, `REFLEXIVE_TOOL_MODULES`, the Slack identity classification |
-| `gateway` | where a call goes: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send`'s retry schedule, and failure text and error body |
+| `gateway` | where a call goes and the call itself: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send` with its retry schedule, failure text and error body, and the five verbs (`_get`, `_post`, `_patch`, `_put`, `_delete`) |
 | `governance` | channel-agent containment and the messaging, browse, channel and memory-write vets |
 | `crew` | Ultra Mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
+
+The other own servers (`kirocrew-cron`, `kirocrew-guide`, `kirocrew-mate`) take the
+verbs and the identity resolvers from `mcp_core_parts.gateway` and
+`mcp_core_parts.identity`, never from `mcp_core`: importing the facade loads the whole
+core server (agent discovery, the conversation store, knowledge search), and each of
+those servers loads its handlers right after its list, in every chat.
+`test/test_mcp_listing_import_budget.py` holds their handler modules to that and to
+a count of package modules each.
 
 `mcp_cron.py` keeps the cron server itself — argument validation, the call path, the
 caller's identity and ownership checks, the tool bodies (`_call_tool_inner`) and the
@@ -4886,7 +4894,7 @@ the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
 
 | Agents | Job tools | Budget (schema tokens per request, as the engine counts them) |
 |---|---|---:|
-| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status`, `mcp_server_wait` | 3,300 |
+| `kirocrew` | `spawn_run`, `spawn_sub_agents`, `spawn_status`, `mcp_server_wait`; and its six most used small tools: `autonudge_stop`, `memory_recall`, `nothing_to_do`, `search_chat_history`, `skill_search`, `wait` | 4,950 |
 | `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report`, `mcp_server_wait` | 1,200 |
 | `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait`, `mcp_server_wait` | 7,700 |
 | `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the eleven above and `work_brief` | 7,850 |
@@ -4894,10 +4902,22 @@ the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
 `mcp_server_wait` is in every row because every shipped agent's turn can be told a
 server is still starting (the `[MCP SERVERS]` block), and a load in front of the
 wait would spend the model round trip the wait exists to save. Its descriptor is
-kept to 63 schema tokens. The default agent's and the workers' rows fit the
-budgets they had. The pipeline and security conductors' row measures 7,653 with
-it, so its budget is 7,700; the goal conductor's, ledger conductor's and team
-lead's row measures 7,808, so its budget is 7,850.
+kept to 63 schema tokens. The workers' row fits the budget it had. The pipeline
+and security conductors' row measures 7,653 with it, so its budget is 7,700; the
+goal conductor's, ledger conductor's and team lead's row measures 7,808, so its
+budget is 7,850.
+
+The default agent's row also carries its six most used small tools
+(`_MAIN_CHAT_MOST_USED`). They were picked by counting, in a long-running
+installation's dashboard chats, how many sessions of the default agent called
+each Kiro Crew tool at least once (a deferred tool costs one load round trip per
+session, so sessions are what a listing saves), and keeping, in that order, each
+tool whose definition is small: `autonudge_stop`, `wait`, `skill_search`,
+`memory_recall`, `nothing_to_do` and `search_chat_history`, about 6 KB in all
+(1,491 schema tokens). `monitor_start`, `send_message` and `monitor_update` were
+called in more sessions than some of these, but each is 4 to 10 KB, so they stay
+deferred. With the six the row measures 4,673, so its budget is 4,950. A first
+use of one of them no longer spends a model round trip on a load.
 
 #### A server that is still starting
 
@@ -4934,7 +4954,9 @@ at most five seconds, as the start did before
 The rules the table is held to (`test/test_job_tools.py`):
 
 - **A row is the tools the agent's own prompt makes its procedure**, not the tools
-  it might use. Anything else is one `tool_search` away.
+  it might use. Anything else is one `tool_search` away. The one addition is the
+  default agent's most used small tools above, chosen from measured use, never
+  from guesses.
 - **A row fits its budget.** Its tools ride in every request of that agent. The
   budgets live in `test/test_job_tools.py` (`JOB_TOOL_BUDGETS`), beside the test
   that enforces them, because nothing at run time reads one. They are counted the
