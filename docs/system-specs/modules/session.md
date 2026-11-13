@@ -4919,6 +4919,14 @@ so absence clears it.
   category, because one card shows its Send now button without opening the stack.
   A crewmate's chat (no cards, only bubbles) and the crew window (read-only
   cards) keep the plain Resume hint, since neither lets the user send a card.
+  A waiting card is not work coming: the slot frame's `queue_held_depth` counts
+  the restored cards that wait for a person (`is_held_queue_entry`: not chosen
+  with "run this next", and not a parked send the startup drain accepted while
+  that drain's attempt lasts; once it ends every card still queued is held, a
+  later accepted card it starts by id after the running turn included), the
+  sidebar row, board lane and command center count only
+  `queue_depth - queue_held_depth` (`readyQueueDepth`), and a restored card's
+  hourglass stands still, chosen or not.
 - **Durability does not depend on the mutation site.** `_queue_persisted_sig`
   records what the last committed save wrote and `slot.queue_persist_pending`
   compares it against the live queue, so an in-place rewrite — a reorder, a

@@ -308,7 +308,7 @@ Takes no arguments. The roster of sessions you stood up, and what each is doing.
 | `status` | Meaning | What to do |
 |---|---|---|
 | `working` | A turn is in flight | Wait |
-| `queued` | Idle, messages waiting to run | Wait; a steer would land on nothing |
+| `queued` | Idle, messages waiting that will run on their own (a card restored after a restart waits for a person, so it reads `idle`) | Wait; a steer would land on nothing |
 | `idle` | Open and doing nothing | This is the one that needs a decision, unless the row's `looping` is true: its own loop (a `monitor_start` waiting on CI) will wake it, so wait |
 | `closed` | The crew log has it, the dashboard does not, and its last life ended by a deliberate tab close (carries `closed_at`) | It finished and closed its tab; nothing to re-dispatch |
 | `lost` | The crew log has it, the dashboard does not, and it did not close cleanly — a turn was open, a process recycle or destroy tore it down, or its lifecycle could not be read | Re-dispatch it |

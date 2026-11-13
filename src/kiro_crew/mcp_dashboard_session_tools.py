@@ -910,7 +910,8 @@ def _session_tools() -> tuple[Tool, ...]:
             description=(
                 "List the sessions YOU stood up and what each one is doing right "
                 "now — the roster a conductor patrols. Each row is `working` (a "
-                "turn is in flight, wait), `queued` (idle with messages waiting), "
+                "turn is in flight, wait), `queued` (idle with messages that will run "
+                "on their own), "
                 "`idle` (open and doing nothing — this is the one that needs a "
                 "decision), `closed` (the crew log recorded a DELIBERATE tab close "
                 "and the dashboard no longer holds it: a worker that FINISHED and "
