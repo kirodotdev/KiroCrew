@@ -631,6 +631,20 @@ def _attribution_value(slot: Any, folds: SaveFolds) -> object:
     return OMIT if value is None else value
 
 
+def _read_participants(r: _Read) -> None:
+    # Shared Crew participants, display only. Function-local like attribution's.
+    from kiro_crew.shared_crew import participants as shared_crew_participants
+
+    shared_crew_participants.restore_from_metadata(r.slot, r.meta)
+
+
+def _participants_value(slot: Any, folds: SaveFolds) -> object:
+    from kiro_crew.shared_crew import participants as shared_crew_participants
+
+    value = shared_crew_participants.metadata_value(slot)
+    return OMIT if value is None else value
+
+
 def _read_folder_id(r: _Read) -> None:
     folder_id = r.meta.get("folder_id")
     if not folder_id:
@@ -1135,6 +1149,16 @@ FIELDS: tuple[Field, ...] = (
         merge=_attribution_value,
         read=_read_attribution,
     ),
+    # Shared Crew participants: who has written here, for the session and Bot
+    # rows' initials (``shared_crew.participants``). Read after ``attribution``,
+    # which names the creator the list keeps first. Display only.
+    Field(
+        "participants",
+        _ALL,
+        line=_participants_value,
+        merge=_participants_value,
+        read=_read_participants,
+    ),
     Field(
         "folder_id",
         _ALL,
@@ -1479,6 +1503,7 @@ LINE_ORDER: tuple[str, ...] = (
     "origin",
     "created_by",
     "attribution",
+    "participants",
     "artifact",
     "pinned",
     "mutes_opened",
@@ -1536,6 +1561,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "origin",
     "created_by",
     "attribution",
+    "participants",
     "linked_session_key",
     "channel_origin",
     "forked_from",

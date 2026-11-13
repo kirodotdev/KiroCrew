@@ -76,6 +76,8 @@ OWNER_PRIVATE = (
     "dynamic_capabilities",
     "dashboard_card_send",
     "triggers",
+    # Who has written in the owner's DM thread (#35145).
+    "participants",
 )
 
 
@@ -191,7 +193,15 @@ async def test_the_owners_read_is_unchanged_by_the_teammate_branch(tmp_path) -> 
     assert raw == raw_before
     row = next(r for r in json.loads(raw)["members"] if r["name"] == MADE)
     # The owner's own row still carries the owner's view of the Bot.
-    for field in ("slot_key", "running", "last_message", "projections", "workspace", "model"):
+    for field in (
+        "slot_key",
+        "running",
+        "last_message",
+        "projections",
+        "workspace",
+        "model",
+        "participants",
+    ):
         assert field in row, field
     assert row["starred"] is True
 

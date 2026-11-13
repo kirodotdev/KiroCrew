@@ -49,6 +49,7 @@ from kiro_crew.dashboard.state_parts.transcript_rows import (
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, mint_row_mid, monotonic_transcript_ts
 from kiro_crew.shared_crew.attribution import with_request_author
+from kiro_crew.shared_crew.participants import note_author
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
@@ -404,6 +405,8 @@ def append(
         # Shared Crew: a live user row written by a request handler names
         # that request's server-derived author unless it already names one.
         meta = with_request_author(meta)
+        # The row's author, if a person, joins the session's participants.
+        note_author(self, meta)
     if meta:
         msg["meta"] = meta
     # Stamp a per-row delivery identity. A client sees the SAME row through

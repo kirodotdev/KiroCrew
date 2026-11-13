@@ -12002,6 +12002,8 @@
     "more_people": "Others here: {{n}}",
     "page_next": "More",
     "page_previous": "Back",
+    "participants": "People who wrote here: {{n}}",
+    "participants_more": "Others who wrote here: {{n}}",
     "people_daemon_not_found": "Tailscale was not running when this Crew started, so people who connect through Tailscale Serve may show as Unattributed until the Crew restarts.",
     "people_failed": "Could not load people.",
     "people_seen_empty": "No one has been seen yet.",

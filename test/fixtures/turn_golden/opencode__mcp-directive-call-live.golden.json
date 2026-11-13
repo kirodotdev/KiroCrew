@@ -110,6 +110,7 @@
               },
               "created_at": null
             },
+            "participants": [],
             "pin_rank": null,
             "pin_rev": 0,
             "manual_rank": null,
@@ -359,6 +360,7 @@
               },
               "created_at": null
             },
+            "participants": [],
             "pin_rank": null,
             "pin_rev": 0,
             "manual_rank": null,

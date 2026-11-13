@@ -143,6 +143,7 @@ class _ChatSlot:
         "_last_stop_reason",
         "_created_by",
         "_attribution",
+        "_participants",
         "_created_by_sid",
         "_saved_created_by",
         "_lineage_minted",
