@@ -1204,6 +1204,24 @@ class SessionMap:
         }
 
     @_guarded
+    def mapped_sid_cwds(self, provider: str) -> frozenset[tuple[str, str]]:
+        """``(sid, cwd)`` of every entry mapped under *provider* with both recorded.
+
+        Compared by equality against the label the entry was mapped under, so only
+        the named provider's sessions are returned. A sid two keys share appears
+        once, under each cwd recorded for it.
+        """
+        return frozenset(
+            (sid, cwd)
+            for entry in self._data.values()
+            if entry.get("provider") == provider
+            and isinstance(sid := entry.get("sid"), str)
+            and sid
+            and isinstance(cwd := entry.get("cwd"), str)
+            and cwd
+        )
+
+    @_guarded
     def reserve_generation(self, session_key: str) -> None:
         """Persist the generation in *session_key* before its first provider turn.
 

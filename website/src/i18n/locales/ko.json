@@ -18035,7 +18035,8 @@
       "unknown_session": "목록에 없는 세션",
       "busy_emptying": "휴지통을 비우고 있습니다. 완료될 때까지 일부 작업이 중지됩니다.",
       "empty_failed_next_step": "'완전히 삭제'를 다시 시도하세요. 자세한 내용은 게이트웨이 로그에 있습니다.",
-      "kept_identity_changed": "선택한 뒤 디스크에서 바뀐 배치가 있어 그대로 두었습니다."
+      "kept_identity_changed": "선택한 뒤 디스크에서 바뀐 배치가 있어 그대로 두었습니다.",
+      "claude_code_kept_other": "Claude Code는 Claude 채팅 {{count}}개에 대해 최소 {{size}}을(를) 추가로 보관합니다. 저장소는 이를 삭제하지 않습니다."
     },
     "sessionsPage": {
       "page_title": "전체 세션",

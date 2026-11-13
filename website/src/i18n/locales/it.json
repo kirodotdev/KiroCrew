@@ -19013,7 +19013,10 @@
       "unknown_session": "una sessione non elencata",
       "busy_emptying": "Svuotamento del cestino. Alcune azioni sono in pausa fino al termine.",
       "empty_failed_next_step": "Riprova Elimina definitivamente. I dettagli sono nel log del gateway.",
-      "kept_identity_changed": "Un lotto è cambiato sul disco dopo la selezione, quindi è stato conservato."
+      "kept_identity_changed": "Un lotto è cambiato sul disco dopo la selezione, quindi è stato conservato.",
+      "claude_code_kept_one": "Claude Code conserva anche almeno {{size}} per {{count}} chat di Claude. Archiviazione non lo rimuove.",
+      "claude_code_kept_many": "Claude Code conserva anche almeno {{size}} per {{count}} chat di Claude. Archiviazione non lo rimuove.",
+      "claude_code_kept_other": "Claude Code conserva anche almeno {{size}} per {{count}} chat di Claude. Archiviazione non lo rimuove."
     },
     "sessionsPage": {
       "page_title": "Tutte le sessioni",

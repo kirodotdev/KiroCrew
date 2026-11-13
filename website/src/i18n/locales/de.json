@@ -18524,7 +18524,9 @@
       "unknown_session": "eine nicht gelistete Sitzung",
       "busy_emptying": "Papierkorb wird geleert. Einige Aktionen pausieren bis zum Abschluss.",
       "empty_failed_next_step": "Versuchen Sie „Endgültig löschen“ erneut. Details stehen im Gateway-Log.",
-      "kept_identity_changed": "Ein Stapel hat sich nach der Auswahl auf der Festplatte geändert und wurde daher behalten."
+      "kept_identity_changed": "Ein Stapel hat sich nach der Auswahl auf der Festplatte geändert und wurde daher behalten.",
+      "claude_code_kept_one": "Claude Code speichert außerdem mindestens {{size}} für {{count}} Claude-Chat. Der Speicher entfernt das nicht.",
+      "claude_code_kept_other": "Claude Code speichert außerdem mindestens {{size}} für {{count}} Claude-Chats. Der Speicher entfernt das nicht."
     },
     "sessionsPage": {
       "page_title": "Alle Sitzungen",

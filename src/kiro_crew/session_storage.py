@@ -148,6 +148,7 @@ from kiro_crew.session_storage_parts.store_inventory import (  # noqa: F401
     _attachment_files,
     _bucketize,
     _cached_scan,
+    _claude_code_usage,
     _cli_index,
     _cotenant_cache_lock,
     _cotenant_key,
@@ -260,6 +261,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # each kiro_crew name in _EXPORTS from its home, for type checkers and IDEs
     from kiro_crew import hooks, pinned_fs, platform_compat  # noqa: F401
+    from kiro_crew.agent_sdk.claude_transcripts import claude_session_paths  # noqa: F401
     from kiro_crew.atomic_write import atomic_write, fsync_dir, replace_with_retry  # noqa: F401
     from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX, attachments_dir  # noqa: F401
     from kiro_crew.config.paths import (  # noqa: F401

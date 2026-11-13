@@ -10,6 +10,7 @@ export type {
   SystemData,
   SessionStorageBucket,
   SessionStorageBatch,
+  ClaudeCodeStorage,
   SessionStorageReport,
   SessionStorageCleanup,
   SessionStorageEmptyJob,

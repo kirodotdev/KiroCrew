@@ -22,10 +22,11 @@ import os
 import stat
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from kiro_crew import hooks, platform_compat
+from kiro_crew.agent_sdk.claude_transcripts import claude_session_paths
 from kiro_crew.chat_attachments import ATTACHMENTS_DIR_SUFFIX, attachments_dir
 from kiro_crew.config.paths import (
     CONFIG_DIR_LEAF,
@@ -690,12 +691,40 @@ def _same_filesystem(a: Path, b: Path) -> bool:
     return dev_a is not None and dev_a == dev_b
 
 
+def _claude_code_usage(sessions: Iterable[tuple[str, str]]) -> tuple[int, int]:
+    """``(bytes, sessions)`` Claude Code keeps for these ``(sid, cwd)`` pairs.
+
+    Each path is sized once, so a sid two pairs name is never counted twice, and
+    a sid with none of its paths present is not a session here. Reads only.
+    """
+    sized: set[Path] = set()
+    found: set[str] = set()
+    total = 0
+    for sid, cwd in sessions:
+        for path in claude_session_paths(sid, cwd):
+            if path in sized:
+                found.add(sid)
+                continue
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            sized.add(path)
+            found.add(sid)
+            if stat.S_ISDIR(info.st_mode):
+                total += _tree_bytes(path)
+            elif stat.S_ISREG(info.st_mode):
+                total += info.st_size
+    return total, len(found)
+
+
 def measure(
     index: SessionIndex,
     *,
     now: float | None = None,
     units: list[SessionUnit] | None = None,
     batches: list[TrashBatch] | None = None,
+    claude_sessions: Iterable[tuple[str, str]] = (),
 ) -> StorageReport:
     """Measure session storage and report what is reclaimable.
 
@@ -709,8 +738,14 @@ def measure(
     every batch manifest uncached on each call — so a caller that already has the
     list should always hand it over, and a payload that lists the batches beside
     these totals must not let the two describe different instants.
+
+    *claude_sessions* are the ``(sid, cwd)`` pairs of this instance's mapped
+    Claude chats. What Claude Code keeps for them is sized on every call, never
+    cached, and lands only in ``claude_code_bytes`` / ``claude_code_sessions``:
+    Storage never moves those files, so no other total includes them.
     """
     clock = time.time() if now is None else now
+    claude_bytes, claude_count = _claude_code_usage(claude_sessions)
     units = _scan_units(index, cached=True) if units is None else units
     active = [u for u in units if u.active]
     # Sub-floor sessions are neither active nor offered: reporting them as
@@ -729,6 +764,8 @@ def measure(
         trash_batches=len(batches),
         trash_same_filesystem=_same_filesystem(kiro_sessions_dir(), trash_root()),
         reclaim_blocked_reason=reclaim_block_reason(cached=True),
+        claude_code_bytes=claude_bytes,
+        claude_code_sessions=claude_count,
     )
     # The per-store split stays out of the report but is the first thing worth
     # knowing when a total looks wrong.

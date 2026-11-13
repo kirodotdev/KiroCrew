@@ -19013,7 +19013,10 @@
       "unknown_session": "une session non répertoriée",
       "busy_emptying": "Vidage de la corbeille. Certaines actions sont suspendues jusqu'à la fin.",
       "empty_failed_next_step": "Réessayez Supprimer définitivement. Les détails sont dans le journal du gateway.",
-      "kept_identity_changed": "Un lot a changé sur le disque après votre sélection, il a donc été conservé."
+      "kept_identity_changed": "Un lot a changé sur le disque après votre sélection, il a donc été conservé.",
+      "claude_code_kept_one": "Claude Code conserve aussi au moins {{size}} pour {{count}} discussion Claude. Le stockage ne le supprime pas.",
+      "claude_code_kept_many": "Claude Code conserve aussi au moins {{size}} pour {{count}} discussions Claude. Le stockage ne le supprime pas.",
+      "claude_code_kept_other": "Claude Code conserve aussi au moins {{size}} pour {{count}} discussions Claude. Le stockage ne le supprime pas."
     },
     "sessionsPage": {
       "page_title": "Toutes les sessions",

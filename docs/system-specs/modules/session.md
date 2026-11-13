@@ -4229,6 +4229,10 @@ to exclude from reclaiming (a mapped session is resumable), and the key each ID
 belongs to so a session's transcript can be paired with its replay log. Returning
 the mapping rather than only the ID set is what lets a caller reclaim a session
 whole instead of leaving one half behind.
+`SessionMap.mapped_sid_cwds(provider)` returns the `(sid, cwd)` pairs of the
+entries mapped under that provider label with both recorded; the Storage report
+sizes Claude Code's own files for the Claude ones
+([session-storage](session-storage.md#what-claude-code-keeps)).
 
 **Dashboard history key round-trip:** Session keys use `:` (e.g.
 `dashboard:chat-1-xxx`) but JSONL filenames use `_safe_key()` which replaces
