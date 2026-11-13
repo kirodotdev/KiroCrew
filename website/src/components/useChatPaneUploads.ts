@@ -1,7 +1,6 @@
-import { useState, useCallback, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
+import { useState, useCallback, useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { useChatFileDrop } from './ChatDropOverlay'
-import { appendSlotMessage } from '../store/chatSlice'
 import { api } from '../api/client'
 import { classifyDrop } from '../utils/dropClassify'
 import { spliceDirTokens, servedUploadMb, VIDEO_EXT } from '../utils/fileTokens'
@@ -16,24 +15,23 @@ import {
   useComposerSendHeld,
   useComposerUploadCount,
 } from '../utils/composerSendHolds'
+import { holdSlotUploadFailure, onSlotUploadFailureHeld, takeSlotUploadFailure } from '../utils/slotUploadFailures'
 import { i18nT } from '../i18n/t'
-import type { AppDispatch } from '../store'
 
 /**
  * `ChatPane`'s attachment uploads: the upload mutation (its result follows the
  * slot the files were picked in, not the screen), cancel, the count and size
  * pre-checks, folder drops, and the per-slot upload notices: a refusal hint and
- * a failure banner keyed by slot, or an error row in the slot's transcript
- * when that slot is no longer on screen.
+ * a failure banner keyed by slot. A failure for a slot not on screen is held
+ * for it (`slotUploadFailures`) and enters its banner when it is shown.
  */
 
 /** Variables of the composer upload mutation: the files, the slot they were
  *  picked in, and the AbortController that can end the request. */
 type UploadVars = { files: File[]; forSlot: string; controller: AbortController }
 
-export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError }: {
+export function useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError }: {
   slotKey: string
-  dispatch: AppDispatch
   slotKeyRef: MutableRefObject<string>
   mountedRef: MutableRefObject<boolean>
   setInput: Dispatch<SetStateAction<string>>
@@ -44,8 +42,8 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
   // A banner belongs to the conversation it happened in: rebinding the pane to
   // another slot must not carry A's banner over B's thread, and coming back to
   // A shows it again until dismissed. Dismiss clears only the shown slot's
-  // entry. A failure for a slot NOT on screen never enters this map — see
-  // reportUploadFailure, which writes it to that slot's transcript instead.
+  // entry. A failure for a slot NOT on screen is held outside this pane (see
+  // reportUploadFailure) and enters the map when the pane shows that slot.
   const [uploadErrors, setUploadErrors] = useState<Record<string, string>>({})
   const uploadError = uploadErrors[slotKey] ?? ''
   // Client-side pre-check refusals (too many files, over the size limit) are
@@ -67,21 +65,29 @@ export function useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, 
   }, [slotKey])
   /** Report an upload failure to the slot whose files failed. On screen it is
    *  the banner. Anywhere else — the pane rebound to another slot, or gone —
-   *  it goes into that slot's TRANSCRIPT as an error row, the same place a
-   *  failed send reports: the transcript is store-backed and survives both the
-   *  rebind and leaving the page, so the failure is found on return rather
-   *  than held in component state nobody may ever render. Never dropped. */
+   *  it is held for that slot outside the transcript, where no history rebuild
+   *  can drop it or read it as a turn error, and the first pane or chat page
+   *  that shows the slot takes it into its banner. */
   const reportUploadFailure = useCallback((message: string, forSlot: string) => {
     if (mountedRef.current && forSlot === slotKeyRef.current) { setUploadError(message, forSlot); return }
-    dispatch(appendSlotMessage({ slot: forSlot, message: { role: 'error', content: message, cls: '' } }))
-  }, [dispatch, setUploadError, mountedRef, slotKeyRef])
+    holdSlotUploadFailure(forSlot, message)
+  }, [setUploadError, mountedRef, slotKeyRef])
+  // Showing a slot takes the failure held for it into the banner, and one held
+  // while the slot is already shown (a request an earlier pane started) enters
+  // at once. Only a non-empty take sets it, so an effect replay that finds the
+  // failure already taken leaves the banner alone.
+  useEffect(() => {
+    const show = (message: string) => { if (message) setUploadError(message, slotKey) }
+    show(takeSlotUploadFailure(slotKey))
+    return onSlotUploadFailureHeld(slot => { if (slot === slotKey) show(takeSlotUploadFailure(slot)) })
+  }, [slotKey, setUploadError])
 
   // File upload as a mutation (isPending replaces a manual `uploading` flag).
   //
   // The variables carry the slot the files were picked in: the pane can be
   // rebound to another slot while the upload is in flight, and the result
   // must follow the files' slot, not the screen: completed paths enter that
-  // slot's arrivals inbox, while failures reach its banner or transcript.
+  // slot's arrivals inbox, while failures reach its banner, held for it when off screen.
   //
   // The variables also carry the request's own AbortController. It is
   // registered per slot in the shared composerSendHolds registry, not kept on

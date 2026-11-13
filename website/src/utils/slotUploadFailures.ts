@@ -3,9 +3,12 @@
  *
  * An upload or capture that fails after the person switched chats belongs to the
  * chat it started in, not the one on screen. It is held here, outside the
- * transcript (no history rebuild can drop or reorder it), and the chat page moves
- * it into its upload banner when that chat is next shown. Module scope, so a
- * failure that lands after the page unmounted is still there when it remounts.
+ * transcript (no history rebuild can drop or reorder it), and the chat page or a
+ * split pane moves it into its upload banner when it next shows that chat. Each
+ * failure is taken once: when both show the chat, the first listener takes it
+ * (in split view that can be the chat page's banner rather than a pane's).
+ * Module scope, so a failure that lands after its pane or page unmounted is
+ * still there when one remounts.
  *
  * An entry leaves when its banner takes it (`takeSlotUploadFailure`) or its chat
  * is closed (`forgetSlotUploadFailure`), and the table keeps only the newest
@@ -23,8 +26,8 @@ type HeldListener = (slot: string) => void
 const listeners = new Set<HeldListener>()
 
 /** Hold `message` for `slot`; a later failure for the same chat replaces it.
- *  A mounted page showing `slot` hears of it at once (`onSlotUploadFailureHeld`),
- *  so a failure held by an earlier page instance is not missed. */
+ *  A mounted page or pane showing `slot` hears of it at once
+ *  (`onSlotUploadFailureHeld`), so a failure held by an earlier instance is not missed. */
 export function holdSlotUploadFailure(slot: string, message: string): void {
   waiting.delete(slot)
   waiting.set(slot, message)
