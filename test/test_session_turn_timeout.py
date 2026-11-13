@@ -26,8 +26,8 @@ from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp import streams, web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.acp import client as acp_client
 from kiro_crew.config.loader import CHAT_TURN_TIMEOUT_MAX, CHAT_TURN_TIMEOUT_MIN
@@ -618,6 +618,70 @@ class TestEndpoint:
                 assert resp.status in (403, 404)
         assert slot.turn_timeout_secs is None
         saver.assert_not_awaited()
+
+
+class TestACancelledRequestLeavesNoCommit:
+    """A request cancelled during its save leaves no commit for later saves to write.
+
+    The real save shields its executor future, so the worker runs on after the
+    request unwinds and may run the commit hook before or after the cancellation.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hook", ["before-cancel", "after-cancel"])
+    async def test_a_cancelled_request_drops_its_commit(self, hook: str) -> None:
+        from kiro_crew.dashboard.chat_handlers import turn_timeout_commits
+
+        slot = _ChatSlot("cancelled-limit")
+        slot.turn_timeout_secs = 3600
+        state = _mock_state(slot)
+        history_key = slot_history_key(slot)
+        entered, release, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        hook_ran = asyncio.Event()
+        workers: list[asyncio.Task[bool]] = []
+
+        async def _shielded_save(*args, **kwargs):  # type: ignore[no-untyped-def]
+            async def _worker() -> bool:
+                await release.wait()
+                kwargs["after_commit_on_transcript"]()
+                hook_ran.set()
+                await finish.wait()
+                return True
+
+            workers.append(asyncio.ensure_future(_worker()))
+            entered.set()
+            return await asyncio.shield(workers[0])
+
+        raw = b'{"secs": 7200}'
+        body = streams.StreamReader(MagicMock(), 2**16, loop=asyncio.get_running_loop())
+        body.feed_data(raw)
+        body.feed_eof()
+        request = make_mocked_request(
+            "POST",
+            f"/api/chat/slots/{slot.key}/turn-timeout",
+            headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+            match_info={"slot": slot.key},
+            app=_make_app(state),
+            payload=body,
+        )
+        try:
+            with patch(_SAVE, new=AsyncMock(side_effect=_shielded_save)):
+                handler = asyncio.ensure_future(api_chat_slot_turn_timeout(request))
+                await asyncio.wait_for(entered.wait(), 30)
+                if hook == "before-cancel":
+                    release.set()
+                    await asyncio.wait_for(hook_ran.wait(), 30)
+                handler.cancel()
+                release.set()
+                finish.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(handler, 30)
+                assert await asyncio.wait_for(workers[0], 30) is True
+            assert hook_ran.is_set()
+            assert history_key not in turn_timeout_commits
+            assert slot.turn_timeout_secs == 3600
+        finally:
+            turn_timeout_commits.pop(history_key, None)
 
 
 class TestRestore:

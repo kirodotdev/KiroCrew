@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from aiohttp import web
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from kiro_crew.dashboard.chat_handlers import (
         AUTOCOMPACT_PCT_MAX,
         AUTOCOMPACT_PCT_MIN,
@@ -49,6 +51,28 @@ def _autocompact_txn_lock(history_key: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _autocompact_txn_locks[history_key] = lock
     return lock
+
+
+async def _save_dropping_commit_on_cancel(
+    save: Coroutine[Any, Any, bool], commits: dict[str, Any], history_key: str
+) -> bool:
+    """Await *save*; if the request is cancelled, drop its commit once the save settles.
+
+    The save's worker runs on after the request unwinds and may record the commit
+    later, so the save runs as its own task and the pop waits for it. The task starts
+    eagerly, so the save dispatches in the caller's tick, as an awaited save does. The
+    caller still holds the transcript's transaction lock, so no later request's commit
+    can be the one dropped.
+    """
+    task = asyncio.eager_task_factory(asyncio.get_running_loop(), save)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait([task])
+        finally:
+            commits.pop(history_key, None)
+        raise
 
 
 async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
@@ -172,14 +196,18 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
 
         if state.conversation_log:
             try:
-                applied = await save_slot_off_loop(
-                    state,
-                    slot,
-                    force=True,
-                    best_effort=False,
-                    expected_history_key=authorized_history_key,
-                    autocompact_override=(pct,),
-                    after_commit_on_transcript=_record_commit,
+                applied = await _save_dropping_commit_on_cancel(
+                    save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=authorized_history_key,
+                        autocompact_override=(pct,),
+                        after_commit_on_transcript=_record_commit,
+                    ),
+                    autocompact_commits,
+                    authorized_history_key,
                 )
             except Exception:
                 logger.exception("Slot %s autocompact_pct persist failed", name)
@@ -448,14 +476,18 @@ async def api_chat_slot_turn_timeout(request: web.Request) -> web.Response:
                 turn_timeout_commits[authorized_history_key] = (secs,)
 
             try:
-                saved = await save_slot_off_loop(
-                    state,
-                    slot,
-                    force=True,
-                    best_effort=False,
-                    expected_history_key=authorized_history_key,
-                    turn_timeout_override=(secs,),
-                    after_commit_on_transcript=_record_commit,
+                saved = await _save_dropping_commit_on_cancel(
+                    save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        best_effort=False,
+                        expected_history_key=authorized_history_key,
+                        turn_timeout_override=(secs,),
+                        after_commit_on_transcript=_record_commit,
+                    ),
+                    turn_timeout_commits,
+                    authorized_history_key,
                 )
             except Exception:
                 logger.exception("Slot %s turn_timeout_secs persist failed", name)
