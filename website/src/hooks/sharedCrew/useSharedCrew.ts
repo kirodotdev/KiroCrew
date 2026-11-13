@@ -11,7 +11,8 @@ import { noteSendRevision } from '../../api/sendRace'
 import type { CreatorFilter, SendState } from '../../api/sharedCrew'
 import { effectiveMode, showsTeamAttribution } from '../../api/sharedCrewMode'
 import { ALL_UNAVAILABLE, capabilityUsable, sharedAccessConfigured, sharedCrewPreviewOn, someoneJoined } from '../../api/sharedCrewUi'
-import { latestSendState, sharedCrewKeys } from './sharedCrewSocket'
+import { timedPoll } from '../../lib/pollRule'
+import { latestSendState, PEOPLE_POLL_ID, sharedCrewKeys } from './sharedCrewSocket'
 
 /** The Crew's capabilities; all unavailable until the gateway says otherwise. */
 export function useSharedCrewCapabilities({ fetchOnMount = true }: { fetchOnMount?: boolean } = {}) {
@@ -46,7 +47,7 @@ export function useSharedCrewMode(enabled = true, { fetchOnMount = true }: { fet
 }
 
 export function useSharedCrewPeople(enabled = true, { fetchOnMount = true }: { fetchOnMount?: boolean } = {}) {
-  return useQuery({ queryKey: sharedCrewKeys.people, queryFn: () => api.sharedCrewPeople(), enabled, retry: false, refetchOnMount: fetchOnMount, retryOnMount: fetchOnMount })
+  return useQuery({ queryKey: sharedCrewKeys.people, queryFn: () => timedPoll(PEOPLE_POLL_ID, () => api.sharedCrewPeople()), enabled, retry: false, refetchOnMount: fetchOnMount, retryOnMount: fetchOnMount })
 }
 
 /** Whether this Crew shows who did what (bylines, decision attribution,

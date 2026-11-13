@@ -37,6 +37,11 @@ const release = () => {
   else inFlight--
 }
 
+/** Record how long a read of `id` took; `crewWorkersGapMs` backs off from it. `lib/pollRule` records its reads here too. */
+export function noteReadMs(id: string, ms: number) {
+  lastMs.set(id, ms)
+}
+
 /** Read the list, waiting for a free slot when the cap is full; times the answer. */
 export async function readCrewWorkers(root: string) {
   await acquire()
@@ -45,7 +50,7 @@ export async function readCrewWorkers(root: string) {
     return await api.crewWorkers(root)
   } finally {
     release()
-    lastMs.set(root, Date.now() - t0)
+    noteReadMs(root, Date.now() - t0)
   }
 }
 

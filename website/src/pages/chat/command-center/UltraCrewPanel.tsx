@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { api } from '../../../api/client'
 import type { CrewWorker } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
+import { timedPoll, usePollRule } from '../../../lib/pollRule'
 import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
 import { artifactEntries } from '../../crewBoardRows'
 import { fmtList, fmtRelative } from '../../../i18n/format'
@@ -629,7 +630,8 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const [view, setView] = useState<'status' | 'list'>('status')
   const [doneOpen, setDoneOpen] = useState(false)
   // The work ledger through the Crew page's own read (GET /api/crew-board), same key and cadence.
-  const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => api.crewBoard(root) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: CREW_BOARD_POLL_MS, retry: false })
+  const boardInterval = usePollRule(`crew-board:${root}`, CREW_BOARD_POLL_MS, active, crewBoardQueryKey(root))
+  const board = useQuery({ queryKey: crewBoardQueryKey(root), queryFn: () => timedPoll(`crew-board:${root}`, () => api.crewBoard(root)) as Promise<WorkBoardResponse>, enabled: !!root && active, refetchInterval: boardInterval, retry: false })
   // ISO timestamps from the board: a byte compare orders them, no locale involved.
   const items = useMemo(() => [...(board.data?.items ?? [])].sort((a, b) => { const x = a.created_at || '', y = b.created_at || ''; return x < y ? -1 : x > y ? 1 : 0 }), [board.data])
   const goalText = (board.data?.conductor?.goal || '').replace(/\s+/g, ' ').trim()
