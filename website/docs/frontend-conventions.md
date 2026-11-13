@@ -835,6 +835,11 @@ Two habits belong to the same concern:
 
 - Framer Motion for orchestrated component transitions: enter/exit, layout
   animations, gesture-driven motion.
+- `src/AppMotionConfig.tsx` wraps the whole render tree in
+  `<MotionConfig reducedMotion="user">`, so under the system "reduce motion"
+  setting Framer skips position and size animations (`x`/`y`, scale, rotate,
+  `width`/`height`, `top`/`left`, layout) and keeps opacity and colour, so a
+  new component needs no `useReducedMotion()` of its own for those.
 - Tailwind `transition-*` for simple state changes (hover, toggle, color).
 - Tailwind `animate-*` for simple indicators (spin, pulse) and the shared
   `animate-rise` / `animate-scale-in` entrances.
