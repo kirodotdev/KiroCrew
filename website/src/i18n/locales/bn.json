@@ -6858,6 +6858,7 @@
       "queue_message": "বার্তা সারিতে রাখুন",
       "queue_run_after_the_current_work_finishes_enter": "কিউ — বর্তমান কাজ শেষ হলে চালাও (Enter)",
       "recording_click_mic_to_stop": "রেকর্ড হচ্ছে… থামাতে মাইকে ক্লিক করো",
+      "muted_click_mic_to_stop": "মিউট করা… থামাতে মাইকে ক্লিক করো",
       "reference_a_file": "একটি ফাইল উল্লেখ করুন",
       "reject": "প্রত্যাখ্যান করুন",
       "reject_all": "সব প্রত্যাখ্যান",
@@ -11390,7 +11391,9 @@
       "mute": "মাইক্রোফোন মিউট করো",
       "unmute": "মাইক্রোফোন আনমিউট করো",
       "shortcut_hint": "Alt+Shift+Q দিয়ে মিউট বা আনমিউট করো",
-      "shortcut_hint_mac": "⌥⇧Q দিয়ে মিউট বা আনমিউট করো"
+      "shortcut_hint_mac": "⌃⇧M দিয়ে মিউট বা আনমিউট করো",
+      "mute_short": "মিউট করো",
+      "unmute_short": "আনমিউট করো"
     }
   },
   "hooks": {

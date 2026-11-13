@@ -7041,6 +7041,7 @@
       "queue_message": "Metti il messaggio in coda",
       "queue_run_after_the_current_work_finishes_enter": "Metti in coda — esegui al termine del lavoro corrente (Enter)",
       "recording_click_mic_to_stop": "Registrazione… clicca sul microfono per fermare",
+      "muted_click_mic_to_stop": "Microfono disattivato… clicca sul microfono per fermare",
       "reference_a_file": "Fai riferimento a un file",
       "reject": "Rifiuta",
       "reject_all": "Rifiuta tutto",
@@ -11645,7 +11646,9 @@
       "mute": "Disattiva microfono",
       "unmute": "Riattiva microfono",
       "shortcut_hint": "Alt+Shift+Q disattiva o riattiva",
-      "shortcut_hint_mac": "⌥⇧Q disattiva o riattiva"
+      "shortcut_hint_mac": "⌃⇧M disattiva o riattiva",
+      "mute_short": "Disattiva",
+      "unmute_short": "Riattiva"
     }
   },
   "hooks": {

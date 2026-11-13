@@ -194,8 +194,11 @@ describe('VoiceStatusBar mute', () => {
     expect(screen.queryByText('Recording')).toBeNull()
     expect(screen.getByTestId('voice-recording-elapsed')).toBeTruthy()
     const btn = screen.getByTestId('voice-mute-toggle')
-    expect(btn.getAttribute('aria-pressed')).toBe('true')
+    // The name carries the action, so there is no pressed state to contradict it.
+    expect(btn.hasAttribute('aria-pressed')).toBe(false)
     expect(btn.getAttribute('aria-label')).toBe('Unmute microphone')
+    // A visible word, not only an icon: the device picker beside it is a mic too.
+    expect(btn.textContent).toBe('Unmute')
     fireEvent.click(btn)
     expect(onToggleMute).toHaveBeenCalledTimes(1)
   })
@@ -207,5 +210,13 @@ describe('VoiceStatusBar mute', () => {
     unmount()
     render(<VoiceStatusBar recording level={0.4} onSelectDevice={noop} />)
     expect(screen.queryByTestId('voice-mute-toggle')).toBeNull()
+  })
+
+  it('lets the recording row wrap, so a narrow composer keeps the device picker inside', () => {
+    // Every child but the picker keeps its width. On one row at 320px (Italian,
+    // muted) they pushed the picker past the composer's clipped edge.
+    render(<VoiceStatusBar recording level={0} muted onToggleMute={noop} deviceLabel="Mic" onSelectDevice={noop} />)
+    const row = screen.getByTestId('voice-mute-toggle').parentElement
+    expect(row?.className).toContain('flex-wrap')
   })
 })

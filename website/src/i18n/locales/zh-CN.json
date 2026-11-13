@@ -6675,6 +6675,7 @@
       "queue_message": "排队消息",
       "queue_run_after_the_current_work_finishes_enter": "排队 — 当前工作完成后运行 (Enter)",
       "recording_click_mic_to_stop": "正在录音…点击麦克风停止",
+      "muted_click_mic_to_stop": "已静音…点击麦克风停止",
       "reference_a_file": "引用文件",
       "reject": "拒绝",
       "reject_all": "全部拒绝",
@@ -11135,7 +11136,9 @@
       "mute": "将麦克风静音",
       "unmute": "取消静音",
       "shortcut_hint": "Alt+Shift+Q 切换静音",
-      "shortcut_hint_mac": "⌥⇧Q 切换静音"
+      "shortcut_hint_mac": "⌃⇧M 切换静音",
+      "mute_short": "静音",
+      "unmute_short": "取消静音"
     }
   },
   "hooks": {

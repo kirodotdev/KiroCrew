@@ -7041,6 +7041,7 @@
       "queue_message": "Enfileirar mensagem",
       "queue_run_after_the_current_work_finishes_enter": "Enfileirar — executar após a conclusão do trabalho atual (Enter)",
       "recording_click_mic_to_stop": "Gravando… clique no microfone para parar",
+      "muted_click_mic_to_stop": "Silenciado… clique no microfone para parar",
       "reference_a_file": "Referenciar um arquivo",
       "reject": "Rejeitar",
       "reject_all": "Rejeitar tudo",
@@ -11645,7 +11646,9 @@
       "mute": "Silenciar microfone",
       "unmute": "Ativar microfone",
       "shortcut_hint": "Alt+Shift+Q silencia ou ativa",
-      "shortcut_hint_mac": "⌥⇧Q silencia ou ativa"
+      "shortcut_hint_mac": "⌃⇧M silencia ou ativa",
+      "mute_short": "Silenciar",
+      "unmute_short": "Ativar"
     }
   },
   "hooks": {

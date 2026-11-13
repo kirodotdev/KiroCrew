@@ -7224,6 +7224,7 @@
       "queue_message": "Добавить в очередь",
       "queue_run_after_the_current_work_finishes_enter": "В очередь — выполнить после завершения текущей работы (Enter)",
       "recording_click_mic_to_stop": "Запись… нажми на микрофон, чтобы остановить",
+      "muted_click_mic_to_stop": "Микрофон выключен… нажми на микрофон, чтобы остановить",
       "reference_a_file": "Сослаться на файл",
       "reject": "Отклонить",
       "reject_all": "Отклонить все",
@@ -11900,7 +11901,9 @@
       "mute": "Выключить микрофон",
       "unmute": "Включить микрофон",
       "shortcut_hint": "Alt+Shift+Q выключает или включает",
-      "shortcut_hint_mac": "⌥⇧Q выключает или включает"
+      "shortcut_hint_mac": "⌃⇧M выключает или включает",
+      "mute_short": "Выключить",
+      "unmute_short": "Включить"
     }
   },
   "hooks": {

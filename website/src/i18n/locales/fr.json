@@ -7041,6 +7041,7 @@
       "queue_message": "Mettre le message en file d'attente",
       "queue_run_after_the_current_work_finishes_enter": "Mettre en file — exécuter une fois le travail en cours terminé (Enter)",
       "recording_click_mic_to_stop": "Enregistrement… clique sur le micro pour arrêter",
+      "muted_click_mic_to_stop": "Micro coupé… clique sur le micro pour arrêter",
       "reference_a_file": "Référencer un fichier",
       "reject": "Refuser",
       "reject_all": "Tout rejeter",
@@ -11645,7 +11646,9 @@
       "mute": "Couper le micro",
       "unmute": "Réactiver le micro",
       "shortcut_hint": "Alt+Shift+Q coupe ou réactive",
-      "shortcut_hint_mac": "⌥⇧Q coupe ou réactive"
+      "shortcut_hint_mac": "⌃⇧M coupe ou réactive",
+      "mute_short": "Couper",
+      "unmute_short": "Réactiver"
     }
   },
   "hooks": {

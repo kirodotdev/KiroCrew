@@ -1157,7 +1157,9 @@ stderr is not quiet, so no test may assert it empty.
 
 A recording can be muted and unmuted without ending it, from the button on the
 recording strip or the dictation panel, or with the rebindable
-`toggle-dictation-mute` chord (Alt+Shift+Q, Option+Shift+Q on macOS). The chord
+`toggle-dictation-mute` chord (Alt+Shift+Q, Control+Shift+M on macOS). The macOS
+chord has no Option in it because the default push-to-talk key there is a bare
+right Option, and pressing that during a recording stops it. The chord
 broadcasts `dictation-mute-toggle` (`website/src/lib/dictationMute.ts`), and only
 the composer that owns the live recording acts on it.
 

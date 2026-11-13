@@ -6675,6 +6675,7 @@
       "queue_message": "메시지를 대기열에 추가",
       "queue_run_after_the_current_work_finishes_enter": "대기열 — 현재 작업이 끝난 후 실행 (Enter)",
       "recording_click_mic_to_stop": "녹음 중… 중지하려면 마이크를 클릭하세요",
+      "muted_click_mic_to_stop": "음소거됨… 중지하려면 마이크를 클릭하세요",
       "reference_a_file": "파일 참조",
       "reject": "거부",
       "reject_all": "모두 거부",
@@ -11135,7 +11136,9 @@
       "mute": "마이크 음소거",
       "unmute": "음소거 해제",
       "shortcut_hint": "Alt+Shift+Q로 음소거 전환",
-      "shortcut_hint_mac": "⌥⇧Q로 음소거 전환"
+      "shortcut_hint_mac": "⌃⇧M로 음소거 전환",
+      "mute_short": "음소거",
+      "unmute_short": "음소거 해제"
     }
   },
   "hooks": {

@@ -6628,7 +6628,9 @@
       "mute": "Mute microphone",
       "unmute": "Unmute microphone",
       "shortcut_hint": "Alt+Shift+Q mutes or unmutes",
-      "shortcut_hint_mac": "⌥⇧Q mutes or unmutes"
+      "shortcut_hint_mac": "⌃⇧M mutes or unmutes",
+      "mute_short": "Mute",
+      "unmute_short": "Unmute"
     }
   },
   "hooks": {

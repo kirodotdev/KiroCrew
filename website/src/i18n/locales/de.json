@@ -6858,6 +6858,7 @@
       "queue_message": "Nachricht in die Warteschlange stellen",
       "queue_run_after_the_current_work_finishes_enter": "In die Warteschlange — nach Abschluss der aktuellen Arbeit ausführen (Enter)",
       "recording_click_mic_to_stop": "Aufnahme… zum Beenden auf das Mikrofon klicken",
+      "muted_click_mic_to_stop": "Stumm… zum Beenden auf das Mikrofon klicken",
       "reference_a_file": "Auf eine Datei verweisen",
       "reject": "Ablehnen",
       "reject_all": "Alle ablehnen",
@@ -11390,7 +11391,9 @@
       "mute": "Mikrofon stummschalten",
       "unmute": "Stummschaltung aufheben",
       "shortcut_hint": "Alt+Shift+Q schaltet stumm oder laut",
-      "shortcut_hint_mac": "⌥⇧Q schaltet stumm oder laut"
+      "shortcut_hint_mac": "⌃⇧M schaltet stumm oder laut",
+      "mute_short": "Stummschalten",
+      "unmute_short": "Stumm aus"
     }
   },
   "hooks": {

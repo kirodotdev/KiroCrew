@@ -7041,6 +7041,7 @@
       "queue_message": "Poner el mensaje en cola",
       "queue_run_after_the_current_work_finishes_enter": "Poner en cola — ejecutar cuando termine el trabajo actual (Enter)",
       "recording_click_mic_to_stop": "Grabando… haz clic en el micrófono para detener",
+      "muted_click_mic_to_stop": "Silenciado… haz clic en el micrófono para detener",
       "reference_a_file": "Referenciar un archivo",
       "reject": "Rechazar",
       "reject_all": "Rechazar todo",
@@ -11645,7 +11646,9 @@
       "mute": "Silenciar micrófono",
       "unmute": "Activar micrófono",
       "shortcut_hint": "Alt+Shift+Q silencia o activa",
-      "shortcut_hint_mac": "⌥⇧Q silencia o activa"
+      "shortcut_hint_mac": "⌃⇧M silencia o activa",
+      "mute_short": "Silenciar",
+      "unmute_short": "Activar"
     }
   },
   "hooks": {

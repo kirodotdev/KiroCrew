@@ -6675,6 +6675,7 @@
       "queue_message": "メッセージをキューに追加",
       "queue_run_after_the_current_work_finishes_enter": "キュー — 現在の処理が完了した後に実行 (Enter)",
       "recording_click_mic_to_stop": "録音中… マイクをクリックして停止",
+      "muted_click_mic_to_stop": "ミュート中… マイクをクリックして停止",
       "reference_a_file": "ファイルを参照",
       "reject": "却下",
       "reject_all": "すべて却下",
@@ -11135,7 +11136,9 @@
       "mute": "マイクをミュート",
       "unmute": "ミュートを解除",
       "shortcut_hint": "Alt+Shift+Q でミュート切り替え",
-      "shortcut_hint_mac": "⌥⇧Q でミュート切り替え"
+      "shortcut_hint_mac": "⌃⇧M でミュート切り替え",
+      "mute_short": "ミュート",
+      "unmute_short": "ミュート解除"
     }
   },
   "hooks": {

@@ -6858,6 +6858,7 @@
       "queue_message": "संदेश कतार में डालें",
       "queue_run_after_the_current_work_finishes_enter": "कतार में डालें — मौजूदा काम पूरा होने के बाद चलाएँ (Enter)",
       "recording_click_mic_to_stop": "रिकॉर्डिंग हो रही है… रोकने के लिए माइक पर क्लिक करें",
+      "muted_click_mic_to_stop": "म्यूट है… रोकने के लिए माइक पर क्लिक करो",
       "reference_a_file": "किसी फ़ाइल का संदर्भ दें",
       "reject": "अस्वीकार करें",
       "reject_all": "सभी अस्वीकार करें",
@@ -11390,7 +11391,9 @@
       "mute": "माइक्रोफ़ोन म्यूट करो",
       "unmute": "माइक्रोफ़ोन अनम्यूट करो",
       "shortcut_hint": "Alt+Shift+Q से म्यूट या अनम्यूट करो",
-      "shortcut_hint_mac": "⌥⇧Q से म्यूट या अनम्यूट करो"
+      "shortcut_hint_mac": "⌃⇧M से म्यूट या अनम्यूट करो",
+      "mute_short": "म्यूट करो",
+      "unmute_short": "अनम्यूट करो"
     }
   },
   "hooks": {
