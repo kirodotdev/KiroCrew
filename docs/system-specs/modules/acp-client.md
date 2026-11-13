@@ -5748,6 +5748,12 @@ advertises `mode=external-sandbox`, both drivers write that value
 (`ACP_BACKEND_PREFERRED_PERMISSION_CONFIG`, `permission_value_for`). An adapter that
 does not offer it gets `mode=read-only`, the required floor, as before; a session
 that offers neither is refused. There is no fallback to full access.
+Codex has no `ACP_BACKEND_FORBIDDEN_MODES` row, so none of the checks that call
+`session_config_drift_issue` (the read-back after Crew's write, the mid-session
+tripwire and the check before each prompt) reads its `mode`. A backend that gets a
+row must have every value `permission_value_for` can write read back as no drift;
+`test_every_value_crew_writes_reads_back_as_no_drift` in
+`test/test_acp_copilot_backend.py` fails otherwise.
 
 The adapter mode uses Codex's `externalSandbox` policy with `untrusted` approvals
 and the user reviewer. Unsafe commands and edits still reach Crew's permission gate;
