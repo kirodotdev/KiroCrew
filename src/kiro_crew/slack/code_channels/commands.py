@@ -101,6 +101,10 @@ NOT_AUTHORIZED_TEXT = "⛔ You are not authorized to use this command here."
 ARCHIVED_TEXT = "This channel is archived."
 NO_PR_TEXT = {
     "not_a_repo": "This session's project is not a git repository, so there is no branch to open a pull request from.",
+    "broken_gitfile": "This session's project has a `.git` file that points at a git directory that is missing or invalid, so there is no branch to open a pull request from.",
+    "git_dubious_ownership": "git refuses this session's project because another user owns it (see git's `safe.directory` setting), so there is no branch to open a pull request from.",
+    "git_permission_denied": "git cannot read this session's project (permission denied), so there is no branch to open a pull request from.",
+    "git_probe_failed": "git could not open this session's project as a repository, so there is no branch to open a pull request from.",
     "no_github_remote": "This repository has no GitHub remote, so I can't open a pull request for it.",
     "host_not_allowed": "This repository's GitHub host isn't one this Kiro Crew may reach.",
     "gh_not_signed_in": "The GitHub CLI isn't signed in on this machine (`gh auth login`), so I can't open a pull request.",
@@ -161,7 +165,9 @@ async def pr_capability(binding: Binding) -> tuple[bool, str]:
         record = await asyncio.to_thread(WorkspaceStore().get, binding.team_id, binding.channel_id)
         tree = record.worktree if record is not None else ""
         if not tree or not await asyncio.to_thread(os.path.isdir, tree):
-            return False, "not_a_repo"
+            # The bind's record of git refusing the project, when that is why.
+            skipped = record.worktree_skipped if record is not None else ""
+            return False, skipped if skipped in NO_PR_TEXT else "not_a_repo"
         repo = parse_remote(await asyncio.to_thread(git_ops.remote_url, tree))
     except Exception:
         logger.debug("code channel PR capability unreadable", exc_info=True)

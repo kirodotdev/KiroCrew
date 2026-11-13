@@ -751,7 +751,7 @@ def test_a_repository_that_can_never_get_a_worktree_is_refused_only_while_a_retr
     proj.mkdir()
     monkeypatch.setattr(svc_mod, "_gate_open", lambda: True)
     monkeypatch.setattr(svc_mod, "_archived", lambda b: False)
-    monkeypatch.setattr(svc_mod.git_ops, "toplevel", lambda p: str(proj))
+    monkeypatch.setattr(svc_mod.git_ops, "toplevel_or_refusal", lambda p: (str(proj), "", ""))
     monkeypatch.setattr(svc_mod, "_remembered_root", lambda *a: str(proj))
     monkeypatch.setattr(svc_mod, "is_sensitive_path", lambda p: False)
     monkeypatch.setattr(
@@ -825,7 +825,7 @@ def test_spent_bind_attempts_do_not_carry_over_to_a_new_project(monkeypatch, tmp
     second.mkdir()
     monkeypatch.setattr(svc_mod, "_gate_open", lambda: True)
     monkeypatch.setattr(svc_mod, "_archived", lambda b: False)
-    monkeypatch.setattr(svc_mod.git_ops, "toplevel", lambda p: p)
+    monkeypatch.setattr(svc_mod.git_ops, "toplevel_or_refusal", lambda p: (p, "", ""))
     monkeypatch.setattr(svc_mod, "_remembered_root", lambda channel, top, *a: top)
     monkeypatch.setattr(svc_mod, "is_sensitive_path", lambda p: False)
     monkeypatch.setattr(svc_mod.git_ops, "create_or_adopt_worktree", lambda r, b: "git failed")
@@ -860,7 +860,9 @@ def test_a_bind_that_always_raises_is_refused_only_while_a_retry_is_left(monkeyp
     proj.mkdir()
     monkeypatch.setattr(svc_mod, "_gate_open", lambda: True)
     monkeypatch.setattr(svc_mod, "_archived", lambda b: False)
-    monkeypatch.setattr(svc_mod.git_ops, "toplevel", lambda p: "")  # not a repository
+    monkeypatch.setattr(
+        svc_mod.git_ops, "toplevel_or_refusal", lambda p: (None, "not_a_git_repository", "")
+    )
     service = svc_mod.WorkspaceService(lambda: None, store=WorkspaceStore(tmp_path / "ws.json"))
     real_bind = service._bind
 
@@ -915,7 +917,9 @@ def test_an_unwritable_store_never_refuses_a_turn_whose_outcome_is_known(monkeyp
     monkeypatch.setattr(store, "put", unwritable)
     monkeypatch.setattr(svc_mod, "_gate_open", lambda: True)
     monkeypatch.setattr(svc_mod, "_archived", lambda b: False)
-    monkeypatch.setattr(svc_mod.git_ops, "toplevel", lambda p: "")  # not a repository
+    monkeypatch.setattr(
+        svc_mod.git_ops, "toplevel_or_refusal", lambda p: (None, "not_a_git_repository", "")
+    )
     service = svc_mod.WorkspaceService(lambda: None, store=store)
     pointed: list[str] = []
 
@@ -1021,7 +1025,7 @@ def test_a_repository_that_refuses_a_worktree_runs_its_turns_in_the_project_at_o
 
     monkeypatch.setattr(svc_mod, "_gate_open", lambda: True)
     monkeypatch.setattr(svc_mod, "_archived", lambda b: False)
-    monkeypatch.setattr(svc_mod.git_ops, "toplevel", lambda p: str(proj))
+    monkeypatch.setattr(svc_mod.git_ops, "toplevel_or_refusal", lambda p: (str(proj), "", ""))
     monkeypatch.setattr(svc_mod, "_remembered_root", lambda *a: str(proj))
     monkeypatch.setattr(svc_mod, "is_sensitive_path", lambda p: False)
     monkeypatch.setattr(svc_mod.git_ops, "create_or_adopt_worktree", refuse)
