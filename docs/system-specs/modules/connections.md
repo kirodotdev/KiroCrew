@@ -1544,8 +1544,9 @@ deletes locally, leaving the card's manual revoke link.
 Crew can also hold an **owner-added remote server** (no card): an entry the
 owner recorded from the dashboard (`connections/owner_servers.py`, sealed
 `config.json`), at that exact url, under a name that is not a registry slug, at
-a url that is no registry provider's `mcp_url` (`crew_oauth._is_registry_url`:
-a card keeps that url's custody), not legacy `type: "sse"`, with no credential
+a url that is no Crew-owned card's `mcp_url` (`crew_oauth._is_registry_url`:
+a card in `SUPPORTED_SLUGS` keeps that url's custody; an unowned card's url, such
+as Sentry's, takes this path), not legacy `type: "sse"`, with no credential
 header. With the preview on a bridged chat backend, the MCP Servers page's Sign
 in runs Crew's sign-in (`dashboard/handlers/connections_custom_oauth.py`,
 `crew_oauth.signs_in_custom`). Its grant is keyed by name AND url
