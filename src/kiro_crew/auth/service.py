@@ -29,6 +29,7 @@ from kiro_crew.auth.login.endpoints import (
     BUILDER_ID_REGION,
     BUILDER_ID_START_URL,
     USER_AGENT,
+    oidc_scopes,
     social_service_url,
 )
 from kiro_crew.auth.shape import Transport, select_transport
@@ -440,7 +441,8 @@ class KasLoginService:
         """
         session = await self._http()
         stored = await asyncio.to_thread(self._store.load, identity)
-        client = builder_id.stored_client(stored, region)
+        scopes = oidc_scopes()
+        client = builder_id.stored_client(stored, region, scopes)
         auth = None
         if client is not None:
             try:
@@ -452,7 +454,7 @@ class KasLoginService:
             except builder_id.BuilderIdAuthError as err:
                 logger.info("stored SSO-OIDC client refused, registering a new one: %s", err)
         if client is None or auth is None:
-            client = await builder_id.register_client(region, session=session)
+            client = await builder_id.register_client(region, session=session, scopes=scopes)
             auth = await builder_id.start_device_authorization(
                 client, region=region, start_url=start_url, session=session
             )

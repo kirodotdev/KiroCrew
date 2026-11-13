@@ -7,7 +7,7 @@ service's (CPS) ``ListAvailableProfiles`` with the fresh token; we do the same.
 Contract mirrored from kiro-cli's ``list_available_profiles`` (its bearer client
 pointed at ``Endpoint::cps_for_region``, AWS JSON 1.0 protocol, bearer auth):
 
-  POST https://management.<region>.kiro.dev/
+  POST https://management.<region>.kiro.dev/   (listing: or ``KIRO_CPS_URL`` when set)
     Content-Type: application/x-amz-json-1.0
     X-Amz-Target: AmazonCodeWhispererService.ListAvailableProfiles
     Authorization: Bearer <accessToken>
@@ -27,11 +27,14 @@ stored-but-unusable credential.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 import aiohttp
 
+from kiro_crew import edition
 from kiro_crew.auth.login.endpoints import USER_AGENT
 
 logger = logging.getLogger(__name__)
@@ -57,6 +60,14 @@ _CPS_ENDPOINTS = {
     "eu-west-1": "https://management.eu-central-1.kiro.dev/",
 }
 _DEFAULT_CPS_REGION = "us-east-1"
+
+# One control plane to use instead of the table above, for an account whose
+# profile lives on a non-production CPS (a gamma Identity Center user). Read like
+# ``KIRO_AUTH_PORTAL_URL`` in ``endpoints.py``; only an ``https://`` URL is taken,
+# since the bearer token is sent to it. Only the sign-in profile listing reads it, and
+# an LTS build ignores it.
+CPS_URL_ENV = "KIRO_CPS_URL"
+_warned_ignored: set[str] = set()
 
 # A Kiro profile ARN; group 1 is the region.
 _PROFILE_ARN_RE = re.compile(
@@ -87,13 +98,54 @@ class ProfileListing:
     pages: int
 
 
+def cps_url_override() -> str:
+    """The ``KIRO_CPS_URL`` control plane with a trailing ``/``, or ``""`` when unset.
+
+    A value that is not an ``https://`` URL with a host is ignored, with one warning
+    per distinct value, so the bearer token never goes out in clear text. An LTS build
+    ignores any value: there the profile a sign-in finds decides whose policy is
+    fetched, and the environment must not choose that.
+    """
+    raw = os.environ.get(CPS_URL_ENV, "").strip()
+    if not raw:
+        return ""
+    if edition.is_lts():
+        if raw not in _warned_ignored:
+            _warned_ignored.add(raw)
+            logger.warning(
+                "%s ignored: an LTS build uses only its built-in control planes", CPS_URL_ENV
+            )
+        return ""
+    try:
+        parts = urlsplit(raw)
+    except ValueError:  # e.g. an unclosed IPv6 bracket; fall back like any other bad value
+        parts = None
+    if parts is None or parts.scheme != "https" or not parts.netloc:
+        if raw not in _warned_ignored:
+            _warned_ignored.add(raw)
+            logger.warning("%s ignored: %r is not an https:// URL", CPS_URL_ENV, raw)
+        return ""
+    return raw.rstrip("/") + "/"
+
+
 def control_plane_url(region: str) -> str:
-    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does."""
+    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does.
+
+    Always a host from the built-in table: ``KIRO_CPS_URL`` never reaches this, so the
+    LTS policy fetch (``platform/enterprise_policy_fetch.py``) cannot be redirected by
+    the environment. Only the sign-in listing (:func:`control_plane_urls`) reads it.
+    """
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
 
 
 def control_plane_urls(region: str) -> list[str]:
-    """Every CPS host sign-in asks for *region*'s profiles, in the order it asks them."""
+    """Every CPS host sign-in asks for *region*'s profiles, in the order it asks them.
+
+    With ``KIRO_CPS_URL`` set, that host is the only one.
+    """
+    override = cps_url_override()
+    if override:
+        return [override]
     return list(dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()]))
 
 
@@ -181,7 +233,8 @@ async def list_available_profiles(
     refusing host may hold the profile and an empty list would wrongly say there is
     none. A transport error is not caught here. When
     every host answered and listed none, the empty result names those hosts and the
-    pages they took, for the diagnostic log.
+    pages they took, for the diagnostic log. With ``KIRO_CPS_URL`` set, that host is
+    the only one asked.
     """
     errors: list[ControlPlaneError] = []
     empty: list[ProfileListing] = []

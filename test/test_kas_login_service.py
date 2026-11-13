@@ -716,7 +716,7 @@ def _oidc_auth(expires_in_secs: float = 300) -> builder_id.DeviceAuthorization:
 
 
 async def _begin_oidc(service, monkeypatch, provider: str, **kwargs) -> dict:
-    async def _fake_register(region, *, session):
+    async def _fake_register(region, *, session, scopes=builder_id.OIDC_SCOPES):
         return builder_id.RegisteredClient(client_id="cid-1", client_secret="csec-1")
 
     async def _fake_start(client, *, region, start_url, session):
@@ -1295,6 +1295,79 @@ def test_control_plane_url_is_the_regional_cps_host():
         "us-east-1"
     )
     assert "amazonaws.com" not in control_plane.control_plane_url("us-east-1")
+
+
+_GAMMA_CPS = "https://management.gamma.example.test"
+
+
+def test_kiro_cps_url_names_the_only_listing_host_but_not_the_region_host(monkeypatch):
+    """A gamma account's profile lives on a CPS outside the table; the env var names it
+    for the sign-in listing only. ``control_plane_url`` (the policy fetch's host) keeps
+    the table for every region."""
+    monkeypatch.setenv("KIRO_CPS_URL", _GAMMA_CPS)
+    for region in ("us-east-1", "eu-central-1", "ap-southeast-2"):
+        assert control_plane.control_plane_urls(region) == [_GAMMA_CPS + "/"]
+        assert control_plane.control_plane_url(region).endswith(".kiro.dev/")
+
+
+def test_kiro_cps_url_is_ignored_in_an_lts_build(monkeypatch, caplog):
+    """An LTS build's policy comes from the same host, so the environment cannot name it."""
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+    monkeypatch.setattr(control_plane, "_warned_ignored", set())
+    monkeypatch.setenv("KIRO_CPS_URL", _GAMMA_CPS + "/lts")
+    with caplog.at_level("WARNING", logger=control_plane.__name__):
+        assert control_plane.cps_url_override() == ""
+    assert "KIRO_CPS_URL" in caplog.text
+    assert control_plane.control_plane_urls("us-east-1")[0] == control_plane.control_plane_url(
+        "us-east-1"
+    )
+    assert _GAMMA_CPS + "/" not in control_plane.control_plane_urls("us-east-1")
+
+
+def test_kiro_cps_url_that_is_not_https_is_ignored_with_a_warning(monkeypatch, caplog):
+    """The bearer token goes to this host, so a clear-text or host-less value is refused."""
+    monkeypatch.setattr(control_plane, "_warned_ignored", set())
+    for bad in (
+        "http://management.gamma.example",
+        "https://",
+        "management.gamma.example",
+        "https://[::1",
+    ):
+        monkeypatch.setenv("KIRO_CPS_URL", bad)
+        with caplog.at_level(logging.WARNING, logger=control_plane.__name__):
+            assert control_plane.control_plane_urls("us-east-1")[0] == (
+                "https://management.us-east-1.kiro.dev/"
+            )
+        assert any("KIRO_CPS_URL" in r.getMessage() for r in caplog.records)
+        caplog.clear()
+
+
+@pytest.mark.asyncio
+async def test_kiro_cps_url_unset_still_asks_every_table_host(monkeypatch):
+    monkeypatch.delenv("KIRO_CPS_URL", raising=False)
+    session = _FakeSession([_page([]), _page([])])
+    listing = await control_plane.list_available_profiles("at", region="us-east-1", session=session)
+    assert listing.profiles == []
+    assert [url for url, _ in session.calls] == [
+        "https://management.us-east-1.kiro.dev/",
+        "https://management.eu-central-1.kiro.dev/",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_kiro_cps_url_listing_asks_only_that_host(monkeypatch):
+    """With the override, no production host sees the gamma token, even when it lists none."""
+    monkeypatch.setenv("KIRO_CPS_URL", _GAMMA_CPS + "/")
+    session = _FakeSession([_page([])])
+    listing = await control_plane.list_available_profiles("at", region="us-east-1", session=session)
+    assert listing.profiles == []
+    assert listing.url == _GAMMA_CPS + "/"
+    assert [url for url, _ in session.calls] == [_GAMMA_CPS + "/"]
+
+    session = _FakeSession([_page([{"arn": _PROFILE_ARN, "profileName": "Gamma"}])])
+    listing = await control_plane.list_available_profiles("at", region="eu-west-1", session=session)
+    assert [p.arn for p in listing.profiles] == [_PROFILE_ARN]
+    assert [url for url, _ in session.calls] == [_GAMMA_CPS + "/"]
 
 
 @pytest.mark.asyncio

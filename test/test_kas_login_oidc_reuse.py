@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from test_kas_login_service import _begin_oidc, _oidc_auth, _service
 
-from kiro_crew.auth.login import builder_id
+from kiro_crew.auth.login import builder_id, endpoints
 from kiro_crew.auth.store import KasToken, TokenStore
 
 
@@ -97,7 +97,7 @@ async def test_a_refused_stored_registration_is_replaced_but_a_refused_start_url
         "StartDeviceAuthorization failed: HTTP 401 invalid_client"
     )
 
-    async def _register(region, *, session):
+    async def _register(region, *, session, scopes=builder_id.OIDC_SCOPES):
         registered.append(region)
         return builder_id.RegisteredClient(client_id="cid-1", client_secret="csec-1")
 
@@ -116,3 +116,71 @@ async def test_a_refused_stored_registration_is_replaced_but_a_refused_start_url
     with pytest.raises(builder_id.StartUrlRejectedError):
         await service.begin_device("idc", start_url=acme)
     assert registered == ["us-east-1"]
+
+
+# ---- KIRO_OIDC_SCOPE_PREFIX ------------------------------------------------------
+
+_PREFIXED = ("acme_test:completions", "acme_test:analysis", "acme_test:conversations")
+
+
+def test_scope_prefix_unset_or_blank_keeps_the_public_scopes(monkeypatch):
+    monkeypatch.delenv(endpoints.OIDC_SCOPE_PREFIX_ENV, raising=False)
+    assert endpoints.oidc_scopes() == endpoints.OIDC_SCOPES
+    monkeypatch.setenv(endpoints.OIDC_SCOPE_PREFIX_ENV, "  ")
+    assert endpoints.oidc_scopes() == endpoints.OIDC_SCOPES
+    assert endpoints.OIDC_SCOPES == (
+        "codewhisperer:completions",
+        "codewhisperer:analysis",
+        "codewhisperer:conversations",
+    )
+
+
+def test_scope_prefix_replaces_the_public_prefix(monkeypatch):
+    monkeypatch.setenv(endpoints.OIDC_SCOPE_PREFIX_ENV, "acme_test")
+    assert endpoints.oidc_scopes() == _PREFIXED
+
+
+@pytest.mark.parametrize("bad", ["acme:x", "acme test", "Acme", "acme1", "acme-test", "x" * 65])
+def test_scope_prefix_that_is_not_a_token_is_ignored_with_a_warning(monkeypatch, caplog, bad):
+    monkeypatch.setenv(endpoints.OIDC_SCOPE_PREFIX_ENV, bad)
+    with caplog.at_level("WARNING", logger=endpoints.__name__):
+        assert endpoints.oidc_scopes() == endpoints.OIDC_SCOPES
+    assert endpoints.OIDC_SCOPE_PREFIX_ENV in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("provider", "identity", "kwargs"),
+    [
+        ("builder_id", "builder_id", {}),
+        ("idc", "identity_center", {"start_url": "https://acme.awsapps.com/start"}),
+    ],
+)
+@pytest.mark.parametrize(("prefix", "want"), [(None, None), ("acme_test", _PREFIXED)])
+@pytest.mark.asyncio
+async def test_a_sign_in_registers_for_the_configured_scopes(
+    tmp_path, monkeypatch, provider, identity, kwargs, prefix, want
+):
+    """Unset, every SSO-OIDC sign-in registers the public scopes; with a prefix, an
+    in-date public-scope registration is not reused and the prefixed ones are asked."""
+    want = want or endpoints.OIDC_SCOPES
+    if prefix is None:
+        monkeypatch.delenv(endpoints.OIDC_SCOPE_PREFIX_ENV, raising=False)
+    else:
+        monkeypatch.setenv(endpoints.OIDC_SCOPE_PREFIX_ENV, prefix)
+    _store_oidc_sign_in(tmp_path, identity, region="us-east-1", lapses_in=30 * 86400)
+    service, _ = _service(tmp_path)
+    registered: list[tuple[str, ...]] = []
+
+    async def _register(region, *, session, scopes=builder_id.OIDC_SCOPES):
+        registered.append(scopes)
+        return builder_id.RegisteredClient("cid-1", "csec-1", scopes=scopes)
+
+    async def _start(client, *, region, start_url, session):
+        return _oidc_auth()
+
+    monkeypatch.setattr(builder_id, "register_client", _register)
+    monkeypatch.setattr(builder_id, "start_device_authorization", _start)
+    begin = await service.begin_device(provider, **kwargs)
+    client = service._pending[begin["login_id"]].client
+    assert client.scopes == want
+    assert registered == ([] if prefix is None else [want])

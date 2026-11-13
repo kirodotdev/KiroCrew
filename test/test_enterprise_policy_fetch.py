@@ -209,6 +209,31 @@ class TestSuccess:
         headers = {k.lower(): v for k, v in cps.requests[0].header_items()}
         assert headers["tokentype"] == "EXTERNAL_IDP"
 
+    def test_kiro_cps_url_does_not_move_the_policy_read(self, enterprise, vault, cps, monkeypatch):
+        """The environment never names the policy host: KIRO_CPS_URL is a sign-in listing
+        setting only, so the policy read stays on the built-in table."""
+        monkeypatch.setenv("KIRO_CPS_URL", "https://management.gamma.example.test")
+        vault()
+        epf.fetch(_request())
+        (req,) = cps.requests
+        assert "gamma.example.test" not in req.full_url
+
+    def test_the_policy_read_ignores_an_accepted_cps_override(
+        self, enterprise, vault, cps, monkeypatch
+    ):
+        """Even an override the listing would accept does not reach the policy host, so
+        the policy source does not hang on the LTS check inside ``cps_url_override``."""
+        from kiro_crew.auth.login import control_plane
+
+        monkeypatch.setattr(
+            control_plane, "cps_url_override", lambda: "https://management.gamma.example.test/"
+        )
+        vault()
+        epf.fetch(_request())
+        (req,) = cps.requests
+        assert "gamma.example.test" not in req.full_url
+        assert req.full_url.endswith(".kiro.dev/")
+
     def test_an_unchanged_answer_keeps_the_cached_copy(self, enterprise, vault, cps):
         vault()
         first = epf.fetch(_request())

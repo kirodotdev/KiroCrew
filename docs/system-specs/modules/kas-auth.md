@@ -245,7 +245,11 @@ registration (`RegisterClient`, `client_type=public`, `client_name="Kiro Crew"`)
 returns `client_id` + `client_secret`; PKCE authorization-code on an arbitrary loopback
 port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `https://oidc.<region>.amazonaws.com` (Builder ID region `us-east-1`). Scopes:
-`codewhisperer:completions|analysis|conversations`. Start URLs: Builder ID
+`codewhisperer:completions|analysis|conversations`. `KIRO_OIDC_SCOPE_PREFIX`, set in
+the gateway's environment, replaces the `codewhisperer` prefix of each (like
+kiro-cli's `api.oidc.scopePrefix`) for a control plane that lists profiles only under
+its own prefix; a value that is not lowercase letters and underscores is ignored with
+a warning, and unset, the public scopes are sent. Start URLs: Builder ID
 `https://view.awsapps.com/start`; internal `https://amzn.awsapps.com/start`.
 
 A sign-in reuses the registration its own slot's stored token carries, as kiro-cli
@@ -257,8 +261,10 @@ region, an entry stored before the expiry was kept, and an empty slot all regist
 new client. So does any `StartDeviceAuthorization` error on the stored client other
 than `StartUrlRejectedError`, so a registration AWS refuses never blocks a
 sign-in. Sign-out deletes the token and its registration with it; slots never share
-one. The registration's scopes are not recorded, so changing `OIDC_SCOPES` must also
-stop this reuse.
+one. A registration made with scopes other than `OIDC_SCOPES` records them in the
+token's `extra["oidc_scopes"]`, which refresh carries forward (refresh sends only the
+client credentials, so the scopes stay the registration's), and it is reused only
+for a sign-in asking the same scopes.
 
 An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 (`auth/service._canonical_start_url`, through the cloud login target's
@@ -288,6 +294,15 @@ a profile. A host that refuses or sends an unreadable answer is logged and skipp
 The poll ends as `error`, with nothing stored, when every host refused or none lists
 a profile (`no available Kiro profiles`); a connection failure is not skipped and
 raises out of the poll, since this leg has no transport budget (above).
+
+`KIRO_CPS_URL`, set in the gateway's environment to an `https://` URL, replaces the
+table for the sign-in profile listing only: `control_plane_urls` answers that one host.
+`control_plane_url`, which the LTS policy fetch (`platform/enterprise_policy_fetch.py`)
+uses, never reads it, so the environment cannot choose where the organisation's policy
+comes from (RFC rfc-crew-lts-edition, D2). This is how an account whose profile lives
+on a non-production control plane (a gamma Identity Center user) signs in. Any other
+value is ignored with a warning, since the bearer token is sent to it; unset, nothing
+changes. An LTS build ignores the variable altogether, also with a warning.
 
 ### External IdP (enterprise SSO) — independent
 

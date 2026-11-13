@@ -7,7 +7,11 @@ the portal via ``KIRO_AUTH_PORTAL_URL``, the social service via ``KIRO_AUTH_SERV
 
 from __future__ import annotations
 
+import logging
 import os
+import re
+
+logger = logging.getLogger(__name__)
 
 # Default hosts (kiro-cli consts.rs).
 _DEFAULT_PORTAL = "https://app.kiro.dev"
@@ -42,11 +46,38 @@ OIDC_SCOPES = (
     "codewhisperer:analysis",
     "codewhisperer:conversations",
 )
+# A non-production control plane can list profiles only for scopes under its own
+# prefix. ``KIRO_OIDC_SCOPE_PREFIX`` swaps the prefix of every scope above, like
+# kiro-cli's ``api.oidc.scopePrefix`` setting. Unset, OIDC_SCOPES are sent as is.
+OIDC_SCOPE_PREFIX_ENV = "KIRO_OIDC_SCOPE_PREFIX"
+_PUBLIC_SCOPE_PREFIX = "codewhisperer"
+_SCOPE_PREFIX_RE = re.compile(r"[a-z_]{1,64}")
+_warned_prefixes: set[str] = set()
+# KasToken.extra key recording a registration's scopes when they are not OIDC_SCOPES,
+# so a later sign-in reuses that registration only for the same scopes.
+OIDC_SCOPES_EXTRA_KEY = "oidc_scopes"
 # client_name we register our own public OAuth client under (kiro-cli uses "Kiro CLI").
 OIDC_CLIENT_NAME = "Kiro Crew"
 
 # Device-flow fallback when the poll response omits an expiry (kiro-cli uses 3600).
 DEFAULT_TOKEN_TTL_SECS = 3600
+
+
+def oidc_scopes() -> tuple[str, ...]:
+    """The scopes an SSO-OIDC client registers for: OIDC_SCOPES under the configured prefix.
+
+    A ``KIRO_OIDC_SCOPE_PREFIX`` that is not lowercase letters and underscores is
+    ignored, with one warning per distinct value, so it cannot add or split a scope.
+    """
+    prefix = os.environ.get(OIDC_SCOPE_PREFIX_ENV, "").strip()
+    if not prefix:
+        return OIDC_SCOPES
+    if not _SCOPE_PREFIX_RE.fullmatch(prefix):
+        if prefix not in _warned_prefixes:
+            _warned_prefixes.add(prefix)
+            logger.warning("%s ignored: %r is not a scope prefix", OIDC_SCOPE_PREFIX_ENV, prefix)
+        return OIDC_SCOPES
+    return tuple(prefix + s[len(_PUBLIC_SCOPE_PREFIX) :] for s in OIDC_SCOPES)
 
 
 def portal_url() -> str:

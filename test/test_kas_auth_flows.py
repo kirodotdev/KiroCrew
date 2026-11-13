@@ -194,6 +194,49 @@ async def test_the_client_registration_expiry_survives_sign_in_storage_and_refre
         assert json.loads(entry.to_json()).get("client_secret_expires_at") == 1798000000
 
 
+async def test_the_registrations_scopes_ride_from_sign_in_through_refresh(tmp_path: Path):
+    """The scopes are sent once, at registration; the stored token records them and
+    every refresh (which sends only the client credentials) carries them forward."""
+    scopes = ("acme_test:completions", "acme_test:analysis", "acme_test:conversations")
+    # Relative to now: stored_client checks the expiry against the live clock.
+    lapses = int(datetime.now(timezone.utc).timestamp()) + 30 * 86400
+    session = _FakeSession(
+        [
+            _FakeResp(
+                200,
+                {"clientId": "cid", "clientSecret": "csec", "clientSecretExpiresAt": lapses},
+            ),
+            _FakeResp(200, {"accessToken": "at", "refreshToken": "rt", "expiresIn": 1}),
+            _FakeResp(200, {"accessToken": "new", "expiresIn": 3600}),
+        ]
+    )
+    client = await builder_id.register_client("us-east-1", session=session, scopes=scopes)
+    tok = await builder_id.poll_token(client, _bid_auth(), region="us-east-1", session=session)
+    store = TokenStore(tmp_path)
+    store.save(tok)
+    stored = store.load("builder_id")
+    assert stored is not None
+    out = await ensure_fresh(store, stored, session=session)
+    assert session.calls[0][1]["scopes"] == list(scopes)
+    assert "scopes" not in session.calls[2][1]
+    assert out.extra[builder_id.OIDC_SCOPES_EXTRA_KEY] == list(scopes)
+    assert builder_id.stored_client(out, "us-east-1", scopes) is not None
+    assert builder_id.stored_client(out, "us-east-1") is None
+
+
+async def test_a_public_scope_sign_in_is_stored_as_before():
+    session = _FakeSession(
+        [
+            _FakeResp(200, {"clientId": "cid", "clientSecret": "csec"}),
+            _FakeResp(200, {"accessToken": "at", "refreshToken": "rt", "expiresIn": 60}),
+        ]
+    )
+    client = await builder_id.register_client("us-east-1", session=session)
+    tok = await builder_id.poll_token(client, _bid_auth(), region="us-east-1", session=session)
+    assert session.calls[0][1]["scopes"] == list(builder_id.OIDC_SCOPES)
+    assert tok.extra == {}
+
+
 async def test_builder_id_register_client_failure_raises():
     session = _FakeSession([_FakeResp(400, "bad request")])
     with pytest.raises(BuilderIdAuthError, match="RegisterClient failed"):
