@@ -181,7 +181,9 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         # user enables from the dashboard, which is the common case.
         keys = ("tools", "allowedTools") if may_skip_gate_now(tool_ref) else ("tools",)
         for key in keys:
-            lst = cfg.setdefault(key, [])
+            if cfg.get(key) is None:  # a hand-edited null reads as no list yet
+                cfg[key] = []
+            lst = cfg[key]
             if tool_ref not in lst:
                 lst.append(tool_ref)
                 changed = True
@@ -355,7 +357,9 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             else:
                 withheld_refs.append(tool_ref)
             for key in keys:
-                lst = cfg.setdefault(key, [])
+                if cfg.get(key) is None:  # a hand-edited null reads as no list yet
+                    cfg[key] = []
+                lst = cfg[key]
                 if tool_ref not in lst:
                     lst.append(tool_ref)
                     changed = True
