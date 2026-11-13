@@ -559,5 +559,6 @@
   "pages.settings.aboutPanel.what_you_d_get_more",
   "pages.settings.releases.earlier_count",
   "pages.settings.releases.show_more",
-  "pages.capabilitiesPage.mcp_servers_waiting"
+  "pages.capabilitiesPage.mcp_servers_waiting",
+  "pages.overview.skillsTab.also_dismiss_older_updates"
 ]
