@@ -18,6 +18,7 @@ import { api } from './api/client'
 import { MetricsCard } from './shell/topbar/metricsReadout'
 import { Rocket, RefreshCw, Package, Download, Hammer, XCircle, Check, Circle, AlertTriangle, Compass, KeyRound, LayoutGrid, SquareTerminal, Search as SearchIcon } from 'lucide-react'
 import { FirstRunChapters } from './shell/boot/firstRun'
+import { useFirstRunSignInHeld } from './components/FirstRunSignInHold'
 import ErrorNotice from './components/ErrorNotice'
 import { MobileConnectDialog } from './components/mobileConnect'
 import { isMacElectron, isWinElectron, isLinuxFramelessElectron } from './lib/electron'
@@ -430,6 +431,8 @@ export default function App() {
   } = shell
   // A calm offline view covers <main> and the docked terminal (see `offlineCover`).
   const contentCovered = offlineCoverKind !== null
+  // The first-run sign-in hides this app behind it, so the local layers hide too.
+  const signInHeld = useFirstRunSignInHeld()
   // "Run in terminal" from a code block outside every chat, on any route.
   const runInTerminal = useRunInTerminalShellBridge(activeSlotProject, !isPopout && !isEmbed)
   usePinnedScrollOrigin(shellRef)
@@ -721,8 +724,9 @@ export default function App() {
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
       {/* Floating layers this pane opens portal into a container hidden with it
-          (see components/overlayRoot). */}
-      <LocalOverlayRoot hidden={activeInstanceId !== null}>
+          (see components/overlayRoot), and while the first-run sign-in holds the
+          app (FirstRunSignInHold hides the pane itself). */}
+      <LocalOverlayRoot hidden={activeInstanceId !== null || signInHeld}>
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
