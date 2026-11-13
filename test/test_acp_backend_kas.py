@@ -409,6 +409,10 @@ class TestSaveKeepsAnAbsentChoiceAbsent:
 
     @pytest.fixture
     def home(self, tmp_path: Path):
+        # Imported before the loader is patched: a first import inside the patch
+        # binds the loader's mock, which patch then restores as the original.
+        import kiro_crew.cli_config  # noqa: F401
+
         d = tmp_path / "crew"
         d.mkdir()
         with (

@@ -138,7 +138,10 @@ def test_the_runtime_session_path_issues_the_pickup():
 
 
 @pytest.fixture(autouse=True)
-def _fresh_client_state():
+def _fresh_client_state(_floor_monkeypatch):
+    # take_pickup makes the whole process non-dumpable, which nothing undoes; later
+    # tests on the worker then get EACCES on /proc/self/fd and fail their writes.
+    _floor_monkeypatch.setattr(agent_ipc_client, "_set_non_dumpable", lambda: None)
     agent_ipc_client._reset_for_tests()
     yield
     agent_ipc_client._reset_for_tests()
