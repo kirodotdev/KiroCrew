@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, within } from '@testing-library/react'
 // `/all` for the Japanese catalog: `../../i18n` registers English only.
 import { i18next } from '../../i18n/all'
 import type { LegacyGoalLoop, StructuredMonitor } from '../../monitoring/automation'
@@ -76,7 +76,7 @@ describe('CrewOnItsOwn', () => {
     expect(row).toHaveTextContent('Watching its tasks')
     expect(row).toHaveTextContent('Wakes when a task reports back, or every 15 min')
     const facts = within(row).getByTestId('crew-patrol-facts')
-    expect(facts).toHaveTextContent('Last check 2m ago · Next in 13m · 3 tasks open')
+    expect(facts).toHaveTextContent('Last check 2m ago · Next in 13 min · 3 tasks open')
     const toggle = within(row).getByTestId('crew-patrol-toggle')
     expect(toggle).toHaveTextContent('Pause')
     fireEvent.click(toggle)
@@ -89,6 +89,16 @@ describe('CrewOnItsOwn', () => {
     await i18next.changeLanguage('ja')
     const { row } = setup()
     expect(row).toHaveTextContent('タスクから報告があったとき、または15 分ごとに起動します')
+  })
+
+  it('says the next check and the time limit in unit words inside the Japanese sentence (#35442)', async () => {
+    onTestFinished(() => i18next.changeLanguage('en'))
+    await i18next.changeLanguage('ja')
+    const { row } = setup()
+    expect(within(row).getByTestId('crew-patrol-facts')).toHaveTextContent('次回は13 分後')
+    cleanup()
+    const stopped = setup({ loop: { ...LOOP, active: false, stoppedReason: 'runtime_budget', nextDueAt: 0 } }).row
+    expect(within(stopped).getByTestId('crew-patrol-facts')).toHaveTextContent('7 日の時間制限に達しました')
   })
 
   it('shows none of the budget bookkeeping the Profile readout used to, and leaks no prompt or path', () => {
@@ -109,11 +119,11 @@ describe('CrewOnItsOwn', () => {
 
   it('an unknown open count and a patrol that never checked read as such', () => {
     const { row } = setup({ loop: { ...LOOP, lastFireAt: 0 }, openTasks: null })
-    expect(within(row).getByTestId('crew-patrol-facts')).toHaveTextContent(/^Has not checked yet · Next in 13m$/)
+    expect(within(row).getByTestId('crew-patrol-facts')).toHaveTextContent(/^Has not checked yet · Next in 13 min$/)
   })
 
   it.each([
-    ['runtime_budget', 'Hit its 7d time limit'],
+    ['runtime_budget', 'Hit its 7 days time limit'],
     ['cycle_cap', 'Hit its check limit'],
     ['manual', 'You paused it'],
     ['user_stop', 'You paused it'],
@@ -153,7 +163,7 @@ describe('CrewOnItsOwn', () => {
   it('a failed open-task count is said under the row, and the facts carry no count', () => {
     const { row } = setup({ openTasks: null, countFailed: true })
     expect(screen.getByTestId('crew-patrol-count-error')).toHaveTextContent('Could not count its open tasks.')
-    expect(within(row).getByTestId('crew-patrol-facts')).toHaveTextContent(/^Last check 2m ago · Next in 13m$/)
+    expect(within(row).getByTestId('crew-patrol-facts')).toHaveTextContent(/^Last check 2m ago · Next in 13 min$/)
   })
 
   it('a write in flight disables the control; a refused write shows as an error notice', () => {

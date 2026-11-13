@@ -20,7 +20,9 @@ export function inDuration(remaining: number): string {
   const h = Math.floor((remaining % 86400) / 3600)
   const m = Math.floor((remaining % 3600) / 60)
   const parts: Array<[number, 'day' | 'hour' | 'minute']> = d > 0 ? [[d, 'day'], [h, 'hour']] : h > 0 ? [[h, 'hour'], [m, 'minute']] : [[Math.max(m, 1), 'minute']]
-  return fmtDuration(parts, { dropZero: true })
+  // `short`, not fmtUnit's narrow default: it sits inside a sentence, where ja
+  // reads `13 分後`, not `13m後`.
+  return fmtDuration(parts, { dropZero: true, unitDisplay: 'short' })
 }
 
 function lastRunFailed(job: CronJob): boolean {

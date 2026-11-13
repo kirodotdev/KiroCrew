@@ -264,7 +264,7 @@ async function captureScheduleVariant(frame, file, expected) {
       'Last check 2m ago', 'Next in 1', '3 tasks open', 'Pause', 'Your schedules',
     ])
     await captureScheduleVariant('ledger-stopped', '02d-card-schedules-patrol-paused-light.png', [
-      'Watching its tasks', 'Paused', 'Hit its 7d time limit', '3 tasks still open', 'Resume',
+      'Watching its tasks', 'Paused', 'Hit its 7 days time limit', '3 tasks still open', 'Resume',
     ])
     await browser.close()
     await new Promise((resolve) => srv.close(resolve))
