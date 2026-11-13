@@ -72,6 +72,51 @@ def _read_pidfile() -> dict[str, dict[str, Any]]:
         return {}
 
 
+def _read_pidfile_for_update(
+    *, set_aside_corrupt: bool = False
+) -> dict[str, dict[str, Any]] | None:
+    """The pidfile's rows for a rewrite, or None when it must not be rewritten.
+
+    Only a missing file reads as empty. A file that cannot be opened (a transient
+    EACCES or EIO) returns None: the caller holds rows the write would replace with
+    its own, so writing over an unread file drops every other app's row, and the
+    backends those rows name are then never reaped.
+
+    A file that opens but is cut off or holds the wrong shape reads as None as well,
+    unless *set_aside_corrupt* is set. Then its bytes move to a ``.corrupt-<utc>`` file
+    and the rewrite starts from empty, so one damaged file does not stop every later
+    spawn from being recorded.
+    """
+    path = _pidfile_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        logger.warning("App-backend pidfile unreadable (%s); left as it is", exc)
+        return None
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        return data
+    logger.warning("App-backend pidfile is not a readable table of rows")
+    if not set_aside_corrupt:
+        return None
+    # Imported here: the backend facade re-exports every name this module binds.
+    from datetime import datetime, timezone
+
+    from kiro_crew.atomic_write import replace_with_retry
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    try:
+        replace_with_retry(path, path.with_name(f"{path.name}.corrupt-{stamp}"))
+    except OSError as exc:
+        logger.warning("Could not set the damaged app-backend pidfile aside (%s)", exc)
+        return None
+    return {}
+
+
 def _write_pidfile(data: dict[str, dict[str, Any]]) -> None:
     # Atomic temp-file + rename (fsync): the whole point of the pidfile is to
     # survive a gateway SIGKILL, so a non-atomic open("w") that truncates first
@@ -105,7 +150,10 @@ def _record_app_pid(
         # discipline.
         start_time = _proc_start_time(pid)
         with _pidfile_lock:
-            data = _read_pidfile()
+            data = _read_pidfile_for_update(set_aside_corrupt=True)
+            if data is None:
+                logger.warning("Backend of %s not recorded: pidfile could not be read", app_name)
+                return start_time
             entry: dict[str, Any] = {"pid": pid, "start_time": start_time, "port": port}
             if spawn_instance:
                 entry["spawn_instance"] = spawn_instance

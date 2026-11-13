@@ -1613,6 +1613,7 @@ if _typing.TYPE_CHECKING:
         _pidfile_lock,
         _pidfile_path,
         _read_pidfile,
+        _read_pidfile_for_update,
         _write_pidfile,
         atomic_write,
         json,

@@ -78,10 +78,8 @@ _FOUND_ONLY = (
 #: Remove an entry when its site is fixed; ``test_every_known_site_still_matches``
 #: fails on a stale one so the list cannot outlive the code.
 _KNOWN: dict[str, str] = {
-    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid_if": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/pidfile.py::_record_app_pid": _UNAUDITED,
-    "kiro_crew/apps/backend_runtime/stale_reap.py::_reap_stale_app_backends": _UNAUDITED,
+    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid": _FOUND_ONLY,
+    "kiro_crew/apps/backend_runtime/pidfile.py::_forget_app_pid_if": _FOUND_ONLY,
     "kiro_crew/apps/builtins/ops_mission_control/backend/ledger_index.py::import_pending": (
         "union write: an empty base re-checks ids on the next import (see _read_cursor)"
     ),
