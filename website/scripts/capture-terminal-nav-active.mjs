@@ -69,20 +69,19 @@ async function main() {
           deviceScaleFactor: 2,
         })
         const page = await context.newPage()
-        await stubDashboardApi(page, { slots, theme: s.theme })
-        logPageProblems(page)
-        // Registered after the stub, so it lands after the stub's
-        // localStorage.clear() only while Chromium runs init scripts in
-        // registration order: Playwright does not define that order.
         // `mc-color-theme` picks the kiro palette; `mc-nav` is the
-        // rail-collapsed flag App reads on mount.
-        await page.addInitScript(([attr, collapsed]) => {
-          localStorage.setItem('mc-color-theme', attr)
-          localStorage.setItem('mc-privacy-notice-v1', '1')
-          localStorage.setItem('mc-nav', collapsed ? '1' : '0')
-          // A persisted open panel would make the "closed" control case a lie.
-          localStorage.removeItem('mc-bottom-terminal')
-        }, [s.attr, rail.collapsed])
+        // rail-collapsed flag App reads on mount. The stub's clear leaves no
+        // `mc-bottom-terminal`: a persisted open panel would make the "closed"
+        // control case a lie.
+        await stubDashboardApi(page, {
+          slots, theme: s.theme,
+          localStorageEntries: {
+            'mc-color-theme': s.attr,
+            'mc-privacy-notice-v1': '1',
+            'mc-nav': rail.collapsed ? '1' : '0',
+          },
+        })
+        logPageProblems(page)
 
         await page.goto(base + '/chat', { waitUntil: 'domcontentloaded' })
         // The palette is applied by a boot effect, so assert on the attribute

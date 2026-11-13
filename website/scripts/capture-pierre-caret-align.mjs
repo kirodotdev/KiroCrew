@@ -140,30 +140,30 @@ async function main() {
     return false
   }
 
-  await stubDashboardApi(page, { slots, extra })
-  logPageProblems(page)
-
   const tab = {
     id: `file:${FILE}`, kind: 'file', title: 'config.ts', path: FILE, slot: SLOT, diffMode: true,
   }
-  await page.addInitScript(([slot, project, tabsJson, split]) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot-chat', slot)
-    localStorage.setItem('mc-activity-open:' + slot, 'true')
-    localStorage.setItem('mc-panel-tabs:' + slot, tabsJson)
-    // '1'/'0' — usePersistedBool's getter is `v === '1'`.
-    localStorage.setItem('mc-diff-split', split)
-    localStorage.setItem('mc-file-wordwrap', '1')
-    localStorage.setItem('mc-file-linenums', '1')
-    localStorage.setItem('mc-file-collapse-unchanged', '0')
-    localStorage.setItem('mc-files-rail-open', '0')
-    localStorage.setItem('mc-side-panel-width', '900')
-    localStorage.setItem('kirocrew:comment-hint-dismissed', '1')
-    localStorage.setItem('mc-git-panel-opened:' + slot + ':' + project, '1')
-    localStorage.setItem('mc-chat-config', JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }))
-  }, [SLOT, PROJECT, bucket([{ id: 'files', kind: 'files', title: 'Files' }, tab], tab.id), SPLIT ? '1' : '0'])
+  await stubDashboardApi(page, {
+    slots, extra,
+    localStorageEntries: {
+      'mc-theme': 'dark',
+      'mc-onboarded': '1',
+      'mc-active-slot-chat': SLOT,
+      ['mc-activity-open:' + SLOT]: 'true',
+      ['mc-panel-tabs:' + SLOT]: bucket([{ id: 'files', kind: 'files', title: 'Files' }, tab], tab.id),
+      // '1'/'0' — usePersistedBool's getter is `v === '1'`.
+      'mc-diff-split': SPLIT ? '1' : '0',
+      'mc-file-wordwrap': '1',
+      'mc-file-linenums': '1',
+      'mc-file-collapse-unchanged': '0',
+      'mc-files-rail-open': '0',
+      'mc-side-panel-width': '900',
+      'kirocrew:comment-hint-dismissed': '1',
+      ['mc-git-panel-opened:' + SLOT + ':' + PROJECT]: '1',
+      'mc-chat-config': JSON.stringify({ pinLastPrompt: false, streamMode: 'immediate' }),
+    },
+  })
+  logPageProblems(page)
 
   await page.goto(base + '/?sid=' + encodeURIComponent(SLOT), { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(3200)
