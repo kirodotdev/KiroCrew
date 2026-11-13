@@ -1,17 +1,12 @@
 /**
- * Pause and resume every status filter at once, from the sort/filter menu.
+ * Pause and resume status filters: one at a time from the chip, or all at once
+ * from the sort/filter menu.
  *
- * Looking at the whole list used to cost the filter setup: the only way to widen
- * it was to clear the chips, then re-pick each one from the menu. The menu now
- * carries a "Pause all filters" / "Resume all filters" row that lifts every
- * active status chip together and puts them all back. The chips stay in the row
- * while paused, marked with a Pause glyph and a dashed border, so the row still
- * says which filters are set.
- *
- * A click on a chip is unchanged: it CLEARS that filter, as it always has. The
- * pause is global, one control, in the menu. A menu row rather than a third
- * button in the chip row, because AUTOSDE `max-two-buttons-per-row` grandfathers
- * that row but forbids growing it.
+ * A click on a status chip's body pauses or resumes just that filter; only its X
+ * clears it. The menu's "Pause all filters" / "Resume all filters" row lifts every
+ * active chip together and puts them all back. A paused chip stays in the row,
+ * marked with a dashed border and "paused" after its label, so the
+ * row still says which filters are set.
  *
  * Persistence rides on the existing per-filter storage key: '0' off, '1' on,
  * '2' on but paused. No second key, so "is it on" and "is it paused" cannot
@@ -141,14 +136,17 @@ function openFilterMenu(utils: ReturnType<typeof renderSidebar>) {
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.clearAllMocks())
 
-/** A chip that is kept but lifted carries the dashed border and the Pause glyph. */
+/** A chip that is kept but lifted carries the dashed border. */
 function expectPaused(chip: HTMLElement, paused: boolean) {
   const classes = chip.className.split(/\s+/)
   if (paused) expect(classes).toContain('border-dashed')
   else expect(classes).not.toContain('border-dashed')
 }
 
-describe('chat sidebar: pause and resume all status filters from the menu', () => {
+const chipToggle = (utils: ReturnType<typeof renderSidebar>, key: string) => utils.getByTestId(`filter-chip-${key}-toggle`)
+const chipClear = (utils: ReturnType<typeof renderSidebar>, key: string) => utils.getByTestId(`filter-chip-${key}-clear`)
+
+describe('chat sidebar: pause and resume status filters', () => {
   it('"Pause all filters" lifts every active filter; the row then reads "Resume all filters" and puts them back', async () => {
     localStorage.setItem(UNREAD_KEY, '1')
     localStorage.setItem(PINNED_KEY, '1')
@@ -178,8 +176,14 @@ describe('chat sidebar: pause and resume all status filters from the menu', () =
     const resumeAll = await utils.findByTestId('filter-pause-all')
     expect(resumeAll).toHaveTextContent('Resume all filters')
     expect(resumeAll).toHaveAttribute('aria-pressed', 'true')
+    const unreadRow = () => utils.getAllByRole('menuitem').find(el => el.textContent?.startsWith('Unread'))!
+    expect(unreadRow()).toHaveTextContent(/· paused$/)
+    expect(unreadRow().querySelector('.lucide-pause')).not.toBeNull()
+    expect(unreadRow().querySelector('.lucide-check')).toBeNull()
     fireEvent.click(resumeAll)
     await waitFor(() => expect(utils.queryByText('plain session')).toBeNull())
+    expect(unreadRow()).not.toHaveTextContent(/paused/)
+    expect(unreadRow().querySelector('.lucide-check')).not.toBeNull()
     expectPaused(utils.getByTestId('filter-chip-unread'), false)
     expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
     expect(localStorage.getItem(PINNED_KEY)).toBe('1')
@@ -197,18 +201,77 @@ describe('chat sidebar: pause and resume all status filters from the menu', () =
     expect(await utils.findByTestId('filter-pause-all')).toHaveTextContent('Resume all filters')
   })
 
-  it('a MIXED "1" / "2" load reads as not paused and is rewritten to "1"', async () => {
-    // Only a build that paused filters one at a time could store that mix. The
-    // menu row has one state to offer, so the load settles on narrowing.
+  it('a MIXED "1" / "2" load keeps each filter as stored: the paused one lifted, the other narrowing', async () => {
+    localStorage.setItem(UNREAD_KEY, '2')
+    localStorage.setItem(PINNED_KEY, '1')
+    const utils = renderSidebar()
+    // Only Pinned narrows, so the unread row goes too.
+    await waitFor(() => expect(utils.queryByText('unread session')).toBeNull())
+    expect(utils.queryByText('plain session')).toBeNull()
+    expectPaused(utils.getByTestId('filter-chip-unread'), true)
+    expectPaused(utils.getByTestId('filter-chip-pinned'), false)
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('2')
+    expect(localStorage.getItem(PINNED_KEY)).toBe('1')
+    // Not every filter is paused, so the row offers to pause the rest.
+    openFilterMenu(utils)
+    expect(await utils.findByTestId('filter-pause-all')).toHaveTextContent('Pause all filters')
+  })
+
+  it('a click on a chip body pauses just that filter and a second click resumes it', async () => {
+    localStorage.setItem(UNREAD_KEY, '1')
+    localStorage.setItem(PINNED_KEY, '1')
+    const utils = renderSidebar()
+    await waitFor(() => expect(utils.queryByText('plain session')).toBeNull())
+    const toggle = chipToggle(utils, 'unread')
+    expect(toggle).toHaveAccessibleName('Pause Unread filter')
+    expect(toggle).toHaveAttribute('aria-pressed', 'false')
+    expect(toggle).toHaveAttribute('title', 'Pause Unread filter')
+
+    fireEvent.click(toggle)
+    // Unread is lifted, Pinned still narrows: the unread row drops out.
+    await waitFor(() => expect(utils.queryByText('unread session')).toBeNull())
+    expect(utils.queryByText('pinned session')).not.toBeNull()
+    expectPaused(utils.getByTestId('filter-chip-unread'), true)
+    expectPaused(utils.getByTestId('filter-chip-pinned'), false)
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('2')
+    expect(localStorage.getItem(PINNED_KEY)).toBe('1')
+    expect(chipToggle(utils, 'unread')).toHaveAttribute('aria-pressed', 'true')
+    expect(chipToggle(utils, 'unread')).toHaveAttribute('title', 'Resume Unread filter')
+    expect(chipToggle(utils, 'unread').querySelector('[data-chip-state]')).toHaveTextContent('· paused')
+    expect(chipToggle(utils, 'pinned').querySelector('[data-chip-state]')).toBeNull()
+
+    fireEvent.click(chipToggle(utils, 'unread'))
+    await waitFor(() => expect(utils.queryByText('unread session')).not.toBeNull())
+    expectPaused(utils.getByTestId('filter-chip-unread'), false)
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
+  })
+
+  it('"Pause all filters" pauses the rest when some are paused, and "Resume all" then resumes every one', async () => {
     localStorage.setItem(UNREAD_KEY, '2')
     localStorage.setItem(PINNED_KEY, '1')
     const utils = renderSidebar()
     await waitFor(() => expect(utils.queryByText('plain session')).toBeNull())
-    expectPaused(utils.getByTestId('filter-chip-unread'), false)
+    openFilterMenu(utils)
+    fireEvent.click(await utils.findByTestId('filter-pause-all'))
+    await waitFor(() => expect(utils.queryByText('plain session')).not.toBeNull())
+    expect(localStorage.getItem(PINNED_KEY)).toBe('2')
+    const resumeAll = await utils.findByTestId('filter-pause-all')
+    expect(resumeAll).toHaveTextContent('Resume all filters')
+    fireEvent.click(resumeAll)
+    await waitFor(() => expect(utils.queryByText('plain session')).toBeNull())
     expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
     expect(localStorage.getItem(PINNED_KEY)).toBe('1')
+  })
+
+  it('a filter turned on while only SOME filters are paused narrows on its own', async () => {
+    localStorage.setItem(UNREAD_KEY, '2')
+    localStorage.setItem(RUNNING_KEY, '1')
+    const utils = renderSidebar()
     openFilterMenu(utils)
-    expect(await utils.findByTestId('filter-pause-all')).toHaveTextContent('Pause all filters')
+    fireEvent.click(await utils.findByRole('menuitem', { name: /^Pinned/ }))
+    await waitFor(() => expect(utils.queryByTestId('filter-chip-pinned')).not.toBeNull())
+    expectPaused(utils.getByTestId('filter-chip-pinned'), false)
+    expect(localStorage.getItem(PINNED_KEY)).toBe('1')
   })
 
   it('a filter turned on while paused JOINS the pause: stored "2", the list stays wide', async () => {
@@ -227,16 +290,14 @@ describe('chat sidebar: pause and resume all status filters from the menu', () =
     expect(await utils.findByTestId('filter-pause-all')).toHaveTextContent('Resume all filters')
   })
 
-  it('a chip click still CLEARS its filter, paused or not, and the last one leaving drops the pause', async () => {
+  it('only the X CLEARS a filter, paused or not, and the last one leaving drops the pause', async () => {
     localStorage.setItem(UNREAD_KEY, '2')
     const utils = renderSidebar()
     expect(await utils.findByText('plain session')).not.toBeNull()
-    const chip = utils.getByTestId('filter-chip-unread')
-    // The accessible name is what the click does, exactly as on a chip that is
-    // not paused: the pause never becomes a second meaning for the click.
-    expect(chip).toHaveAccessibleName('Clear Unread filter')
-    expect(chip).toHaveTextContent('Unread (1)')
-    fireEvent.click(chip)
+    expect(utils.getByTestId('filter-chip-unread')).toHaveTextContent('Unread (1)')
+    const clear = chipClear(utils, 'unread')
+    expect(clear).toHaveAccessibleName('Clear Unread filter')
+    fireEvent.click(clear)
     await waitFor(() => expect(utils.queryByTestId('filter-chip-unread')).toBeNull())
     expect(localStorage.getItem(UNREAD_KEY)).toBe('0')
 
@@ -273,6 +334,31 @@ describe('chat sidebar: pause and resume all status filters from the menu', () =
     localStorage.setItem(UNREAD_KEY, '1')
     const utils = renderSidebar(SLOTS, [])
     expect(await utils.findByText('plain session')).not.toBeNull()
+    await waitFor(() => expect(utils.queryByTestId('filter-chip-unread')).toBeNull())
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('0')
+  })
+
+  it('pausing the only OTHER filter over an empty inbox never makes the drain take Unread away', async () => {
+    localStorage.setItem(UNREAD_KEY, '1')
+    localStorage.setItem(PINNED_KEY, '1')
+    const utils = renderSidebar(SLOTS, [])
+    await waitFor(() => expect(utils.queryByText('pinned session')).not.toBeNull())
+    fireEvent.click(chipToggle(utils, 'pinned'))
+    await waitFor(() => expectPaused(utils.getByTestId('filter-chip-pinned'), true))
+    expect(utils.getByTestId('filter-chip-unread')).toBeTruthy()
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
+    fireEvent.click(chipToggle(utils, 'pinned'))
+    await waitFor(() => expectPaused(utils.getByTestId('filter-chip-pinned'), false))
+    expect(localStorage.getItem(UNREAD_KEY)).toBe('1')
+  })
+
+  it('clearing the only OTHER filter over an empty inbox still drains Unread', async () => {
+    // POSITIVE CONTROL for the test above: the X, not a pause.
+    localStorage.setItem(UNREAD_KEY, '1')
+    localStorage.setItem(PINNED_KEY, '1')
+    const utils = renderSidebar(SLOTS, [])
+    await waitFor(() => expect(utils.queryByText('pinned session')).not.toBeNull())
+    fireEvent.click(chipClear(utils, 'pinned'))
     await waitFor(() => expect(utils.queryByTestId('filter-chip-unread')).toBeNull())
     expect(localStorage.getItem(UNREAD_KEY)).toBe('0')
   })
