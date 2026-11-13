@@ -586,6 +586,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_posttoken_retry_used": ("value", "False"),
     "_prefetch_ttl_task": ("value", "None"),
     "_prestream_exhausted_cycles": ("value", "0"),
+    "_project_hook_files_notice_shown": ("value", "''"),
     "_projection": ("type", "kiro_crew.dashboard.slot_projection.SlotProjection"),
     "_promise_only_retries": ("value", "0"),
     "_prompt_busy_retries": ("value", "0"),

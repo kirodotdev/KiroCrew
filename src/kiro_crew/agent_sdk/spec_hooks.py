@@ -872,24 +872,24 @@ def spec_script_hooks(agent_id: str, spec: dict[str, Any]) -> list[ScriptHook]:
     return list(_convert(agent_id, spec)[0])
 
 
-def project_hook_files_present(project_dir: str | None) -> bool:
-    """Whether the session's checkout has standalone ``<project>/.kiro/hooks/*.json``.
+def project_hook_file_names(project_dir: str | None) -> list[str]:
+    """The sorted names of the checkout's standalone ``<project>/.kiro/hooks/*.json``.
 
     These files do NOT run in a dashboard KAS session: a project hook is a command
     from a checkout, gated on the trust verdict Crew cannot read
     (:func:`kiro_crew.acp.session_mcp._project_mcp_trusted`). This only reports that
     such files exist, so a session-start notice can say they are withheld rather
     than let them fail silently -- the same shape as the withheld project spec
-    hooks notice. Best-effort: any read error answers ``False`` (no notice) rather
-    than failing the turn.
+    hooks notice. The names tell a chat a changed file set. Best-effort: any read
+    error answers ``[]`` (no notice) rather than failing the turn.
     """
     if not project_dir:
-        return False
+        return []
     try:
         hooks_dir = Path(project_dir) / ".kiro" / "hooks"
-        return any(p.is_file() for p in hooks_dir.glob("*.json"))
+        return sorted(p.name for p in hooks_dir.glob("*.json") if p.is_file())
     except OSError:
-        return False
+        return []
 
 
 def _user_hooks_dir() -> Path | None:

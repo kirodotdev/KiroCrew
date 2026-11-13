@@ -164,6 +164,7 @@ class _ChatSlot:
         "_mcp_banner_shown",
         "_hidden_scratch_notice_shown",
         "_telemetry_notice_shown",
+        "_project_hook_files_notice_shown",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -486,6 +487,9 @@ class _ChatSlot:
     # A mark of the last KAS telemetry notice this chat showed, "" for none; saved
     # on the metadata line, so a restart does not show the same notice again.
     _telemetry_notice_shown: str
+    # A mark of the project folder and hook-file names whose withheld-files notice
+    # this chat last showed, "" for none; saved on the metadata line like the above.
+    _project_hook_files_notice_shown: str
     _pending_reset_history_key: str | None
     _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None
