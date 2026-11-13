@@ -7,7 +7,8 @@ turn and delivers the result inside one ``try``; its ``except`` retries an ACP d
 or a transient backend error by re-entering the whole callback, attributes a runtime
 death, and alerts; its ``finally`` hands the post-compaction re-injection and the
 skill-body dedup back, releases the session and resets it unless sub-agent work is
-still pending.
+still pending. The attempt that fails the run for good stops the key's sub-agent runs
+before that release instead.
 
 These tests drive that callback through ``on_job`` with every collaborator replaced
 and pin what an extraction must keep: the order the ``finally`` runs in, which flags
@@ -31,6 +32,9 @@ from kiro_crew import execution_context, runtime_death
 from kiro_crew.acp.client import AcpProcessDied
 from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD
 from kiro_crew.slack import gateway as gw_mod
+
+#: Bounds a wait that a hang would otherwise make endless; never a barrier.
+_HANG_CEILING_S = 30
 
 
 class _Transient(RuntimeError):
@@ -90,6 +94,20 @@ class _Fire:
         gw.sessions.release = MagicMock(side_effect=self._release)
         gw.sessions.reset = AsyncMock(side_effect=self._reset)
         gw.sessions.is_busy = MagicMock(side_effect=lambda _key: self.held)
+        # The run holds the key from its acquire to its release, as the claim's
+        # ``turn_owner`` records; an acquire registers a session under the key and
+        # a reset pops it. A run that fails for good stops the key's sub-agent runs
+        # in between, by ending the conversation it holds or, with no session left,
+        # by ``end_children_for``.
+        self.holding = False
+        self.registered: Any = None
+        self.ended_keys: list[str] = []
+        gw.sessions.turn_holder = MagicMock(
+            side_effect=lambda _key: asyncio.current_task() if self.holding else None
+        )
+        gw.sessions._sessions = MagicMock()
+        gw.sessions._sessions.get = MagicMock(side_effect=lambda _key: self.registered)
+        gw.sessions.end_children_for = AsyncMock(side_effect=self._end_children)
         gw._deliver_cron_to_channel = AsyncMock(return_value=False)
         gw._deliver_failure_alert = AsyncMock(side_effect=self._alert)
         gw.dashboard_state.conversation_log = None
@@ -132,11 +150,18 @@ class _Fire:
 
     def _release(self, _key: str) -> None:
         self.calls.append("release")
+        self.holding = False
         if self.tab_turn_after_release:
             self.held = True
 
     async def _reset(
-        self, key: str, *, skip_if_busy: bool = False, skip_if_injecting: bool = False
+        self,
+        key: str,
+        *,
+        skip_if_busy: bool = False,
+        skip_if_injecting: bool = False,
+        ends_conversation: bool = False,
+        expect_session: Any = None,
     ) -> bool:
         # The real ``reset`` declines under ``skip_if_busy`` while a turn
         # holds the session's semaphore, under ``skip_if_injecting`` while the
@@ -150,13 +175,25 @@ class _Fire:
         if skip_if_injecting and self.gw._cron_injecting.get(key, 0) > 0:
             self.calls.append("reset-declined")
             return False
-        self.calls.append("reset")
+        self.calls.append("end-reset" if ends_conversation else "reset")
+        self.registered = None
+        return True
+
+    async def _end_children(self, key: str, *, unless_registered: bool = False) -> bool:
+        # The real verb reads the registry in the same lock hold as its snapshot,
+        # and with ``unless_registered`` ends nothing while a session is there.
+        if unless_registered and self.registered is not None:
+            return False
+        self.ended_keys.append(key)
+        self.calls.append("end-children")
         return True
 
     async def _get_or_create(self, key: str, **_kw: Any) -> tuple[Any, bool, bool]:
         self.calls.append("acquire")
         if self.acquire_errors:
             raise self.acquire_errors.pop(0)
+        self.holding = True
+        self.registered = self.registered or SimpleNamespace()
         return self.client, True, False
 
     async def _stream(self, client: Any, msg: str, **kw: Any) -> str:
@@ -339,13 +376,14 @@ async def test_a_raise_after_the_reinjection_is_consumed_hands_it_back(
     assert raised.value is boom
     assert "stream" not in fire.names()
     assert fire.rearms() == [{"consumed": True, "landed": False, "compacted": False}]
-    assert fire.names()[-7:] == [
+    # A run that failed for good ends its conversation before it releases the key,
+    # and does not ask whether sub-agent work is pending: nothing is deferred to it.
+    assert fire.names()[-6:] == [
         "alert",
         "rearm",
         "rollback",
+        "end-reset",
         "release",
-        "pending?",
-        "reset",
         "clear",
     ]
     assert job.consecutive_failures == 1
@@ -579,6 +617,386 @@ async def test_a_cancellation_in_the_backoff_does_not_release_twice(
     assert fire.rearms()[-1] == {"consumed": False, "landed": False, "compacted": False}
 
 
+# ── a run that fails for good stops its sub-agents ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_failed_run_ends_its_conversation_even_with_sub_agent_work_pending(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed run has no orchestration left for its workers to report into, so the
+    finally does not defer to them: it ends the conversation while it still holds the
+    key, which stops the workers, and only then releases and retires the key."""
+    fire.pending = True
+    monkeypatch.setattr(
+        gw_mod, "run_in_embed_pool", AsyncMock(side_effect=RuntimeError("context assembly failed"))
+    )
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_make_llm_job())
+
+    assert fire.names()[-4:] == ["rollback", "end-reset", "release", "clear"]
+    assert "pending?" not in fire.names()
+    ending = fire.gw.sessions.reset.await_args
+    assert ending.kwargs["ends_conversation"] is True
+    assert ending.kwargs["expect_session"] is not None
+
+
+@pytest.mark.asyncio
+async def test_a_turn_whose_session_was_torn_down_under_it_ends_the_keys_runs(
+    fire: _Fire,
+) -> None:
+    """Something tore the turn's session down mid-turn (a completion's timeout reset,
+    a provider shutdown), and the turn then fails. No session is left to end, so the
+    key's runs are ended on their own before the release, and the key is retired."""
+
+    def _torn_down(_kw: Any) -> None:
+        fire.registered = None
+        fire.holding = False
+        raise RuntimeError("Runtime process died during prompt (provider shutdown)")
+
+    fire.stream_hook = _torn_down
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names[-4:] == ["rollback", "end-children", "release", "clear"]
+    assert "end-reset" not in names
+
+
+@pytest.mark.asyncio
+async def test_a_session_another_turn_took_is_left_with_its_runs(fire: _Fire) -> None:
+    """The turn's session was replaced under it by one another turn holds (the job's
+    dashboard tab runs on the same key). The run fails and ends neither that session
+    nor the key's runs: runs are told apart by key only."""
+
+    def _replaced(_kw: Any) -> None:
+        fire.registered = SimpleNamespace(holder="the tab's turn")
+        fire.holding = False
+        raise RuntimeError("the turn failed")
+
+    fire.stream_hook = _replaced
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert "end-reset" not in names
+    assert "end-children" not in names
+    assert names[-3:] == ["rollback", "release", "clear"]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_acp_retry_ends_its_conversation_before_the_alert(fire: _Fire) -> None:
+    """The retry's own frame is the run's last attempt: its finally ends the
+    conversation it holds before releasing it. The outer frame, which handed the run to
+    that retry, alerts after that and finds nothing of its key left to end."""
+    fire.pending = True
+    fire.acquire_errors = [AcpProcessDied("ACP process pipe broken: Connection lost")]
+    fire.stream_hook = lambda _kw: (_ for _ in ()).throw(RuntimeError("still broken"))
+
+    with pytest.raises(AcpProcessDied):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names.index("end-reset") < names.index("release") < names.index("alert")
+    assert names.count("end-reset") == 1
+    assert "pending?" not in names
+
+
+@pytest.mark.asyncio
+async def test_an_acp_retry_that_fails_before_it_gets_a_session_ends_the_keys_runs(
+    fire: _Fire,
+) -> None:
+    """The turn dispatched (and may have spawned workers), then kiro-cli exited, so the
+    ACP-death arm reset the key and retried. The retry, the run's last attempt, fails
+    before it gets a session: none is left under the key, so the key's runs are ended
+    on their own, before the outer frame alerts."""
+    from kiro_crew.acp.client import AcpError
+
+    real_acquire, acquires = fire._get_or_create, []
+
+    async def acquire(key: str, **kw: Any) -> tuple[Any, bool, bool]:
+        acquires.append(key)
+        if len(acquires) == 2:
+            fire.calls.append("acquire")
+            raise RuntimeError("no runtime for the retry")
+        return await real_acquire(key, **kw)
+
+    fire.gw.sessions.get_or_create.side_effect = acquire
+    exits = [AcpError("ACP process exited mid-turn")]
+
+    def _exit_once(_kw: Any) -> None:
+        if exits:
+            raise exits.pop()
+
+    fire.stream_hook = _exit_once
+
+    with pytest.raises(AcpError):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names.count("acquire") == 2
+    assert names.index("end-children") < names.index("alert")
+    # No completion of a stopped run is delivered, so the run retires the key's
+    # reaper registration itself.
+    assert names[names.index("end-children") + 1] == "clear"
+    assert "end-reset" not in names
+
+
+@pytest.mark.asyncio
+async def test_an_acp_retry_on_a_key_of_its_own_also_stops_the_first_attempts_runs(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stateless job mints a fresh key for every attempt, so the ACP-death retry runs
+    on a key of its own and its failure ends only that key's conversation. The first
+    attempt, whose turn dispatched and may have spawned workers under its own key,
+    stops that key's runs as the failure unwinds through it."""
+    from kiro_crew.acp.client import AcpError
+
+    keys = iter(["cron:lj1:aaaa1111", "cron:lj1:bbbb2222"])
+    monkeypatch.setattr(gw_mod, "build_cron_session_context", lambda job: (next(keys), job.message))
+    exits = [AcpError("ACP process exited mid-turn")]
+
+    def _exit_then_fail(_kw: Any) -> None:
+        raise exits.pop() if exits else RuntimeError("the retry failed too")
+
+    fire.stream_hook = _exit_then_fail
+
+    with pytest.raises(AcpError):
+        await fire.fire(_make_llm_job())
+
+    reset_keys = [c.args[0] for c in fire.gw.sessions.reset.await_args_list]
+    assert reset_keys == ["cron:lj1:aaaa1111", "cron:lj1:bbbb2222"]
+    assert fire.gw.sessions.reset.await_args_list[1].kwargs["ends_conversation"] is True
+    assert fire.ended_keys == ["cron:lj1:aaaa1111"]
+    assert all(
+        c.kwargs == {"unless_registered": True}
+        for c in fire.gw.sessions.end_children_for.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sequence", [False, True], ids=["single", "sequence"])
+async def test_a_failed_run_marks_its_key_finished_only_after_its_ending_reset(
+    fire: _Fire, sequence: bool
+) -> None:
+    """Marked finished first, the key could be retired by a completion that the ending
+    reset's pop wakes while that reset still tears the process down, and the reaper
+    would lose the key and the process with it."""
+    fire.svc.finish_session_key.side_effect = lambda *_a: fire.calls.append("finish")
+    fire.stream_hook = lambda _kw: (_ for _ in ()).throw(RuntimeError("the turn failed"))
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_sequence_job() if sequence else _make_llm_job())
+
+    names = fire.names()
+    assert names.index("end-reset") < names.index("finish") < names.index("release")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sequence", [False, True], ids=["single", "sequence"])
+async def test_a_run_cancelled_while_its_ending_reset_waits_still_releases_its_key(
+    fire: _Fire, sequence: bool
+) -> None:
+    """The run's deadline cancels it while its ending reset waits for the registry lock.
+    The finally still marks the key finished and releases the permit, so the session is
+    not left locked by a task that has finished."""
+    waiting = asyncio.Event()
+    real_reset = fire._reset
+
+    async def stalled_ending(key: str, **kw: Any) -> bool:
+        if kw.get("ends_conversation"):
+            fire.calls.append("end-reset-waits")
+            waiting.set()
+            await asyncio.Event().wait()  # until the cancel below
+        return await real_reset(key, **kw)
+
+    fire.gw.sessions.reset.side_effect = stalled_ending
+    fire.svc.finish_session_key.side_effect = lambda *_a: fire.calls.append("finish")
+    fire.stream_hook = lambda _kw: (_ for _ in ()).throw(RuntimeError("the turn failed"))
+
+    run = asyncio.create_task(fire.fire(_sequence_job() if sequence else _make_llm_job()))
+    await asyncio.wait_for(waiting.wait(), _HANG_CEILING_S)
+    run.cancel()
+    done, _pending = await asyncio.wait({run}, timeout=_HANG_CEILING_S)
+
+    assert run in done and run.cancelled()
+    after = fire.names()[fire.names().index("end-reset-waits") + 1 :]
+    assert after[:2] == ["finish", "release"]
+
+
+@pytest.mark.asyncio
+async def test_a_released_attempt_cancelled_in_its_cleanup_still_closes_its_replay_gap(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The first attempt re-projected its session, which holds the key's replay gap, and
+    then kiro-cli exited, so the ACP-death arm released the key and retried. The retry
+    failed before it acquired one. The run's deadline cancels the first attempt while
+    its own cleanup waits: its finally still closes the gap, which every later turn on
+    the key waits on."""
+    from kiro_crew.acp.client import AcpError
+    from kiro_crew.agent_sdk import spec_hooks
+
+    async def reprojected(_sessions: Any, _key: str, _agent: Any, claimed: Any, *_a: Any) -> Any:
+        return SimpleNamespace(claimed=claimed, reprojected=True, superseded=False)
+
+    monkeypatch.setattr(spec_hooks, "reproject_unattended_claim", reprojected)
+    monkeypatch.setattr(
+        spec_hooks, "close_reprojection_gap", lambda _s, _key: fire.calls.append("gap-closed")
+    )
+    real_acquire, acquires = fire._get_or_create, []
+
+    async def acquire(key: str, **kw: Any) -> tuple[Any, bool, bool]:
+        acquires.append(key)
+        if len(acquires) == 2:
+            fire.calls.append("acquire")
+            raise RuntimeError("no runtime for the retry")
+        return await real_acquire(key, **kw)
+
+    fire.gw.sessions.get_or_create.side_effect = acquire
+    exits = [AcpError("ACP process exited mid-turn")]
+
+    def _exit_once(_kw: Any) -> None:
+        if exits:
+            raise exits.pop()
+
+    fire.stream_hook = _exit_once
+    cleanups: list[str] = []
+    waiting = asyncio.Event()
+
+    async def first_attempt_cleanup_waits(key: str, *, unless_registered: bool = False) -> bool:
+        cleanups.append(key)
+        if len(cleanups) == 2:  # the retry's cleanup came first
+            waiting.set()
+            await asyncio.Event().wait()  # until the cancel below
+        return True
+
+    fire.gw.sessions.end_children_for.side_effect = first_attempt_cleanup_waits
+
+    run = asyncio.create_task(fire.fire(_make_llm_job()))
+    await asyncio.wait_for(waiting.wait(), _HANG_CEILING_S)
+    run.cancel()
+    done, _pending = await asyncio.wait({run}, timeout=_HANG_CEILING_S)
+
+    assert run in done and run.cancelled()
+    assert fire.names().count("gap-closed") == 1
+
+
+@pytest.mark.asyncio
+async def test_an_acp_retry_that_fails_before_its_turn_begins_stops_the_runs(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ACP-death arm reset the key and re-entered the callback, whose fire-time gate
+    then raised: the retry never reached a turn of its own to end anything. The frame
+    that handed the run to it stops the key's runs as the failure unwinds."""
+    from kiro_crew.acp.client import AcpError
+
+    monkeypatch.setattr(
+        gw_mod,
+        "_await_cron_fire_time_gate",
+        AsyncMock(side_effect=[(None, False), RuntimeError("policy store unreadable")]),
+    )
+    exits = [AcpError("ACP process exited mid-turn")]
+
+    def _exit_once(_kw: Any) -> None:
+        if exits:
+            raise exits.pop()
+
+    fire.stream_hook = _exit_once
+
+    with pytest.raises(AcpError):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names.count("acquire") == 1
+    assert names.count("end-children") == 1
+    assert names[-2:] == ["end-children", "clear"]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_before_the_acquire_under_a_session_it_does_not_hold_keeps_the_key(
+    fire: _Fire,
+) -> None:
+    """The attempt fails before it acquires while a session it never held is
+    registered under the key (the job's dashboard tab). That session and its runs are
+    left alone, and so is the key's registration."""
+    fire.registered = SimpleNamespace(holder="the tab's turn")
+    fire.acquire_errors = [RuntimeError("session store unreadable")]
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert "end-children" not in names
+    assert "end-reset" not in names
+    assert "clear" not in names
+
+
+@pytest.mark.asyncio
+async def test_a_session_handed_to_a_retry_that_cannot_claim_it_is_left(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attempt A dispatched and kiro-cli exited, so the ACP-death arm gave the key to
+    retry B. B claimed a new session, met a transient error before dispatch, gave the
+    session back and handed the run to retry C, which fails before claiming it. No
+    frame holds B's session, and another turn may have taken it during the backoff, so
+    neither it nor the key's runs are ended."""
+    from kiro_crew.acp.client import AcpError
+
+    real_acquire, acquires = fire._get_or_create, []
+
+    async def acquire(key: str, **kw: Any) -> tuple[Any, bool, bool]:
+        acquires.append(key)
+        if len(acquires) == 3:
+            fire.calls.append("acquire")
+            raise RuntimeError("no runtime for the retry")
+        return await real_acquire(key, **kw)
+
+    fire.gw.sessions.get_or_create.side_effect = acquire
+    exits = [AcpError("ACP process exited mid-turn")]
+
+    def _exit_once(_kw: Any) -> None:
+        if exits:
+            raise exits.pop()
+
+    fire.stream_hook = _exit_once
+    monkeypatch.setattr(
+        gw_mod,
+        "run_in_embed_pool",
+        AsyncMock(side_effect=[("full prompt", None), _Transient("throttled")]),
+    )
+
+    with pytest.raises(AcpError):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names.count("acquire") == 3
+    assert "alert" in names
+    assert "end-reset" not in names
+    assert "end-children" not in names
+    assert fire.registered is not None
+
+
+@pytest.mark.asyncio
+async def test_only_the_last_transient_attempt_ends_the_runs(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each transient attempt before the last hands the run to a retry and ends
+    nothing; the last one fails the run while it holds the key, and ends it once."""
+    monkeypatch.setattr(gw_mod, "run_in_embed_pool", AsyncMock(side_effect=_Transient("throttled")))
+
+    with pytest.raises(_Transient):
+        await fire.fire(_make_llm_job())
+
+    names = fire.names()
+    assert names.count("sleep") == gw_mod._CRON_TRANSIENT_RETRIES
+    assert names.count("end-reset") == 1
+    last_sleep = len(names) - 1 - names[::-1].index("sleep")
+    assert names.index("end-reset") > last_sleep
+
+
 # ── whose fault a runtime death was ──────────────────────────────────────────
 
 
@@ -789,15 +1207,94 @@ async def test_a_failing_step_propagates_without_an_alert_or_a_charge(fire: _Fir
     assert raised.value is boom
     assert "alert" not in fire.names()
     assert job.consecutive_failures == 0
-    assert fire.names()[-7:] == [
+    assert fire.names()[-6:] == [
         "stream",
         "rearm",
         "rollback",
+        "end-reset",
         "release",
-        "pending?",
-        "reset",
         "clear",
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_step_ends_its_conversation_even_with_sub_agent_work_pending(
+    fire: _Fire,
+) -> None:
+    fire.pending = True
+    fire.stream_hook = lambda _kw: (_ for _ in ()).throw(RuntimeError("step failed"))
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_sequence_job())
+
+    assert fire.names()[-4:] == ["rollback", "end-reset", "release", "clear"]
+    assert "pending?" not in fire.names()
+
+
+@pytest.mark.asyncio
+async def test_a_step_that_fails_before_it_gets_a_session_ends_its_keys_runs(
+    fire: _Fire,
+) -> None:
+    fire.acquire_errors = [RuntimeError("no runtime for the step")]
+
+    with pytest.raises(RuntimeError):
+        await fire.fire(_sequence_job())
+
+    names = fire.names()
+    assert names[-5:] == ["acquire", "rearm", "rollback", "end-children", "clear"]
+    assert "release" not in names
+
+
+@pytest.mark.asyncio
+async def test_a_step_that_lost_its_session_under_pending_work_ends_it_before_release(
+    fire: _Fire,
+) -> None:
+    """The backend lost the step's session while work another turn left on the same
+    key is still pending. The step gives up instead of retrying, and the give-up is
+    decided before the release, so the step still holds the key when it ends the
+    conversation."""
+    from kiro_crew.acp.client import AcpError
+
+    fire.pending = True
+    fire.stream_hook = lambda _kw: (_ for _ in ()).throw(AcpError("Session not found"))
+
+    with pytest.raises(AcpError) as raised:
+        await fire.fire(_sequence_job())
+
+    assert gw_mod.SESSION_NOT_FOUND_GIVE_UP_TEXT in str(raised.value)
+    assert fire.names()[-6:] == ["pending?", "rearm", "rollback", "end-reset", "release", "clear"]
+
+
+@pytest.mark.asyncio
+async def test_a_lost_step_session_that_gains_work_after_the_release_is_not_retried(
+    fire: _Fire, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backend lost the step's session with no work pending, so the step chose to
+    re-load it and released the key. A turn that took the key in that gap spawned a
+    worker: the step's deferral holds, and it gives the re-load up without ending the
+    session that worker reports into or the worker itself."""
+    from kiro_crew.acp.client import AcpError
+
+    asked: list[str] = []
+
+    async def work_pending(_mgr: Any, _key: str) -> bool:
+        fire.calls.append("pending?")
+        asked.append(_key)
+        return len(asked) > 1  # the worker appears after the step's release
+
+    monkeypatch.setattr(gw_mod, "_subagent_work_pending", work_pending)
+    fire.stream_hook = lambda _kw: (_ for _ in ()).throw(AcpError("Session not found"))
+
+    with pytest.raises(AcpError) as raised:
+        await fire.fire(_sequence_job())
+
+    assert gw_mod.SESSION_NOT_FOUND_GIVE_UP_TEXT in str(raised.value)
+    names = fire.names()
+    assert names.count("stream") == 1
+    after_release = names[names.index("release") + 1 :]
+    assert "reset" not in after_release
+    assert "end-reset" not in after_release
+    assert "end-children" not in after_release
 
 
 # ── the carried previous-run result ───────────────────────────────────────────

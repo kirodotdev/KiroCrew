@@ -4030,7 +4030,11 @@ Sites: `reset` (conditionally, see below), `remove`, `destroy`,
 `discard_conversation`, `remove_if_unclaimed`, `retire_kiro_identity_sessions`,
 and `end_children_for`, which ends the children when `workflows/agent_pool`
 reuses a live worker for a new conversation without popping the session or
-touching processes.
+touching processes, and when a cron run that failed for good finds no session left
+under its key (`_end_failed_cron_turn`). That caller passes `unless_registered=True`:
+the verb ends nothing while a session is registered under the key, read in the same
+lock hold as the snapshot, so a successor registered while the caller waited for the
+lock keeps the runs its own turn spawned. The verb returns whether it ended the runs.
 
 The selection is NOT complete, and deliberately so. The mark and the snapshot are both
 taken inside this lock hold, which is the only synchronous point available, so anything
@@ -4063,6 +4067,7 @@ those callers are:
 | caller | why it ends the conversation |
 |---|---|
 | `cron_service/service/run_kill.py` — `_reset_and_kill_once`, reached from `cancel` / `_force_reap` | the job is cancelled or reaped, so its conversation is over |
+| `slack/gateway_runtime/cron_turn.py` — `_end_failed_cron_turn`, reached from the `finally` of `_cron_run_single` and of an `agent_sequence` step | the run failed for good, so the orchestration its sub-agents report into is over |
 | `taskrunner_parts/run_scope.py` — `TaskRunner._cleanup_run_sessions` | cancel cleanup ends every step conversation of the run |
 | `workflows/agent_pool.py` — `reset` | the pool STARTS A NEW conversation on a pooled key |
 | `llm_helpers_parts/background_turns.py` — `_start_fresh_conversation`, reached from `background_turn(fresh_conversation=True)` | the turn's conversation is over; the reset is the fallback when `new_conversation` is unavailable |

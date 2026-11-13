@@ -169,14 +169,20 @@ async def remove_if_unclaimed(self: SessionManager, key: str) -> bool:
     return await self._lifecycle_boundary().remove_if_unclaimed(key)
 
 
-async def end_children_for(self: SessionManager, key: str) -> None:
+async def end_children_for(
+    self: SessionManager, key: str, *, unless_registered: bool = False
+) -> bool:
     """End *key*'s sub-agent runs without tearing its process down.
 
     For a caller that replaces the conversation on a live process: the children of the
     conversation that ended have nowhere to report, and the process surviving does not
-    change that.
+    change that. ``unless_registered`` ends nothing while a session is registered under
+    *key*, decided in the same lock hold as the runs' snapshot, for a caller whose
+    conversation was already torn down. Returns whether the runs were ended.
     """
-    return await self._lifecycle_boundary().end_children_for(key)
+    return await self._lifecycle_boundary().end_children_for(
+        key, unless_registered=unless_registered
+    )
 
 
 async def destroy(self: SessionManager, key: str) -> None:

@@ -95,7 +95,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "discard_conversation": ("function", True, "69405409fda2", "teardown"),
     "drain_active_turns": ("function", True, "5944c6af44b2", "fleet"),
     "drain_all_providers": ("function", True, "0624c13b3dee", "fleet"),
-    "end_children_for": ("function", True, "958babeb61c8", "parent_end"),
+    "end_children_for": ("function", True, "f434e4d5ef08", "parent_end"),
     "flag_identity_stamp_mismatches": ("function", True, "946212e80718", "identity_retirement"),
     "has_open_replay_gap": ("function", False, "1eda252b53bd", "turn_stop"),
     "holds_kiro_process_of_unknown_account": (

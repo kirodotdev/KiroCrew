@@ -231,7 +231,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "drain_all_providers": ("function", True, "f5423acdeebc", "teardown"),
     "drain_warm_pool": ("function", True, "f5423acdeebc", "runtimes"),
     "effective_autocompact_pct": ("function", False, "c61b0946c307", "turn_context"),
-    "end_children_for": ("function", True, "958babeb61c8", "teardown"),
+    "end_children_for": ("function", True, "f434e4d5ef08", "teardown"),
     "ending_key": ("function", False, "e1e3936a7475", "claims"),
     "enqueue": ("function", False, "d3c6da093136", "claims"),
     "fence_update_restart": ("function", False, "a6632a57e602", "claims"),
