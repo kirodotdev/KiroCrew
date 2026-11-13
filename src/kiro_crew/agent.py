@@ -1294,12 +1294,15 @@ def _refresh_dynamic_fields(
     managed_mcp.refresh_managed_servers(mcp, gated_off=gated_off, registry_mode=registry_mode)
 
     # Edition-contributed MCP servers (PlatformContext).  Seed a missing entry
-    # whole.  On an existing entry the edition owns only the invocation
+    # whole.  On an existing entry the edition owns the invocation
     # (``command``/``args``, which can name a versioned interpreter that a later
-    # install deletes), so refresh those and keep every other key the user set
-    # (env, autoApprove, disabled, ...).  A non-object entry (null included)
-    # occupies the name as the user's and is left alone.  Standalone
-    # contributes {} (unchanged).
+    # install deletes), so refresh those.  It also owns the env keys it ships:
+    # one the entry lacks is restored (a same-named hand-added server could
+    # replace the whole env, and the server then runs without what the edition
+    # needs), while a key the user set keeps the user's value.  Every other key
+    # the user set (autoApprove, disabled, ...) is kept.  A non-object entry
+    # (null included) occupies the name as the user's and is left alone.
+    # Standalone contributes {} (unchanged).
     for name, extra_spec in _extra_mcp_servers().items():
         if name not in mcp:
             mcp[name] = dict(extra_spec)
@@ -1310,6 +1313,13 @@ def _refresh_dynamic_fields(
                 if key in extra_spec:
                     value = extra_spec[key]
                     entry[key] = list(value) if isinstance(value, list) else value
+            extra_env = extra_spec.get("env")
+            if isinstance(extra_env, dict) and extra_env:
+                user_env = entry.get("env")
+                if isinstance(user_env, dict):
+                    entry["env"] = {**extra_env, **user_env}
+                elif user_env is None:
+                    entry["env"] = dict(extra_env)
 
     # Security: hooks always from bundled config.
     # Hard-fail if bundled defaults are missing — deny-by-default.
