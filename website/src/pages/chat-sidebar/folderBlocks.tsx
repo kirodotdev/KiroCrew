@@ -42,7 +42,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     disarmHold, dispatch, editName, editScope, editingId, filterHiddenFolders, folderCompare,
     folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef, folderNameMatchIds,
     folderReorderable, folderSortMode, folderSubtrees, folders, foldersWithActiveSubtree, heldLane,
-    hiddenByContainer, hideEmptyFolderBody, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
+    hiddenByContainer, hideEmptyFolderBody, hideEmptyFolders, ime, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, listNarrowed, moveFolderTo, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot,
     pinned, pinnedFolderAncestors, pinnedFolderSubtree, renameCommit, renderSessionRow, renderStaleSection, revealFlash, revealedContainers,
     searchRanked, setEditName, setEditScope, setEditingId, setFolderCleanupRoot, setFolderCreateError, setFolderModal, setFolderOfflineNotice, sidebarRows,
@@ -1029,7 +1029,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // most of the sidebar's height on rows holding nothing. Dropping the body
     // rather than collapsing it is why there is no per-folder expansion state:
     // nothing is hidden, so nothing needs re-reaching.
-    const emptyBody = hideEmptyFolderBody && childNodes.length === 0
+    // The empty folders a session drag brings back come back as one row each,
+    // which halves how far the list moves under the pointer.
+    const emptyBody = (hideEmptyFolderBody || (hideEmptyFolders && activeDrag?.type === 'session')) && childNodes.length === 0
     const wrapped = childNodes.length > 0 ? (
       <div key={`folder-children-${folder.id}`} className={FOLDER_BODY_CLS}>
         <FolderRail name={folder.name} id={folder.id} onToggle={e => toggleListFolderCollapse(folder, e.currentTarget)} />

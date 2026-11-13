@@ -405,6 +405,7 @@ export interface SidebarScope {
   tagColumnsEnabled: ReturnType<typeof useBoardColumns>['tagColumnsEnabled']
   hideEmptyFolderBody: ReturnType<typeof useBoardColumns>['hideEmptyFolderBody']
   countSubfolderContents: ReturnType<typeof useBoardColumns>['countSubfolderContents']
+  hideEmptyFolders: ReturnType<typeof useBoardColumns>['hideEmptyFolders']
   orderedColumns: ReturnType<typeof useBoardColumns>['orderedColumns']
 
   // From `useSidebarResize`

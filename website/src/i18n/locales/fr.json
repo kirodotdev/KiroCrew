@@ -19475,6 +19475,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Un dossier sans conversation occupe une ligne au lieu de deux, et son bouton de nouvelle conversation passe sur la ligne du dossier",
         "folder_count_includes_subfolders": "Inclure le contenu des sous-dossiers dans le décompte des dossiers",
         "folder_count_includes_subfolders_description": "Le décompte d'un dossier inclut aussi tout ce que contiennent ses sous-dossiers : replié, un dossier montre combien il contient",
+        "hide_empty_folders": "Masquer les dossiers vides",
+        "hide_empty_folders_description": "Dans la vue liste, les dossiers sans session ouverte restent masqués jusqu’à ce qu’une session y soit créée ou déplacée, et s’affichent pendant que tu fais glisser une session",
         "full_titles_on_scroll": "Afficher les titres complets pendant le défilement",
         "needs_me_hover_card": "Carte de réponse rapide au survol",
         "needs_me_hover_card_hint": "Quand tu restes sur une session qui t’attend, ou que tu appuies sur → dessus, une carte s’ouvre pour répondre sans quitter ce chat.",

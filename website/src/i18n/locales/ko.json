@@ -18483,6 +18483,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "채팅이 없는 폴더는 두 줄 대신 한 줄을 사용하며, 새 채팅 버튼은 폴더 줄로 옮겨집니다",
         "folder_count_includes_subfolders": "폴더 개수에 하위 폴더 내용 포함",
         "folder_count_includes_subfolders_description": "폴더 개수에 하위 폴더 안의 모든 항목도 더해져, 접힌 폴더에서도 안에 얼마나 있는지 알 수 있습니다",
+        "hide_empty_folders": "빈 폴더 숨기기",
+        "hide_empty_folders_description": "목록 보기에서는 열린 세션이 없는 폴더가 폴더에 세션을 만들거나 옮길 때까지 숨겨지며, 세션을 드래그하는 동안에는 표시됩니다",
         "full_titles_on_scroll": "스크롤할 때 전체 제목 표시",
         "needs_me_hover_card": "마우스를 올리면 빠른 답장 카드 표시",
         "needs_me_hover_card_hint": "나를 기다리는 세션에 마우스를 올리거나 그 위에서 →를 누르면, 지금 채팅을 떠나지 않고 답할 수 있는 카드가 열려요.",

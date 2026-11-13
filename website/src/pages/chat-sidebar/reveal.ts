@@ -58,7 +58,7 @@ const REVEAL_FLASH_FADE_MS = 500
 const REVEAL_SETTLE_SLACK_MS = 50
 
 /** Consumes session and folder reveal requests and flashes the target row. */
-export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView }: {
+export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders }: {
   sidebarRootRef: RefObject<HTMLDivElement>
   dispatch: AppDispatch
   localSlots: Slot[]
@@ -79,6 +79,8 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
   setFilterHiddenFolders: Dispatch<SetStateAction<Set<string>>>
   setRevealForcedVisible: Dispatch<SetStateAction<Set<string>>>
   setFlatView: (on: boolean) => void
+  /** `ChatConfig.hideEmptyFolders`: folder reveals accumulate instead of replacing the last one. */
+  hideEmptyFolders: boolean
 }) {
   // Reveal-in-sidebar: consume the pending request held in the store (set by
   // the session header menu). Store state rather than a window event on
@@ -378,8 +380,9 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // server. The rule still describes what the user wants on their next visit --
     // they asked to see this folder now, not to stop hiding it -- so a persisted
     // write would answer a question they did not ask, and could not be undone from
-    // the row it reveals.
-    setRevealForcedVisible(chain)
+    // the row it reveals. With empty folders hidden, each folder just created is
+    // revealed and must stay shown, so reveals add up; otherwise one replaces the last.
+    setRevealForcedVisible(prev => (hideEmptyFolders ? new Set([...prev, ...chain]) : chain))
     // Expand the folder and every collapsed ancestor. The folder ITSELF opening is
     // part of the destination here: landing on a folder means seeing what is in it.
     expandFolderAncestors(folderId)
@@ -391,6 +394,6 @@ export function useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealB
     // their preference comes back on reload.
     setFlatView(false)
     runReveal('folder', folderId, folderId)
-  }, [revealRequest, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible])
+  }, [revealRequest, dispatch, folders, expandFolderAncestors, runReveal, setSlotFilter, setFilterHiddenFolders, setFlatView, setRevealForcedVisible, hideEmptyFolders])
   return { revealFlash }
 }
