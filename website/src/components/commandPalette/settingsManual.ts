@@ -205,6 +205,27 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
     occurrence: 1,
   },
   {
+    // About itself, so "version" or "about" finds the page. The anchor is the
+    // install card's version chip (`data-setting-label` in AboutPanel.tsx).
+    id: 'about.version',
+    labelKey: 'pages.settings.aboutPanel.version_label',
+    descriptionKey: 'settings.tabs.about.description',
+    tab: 'about',
+    // Read-only; no primitive fits, and the type only steers the icon.
+    type: 'select',
+    occurrence: 1,
+  },
+  {
+    // The release notes section at the foot of About (ReleasesPanel.tsx carries
+    // the `data-setting-label` anchor). `release=notes` scrolls to and focuses it.
+    id: 'about.release-notes',
+    labelKey: 'pages.settings.releases.section_label',
+    tab: 'about',
+    type: 'select',
+    occurrence: 1,
+    params: { release: 'notes' },
+  },
+  {
     // Per-channel notification mute + priority overrides: rows are fetched at
     // runtime (channel names are data), so one entry covers the Sources card.
     id: 'notifications.sources',

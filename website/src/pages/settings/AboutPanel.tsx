@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, History, Download, Copy } from 'lucide-react'
-import { SettingsLink } from '../../components/SettingsLink'
+import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitHorizontal, ExternalLink, ArrowUp, Download, Copy } from 'lucide-react'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn } from '../../components/ui'
 import { useBranding } from '../../hooks/useBranding'
@@ -15,6 +14,8 @@ import { AboutPanelGatewayUpdates, AboutPanelUpdateConfirm, useAboutPanelGateway
 import { DesktopGatewayRestartRow, useDesktopGatewayRestart } from './DesktopGatewayRestartRow'
 import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from './AboutPanelUpdateSwitches'
 import { AboutPanelUpcomingUpdate } from './AboutPanelUpcomingUpdate'
+import { AboutPanelUpdateChanges } from './AboutPanelUpdateChanges'
+import ReleasesPanel from './ReleasesPanel'
 import { api } from '../../api/client'
 import { useIsPolicyGoverned, useUpdateSwitchesShown } from '../../utils/updateSwitches'
 import { storeAnsweredUpdateInfo, updateInfoQuery } from '../../api/updateInfoQuery'
@@ -511,6 +512,13 @@ export function AboutPanel() {
   // reports its darwin default everywhere.
   const manualUrl = info?.downloadUrl || null
   const showManualFallback = !!manualUrl && (cardReady || cardFailed)
+  // Whether the running bytes are the followed lane's stable release, so the
+  // release-list fallback keeps or drops the running release's own section.
+  const desktopBytesAreStable = followedLanePublishesRunningBytes({
+    followedChannel: info?.channel,
+    laneAnswered: runningAheadOfLane === true || runningAheadOfLane === false,
+    runningAheadOfLane: runningAheadOfLane === true,
+  })
   const updateCard: React.ReactNode = showUpdateCard ? (
     <div className="p-3 bg-bg rounded-lg border border-border flex flex-col gap-2" data-testid="update-card">
       <div className="flex items-start justify-between gap-3">
@@ -642,9 +650,7 @@ export function AboutPanel() {
           </span>
         </span>
       )}
-      {updateState?.notes ? (
-        <div className="p-2.5 bg-card rounded-md border border-border max-h-40 overflow-y-auto text-[12px] text-text whitespace-pre-wrap">{updateState.notes}</div>
-      ) : null}
+      <AboutPanelUpdateChanges notes={updateState?.notes || ''} version={updateState?.version || ''} runningVersion={info?.version || ''} bytesAreStable={desktopBytesAreStable} />
     </div>
   ) : null
 
@@ -822,6 +828,16 @@ export function AboutPanel() {
     </a>
   )
 
+  // Desktop channel controls: shown for an install with a lane its owner reads.
+  const desktopChannelShown = isDesktop && !!channel && !isExternallyManaged && !isGatewayPolicyManaged
+  const desktopChannelSwitchable = !!info?.channelSwitchable && !!desktopApi?.setChannel
+  // Check for updates, wherever the install can check for itself: the desktop
+  // updater's own lane, or a gateway with no update or channel move on screen
+  // (that state offers the update instead).
+  const showCheckButton = isDesktop
+    ? !isExternallyManaged && !updatesDisabled && !isGatewayPolicyManaged
+    : !(showUpdate || channelMovePending)
+
   return (
     <>
       <Card style={HERO_BG}>
@@ -840,7 +856,7 @@ export function AboutPanel() {
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
               <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
                     title={versionLanesDiffer ? i18nT('pages.settings.aboutPanel.app_lane_title') : undefined}
-                    data-testid="about-version">
+                    data-testid="about-version" data-setting-label={i18nT('pages.settings.aboutPanel.version_label')}>
                 {versionLanesDiffer && (
                   <span className="font-sans font-medium text-muted mr-1" data-testid="about-version-lane">{i18nT('pages.settings.aboutPanel.app_lane_label')}</span>
                 )}
@@ -937,8 +953,92 @@ export function AboutPanel() {
           </span>
         </div>
 
-        {isDesktop && channel && !isExternallyManaged && !isGatewayPolicyManaged && (
-          info?.channelSwitchable && desktopApi?.setChannel ? (
+        {/* The read-only channel and the Check button sit with the version they
+            describe. The Updates card below holds what changes it: the channel
+            switcher, the update itself and the auto-update switch. */}
+        {desktopChannelShown && !desktopChannelSwitchable && (
+          <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              {info?.channelLockedByPolicy ? (
+                <span className="inline-flex items-center gap-2">
+                  {channelLabel(channel)}
+                  {/* A build that cannot follow the required channel names both:
+                      the lane it is on, and the one the policy requires. */}
+                  {info.requiredChannel && info.requiredChannel !== channel && (
+                    <span className="text-muted" data-testid="channel-requires">
+                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
+                    </span>
+                  )}
+                  <LockedByPolicyBadge />
+                </span>
+              ) : channel}
+          </Row>
+        )}
+        {gwLtsLane && (
+          <div data-testid="gateway-channel-locked">
+            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
+              <span className="inline-flex items-center gap-2">
+                {channelLabel(effectiveGwChannel)}
+                <LockedByPolicyBadge />
+              </span>
+            </Row>
+          </div>
+        )}
+        {showCheckButton && (
+          <div className="mt-2">
+            <Btn
+              primary={isDesktop}
+              onClick={() => (isDesktop ? checkMutation.mutate() : gwUpdate.gwCheck.mutate())}
+              disabled={isDesktop ? checking : gwUpdate.gwCheck.isPending}
+              data-testid="about-check-for-updates"
+            >
+              <RefreshCw size={13} className={`lucide-inline ${(isDesktop ? checking : gwUpdate.gwCheck.isPending) ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
+            </Btn>
+          </div>
+        )}
+        {isPrerelease && (
+          // NOT behind the disclosure: a user already running prerelease bytes
+          // is exactly who must see the ask, and hiding it behind a click means
+          // the people whose bug reports matter most never read it.
+          //
+          // NOT gated on `isDesktop` either, which is what it used to be: a
+          // wheel install is a first-class insider/nightly lane (release.yml
+          // publishes to cli/<channel>/), and gating on the desktop shell meant
+          // every CLI prerelease user — the ones with no updater and no app
+          // menu — saw nothing here at all.
+          // Deliberately NOT warn-tinted with an alert triangle: a first-time
+          // reader took that as "something is wrong with my installation" and
+          // was reluctant to click a link inside it. This is a request for help,
+          // so it speaks in the app's own accent voice, and the anchor names
+          // GitHub because the destination is a new-issue form — a surprise
+          // worth spending four words to avoid.
+          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
+               data-testid="prerelease-report-note">
+            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
+            <span className="text-text leading-relaxed">
+              {/* ONE catalog string carrying the anchor: splitting it into
+                  fragments around the link would lock every language into
+                  English clause order. `Trans` (not a hand-rolled split on a
+                  mustache literal) is what lets the translator move the anchor
+                  to wherever the target grammar needs it. */}
+              <Trans
+                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
+                components={{
+                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
+                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
+                }}
+              />
+            </span>
+          </div>
+        )}
+        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
+      </Card>
+
+      <Card>
+        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
+        {/* The channel controls open the card: switching lanes is how the next
+            update is chosen, and the pending-move note below them points at the
+            installer command further down this card. */}
+        {desktopChannelShown && desktopChannelSwitchable && (
             <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
                 <div className="flex flex-col items-start min-w-0">
@@ -1009,33 +1109,6 @@ export function AboutPanel() {
                 />
               )}
             </div>
-          ) : (
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
-              {info?.channelLockedByPolicy ? (
-                <span className="inline-flex items-center gap-2">
-                  {channelLabel(channel)}
-                  {/* A build that cannot follow the required channel names both:
-                      the lane it is on, and the one the policy requires. */}
-                  {info.requiredChannel && info.requiredChannel !== channel && (
-                    <span className="text-muted" data-testid="channel-requires">
-                      {i18nT('pages.settings.aboutPanel.update_channel_requires', { channel: info.requiredChannel })}
-                    </span>
-                  )}
-                  <LockedByPolicyBadge />
-                </span>
-              ) : channel}
-            </Row>
-          )
-        )}
-        {gwLtsLane && (
-          <div data-testid="gateway-channel-locked">
-            <Row label={i18nT('pages.settings.aboutPanel.update_channel')}>
-              <span className="inline-flex items-center gap-2">
-                {channelLabel(effectiveGwChannel)}
-                <LockedByPolicyBadge />
-              </span>
-            </Row>
-          </div>
         )}
         {showGwChannelSwitcher && (
           // Gateway (CLI / wheel / cloud source) channel switcher: the same two
@@ -1166,52 +1239,12 @@ export function AboutPanel() {
                 <AlertCircle size={13} className="lucide-inline shrink-0 text-warn" />
                 <span>{i18nT('pages.settings.aboutPanel.channel_explainer_gateway_switch_note_version', {
                   channel: effectiveGwChannel,
-                  version: gwTargetDisplay || gwStatusLatestDisplay,
+                  version: (newestIsLocal ? gwTargetDisplay : '') || gwStatusLatestDisplay,
                 })}</span>
               </span>
             )}
           </div>
         )}
-        {isPrerelease && (
-          // NOT behind the disclosure: a user already running prerelease bytes
-          // is exactly who must see the ask, and hiding it behind a click means
-          // the people whose bug reports matter most never read it.
-          //
-          // NOT gated on `isDesktop` either, which is what it used to be: a
-          // wheel install is a first-class insider/nightly lane (release.yml
-          // publishes to cli/<channel>/), and gating on the desktop shell meant
-          // every CLI prerelease user — the ones with no updater and no app
-          // menu — saw nothing here at all.
-          // Deliberately NOT warn-tinted with an alert triangle: a first-time
-          // reader took that as "something is wrong with my installation" and
-          // was reluctant to click a link inside it. This is a request for help,
-          // so it speaks in the app's own accent voice, and the anchor names
-          // GitHub because the destination is a new-issue form — a surprise
-          // worth spending four words to avoid.
-          <div className="flex items-start gap-2 p-2.5 rounded-lg border border-border bg-[var(--accent-subtle)] text-[12px]"
-               data-testid="prerelease-report-note">
-            <Bug size={13} className="lucide-inline shrink-0 mt-0.5 text-accent" />
-            <span className="text-text leading-relaxed">
-              {/* ONE catalog string carrying the anchor: splitting it into
-                  fragments around the link would lock every language into
-                  English clause order. `Trans` (not a hand-rolled split on a
-                  mustache literal) is what lets the translator move the anchor
-                  to wherever the target grammar needs it. */}
-              <Trans
-                i18nKey="pages.settings.aboutPanel.prerelease_report_prompt"
-                components={{
-                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label
-                  report: <a href={reportIssueUrl()} target="_blank" rel="noreferrer" className="text-accent hover:underline" />,
-                }}
-              />
-            </span>
-          </div>
-        )}
-        {isDesktop && info?.platform && <Row label={i18nT('pages.settings.aboutPanel.platform')}>{info.platform}</Row>}
-      </Card>
-
-      <Card>
-        <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
         {isDesktop ? (<>
           {isExternallyManaged ? (
             // The marker's owner (a distro/enterprise package manager) replaces
@@ -1351,11 +1384,6 @@ export function AboutPanel() {
               <p className="text-sm text-muted">
                 {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
               </p>
-              <div>
-                <Btn primary onClick={() => checkMutation.mutate()} disabled={checking}>
-                  <RefreshCw size={13} className={`lucide-inline ${checking ? 'animate-spin' : ''}`} /> {i18nT('pages.settings.aboutPanel.check_for_updates')}
-                </Btn>
-              </div>
               {status && <div className="text-[13px]">{status}</div>}
               {/* The followed lane has never published these bytes (the running
                   build is ahead of its feed), so "up to date" above is about the
@@ -1456,27 +1484,15 @@ export function AboutPanel() {
 
         {/* Directly under the update controls, never a pop-up. */}
         <AboutPanelUpcomingUpdate />
-
-        {/* The full changelog used to be inlined here, open by default. It grows
-            without bound while this card's job -- stating the identity of this
-            install -- is bounded to one screen forever, so the archive moved to
-            its own Releases panel and this is the link to it. See
-            pages/settings/ReleasesPanel.tsx. */}
-        <div className="mt-3 pt-3 border-t border-border">
-          <SettingsLink
-            tab="releases"
-            className="text-[13px] text-accent hover:underline inline-flex items-center gap-1.5"
-          >
-            <History size={13} className="lucide-inline" aria-hidden="true" />
-            {i18nT('pages.settings.aboutPanel.view_all_releases')}
-          </SettingsLink>
-        </div>
       </Card>
 
       {/* Web update confirm — shows the changelog, then applies (which restarts the gateway). */}
       {showConfirm && (
         <AboutPanelUpdateConfirm gwUpdate={gwUpdate} gwDiverged={gwDiverged} gwDivergedText={gwDivergedText} runningVersion={gatewayVersion} />
       )}
+
+      {/* The running release's notes, then a capped list of earlier ones. */}
+      <ReleasesPanel />
 
       <ReportProblemCard />
     </>

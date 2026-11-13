@@ -103,7 +103,7 @@ describe('AboutPanelUpcomingUpdate', () => {
     } as never))
     mount(<AboutPanel />)
     expect(await screen.findByText('Update available')).toBeTruthy()
-    expect(screen.getAllByRole('button', { name: /Update when I restart/ }).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: /Update to v0\.13\.0/ }).length).toBeGreaterThan(0)
     expect(screen.queryByTestId('upcoming-update')).toBeNull()
   })
 

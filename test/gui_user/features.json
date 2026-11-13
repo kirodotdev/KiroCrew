@@ -6653,19 +6653,19 @@
     {
       "id": "settings-releases",
       "feature": "settings",
-      "title": "Settings › Releases",
-      "user_story": "As a user, I want a release channel, update check and changelog, so that I stay current on my terms.",
-      "start_url": "/settings/releases",
-      "entry_path": "Settings → Releases",
+      "title": "Settings › About › Release notes",
+      "user_story": "As a user, I want a release channel, update check and the release notes in one place, so that I stay current on my terms.",
+      "start_url": "/settings/about",
+      "entry_path": "Settings → About → What's new / Earlier releases (old /settings/releases links redirect here)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": "Update check hits the network; stub it. Do not apply an update. | Fixed-height contained tab; rows come from CHANGELOG.md sections plus the running build. | updateAffordance decides apply vs command; About also hosts Support/ReportProblemCard and MobileLoginCard."
+        "notes": "Update check hits the network; stub it. Do not apply an update. | Rows come from CHANGELOG.md sections plus the running build; five earlier releases, then Show 5 more. | updateAffordance decides apply vs command; About also hosts Support/ReportProblemCard and MobileLoginCard."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
-      "rationale": "Changelog and channel selector render offline; applying an update is excluded.",
+      "rationale": "Release notes and channel selector render offline; applying an update is excluded.",
       "source": [
         "docs/feature-map/README.md",
         "website/src/pages/settings/ReleasesPanel.tsx",

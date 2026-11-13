@@ -100,8 +100,7 @@ documented by their own in-panel help.
 | Connections | Provider cards, each with its OAuth app when the provider needs a registered client; MCP servers have their own MCP Servers page | [Connections](connections.md) |
 | Secrets | The encrypted credential vault | [Secrets vault](secrets-vault.md) |
 | Developer | A list of pages: Feature Previews (with an optional local-gateway toggle), then logs, metrics, storage and the other developer views | [Dashboard](dashboard.md) |
-| Releases | Release notes for each version | — |
-| About | Version, update channel, check for updates, and license | [Getting Started](getting-started.md) |
+| About | Version, update channel, check for updates, release notes, and license | [Getting Started](getting-started.md) |
 
 ## Chat Channels
 

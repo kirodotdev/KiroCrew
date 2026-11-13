@@ -41,8 +41,8 @@ function withNudgeConfig(record: Record<string, unknown> | undefined) {
   mockedApi.kirocrewConfig.mockResolvedValue({ dashboard: { update_nudge: record } } as never)
 }
 
-async function mount(initial?: UpdateState, store = createTestStore(), ui: ReactElement = <UpdateFoundModal />) {
-  const rendered = renderWithProviders(ui, { store })
+async function mount(initial?: UpdateState, store = createTestStore(), ui: ReactElement = <UpdateFoundModal />, route = '/') {
+  const rendered = renderWithProviders(ui, { store, route })
   const push = async (next: UpdateState) => {
     await act(async () => { rendered.queryClient.setQueryData(['update-state'], next) })
   }
@@ -111,6 +111,23 @@ describe('UpdateFoundModal — desktop source', () => {
     expect(screen.getByText('9.9.9')).toBeInTheDocument()
     expect(screen.getByText('zzq release notes')).toBeInTheDocument()
     expect(byName('components.updateFoundModal.download')).toBeInTheDocument()
+  })
+
+  it('stays closed on Settings > About, which already shows the update', async () => {
+    await mount(found, createTestStore(), <UpdateFoundModal />, '/settings/about')
+    expect(dialog()).toBeNull()
+  })
+
+  it('opens a mandatory update on Settings > About despite a persisted skip', async () => {
+    withNudgeConfig({ version: '8.8.8', skipped: true })
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '8.8.8', update_can_apply: true,
+      update_required: true, update_min_version: '8.0.0',
+    }), <UpdateFoundModal />, '/settings/about')
+    expect(dialog()).toBeInTheDocument()
+    expect(screen.getByTestId('update-required-note')).toHaveTextContent('8.0.0')
+    expect(screen.queryByRole('button', { name: i18nT('components.updateFoundModal.dismiss') })).toBeNull()
+    expect(byName('components.updateFoundModal.update_when_i_restart')).toBeInTheDocument()
   })
 
   it('never opens for a replayed payload', async () => {
@@ -439,6 +456,23 @@ describe('UpdateFoundModal — desktop source', () => {
 })
 
 describe('UpdateFoundModal — gateway source', () => {
+  it('stays closed on Settings > About in a browser, where About shows the gateway update', async () => {
+    delete (window as unknown as { updateAPI?: unknown }).updateAPI
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '0.4.0', update_command: 'x-update',
+    }), <UpdateFoundModal />, '/settings/about')
+    expect(dialog()).toBeNull()
+  })
+
+  it('opens on Settings > About in the desktop app for a gateway it does not bundle', async () => {
+    // The desktop About page draws a gateway update only for a policy-governed
+    // install, so an adopted or remote gateway's update keeps its popup there.
+    await mount(undefined, gatewayStore({
+      update_available: true, update_latest_version: '0.4.0', update_command: 'x-update',
+    }), <UpdateFoundModal />, '/settings/about')
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+  })
+
   it('prints the folded display version but keys snooze/skip on the raw stamp', async () => {
     // A promoted stable candidate: the popup's text must show the clean
     // release, while the persisted per-version verdict keys on the raw stamp

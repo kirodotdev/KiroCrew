@@ -237,6 +237,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'AboutPanelGatewayUpdate.tsx': 'about',
   'AboutPanelUpdateSwitches.tsx': 'about',
   'AboutPanelUpcomingUpdate.tsx': 'about',
+  // The release notes section at the foot of About: its anchor backs the
+  // manual about.release-notes entry.
+  'ReleasesPanel.tsx': 'about',
   'DesktopGatewayRestartRow.tsx': 'about',
   'SttSettings.tsx': 'voice',
   // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also

@@ -74,7 +74,7 @@ A board column's **Filter & manage tags** view lists the same tags. There you ca
 
 ### Settings (`/settings/*`)
 
-Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
+Settings uses tabbed panels for Overview, Import / Export, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, and About (which also holds the release notes). `/overview` redirects to `/settings/overview`.
 
 ### Customize (`/capabilities`)
 

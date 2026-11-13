@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
-import { Bell, Code, Cpu, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
+import { Navigate, useLocation, useNavigate } from 'react-router-dom'
+import { Bell, Code, Cpu, Fingerprint, Globe, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Plug, Server, ShieldCheck, Sparkles, SquareMousePointer, Users, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { SUBNAV_PARAM, SUBNAV_LEGACY_PARAMS, deleteSubSelection, toPathSegment, parsePathSegments } from '../components/subNavParams'
@@ -22,7 +22,7 @@ import { OverviewPanel } from './settings/OverviewPanel'
 import { NotificationsPanel } from './settings/NotificationsPanel'
 import { ShortcutsPanel } from './settings/ShortcutsPanel'
 import { AboutPanel } from './settings/AboutPanel'
-import ReleasesPanel from './settings/ReleasesPanel'
+import { RELEASE_NOTES_LINK, RELEASE_PARAM } from './settings/ReleasesPanel'
 import { ImportPanel } from './settings/ImportPanel'
 import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
@@ -119,19 +119,9 @@ function buildTabs() {
     { key: 'secrets', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.secrets.label'), icon: <KeyRound size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.secrets.description') },
     { key: 'session-environments', tile: 'var(--tile-blue)', label: i18nT('sessionEnvironments.title'), icon: <Server size={16} />, group: GROUP_SYSTEM, description: i18nT('sessionEnvironments.settingsDescription') },
     { key: 'developer', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.developer.label'), icon: <Code size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.developer.description'), hostsSubNav: true },
-    // The trailing divider fences off the entries that are not settings at all.
-    // About was its only occupant; the release archive is the same kind of thing
-    // (a document about the product, not a preference), so it joins the fence
-    // rather than opening a second exception. The divider flag rides the FIRST
-    // entry after it -- `SidePanelLayout` renders one separator per flagged row,
-    // so leaving it on About too would draw two lines and strand this row
-    // outside the fence. About stays last, where every platform puts it.
-    // The one Settings tab that is contained rather than page-scrolled: it has
-    // its own version rail beside the notes, and letting the page grow scrolled
-    // the rail and the "Releases" heading off the top while the reader was
-    // still inside one release's notes.
-    { key: 'releases', tile: 'var(--tile-purple)', label: i18nT('settings.tabs.releases.label'), icon: <History size={16} />, dividerBefore: true, fixedContent: true, description: i18nT('settings.tabs.releases.description') },
-    { key: 'about', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, description: i18nT('settings.tabs.about.description') },
+    // The trailing divider fences off About, the one entry that is not a
+    // setting at all. About stays last, where every platform puts it.
+    { key: 'about', tile: 'var(--tile-gray)', label: i18nT('settings.tabs.about.label'), icon: <Info size={16} />, dividerBefore: true, description: i18nT('settings.tabs.about.description'), drillInParams: [RELEASE_PARAM] },
   ]
 }
 
@@ -294,6 +284,23 @@ export default function SettingsPage() {
     && memorySelection.get('view') === 'memory' && !!memorySelection.get('store')
     && memorySelection.get('store') !== 'default'
 
+  // The release notes used to be a Releases tab of their own and now sit at the
+  // foot of About, so its old addresses (`/settings/releases`,
+  // `/settings/releases/<version>` and the legacy `?tab=releases`) land there,
+  // with the release notes section, or a named version in it, scrolled into
+  // view. Rendered in place of
+  // the layout so no other tab paints for a frame on the way.
+  const releasesSegments = parsePathSegments(SETTINGS_BASE_PATH, pathname)
+  const legacyReleasesTab = !releasesSegments[0] && memorySelection.get('tab') === 'releases'
+  if (releasesSegments[0] === 'releases' || legacyReleasesTab) {
+    const qs = new URLSearchParams(search)
+    qs.delete('tab')
+    // A named version opens that release; the bare address opens the section.
+    qs.set(RELEASE_PARAM, releasesSegments[1] || RELEASE_NOTES_LINK)
+    const rest = qs.toString()
+    return <Navigate replace to={{ pathname: `${SETTINGS_BASE_PATH}/about`, search: rest ? `?${rest}` : '' }} />
+  }
+
   return (
     <SidePanelLayout
       title={i18nT('pages.settingsPage.settings')}
@@ -384,7 +391,6 @@ export default function SettingsPage() {
           </SettingsCard>
         )}
         {tab === 'developer' && <DeveloperPanel basePath={SETTINGS_BASE_PATH} />}
-        {tab === 'releases' && <ReleasesPanel />}
         {tab === 'about' && <AboutPanel />}
       </>}
     </SidePanelLayout>
