@@ -21,15 +21,17 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from kiro_crew.acp import pi_steer_turn
-from kiro_crew.acp.client import AcpClient
+from kiro_crew.acp.client import AcpClient, AcpError
 from kiro_crew.acp.harness import pi as pi_mod
 from kiro_crew.acp.harness.pi_steer import (
     PiSteerChannel,
+    model_error_line,
     new_pi_steer_channel,
     steer_echo_seq,
 )
 from kiro_crew.acp.types import (
     ACP_BACKEND_PI,
+    ACP_BACKEND_STRANDS,
     ACP_BACKENDS_STEER,
     ACP_BACKENDS_STEERING_REQUEST,
     EVENT_COMPLETE,
@@ -38,12 +40,13 @@ from kiro_crew.acp.types import (
     MAX_STEERING_ANSWERS,
     MAX_STEERING_TEXT_CHARS,
 )
-from kiro_crew.testing.wait import await_until, until_parked
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until, until_parked
 
 _SID = "pi-session-1"
 _NONCE = "0123456789abcdef0123456789abcdef"
 _PROMPT_ID = 7
 _FIXTURE = Path(__file__).parent / "fixtures" / "acp_frames" / "pi" / "steering-live.jsonl"
+_MODEL_ERROR_FIXTURE = _FIXTURE.with_name("model-error-live.jsonl")
 
 
 @pytest.fixture
@@ -54,8 +57,10 @@ def gate_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     return pi_mod._pi_gate_artifact_dir()
 
 
-def _client(tmp_path: Path, channel: PiSteerChannel | None) -> tuple[AcpClient, Any]:
-    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+def _client(
+    tmp_path: Path, channel: PiSteerChannel | None, backend: str = ACP_BACKEND_PI
+) -> tuple[AcpClient, Any]:
+    client = AcpClient(work_dir=tmp_path, acp_backend=backend)
     reader = asyncio.StreamReader()
     proc = MagicMock()
     proc.stdout = reader
@@ -511,3 +516,105 @@ async def test_the_live_capture_reports_the_steer_consumed_and_shows_no_envelope
         "kiro-crew-steer" in (e.text or "") for e in events if e.kind == EVENT_TEXT_CHUNK
     )
     assert events[-1].stop_reason == "end_turn"
+
+
+# ── a failed model call: the extension's report fails the turn ───────────────
+
+
+def _failure(nonce: str = _NONCE, **extra: Any) -> str:
+    body = {"kiro-crew-model-error": 1, "nonce": nonce, "provider": "p", "model": "m"}
+    return json.dumps({**body, "error": "boom", **extra})
+
+
+@pytest.mark.parametrize(
+    ("text", "line"),
+    [
+        (_failure(), "pi's model call failed (p/m): boom"),
+        (_failure(provider="", model=""), "pi's model call failed: boom"),
+        (_failure(nonce="f" * 32), None),
+        (_failure(x=1), None),
+        (_failure(error=None), None),
+        (_failure().replace('"kiro-crew-model-error": 1', '"kiro-crew-model-error": true'), None),
+        ("pi's model call failed (p/m): boom", None),
+        ("{not json", None),
+    ],
+)
+def test_only_the_extensions_own_failure_report_reads_as_one(text: str, line: str | None) -> None:
+    assert model_error_line(text, _NONCE) == line
+    assert model_error_line(text, "") is None
+
+
+@pytest.mark.asyncio
+async def test_model_text_that_spells_the_failure_report_is_text(tmp_path: Path) -> None:
+    """Without pi-acp's notify marker, or on another backend, the chunk is the model's."""
+    client, reader = _client(tmp_path, None)
+    client._pi_gate_nonce = _NONCE
+    events, _ = await _turn(client, reader, _chunk(_failure(), notify=False) + _complete(), None)
+    assert [e.text for e in events if e.kind == EVENT_TEXT_CHUNK] == ["working", _failure()]
+    assert events[-1].stop_reason == "end_turn"
+    # strands' launch sets the gate nonce too; only a pi client reads the report.
+    client, reader = _client(tmp_path, None, ACP_BACKEND_STRANDS)
+    client._pi_gate_nonce = _NONCE
+    events, _ = await _turn(client, reader, _chunk(_failure(), notify=True) + _complete(), None)
+    assert events[-1].stop_reason == "end_turn"
+
+
+def _model_error_turn(tmp_path: Path) -> tuple[AcpClient, int]:
+    """A pi client fed the capture's failing turn, and that turn's prompt id."""
+    lines = _MODEL_ERROR_FIXTURE.read_text().splitlines()
+    meta = json.loads(lines[0])["_meta"]
+    frames = [json.loads(line) for line in lines[1:]]
+    # The turn begins after the session/new and set-model answers (ids 1-3).
+    start = next(i for i, f in enumerate(frames) if f.get("id") == 3) + 1
+    turn = frames[start:]
+    assert turn[-1]["result"] == {"stopReason": "end_turn"}
+    client, reader = _client(tmp_path, None)
+    client._pi_gate_nonce = meta["gate_envelope_nonce"]
+    client._session_id = "pi-session-1"
+    client._turn_done.clear()
+    for frame in turn:
+        reader.feed_data((json.dumps(frame) + "\n").encode())
+    return client, turn[-1]["id"]
+
+
+@pytest.mark.asyncio
+async def test_the_live_model_error_capture_fails_the_turn_and_shows_no_envelope(
+    tmp_path: Path,
+) -> None:
+    client, prompt_id = _model_error_turn(tmp_path)
+    events: list[Any] = []
+    with pytest.raises(AcpError) as raised:
+        async for event in client._dispatch_events(prompt_id, timeout=FALLBACK_TIMEOUT_SECS):
+            events.append(event)
+    assert "Could not load credentials from any providers" in str(raised.value)
+    assert "amazon-bedrock/amazon.nova-micro-v1:0" in str(raised.value)
+    assert not [e for e in events if e.kind in (EVENT_TEXT_CHUNK, EVENT_COMPLETE)]
+    assert client._last_stop_reason == ""
+    assert client._turn_done.is_set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api", ["send_message", "send_message_stream"])
+async def test_the_text_only_readers_fail_the_same_turn_and_return_no_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, api: str
+) -> None:
+    client, prompt_id = _model_error_turn(tmp_path)
+
+    async def _ready() -> None:
+        return None
+
+    async def _sent(message: str) -> int:
+        return prompt_id
+
+    monkeypatch.setattr(client, "ensure_ready", _ready)
+    monkeypatch.setattr(client, "_send_prompt", _sent)
+    chunks: list[str] = []
+    with pytest.raises(AcpError) as raised:
+        if api == "send_message":
+            chunks.append(await client.send_message("hi", timeout=FALLBACK_TIMEOUT_SECS))
+        else:
+            async for chunk in client.send_message_stream("hi", timeout=FALLBACK_TIMEOUT_SECS):
+                chunks.append(chunk)
+    assert "Could not load credentials from any providers" in str(raised.value)
+    assert chunks == []
+    assert client._last_stop_reason == ""

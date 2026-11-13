@@ -14,12 +14,15 @@ the corpus does and does not prove.
 | `zero-tools-refused-live.jsonl` | live | four turns on an agent spec declaring `"tools": []`: a `write`, a `bash` and an `mcp__probe_server__echo` call, each with the `session/request_permission` the gate extension raised and the `tool_call_update` that ended it `failed`, and a `frobnicate` call pi failed itself with no permission frame |
 | `effort-live.jsonl` | live | the initialize and `session/new` responses on pi's own catalog model `claude-opus-4-8` (a `thought_level` select offering `max`), a `thought_level=max` write reading back `max`, a model write to `claude-sonnet-4-5` (select now off through `high`, current `high`), a `max` write there answered with success and read back `high`, and the `current_mode_update` / `config_option_update` after each write |
 | `steering-live.jsonl` | live | the initialize, `session/new` and set-model responses, a `tool_call` for a `bash` sleep, the `session/request_permission` forwarded from Kiro Crew's gate extension, the updates through `completed`, the extension's consumed-steer notification (an `agent_message_chunk` carrying `_meta.piAcp.notify`), the model's answer to the steer, `usage_update`, and the `end_turn` result |
+| `model-error-live.jsonl` | live | the initialize, `session/new` and set-model responses, the gate extension's failed-model-call envelope (an `agent_message_chunk` carrying `_meta.piAcp.notify` level `error`), `usage_update`, the `session_info_update` pair around the turn, and the `end_turn` result |
 | `saved-spec-projection-live.jsonl` | live | the initialize and `session/new` responses of a crew member session on a saved spec the client confirmed, then one turn: a `tool_call` for the spec's own `mcp__probe_server__echo`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the server's answer, and the result |
 
 Every file is captured off `pi-acp` 0.0.34 spawning `pi` 1.4.0, the pair the Real
 Adapter lane pins in `test/real_adapters/package.json` (installed with `npm ci`
 there), driving a scripted OpenAI-compatible endpoint on the loopback interface
-named in pi's own `models.json`. `test/test_real_adapter_fixture_pins.py` reds when
+named in pi's own `models.json`; `model-error-live.jsonl` instead names pi's built-in
+`amazon-bedrock` provider, whose call fails before any request leaves the host.
+`test/test_real_adapter_fixture_pins.py` reds when
 either pin moves past a header. Agent-to-client lines are verbatim apart from the
 reductions each `_meta.note` names (synthetic session and dialog ids, `<cwd>`, the
 command inventory dropped). The working directory in the frames is a scratch
@@ -172,6 +175,24 @@ terminal id, and the `completed` update carries `_meta.terminal_exit` with the e
 code and nothing else -- the output is meant to be read through the ACP
 `terminal/*` methods, which Kiro Crew does not implement. The model saw the output
 (its reply reports it); the transcript's tool pill does not.
+
+## What the model-error capture establishes
+
+`model-error-live.jsonl` was recorded by the in-product recorder while the real
+`kirocrew chat -m` CLI ran one turn on pi's built-in `amazon-bedrock` provider with no
+AWS credential reachable, off `pi-acp` 0.0.34 spawning `pi` 1.4.0 through the gate
+launcher, inside the namespace sandbox backend the recording host provides. pi's
+assistant message ended `stopReason: "error"` with `Could not load credentials from
+any providers`. Before the extension reported it, the same drive carried no chunk at
+all between the turn's two `session_info_update` frames and the prompt answered
+`end_turn`: an empty reply. Now the extension records the failure at `turn_end` and,
+at `agent_settled`, notifies one envelope (the `kiro-crew-model-error` marker, the
+gate nonce in `_meta.gate_envelope_nonce`, provider, model, error), which pi-acp
+forwards before it answers `end_turn`: pi runs its extensions' `agent_settled`
+handlers before it tells its RPC listeners, and pi-acp's `settleTurn` flushes the
+updates it queued before it answers the prompt. `AcpClient` never shows the envelope as text
+and fails the turn with `pi's model call failed (<provider>/<model>): <error>`;
+`test_pi_steer.py` replays the turn through the client's real read loop.
 
 ## What the steering capture establishes
 

@@ -425,6 +425,14 @@ to queue, so pi joins `ACP_BACKENDS_STEERING_REQUEST` and `steer_needs_loss_reco
 like goose (`steering-live.jsonl`, `test_pi_steer.py`,
 `test_pi_gate_extension_steer.py`).
 
+pi-acp forwards nothing of a failed model call either: the run ends `end_turn`
+with no text. The gate extension records the failure at `turn_end` and, when the
+run settles not aborted, notifies a nonce-bound `kiro-crew-model-error` envelope
+over the same notify channel, which `AcpClient` never shows as text and fails the
+turn on when the prompt answers `end_turn`
+([error-handling](../common/error-handling.md#provider-failures-a-harness-writes-as-text),
+`model-error-live.jsonl`).
+
 The session's own pi process confirms what it registered: during `session_start`
 the extension writes a nonce-bound receipt to the session's writable scratch window
 (the gate artifact directory stays read-only) naming how reading the handoff went

@@ -472,6 +472,20 @@ the adapter's tool-call, plan and permission frames to AIR shapes. Members of
 - A JSON-RPC error that follows held chunks (codex's `usageLimitExceeded` writes
   the text and fails the prompt) is raised alone, so the failure is reported once.
 
+pi-acp writes nothing at all of a failed model call: the run settles and the
+prompt answers `end_turn` with no text, an empty reply. Crew's gate extension
+inside pi records the failure at `turn_end` (the assistant message's
+`provider`, `model` and `errorMessage`) and, when the run settles still failed
+and not aborted, notifies one `kiro-crew-model-error` envelope under the launch's
+gate nonce; a failure pi retried successfully reports nothing. pi runs on
+`AcpClient`, so each of its read loops (`_dispatch_events`, `send_message_stream`,
+`_read_prompt_response`; `acp/pi_steer_turn.model_error`) holds the envelope back
+from the turn's text and, when the prompt then answers `end_turn`, raises through
+`_raise_acp_error` with
+`pi's model call failed (<provider>/<model>): <error>`. pi is not a member of
+`ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR`: only the envelope is read, never the
+provider's text. A prompt pi rejects before any model call still ends as today.
+
 The selected model and effort are untouched, and no recovery is added: whether
 the failed turn is retried is decided downstream from the raised error, exactly
 as for any other harness.
