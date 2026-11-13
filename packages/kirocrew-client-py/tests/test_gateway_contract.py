@@ -580,6 +580,41 @@ class TestNotificationsAndApprovals:
         assert exc.value.code == ErrorCode.VALIDATION_ERROR
         assert gw.requests == []
 
+    async def test_request_mid_sends_the_native_target_on_the_slot_route(self, gw):
+        async with _client(gw) as mc:
+            await mc.resolve_approval("r1", "trust", slot_id="s1", request_mid="m-1")
+        assert gw.last["path"] == "/api/chat/slots/s1/approve"
+        assert gw.last["body"] == {
+            "action": "trust",
+            "request_id": "r1",
+            "origin": "native",
+            "request_mid": "m-1",
+        }
+
+    @pytest.mark.parametrize(("slot", "action"), [("dashboard:s1", "approve"), ("", "reject_once")])
+    async def test_instance_sends_the_coordinator_target_in_the_query(self, gw, slot, action):
+        # The record's own slot is part of the target, empty for a slotless one,
+        # and it names no slot route.
+        async with _client(gw) as mc:
+            await mc.resolve_approval("r1", action, slot, instance="i-1")
+        assert gw.last["path"] == f"/api/approvals/r1/{action}"
+        assert gw.last["query"] == {"origin": "coordinator", "slot": slot, "instance": "i-1"}
+
+    @pytest.mark.parametrize(
+        ("kwargs", "reason"),
+        [
+            ({"slot_id": "s1", "request_mid": "m-1", "instance": "i-1"}, "not both"),
+            ({"request_mid": "m-1"}, "needs slot_id"),
+            ({"slot_id": "s1", "instance": "i-1", "action": "trust"}, "with an instance"),
+        ],
+    )
+    async def test_an_unsendable_target_is_refused_before_request(self, gw, kwargs, reason):
+        async with _client(gw) as mc:
+            with pytest.raises(KiroCrewError, match=reason) as exc:
+                await mc.resolve_approval("r1", **kwargs)
+        assert exc.value.code == ErrorCode.VALIDATION_ERROR
+        assert gw.requests == []
+
     async def test_set_slot_scoped_approval_mode(self, gw):
         async with _client(gw) as mc:
             await mc.set_approval_mode("trust_reads", slot_id="s1")

@@ -50,8 +50,13 @@ export interface ChatMessageListProps {
   /** Resolve a pending approval. MUST return the request's promise: rejection
    *  reaches the approval row's rollback and the buttons come back. The type
    *  deliberately has no `void` arm so a fire-and-forget handler — the exact
-   *  shape behind #5524 — cannot compile against this boundary. */
-  onApprove?: (approvalId: string, decision: string) => Promise<unknown>
+   *  shape behind #5524 — cannot compile against this boundary.
+   *
+   *  The third argument is the pending row's `meta`, which names the exact
+   *  request the card showed (`permissionRowTarget` in types/approvalTarget.ts):
+   *  the id recurs, so a host that decides by the id alone can resolve a later
+   *  request that took it over. A host that ignores it keeps working. */
+  onApprove?: (approvalId: string, decision: string, meta?: Record<string, unknown>) => Promise<unknown>
   /** Resolve EVERY pending approval in a permission group with one decision
    *  (batch multi-select, Req 4.1-4.4). The host receives all pending approval
    *  ids and MUST route each through the SLOT-scoped approve endpoint (the same
@@ -60,8 +65,10 @@ export interface ChatMessageListProps {
    *  check. Like `onApprove`, MUST return the settle promise so the row's
    *  rollback restores the buttons; it settles per id and surfaces any excluded
    *  call rather than aborting the whole batch. Wired only by hosts whose
-   *  approve path is slot-scoped; left unset elsewhere. */
-  onApproveBatch?: (approvalIds: string[], decision: string) => Promise<unknown>
+   *  approve path is slot-scoped; left unset elsewhere. The third argument is
+   *  each pending row's `meta`, aligned 1:1 with `approvalIds`, so the host can
+   *  bind every decide to its row the way `onApprove` does. */
+  onApproveBatch?: (approvalIds: string[], decision: string, metas?: Record<string, unknown>[]) => Promise<unknown>
   /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
    *  only when `onApprove` routes to an endpoint that RECORDS standing trust
    *  (the slot approve endpoint carries the decision verbatim). Hosts resolving
@@ -420,7 +427,7 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     const lastPerm = unresolvedPerms[unresolvedPerms.length - 1]
 
     const handleApprove = onApprove && lastPerm?.meta?.approval_id
-      ? (decision: string) => onApprove(lastPerm.meta!.approval_id as string, decision)
+      ? (decision: string) => onApprove(lastPerm.meta!.approval_id as string, decision, lastPerm.meta)
       : undefined
 
     // Batch resolver over EVERY pending id in this group (Req 4.1-4.4). Only
@@ -431,11 +438,13 @@ const ChatMessageList = memo(forwardRef<VirtualTranscriptHandle, ChatMessageList
     // real trigger by requiring > 1 here. TOOL_DENY calls never surface as
     // pending permissions (backend gate; locked by the T5-guard test), so this
     // id list is deny-free.
-    const batchIds = unresolvedPerms
-      .map(m => m.meta?.approval_id as string | undefined)
-      .filter((x): x is string => !!x)
+    // The rows behind those ids, kept beside them by the same filter so the
+    // host receives each id with its own row's meta.
+    const batchRows = unresolvedPerms.filter(m => !!m.meta?.approval_id)
+    const batchIds = batchRows.map(m => m.meta!.approval_id as string)
+    const batchRowMetas = batchRows.map(m => m.meta!)
     const handleApproveBatch = onApproveBatch && batchIds.length > 1
-      ? (decision: string) => onApproveBatch(batchIds, decision)
+      ? (decision: string) => onApproveBatch(batchIds, decision, batchRowMetas)
       : undefined
     // Every pending call's meta, so the batch row can preview ALL N commands the
     // one click will approve — not just the newest (permissionMeta). The human

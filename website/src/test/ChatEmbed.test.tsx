@@ -14,10 +14,14 @@ vi.mock('../app-sdk/index', () => ({
   useAppInfo: () => ({ name: 'test-app', version: '0', permissions: { api: ['/api/chat'], events: [] } }),
 }))
 
+// The pending row the mocked list hands the embed with each press: its
+// `approval_id` and `mid` are the request the card showed.
+const MOCK_ROW_META = { approval_id: 'appr-1', mid: 'm-appr-1' }
+
 interface MockChatMessageListProps {
   messages: unknown[]
   running: boolean
-  onApprove?: (approvalId: string, decision: string) => void
+  onApprove?: (approvalId: string, decision: string, meta?: Record<string, unknown>) => void
   canTrust?: boolean
   /** The virtualized mount's slots: the embed's empty state renders above the rows. */
   transcript?: { aboveRows?: React.ReactNode }
@@ -30,8 +34,8 @@ vi.mock('./ChatMessageList', () => ({
       {transcript?.aboveRows}
       {onApprove && (
         <>
-          <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
-          <button data-testid="mock-trust" onClick={() => onApprove('appr-1', 'trust')}>trust</button>
+          <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved', MOCK_ROW_META)}>approve</button>
+          <button data-testid="mock-trust" onClick={() => onApprove('appr-1', 'trust', MOCK_ROW_META)}>trust</button>
         </>
       )}
     </div>
@@ -46,8 +50,8 @@ vi.mock('../app-sdk/ChatMessageList', () => ({
       {transcript?.aboveRows}
       {onApprove && (
         <>
-          <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
-          <button data-testid="mock-trust" onClick={() => onApprove('appr-1', 'trust')}>trust</button>
+          <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved', MOCK_ROW_META)}>approve</button>
+          <button data-testid="mock-trust" onClick={() => onApprove('appr-1', 'trust', MOCK_ROW_META)}>trust</button>
         </>
       )}
     </div>
@@ -747,7 +751,7 @@ describe('ChatEmbed approvals', () => {
     expect(screen.getByTestId('chat-message-list')).toHaveAttribute('data-can-approve', 'true')
   })
 
-  it('POSTs the decision to the slot approval endpoint with the request id', async () => {
+  it('POSTs the decision to the slot approval endpoint with the row\'s native target', async () => {
     await act(async () => {
       renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       await vi.advanceTimersByTimeAsync(0)
@@ -758,7 +762,9 @@ describe('ChatEmbed approvals', () => {
     })
     expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', {
       action: 'approved',
+      origin: 'native',
       request_id: 'appr-1',
+      request_mid: 'm-appr-1',
     })
   })
 
@@ -781,7 +787,9 @@ describe('ChatEmbed approvals', () => {
     })
     expect(mockPost).toHaveBeenCalledWith('/api/chat/slots/slot-1/approve', {
       action: 'trust',
+      origin: 'native',
       request_id: 'appr-1',
+      request_mid: 'm-appr-1',
     })
     expect(mockPost).not.toHaveBeenCalledWith(expect.stringContaining('/api/approvals/'), expect.anything())
   })

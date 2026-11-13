@@ -267,7 +267,7 @@ API-path check for each of these calls:
 - `GET /api/chat/slots/{slot}?limit=N` — the transcript read (polled, and
   re-issued on each push signal; see below).
 - `POST /api/chat` — sending, unless `onSend` is supplied.
-- `POST /api/chat/slots/{slot}/approve` — Approve, Reject and Trust on a tool approval.
+- `POST /api/chat/slots/{slot}/approve` — Approve, Reject and Trust on a tool approval, naming the card row's target (`origin: "native"`, `request_id`, `request_mid`); a row with no `mid` sends nothing and shows as no longer pending.
 - `GET /api/chat/slots/{slot}/question` — the slot's pending `ask_question` cards,
   polled every 1.5 s while a turn runs and every 10 s when idle.
 - `POST /api/chat/slots/{slot}/question/answer` — answer or decline a blocking card
@@ -2030,7 +2030,7 @@ does so before each reconnect.
 | `ackNotifications()` | `ack_notification(ts)` / `ack_all_notifications()` |
 | `approveAction(slot, task, pattern?)` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
 | `rejectAction(slot, task)` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
-| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", pattern="")`; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
+| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", pattern="", request_mid="", instance="")`; `request_mid` (a slot row's `meta.mid`, needs `slot_id`) sends the slot route's `origin: "native"` target, `instance` (with the record's `slot` as `slot_id`, from `list_approvals()`) sends `?origin=coordinator&slot=&instance=` on `/api/approvals/{id}/{action}`; one of them, never both; without either the bare id is sent, the form a later Gateway refuses; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
 | `listApprovals()` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
 | `getApprovalMode()` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
 | `setApprovalMode(mode)` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |

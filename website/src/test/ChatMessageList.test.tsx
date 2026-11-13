@@ -567,8 +567,13 @@ describe('ChatMessageList — batch approval wiring (Req 4.1-4.4)', () => {
     expect(group).toHaveAttribute('data-pending-perm-count', '3')
     expect(group).toHaveAttribute('data-has-batch', 'true')
     fireEvent.click(screen.getByTestId('ctg-batch-approve'))
-    // The host receives EVERY pending id, not just the last one.
-    expect(onApproveBatch).toHaveBeenCalledWith(['req-a', 'req-b', 'req-c'], 'approved')
+    // The host receives EVERY pending id, not just the last one, each beside
+    // its own row's meta so the decide can name that row's request.
+    expect(onApproveBatch).toHaveBeenCalledWith(
+      ['req-a', 'req-b', 'req-c'],
+      'approved',
+      [{ approval_id: 'req-a' }, { approval_id: 'req-b' }, { approval_id: 'req-c' }],
+    )
   })
 
   it('does not wire a batch handler when the host supplies none', () => {

@@ -475,6 +475,23 @@ of correcting it in a second write that a due-scan can beat. The rationale per
 field, the fields still deliberately omitted, and the tests pinning each one are
 in `learn-cron-dashboard.md` under "App SDK create allowlist".
 
+## ChatEmbed approvals
+
+`ChatEmbed`'s Approve, Reject and Trust (and a group's "Approve all") decide
+the request the card's row names, not whichever request holds its id when the
+press lands: each decide posts the row's native target to
+`POST /api/chat/slots/{slot}/approve` (`origin: "native"`, the request id and
+the row's `meta.mid` as `request_mid`, built by `permissionRowTarget`), which
+the route resolves only while that very request is pending. `ChatMessageList`
+hands the host the row's `meta` beside the id (`onApprove`'s and
+`onApproveBatch`'s third argument) for that. A row with no native target (no
+`mid`, or a row the coordinator injected, which an app token never resolves)
+sends nothing and rolls back as no longer pending. The Python client's
+`resolve_approval` sends the same target with `request_mid`, or a background
+record's with `instance`. Tests: `website/src/test/ChatEmbed.approvalRollback.test.tsx`
+("ChatEmbed approval target"), `website/src/test/ChatEmbed.test.tsx`, and the Python client's
+`test_gateway_contract.py`.
+
 ## ChatEmbed Stop
 
 `ChatEmbed` shows the dashboard composer's Stop control (`StopControls`) in the
