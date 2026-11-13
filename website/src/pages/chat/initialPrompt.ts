@@ -43,16 +43,45 @@ export function firstPromptText(messages: readonly ChatMessage[]): string {
   return ''
 }
 
-type FetchPage = (slot: string, limit: number, before: number) => Promise<{ messages?: ChatMessage[]; total?: number }>
+type FetchPage = (
+  slot: string,
+  limit: number,
+  before: number,
+) => Promise<{ messages?: ChatMessage[]; total?: number; next_before?: number }>
+
+/**
+ * The rows of one window, `[end - INITIAL_PROMPT_PAGE, end)`, oldest first.
+ *
+ * The server may cut a page's OLDEST rows to stay under its byte budget (a few
+ * very large rows), and says so with a `next_before` above the window's start.
+ * Those rows are the ones this reader came for, so the cut prefix is read before
+ * the window is judged. A response without `next_before`, or one that does not
+ * move older, ends the walk (one read per row at most).
+ */
+async function readWindow(slotKey: string, fetchPage: FetchPage, end: number): Promise<{ rows: ChatMessage[]; total: number | undefined }> {
+  const start = Math.max(0, end - INITIAL_PROMPT_PAGE)
+  let rows: ChatMessage[] = []
+  let total: number | undefined
+  let cursor = end
+  for (let reads = 0; reads < INITIAL_PROMPT_PAGE && cursor > start; reads++) {
+    const res = await fetchPage(slotKey, cursor - start, cursor)
+    rows = [...(res.messages || []), ...rows]
+    total ??= res.total
+    const next = res.next_before
+    if (typeof next !== 'number' || next >= cursor || next <= start) break
+    cursor = next
+  }
+  return { rows, total }
+}
 
 /** Read the session's initial prompt, oldest page first. '' = no prompt yet. */
 export async function loadInitialPrompt(slotKey: string, fetchPage: FetchPage): Promise<string> {
   for (let page = 1; page <= INITIAL_PROMPT_MAX_PAGES; page++) {
     const end = page * INITIAL_PROMPT_PAGE
-    const res = await fetchPage(slotKey, INITIAL_PROMPT_PAGE, end)
-    const text = firstPromptText(res.messages || [])
+    const { rows, total } = await readWindow(slotKey, fetchPage, end)
+    const text = firstPromptText(rows)
     if (text) return text
-    if (end >= (res.total ?? 0)) return ''
+    if (end >= (total ?? 0)) return ''
   }
   return ''
 }

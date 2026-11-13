@@ -680,6 +680,34 @@ def _bounded_slot_page(
     return messages, total, start > 0, start
 
 
+#: Largest page, in serialized bytes, one slot-detail read sends (about 400 KB gzipped on
+#: real transcripts). Rows are cut from the OLD end; the newest row is always sent, so a
+#: single row over the budget goes alone and is never dropped.
+SLOT_DETAIL_PAGE_BYTE_BUDGET = 1_500_000
+
+
+def _oldest_over_byte_budget(fragments: list[str | None]) -> int:
+    """How many of the OLDEST positions to leave for an older-page read.
+
+    Walks newest to oldest, one step per row of the page (the handler caps a page at
+    ``SLOT_DETAIL_MAX_LIMIT`` rows), and stops before the row that would pass the byte
+    budget. The newest rendered row is always kept. A ``None`` fragment renders as nothing
+    but still holds a position, so the count is in positions and ``next_before`` stays exact.
+    """
+    used = 0
+    kept_rendered = False
+    keep_from = len(fragments)
+    for i in range(len(fragments) - 1, -1, -1):
+        fragment = fragments[i]
+        if fragment is not None:
+            used += len(fragment) + 2
+            if kept_rendered and used > SLOT_DETAIL_PAGE_BYTE_BUDGET:
+                break
+            kept_rendered = True
+        keep_from = i
+    return keep_from
+
+
 def _note_owner_focus(request: web.Request, state: "DashboardState", key: str) -> None:
     """The owner opened this session: keep its chips fresh, starting now.
 
@@ -1254,6 +1282,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # an older page by its cursor, or the whole history. Until its row memo
     # has been filled in the background, it is rendered without the memo.
     memo_scope = (slot_history_key(slot), before, limit_raw is None and before_raw is None)
+    # A page (a limit or a cursor position) is also bounded by bytes; the whole-history
+    # read is not, and a cursor read keeps its row-position contract.
+    paged = not cursor_mode and (limit_raw is not None or before_raw is not None)
     use_memo, fill = wire_render.plan_read(memo_scope)
 
     def _render(live_child: str) -> str:
@@ -1271,6 +1302,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         #
         # The session's stored display verdicts (display_verdicts) let a cold
         # render skip the scan for every string a save already judged.
+        page_has_more, page_next_before = has_more, next_before
         with display_verdicts.session(verdict_key):
             plan: slot_detail_delta.PagePlan | None = None
             if cursor_mode:
@@ -1294,19 +1326,27 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     cursor=delta_cursor,
                 )
                 messages_json = "[" + ", ".join(plan.fragments) + "]"
-            elif use_memo:
-                messages_json = wire_render.prepare_messages_json(
+            elif use_memo or paged:
+                fragments, _identities = wire_render.prepare_message_rows(
                     messages,
                     running,
                     live_child=live_child,
                     workspace=workspace,
+                    use_memo=use_memo,
                     scope=memo_scope,
                 )
+                if paged:
+                    dropped = _oldest_over_byte_budget(fragments)
+                    if dropped:
+                        fragments = fragments[dropped:]
+                        page_next_before += dropped
+                        page_has_more = True
+                messages_json = "[" + ", ".join(f for f in fragments if f is not None) + "]"
             else:
                 messages_json = json.dumps(
                     _prepare_messages(messages, running, live_child=live_child, workspace=workspace)
                 )
-        page_fields: dict[str, Any] = {"has_more": has_more, "next_before": next_before}
+        page_fields: dict[str, Any] = {"has_more": page_has_more, "next_before": page_next_before}
         if plan is not None:
             page_fields = {"has_more": plan.has_more, "next_before": plan.next_before}
             if plan.cursor is not None:
@@ -1362,4 +1402,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         wire_render.schedule_fill(
             memo_scope, messages, running, live_child=live_child, workspace=workspace
         )
-    return web.Response(text=body, content_type="application/json")
+    # Access was decided above, so a 304 here is never an access shortcut.
+    from kiro_crew.dashboard.conditional_get import conditional_json_response
+
+    return await conditional_json_response(request, body.encode())
