@@ -116,15 +116,66 @@ test("serializeMenuItems does not silently pass a submenu off as a command", () 
   // Guards the model itself, independently of today's template: if nesting ever
   // reaches it, the serialized item must NOT claim to be a plain "normal"
   // command, which is what makes a dead row indistinguishable from a live one.
-  const nested = {
-    items: [{
-      visible: true, enabled: true, label: "Recent", type: "submenu",
-      submenu: { items: [{ visible: true, enabled: true, label: "Deep", type: "normal" }] },
-    }],
+  //
+  // `serializeMenuItems` now takes the TOP-LEVEL menu item (so the per-action
+  // gate can classify by top-level id), so we wrap the submenu in a top-level
+  // shape here. Passing `senderIsLocal=true` keeps this test scoped to the
+  // shape guarantee it was written for — the LOCAL_ONLY grey-out is asserted
+  // in `windows-menu-model.test.js`.
+  const topLevelItem = {
+    submenu: {
+      items: [{
+        visible: true, enabled: true, label: "Recent", type: "submenu",
+        submenu: { items: [{ visible: true, enabled: true, label: "Deep", type: "normal" }] },
+      }],
+    },
   };
-  const [entry] = serializeMenuItems(nested);
+  const [entry] = serializeMenuItems(topLevelItem, /*senderIsLocal*/ true);
   assert.notStrictEqual(
     entry.type, "normal",
     "a submenu item serialized as type 'normal' renders as a live-looking dead row",
+  );
+});
+
+// The fourth place the titlebar menu's behaviour is maintained: the two
+// `window-lifecycle.js` seams that carry the IPC boundary's locality verdict
+// into the menu surfaces. `senderIsLocal` is computed once at the boundary in
+// `ipc-registrar.js` (via `assertLocalDashboard`) and threaded down; these pin
+// that the threading exists and is strict, because losing it silently restores
+// the per-channel behaviour this gate replaced.
+//
+// Read as TEXT for the same reason as the allowlist above: the seam is a
+// function signature, and asserting on the signature is what catches a
+// refactor that drops the argument.
+
+test("executeMenu accepts and forwards senderIsLocal into executeMenuItem", () => {
+  const src = fs.readFileSync(WINDOW_LIFECYCLE_JS, "utf8").replace(/\r\n/g, "\n");
+  const executeMenu = src.match(
+    /function executeMenu\(sender, id, index, senderIsLocal\) \{([\s\S]*?)\n  \}/,
+  );
+  assert.ok(executeMenu, "executeMenu must accept senderIsLocal as its fourth parameter");
+  assert.match(
+    executeMenu[1],
+    /executeMenuItem\(topLevelItem, index, win, sender, senderIsLocal === true\)/,
+    "senderIsLocal must be forwarded to executeMenuItem with strict === true, "
+    + "so any non-boolean value falls to the fail-closed branch",
+  );
+});
+
+// Without this second seam `app-menu:items` would advertise LOCAL_ONLY rows as
+// `enabled: true` while `app-menu:execute` silently refused them — a rendered
+// row that no-ops on click. `menuItems` is what carries the boundary decision
+// into the items surface.
+test("menuItems accepts and forwards senderIsLocal into serializeMenuItems", () => {
+  const src = fs.readFileSync(WINDOW_LIFECYCLE_JS, "utf8").replace(/\r\n/g, "\n");
+  const menuItems = src.match(
+    /function menuItems\(sender, id, senderIsLocal\) \{([\s\S]*?)\n  \}/,
+  );
+  assert.ok(menuItems, "menuItems must accept senderIsLocal as its third parameter");
+  assert.match(
+    menuItems[1],
+    /serializeMenuItems\(item, senderIsLocal === true\)/,
+    "senderIsLocal must reach serializeMenuItems with strict === true, "
+    + "so any non-boolean value falls to the fail-closed (greyed) branch",
   );
 });
