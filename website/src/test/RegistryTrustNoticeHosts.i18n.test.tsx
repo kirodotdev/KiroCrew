@@ -8,6 +8,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createConnectedTestStore } from './helpers'
 // `/all` registers every authored catalog; `../i18n` registers English only.
 import { i18next } from '../i18n/all'
 import RegistryManager from '../components/RegistryManager'
@@ -28,7 +30,7 @@ async function showBanner(lng: string, hosts: string[]): Promise<string> {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   mockListRegistries.mockResolvedValue({ registries: [] })
   mockUpdateRegistries.mockResolvedValue({ ok: true, registries: [], newlyTrustedHosts: hosts })
-  render(<QueryClientProvider client={qc}><RegistryManager /></QueryClientProvider>)
+  render(<Provider store={createConnectedTestStore()}><QueryClientProvider client={qc}><RegistryManager /></QueryClientProvider></Provider>)
   const add = i18next.t('components.registryManager.add_registry')
   await waitFor(() => screen.getAllByText(add))
   fireEvent.click(screen.getAllByText(add)[0])

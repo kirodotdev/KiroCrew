@@ -31,6 +31,7 @@ function Harness({ onUpdate, onUpdateAll }: { onUpdate: (n: string) => void; onU
         rows={ROWS}
         updatingAll={updatingAll}
         updatePending={updatePending}
+        connected
         onUpdate={(n) => { onUpdate(n); setUpdatePending(n) }}
         onUpdateAll={() => { onUpdateAll(); setUpdatingAll({ done: 0, total: 2 }) }}
       />
