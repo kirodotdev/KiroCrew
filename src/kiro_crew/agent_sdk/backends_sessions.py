@@ -384,6 +384,18 @@ ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset(
 # behind it (harness-parity H6, the same reason every capability here is opt-in).
 ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK})
 
+# Harnesses that keep a saved session on the directory it was created in, so it is
+# restored only in that directory. opencode 1.x runs one instance per directory and
+# a session stays with the instance it was created by: a ``session/load`` naming
+# another ``cwd`` answers from the new instance while the session's permission asks
+# keep coming from the old one, so every approval reply is dropped, and the MCP
+# servers sent with the load are mounted on the instance the model is not using.
+# For a member, a chat whose folder changed since its session was saved starts a
+# fresh session in the new folder and gets its conversation replayed as text
+# (``session_allocation_parts.get_or_create``). kiro-cli takes the cwd from each
+# load, so it is not a member and a moved chat keeps its native history.
+ACP_BACKENDS_CWD_BOUND_SESSIONS = frozenset({ACP_BACKEND_OPENCODE})
+
 # Harnesses whose ``session/fork`` copies a stored session only up to a given
 # assistant message, which is what lets a rewind keep the native history it
 # retains. Advertising ``sessionCapabilities.fork`` is not enough: a fork that
