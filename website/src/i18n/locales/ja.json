@@ -8318,7 +8318,10 @@
     },
     "matesDock": {
       "load_failed": "スターを付けた Bot を読み込めませんでした。",
-      "reorder_failed": "Bot の新しい並び順を保存できませんでした。"
+      "remove_from_sidebar": "サイドバーから削除",
+      "reorder_failed": "Bot の新しい並び順を保存できませんでした。",
+      "row_menu": "{{name}} のその他の操作",
+      "unstar_failed": "この Bot をサイドバーから削除できませんでした。"
     },
     "mcpAppFrame": {
       "collapse": "折りたたむ",

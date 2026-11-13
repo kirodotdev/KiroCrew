@@ -8528,7 +8528,10 @@
     },
     "matesDock": {
       "load_failed": "তোমার তারকাচিহ্নিত Bot-গুলো লোড করা যায়নি।",
-      "reorder_failed": "Bot-গুলোর নতুন ক্রম সংরক্ষণ করা যায়নি।"
+      "remove_from_sidebar": "সাইডবার থেকে সরান",
+      "reorder_failed": "Bot-গুলোর নতুন ক্রম সংরক্ষণ করা যায়নি।",
+      "row_menu": "{{name}}-এর জন্য আরও কাজ",
+      "unstar_failed": "এই Bot-টিকে সাইডবার থেকে সরানো যায়নি।"
     },
     "mcpAppFrame": {
       "collapse": "সংকুচিত করুন",

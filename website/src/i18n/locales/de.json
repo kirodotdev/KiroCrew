@@ -8528,7 +8528,10 @@
     },
     "matesDock": {
       "load_failed": "Deine mit einem Stern markierten Bots konnten nicht geladen werden.",
-      "reorder_failed": "Die neue Reihenfolge deiner Bots konnte nicht gespeichert werden."
+      "remove_from_sidebar": "Aus der Seitenleiste entfernen",
+      "reorder_failed": "Die neue Reihenfolge deiner Bots konnte nicht gespeichert werden.",
+      "row_menu": "Weitere Aktionen für {{name}}",
+      "unstar_failed": "Dieser Bot konnte nicht aus der Seitenleiste entfernt werden."
     },
     "mcpAppFrame": {
       "collapse": "Einklappen",
