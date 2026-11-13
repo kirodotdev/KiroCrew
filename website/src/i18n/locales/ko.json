@@ -13058,7 +13058,8 @@
         "tools_not_ready": "기본 제공 도구가 제때 준비되지 않아 에이전트를 시작하지 못했습니다. 메시지는 그대로 남아 있습니다. 잠시 후 다시 시도하세요. 계속 발생하면 자세한 내용은 게이트웨이 로그에 있습니다.",
         "kas_route_relay": "에이전트가 kiro-cli를 통해 실행 중입니다.",
         "kas_route_bundle": "에이전트가 {{productName}} 자체 엔진에서 실행 중입니다.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "{{server}}의 리소스 구독 {{subscription}}이(가) {{day}}(UTC) 깨우기 한도 {{limit}}회에 도달해 다음 UTC 날짜까지 일시 중지되었습니다. 그동안의 업데이트는 일시 중지가 끝난 뒤 한 번의 깨우기로 합쳐집니다."
       },
       "turnBlock": {
         "earlier_step_other": "이전 단계 {{count}}개",

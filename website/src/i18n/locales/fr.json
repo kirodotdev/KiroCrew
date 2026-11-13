@@ -13690,7 +13690,8 @@
         "tools_not_ready": "L’agent n’a pas pu démarrer, car ses outils intégrés n’étaient pas prêts à temps. Ton message est toujours là. Réessaie dans un instant. Si ça se reproduit, le journal de la passerelle contient les détails.",
         "kas_route_relay": "Ton agent passe par kiro-cli.",
         "kas_route_bundle": "Ton agent tourne sur le moteur de {{productName}}.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "L’abonnement à la ressource {{subscription}} sur {{server}} a atteint ses {{limit}} réveils pour le {{day}} (UTC) et reste en pause jusqu’au jour UTC suivant. Les mises à jour d’ici là sont regroupées en un seul réveil après la pause."
       },
       "turnBlock": {
         "earlier_step_many": "{{count}} étapes précédentes",

@@ -41,6 +41,8 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
     AUTOMATION_STEER_META,
     GATEWAY_PROMPT_INJECT_KINDS,
     REQUEUED_STEER_ROW_MID_META,
+    RESOURCE_WAKE_KIND,
+    resource_inject_row,
 )
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
@@ -94,6 +96,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.steer_queue import (
         _actor_for_queue_items,
         _drop_stale_admissions,
+        _drop_stale_resource_wakes,
     )
     from kiro_crew.dashboard.chat_turn.superseded_steer import (
         _carry_superseded_steer_meta,
@@ -366,6 +369,10 @@ _RESTORED_DRAIN_IDS: ContextVar[dict[str, frozenset[str]]] = ContextVar(
     "restored_drain_ids", default={}
 )
 
+# An idle delivery collects the ids of the entries its drain started here, so it
+# can tell its own entry starting from a sweep dropping it while another starts.
+_STARTED_QUEUE_IDS: ContextVar[list[str] | None] = ContextVar("started_queue_ids", default=None)
+
 
 async def _drain_parked_queues(state: DashboardState, slot_keys: list[str]) -> None:
     """Start the next queued turn on each parked slot that is still idle.
@@ -636,6 +643,7 @@ async def _start_next_queued_turn(
     # Everything below — the note flush peeking at queue[0], the user-intervention
     # purge, the dequeue itself — must see only entries that may still deliver.
     _drop_stale_admissions(state, slot, selected_id=required_queue_id)
+    _drop_stale_resource_wakes(state, slot)
     # The sweep may have dropped that recovery, leaving a new turn at the head.
     if (
         predecessor_actor
@@ -716,6 +724,12 @@ async def _start_next_queued_turn(
     # the content is the user's own words or a recovery prompt, never a fixed
     # text -- and dropped when the ledger revokes it.
     if await _drop_revoked_replays(state, slot):
+        return False
+
+    # A subscription removal or pause can commit during any await since the first
+    # sweep, so this last synchronous point before the dequeue checks the wakes again.
+    _drop_stale_resource_wakes(state, slot)
+    if not slot._queue:
         return False
 
     # Asked again after the parked-work probes above: a Pause all published
@@ -877,6 +891,11 @@ async def _start_next_queued_turn(
         )
     if next_msg is None:
         return False
+    started_queue_ids = _STARTED_QUEUE_IDS.get()
+    if started_queue_ids is not None:
+        started_queue_ids.extend(item["id"] for item in consumed)
+        # The turn spawned below copies this context, and its own drains report to nobody.
+        _STARTED_QUEUE_IDS.set(None)
     _record_queued_crew_steers(state, consumed)
 
     # A successor turn is now certain to dispatch (every no-successor path above
@@ -958,7 +977,7 @@ async def _start_next_queued_turn(
     # and the restore drops the actor stamp, so the text is all that is left and
     # it cannot name an event.
     _not_an_event = (
-        _actor_for_queue_items(consumed) == "app"
+        _actor_for_queue_items(consumed) in ("app", "resource")
         or any(item.get(RESTORED_QUEUE_KEY) for item in consumed)
         or any(responsive_chat.priority_entry(item) for item in consumed)
     )
@@ -973,6 +992,9 @@ async def _start_next_queued_turn(
     # message never merges (it is a system-injection kind, so the merge stops
     # at it), so `consumed` holds it alone.
     is_app_message = any(item.get("kind") == MCP_APP_MESSAGE_KIND for item in consumed)
+    # A queued MCP resource-subscription wake: the same structural rule as the app
+    # message above, for the same reason (its URI is server-written).
+    is_resource_wake = any(item.get("kind") == RESOURCE_WAKE_KIND for item in consumed)
     # A re-routed automation refusal (``session_directive_apply``): structural
     # kind, like the app message above, so it drains as an ``inject`` row the
     # crewmate's turn carries rather than a ``user`` row shown as the person's
@@ -1024,6 +1046,7 @@ async def _start_next_queued_turn(
         or is_subagent
         or is_recovery
         or is_app_message
+        or is_resource_wake
         or is_automation_notice
         or is_automation_steer
         or is_gateway_prompt
@@ -1079,6 +1102,7 @@ async def _start_next_queued_turn(
             or is_subagent
             or is_recovery
             or is_app_message
+            or is_resource_wake
             or is_automation_notice
             or is_automation_steer
             or is_gateway_prompt
@@ -1142,7 +1166,14 @@ async def _start_next_queued_turn(
         row_role = "nudge"
     elif is_subagent:
         row_role = "subagent"
-    elif is_cron or is_recovery or is_app_message or is_automation_notice or is_gateway_prompt:
+    elif (
+        is_cron
+        or is_recovery
+        or is_app_message
+        or is_resource_wake
+        or is_automation_notice
+        or is_gateway_prompt
+    ):
         row_role = "inject"
     else:
         row_role = "user"
@@ -1158,6 +1189,8 @@ async def _start_next_queued_turn(
         # `_prepare_messages` replace the stored meta on HTTP rebuild,
         # dropping `injectKind` and the row's collapse/fold exemptions.
         row_cls = app_inject_row(app_label or "app")[1]
+    elif is_resource_wake:
+        row_cls = resource_inject_row("", "")[1]
     elif is_recovery or is_automation_notice or is_gateway_prompt:
         row_cls = "msg msg-inject"
     else:
@@ -1363,6 +1396,8 @@ async def _start_next_queued_turn(
             # payload (that is what suppresses the channel mirror), but its
             # inject identity is its own, matching the direct-dispatch twin.
             _inject_kind = "mcp_app"
+        elif is_resource_wake:
+            _inject_kind = "resource"
         elif is_automation_notice:
             _inject_kind = "automation_notice"
         elif gateway_inject_kind is not None:
@@ -1376,6 +1411,20 @@ async def _start_next_queued_turn(
             _inject_meta["cronLabel"] = cron_label
         elif is_app_message:
             _inject_meta["appLabel"] = app_label or "app"
+        elif is_resource_wake:
+            # The identity the producer stamped on the entry: the keys
+            # `resource_inject_row` gives a resource wake's row.
+            _resource_meta = next(
+                (
+                    item.get("meta") or {}
+                    for item in consumed
+                    if item.get("kind") == RESOURCE_WAKE_KIND
+                ),
+                {},
+            )
+            for _field in ("resourceServer", "resourceSubscription"):
+                if isinstance(_resource_meta.get(_field), str):
+                    _inject_meta[_field] = _resource_meta[_field]
         _drained_meta.update(_inject_meta)
     elif row_role == "user" and directive_user_origin:
         # The direct-send path stamps HUMAN_TURN_META_KEY on a user row whenever

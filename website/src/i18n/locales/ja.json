@@ -13058,7 +13058,8 @@
         "tools_not_ready": "組み込みツールの準備が間に合わなかったため、エージェントを開始できませんでした。メッセージはそのまま残っています。少し待ってからもう一度お試しください。繰り返し発生する場合は、詳細がゲートウェイのログにあります。",
         "kas_route_relay": "エージェントは kiro-cli 経由で動いています。",
         "kas_route_bundle": "エージェントは {{productName}} 独自のエンジンで動いています。",
-        "kas_route_lead": "{{route}}{{message}}"
+        "kas_route_lead": "{{route}}{{message}}",
+        "resource_wake_budget_paused": "{{server}} のリソース購読 {{subscription}} は {{day}}（UTC）の起動上限 {{limit}} 回に達したため、次の UTC 日まで一時停止しています。その間の更新は、停止明けに 1 回の起動にまとめられます。"
       },
       "turnBlock": {
         "earlier_step_other": "以前の {{count}} ステップ",

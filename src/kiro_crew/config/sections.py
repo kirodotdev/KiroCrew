@@ -82,6 +82,7 @@ from kiro_crew.config.integration_sections import (  # noqa: F401
     InstancesConfig,
     McpConfig,
     McpGatewayConfig,
+    McpResourceSubscriptionsConfig,
     PublishConfig,
     TunnelConfig,
     _resolve_stub_base,

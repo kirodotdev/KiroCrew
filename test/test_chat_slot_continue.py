@@ -744,6 +744,9 @@ class TestSessionStartFailureStreak:
             lambda slot: slot.append("inject", "synthesis", "x", meta={"injectKind": "synthesis"}),
             lambda slot: slot.append("inject", "workflow", "x", meta={"injectKind": "workflow"}),
             lambda slot: slot.append("inject", "heartbeat", "x", meta={"injectKind": "heartbeat"}),
+            lambda slot: slot.append(
+                "inject", "[Webhook wake] …", "x", meta={"injectKind": "resource"}
+            ),
             lambda slot: slot.append("nudge", "[auto-nudge cycle 2]", "x"),
             lambda slot: slot.append("subagent", "[Subagent completion event] …", "x"),
         ):

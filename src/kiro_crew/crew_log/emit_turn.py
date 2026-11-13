@@ -79,7 +79,18 @@ _UNCLASSIFIED_LABELS = frozenset({""})
 #: set without breaking a reader built against the narrower one -- unlike an
 #: entry TYPE, which aborts reconstruction when a reader does not know it.
 ACTORS = frozenset(
-    {"user", "app", "crew", "cron", "autonudge", "subagent", "agent", "gateway", "other"}
+    {
+        "user",
+        "app",
+        "crew",
+        "cron",
+        "autonudge",
+        "subagent",
+        "agent",
+        "resource",
+        "gateway",
+        "other",
+    }
 )
 
 

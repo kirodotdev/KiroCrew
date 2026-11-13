@@ -160,6 +160,9 @@ GATEWAY_NOTICE_WINDOWS_SPAWN_BLOCKED = "windows_spawn_blocked"
 # timeout's own message, for the log and the channel mirrors.
 GATEWAY_NOTICE_TOOLS_NOT_READY = "tools_not_ready"
 
+# The resource-subscription wake budget row (``dashboard/resource_wakes``).
+GATEWAY_NOTICE_RESOURCE_WAKE_BUDGET_PAUSED = "resource_wake_budget_paused"
+
 #: English fallback ``content`` for the recovery rows above. Plain language: no
 #: "backend", no "hiccup" (the parity test lints every ``GATEWAY_*_TEXT``).
 GATEWAY_CONNECTION_LOST_RETRYING_TEXT = "⟳ Connection lost — retrying…"

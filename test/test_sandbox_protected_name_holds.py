@@ -494,7 +494,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
     #: the data-home root, so leaf-only is the only hold, as for
     #: ``ssh_auth_sock_consent.json``.
-    EXPECTED: dict[str, int] = {"standard": 336, "cc": 343, "strict": 344}
+    #:
+    #: One more root-level directory, three entries per tier:
+    #:
+    #: * ``mcp-resource-subscriptions`` -- the holder's durable Register,
+    #:   initialize and server-defined URIs. A URI may be a credential and a forged
+    #:   record chooses which session gets an unsandboxed holder at startup. The
+    #:   directory is at the data-home root so its own mask is the only available hold.
+    EXPECTED: dict[str, int] = {"standard": 339, "cc": 346, "strict": 347}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

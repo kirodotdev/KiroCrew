@@ -13374,7 +13374,8 @@
         "tools_not_ready": "Der Agent konnte nicht starten, weil seine integrierten Tools nicht rechtzeitig bereit waren. Deine Nachricht ist noch da. Versuch es gleich noch einmal. Wenn das wieder passiert, stehen die Details im Gateway-Protokoll.",
         "kas_route_relay": "Dein Agent läuft über kiro-cli.",
         "kas_route_bundle": "Dein Agent läuft auf der eigenen Engine von {{productName}}.",
-        "kas_route_lead": "{{route}} {{message}}"
+        "kas_route_lead": "{{route}} {{message}}",
+        "resource_wake_budget_paused": "Das Ressourcenabo {{subscription}} auf {{server}} hat seine {{limit}} Weckaufrufe für {{day}} (UTC) erreicht und pausiert bis zum nächsten UTC-Tag. Updates aus der Zwischenzeit werden nach der Pause zu einem Weckaufruf zusammengefasst."
       },
       "turnBlock": {
         "earlier_step_one": "{{count}} früherer Schritt",

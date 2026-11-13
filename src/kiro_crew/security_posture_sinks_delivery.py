@@ -946,4 +946,12 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redactors, then the native approval card's own renderer. `redact_note` covers "
         "only a note's title and body, so the sink scrubs this field itself.",
     ),
+    (
+        "MCP resource-subscription wakes",
+        "dashboard/resource_wakes.py",
+        "The server-chosen resource URI and the server label are redacted before the "
+        "[Webhook wake] envelope is built and handed to the session's turn, and the "
+        "session-written instruction is redacted with them. The same text reaches the "
+        "pause notice on the bell.",
+    ),
 )
