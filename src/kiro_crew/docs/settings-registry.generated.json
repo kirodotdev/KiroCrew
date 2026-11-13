@@ -2282,6 +2282,13 @@
       "tab": "voice",
       "route": "/settings/voice?highlight=voice.voice-2",
       "hint": "Amazon Polly voice for TTS"
+    },
+    {
+      "id": "voice.what-to-speak",
+      "label": "What to speak",
+      "tab": "voice",
+      "route": "/settings/voice?highlight=voice.what-to-speak",
+      "hint": "For Auto-speak and Read aloud. A short summary is a few spoken sentences about the finished reply; when none can be made, the full reply is spoken."
     }
   ]
 }

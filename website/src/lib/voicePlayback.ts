@@ -121,3 +121,42 @@ export function voiceBoundary(text: string, consumed: number): number {
   }
   return boundary
 }
+
+/** The gateway refuses one synthesis request longer than this (`chat_voice._MAX_SYNTHESIS_TEXT_CHARS`). */
+export const SYNTHESIS_TEXT_CAP = 20000
+
+/** Cut `text` into pieces of at most `max` characters, each ending at a speech
+ *  boundary where one exists, for a reply that must be spoken whole in one go
+ *  (the summary mode's full-reply fallback): the synthesis endpoint refuses one
+ *  oversized request, while the streaming path never sends more than a few
+ *  sentences at a time. A closed backtick fence is never cut: the gateway speaks
+ *  a closed fence as "(code block)" and would read a half fence as prose, so a
+ *  fence longer than `max` goes out as one piece, and one past the gateway's own
+ *  cap goes out as an empty fence, which still speaks as "(code block)". An
+ *  unmatched marker is prose and is cut like prose. */
+export function splitForSynthesis(text: string, max = 3500): string[] {
+  const parts: string[] = []
+  let start = 0
+  while (start < text.length) {
+    const window = text.slice(start, start + max)
+    if (window.length < max) { parts.push(window); break }
+    const fence = /```|~~~/.exec(window)
+    const close = fence ? text.indexOf(fence[0], start + fence.index + 3) : -1
+    if (fence && close !== -1 && close + 3 > start + max) {
+      // The window opens a fence that closes beyond it: send the prose before
+      // the fence on its own, then the whole fence as one piece.
+      if (fence.index > 0) parts.push(window.slice(0, fence.index))
+      const end = close + 3
+      const block = text.slice(start + fence.index, end)
+      // Always a backtick fence: the gateway speaks only that form as "(code block)".
+      parts.push(block.length > SYNTHESIS_TEXT_CAP ? '```\n```' : block)
+      start = end
+      continue
+    }
+    const cut = voiceBoundary(window, 0)
+    const end = cut > 0 ? cut : max
+    parts.push(window.slice(0, end))
+    start += end
+  }
+  return parts.map(p => p.trim()).filter(Boolean)
+}

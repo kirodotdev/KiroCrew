@@ -20327,7 +20327,11 @@
         "recheck": "重新检出",
         "language": "语言",
         "language_for_spoken_replies": "朗读回复的语言",
-        "language_provider_default": "提供方默认"
+        "language_provider_default": "提供方默认",
+        "what_to_speak": "朗读内容",
+        "speak_mode_full": "完整回复",
+        "speak_mode_summary": "简短摘要",
+        "speak_mode_hint": "适用于自动朗读和朗读。简短摘要是关于已完成回复的几句口语；无法生成摘要时，将朗读完整回复。"
       },
       "weComPanel": {
         "allow_all_bypass_note": "已开启全部允许：上方的 userid 列表不再生效。它会保留下来，方便你切换回去。",

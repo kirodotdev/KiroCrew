@@ -21361,7 +21361,11 @@
         "recheck": "Comprobar de nuevo",
         "language": "Idioma",
         "language_for_spoken_replies": "Idioma de las respuestas leídas",
-        "language_provider_default": "Predeterminado del proveedor"
+        "language_provider_default": "Predeterminado del proveedor",
+        "what_to_speak": "Qué leer en voz alta",
+        "speak_mode_full": "Respuesta completa",
+        "speak_mode_summary": "Resumen breve",
+        "speak_mode_hint": "Para Leer automáticamente y Leer en voz alta. Un resumen breve son unas pocas frases habladas sobre la respuesta terminada; si no se puede generar, se lee la respuesta completa."
       },
       "weComPanel": {
         "allow_all_bypass_note": "La opción de permitir a todos está activada: se omite la lista de userid de arriba. Se conserva para cuando vuelvas a desactivarla.",

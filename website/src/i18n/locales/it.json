@@ -21361,7 +21361,11 @@
         "recheck": "Controlla di nuovo",
         "language": "Lingua",
         "language_for_spoken_replies": "Lingua delle risposte vocali",
-        "language_provider_default": "Predefinito del provider"
+        "language_provider_default": "Predefinito del provider",
+        "what_to_speak": "Cosa leggere ad alta voce",
+        "speak_mode_full": "Risposta completa",
+        "speak_mode_summary": "Breve riepilogo",
+        "speak_mode_hint": "Per la lettura automatica e Leggi ad alta voce. Un breve riepilogo è qualche frase parlata sulla risposta completata; se non può essere creato, viene letta la risposta completa."
       },
       "weComPanel": {
         "allow_all_bypass_note": "«Consenti a tutti» è attivo: l’elenco di userid qui sopra viene ignorato. Viene conservato per quando tornerai indietro.",

@@ -16,6 +16,8 @@ type VoiceConfig = {
   enabled: boolean; provider: string; voice: string; engine: string; rate: string
   autoSpeak: boolean; aws_profile: string; region: string
   system_voice: string
+  /** What Auto-speak and Read aloud speak: `full` (the reply) or `summary`. Absent on an older gateway. */
+  speakMode?: string
   /** BCP-47 tag for spoken replies; `''` is the provider's own default. Absent on an older gateway. */
   language_code?: string
   /** The Language picker's codes, `''` first; absent on an older gateway. */
@@ -26,6 +28,9 @@ type VoiceConfig = {
 
 /** The options when the gateway serves no provider list. */
 const PROVIDER_OPTIONS = ['system', 'polly']
+
+/** `voice_reply.speak_mode` values, in the order the picker lists them. */
+const SPEAK_MODE_OPTIONS = ['full', 'summary']
 
 // Consent-gate service key for Polly; shared so the gate and the cache
 // invalidation below cannot drift apart.
@@ -111,7 +116,7 @@ export function VoicePanel() {
   // `voice` takes the first fallback entry rather than respelling the VoiceId:
   // one source for the same value, and the id is provider-supplied data that no
   // catalog can localise.
-  const voiceCfg = voiceQ.data ?? { enabled: false, provider: 'system', voice: VOICE_OPTIONS_FALLBACK[0].value, engine: 'generative', rate: '100%', autoSpeak: false, aws_profile: '', region: '', system_voice: '' }
+  const voiceCfg = voiceQ.data ?? { enabled: false, provider: 'system', voice: VOICE_OPTIONS_FALLBACK[0].value, engine: 'generative', rate: '100%', autoSpeak: false, speakMode: 'full', aws_profile: '', region: '', system_voice: '' }
   const isPolly = voiceCfg.provider === 'polly'
   const isSystem = voiceCfg.provider === 'system'
   const servedProviders = parseSpeechProviders(voiceCfg.providers)
@@ -206,6 +211,9 @@ export function VoicePanel() {
           ) : (
             <>
               <SettingsToggle label={i18nT('pages.settings.voicePanel.auto_speak_responses')} hint={i18nT('pages.settings.voicePanel.speak_every_assistant_reply_automatically')} checked={voiceCfg.autoSpeak} onChange={v => setVoice({ autoSpeak: v, ...(v ? { enabled: true } : {}) })} disabled={voiceDisabled} />
+              {/* Shown whether or not auto-speak is on: Read aloud reads it too. An
+                  older gateway serves no `speakMode`, which reads as the full reply. */}
+              <SettingsSelect label={i18nT('pages.settings.voicePanel.what_to_speak')} hint={i18nT('pages.settings.voicePanel.speak_mode_hint')} value={voiceCfg.speakMode === 'summary' ? 'summary' : 'full'} options={SPEAK_MODE_OPTIONS} optionLabels={[i18nT('pages.settings.voicePanel.speak_mode_full'), i18nT('pages.settings.voicePanel.speak_mode_summary')]} onChange={v => setVoice({ speakMode: v })} disabled={voiceDisabled} />
               <SettingsSelect settingId="voice.provider-2" label={i18nT('pages.settings.voicePanel.provider')} description={i18nT('pages.settings.voicePanel.the_built_in_engine_needs_no_setup_amazon_polly_uses')} value={voiceCfg.provider} options={providerChoices.options} optionLabels={providerChoices.labels} onChange={v => setVoice({ provider: v })} disabled={voiceDisabled} />
               {/* Hand-off on: with a registered provider selected, no Polly
                   field is mounted, and every control left commits on change. */}

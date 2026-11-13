@@ -31,6 +31,7 @@ vi.mock('../api/client', () => ({
     pendingQuestions: vi.fn().mockResolvedValue([]),
     answerQuestion: vi.fn().mockResolvedValue({ ok: true }),
     voiceSynthesize: vi.fn().mockResolvedValue({ ok: true }),
+    voiceSummarize: vi.fn().mockResolvedValue({ ok: true, text: 'The short spoken version.', summarized: true }),
     voiceCancel: vi.fn().mockResolvedValue({ ok: true }),
     sessions: vi.fn().mockResolvedValue({ sessions: [], has_more: false }),
   },
@@ -375,6 +376,173 @@ describe('useWebSocket frame router', () => {
 
     await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
     expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'A complete final answer.', expect.objectContaining({ request_id: expect.any(String) }))
+  })
+
+  it('in summary mode speaks nothing while streaming and the gateway summary at the end', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    const reply = 'This sentence is long enough. And so is this second one, which ends the reply.'
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'chunk', content: reply, batched: true }))
+    })
+    await act(async () => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: ACTIVE, content: reply, seq: 1 } })
+    })
+    await act(async () => { rafCbs[0](0) })
+    // No sentence went out mid-stream: the summary needs the whole reply.
+    expect(api.voiceSynthesize).not.toHaveBeenCalled()
+
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSummarize).toHaveBeenCalledWith(reply, expect.any(String))
+    expect(api.voiceSynthesize).toHaveBeenCalledTimes(1)
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'The short spoken version.', expect.objectContaining({ request_id: expect.any(String) }))
+  })
+
+  it('in summary mode summarizes every segment of the turn, not only the one after the last tool call', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'user', content: 'go', ts: '1' }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'The migration failed, so I am retrying it.', ts: '2' }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'Done.', ts: '3' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSummarize).toHaveBeenCalledWith('The migration failed, so I am retrying it.\n\nDone.', expect.any(String))
+    // A repeated completion event for the same turn starts no second summary.
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSummarize).toHaveBeenCalledTimes(1)
+  })
+
+  it('in summary mode sends a code-heavy turn whole, so the gateway strips it before it clips', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    const long = 'Checked one more file and it was fine. '.repeat(120) + 'The migration failed. ' + '```\n' + 'x = 1\n'.repeat(3500) + '```\nDone.'
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: long, ts: '1' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSummarize).toHaveBeenCalledWith(long, expect.any(String))
+  })
+
+  it('in summary mode speaks the full turn, not an echo, when the gateway declines to summarize', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    ;(api.voiceSummarize as ReturnType<typeof vi.fn>).mockImplementationOnce(async (text: string) => ({ ok: true, text: text.slice(0, 40), summarized: false }))
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    const reply = 'This sentence is here to be spoken. '.repeat(250).trim()
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: reply, ts: '1' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
+    const sent = (api.voiceSynthesize as ReturnType<typeof vi.fn>).mock.calls.map(c => c[1] as string)
+    expect(sent.join(' ')).toBe(reply)
+  })
+
+  it('in summary mode leaves a compaction notice out of the summary', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'The real answer.', ts: '1' }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'Context at 90%, will compact after this turn.', ts: '2', kind: 'compaction' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSummarize).toHaveBeenCalledWith('The real answer.', expect.any(String))
+  })
+
+  it('reports no failure when the HTTP path says a request was cancelled', async () => {
+    const { ws } = mount()
+    // The harness mounts with one request already preparing; settle it first.
+    act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'test-voice', code: 'voice_cancelled' } }) })
+    expect(chat().voicePreparing).toBe(false)
+    const before = recentErrors().length
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-synthesis-start', { detail: { slot: ACTIVE, request_id: 'r-cancelled' } }))
+    })
+    expect(chat().voicePreparing).toBe(true)
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-synthesis-failed', { detail: { slot: ACTIVE, request_id: 'r-cancelled', code: 'voice_cancelled' } }))
+    })
+    expect(chat().voicePreparing).toBe(false)
+    expect(recentErrors().length).toBe(before)
+  })
+
+  it('in summary mode speaks an oversized unsummarized reply in chunks, never as one refused request', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    ;(api.voiceSummarize as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('413'))
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    const long = 'This sentence is here to be spoken. '.repeat(250).trim()
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: long, ts: '1' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
+    const sent = (api.voiceSynthesize as ReturnType<typeof vi.fn>).mock.calls.map(c => c[1] as string)
+    expect(sent.length).toBeGreaterThan(1)
+    expect(Math.max(...sent.map(t => t.length))).toBeLessThan(4000)
+  })
+
+  it('in summary mode speaks the full reply when the summary request fails', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    ;(api.voiceSummarize as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('gateway busy'))
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'A complete final answer.', ts: '1' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'A complete final answer.', expect.objectContaining({ request_id: expect.any(String) }))
+  })
+
+  it('in summary mode drops a summary that arrives after Stop', async () => {
+    ;(api.voiceConfig as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ autoSpeak: true, speakMode: 'summary' })
+    let answer!: (value: { ok: boolean; text: string; summarized: boolean }) => void
+    ;(api.voiceSummarize as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise(resolve => { answer = resolve }))
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'A complete final answer.', ts: '1' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    expect(chat().voicePreparing).toBe(true)
+    act(() => { window.dispatchEvent(new Event('voice-stop')) })
+    expect(chat().voicePreparing).toBe(false)
+    await act(async () => { answer({ ok: true, text: 'Too late.', summarized: true }); await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSynthesize).not.toHaveBeenCalled()
+  })
+
+  it('follows the speak mode when the settings pane changes it', async () => {
+    const { ws } = mount()
+    await act(async () => { await Promise.resolve() })
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: true, speakMode: 'summary' } }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'Spoken through the summary.', ts: '1' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(api.voiceSummarize).toHaveBeenCalledWith('Spoken through the summary.', expect.any(String))
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'The short spoken version.', expect.objectContaining({ request_id: expect.any(String) }))
+
+    ;(api.voiceSynthesize as ReturnType<typeof vi.fn>).mockClear()
+    ;(api.voiceSummarize as ReturnType<typeof vi.fn>).mockClear()
+    act(() => {
+      window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { autoSpeak: true, speakMode: 'full' } }))
+      globalStore.dispatch(sseChatMessage({ slot: ACTIVE, role: 'assistant', content: 'Spoken as written.', ts: '2' }))
+    })
+    await act(async () => { ws.simulateMessage({ type: 'chat_done', data: { slot: ACTIVE } }) })
+    expect(api.voiceSummarize).not.toHaveBeenCalled()
+    expect(api.voiceSynthesize).toHaveBeenCalledWith(ACTIVE, 'Spoken as written.', expect.objectContaining({ request_id: expect.any(String) }))
   })
 
   it('does not read an earlier reply again when the newest Sessions turn said nothing', async () => {
