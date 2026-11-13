@@ -39,6 +39,7 @@ from kiro_crew.llm_helpers_parts.turn_usage import (
 from kiro_crew.metrics.usage_attrs import TRIGGER_SYSTEM
 from kiro_crew.sel import sel as _sel
 from kiro_crew.start_priority import StartPriority
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger("kiro_crew.llm_helpers")
 
@@ -89,6 +90,7 @@ async def _refuse_while_memory_critical(what: str) -> None:
         raise RuntimeError(f"background helper {what!r} not started: {decision.reason}")
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_BACKGROUND)
 async def run_bg_oneliner(
     sessions: Any,
     prompt: str,
@@ -692,7 +694,8 @@ async def background_turn(
     # so this is the only duration a background row can carry.
     turn_started = time.monotonic()
     try:
-        yield client
+        with trace_surfaces.root(trace_surfaces.TRIGGER_BACKGROUND):
+            yield client
     finally:
         turn_elapsed_ms = int((time.monotonic() - turn_started) * 1000)
         # Snapshot the billing BEFORE releasing. ``last_prompt_stats`` is shared

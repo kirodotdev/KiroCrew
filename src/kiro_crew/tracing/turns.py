@@ -38,7 +38,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from kiro_crew.tracing import provider, runs
@@ -150,6 +150,33 @@ def bind_turn_root(
             rollup_key,
         )
     )
+
+
+def adopt_root() -> None:
+    """Make the turn root this task inherited its own, so its turns are the root's.
+
+    A task copies its creator's context but streams as a stranger to the root,
+    which records the task that bound it. Work the binding task hands to a new
+    task and only awaits (an admitted cron dispatch) calls this first; the
+    binding task streams nothing of its own after that.
+    """
+    root = _ROOT.get()
+    task = _current_task()
+    if root is not None and task is not None:
+        root.task = task
+
+
+def next_turn() -> None:
+    """Start a new turn under the root bound in this task: same run, a fresh turn id.
+
+    For an engine whose one root streams several distinct turns in one task (a
+    cron run's agent sequence): without it each later turn would count as the
+    next attempt of the first. No-op when no root is bound in this task. The
+    root's own release still restores what was bound before it.
+    """
+    root = _ROOT.get()
+    if root is not None and root.task is _current_task():
+        _ROOT.set(replace(root, turn_id=uuid.uuid4().hex, attempts=0))
 
 
 def release_turn_root(token: contextvars.Token | None) -> None:
@@ -502,6 +529,19 @@ def _add_to_rollup(span_id: str, spend: dict[str, Any]) -> None:
         rollup = _rollups.get(span_id)
         if rollup is not None:
             rollup.add(spend)
+
+
+def open_rollup(span_id: str) -> None:
+    """Start summing the spend of the turns that hang under *span_id* (a run anchor)."""
+    with _lock:
+        if len(_rollups) < _MAX_OPEN:
+            _rollups[span_id] = runs.Rollup()
+
+
+def close_rollup(span_id: str) -> runs.Rollup | None:
+    """Stop summing under *span_id* and return what was summed, if it was open."""
+    with _lock:
+        return _rollups.pop(span_id, None)
 
 
 def _register(turn: TurnTrace) -> None:

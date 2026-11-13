@@ -312,3 +312,4 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.tool_gate_busy import (  # noqa: F401
         hook_gate_busy,
     )
+    from kiro_crew.tracing import surfaces as trace_surfaces  # noqa: F401

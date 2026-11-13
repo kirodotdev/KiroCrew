@@ -268,3 +268,124 @@ async def test_cron_retry_reuses_running_reservation(service, outcome):
     )
     assert service.scheduler.active_tickets() == ()
     assert admitted_work() == ""
+
+
+@pytest.mark.asyncio
+async def test_an_admitted_cron_dispatch_streams_under_its_runs_trace_root(service):
+    """Admitted work runs in a task of its own; the run's turns still join its anchor."""
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent, TurnUsage
+    from kiro_crew.tracing import provider, runs, surfaces, turns
+
+    exporter = InMemorySpanExporter()
+    provider.install_for_testing(
+        provider.new_state(SimpleSpanProcessor(exporter), "0" * 31 + "1", b"k" * 32)
+    )
+    try:
+
+        async def events():
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn", usage=TurnUsage())
+
+        async def dispatch():
+            source = SimpleNamespace(session_id="acp-1", _session_key="cron:jt")
+            async for _ in turns.traced(source, events()):
+                pass
+            return "ok"
+
+        job = SimpleNamespace(id="jt", last_status="", last_error="", created_by_principal="")
+        with surfaces.root(surfaces.TRIGGER_CRON, run_name="agent", run_key=("jt", "r1")):
+            assert await asyncio.wait_for(entry.admitted_cron_dispatch(job, dispatch()), BOUND)
+        spans = exporter.get_finished_spans()
+        (anchor,) = [s for s in spans if s.name == "cron agent"]
+        (turn,) = [s for s in spans if s.name.startswith("invoke_agent")]
+        assert turn.parent is not None and turn.parent.span_id == anchor.context.span_id
+        assert turn.attributes["kirocrew.trigger"] == "cron"
+    finally:
+        turns.reset_for_testing()
+        runs.reset_for_testing()
+        provider.reset_for_testing()
+
+
+@pytest.mark.asyncio
+async def test_a_gateway_cron_run_under_fair_admission_joins_its_anchor(service, tmp_path):
+    """The gateway's real ``_cron_callback``, admitted: its turn joins the run's anchor.
+
+    Admission runs the dispatch in a task of its own, so the turn streams in a
+    different task from the one ``_execute_with_timeout`` bound the root in.
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from cron_gateway_integration_helpers import _make_gw_for_llm, _make_llm_job
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from kiro_crew.acp.types import EVENT_COMPLETE, AcpEvent, TurnUsage
+    from kiro_crew.cron import CronService
+    from kiro_crew.cron_service.claims import _RunClaim
+    from kiro_crew.shared_crew.turn_gate import admitted_work
+    from kiro_crew.tracing import provider, runs, turns
+
+    exporter = InMemorySpanExporter()
+    provider.install_for_testing(
+        provider.new_state(SimpleSpanProcessor(exporter), "0" * 31 + "2", b"k" * 32)
+    )
+    run_task = asyncio.current_task()
+    seen: dict = {}
+
+    async def events():
+        yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn", usage=TurnUsage(credits=2.0))
+
+    async def stream_and_collect(_client, _message, **_kw):
+        seen["admitted"] = bool(admitted_work())
+        seen["own_task"] = asyncio.current_task() is not run_task
+        source = SimpleNamespace(session_id="acp-cron", _session_key=f"cron:{job.id}")
+        async for _ in turns.traced(source, events()):
+            pass
+        return "done"
+
+    gw = _make_gw_for_llm()
+    gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    job = _make_llm_job(id="adm1")
+    captured = {}
+
+    def capture_cron(on_job=None, **_kw):
+        captured["cb"] = on_job
+        svc = MagicMock()
+        svc.start = AsyncMock()
+        svc.remove_job_async = AsyncMock(return_value=True)
+        return svc
+
+    try:
+        with (
+            patch("kiro_crew.slack.gateway.CronService") as cron_cls,
+            patch(
+                "kiro_crew.slack.gateway.run_in_embed_pool",
+                AsyncMock(return_value=("full prompt", None)),
+            ),
+            patch("kiro_crew.slack.gateway.stream_and_collect", stream_and_collect),
+            patch("kiro_crew.slack.gateway.sel"),
+            patch("kiro_crew.slack.gateway.build_cron_session_context") as ctx,
+            patch("kiro_crew.cron_service.agent_presence.cron_agent_missing", return_value=False),
+        ):
+            ctx.return_value = (f"cron:{job.id}", job.message)
+            cron_cls.create = AsyncMock(side_effect=capture_cron)
+            await gw._init_cron()
+            cron = CronService(base_dir=tmp_path)
+            cron._on_job = captured["cb"]
+            claim = _RunClaim(trigger="manual", claimed_at=0.0)
+            await asyncio.wait_for(cron._execute_with_timeout(job, claim), BOUND)
+        assert seen == {"admitted": True, "own_task": True}, seen
+        spans = exporter.get_finished_spans()
+        (anchor,) = [s for s in spans if s.name == "cron agent"]
+        (turn,) = [s for s in spans if s.name.startswith("invoke_agent")]
+        assert turn.context.trace_id == anchor.context.trace_id
+        assert turn.parent is not None and turn.parent.span_id == anchor.context.span_id
+        assert turn.attributes["kirocrew.trigger"] == "cron"
+        (outcome,) = [s for s in spans if s.name.startswith("cron outcome")]
+        assert outcome.attributes["kirocrew.usage.turns_total"] == 1
+    finally:
+        turns.reset_for_testing()
+        runs.reset_for_testing()
+        provider.reset_for_testing()

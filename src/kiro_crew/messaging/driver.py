@@ -69,6 +69,7 @@ from kiro_crew.messaging.empty_turn_copy import (
     EMPTY_TURN_NOTICE_UNCLOSED_AFTER_WORK,
     UNFINISHED_TURN_NOTICE,
 )
+from kiro_crew.messaging.link import CHANNEL_SESSION_NAMESPACES, channel_namespace_of
 from kiro_crew.messaging.renderer import (
     COMPACTION,
     DONE,
@@ -94,6 +95,7 @@ from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfilt
 from kiro_crew.sel import sel
 from kiro_crew.tool_call_title import derive_tool_call_title
 from kiro_crew.tool_gate_busy import TOOL_GATE_BUSY_REASON
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger(__name__)
 
@@ -690,6 +692,21 @@ class TurnDriver:
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
+        with trace_surfaces.root(trace_surfaces.TRIGGER_CHANNEL, channel=self._trace_channel()):
+            return await self._drive(message)
+
+    def _trace_channel(self) -> str:
+        """The channel this turn's message arrived on, from a closed vocabulary.
+
+        The renderer's transport first: a reply in a dashboard-linked thread runs
+        under the dashboard session's key, which names no channel.
+        """
+        transport = str(getattr(self.renderer, "channel_type", "") or "")
+        if transport in CHANNEL_SESSION_NAMESPACES:
+            return transport
+        return channel_namespace_of(self.audit_session_key)
+
+    async def _drive(self, message: str) -> str:
         # Bound here, not at module scope: ``kiro_crew.acp`` imports this package
         # while it initialises (``acp.prompt_blocks`` reads ``messaging.raster``).
         from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls

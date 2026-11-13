@@ -83,6 +83,7 @@ from kiro_crew.session_capabilities import CapabilityStartupError
 from kiro_crew.shared_crew.admission import OperationKind
 from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
+from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger(__name__)
 
@@ -754,6 +755,7 @@ def _capability_refusal_text(
     )
 
 
+@trace_surfaces.rooted(trace_surfaces.TRIGGER_WEBHOOK)
 async def _run_hook_inner(
     state: DashboardState,
     session_key: str,
