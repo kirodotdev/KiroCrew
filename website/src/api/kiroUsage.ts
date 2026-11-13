@@ -23,6 +23,7 @@ export type KiroUsageState =
   | KiroAccountOnly
   | 'none'
   | 'signin-required'
+  | 'signin-rejected'
   | null
 
 /**
@@ -116,7 +117,11 @@ export function parseKiroUsagePayload(d: { usage?: KiroUsagePayload } | undefine
   // is not a terminal state: the /usage scrape returns the real balance for it
   // just as it does for an SSO sign-in, so it resolves to a reading.
   if (u.available === false) {
-    if (u.reason === 'signin_required') return 'signin-required' as const
+    // `signin-rejected`: the API refused a credential, so a read failed.
+    // `signin-required`: no credential was read, so there may be no sign-in.
+    if (u.reason === 'signin_required') {
+      return u.credential_rejected === true ? 'signin-rejected' as const : 'signin-required' as const
+    }
     if (u.reason === 'account_unproven') {
       const type = u.account_type
       return { accountOnly: true, accountType: typeof type === 'string' && type ? type : undefined }
@@ -141,7 +146,7 @@ export const KIRO_USAGE_STEADY_POLL_MS = 30_000
  * the next poll sees the warmed value, so the pill sits "checking" for roughly
  * two intervals after a reopen. Polling fast while the state is unsettled
  * collapses that wait to a couple of seconds; a settled state — a real reading,
- * or a terminal `none` / `api-key` / `signin-required` the next poll would not
+ * or a terminal `none` / `api-key` / `signin-required` / `signin-rejected` the next poll would not
  * change — drops back to the steady cadence so a resolved pill is not polled
  * every few seconds forever.
  *
