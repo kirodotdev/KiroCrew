@@ -399,6 +399,33 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"ctx.lifecycle": 2},
         ),
         ({}, {"backend/_host.py": "def f(ctx:\n    ctx.lifecycle\n"}, {"ctx.lifecycle": 2}),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps.backend_sdk import is_sensitive_path\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "sdk = _host_module('kiro_crew.apps.backend_sdk')\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps import backend_sdk as sdk\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew.apps import (\n    backend_sdk,\n)\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        (
+            {},
+            {"backend/_host.py": "from kiro_crew import apps\nsdk = apps.backend_sdk\n"},
+            {"kiro_crew.apps.backend_sdk": 7},
+        ),
+        ({}, {"backend/_host.py": "import kiro_crew\nfrom . import my_backend_sdk\n"}, {}),
+        ({}, {"tests/fakehost.py": "import kiro_crew.apps.backend_sdk\n"}, {}),
         ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
         ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
         ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),

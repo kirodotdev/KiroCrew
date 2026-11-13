@@ -6768,15 +6768,16 @@ Writers: `apps/marketplace_install.py`, `apps/market_client.py`,
 
 ## 32. App Kit seam level 1: what a former built-in needs, offered to every app
 
-An installed app reaches the host only through its context and the dashboard SDK,
-never through a `kiro_crew` import or a dashboard source path: such an import pins the
-app to one wheel's private layout and breaks silently on the next upgrade. Level 1 is
+An installed app reaches the host only through its context, the dashboard SDK and the
+public backend SDK package (§40), never through another `kiro_crew` import or a
+dashboard source path: such an import pins the app to one wheel's private layout and
+breaks silently on the next upgrade. Level 1 is
 the set of seams a built-in's code needed from core, published generically. Nothing in
 any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
 pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
-manifest's `agentReadOnlyDirs` (§39). An app reads `ctx.sdk_level` or the SDK export to detect an
+manifest's `agentReadOnlyDirs` (§39) and the backend SDK package (§40). An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
@@ -7113,7 +7114,10 @@ for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
 `ctx.untrusted`, `ctx.lifecycle` or
 `ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
 `conftest.py` (level 2), and `ctx.app_token` or `ctx.gateway_origin` there (level 5), read as an attribute of a context-named receiver or as a
-`getattr`/`hasattr` of that name on any receiver. A level below the highest one found
+`getattr`/`hasattr` of that name on any receiver, and the backend SDK package in
+any form in such a file (level 7): the file names both `kiro_crew` and the word
+`backend_sdk`, which catches a dotted import, `from kiro_crew.apps import
+backend_sdk`, an attribute of an imported parent and a string lookup alike. A level below the highest one found
 is refused, naming what was found, by `compute` and `verify` alike, so a tree that
 feature-detects a seam and degrades still pins at that seam's level, and a host
 without it keeps the wheel copy. The scan errs wide: a false hit only asks for a
@@ -7977,6 +7981,105 @@ name in the expiry log), `sandbox_aliases.py`, `sandbox_argv.py`,
 `test/test_app_agent_readonly_dirs.py` (including a real Linux namespace spawn that
 gets `EROFS` writing a declared directory and keeps writing its sibling),
 `src/kiro_crew/apps/builtins/spec_builder/tests/test_routes_decision_ledger.py`.
+
+## 40. The backend SDK: public host controls for an app's own Python (seam level 7)
+
+The app repositories reach a set of private gateway names through their `_host.py`
+shims (in each repository's backend folder): a feature-detected string lookup per
+name, refused when absent. Each one is a gap that blocks deleting the wheel copy,
+because the name moves with the wheel. `kiro_crew.apps.backend_sdk` is the public, documented spelling of the
+most-used of them, grouped by control. It is a package of thin delegates: every name
+calls the private function the gateway itself enforces, looked up on its facade module
+at call time, so a check tightened later reaches the app with the wheel and nothing is
+a copy. Nothing in it names an app.
+
+**Reachable from both backend kinds.** An in-process app (`backend.hooks`) and a
+spawned one (`backend.entryPoint` started on the gateway's interpreter, which is the
+case once its dependencies are provisioned, §21) import it the same way. A spawned
+backend on its own venv interpreter has no `kiro_crew` and sees the package as absent,
+as it does on an older gateway. The package binds each name on first access
+(`__getattr__`), so an import loads nothing past the package roots and
+`apps.app_sdk_level`, and a spawned backend
+that wants one helper does not pay for the security stack.
+
+**What it offers, and the private name behind each.**
+
+| Group | Public name | Delegates to |
+|---|---|---|
+| Sensitive paths | `is_sensitive_path(path)`, `contains_sensitive_path(directory)` | `security.is_sensitive_path`, `security.path_contains_sensitive` |
+| Files | `read_bytes_nofollow(path, *, within_root, max_bytes, within_root_is_canonical)`, `FileTooLargeError` | `hooks.safe_read_file_bytes_nolink`, `hooks.FileTooLargeError` |
+| Files | `atomic_write(path, content, *, fsync, mode, newline, restrict_to_owner)`, `ensure_owner_only_dir(path)` | `atomic_write.atomic_write`, `owner_only_files.ensure_directory` |
+| Redaction | `scrub_outbound(text)`, `ScrubResult` | `apps.scrub_sdk.ScrubSDK.outbound` (the `ctx.scrub` pass) |
+| Audit | `audit_log(app_name=None)` | `apps.audit_sdk.AuditSDK` (the `ctx.audit` writer) |
+| Sandboxed children | `run_sandboxed`, `run_sandboxed_async`, `sandboxed_argv`, `sandboxed_argv_async`, `SandboxUnavailableError` | `sandbox.sandboxed_spawn_argv` then `sandbox.run_limited`; `sandbox.sandboxed_spawn_argv_async` then `sandbox.create_subprocess_limited`; the two preparations alone; `sandbox.SandboxUnavailableError` |
+| Process and locks | `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX`, `kill_and_reap`, `is_link_or_junction`, `first_linked_ancestor`, `rmtree_force`, `file_lock` | the `platform_compat` names of the same spelling |
+
+**Same safety semantics.** A read refuses exactly what the private read refuses and
+raises the gateway's own `FileTooLargeError`; a spawn the host cannot sandbox raises
+the gateway's own `SandboxUnavailableError`. The exception classes are the private
+ones, not look-alikes, so an `except` written against either catches both.
+
+**No widening knob.** A public signature carries only the parameters the apps use, and
+never one that adds reach. `sandboxed_argv` accepts the `standard` and `strict` tiers
+and refuses any other value (`off` included) with `ValueError` before anything is
+prepared; the private chokepoint's `extra_*_dirs`, `first_party_fixed_argv` and
+`is_kiro_cli` lift a mask, open a write window in a sealed parent or reclassify the
+child, which is the gateway's decision for its own spawns, so they are not offered.
+The read has no `admit_hardlinked` or `canonical_gate`. The SDK spawns nothing that
+is not sandboxed: `run_sandboxed` and `run_sandboxed_async` prepare through the
+chokepoint and run under the resource limits in the same function, with the
+scrubbed environment and the cleanup path removed on every outcome, so
+`test/test_spawn_audit.py` sees both as routed. `run_sandboxed` forwards only the
+`subprocess.run` keywords in `spawn.RUN_KWARGS` (stdio, `cwd`, `timeout`, `check`,
+text decoding) and refuses every other one with `TypeError` before preparing,
+because `run_limited` and `subprocess.run` also take keywords that add reach:
+`profile="none"` lifts the resource limits, `executable` replaces the program the
+sandbox wrapper starts, and `pass_fds` / `close_fds` hand the child the caller's
+descriptors beyond its stdio. The async one starts the child in its own process group on POSIX
+(`start_new_session`) and reads that group id while the child is alive
+(`platform_compat._isolated_group_of_live_child`). On a timeout or a cancel it
+SIGKILLs that group before `kill_and_reap`, which does not group-kill a child it has
+already reaped: the id cannot name another group while any member of this one lives,
+so a descendant that outlived the child (`sh -c "work &"`) is reached too. A
+descendant that `setsid()`-ed away is outside the group. `run_sandboxed` kills the
+child on a timeout, its whole tree on Windows, but not a POSIX descendant that
+outlives it; its docstring and the api-reference row point such a child at the
+async form. The private limited spawners, which run whatever argv they are
+handed, are not offered. Nothing here is gated by a
+permission because nothing adds reach: the controls only refuse, redact, record or
+confine, and an in-process app could call the private names anyway.
+
+**Audit attribution.** `audit_log()` returns the `ctx.audit` writer for the name in
+`KIROCREW_APP_NAME`, which the gateway sets on every spawned backend, or for an
+explicit `app_name`. With neither it raises `LookupError` when the writer is built,
+so rows are never attributed to nobody, and `record` itself still never raises. The
+attribution is cooperative, as it is for `ctx.audit`. The SEL log is written
+cross-process under its chain lock (`sel_chain_lock`), so a spawned backend's row and
+the gateway's own interleave safely.
+
+**Level.** `SDK_LEVEL` is `APP_SDK_LEVEL`; `BACKEND_SDK_LEVEL` is 7, the level that
+publishes the package. The adoption pin tool counts any non-test source naming the
+package as a level-7 use (§33), so a tree that adopts it is held on a host without it.
+
+**Not in it yet.** The names the apps reach that this package does not cover stay
+private and keep their `_host.py` gap: chat slot and auto-nudge internals (they belong
+to the app-owned chat slot seam of ruling item 4), `pinned_fs` descriptor helpers,
+`link_unfurl` URL vetting, `messaging.raster.sniff_raster_mime`,
+`asset_downloader.download_to`, `executors.subprocess_executor`,
+`apps.registry.minimal_env`, `config.loader.config_dir` and `KiroCrewConfig`,
+`security.redact_local_paths`, `security.iter_credential_matches`,
+`atomic_write.read_bytes_with_retry`, `owner_only_files.mkdirs_owner_only` and
+`owner_only_opener_for`, `sandbox.effective_sandbox_mode`, and the domain modules
+(`crew_log`, `knowledge`, `deploy`, `transcribe`, `vector_memory`, `cron`,
+`notifications.bus`).
+
+Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
+`apps/backend_sdk/files.py`, `apps/backend_sdk/redaction.py`,
+`apps/backend_sdk/audit.py`, `apps/backend_sdk/spawn.py`,
+`apps/backend_sdk/process.py`, `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`, `scripts/adoption_pin.py` (`_seam_level_uses`).
+Pinned by `test/test_app_backend_sdk.py` and `test/test_builtin_adoption_pins.py`.
+App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 
 ## Windows stale-backend cleanup capacity
 
