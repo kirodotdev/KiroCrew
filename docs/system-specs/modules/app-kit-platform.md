@@ -7576,6 +7576,43 @@ says the app keeps running as a built-in while the record is still the built-in'
 control for (wider access, another platform, a failed verification) says the move is
 on hold, never "until then".
 
+**Permission parity of the wheel copies.** E9 compares the pinned tree's grants with
+what the built-in record approved, and a built-in approves what its wheel copy ships
+(`register_builtin_apps` stores that set at every start). The compiled built-in page
+calls the host as dashboard code, while the adopted bundle calls it through the scoped
+client, which refuses a path its `permissions.api` does not declare. So, under the
+owner ruling of 2026-11-13 (#26967, comment 6841699202: a user's normal use must not
+be affected, and an app gets what its built-in already uses), a wheel copy declares
+exactly the host paths its page and backend call today, in the narrowest entries the
+matcher allows, and the app repository declares the same list. The wheel release
+grants it to every existing user before the pin, so adoption carries it and is no
+widening; nothing the built-in does not call is declared. Design Tweak declares
+`/api/chat`: its page sends the batch (`POST /api/chat`) and creates, binds, resumes
+and reads its own chat slot under `/api/chat/slots`. A bare entry covers every path
+below it, which the slot routes need (their key is a path segment); on those routes an
+app caller reaches only the slots it owns (`dashboard/slot_ownership.py`). The prefix
+also admits the slot list, `GET /api/chat/slots`, which shows an app token only the
+slots its `/api/ws` connect snapshot shows it: its own, plus what its declared `slots:*`
+scopes add, none for a disabled app (`chat_api/slot_detail.py:api_chat_slots` through
+`ws_event_scope.filter_slots_for_app`, pinned by `test/test_chat_slots_app_token_view.py`).
+The person and an internal-secret caller keep the full list. Pinned by `test/test_design_tweak_permission_parity.py`,
+which registers the real wheel copy and asks `permission_refusal` of the repository's
+list (None) and of that list plus one more path (`permission_widening`).
+
+**The trust prompt names the host paths.** `TrustAppModal` lists the manifest's
+`permissions.api` entries outside the app's own namespace in a box of their own, as
+declared, beside the boxes of the other declared grants. The box opens in plain words,
+says what a chat path lets the app do when one is listed (`callsChat`), and shows the
+paths below that (`hostApiPaths`; the
+namespace is `/apps/<name>/...` and `/api/apps/<name>/...`, which the gateway admits
+without a declaration, `_app_owns_path`). `trustGrants` carries them with the other
+declared grants, so every path that opens the prompt (install, enable, update, the
+local-source switch) reads them from the manifest it already holds; the official
+catalog projects a declared `api` list into its rows
+(`official_catalog._disclosed_permissions_manifest`, non-empty strings only), as it
+does `sessionApproval`. Display only: no consent step reads it. Pinned by
+`website/src/test/TrustAppModalHostApi.test.tsx` and `test/test_catalog_inventory.py`.
+
 Writers: `apps/builtin_adoption.py`, `apps/builtin_adoption_apply.py`,
 `apps/builtin_adoption_checks.py`, `apps/builtin_adoption_mcp.py`,
 `apps/builtin_adoption_fetch.py`, `apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
@@ -7592,7 +7629,10 @@ renders as the notice and the legacy route.
 Writers (dashboard side): `website/src/appNav.ts`, `website/src/apps/builtinIcons.tsx`,
 `website/src/apps/BuiltinAppRoute.tsx`, `website/src/hooks/panelTabRegistry.ts`,
 `website/src/components/InstalledAppSurface.tsx`, `website/src/components/appstore/types.ts`,
-`website/src/pages/AppDetailAdoptionNotice.tsx`, `website/src/pages/AppDetailPage.tsx`.
+`website/src/pages/AppDetailAdoptionNotice.tsx`, `website/src/pages/AppDetailPage.tsx`,
+`website/src/components/appstore/TrustAppModal.tsx`, `website/src/components/appstore/trustGrants.ts`,
+`src/kiro_crew/apps/official_catalog.py` (the host paths on the trust prompt),
+`src/kiro_crew/dashboard/chat_api/slot_detail.py` (an app token's slot list).
 
 ### Folding a built-in into core
 

@@ -550,7 +550,8 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     """Project the explicit grants the trust prompt discloses before install.
 
     ``memberThreads`` rides along only with ``sessionApproval``, the grant it scopes.
-    ``reachableByUserSessions`` is a list of verbs, kept to the known ones.
+    ``reachableByUserSessions`` is a list of verbs, kept to the known ones. ``api`` is
+    kept to its non-empty string entries, the ones the scope check can match.
     """
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
@@ -560,6 +561,9 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     }
     if reach := declared_verbs(permissions.get(USER_SESSION_REACH_KEY)):
         disclosed[USER_SESSION_REACH_KEY] = reach
+    api = permissions.get("api")
+    if isinstance(api, list) and (paths := [p for p in api if isinstance(p, str) and p.strip()]):
+        disclosed["api"] = paths
     if not disclosed:
         return None
     if disclosed.get("sessionApproval") and permissions.get("memberThreads") is True:
