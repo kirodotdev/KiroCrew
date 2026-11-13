@@ -488,6 +488,13 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # client to service them. The settings channel is opened because that is how a
 # client selects KAS feature flags; ``openExternalUrl`` is covered below.
 #
+# ``codeIntelligence`` is declared on because KAS creates a session's ``code`` tool
+# (and answers ``_kiro/codeIntelligence``) only when the client enables it. The
+# spawn sends kiro-cli's own ``chat.enableCodeIntelligence`` in its place (on
+# unless it is false). Which agent may CALL that tool is still its spec's
+# ``tools`` list, which the engine applies, and Crew's own gate still answers
+# each call.
+#
 # ``hooks`` stays undeclared although ``acp/kas_wire.py`` serves all three of its
 # methods. Kiro Crew's own turn loop already fires every hook event this surface
 # can serve for a KAS session, and its PreToolUse can BLOCK a tool on exit 2;
@@ -511,7 +518,13 @@ PROVIDER_LABEL_BY_BACKEND: dict = {
 # and every other callback stays undeclared (= false).
 KAS_CLIENT_CAPABILITIES: dict = {
     **ACP_CLIENT_CAPABILITIES,
-    "_meta": {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}},
+    "_meta": {
+        "kiro": {
+            "settings": {"codeIntelligence": {"enabled": True}},
+            "openExternalUrl": True,
+            "userInput": True,
+        }
+    },
 }
 
 # ── Claude backend permission modes ──

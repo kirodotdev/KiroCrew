@@ -3036,7 +3036,10 @@ enforcement and display correctly scoped:
 grants in `allowedTools` is auto-approved by Crew at its permission request instead
 of by a KAS allow rule, and so is every built-in whose capabilities an unscoped
 `allow` in the spec's own `permissions` block covers (`shell`, `fs_read` or
-`fs_write`, no `match` or an empty one, no `exclude`; #25365). The KAS projection
+`fs_write`, no `match` or an empty one, no `exclude`; #25365). `code` is never one
+of them: an LSP-backed `code` call starts the language server the workspace's
+`.kiro/settings/lsp.json` names, so each KAS `code` call reaches the same tiers as on
+kiro-cli (a proven tree-sitter lookup passes `read-only`, anything else asks). The KAS projection
 never relays an allow for the shell and
 filesystem families (`kas_permissions.WITHHELD_FROM_AUTO_APPROVE`): an auto-approved
 KAS call raises no `session/request_permission`, so no row of this table would run

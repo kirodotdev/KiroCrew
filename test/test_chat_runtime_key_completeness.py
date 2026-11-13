@@ -138,6 +138,12 @@ _HANDSHAKE_NOT_KEYED = {
         "A pure transform of the capabilities dict by the boolean the read above "
         "produced; it reads nothing of its own, so it adds no input."
     ),
+    "kiro_cli_code_intelligence_enabled": (
+        "A feature setting, not a privacy opt-out: read when the KAS process "
+        "starts, so a changed value applies to the next process. Its workspace "
+        "file follows work_dir, which is keyed, and Crew's gate still answers "
+        "every code call a joiner's session makes."
+    ),
 }
 _HANDSHAKE_MODULE = "src/kiro_crew/acp/runtime_spawn_launch.py"
 _HANDSHAKE_FUNCTION = "_handshake_client_capabilities"

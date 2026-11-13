@@ -486,7 +486,9 @@ class TestCapabilities:
         ],
     )
     def test_the_kiro_settings_channel_is_announced(self):
-        assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {}
+        assert KAS_CLIENT_CAPABILITIES["_meta"]["kiro"]["settings"] == {
+            "codeIntelligence": {"enabled": True}
+        }
 
     def test_kas_keeps_the_standard_top_level_declarations(self):
         for key, value in ACP_CLIENT_CAPABILITIES.items():
@@ -730,7 +732,10 @@ class TestKasInvocation:
             tools=["fs_read", "tool_search"],
             tool_search=ToolSearchSettings(True, 5, 50_000),
         )
-        assert settings == {"toolSearch": {"enabled": True, "minPct": 5, "minTokens": 50_000}}
+        assert settings == {
+            "codeIntelligence": {"enabled": True},
+            "toolSearch": {"enabled": True, "minPct": 5, "minTokens": 50_000},
+        }
         assert not (tmp_path / "ws-ts" / ".kiro" / "settings" / "cli.json").exists()
 
     @pytest.mark.asyncio
@@ -775,14 +780,14 @@ class TestKasInvocation:
         assert settings["toolSearch"]["enabled"] is False
 
     @pytest.mark.asyncio
-    async def test_no_tool_search_value_leaves_the_channel_empty(
+    async def test_no_tool_search_value_sends_only_the_constants_settings(
         self, kas_stub, tmp_path, monkeypatch
     ):
-        """No toggle threaded in: the handshake is the harness constant, byte for byte."""
+        """No toggle threaded in: the settings channel is the harness constant's."""
         settings = await self._handshake_settings(
             tmp_path, monkeypatch, tools=["fs_read", "tool_search"], tool_search=None
         )
-        assert settings == {}
+        assert settings == {"codeIntelligence": {"enabled": True}}
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
