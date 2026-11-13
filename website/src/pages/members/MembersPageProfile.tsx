@@ -29,6 +29,7 @@ import workerPoseB from '../../assets/ghost-poses/pose-6.svg'
 import { api, type MemberRosterRow } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
 import { CREW_BOARD_POLL_MS, crewBoardQueryKey } from '../../api/crewBoard'
+import { timedPoll, usePollRule } from '../../lib/pollRule'
 import { retryPolicy } from '../../api/queryClient'
 import { crewDisplayName } from '../../components/AgentSelector'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../../components/autoNudgeLoop'
@@ -484,12 +485,13 @@ function CrewPatrolRow({ loop, slotKey, nowTs, onBusyChange }: {
   onBusyChange?: (busy: boolean) => void
 }) {
   const queryClient = useQueryClient()
+  const boardInterval = usePollRule(`crew-board:${slotKey}`, CREW_BOARD_POLL_MS, true, crewBoardQueryKey(slotKey))
   const boardQuery = useQuery({
     queryKey: crewBoardQueryKey(slotKey),
-    queryFn: () => api.crewBoard(slotKey),
+    queryFn: () => timedPoll(`crew-board:${slotKey}`, () => api.crewBoard(slotKey)),
     enabled: !!slotKey,
     // Items close while the tab is open; the count follows at the board's cadence.
-    refetchInterval: CREW_BOARD_POLL_MS,
+    refetchInterval: boardInterval,
     retry: (failureCount, error) => !isNotFoundError(error) && retryPolicy(failureCount, error),
   })
   const openTasks = boardQuery.data

@@ -13,7 +13,8 @@ import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { fetchHistory, deleteHistorySession, switchSlot, resumeFromHistory, clearHistorySessions, requestFolderReveal } from '../store/chatSlice'
 import { CreatorFilterBar, CreatorFilteredSessions, useSharedCrewListView } from './chat-sidebar/CreatorFilter'
-import { sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
+import { PEOPLE_POLL_ID, PEOPLE_REFRESH_MS, sharedCrewKeys } from '../hooks/sharedCrew/sharedCrewSocket'
+import { requestRefresh } from '../lib/pollRule'
 import { SharedCrewBylineContext } from './chat-sidebar/SessionCreatorByline'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
 import { folderNameText, orderFoldersWithPaths } from '../utils/folderTree'
@@ -315,7 +316,7 @@ function ChatSidebar({
     // Catalog writes and live slot/history updates affect every creator page,
     // including cached filters that are not currently mounted.
     void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.sessionsAll })
-    void queryClient.invalidateQueries({ queryKey: sharedCrewKeys.people })
+    requestRefresh(queryClient, PEOPLE_POLL_ID, sharedCrewKeys.people, PEOPLE_REFRESH_MS)
   }, [queryClient, localSlots, history, refreshTrigger])
   // An offline refusal stops being true once the gateway is back, so retire it on
   // the disconnected -> connected transition only.

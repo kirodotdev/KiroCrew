@@ -45,6 +45,7 @@ import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { fmtNumber, fmtRelative } from '../i18n/format'
 import { isNotFoundError } from '../api/apiError'
+import { timedPoll, usePollRule } from '../lib/pollRule'
 import {
   CREW_BOARD_POLL_MS,
   crewBoardQueryKey,
@@ -501,10 +502,11 @@ function ItemRow({
 export function CrewBoard({ conductor }: { conductor: string }) {
   const [showFinished, setShowFinished] = useState(false)
 
+  const boardInterval = usePollRule(`crew-board:${conductor}`, CREW_BOARD_POLL_MS, true, crewBoardQueryKey(conductor))
   const board = useQuery<WorkBoardResponse>({
     queryKey: crewBoardQueryKey(conductor),
-    queryFn: () => api.crewBoard(conductor),
-    refetchInterval: CREW_BOARD_POLL_MS,
+    queryFn: () => timedPoll(`crew-board:${conductor}`, () => api.crewBoard(conductor)),
+    refetchInterval: boardInterval,
     enabled: Boolean(conductor),
   })
 
