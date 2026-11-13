@@ -133,4 +133,5 @@ def test_the_drop_notice_is_its_own_output_path_beside_the_session_control_read(
             f"dashboard/{_PACKAGE.rpartition('.')[2]}/delivery_containment.py",
         ),
         ("Session control read", f"dashboard/{_PACKAGE.rpartition('.')[2]}/session_status.py"),
+        ("Session control queue", "dashboard/session_control_queue.py"),
     }
