@@ -245,6 +245,38 @@ def _make_levels(present: str) -> None:
             return
 
 
+@needs_pinned_walk
+def test_member_dashboard_missing_level_is_never_reopened_by_name(monkeypatch):
+    """A folder an agent recreates after the failed open must not be read through its name."""
+    data_home().mkdir(parents=True, exist_ok=True)
+
+    def by_name(*_args: Any, **_kwargs: Any) -> bytes:
+        raise AssertionError("a missing page folder was read again by name")
+
+    monkeypatch.setattr(instance, "read_bytes_with_retry", by_name)
+    assert instance.read(SLUG).state == instance.STATE_EMPTY
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+@pytest.mark.parametrize("level", PAGE_LEVELS)
+def test_member_dashboard_a_file_where_a_folder_belongs_is_not_taken_for_a_link(
+    monkeypatch, pinned, level
+):
+    """Only a link answers "not set"; a file at a level keeps its refusal, never an empty page."""
+    if pinned and not instance.pinned_fs.supports_pinned_walk():
+        pytest.skip("needs descriptor-relative opens")
+    if not pinned:
+        if os.name == "nt":
+            pytest.skip("a path below a file is a missing path on Windows")
+        _no_pinning(monkeypatch)
+    _seed()
+    path = _level_path(level)
+    shutil.rmtree(path)
+    path.write_text("not a folder", encoding="utf-8")
+    with pytest.raises(instance.InstanceError):
+        instance.read(SLUG)
+
+
 @pytest.mark.parametrize("pinned", [True, False])
 @pytest.mark.parametrize("present", ["nothing", "members", "slug", "dashboard"])
 @pytest.mark.parametrize("reader", READERS)

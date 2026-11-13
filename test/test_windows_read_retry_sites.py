@@ -361,6 +361,8 @@ def test_an_absent_workflow_run_is_still_unavailable_and_is_read_once(attempts):
     assert attempts["n"] == 2
 
 
-def test_an_absent_instance_record_is_still_not_adopted_and_is_read_once(attempts):
+def test_an_absent_instance_record_is_still_not_adopted_and_is_read_once_by_name_only_unpinned(
+    attempts,
+):
     assert instance.read(SLUG).instance_version == 0
-    assert attempts["n"] == 1
+    assert attempts["n"] == (0 if instance._can_pin() else 1)
