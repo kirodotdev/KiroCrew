@@ -17964,7 +17964,6 @@
         "rename": "이름 변경",
         "ungrouped": "그룹 없음"
       },
-      "d_ago": "{{n}}일 전",
       "delete": "삭제",
       "delete_2": "{{n}}개 삭제",
       "delete_failed": "삭제에 실패했습니다",
@@ -17979,7 +17978,6 @@
       "failed": "실패",
       "failed_to_load_jobs": "작업을 불러오지 못했습니다",
       "filter_jobs": "작업 필터…",
-      "h_ago": "{{n}}시간 전",
       "hide_message": "메시지 숨기기",
       "id": "ID",
       "job_could_not_be_deleted_other": "작업 {{count}}개 중 {{failed}}개를 삭제하지 못했습니다",
@@ -17988,7 +17986,6 @@
       "last_error": "마지막 오류",
       "last_output": "마지막 출력",
       "last_run": "마지막 실행",
-      "m_ago": "{{n}}분 전",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "반복 cron 작업과 예약된 태스크를 관리합니다",
       "message": "메시지",
       "name": "이름",

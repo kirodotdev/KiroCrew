@@ -18937,7 +18937,6 @@
         "rename": "Renomear",
         "ungrouped": "Sem grupo"
       },
-      "d_ago": "{{n}}d atrás",
       "delete": "Excluir",
       "delete_2": "Excluir {{n}}",
       "delete_failed": "Falha ao excluir",
@@ -18952,7 +18951,6 @@
       "failed": "Falhou",
       "failed_to_load_jobs": "Falha ao carregar os jobs",
       "filter_jobs": "Filtrar jobs…",
-      "h_ago": "{{n}}h atrás",
       "hide_message": "Ocultar mensagem",
       "id": "ID",
       "job_could_not_be_deleted_many": "Não foi possível excluir {{failed}} de {{count}} jobs",
@@ -18963,7 +18961,6 @@
       "last_error": "Último erro",
       "last_output": "Última saída",
       "last_run": "Última execução",
-      "m_ago": "{{n}}min atrás",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "Gerencie jobs cron recorrentes e tarefas agendadas",
       "message": "Mensagem",
       "name": "Nome",

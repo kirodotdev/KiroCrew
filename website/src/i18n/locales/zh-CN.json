@@ -17969,7 +17969,6 @@
         "rename": "重命名",
         "ungrouped": "未分组"
       },
-      "d_ago": "{{n}} 天前",
       "delete": "删除",
       "delete_2": "删除 {{n}} 项",
       "delete_failed": "删除失败",
@@ -17984,7 +17983,6 @@
       "failed": "失败",
       "failed_to_load_jobs": "加载定时任务失败",
       "filter_jobs": "筛选任务…",
-      "h_ago": "{{n}} 小时前",
       "hide_message": "隐藏消息",
       "id": "ID",
       "job_could_not_be_deleted_other": "{{count}} 个任务中有 {{failed}} 个无法删除",
@@ -17993,7 +17991,6 @@
       "last_error": "最近一次错误",
       "last_output": "最近一次输出",
       "last_run": "上次运行",
-      "m_ago": "{{n}} 分钟前",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "管理周期性定时任务和计划任务",
       "message": "消息",
       "name": "名称",

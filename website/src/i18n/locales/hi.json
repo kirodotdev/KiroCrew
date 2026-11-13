@@ -18453,7 +18453,6 @@
         "rename": "नाम बदलें",
         "ungrouped": "बिना समूह"
       },
-      "d_ago": "{{n}} दिन पहले",
       "delete": "हटाएँ",
       "delete_2": "{{n}} हटाओ",
       "delete_failed": "हटाना विफल",
@@ -18468,7 +18467,6 @@
       "failed": "विफल",
       "failed_to_load_jobs": "जॉब लोड नहीं हो सकीं",
       "filter_jobs": "जॉब फ़िल्टर करें…",
-      "h_ago": "{{n}} घंटे पहले",
       "hide_message": "संदेश छिपाएँ",
       "id": "ID",
       "job_could_not_be_deleted_one": "{{count}} में से {{failed}} जॉब हटाया नहीं जा सका",
@@ -18478,7 +18476,6 @@
       "last_error": "पिछली त्रुटि",
       "last_output": "पिछला आउटपुट",
       "last_run": "पिछला रन",
-      "m_ago": "{{n}} मिनट पहले",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "आवर्ती क्रॉन जॉब और शेड्यूल किए गए कार्य प्रबंधित करें",
       "message": "संदेश",
       "name": "नाम",

@@ -17969,7 +17969,6 @@
         "rename": "名前を変更",
         "ungrouped": "グループなし"
       },
-      "d_ago": "{{n}} 日前",
       "delete": "削除",
       "delete_2": "{{n}} 件を削除",
       "delete_failed": "削除に失敗しました",
@@ -17984,7 +17983,6 @@
       "failed": "失敗",
       "failed_to_load_jobs": "ジョブの読み込みに失敗しました",
       "filter_jobs": "ジョブをフィルタ…",
-      "h_ago": "{{n}} 時間前",
       "hide_message": "メッセージを非表示",
       "id": "ID",
       "job_could_not_be_deleted_other": "{{count}} 件中 {{failed}} 件のジョブを削除できませんでした",
@@ -17993,7 +17991,6 @@
       "last_error": "最後のエラー",
       "last_output": "最後の出力",
       "last_run": "最後の実行",
-      "m_ago": "{{n}} 分前",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "定期的なcronジョブとスケジュール済みタスクを管理",
       "message": "メッセージ",
       "name": "名前",

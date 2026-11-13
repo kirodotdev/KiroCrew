@@ -170,9 +170,9 @@ const fmtAgo = (ts?: number) => {
   if (!ts) return '—'
   const s = Math.floor((Date.now() / 1000) - ts)
   if (s < 60) return i18nT('pages.schedulePage.just_now')
-  if (s < 3600) return i18nT('pages.schedulePage.m_ago', { n: Math.floor(s / 60) })
-  if (s < 86400) return i18nT('pages.schedulePage.h_ago', { n: Math.floor(s / 3600) })
-  return i18nT('pages.schedulePage.d_ago', { n: Math.floor(s / 86400) })
+  // The locale words the past offset in the largest unit that fits, so a run a
+  // year ago reads `1y ago`, not `400d ago`, and matches the Next-run column.
+  return fmtRelative(ts * 1000, { numeric: 'always' })
 }
 
 const fmtIn = (ts?: number | null) => {

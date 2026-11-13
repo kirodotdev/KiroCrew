@@ -18453,7 +18453,6 @@
         "rename": "নাম বদলাও",
         "ungrouped": "গোষ্ঠীহীন"
       },
-      "d_ago": "{{n}} দিন আগে",
       "delete": "মুছুন",
       "delete_2": "{{n}}টি মুছে ফেলো",
       "delete_failed": "মুছে ফেলা যায়নি",
@@ -18468,7 +18467,6 @@
       "failed": "ব্যর্থ",
       "failed_to_load_jobs": "জব লোড করা যায়নি",
       "filter_jobs": "জব ফিল্টার করুন…",
-      "h_ago": "{{n}} ঘণ্টা আগে",
       "hide_message": "মেসেজ লুকাও",
       "id": "ID",
       "job_could_not_be_deleted_one": "{{count}}টির মধ্যে {{failed}}টি জব মুছে ফেলা যায়নি",
@@ -18478,7 +18476,6 @@
       "last_error": "শেষ ত্রুটি",
       "last_output": "শেষ আউটপুট",
       "last_run": "শেষ রান",
-      "m_ago": "{{n}} মিনিট আগে",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "পুনরাবৃত্ত cron জব ও নির্ধারিত টাস্ক পরিচালনা করুন",
       "message": "মেসেজ",
       "name": "নাম",

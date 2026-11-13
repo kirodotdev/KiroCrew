@@ -18937,7 +18937,6 @@
         "rename": "Cambiar nombre",
         "ungrouped": "Sin agrupar"
       },
-      "d_ago": "hace {{n}} d",
       "delete": "Eliminar",
       "delete_2": "Eliminar {{n}}",
       "delete_failed": "Error al eliminar",
@@ -18952,7 +18951,6 @@
       "failed": "Falló",
       "failed_to_load_jobs": "No se pudieron cargar los trabajos",
       "filter_jobs": "Filtrar trabajos…",
-      "h_ago": "hace {{n}} h",
       "hide_message": "Ocultar el mensaje",
       "id": "ID",
       "job_could_not_be_deleted_many": "No se pudieron eliminar {{failed}} de {{count}} trabajos",
@@ -18963,7 +18961,6 @@
       "last_error": "Último error",
       "last_output": "Última salida",
       "last_run": "Última ejecución",
-      "m_ago": "hace {{n}} min",
       "manage_recurring_cron_jobs_and_scheduled_tasks": "Gestiona trabajos cron recurrentes y tareas programadas",
       "message": "Mensaje",
       "name": "Nombre",
