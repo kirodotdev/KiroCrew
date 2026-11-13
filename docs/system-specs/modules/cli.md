@@ -827,11 +827,16 @@ exfiltration redactors run.
    missing `node` reads `not needed`, naming the installed bundle's own Node, as
    doctor's node row does; elsewhere it is the install-Node advice
 2. Saves `KIROCREW_PROJECT_DIR` to `~/.kiro/crew/project_dir`
-3. Installs agent config to `~/.kiro/agents/kirocrew.json`
-4. Prompts for Slack credentials and the slash-command name only when `--slack`
+3. Asks for the workspace folder and saves it to `~/.kiro/crew/workspace_dir`
+   (skipped with `--agent-only`). A refused typed answer (a relative path, a
+   folder that cannot be created) is asked again at a terminal; off one, the
+   folder shown is kept and named. Enter on a folder shown that cannot be
+   created prints the platform-default line
+4. Installs agent config to `~/.kiro/agents/kirocrew.json`
+5. Prompts for Slack credentials and the slash-command name only when `--slack`
    is passed; the default wizard configures no messaging channels and prints a
    pointer to connect them later
-5. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
+6. Offers to set up custom domain `kirocrew.localhost` (macOS/Linux)
 
 The saved project dir enables running `kirocrew` from any directory.
 
