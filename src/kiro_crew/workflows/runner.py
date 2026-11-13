@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import hashlib
 import inspect
 import json
@@ -1291,7 +1292,10 @@ class WorkflowRunner:
         # 2. Build the run context + restricted exec namespace.
         ctx = _RunContext(
             run_id=run_id,
-            args=args,
+            # The script's own copy: it may edit ``ctx.args`` as scratch state, and
+            # the run record, its ``run_started`` event and a rerun keep the args
+            # the run was launched with.
+            args=copy.deepcopy(args),
             now=now,
             owner_dm=owner_dm,
             stream=stream,
