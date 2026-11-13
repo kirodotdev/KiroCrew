@@ -6,6 +6,7 @@ shells included. A seatbelt, not a parser: other shapes stay with the rows and t
 
 from __future__ import annotations
 
+import bisect
 import re
 
 from ..trust_patterns import ENV_ASSIGNMENT_RE
@@ -277,6 +278,8 @@ def _heredoc_payloads(command: str) -> "list[str]":
     and each command read from a substitution in an unquoted body, which bash runs."""
     commands = _commands.read_commands(command, heredocs=True)
     docs = [d for c in commands for d in c.heredocs if not d.quoted]
+    firsts = sorted((c.steps[0].start, j) for j, c in enumerate(commands) if c.steps)
+    bodies = sorted(d.start for c in commands for d in c.heredocs)
     out: list[str] = []
     for i, cmd in enumerate(commands):
         if cmd.steps and any(d.start <= cmd.steps[0].start < d.end for d in docs):
@@ -284,13 +287,35 @@ def _heredoc_payloads(command: str) -> "list[str]":
         if cmd.heredocs and (
             _runs_shell(cmd)
             or cmd.separator == "|"
-            and i + 1 < len(commands)
-            and _runs_shell(commands[i + 1])
             and _forwards_stdin(cmd)
-            and not _stdin_redirect(commands[i + 1])[0]  # its own stdin replaces the pipe
+            and any(_reads_pipe(r) for r in _pipe_recipients(commands, i, firsts, bodies))
         ):
             out.extend(_stdin_body(cmd))
     return out
+
+
+def _pipe_recipients(
+    commands: "list[_commands.ShellCommand]",
+    i: int,
+    firsts: "list[tuple[int, int]]",
+    bodies: "list[int]",
+) -> "list[_commands.ShellCommand]":
+    """The commands ``commands[i]``'s pipe may feed: the next one read (a substitution in
+    the recipient's words, ``| grep "$(sh)"``, is read first and reads the pipe too) and
+    the one starting first after it on its own line, as a quoted substitution's commands
+    are read before the command holding them (``| sh -s "$(true)"``)."""
+    out = commands[i + 1 : i + 2]
+    end = commands[i].steps[-1].end  # it holds a heredoc: its ``<<`` is a step, its body later
+    k = bisect.bisect_right(firsts, (end, len(commands)))
+    b = bisect.bisect_right(bodies, end)
+    if k < len(firsts) and firsts[k][0] < bodies[b]:
+        out.append(commands[firsts[k][1]])
+    return out
+
+
+def _reads_pipe(cmd: "_commands.ShellCommand") -> bool:
+    """*cmd* is a shell reading its script from a pipe: no stdin of its own replaces it."""
+    return _runs_shell(cmd) and not _stdin_redirect(cmd)[0]
 
 
 def _program(cmd: "_commands.ShellCommand") -> str:

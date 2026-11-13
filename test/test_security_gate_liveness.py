@@ -807,7 +807,11 @@ def _url_payload_command(n: int) -> str:
 #: row only, and ``is_denied`` judges that row on the view while its events keep the
 #: command as submitted. Every other row, an operator's copy, and the rm floor for
 #: ``/`` and ``~`` read the full text. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_997
+#: Raised by 25, from 35,997, to 36,022, for ``rm_floor._pipe_recipients`` and
+#: ``_reads_pipe``: a heredoc piped into a shell is read as its script whatever the
+#: shell's arguments hold, the recipient found by bisecting sorted offsets. No
+#: check was relaxed. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_022
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

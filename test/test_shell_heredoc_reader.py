@@ -91,6 +91,33 @@ class TestReader:
             f"cat <<EOF\n$(cat <<X\nyyyyyyyyyyyy\nX\n)\nEOF\nbash -c '{ROOT}'",
             id="command-after-nested-heredoc",
         ),
+        pytest.param(f"cat <<'EOF' | sh -s \"$(true)\"\n{HOME}\nEOF", id="pipe-shell-quoted-subst"),
+        pytest.param(
+            f"cat <<'EOF' | sh -s \"`true`\"\n{HOME}\nEOF", id="pipe-shell-quoted-backtick"
+        ),
+        pytest.param(
+            f'cat <<\'EOF\' | sh -s "$(true)"\n{RM} -fr "$HOME"\nEOF',
+            id="pipe-shell-subst-home-var",
+        ),
+        pytest.param(
+            f'echo "$(cat <<\'X\' | sh -s "$(true)"\n{HOME}\nX\n)"', id="pipe-shell-subst-in-echo"
+        ),
+        pytest.param(
+            f'x="$(cat <<\'X\' | sh -s "$(true)"\n{HOME}\nX\n)"', id="pipe-shell-subst-assigned"
+        ),
+        pytest.param(
+            f"cat <<EOF\n$(cat <<'X' | sh -s \"$(true)\"\n{HOME}\nX\n)\nEOF",
+            id="pipe-shell-subst-in-unquoted-body",
+        ),
+        pytest.param(
+            f"cat <<'EOF' | sudo sh -s \"$(id -un)\"\n{HOME}\nEOF",
+            id="pipe-sudo-shell-quoted-subst",
+        ),
+        pytest.param(f"cat <<'EOF' |& sh\n{HOME}\nEOF", id="pipe-and-stderr-into-shell"),
+        pytest.param(f"cat <<'EOF' | sh -s x\n{HOME}\nEOF", id="pipe-shell-plain-arg"),
+        pytest.param(
+            f"cat <<'EOF' | grep \"$(sh)\"\n{HOME}\nEOF", id="pipe-shell-in-recipient-subst"
+        ),
         # already refused before here-documents were read: kept so they stay refused
         pytest.param(f"bash -c -e '{ROOT}'", id="option-after-c"),
         pytest.param(f"bash -c -o posix '{ROOT}'", id="option-with-value-after-c"),
@@ -128,6 +155,11 @@ def test_the_floor_refuses(cmd):
         pytest.param(
             f'cat <<\'bash -c "{ROOT}"\'\nhello\nbash -c "{ROOT}"', id="tag-spells-a-wipe"
         ),
+        pytest.param(f"cat <<'EOF' | grep \"$(true)\"\n{HOME}\nEOF", id="pipe-grep-quoted-subst"),
+        pytest.param(
+            f"cat <<'EOF' | python3 \"$(echo x)\"\n{HOME}\nEOF", id="pipe-python-quoted-subst"
+        ),
+        pytest.param(f"cat <<EOF |\n$(sh)\n{HOME}\nEOF\ngrep x", id="line-end-pipe-shell-in-body"),
     ],
 )
 def test_the_floor_allows_body_data(cmd):
