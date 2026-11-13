@@ -1138,6 +1138,35 @@ custom-rules:
       is applied before it lands. FLAG a boolean success returned on a path where
       the write raised or returned falsy.
 
+  - id: no-implicit-state-machines
+    blocking: false
+    file-patterns:
+      - "src/kiro_crew/**/*.py"
+      - "website/src/**/*.ts"
+      - "website/src/**/*.tsx"
+    rule: |
+      When a change adds or changes a value that moves between states (a status
+      string, a phase field, a pair of boolean flags, a progress file), the
+      states and the allowed moves must live in ONE place: an enum plus a
+      transition table, or a single transition function. Not spread across
+      flags and writers.
+
+      A state machine nobody owns reaches states nobody designed: it gets
+      stuck, shows two states at once, reopens finished work, keeps copies
+      that drift, and loses state on restart.
+
+      Real defects this rule exists for, all found on main:
+      - the update popup stuck on "restarting", every exit disabled (#34434);
+      - chat showing Resume and Stop together on one turn (#34409);
+      - a closed work item reopened from a torn record;
+      - channel approvals kept in nine separate stores;
+      - "Resume all" losing paused members across a restart (#33467).
+
+      FLAG only new or changed code in the diff, never code that was already
+      there. Each flag names its fix: one owner for the value, a timeout or an
+      exit for a middle state, or one combined state value in place of two
+      flags.
+
   - id: a-ratchet-may-only-tighten
     blocking: true
     file-patterns:
