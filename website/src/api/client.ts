@@ -32,6 +32,7 @@ import { isDeadlineError, queryClient, invalidateAcrossQueryClients } from './qu
 import { recordError, recordTransportRejection, attachReport, parseErrorCode, requestPath } from '../utils/errorReport'
 import { i18nT } from '../i18n/t'
 import type { ClientTransport } from './client/transport'
+import { gatedRead } from './readGate'
 import { createSystemEndpoints } from './client/system'
 import { createTelemetryEndpoints } from './client/telemetry'
 import { createChatEndpoints } from './client/chat'
@@ -1466,7 +1467,10 @@ function jfetch(input: string, init?: RequestInit, send: (input: string, init?: 
   // keeping the shapes identical means this wrapper is observable only on the
   // rejection path it exists for).
   const generation = callerGeneration
-  const request = init === undefined ? send(input) : send(input, init)
+  const start = () => (init === undefined ? send(input) : send(input, init))
+  // A read takes its turn among the reads that are out, so they cannot hold every
+  // connection the browser has to the gateway; a write goes straight out.
+  const request = isRead ? gatedRead(input, init?.signal, start) : start()
   return request.then((r) => (isRead ? keepIfRefused(input, r, generation) : r)).catch((error: unknown) => {
     if (!isDeliberateAbort(error)) {
       const report = recordTransportRejection({
