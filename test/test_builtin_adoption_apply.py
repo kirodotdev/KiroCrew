@@ -900,6 +900,85 @@ async def test_data_in_two_places_is_never_adopted(world):
     assert (dest / "data" / "store.txt").read_text(encoding="utf-8") == "kept"
 
 
+async def test_a_file_beside_the_manifest_is_never_retired_by_the_swap(world, caplog):
+    """The swap keeps only ``data/``, so state beside ``app.json`` holds the built-in."""
+    await _stage()
+    dest = manager.app_dir(NAME)
+    (dest / "state.db").write_bytes(b"rows")
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.builtin_adoption"):
+        assert await _boot() == {}
+    assert manager.builtin_owns_installed(NAME)
+    assert (dest / "state.db").read_bytes() == b"rows"
+    assert any("state.db beside app.json" in r.getMessage() for r in caplog.records)
+    # Once the built-in keeps it in data/, the next start adopts and carries it.
+    (dest / "state.db").replace(dest / "data" / "state.db")
+    assert await _boot() == {NAME: "applied"}
+    assert (dest / "data" / "state.db").read_bytes() == b"rows"
+
+
+async def test_a_crash_surviving_grant_is_rolled_back_while_state_holds_the_swap(
+    world, monkeypatch
+):
+    await _stage()
+    await _crash_after_the_grant(monkeypatch)
+    (manager.app_dir(NAME) / "state.db").write_bytes(b"rows")
+    assert await _boot() == {}
+    assert NAME not in read_adoption_markers()
+    assert NAME not in agent_section(world.home).get("apps_trusted", [])
+    assert manager.builtin_owns_installed(NAME)
+    assert (manager.app_dir(NAME) / "state.db").read_bytes() == b"rows"
+
+
+async def test_a_directory_beside_the_manifest_holds_the_built_in_too(world):
+    await _stage()
+    dest = manager.app_dir(NAME)
+    (dest / "cache").mkdir()
+    (dest / "cache" / "entry").write_text("kept", encoding="utf-8")
+    assert await _boot() == {}
+    assert (dest / "cache" / "entry").read_text(encoding="utf-8") == "kept"
+
+
+def test_the_gateway_s_own_files_do_not_hold_the_swap(world):
+    """The record, the manifest copy, the secret, ``data/``, the imported grants file
+    and the cron manifest the next registration rewrites."""
+    dest = manager.app_dir(NAME)
+    (dest / manager.APPROVED_GRANTS_FILENAME).write_text("{}", encoding="utf-8")
+    (dest / "app-crons.json").write_text("[]", encoding="utf-8")
+    assert sorted(p.name for p in dest.iterdir()) == [
+        ".app_secret",
+        "app-crons.json",
+        "app.json",
+        manager.APPROVED_GRANTS_FILENAME,
+        "data",
+        "installed.json",
+    ]
+    assert apply_mod._nothing_beside_the_manifest(NAME, world.tree) is True
+
+
+async def test_what_the_pinned_tree_ships_beside_the_manifest_does_not_hold_the_swap(
+    tmp_path, monkeypatch, audit
+):
+    """An app that renders ``agents/`` and ``prompts/`` from its own package beside
+    ``app.json`` adopts when its pinned tree ships both: the swap replaces them, as
+    an update does, and only what nothing ships holds it."""
+    shipped = {"agents/deck.json": "{}", "prompts/deck.md": "pinned"}
+    build_world(tmp_path, monkeypatch, tree_files=shipped)
+    write_builtin_record()
+    _invalidate_config_cache()
+    dest = manager.app_dir(NAME)
+    for rel in ("agents/deck.json", "prompts/deck.md", "prompts/rendered.md"):
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dest / rel).write_text("rendered", encoding="utf-8")
+    (dest / "notes.txt").write_text("mine", encoding="utf-8")
+    await _stage()
+    assert await _boot() == {}
+    assert manager.builtin_owns_installed(NAME)
+    (dest / "notes.txt").replace(dest / "data" / "notes.txt")
+    assert await _boot() == {NAME: "applied"}
+    assert (dest / "prompts" / "deck.md").read_text(encoding="utf-8") == "pinned"
+    assert (dest / "data" / "notes.txt").read_text(encoding="utf-8") == "mine"
+
+
 # --------------------------------------------------------------------------- #
 # Rows 5, 12 and 16: uninstall sticks, shadowing apps, idempotence
 # --------------------------------------------------------------------------- #
