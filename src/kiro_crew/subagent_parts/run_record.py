@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.agent_sdk.drivers.acp_vocab import InFlightToolTracker
+from kiro_crew.agent_sdk.drivers.acp_vocab import InFlightToolTracker, is_unpinned_pick
 
 if TYPE_CHECKING:
     import asyncio
@@ -809,6 +809,13 @@ class SubagentInfo:
         and made no commit, whatever its text reports.
         """
         return self.tool_count == 0 and self.turns == 0
+
+    @property
+    def served_model_unverified(self) -> bool:
+        """Was this run pinned to a model while the backend never reported which one served it?"""
+        return (
+            not is_unpinned_pick(self.requested_model) and not (self.resolved_model or "").strip()
+        )
 
     @property
     def ending(self) -> SubagentEnding:

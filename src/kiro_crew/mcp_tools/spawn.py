@@ -941,6 +941,7 @@ if TYPE_CHECKING:  # names the owners import from elsewhere in kiro_crew, still 
         DEFAULT_SUBAGENT_MAX_TURNS,
         LEAKED_TOOL_CALL_NOTE,
         NO_TOOL_CALLS_NOTE,
+        UNVERIFIED_MODEL_NOTE,
     )
     from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS  # noqa: F401
     from kiro_crew.execution_context import read_session_execution  # noqa: F401

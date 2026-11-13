@@ -22,7 +22,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from kiro_crew import mcp_core
-from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE
+from kiro_crew.constants import LEAKED_TOOL_CALL_NOTE, NO_TOOL_CALLS_NOTE, UNVERIFIED_MODEL_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.mcp_caller import heartbeat_fields
 from kiro_crew.mcp_shared import DEFERRED_STEP_WORKERS, DeferredTool
@@ -704,6 +704,8 @@ class _SubAgentsStep(DeferredTool):
                     record["unverified"] = f"This agent {NO_TOOL_CALLS_NOTE}"
                 if sa_st.get("leaked_tool_call") is True:
                     record["leaked_tool_call"] = f"This agent {LEAKED_TOOL_CALL_NOTE}"
+                if sa_st.get("served_model_unverified") is True:
+                    record["served_model_unverified"] = f"This agent {UNVERIFIED_MODEL_NOTE}"
                 _block_of[aid] = len(sa_results)
                 sa_results.append(json.dumps(record))
         if _unsettled:
