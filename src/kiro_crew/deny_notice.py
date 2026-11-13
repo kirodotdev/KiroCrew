@@ -29,6 +29,7 @@ from kiro_crew.constants import (
     DENY_CAUSE_AUDIT_UNAVAILABLE,
     DENY_CAUSE_BATCH_CASCADE,
     DENY_CAUSE_BATCH_READ_WRITE,
+    DENY_CAUSE_BATCH_WRITE_RUN,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
     DENY_CAUSE_POLICY,
@@ -98,6 +99,13 @@ _DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
         "that batch to return and check their output, then re-issue this call by "
         "itself in your next step, with values copied from that output. Do not "
         "send it again in a batch that also holds a read.",
+    ),
+    DENY_CAUSE_BATCH_WRITE_RUN: (
+        "was declined by the Kiro Crew batch guard, because the file write in this "
+        "same step has not finished, and the backend runs the calls of one step in "
+        "no fixed order",
+        "the command itself was not judged and nothing ran. Run this command again "
+        "in your next step, once the write has returned.",
     ),
     DENY_CAUSE_APPROVAL_TIMEOUT: (
         "was auto-declined because its approval prompt expired unanswered",

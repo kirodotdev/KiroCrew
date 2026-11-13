@@ -1754,6 +1754,24 @@ control that judges such a call regardless). It has been tested only at the
 transport level; do one live run on the target harness before turning it on.
 Pinned by `test_batch_write_guard.py` and `test_batch_guard_tokens.py`.
 
+On KAS only, the same screen refuses a SHELL command whose batch holds a file
+write (`batch_guard.is_file_edit`: `fs_write`, `fs_append`, `str_replace`, by
+kiro-cli or KAS name, or kind `edit`) announced before it and still open
+(`BatchWindow.open_edit_before`: not yet approved, or approved and not yet
+terminal), when the command names that file: a word of the command (split on
+whitespace and shell operators) is the write's `path`, or ends in its basename.
+A write whose frames name no path counts for any command; a command that names
+no open write's file (`git status` next to a write of `notes.md`) runs as before.
+KAS starts a batch's calls in no fixed order, so the command could
+run before the file exists (a 9 KB write lost the race 4 times in 5). Holding
+the command until the write lands does not work: KAS asks one permission at a
+time, so the write's own request only arrives after the command's is answered,
+and a hold waits out its whole cap. The refusal steers cause
+`DENY_CAUSE_BATCH_WRITE_RUN` ("the file write in this same step has not
+finished; run this command again in your next step"), and its SEL row and
+`tool_permission` settlement carry that cause (`batch_guard.cause_for`). It rides
+`hooks.batch_write_guard`. Pinned by `test_batch_guard_write_run.py`.
+
 The rendered tool-input cache is consumed by the first permission event, but
 structured raw params remain keyed by `toolCallId` for the whole turn. A repeated
 permission for the same call therefore retains the fact that a non-shell MCP tool
