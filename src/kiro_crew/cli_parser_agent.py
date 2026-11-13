@@ -997,7 +997,7 @@ def register_agent_parser(sub: _Commands) -> None:
         "validate",
         help=(
             "Check agent specs offline (unknown fields, wrong value shapes, malformed "
-            "tools entries, @server refs nothing defines); exits 1 on a problem"
+            "tools entries); exits 1 on a problem"
         ),
     )
     agent_validate.add_argument(

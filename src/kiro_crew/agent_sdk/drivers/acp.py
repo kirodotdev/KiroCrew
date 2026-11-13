@@ -716,35 +716,6 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
         return spec
 
 
-def configured_server_names(agent: str, spec: dict[str, Any]) -> set[str]:
-    """Every MCP server name a session on *agent*'s *spec* can reach, read offline.
-
-    The spec's own ``mcpServers``, the servers Crew adds to a custom agent
-    (:func:`_with_default_crew_servers`), every server Crew owns (a managed server
-    whose gate is closed here is left out of a spec on purpose and returns when the
-    gate opens, so its ref is not a fault) and the enabled ``mcp.json`` servers the
-    spec opts in to. For ``kirocrew agent validate``, which has no session to ask.
-    Blocking (reads ``mcp.json``) and never raises.
-    """
-    from kiro_crew.agent import crew_owned_mcp_servers
-    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
-    from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
-
-    names: set[str] = set()
-    own = spec.get("mcpServers")
-    if isinstance(own, dict):
-        names.update(str(name) for name in own)
-    try:
-        added = _with_default_crew_servers(agent, spec).get("mcpServers")
-        if isinstance(added, dict):
-            names.update(str(name) for name in added)
-        names.update(crew_owned_mcp_servers())
-        names.update(mcp_json_server_names(spec, ACP_BACKEND_KIRO))
-    except Exception:
-        logger.debug("configured servers for %r could not be read", agent, exc_info=True)
-    return names
-
-
 def kiro_cli_resolves() -> bool:
     """Does kiro-cli resolve, through the resolver ``_resolve_spawn_plan`` calls?
 

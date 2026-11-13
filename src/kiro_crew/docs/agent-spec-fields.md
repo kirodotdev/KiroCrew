@@ -12,9 +12,10 @@ below because there is nothing Crew-side to describe.
 To check a spec before a session reads it, run `kirocrew agent validate [path]`.
 It needs no gateway or kiro-cli and prints one line per problem
 (`<file>: <field>: <message>`), exiting 1 when there is any: an unlisted top-level
-field, a field of the wrong shape, a malformed `tools` or `allowedTools` entry, and
-an `@server` ref that no `mcpServers` entry, Crew-owned server or opted-in
-`mcp.json` server defines. `path` is a spec file or a directory of specs; with no
+field, a field of the wrong shape, and a malformed `tools` or `allowedTools` entry.
+Whether an `@server` ref names a server a session can reach depends on the backend,
+so `kirocrew doctor` checks that per backend instead. `path` is a spec file or a
+directory of specs; with no
 path it checks the user-level agents directory. `--allow-unknown-fields` skips the
 unlisted-field check for a kiro-cli newer than this release's table, and
 `--print-schema` prints the JSON Schema built from that same table

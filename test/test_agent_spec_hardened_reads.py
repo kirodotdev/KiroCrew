@@ -1436,6 +1436,8 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # spec against its template; a link at the name is screened before it is followed.
     # Each repair names its own operation.
     "kiro_crew/agent_materialization/service_agents.py": [("forward:operation", "unknown")],
+    # `kirocrew agent validate` reads each spec file it checks through the same gate.
+    "kiro_crew/cli_agent_validate.py": [("agent_validate", "cli")],
     "kiro_crew/crewmate_prune_migration.py": [("crewmate_prune", "dashboard")],
     # Settings → Secrets lists the MCP servers whose env references each item; a
     # spec that fails to read marks the scan incomplete instead of reading empty.

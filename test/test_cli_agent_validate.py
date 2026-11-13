@@ -56,20 +56,21 @@ def test_each_problem_is_one_line_naming_file_and_field(
     out, err = _fails(capsys, str(path))
     lines = err.splitlines()
     assert f"{path}: colour: unknown field" in lines
-    assert f"{path}: tools: names @ghost, which no server this spec can reach defines" in lines
     assert f"{path}: tools[1]: '' is empty" in lines
     assert f"{path}: allowedTools: must be a list of strings" in lines
     assert f"{path}: model: must be a string" in lines
-    assert len(lines) == 5
-    assert out == "Checked 1 agent spec(s): 5 problem(s).\n"
+    assert len(lines) == 4
+    assert out == "Checked 1 agent spec(s): 4 problem(s).\n"
 
 
-def test_servers_crew_adds_to_a_custom_agent_are_not_reported(
+def test_a_grant_every_tool_spec_and_a_whole_server_ref_are_clean(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    path = _write(tmp_path, "uses-core", {"tools": ["@kirocrew-core"]})
+    path = _write(tmp_path, "everything", {"tools": "*", "allowedTools": ["@git/"]})
     _run(str(path))
-    assert capsys.readouterr().err == ""
+    captured = capsys.readouterr()
+    assert captured.out == "Checked 1 agent spec(s): 0 problem(s).\n"
+    assert captured.err == ""
 
 
 def test_a_directory_checks_json_and_markdown_specs(
@@ -78,17 +79,49 @@ def test_a_directory_checks_json_and_markdown_specs(
     _write(tmp_path, "good", {})
     _write(tmp_path, "bad-json", {"colour": "red"})
     (tmp_path / "bad-md.md").write_text(
-        "---\nname: bad-md\nincludeMcpJson: false\ntools: '@ghost'\n---\nPrompt body\n",
+        "---\nname: bad-md\nincludeMcpJson: false\ntools: ['']\n---\nPrompt body\n",
         encoding="utf-8",
     )
     out, err = _fails(capsys, str(tmp_path))
     assert f"{tmp_path / 'bad-json.json'}: colour: unknown field" in err
-    assert (
-        f"{tmp_path / 'bad-md.md'}: tools: names @ghost, which no server this spec can reach defines"
-        in err
-    )
+    assert f"{tmp_path / 'bad-md.md'}: tools[0]: '' is empty" in err
     assert "good.json" not in err
     assert out == "Checked 3 agent spec(s): 2 problem(s).\n"
+
+
+def test_a_directory_skips_plain_markdown_and_macos_sidecars(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A README or a prompt fragment with no frontmatter fence, and a ``._`` sidecar
+    holding the AppleDouble magic, are not specs; the agent readers skip them too."""
+    _write(tmp_path, "good", {})
+    (tmp_path / "README.md").write_text("# Our agents\n\nNotes for the team.\n", encoding="utf-8")
+    (tmp_path / "._good.json").write_bytes(b"\x00\x05\x16\x07" + b"\x00" * 60)
+    _run(str(tmp_path))
+    captured = capsys.readouterr()
+    assert captured.out == "Checked 1 agent spec(s): 0 problem(s).\n"
+    assert captured.err == ""
+
+
+def test_a_fenced_markdown_spec_that_does_not_parse_is_still_reported(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "cut.md").write_text("---\nname: cut\n", encoding="utf-8")
+    out, err = _fails(capsys, str(tmp_path))
+    assert f"{tmp_path / 'cut.md'}: cannot be parsed" in err
+    assert out == "Checked 1 agent spec(s): 1 problem(s).\n"
+
+
+def test_a_spec_nested_too_deeply_is_one_line_and_the_rest_are_checked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deep = '{"name": "deep", "resources": ' + "[" * 20000 + "]" * 20000 + "}"
+    (tmp_path / "a-deep.json").write_text(deep, encoding="utf-8")
+    _write(tmp_path, "b-bad", {"colour": "red"})
+    out, err = _fails(capsys, str(tmp_path))
+    assert f"{tmp_path / 'a-deep.json'}: cannot be parsed: it is nested too deeply" in err
+    assert f"{tmp_path / 'b-bad.json'}: colour: unknown field" in err
+    assert out == "Checked 2 agent spec(s): 2 problem(s).\n"
 
 
 def test_no_path_checks_the_user_level_agents_directory(
@@ -152,3 +185,45 @@ def test_print_schema_prints_the_published_schema(capsys: pytest.CaptureFixture[
     published = json.loads(capsys.readouterr().out)
     assert set(published["properties"]) == {f.name for f in FIELDS}
     assert published["additionalProperties"] is False
+
+
+def test_a_network_share_outside_the_trusted_roots_is_refused_before_any_probe(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """On Windows, probing a UNC path opens an SMB connection to the host it names."""
+    from kiro_crew import cli_agent_validate as mod
+
+    monkeypatch.setattr(mod, "_WINDOWS", True)
+    monkeypatch.setattr(mod, "unc_probe_allowed", lambda raw: False)
+    probed: list[str] = []
+    real_exists = Path.exists
+
+    def exists(self: Path, *args: object, **kwargs: object) -> bool:
+        probed.append(str(self))
+        return real_exists(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "exists", exists)
+    out, err = _fails(capsys, "//attacker/share/spec.json")
+    assert "names a network share outside the trusted roots" in err
+    assert not [p for p in probed if "attacker" in p]
+    assert out == ""
+
+
+def test_a_file_is_read_through_the_agent_spec_readers_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each file goes through the agent readers' own gate, and its refusal is one line."""
+    from kiro_crew import agent_discovery
+
+    path = _write(tmp_path, "linked", {})
+    seen: list[tuple[Path, str, str]] = []
+
+    def refuse(target: Path, *, operation: str, source: str) -> None:
+        seen.append((target, operation, source))
+        raise agent_discovery.SensitiveAgentSpecPathError(f"{target} resolves to a sensitive path")
+
+    monkeypatch.setattr(agent_discovery, "read_agent_spec_strict", refuse)
+    out, err = _fails(capsys, str(path))
+    assert err.splitlines() == [f"{path}: is refused: resolves to a sensitive path"]
+    assert seen == [(path, "agent_validate", "cli")]
+    assert out == "Checked 1 agent spec(s): 1 problem(s).\n"

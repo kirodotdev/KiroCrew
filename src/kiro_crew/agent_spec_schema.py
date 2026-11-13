@@ -7,22 +7,23 @@ fields kiro-cli documents (``docs/reference/kiro-cli/custom-agents``) plus the
 few Kiro Crew itself writes; it is not a claim that kiro-cli accepts nothing
 else, which is why :func:`check_spec` can be told to let unknown fields pass.
 
-Pure functions over a parsed spec dict: no file, config or network access. The
-caller supplies the server names that count as configured, so the same checks
-run in a test and on a host.
+Pure functions over a parsed spec dict: no file, config or network access.
+Whether an ``@server`` ref names a server a session can reach is not checked here:
+that depends on the backend and on what Kiro Crew mounts, and ``kirocrew doctor``
+judges it per backend with the resolver a session uses.
 """
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES, parse_tools_refs
 from kiro_crew.mcp_cleanup import mcp_entry_is_registry_governed
 
-#: Value shapes a field can take. ``any`` states nothing about the value.
-KINDS = ("string", "bool", "object", "string_list", "resources", "hooks", "any")
+#: Value shapes a field can take. ``any`` states nothing about the value; ``tools``
+#: is a list of strings or the single string ``"*"`` (every tool).
+KINDS = ("string", "bool", "object", "string_list", "tools", "resources", "hooks", "any")
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ FIELDS: tuple[SpecField, ...] = (
     SpecField("prompt", "string", "System prompt, inline or a file:// URI."),
     SpecField("mcpServers", "object", "MCP servers the agent defines, keyed by server name."),
     SpecField(
-        "tools", "string_list", "Tools the agent can use; @server and @server/tool name MCP."
+        "tools", "tools", 'Tools the agent can use, or "*"; @server and @server/tool name MCP.'
     ),
     SpecField("excludedTools", "string_list", "Tools removed even when tools allows them."),
     SpecField("toolAliases", "object", "Tool name remapping."),
@@ -56,7 +57,14 @@ FIELDS: tuple[SpecField, ...] = (
     SpecField("model", "string", "Model id."),
     SpecField("keyboardShortcut", "string", "Quick-switch shortcut, such as ctrl+a."),
     SpecField("welcomeMessage", "string", "Message shown when the agent is selected."),
-    SpecField("managedToolPolicy", "any", "Policy written by an administrator."),
+    SpecField("managedToolPolicy", "object", "Policy written by an administrator."),
+    SpecField(
+        "includeCrewContext", "bool", "Kiro Crew: false keeps Crew context out of the session."
+    ),
+    SpecField(
+        "systemPrompt", "string", "Another spelling of prompt; prompt wins when both are set."
+    ),
+    SpecField("slashCommand", "any", "Slash command settings, read by kiro-cli."),
 )
 
 _BY_NAME = {field.name: field for field in FIELDS}
@@ -67,6 +75,7 @@ _SCHEMA_FRAGMENTS: dict[str, dict[str, Any]] = {
     "bool": {"type": "boolean"},
     "object": {"type": "object"},
     "string_list": {"type": "array", "items": {"type": "string"}},
+    "tools": {"oneOf": [{"const": "*"}, {"type": "array", "items": {"type": "string"}}]},
     "resources": {"type": "array", "items": {"type": ["string", "object"]}},
     "hooks": {"type": ["object", "array"]},
     "any": {},
@@ -99,6 +108,12 @@ def _shape_problem(kind: str, value: Any) -> str:
             if not isinstance(item, str):
                 return f"entry {index} must be a string"
         return ""
+    if kind == "tools":
+        if value == "*":
+            return ""
+        if not isinstance(value, list):
+            return 'must be "*" or a list of strings'
+        return _shape_problem("string_list", value)
     if kind == "resources":
         if not isinstance(value, list):
             return "must be a list"
@@ -112,17 +127,17 @@ def _shape_problem(kind: str, value: Any) -> str:
 
 
 def _tool_entry_problem(entry: str) -> str:
-    """Why one ``tools`` / ``allowedTools`` entry is malformed, or ``""``."""
+    """Why one ``tools`` / ``allowedTools`` entry is malformed, or ``""``.
+
+    ``@server``, ``@server/`` and ``@server/*`` all name the whole server, as the
+    session's own grant matching reads them; only a ref with no server is wrong.
+    """
     if not entry.strip():
         return "is empty"
     if any(ch.isspace() for ch in entry):
         return "contains whitespace"
-    if entry.startswith("@"):
-        server, slash, tool = entry[1:].partition("/")
-        if not server:
-            return "names no server after @"
-        if slash and not tool:
-            return "names no tool after the /"
+    if entry.startswith("@") and not entry[1:].partition("/")[0]:
+        return "names no server after @"
     return ""
 
 
@@ -137,7 +152,13 @@ def _server_problems(servers: Mapping[str, Any]) -> list[tuple[str, str]]:
         launchable = (isinstance(command, str) and command.strip()) or (
             isinstance(url, str) and url.strip()
         )
-        if not launchable and not mcp_entry_is_registry_governed(entry):
+        # Only a literal true mutes: a string such as "false" is refused by the spec
+        # schemas the harnesses apply, though Kiro Crew's own reading (fail-closed)
+        # treats it as a mute, so it is reported, not taken as a mute-only entry.
+        disabled = entry.get("disabled")
+        if "disabled" in entry and not isinstance(disabled, bool):
+            problems.append((f"{where}.disabled", "must be true or false"))
+        if not launchable and not (mcp_entry_is_registry_governed(entry) or disabled is True):
             problems.append((where, "names neither a command to run nor a url to reach"))
         if "command" in entry and not isinstance(command, str):
             problems.append((f"{where}.command", "must be a string"))
@@ -153,19 +174,11 @@ def _server_problems(servers: Mapping[str, Any]) -> list[tuple[str, str]]:
     return problems
 
 
-def check_spec(
-    spec: Any,
-    *,
-    configured_servers: Collection[str] | None = None,
-    allow_unknown: bool = False,
-) -> list[tuple[str, str]]:
+def check_spec(spec: Any, *, allow_unknown: bool = False) -> list[tuple[str, str]]:
     """Every problem in a parsed spec, as ``(field path, message)`` pairs in field order.
 
-    *configured_servers* is the set of MCP server names the spec can reach (its
-    own ``mcpServers``, the ``mcp.json`` servers it opts in to, and the servers
-    Kiro Crew adds); ``None`` skips the server-reference check. *allow_unknown*
-    stops an unlisted top-level field from being reported, for a kiro-cli newer
-    than this table. Never raises.
+    *allow_unknown* stops an unlisted top-level field from being reported, for a
+    kiro-cli newer than this table. Never raises.
     """
     if not isinstance(spec, dict):
         return [("", "the spec must be an object")]
@@ -190,12 +203,4 @@ def check_spec(
             reason = _tool_entry_problem(entry) if isinstance(entry, str) else ""
             if reason:
                 problems.append((f"{field_name}[{index}]", f"{entry!r} {reason}"))
-        if configured_servers is None:
-            continue
-        _all, refs = parse_tools_refs(entries)
-        for server in refs:
-            if server not in configured_servers and server not in RESERVED_TOOL_NAMESPACES:
-                problems.append(
-                    (field_name, f"names @{server}, which no server this spec can reach defines")
-                )
     return problems
