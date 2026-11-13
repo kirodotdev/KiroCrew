@@ -1497,6 +1497,13 @@
       "hint": "Copy text to the clipboard as soon as you select it in the terminal with the mouse. The selection toolbar still opens."
     },
     {
+      "id": "display.ctrl-c-and-ctrl-v-copy-and-paste",
+      "label": "Ctrl+C and Ctrl+V copy and paste",
+      "tab": "display",
+      "route": "/settings/display/terminal?highlight=display.ctrl-c-and-ctrl-v-copy-and-paste",
+      "hint": "Ctrl+C copies the selected text; with nothing selected, it still stops the running command. Ctrl+V pastes instead of reaching the shell."
+    },
+    {
       "id": "display.cursor-style",
       "label": "Cursor style",
       "tab": "display",

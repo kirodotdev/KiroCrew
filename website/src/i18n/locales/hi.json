@@ -19449,6 +19449,8 @@
         "terminal_cursor_style_underline": "अंडरलाइन",
         "terminal_copy_on_select": "चुनते ही कॉपी करो",
         "terminal_copy_on_select_desc": "टर्मिनल में माउस से टेक्स्ट चुनते ही उसे क्लिपबोर्ड पर कॉपी करता है। चयन टूलबार फिर भी खुलता है।",
+        "terminal_ctrl_copy_paste": "Ctrl+C और Ctrl+V से कॉपी और पेस्ट",
+        "terminal_ctrl_copy_paste_desc": "Ctrl+C चुना हुआ टेक्स्ट कॉपी करता है; कुछ भी न चुना हो तो यह पहले की तरह चल रही कमांड रोकता है। Ctrl+V शेल तक पहुँचने के बजाय पेस्ट करता है।",
         "terminal_shell": "डिफ़ॉल्ट शेल",
         "terminal_shell_hint": "बिल्ट-इन टर्मिनल द्वारा शुरू किया जाने वाला शेल।",
         "terminal_shell_desc": "एक पूर्ण पथ या PATH में मौजूद कमांड। खाली होने पर सिस्टम डिफ़ॉल्ट ($SHELL) उपयोग होता है।",

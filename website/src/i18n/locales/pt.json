@@ -19949,6 +19949,8 @@
         "terminal_cursor_style_underline": "Sublinhado",
         "terminal_copy_on_select": "Copiar ao selecionar",
         "terminal_copy_on_select_desc": "Copia o texto para a área de transferência assim que você o seleciona no Terminal com o mouse. A barra de seleção continua abrindo.",
+        "terminal_ctrl_copy_paste": "Copiar e colar com Ctrl+C e Ctrl+V",
+        "terminal_ctrl_copy_paste_desc": "Ctrl+C copia o texto selecionado; sem nada selecionado, continua interrompendo o comando em execução. Ctrl+V cola em vez de ser enviado ao seu shell.",
         "terminal_shell": "Shell padrão",
         "terminal_shell_hint": "Shell que o terminal integrado inicia.",
         "terminal_shell_desc": "Um caminho absoluto ou um comando no PATH. Deixe vazio para usar o padrão do sistema ($SHELL).",

@@ -1,18 +1,23 @@
 /** Pure rules for the terminal's find and fullscreen affordances (the layout
  *  rules, the per-platform find/fullscreen chord match and the keycaps the
- *  menu shows), kept out of the components so they unit-test without
- *  rendering. */
+ *  menu shows) and the chord-letter match its key handler shares, kept out of
+ *  the components so they unit-test without rendering. */
 
-/** Whether a keydown is the F of the find/fullscreen chord. Matches the letter
- *  TYPED (`key`), so on a remapped Latin layout such as Dvorak, Ctrl+U on
- *  QWERTY's F position still reaches the shell as kill-line, and the key that
- *  types `f` opens find. Falls back to the physical position (`code === 'KeyF'`)
- *  only when the typed key is not a Latin letter, so non-Latin layouts (and
- *  macOS Option glyphs) keep a working chord. */
-export function isFindChordKey(key: string, code: string): boolean {
+/** Whether a keydown is the lowercase Latin `letter` of a terminal chord.
+ *  Matches the letter TYPED (`key`), so on a remapped Latin layout such as
+ *  Dvorak, Ctrl+U on QWERTY's F position still reaches the shell as kill-line,
+ *  and the key that types `f` opens find. Falls back to the physical position
+ *  (`code === 'Key<LETTER>'`) only when the typed key is not a Latin letter, so
+ *  non-Latin layouts (and macOS Option glyphs) keep a working chord. */
+export function isChordLetter(key: string, code: string, letter: string): boolean {
   const k = key.toLowerCase()
-  if (k.length === 1 && k >= 'a' && k <= 'z') return k === 'f'
-  return code === 'KeyF'
+  if (k.length === 1 && k >= 'a' && k <= 'z') return k === letter
+  return code === `Key${letter.toUpperCase()}`
+}
+
+/** Whether a keydown is the F of the find/fullscreen chord. */
+export function isFindChordKey(key: string, code: string): boolean {
+  return isChordLetter(key, code, 'f')
 }
 
 /** What a keydown in a focused terminal (or its find bar) asks for, if
