@@ -305,9 +305,10 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 # Switching that server off WHOLE (``disabled``) is a stronger rule and carries no
 # backend condition, because the form has no per-call spelling for any harness to
 # refuse by (``acp.session_mcp.session_mcp_disabled_servers``). It binds on BOTH paths
-# that compose a session's array -- ``AcpClient``'s, which opencode and claude take,
-# and ``AcpRuntime``'s create and resume paths, which codex and KAS take -- so the
-# operator's switch-off reaches a member session whichever one runs.
+# that compose a session's array -- ``AcpClient``'s, which claude, opencode, mimocode,
+# goose, deepseek and pi take, and ``AcpRuntime``'s create and resume paths, which
+# codex and KAS take -- so the operator's switch-off reaches a member session
+# whichever one runs.
 #
 # goose is a member, and it holds the same two things opencode does:
 #
@@ -365,8 +366,8 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 #     the harness's own command registry is READ BACK before the first prompt, so a
 #     session that cannot establish it is REFUSED rather than run.
 #
-# Like deepseek it has no mirror, so a narrowed dashboard tool withholds the whole
-# mount and the thread runs as plain chat. And a same-named server in pi's own
+# pi has no mirror, so a narrowed dashboard tool withholds the whole mount and the
+# thread runs as plain chat. And a same-named server in pi's own
 # ``mcp.json`` outranks the registration, so the gate extension refuses that name's
 # tools rather than let another command answer for session control.
 # deepseek is a member, and it holds the same two things goose does:
@@ -408,9 +409,9 @@ ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT = frozenset({ACP_BACKEND_CLAUDE, ACP_
 #
 # WHERE the mount happens differs by backend, and opencode's is the client's.
 # ``AcpClient._append_member_dispatch_server`` serves the backends whose array the
-# CLIENT composes -- claude's, opencode's, goose's, deepseek's and pi's -- while codex and
-# KAS are served by
-# ``AcpRuntime``: their arrays come from ``AcpRuntime._mirrored_session_mcp`` and
+# CLIENT composes -- claude's, opencode's, mimocode's, goose's, deepseek's and pi's --
+# while codex and KAS are served by
+# ``AcpRuntime``: codex's array comes from ``AcpRuntime._mirrored_session_mcp`` and
 # ``create_session`` / ``load_session`` append the entry themselves, on a non-empty
 # ``member_session_key``. That key is where membership is read
 # (``providers/acp_runtime_start.py`` ``_member_session_key``), which is why adding a backend here
