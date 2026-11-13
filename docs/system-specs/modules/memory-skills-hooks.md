@@ -19,6 +19,38 @@ routing authority. Admission resolves it once before awaiting preparation.
 Display names, provider templates and project paths cannot select a store.
 New member IDs exclude both live member IDs and retained store owner IDs, so
 deleting and recreating a name cannot reinterpret an earlier execution's identity.
+The one way a kept identity gets a live owner again is explicit: a create that
+names an ownerless kept V2 store (`adopt_memory_store` on `POST /api/agents`, the
+New Bot dialog's Memory choice) binds the new crewmate to that store's recorded
+`owner_member_id` (`member_memory_adopt`). Nothing is copied and
+the database identity is unchanged; only the record's display `owner_member`
+follows the new name. It is refused unless no crewmate holds that id or binds the
+store, no legacy crewmate derives that id as its slug, the database identity is
+exactly `(owner_member_id, store)`, and no kept chat-thread binding under the slug
+is keyed by a former name only. A name match never adopts. Adopting deliberately
+reuses that identity, so everything keyed by the member id or its slug (the kept
+chat thread, member rules, goals, activity) follows the new crewmate too; this is the
+one exception to the rule above, and only an explicit owner action takes it. The
+delete removed the goal check-in jobs, so the create turns off any check-in switch
+the goal record still has on (`turn_off_kept_check_ins`) instead of re-creating them.
+The create's locked write re-checks that no crewmate on disk binds the store,
+holds the id, or (with no member id) derives it as its slug. The thread key is
+the deleted crewmate's too, so before anything is published the create closes a
+DM slot still live on it (`retire_stale_member_slot`), after clearing every
+approval grant on that thread's session, open DM or not (a linked workflow slot
+outlives a closed DM). It is refused (409 `member_thread_busy`) when the grants
+cannot be cleared or the close fails: the next open pins the thread to the new
+name and seeds its approval from the new record, never the deleted one's grants.
+A refusal from the adopt's own checks of the store (owned, missing, unreadable,
+or no longer matching its record) is 409 `adopt_memory_unavailable`, the one
+code the New bot dialog answers by dropping the pick and re-reading the list; a
+failure after those checks (the workspace, the database writes, the locked
+config write) keeps `member_memory_unavailable` and the pick. Only the gateway holds that slot, which is why the CLI
+create has no adopt option. Every delete that keeps a V2 store
+(`DELETE /api/agents/{name}`, `kirocrew agent delete`, the installed-agent sync
+prune) stamps the name the Bot showed on the record (`former_owner`), so the
+offer names it as the user knew it rather than by its config key; an adopt
+clears it.
 Manual context resolves captured member IDs strictly; only explicitly named member
 inputs resolve configured aliases, never as a fallback for a missing captured ID.
 Cross-member `target_member` dispatch follows existing tool, delegation and app
@@ -2850,8 +2882,9 @@ self-contained file with no WAL to pair.
   it, independently of strict binding resolution.
   Unreferenced retained files remain untouched. Routine maintenance excludes
   stores without their active canonical member binding. Restore requires the
-  configured member/store identity; no retirement marker or archive reattachment
-  framework exists.
+  configured member/store identity; no retirement marker exists. A kept store is
+  reattached only by creating a crewmate on it (see the adopt rule in the
+  overview), after which it is an ordinary owned store again.
 - **Fail soft per store**: one unreadable store must not prevent another eligible
   store's backup, so the loop counts failures instead of propagating them.
   Inside the agent sandbox `memory_stores` is read-only, so a member backup run there
@@ -3664,6 +3697,7 @@ the unconditional gate is the stronger check layered in front of it.
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/memory/stores` | Enumerate every store for the picker: `name`, `is_default`, `lineage` (`v1`/`crew`), `exists`, `semantic_count`, `episodic_count`, `lessons_count`, `facets_supported`, `backup_count`, `newest_backup`. Takes no `?store=` — it answers for all of them. One exception: a crew (V2) store whose `owner_member_id` no living member holds — a deleted member's retained store — is omitted, because no content route can read it (every request fails the member lookup) and listing it would give the picker a row whose every click is a 503. The record itself stays in `memory_stores` (its member id is reserved), so `kirocrew memory backups`, which walks every declared store, still lists it. `kirocrew memory backup` does not copy it (it backs up active stores only), and `kirocrew doctor` does not report it (its memory-binding check walks only living members) |
+| GET | `/api/memory/ownerless-stores` | The kept V2 stores the picker omits that a new crewmate can start from: `name`, `former_owner` (the name the deleted Bot showed, which the delete stamps on the record as `former_owner`; else its `owner_member`; display only). A store whose directory is gone, or cannot be resolved (one redirected through a link), is left out. Owner-gated; reads config only, never a store's contents |
 | GET | `/api/memory/retired?store=&limit=&offset=` | Episodes a semantic write superseded, newest first: `id`, `text`, `superseded_by`, `retired_times`, `ts`. 400 `invalid_pagination` |
 | POST | `/api/memory/retired/restore` | Body `{"id", "store"}` — clears the tombstone in place. 400 `invalid_episode_id`, 404 `unknown_retired_episode` for an id that is not a restorable retirement in that store |
 | GET | `/api/memory/backups?store=` | That store's hot copies: `name`, `size_bytes`, `taken_at` |

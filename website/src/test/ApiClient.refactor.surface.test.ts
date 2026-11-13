@@ -49,7 +49,7 @@ const API_KEY_ORDER = [
   'cloudLaunchCancel', 'cloudLaunchSignin', 'cloudLaunchSigninRestart', 'cloudStop',
   'cloudStart', 'cloudDestroy', 'memoryPreferences', 'saveMemoryPreferences',
   'memoryProjects', 'saveMemoryProjects', 'memoryHistory', 'saveMemoryHistory',
-  'memorySettings', 'saveMemorySettings', 'memoryStores', 'memoryRetired',
+  'memorySettings', 'saveMemorySettings', 'memoryStores', 'memoryOwnerlessStores', 'memoryRetired',
   'memoryRestoreRetired', 'memoryBackups', 'memoryBackupNow', 'memoryRestoreBackup',
   'cancelMemberMemoryRestore', 'memoryCarve', 'memoryRecall', 'memoryRecords',
   'memoryEditPreview', 'memoryEditPreviewPage', 'memoryRecordsRefresh', 'memoryQuerySelectionRefresh',

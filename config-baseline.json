@@ -12735,6 +12735,20 @@
       "defaultValue": ""
     },
     {
+      "path": "memory_stores.*.former_owner",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Former Owner",
+      "help": "The name the deleted bot that left this kept member store showed; display only.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "memory_stores.*.memory_version",
       "kind": "core",
       "type": "integer",

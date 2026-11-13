@@ -438,6 +438,9 @@ def _handle_agent(args: argparse.Namespace) -> None:
             entry = agents[args.name]
             bound = entry.get("kiro_agent") if isinstance(entry, dict) else ""
             bound_template = bound if isinstance(bound, str) else ""
+            from kiro_crew.member_memory_adopt import stamp_former_owner
+
+            stamp_former_owner(doc, entry, args.name)
             del agents[args.name]
             return doc
 

@@ -1147,6 +1147,7 @@ def build_config(
                 description=store.get("description"),
                 embedding_provider=store.get("embedding_provider"),
                 owner_member=store.get("owner_member"),
+                former_owner=store.get("former_owner"),
                 memory_version=store.get("memory_version"),
             )
     if not memory_stores:

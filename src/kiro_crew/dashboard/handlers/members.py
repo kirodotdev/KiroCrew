@@ -108,6 +108,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_workspace_project,
         _seed_member_approval,
         api_member_thread,
+        retire_stale_member_slot,
     )
     from kiro_crew.dashboard.handlers.members_thread_turns import (  # noqa: F401
         _FRESH_START_POLL_SECS,

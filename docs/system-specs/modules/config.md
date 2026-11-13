@@ -651,7 +651,11 @@ V2 member must retain its ID and store. No manifest, retirement registry, privat
 payload copy, OS admission gate, or memory provisioning feature flag is involved.
 
 `POST /api/agents` and `kirocrew agent create` allocate new stores automatically.
-A supplied named store is rejected. They also allocate the member's own workspace
+A supplied named store is rejected; the one exception is `POST /api/agents` naming
+a kept store no member owns in `adopt_memory_store`, which binds the new member to
+that store's recorded identity (owned by [memory-skills-hooks](memory-skills-hooks.md)).
+`MemoryStoreConfig.former_owner` is display-only: the name a deleted member showed,
+stamped by the delete and read at request time by the kept-store offer. They also allocate the member's own workspace
 (`member_workspace.provision_member_workspace`: `member-<slug>` bound in `agents`,
 `workspace-member-<slug>` under the data home declared in `workspaces`) unless a
 workspace is named; `persist_member_config(create=True, new_workspace=…)`
