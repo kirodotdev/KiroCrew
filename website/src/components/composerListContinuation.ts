@@ -266,7 +266,8 @@ function nestedShifts(value: string, lineEnd: number, floor: number, column: num
     pos = end
     const line = value.slice(start, end)
     if (line.trim() === '') continue
-    const indent = /^[ \t]*/.exec(line)![0].length
+    let indent = 0
+    while (line[indent] === ' ' || line[indent] === '\t') indent += 1
     if (indent <= floor) break
     if (indent < column) continue
     const move = indentShift(value, start + indent, columns)
