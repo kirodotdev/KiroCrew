@@ -484,7 +484,7 @@ command that installs it.
 | `opencode models openrouter` answers "Provider not found" | No OpenRouter key is stored yet. Run `opencode auth login` and choose OpenRouter. |
 | A turn on Ollama stalls or loops without using tools | The chosen Ollama model likely lacks tool/function-calling support. Pick a tool-capable model from [ollama.com/library](https://ollama.com/library). |
 | New chats still hit the cloud after switching to a local harness | The switch applies on the next session - start a new chat. Re-read `agent.acp_backend` with `kirocrew config get agent.acp_backend`; an explicit value that is unrecognized or unselectable falls back to the Kiro CLI (kiro-cli) floor, not KAS. |
-| The selected harness is not installed | **Settings → Agent Harness** reports a missing harness binary and prints the command that installs it (`npm i -g opencode-ai@1`, Pi's install command, or goose's `download_cli.sh`). If the binary lives somewhere unusual, set `OPENCODE_BIN` / `PI_ACP_BIN` / `GOOSE_BIN`. |
+| The selected harness is not installed | **Settings → Agent Harness** reports a missing harness binary and prints the command that installs it (`npm i -g opencode-ai@1`, Pi's install command, or goose's `download_cli.sh`). OpenCode's own installer folder (`~/.opencode/bin`) is searched too, so **Check again** finds an install made while the gateway runs. If the binary lives somewhere unusual, set `OPENCODE_BIN` / `PI_ACP_BIN` / `GOOSE_BIN`. |
 | A Crew Member DM does not use the model | Member threads follow `agent.member_acp_backend`, not `agent.acp_backend`. See section 1 and section 6. |
 
 For the authoritative backend reference, see the `agent.acp_backend` section of

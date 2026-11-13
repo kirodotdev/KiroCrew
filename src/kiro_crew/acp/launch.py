@@ -51,7 +51,12 @@ from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
-from kiro_crew.env import append_mcp_path_dirs, describe_search_path, mise_data_dir
+from kiro_crew.env import (
+    _validated_bin_dir,
+    append_mcp_path_dirs,
+    describe_search_path,
+    mise_data_dir,
+)
 
 # Re-exported: the launcher was these helpers' first home, and their callers and
 # tests still import them from here (``acp.kas_app_identity`` reads the port gate).
@@ -513,9 +518,11 @@ def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
     """Find *backend*'s own executable and the PATH searched for it.
 
     Three rungs, the plain-binary ladder: explicit override, then mise, then the
-    augmented PATH. No ``node_modules`` rung and no node resolution, because every
-    harness this serves is a binary that speaks ACP itself rather than a Node entry
-    script -- which is exactly what membership in ``ACP_BACKEND_LAUNCH`` asserts.
+    augmented PATH with the record's ``install_dirs`` behind it, so an install made
+    while the gateway runs resolves on the next probe. No ``node_modules`` rung and no
+    node resolution, because every harness this serves is a binary that speaks ACP
+    itself rather than a Node entry script -- which is exactly what membership in
+    ``ACP_BACKEND_LAUNCH`` asserts.
 
     The binary name and the override variable come from that record, so a harness is
     resolved by its row rather than by a function of its own.
@@ -530,7 +537,14 @@ def _resolve_self_served_bin(backend: str) -> tuple[str | None, str]:
     from kiro_crew.acp.client import _mise_which, augmented_path
 
     launch = launch_for(backend)
-    search_path = augmented_path(os.environ.get("PATH", ""))
+    home = os.path.expanduser("~")
+    # Absolute-only, so a home that does not expand adds no cwd-relative entry.
+    install_dirs = [
+        _validated_bin_dir(os.path.normpath(d.format(home=home))) for d in launch.install_dirs
+    ]
+    search_path = os.pathsep.join(
+        p for p in (augmented_path(os.environ.get("PATH", "")), *install_dirs) if p
+    )
 
     override = os.environ.get(launch.bin_env_var)
     if override and platform_compat.is_executable_file(override):
