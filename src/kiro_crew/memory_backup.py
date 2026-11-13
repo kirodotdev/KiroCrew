@@ -41,7 +41,9 @@ from itertools import islice
 from pathlib import Path
 from uuid import uuid4
 
-from kiro_crew import member_memory_backup, platform_compat
+from kiro_crew import member_memory_backup
+from kiro_crew import memory_record_metadata as record_meta
+from kiro_crew import platform_compat
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.memory_stores import (
@@ -558,6 +560,10 @@ def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path
                         raise ValueError("Backup fails its integrity check; refusing to restore")
                     _require_v1_restore_database(src, store)
                     src.backup(dst)
+                    # The backup's reconcile marker is not trusted: the first start on
+                    # the restored file re-checks every row.
+                    record_meta.invalidate_marker(dst)
+                    dst.commit()
                     # A backup taken before rollback-journal publishing carries a WAL
                     # header; left that way, the probe below would leave
                     # `restore-*.db-wal`/`-shm` behind once activation renames the stage.

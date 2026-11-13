@@ -545,7 +545,9 @@ class TestThePreExistingSiloKeepsItsLineage:
         for attempt in (1, 2):
             silo = stores(silo_path)
             assert silo._lineage == memory_schema.LINEAGE_V1, attempt
-            assert _objects(silo.db, "table") == set(_V1_TABLES), attempt
+            # A populated store also carries the startup reconcile's marker tables.
+            marker = {"memory_reconcile_state", "memory_reconcile_dirty"}
+            assert _objects(silo.db, "table") == set(_V1_TABLES) | marker, attempt
             assert _objects(silo.db, "view") == set(), attempt
             assert "memory_items" not in _objects(silo.db, "table"), attempt
             assert _versions(silo.db) == set(_V1_SCHEMA_VERSIONS), attempt
