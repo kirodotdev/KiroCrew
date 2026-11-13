@@ -269,6 +269,18 @@ child's environment, so a name alone would not outlive the kill it is meant to
 explain. Giving that path a durable token is harness-parity work, not part of this
 naming pass.
 
+### Failed scopes are collected
+
+Every wrap passes `--collect` (`CollectMode=inactive-or-failed`). `systemd-run --scope`
+registers its own pid and waits for the user manager to attach it before it execs the
+command. If that pid is gone before the manager attaches it (a caller timed out and
+killed the waiting wrapper), the scope fails with `Result=resources` ("No PIDs left to
+attach"); a kernel OOM kill fails it too. Without `--collect` the manager keeps each
+failed unit loaded until someone runs `reset-failed`, so a slow manager whose callers
+keep timing out accumulates failed units on every call. With it, the unit record is
+freed once the scope ends. No limit changes. `test/test_scope_collect_policy.py` pins
+the flag and has an opt-in check against a real user manager.
+
 ### The aggregate slice ceiling (`memory.high` on `kirocrew-agents.slice`)
 
 `MemoryMax` is a **per-scope** cap, and scopes are created per spawn — so several
