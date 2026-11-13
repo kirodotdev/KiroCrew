@@ -175,6 +175,26 @@ class TestUntrackedCollisionReplacements:
 
         assert _untracked_collisions(repo, target, dict(os.environ)) == ["d"]
 
+    def test_an_untracked_symlink_to_a_directory_inside_it_is_still_named(self, tmp_path):
+        # Both symlink tests are listed in test/requires-real-symlinks.txt: git tracks
+        # a real link as a blob, and a junction is not one.
+        repo, target = self._repo(tmp_path, self._make_dir, self._dir_to_file)
+        (tmp_path / "elsewhere").mkdir()
+        (tmp_path / "d" / "link").symlink_to(tmp_path / "elsewhere", target_is_directory=True)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == ["d"]
+
+    def test_a_tracked_symlink_to_a_directory_the_target_deletes_is_not_named(self, tmp_path):
+        def make_dir_with_link(root):
+            self._make_dir(root)
+            (root / "elsewhere").mkdir()
+            (root / "elsewhere" / "kept.txt").write_text("tracked")
+            (root / "d" / "link").symlink_to(root / "elsewhere", target_is_directory=True)
+
+        repo, target = self._repo(tmp_path, make_dir_with_link, self._dir_to_file)
+
+        assert _untracked_collisions(repo, target, dict(os.environ)) == []
+
     @staticmethod
     def _case_rename(root):
         (root / "foo.md").rename(root / "Foo.md")
