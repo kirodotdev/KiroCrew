@@ -27,6 +27,7 @@ export const BRIDGE_TRANSPORT_LABEL_KEY: Record<string, string> = {
   telegram: 'pages.servicesTab.telegram',
   webex: 'pages.servicesTab.webex',
   wecom: 'pages.servicesTab.wecom',
+  feishu: 'pages.servicesTab.feishu',
 }
 const BRIDGE_TRANSPORTS = Object.keys(BRIDGE_TRANSPORT_LABEL_KEY)
 
