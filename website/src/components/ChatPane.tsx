@@ -652,7 +652,7 @@ export default function ChatPane({
   const {
     uploadError, setUploadError, uploadHint, setUploadHint, sendHeld, uploadCount, uploadMutation,
     cancelUpload, uploadFiles, dragOver, dropTargetProps,
-  } = useChatPaneUploads({ slotKey, dispatch, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError })
+  } = useChatPaneUploads({ slotKey, slotKeyRef, mountedRef, setInput, dashCfg, dashCfgError })
 
 
   const { messageQuote, paneHiddenCommands, slashError, setSlashError, doSend, doSteer, onDirectQuestionSend } = useChatPaneSend({

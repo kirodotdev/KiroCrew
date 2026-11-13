@@ -182,7 +182,7 @@ export function useChatPaneSend({ slotKey, crewmate, dispatch, draft, composerRe
         const fallback = res.stage === 'agent' ? 'pages.chatPage.agent_command_not_run' : 'pages.chatPage.side_command_not_run'
         const message = res.error || i18nT(fallback)
         // Off screen (the pane was rebound or is gone): the refusal goes to
-        // the sending slot's transcript, as reportUploadFailure does.
+        // the sending slot's transcript.
         if (live) setSlashError({ slot: sentSlot, message })
         else dispatch(appendSlotMessage({ slot: sentSlot, message: { role: 'error', content: message, cls: '' } }))
         return
