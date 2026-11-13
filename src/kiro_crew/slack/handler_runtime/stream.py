@@ -45,6 +45,7 @@ if TYPE_CHECKING:
         redact,
         redact_credentials,
         redact_exfiltration_urls,
+        seal_stream,
         split_message,
         strip_control_comments,
         strip_thinking_tags,
@@ -1033,8 +1034,17 @@ class _AnswerStream:
             self.stream_buffer, _ = strip_thinking_tags(self.stream_buffer, strip_whitespace=False)
             await self.append(self.stream_buffer)
 
-    async def seal(self, clean_text: str, *, redacted: bool) -> None:
+    async def seal(
+        self, clean_text: str, *, redacted: bool, footer_blocks: list[dict] | None = None
+    ) -> bool:
         """Seal the stream with the final text, then overwrite it when redaction ran.
+
+        ``footer_blocks`` asks for the timing footer to ride in the seal itself
+        (``chat.stopStream``'s ``blocks``), so it lands inside the answer message.
+        Returns True only when it did; on False the caller posts the footer as
+        its own message, so it is never lost and never doubled. It is not folded
+        when a ``chat.update`` follows the seal (a demoted stream or a redaction
+        overwrite), because that update rewrites the message the footer is in.
 
         Disclose real answer text Slack refused for good, while the
         stream is still open (an append after the seal is refused).
@@ -1066,12 +1076,16 @@ class _AnswerStream:
             self.debt = False
         if self.debt:
             await self.settle_debt(self.stream_ts)
+        _redact_overwrite = self.had_redaction or redacted
         # The seal is decoration: the answer is already on screen, so a
         # failed stop_stream does not un-deliver it.
-        try:
-            await self.slack.stop_stream(self.channel, self.stream_ts, clean_text or _NO_RESPONSE)
-        except Exception:
-            logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+        _folded = await seal_stream(
+            self.slack,
+            self.channel,
+            self.stream_ts,
+            clean_text or _NO_RESPONSE,
+            None if _demoted or _redact_overwrite else footer_blocks,
+        )
         if _demoted:
             # The answer's last text is on no message yet, so this update is what
             # delivers it: a failed send raises and the turn books a failure.
@@ -1084,10 +1098,10 @@ class _AnswerStream:
                 raise_on_primary_failure=True,
             )
             self.delivered = True
-            return
+            return False
         # Redaction overwrite is decoration on an already-delivered stream:
         # it corrects the visible copy, it does not deliver the answer.
-        if self.had_redaction or redacted:
+        if _redact_overwrite:
             fallback_text = _convert_tables(clean_text) if clean_text else _NO_RESPONSE
             await _safe_final_update(
                 self.slack,
@@ -1096,3 +1110,4 @@ class _AnswerStream:
                 fallback_text or _NO_RESPONSE,
                 self.reply_ts,
             )
+        return _folded

@@ -350,6 +350,28 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             turn.release_permit()
             return
 
+        def _build_footer(options_token: str | None) -> tuple[list[dict], str]:
+            """The timing footer with its OPTIONS / Link-to-Dashboard controls."""
+            footer_blocks, footer_text = build_timing_footer(time.monotonic() - _t0, client)
+            # Re-read the DASHBOARD link for the footer button only: a mid-turn
+            # click on the turn-start button may have linked the thread to a slot
+            # since turn start, and a second Link button would be redundant. (Not
+            # the session map: the turn's own self-link lands there mid-turn too.)
+            _ds_now = cast("DashboardState | None", _dashboard_state)
+            _footer_link_key = linked_session_key
+            if not _footer_link_key and thread_ts and _ds_now is not None:
+                _slot_now = _ds_now.get_linked_slot(reply_ts)
+                _footer_link_key = _slot_now.key if _slot_now is not None else None
+            footer_blocks = _append_footer_actions(
+                footer_blocks,
+                options,
+                thread_ts,
+                _footer_link_key,
+                _dashboard_state,
+                options_token,
+            )
+            return footer_blocks, footer_text
+
         # ── Answer delivery, then exactly one verdict ──────────────────────────
         # The turn invariant. Read it before touching accounting:
         #
@@ -375,6 +397,9 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         # push the consecutive-failure breaker toward a session reset.
         _answer_text_to_send = bool(clean_text) and clean_text != _NO_RESPONSE
         _answer_reached = not _answer_text_to_send
+        # True once the timing footer rode in the stream's seal (the answer
+        # message itself); the footer site below then posts no second one.
+        _footer_inline = False
 
         try:
             if answer.use_slack_stream and answer.stream_ts:
@@ -384,8 +409,13 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
                 # failure. Applied only when there was answer text, since a
                 # reasoning-only stream lands no append. Read after the seal,
                 # which sends the last held run of text.
-                await answer.seal(
-                    clean_text, redacted=bool(_render_redacted or exfil_warnings or cred_warnings)
+                #
+                # An OPTIONS turn keeps its footer a message of its own: the next
+                # turn strikes the buttons with a ``chat.update`` on that ts.
+                _footer_inline = await answer.seal(
+                    clean_text,
+                    redacted=bool(_render_redacted or exfil_warnings or cred_warnings),
+                    footer_blocks=None if options else _build_footer(None)[0],
                 )
                 if _answer_text_to_send:
                     _answer_reached = answer.delivered
@@ -562,8 +592,6 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             )
 
         # ── Timing footer ──
-        elapsed = time.monotonic() - _t0
-        footer_blocks, footer_text = build_timing_footer(elapsed, client)
         # Gated on `options` alone. A top-level Slack message has no ``thread_ts``, so
         # gating on it left every root-thread control untokened -- unprotected on
         # exactly the path a restart strands. ``reply_ts`` is the thread this control
@@ -588,23 +616,7 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
             if options and _turn_row_ts
             else None
         )
-        # Re-read the DASHBOARD link for the footer button only: a mid-turn
-        # click on the turn-start button may have linked the thread to a slot
-        # since turn start, and a second Link button would be redundant. (Not
-        # the session map: the turn's own self-link lands there mid-turn too.)
-        _ds_now = cast("DashboardState | None", _dashboard_state)
-        _footer_link_key = linked_session_key
-        if not _footer_link_key and thread_ts and _ds_now is not None:
-            _slot_now = _ds_now.get_linked_slot(reply_ts)
-            _footer_link_key = _slot_now.key if _slot_now is not None else None
-        footer_blocks = _append_footer_actions(
-            footer_blocks,
-            options,
-            thread_ts,
-            _footer_link_key,
-            _dashboard_state,
-            _options_token,
-        )
+        footer_blocks, footer_text = _build_footer(_options_token)
         # The footer is decoration EXCEPT when it carries an [OPTIONS] control:
         # the trailer was stripped from the answer, so the choices ride ONLY here,
         # which makes the footer (or its fallback) answer-carrying. For such a turn
@@ -617,7 +629,9 @@ async def _deliver_answer(turn: _SlackTurn) -> None:
         _footer_ts: str | None = None
         _options_delivered = False
         try:
-            _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
+            # Already inside the answer message when the seal carried it.
+            if not _footer_inline:
+                _footer_ts = await slack.post_blocks(channel, footer_blocks, footer_text, reply_ts)
             _options_delivered = True
         except Exception:
             logger.warning("Slack footer post_blocks failed for %s", session_key, exc_info=True)

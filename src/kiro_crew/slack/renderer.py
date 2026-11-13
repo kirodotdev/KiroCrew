@@ -88,13 +88,14 @@ from kiro_crew.slack.handler import (
     _NO_RESPONSE,
     _STREAM_CONTINUED,
     _THINKING,
-    DELIVERY_DEBT_NOTICE,
     StatusReactionController,
     _append_footer_actions,
     build_timing_footer,
+    seal_stream,
 )
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.renderer_session_status import ApprovalSessionStatus
+from kiro_crew.slack.renderer_stream_debt import StreamDebtNotice
 from kiro_crew.slack.reply_pieces import (  # noqa: F401 -- re-exported
     _NARRATION_MAX_CHARS,
     _SPLIT_HEADROOM,
@@ -507,7 +508,7 @@ class SlackApprovalDecider:
         return dec.session_key
 
 
-class SlackRenderer(ApprovalSessionStatus, Renderer):
+class SlackRenderer(ApprovalSessionStatus, StreamDebtNotice, Renderer):
     """Renders abstract output events onto a Slack thread.
 
     Holds (and exposes) the underlying ``SlackClientOps`` so the inline
@@ -822,43 +823,6 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
         else:
             self._stream_debt = True
         return ok
-
-    async def _settle_stream_debt(self, ts: str) -> None:
-        """Disclose answer text Slack refused for good, on the message that lost it.
-
-        Called at every point a stream is abandoned, so the notice goes out while
-        an append can still reach the message the hole is in. Clearing the debt is
-        part of settling it: a second notice on a later message would report a gap
-        the reader has already been shown.
-
-        Sent directly rather than through ``_append_stream``: the notice is not
-        answer text, so it must not enter the delivery ledger, which the rescue
-        replays to the next turn as text the reader already established.
-
-        ``append_stream`` reports a refusal by RETURNING False -- the client turns
-        every exception into that return -- so the return value is the whole
-        signal, and leaving it unread hides the very loss this notice exists to
-        disclose. The two refusals that takes fall inside one Slack rate-limit or
-        outage window, so they are correlated rather than independent. On refusal
-        post a separate message, which does not depend on the stream that just
-        refused and, sent directly, stays out of the ledger too.
-        """
-        if not self._stream_debt:
-            return
-        self._stream_debt = False
-        notice_ok = False
-        try:
-            notice_ok = await self.slack.append_stream(self.channel, ts, DELIVERY_DEBT_NOTICE)
-        except Exception:
-            logger.warning("Slack: appending the delivery-debt notice failed")
-        if not notice_ok:
-            try:
-                await self.slack.post_message(self.channel, DELIVERY_DEBT_NOTICE, self.thread_ts)
-            except Exception:
-                logger.warning(
-                    "Slack: the delivery-debt notice reached neither the "
-                    "stream nor a separate message"
-                )
 
     async def _shown(self, raw: str) -> str:
         """Model text as a reader may see it outside the sealed reply.
@@ -1781,6 +1745,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
                 # security property; the native path logs counts, this path stays
                 # silent to avoid adding a logger to the renderer.
                 clean_text = _display_safe(clean_text)
+        footer_inline = False  # the stream's seal carried the timing footer
         if self._stream_ts is not None:
             if self._use_slack_stream and clean_text:
                 # The answer-carrying delivery. The reply was held whole until
@@ -1828,11 +1793,16 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
                 # delivery ledger), and chat.stopStream only closes the live
                 # stream. A failed seal leaves the shown answer exactly where it
                 # is, so it stays best-effort — failing the turn here would record
-                # a failure for a turn the reader fully received.
-                try:
-                    await self.slack.stop_stream(self.channel, self._stream_ts, clean_text or None)
-                except Exception:
-                    logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+                # a failure for a turn the reader fully received. With no [OPTIONS]
+                # the timing footer rides in the seal (see ``seal_stream``).
+                turn_elapsed = (self._now() - self._t0) if self._t0 else 0.0
+                footer_inline = await seal_stream(
+                    self.slack,
+                    self.channel,
+                    self._stream_ts,
+                    clean_text or None,
+                    None if options else build_timing_footer(turn_elapsed, None)[0],
+                )
             else:
                 # No-stream fallback: _stream_ts is a regular message ts (the
                 # _THINKING placeholder), not a stream handle — finalize it via
@@ -1895,7 +1865,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
             self._status_cleared = True
         except Exception:
             logger.warning("Slack set_thread_status failed — skipping status clear", exc_info=True)
-        # Timing footer (always posted at turn end), mirroring native.
+        # Timing footer, mirroring native (unless the stream's seal carried it).
         turn_elapsed = (self._now() - self._t0) if self._t0 else 0.0
         footer_blocks, footer_text = build_timing_footer(turn_elapsed, None)
         # Make the turn durable and stamp the control BEFORE it goes out. This is
@@ -1944,9 +1914,10 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
         # native handler's deferred-OPTIONS verdict -- one policy, both sites.
         footer_ts: str | None = None
         try:
-            footer_ts = await self.slack.post_blocks(
-                self.channel, footer_blocks, footer_text, self.thread_ts
-            )
+            if not footer_inline:
+                footer_ts = await self.slack.post_blocks(
+                    self.channel, footer_blocks, footer_text, self.thread_ts
+                )
         except Exception:
             logger.warning("Slack footer post_blocks failed — skipping footer", exc_info=True)
             if options:
