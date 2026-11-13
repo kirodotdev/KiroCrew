@@ -7,9 +7,10 @@ export interface DisclosedPermissions {
   workerAutoApprove?: boolean
   chatSlots?: boolean
   reachableByUserSessions?: string[]
+  desktopCapabilities?: string[]
 }
 
-type TrustGrants = Pick<TrustAppTarget, 'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'reachableByUserSessions'>
+type TrustGrants = Pick<TrustAppTarget, 'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'reachableByUserSessions' | 'desktopCapabilities'>
 
 /**
  * The declared grants a trust prompt shows, read off an app's manifest
@@ -24,5 +25,6 @@ export function trustGrants(permissions: DisclosedPermissions | undefined): Trus
     workerAutoApprove: permissions?.workerAutoApprove === true,
     chatSlots: permissions?.chatSlots === true,
     reachableByUserSessions: permissions?.reachableByUserSessions,
+    desktopCapabilities: permissions?.desktopCapabilities,
   }
 }

@@ -22,9 +22,10 @@ registry is complete once it is imported.
 ``register_permission_grants(families, entries, *, explicit_only=False)``
     The same, for a grant a manifest declares in ``permissions`` rather than in
     ``contributes`` (``permissions.workerAutoApprove``,
-    ``permissions.reachableByUserSessions``): ``entries`` maps the
-    manifest's ``permissions`` (parsed or a raw dict). Its families are staged and
-    approved exactly like a point's, and :func:`point_grant_families` lists them too.
+    ``permissions.reachableByUserSessions``, ``permissions.desktopCapabilities``):
+    ``entries`` maps the manifest's ``permissions`` (parsed or a raw dict). Its
+    families are staged and approved exactly like a point's, and
+    :func:`point_grant_families` lists them too.
     ``explicit_only`` families are approved only by entries a stored set names: a
     stored set that lacks one approves nothing in it, where it would otherwise
     approve what the manifest declares (:func:`explicit_only_grant_families`).
@@ -168,6 +169,15 @@ from kiro_crew.apps.user_session_reach import (  # noqa: E402
 
 register_permission_grants(
     USER_SESSION_REACH_GRANT_FAMILIES, user_session_reach_grant_entries, explicit_only=True
+)
+
+from kiro_crew.apps.desktop_capabilities import (  # noqa: E402
+    DESKTOP_CAPABILITY_GRANT_FAMILIES,
+    desktop_capability_grant_entries,
+)
+
+register_permission_grants(
+    DESKTOP_CAPABILITY_GRANT_FAMILIES, desktop_capability_grant_entries, explicit_only=True
 )
 
 

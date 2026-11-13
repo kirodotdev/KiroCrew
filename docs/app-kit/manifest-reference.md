@@ -1835,6 +1835,7 @@ packages at all.
     "chatSlots": false,
     "workerAutoApprove": false,
     "reachableByUserSessions": [],
+    "desktopCapabilities": [],
     "exposeToApps": []
   }
 }
@@ -1858,6 +1859,7 @@ packages at all.
 | `permissions.chatSlots` | boolean | May open and drive dashboard chat slots keyed `<app>-<id>` through `ctx.chat_slots`: turns through the host's own chat runner under this app's identity, the slot's queue, stop, archive, transcript and the AutoNudge loops on those slots, never another slot. Shown at the trust prompt. `ctx.chat_slots` is absent unless the value is literally `true` (App Kit seam level 7, [api-reference](api-reference.md#chat-slots-ctxchat_slots)) |
 | `permissions.workerAutoApprove` | boolean | May hold a bounded, audited auto-approve grant on the app's OWN worker slots through `ctx.auto_approve`, so an unattended session's tool calls run without a prompt. Absent unless the value is literally `true`; shown at the trust prompt; an update that adds it waits for the owner's approval; never above the approval-mode policy; ended when the app is disabled or removed ([api-reference](api-reference.md#worker-auto-approve-ctxauto_approve)) |
 | `permissions.reachableByUserSessions` | string[] | What the owner's own chats may do, through the session tools, to the sessions this app owns: `"read"` (`session_read_message`, `session_summary`) and `"send"` (`session_send`). Empty by default, which keeps every app session refused as `app_scoped_target`. Other entries are ignored. Shown at the trust prompt; an update that adds a verb waits for the owner's approval on the app's page. Only a persistent chat the owner opened is admitted, never an incognito, scheduled, agent-created, channel-linked or Bot session, and stop, close and revive stay refused ([session control](../system-specs/modules/session-control.md#app-sessions-the-owners-chats-may-reach)) |
+| `permissions.desktopCapabilities` | string[] | What the app's [desktop windows](#desktop--windows-and-global-shortcuts-in-the-desktop-app) may ask the desktop app for: `"screenCapture"` (be granted a screen through `getDisplayMedia`), `"localFiles"` (reveal a local file in the system file manager, open a local image in the system viewer) and `"gatewayChoice"` (list the operator's gateways, remote ones over SSH or SSM included, and load the app's windows from the one picked). Empty by default, which refuses all three. Other entries are ignored. Shown at the trust prompt and on the app's page; an update that adds one waits for the owner's approval there. The desktop app serves a capability only to a window of an enabled app that declares it and whose owner approved it |
 | `permissions.exposeToApps` | string[] | App names (or `"*"`) allowed to request cross-app visibility into this app's slots/subagents |
 
 #### `permissions.spawn` — Background Agents
@@ -2356,6 +2358,19 @@ Level 2 of the bridge (App Kit seam level 7) adds:
   press (its release does not count again), never from a background window.
 
 The trust prompt lists the window shapes you declare before the user says yes.
+
+Level 2 also adds what your [`permissions.desktopCapabilities`](#permissions--declared-capabilities)
+buy, each refused unless you declare it and the owner approved it; `capabilities` lists
+the ones this window was opened with:
+
+| Capability | In the window |
+|------------|---------------|
+| `screenCapture` | `navigator.mediaDevices.getDisplayMedia(...)` is granted a screen, the way the desktop app's own snip surfaces are. Without it the call is refused |
+| `localFiles` | `revealFile(path)` shows an existing regular file in the system file manager; `openImage(path)` resolves `true` once the system viewer opened an existing regular `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp` or `.svg` file (a link is judged by what it points at) |
+| `gatewayChoice` | `listGateways()` resolves `{ state, gateways, chosen, showing }`, each gateway `{ id, name, state, connected, appEnabled }` (no host names, ports or credentials); `chooseGateway(id)` loads your windows from that gateway (`"self"` is this computer's) and resolves `{ ok, chosen, showing }`. A gateway is used only while it is connected and your app is enabled there with every window this computer opens declared and `gatewayChoice` approved, so your windows can always come back (`appEnabled` reads `false` otherwise); otherwise your windows stay on this computer's gateway, and a gateway that does not answer leaves them where they are. The choice is kept per computer |
+
+When the owner withdraws a capability, every window opened with it is closed (an
+`openOnEnable` one reopens without it).
 
 ## Open Command
 

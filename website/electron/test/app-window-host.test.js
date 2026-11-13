@@ -96,6 +96,8 @@ function fakeElectron() {
     ipcMain: {
       on(channel, fn) { ipc[channel] = fn; },
       removeListener(channel) { delete ipc[channel]; },
+      handle(channel, fn) { ipc[channel] = fn; },
+      removeHandler(channel) { delete ipc[channel]; },
     },
     globalShortcut: {
       held: new Set(),
@@ -177,7 +179,7 @@ test("an openOnEnable overlay opens hidden, sandboxed, on the host's own route",
   assert.strictEqual(prefs.sandbox, true);
   assert.strictEqual(prefs.nodeIntegration, false);
   assert.strictEqual(prefs.webviewTag, false);
-  assert.deepStrictEqual(prefs.additionalArguments, ["--kc-app-window=pets/pet/overlay/2"]);
+  assert.deepStrictEqual(prefs.additionalArguments, ["--kc-app-window=pets/pet/overlay/2/"]);
   assert.deepStrictEqual(win.ignore[0], [true, { forward: true }]);
   assert.deepStrictEqual(win.focusable, [false]);
   assert.strictEqual(win.isVisible(), false, "not revealed before the page says ready");
@@ -560,4 +562,439 @@ test("sanitizeHitRegions keeps finite boxes only and caps the count", () => {
   assert.strictEqual(sanitizeHitRegions([{ x: "1", y: 2, width: 3, height: 4 }]), null);
   assert.strictEqual(sanitizeHitRegions(Array.from({ length: 17 }, () => ({ x: 0, y: 0, width: 1, height: 1 }))), null);
   assert.strictEqual(sanitizeHitRegions("all"), null);
+});
+
+// ── Capabilities: declared AND approved, or refused ──────────────────────────
+
+const PANEL_APP = { windows: [{ id: "panel", entry: "desktop/panel.mjs", kind: "panel", openOnEnable: true }] };
+
+/** A row declaring *declared* capabilities, of which the owner approved *approved*. */
+function capRow(name, declared, approved, desktop = PANEL_APP) {
+  return appRow(name, desktop, {
+    manifest: { name, desktop, permissions: { desktopCapabilities: declared } },
+    ...(approved ? { desktopCapabilitiesGrant: { approved, staged: declared.filter((c) => !approved.includes(c)) } } : {}),
+  });
+}
+
+function fakeLocalFiles(files) {
+  const calls = [];
+  return {
+    calls,
+    deps: {
+      fs: {
+        statSync: (p) => {
+          if (!(p in files)) throw new Error("ENOENT");
+          return { isFile: () => files[p] === "file" };
+        },
+        realpathSync: (p) => {
+          if (!(p in files)) throw new Error("ENOENT");
+          return p;
+        },
+      },
+      path: require("path"),
+      shell: { showItemInFolder: (p) => calls.push(["reveal", p]) },
+      openPathHardened: async (_shell, p) => {
+        calls.push(["open", p]);
+        return "";
+      },
+    },
+  };
+}
+
+test("NEGATIVE: a capability the app does not declare, or the owner did not approve, is refused", async (t) => {
+  const captured = [];
+  const files = fakeLocalFiles({ "/tmp/a.png": "file" });
+  const { host, fake } = await started(
+    [
+      appRow("plain", PANEL_APP),
+      capRow("staged", ["localFiles", "screenCapture", "gatewayChoice"], []),
+      // A gateway that predates the grant publishes no approval at all.
+      capRow("older", ["localFiles", "screenCapture", "gatewayChoice"], null),
+    ],
+    { registerCaptureSurface: (wc) => captured.push(wc.id), localFiles: files.deps },
+  );
+  t.after(() => host.stop());
+  assert.strictEqual(fake.created.length, 3);
+  for (const win of fake.created) {
+    assert.match(win.opts.webPreferences.additionalArguments[0], /\/2\/$/, "opened with no capability");
+    fake.ipc[CHANNELS.revealFile](fromWindow(win), "/tmp/a.png");
+    assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(win), "/tmp/a.png"), false);
+    assert.strictEqual(await fake.ipc[CHANNELS.listGateways](fromWindow(win)), null);
+    assert.deepStrictEqual(await fake.ipc[CHANNELS.chooseGateway](fromWindow(win), "crew"), { ok: false });
+  }
+  assert.deepStrictEqual(captured, [], "no window may be granted a screen");
+  assert.deepStrictEqual(files.calls, []);
+});
+
+test("localFiles: reveal and open-image run the shared rules, for that app's windows only", async (t) => {
+  const files = fakeLocalFiles({ "/tmp/a.png": "file", "/tmp/notes.txt": "file", "/tmp/dir": "dir" });
+  const { host, fake } = await started(
+    [capRow("files", ["localFiles"], ["localFiles"])],
+    { localFiles: files.deps },
+  );
+  t.after(() => host.stop());
+  const [win] = fake.created;
+  assert.match(win.opts.webPreferences.additionalArguments[0], /\/2\/localFiles$/);
+  fake.ipc[CHANNELS.revealFile](fromWindow(win), "/tmp/notes.txt");
+  fake.ipc[CHANNELS.revealFile](fromWindow(win), "/tmp/dir");
+  fake.ipc[CHANNELS.revealFile](fromWindow(win), 42);
+  assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(win), "/tmp/a.png"), true);
+  assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(win), "/tmp/notes.txt"), false, "not an image");
+  assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(win), "/tmp/gone.png"), false);
+  assert.deepStrictEqual(files.calls, [["reveal", "/tmp/notes.txt"], ["open", "/tmp/a.png"]]);
+  // A sender the host did not create gets nothing, whatever it asks.
+  const stranger = { sender: { id: 999, getURL: () => win.webContents.url, mainFrame: {} } };
+  fake.ipc[CHANNELS.revealFile](stranger, "/tmp/notes.txt");
+  assert.strictEqual(await fake.ipc[CHANNELS.openImage](stranger, "/tmp/a.png"), false);
+  assert.strictEqual(files.calls.length, 2);
+});
+
+test("screenCapture: only a window of an app holding it is registered as a capture surface", async (t) => {
+  const captured = [];
+  const { host, fake } = await started(
+    [capRow("snips", ["screenCapture"], ["screenCapture"]), capRow("other", ["localFiles"], ["localFiles"])],
+    { registerCaptureSurface: (wc, url) => captured.push([wc.id, url]) },
+  );
+  t.after(() => host.stop());
+  const [snips] = fake.created;
+  assert.deepStrictEqual(captured, [[snips.webContents.id, BACKEND]]);
+});
+
+test("withdrawing an approved capability closes the window opened with it", async (t) => {
+  const { host, fake, state } = await started([capRow("files", ["localFiles"], ["localFiles"])]);
+  t.after(() => host.stop());
+  const [first] = fake.created;
+  state.rows = [capRow("files", ["localFiles"], [])];
+  await host.reconcileOnce();
+  assert.strictEqual(first.isDestroyed(), true);
+  const [, second] = fake.created;
+  assert.match(second.opts.webPreferences.additionalArguments[0], /\/2\/$/, "reopened without it");
+});
+
+/** A router over the host gateway, its instance registry and one remote crew. */
+function crewNetwork(state, crew) {
+  return async (url, init = {}) => {
+    state.fetches.push({ url, init });
+    const u = new URL(url);
+    const reply = (status, body) => ({ status, json: async () => body });
+    if (u.origin === BACKEND && u.pathname === "/api/apps") return reply(200, state.rows);
+    if (u.origin === BACKEND && u.pathname === "/api/instances") {
+      if (crew.list instanceof Error) throw crew.list;
+      return reply(200, { active: true, instances: crew.instances });
+    }
+    if (u.origin === BACKEND && u.pathname === "/api/instances/crew/connect" && init.method === "POST") {
+      return reply(200, { state: "connected", local_port: 7778, token: crew.token });
+    }
+    if (u.origin === "http://localhost:7778" && u.pathname === "/api/apps") {
+      if (crew.remote instanceof Error) throw crew.remote;
+      const desktop = crew.desktop || PANEL_APP;
+      // The app there declares and approves `crew.caps` (gatewayChoice unless a test says otherwise).
+      const caps = crew.caps || ["gatewayChoice"];
+      const declaredThere = crew.declared || caps;
+      return reply(200, [{
+        name: "pets",
+        enabled: crew.enabled,
+        manifest: { name: "pets", desktop, permissions: { desktopCapabilities: declaredThere } },
+        desktopCapabilitiesGrant: { approved: caps, staged: declaredThere.filter((c) => !caps.includes(c)) },
+      }]);
+    }
+    return reply(404, null);
+  };
+}
+
+const CONNECTED = { id: "crew", name: "Build box", ssh_host: "secret.example", local_port: 7778, status: { state: "connected" } };
+
+test("gatewayChoice: a chosen crew where the app is on gets the app's windows, and back again", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true };
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const state = ctx.state;
+  const fake = ctx.fake;
+  const host = createAppWindowHost({
+    electron: fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(state, crew),
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const [local] = fake.created;
+  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+
+  const listed = await fake.ipc[CHANNELS.listGateways](fromWindow(local));
+  assert.deepStrictEqual(listed, {
+    state: "ready",
+    gateways: [{ id: "crew", name: "Build box", state: "connected", connected: true, appEnabled: true }],
+    chosen: "self",
+    showing: "self",
+  });
+  assert.ok(!JSON.stringify(listed).includes("secret.example"), "no host name reaches the page");
+
+  const moved = await fake.ipc[CHANNELS.chooseGateway](fromWindow(local), "crew");
+  assert.deepStrictEqual(moved, { ok: true, chosen: "crew", showing: "crew" });
+  assert.strictEqual(local.isDestroyed(), true);
+  const remote = fake.created[1];
+  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
+  // The remote window speaks for itself only while it holds the remote's own document.
+  remote.webContents.url = remote.loaded[0];
+  fake.ipc[CHANNELS.ready](fromWindow(remote));
+  assert.strictEqual(remote.isVisible(), true);
+
+  const back = await fake.ipc[CHANNELS.chooseGateway](fromWindow(remote), "self");
+  assert.deepStrictEqual(back, { ok: true, chosen: "self", showing: "self" });
+  assert.deepStrictEqual(fake.created[2].loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+});
+
+test("gatewayChoice: a crew's window is served only what the app holds on BOTH gateways", async (t) => {
+  const ALL = ["localFiles", "screenCapture", "gatewayChoice"];
+  // The crew's copy declares all three but its owner approved only gatewayChoice.
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, declared: ALL, caps: ["gatewayChoice"] };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const captured = [];
+  const files = fakeLocalFiles({ "/tmp/a.png": "file" });
+  const ctx = makeHost([capRow("pets", ALL, ALL)]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    registerCaptureSurface: (wc) => captured.push(wc.id),
+    localFiles: files.deps,
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const fake = ctx.fake;
+  const [remote] = fake.created;
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+  remote.webContents.url = remote.loaded[0];
+  assert.match(remote.opts.webPreferences.additionalArguments[0], /\/2\/gatewayChoice$/, "only what the crew approved");
+  assert.deepStrictEqual(captured, [], "the crew's bundle is granted no screen");
+  fake.ipc[CHANNELS.revealFile](fromWindow(remote), "/tmp/a.png");
+  assert.strictEqual(await fake.ipc[CHANNELS.openImage](fromWindow(remote), "/tmp/a.png"), false);
+  assert.deepStrictEqual(files.calls, []);
+
+  // The crew's owner approves localFiles there: the window reopens holding it.
+  crew.caps = ["gatewayChoice", "localFiles"];
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), true);
+  const widened = fake.created[1];
+  assert.match(widened.opts.webPreferences.additionalArguments[0], /\/2\/localFiles,gatewayChoice$/);
+
+  // ...and withdraws it again: the window opened with it is closed.
+  crew.caps = ["gatewayChoice"];
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(widened.isDestroyed(), true);
+  assert.match(fake.created[2].opts.webPreferences.additionalArguments[0], /\/2\/gatewayChoice$/);
+  assert.deepStrictEqual(captured, []);
+});
+
+test("gatewayChoice: a crew that has not approved gatewayChoice never takes the windows, so they can always come back", async (t) => {
+  // The app is on there, but its owner there approved nothing (an older build publishes no grant).
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, declared: ["gatewayChoice"], caps: [] };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const fake = ctx.fake;
+  const [local] = fake.created;
+  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`], "the stored crew is refused");
+  const listed = await fake.ipc[CHANNELS.listGateways](fromWindow(local));
+  assert.strictEqual(listed.gateways[0].appEnabled, false, "the page is told it cannot move there");
+  assert.deepStrictEqual(listed.showing, "self");
+  const tried = await fake.ipc[CHANNELS.chooseGateway](fromWindow(local), "crew");
+  assert.deepStrictEqual(tried, { ok: false, chosen: "crew", showing: "self" });
+  assert.strictEqual(local.isDestroyed(), false, "the window stays here, still holding the way to choose");
+  assert.deepStrictEqual(await fake.ipc[CHANNELS.chooseGateway](fromWindow(local), "self"), { ok: true, chosen: "self", showing: "self" });
+});
+
+test("gatewayChoice: a crew with the app off, or down, is a fact; a non-answer keeps the windows", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: false };
+  const store = new Map();
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const fake = ctx.fake;
+  const [local] = fake.created;
+  const off = await fake.ipc[CHANNELS.chooseGateway](fromWindow(local), "crew");
+  assert.deepStrictEqual(off, { ok: false, chosen: "crew", showing: "self" }, "the app is off there");
+  assert.strictEqual(local.isDestroyed(), false, "nothing moved");
+  assert.deepStrictEqual(store.get("appWindowGatewayChoices"), { pets: "crew" }, "the choice is kept for later");
+
+  crew.enabled = true;
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  const remote = fake.created[1];
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+
+  // The crew stops answering: the windows stay where they are.
+  crew.remote = new Error("tunnel restarting");
+  host._targets.get("pets").at = 0;
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), false);
+  assert.strictEqual(fake.created.length, 2);
+});
+
+test("gatewayChoice: a crew whose manifest lacks this computer's window keeps the windows here", async (t) => {
+  // An older version there declares only "pet": its page would close "panel" on load.
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, desktop: { windows: [{ id: "pet", entry: "desktop/pet.mjs", kind: "panel" }] } };
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const fake = ctx.fake;
+  const [local] = fake.created;
+  const listed = await fake.ipc[CHANNELS.listGateways](fromWindow(local));
+  assert.strictEqual(listed.gateways[0].appEnabled, false, "the page is told the app cannot show its windows there");
+  const tried = await fake.ipc[CHANNELS.chooseGateway](fromWindow(local), "crew");
+  assert.deepStrictEqual(tried, { ok: false, chosen: "crew", showing: "self" });
+  assert.strictEqual(local.isDestroyed(), false, "the working window stays");
+  assert.strictEqual(fake.created.length, 1);
+});
+
+const TWO_PANELS = {
+  windows: [
+    { id: "panel", entry: "desktop/panel.mjs", kind: "panel", openOnEnable: true },
+    { id: "notes", entry: "desktop/notes.mjs", kind: "panel" },
+  ],
+};
+
+/** "pets" shown from crew "crew" on port 7778, chosen before start. */
+async function onCrew(t) {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, desktop: TWO_PANELS };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"], TWO_PANELS)]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const [remote] = ctx.fake.created;
+  assert.deepStrictEqual(remote.loaded, ["http://localhost:7778/popout/desktop/pets/panel?token=remote-tok"]);
+  remote.webContents.url = remote.loaded[0];
+  // The crew disconnects, freeing its port, and another crew is given it.
+  crew.instances = [{ ...CONNECTED, status: { state: "disconnected" } }, { ...CONNECTED, id: "other", name: "Other" }];
+  return { host, fake: ctx.fake, remote };
+}
+
+/** Every page URL a window after the first loaded. */
+const laterLoads = (fake) => fake.created.slice(1).flatMap((w) => w.loaded);
+
+test("gatewayChoice: a window opened on a reused crew target loads only if that crew still holds the port", async (t) => {
+  const { host, fake, remote } = await onCrew(t);
+  fake.ipc[CHANNELS.open](fromWindow(remote), "notes");
+  const notes = fake.created[1];
+  await Promise.all([...host._pendingLoads]);
+  assert.deepStrictEqual(notes.loaded, [], "the crew's token never goes to the port's new owner");
+  assert.strictEqual(notes.isDestroyed(), true);
+  assert.strictEqual(host._targets.get("pets")?.instanceId ?? "self", "self", "the target is dropped");
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), true);
+  assert.ok(laterLoads(fake).every((url) => url.startsWith(`${BACKEND}/`)), laterLoads(fake).join(" "));
+  assert.ok(laterLoads(fake).includes(`${BACKEND}/popout/desktop/pets/panel?token=tok`), "the app is back on this computer");
+});
+
+test("gatewayChoice: a reused crew target is re-checked every tick, so its windows leave a port it gave up", async (t) => {
+  const { host, fake, remote } = await onCrew(t);
+  // Inside the reuse window: nothing re-resolves the target unless the tick re-checks it.
+  await host.reconcileOnce();
+  assert.strictEqual(remote.isDestroyed(), true);
+  assert.deepStrictEqual(laterLoads(fake), [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+});
+
+test("gatewayChoice: a window added here is checked against the crew inside the reuse window", async (t) => {
+  // The crew still runs the older manifest: only "panel".
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, desktop: PANEL_APP };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"], PANEL_APP)]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const [remote] = ctx.fake.created;
+  assert.match(remote.loaded[0], /^http:\/\/localhost:7778\//);
+  // An update here adds "notes", opened on enable; the crew's target is seconds old.
+  const NOTES_TOO = { windows: [PANEL_APP.windows[0], { id: "notes", entry: "desktop/notes.mjs", kind: "panel", openOnEnable: true }] };
+  ctx.state.rows = [capRow("pets", ["gatewayChoice"], ["gatewayChoice"], NOTES_TOO)];
+  await host.reconcileOnce();
+  await Promise.all([...host._pendingLoads]);
+  assert.strictEqual(host._targets.get("pets").instanceId, "self", "the crew lacks a window, so this computer serves them");
+  assert.strictEqual(remote.isDestroyed(), true);
+  const later = ctx.fake.created.slice(1).flatMap((w) => w.loaded);
+  assert.ok(later.length > 0 && later.every((url) => url.startsWith(`${BACKEND}/`)), later.join(" "));
+});
+
+test("gatewayChoice: a stored crew that does not answer at start opens the windows on this computer", async (t) => {
+  const crew = { instances: [CONNECTED], token: "remote-tok", enabled: true, remote: new Error("link restarting") };
+  const store = new Map([["appWindowGatewayChoices", { pets: "crew" }]]);
+  const ctx = makeHost([capRow("pets", ["gatewayChoice"], ["gatewayChoice"])]);
+  const host = createAppWindowHost({
+    electron: ctx.fake.electron,
+    backendUrl: BACKEND,
+    preloadPath: "/shell/app-window-preload.js",
+    fetchGatewayAuth: async () => ({ value: "tok", viaCookie: false }),
+    fetchImpl: crewNetwork(ctx.state, crew),
+    gatewayStore: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) },
+    log: () => {},
+    platform: "darwin",
+  });
+  await host.start();
+  t.after(() => host.stop());
+  const [local] = ctx.fake.created;
+  assert.deepStrictEqual(local.loaded, [`${BACKEND}/popout/desktop/pets/panel?token=tok`]);
+  // The crew answers on a later tick: the windows move there.
+  delete crew.remote;
+  await host.reconcileOnce();
+  assert.strictEqual(local.isDestroyed(), true);
+  assert.match(ctx.fake.created[1].loaded[0], /^http:\/\/localhost:7778\//);
 });
