@@ -1892,6 +1892,25 @@ signalled at all — instead the sweep returns and the stops finish in the
 background. The sweep is not gated on the lifecycle dispatcher being
 initialized, and one app's failing stop does not skip the rest.
 
+The sweep is a dashboard cleanup hook, and the web server runs its cleanup hooks
+only after its in-flight requests drain (aiohttp waits up to 60 seconds). A
+request that outlives the gateway's graceful budget, such as an open `/api/logs`
+stream, lets that budget cut the shutdown before any cleanup hook runs. So the
+gateway's exit path asks again before its hard exit:
+`hooks_integration.stop_spawned_backends_at_exit` runs the same sweep, which finds
+nothing to stop when the cleanup hook already ran. Without it, a timed-out
+shutdown left every spawned backend and its sandbox wrapper running under PID 1,
+still holding its port. A stop drops the backend's tracking and pidfile records
+before it signals, then waits up to 5 seconds before its SIGKILL escalation, so a
+stop the hard exit cuts short leaves a backend nothing records. Every stop either
+sweep hands to a worker is kept in `hooks_integration._unfinished_stops` until it
+returns, and the exit pass waits, under the sweep's 6-second budget, for two
+kinds together: each stop the cleanup hook started that is already running, and a
+fresh stop for each backend still tracked, each on its own worker instead of a
+slot in the shared subprocess pool, so every SIGTERM goes out at once. A
+cleanup-hook stop still queued is cancelled first; it has not dropped its records,
+so its backend is among the tracked ones.
+
 **Every exit that signals a spawned backend reaches its whole tree, root alive or
 not.** A backend launcher is free to fork its real server and return -- the
 reported shape is a Python launcher that starts a Node process and exits 0 -- and
