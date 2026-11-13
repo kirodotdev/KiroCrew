@@ -337,6 +337,8 @@ from kiro_crew.slack.handler_runtime.dispatch import (  # noqa: F401
 from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _append_footer_actions,
     _backfill_late_link,
+    _block_texts,
+    _footer_landed,
     _maybe_auto_title_slack,
     _mirror_to_dashboard,
     _post_review_draft,
@@ -344,6 +346,7 @@ from kiro_crew.slack.handler_runtime.finalize import (  # noqa: F401
     _review_drafts_pop,
     _review_drafts_set,
     build_timing_footer,
+    seal_stream,
 )
 from kiro_crew.slack.handler_runtime.inbound import (  # noqa: F401
     LinkedRoute,
