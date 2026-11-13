@@ -459,7 +459,15 @@ def build_preview(
         if not snapshot.get("exists"):
             raise _fail("not_found", "that schedule does not exist")
         before = snapshot.get("fields") or {}
-        changed = {k: v for k, v in p["fields"].items() if before.get(k) != v}
+        from kiro_crew.cron_service.schedule import pin_random_cron_fields
+
+        # The stored expression is already pinned (an ``R`` field saved as the
+        # job's own pick), so an incoming one is pinned the same way first.
+        changed = {
+            k: v
+            for k, v in p["fields"].items()
+            if before.get(k) != (pin_random_cron_fields(v, p["id"]) if k == "cron_expr" else v)
+        }
         if not changed:
             raise _fail("no_change", "the schedule already has those values")
         out["title"] = f"Update schedule “{snapshot.get('name') or p['id']}”"

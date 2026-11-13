@@ -350,7 +350,12 @@ def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     if schedule is None:
         return False
     if "cron_expr" in payload:
-        return getattr(schedule, "cron_expr", None) == payload["cron_expr"]
+        from kiro_crew.cron_service.schedule import pin_random_cron_fields
+
+        # The store keeps a random (``R``) field as this job's pick of it.
+        return getattr(schedule, "cron_expr", None) == pin_random_cron_fields(
+            payload["cron_expr"], str(getattr(job, "id", ""))
+        )
     if "every_secs" in payload:
         return getattr(schedule, "every_secs", None) == payload["every_secs"]
     return getattr(schedule, "at_ts", None) == payload.get("at_ts")

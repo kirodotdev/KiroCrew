@@ -35,6 +35,7 @@ from kiro_crew.cron_service.model import (
     CronSchedule,
     parked_by_its_run,
 )
+from kiro_crew.cron_service.schedule import pin_random_cron_fields
 from kiro_crew.cron_service.zone_default_migration import (
     _LEGACY_DEFAULT_ZONE,
     LOCAL_DEFAULT_STORE_VERSION,
@@ -327,7 +328,13 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
             kind=sched_kind,
             every_secs=sched.get("every_secs"),
             at_ts=sched.get("at_ts"),
-            cron_expr=_cron_expr,
+            # A stored random (``R``) field reads as the same pick for this job on
+            # every load, so every reader agrees on when it runs.
+            cron_expr=(
+                pin_random_cron_fields(_cron_expr, _required_str(j, "id"))
+                if _cron_expr
+                else _cron_expr
+            ),
         ),
         channel=_guard_opt_str("channel"),
         thread_ts=_guard_opt_str("thread_ts"),

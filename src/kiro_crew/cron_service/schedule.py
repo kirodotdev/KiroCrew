@@ -100,6 +100,51 @@ def validate_cron_expr(expr: str) -> bool:
     return len(parts) == 1 and expr.startswith("@")
 
 
+def _hash_random_item(item: str) -> str:
+    """``item`` with a croniter ``R`` token (``R``, ``R(0-29)``, ``R/15``) as ``H``.
+
+    Never a name such as ``mar``, ``thu`` or ``fri``: only an item that is ``R``
+    alone, or starts with ``R(`` or ``R/``, is random.
+    """
+    upper = item.upper()
+    if upper == "R" or upper.startswith(("R(", "R/")):
+        return "H" + item[1:]
+    return item
+
+
+def pin_random_cron_fields(expr: str, job_id: str) -> str:
+    """``expr`` with each croniter random (``R``) field replaced by its values for ``job_id``.
+
+    croniter draws a fresh value for an ``R`` field every time it reads the
+    expression, so a stored ``R 9 * * *`` fired at a different minute on each
+    check: some days never, some days twice, with a preview that changed on every
+    read. The pick is croniter's ``H`` hash of ``job_id`` instead, so the same job
+    always gets the same minute, every reader agrees on it, and two jobs with
+    the same expression still spread apart. An expression without ``R``, or one
+    croniter cannot expand, is returned unchanged.
+    """
+    if not isinstance(expr, str):
+        return expr
+    parts = expr.split()
+    if len(parts) != 5:
+        return expr
+    hashed = [",".join(_hash_random_item(item) for item in part.split(",")) for part in parts]
+    if hashed == parts:
+        return expr
+    if parts[2].upper() == "R":
+        # A bare random day of the month stays on a day every month has: a pick
+        # of 29-31 would skip short months, and 30 or 31 never fires in February.
+        hashed[2] = "H(1-28)"
+    try:
+        expanded = croniter.expand(" ".join(hashed), hash_id=job_id.encode())[0]
+    except (ValueError, KeyError, TypeError):
+        return expr
+    return " ".join(
+        ",".join(str(value) for value in values) if hashed[i] != part else part
+        for i, (part, values) in enumerate(zip(parts, expanded))
+    )
+
+
 def never_fires_warning(schedule: CronSchedule) -> str:
     """A one-line caveat for a cron schedule that matches no date, else ``""``.
 

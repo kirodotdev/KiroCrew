@@ -34,6 +34,7 @@ from kiro_crew.cron_service.schedule import (
     is_local_timezone,
     is_valid_skip_date,
     is_valid_timezone,
+    pin_random_cron_fields,
     runs_more_than_once_a_day,
     validate_cron_expr,
 )
@@ -411,10 +412,11 @@ def build_job(
     for _d in skip_dates:
         if not is_valid_skip_date(_d):
             raise ValueError(f"Invalid skip_date: {_d!r} (expected YYYY-MM-DD)")
+    job_id = uuid.uuid4().hex[:8]
     if cron_expr:
         if not validate_cron_expr(cron_expr):
             raise ValueError(f"Invalid cron expression: {cron_expr}")
-        schedule = CronSchedule(kind="cron", cron_expr=cron_expr)
+        schedule = CronSchedule(kind="cron", cron_expr=pin_random_cron_fields(cron_expr, job_id))
     elif every_secs:
         schedule = CronSchedule(kind="every", every_secs=max(every_secs, _MIN_INTERVAL_SECS))
     elif at_ts:
@@ -425,7 +427,7 @@ def build_job(
         raise ValueError(_NEW_CHAT_PER_RUN_TOO_OFTEN)
 
     return CronJob(
-        id=uuid.uuid4().hex[:8],
+        id=job_id,
         name=name,
         message=message,
         schedule=schedule,
@@ -543,7 +545,9 @@ def apply_job_update(
     # leaves; only a request that names either one is checked.
     _schedule = job.schedule
     if kwargs.get("cron_expr"):
-        _schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+        _schedule = CronSchedule(
+            kind="cron", cron_expr=pin_random_cron_fields(kwargs["cron_expr"], job.id)
+        )
     elif kwargs.get("every_secs"):
         _schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
     _per_run = (
@@ -784,7 +788,9 @@ def apply_job_update(
     # deleted after its first run, so a one-shot made recurring clears
     # ``delete_after_run``.
     if "cron_expr" in kwargs and kwargs["cron_expr"]:
-        job.schedule = CronSchedule(kind="cron", cron_expr=kwargs["cron_expr"])
+        job.schedule = CronSchedule(
+            kind="cron", cron_expr=pin_random_cron_fields(kwargs["cron_expr"], job.id)
+        )
         job.delete_after_run = False
     elif "every_secs" in kwargs and kwargs["every_secs"]:
         job.schedule = CronSchedule(kind="every", every_secs=int(kwargs["every_secs"]))
