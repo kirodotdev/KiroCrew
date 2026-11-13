@@ -106,13 +106,19 @@ async def _live_slot_resume_payload(state, existing) -> dict:
     window = _collapse_wire_rows(existing.messages)
     total = len(window)
     recent = window[-200:] if total > 200 else window
+    next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
+    # The page slot detail serves: none of the rows the tab's display floor hides.
+    from kiro_crew.dashboard.display_floor import clip_page_off_loop
+
+    recent, next_before, floor_reached = await clip_page_off_loop(
+        state.conversation_log, slot_history_key(existing), recent, next_before
+    )
     prepared = _prepare_messages(
         recent,
         existing.running,
         live_child=_live_child_instance(state, existing),
         workspace=existing.workspace,
     )
-    next_before = (getattr(existing, "_disk_older_count", 0) or 0) + (total - len(recent))
     return {
         "ok": True,
         "key": existing.key,
@@ -120,7 +126,7 @@ async def _live_slot_resume_payload(state, existing) -> dict:
         "messages": prepared,
         "queue": queue_view(existing._queue),
         "total": total,
-        "has_more": next_before > 0,
+        "has_more": next_before > 0 and not floor_reached,
         "next_before": next_before,
         "memory_mode": existing.memory_mode,
         "mode": existing.mode,

@@ -203,6 +203,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         inject_cron_result_to_dashboard,
         move_cron_job_tab,
         prefetch_cron_dismissed,
+        read_cron_tab_rows,
         restore_cron_turn_timeout,
     )
     from kiro_crew.dashboard.cron_note_ack import (  # noqa: F401

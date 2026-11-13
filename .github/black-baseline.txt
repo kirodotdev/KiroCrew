@@ -334,7 +334,6 @@ test/test_cron.py
 test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
 test/test_cron_arbiter_items.py
-test/test_cron_context_meter_seed.py
 test/test_cron_count_from_disk.py
 test/test_cron_dedup.py
 test/test_cron_history.py

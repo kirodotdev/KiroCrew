@@ -825,6 +825,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
         "minimal_context": bool(minimal_context),
         "persistent_session": bool(persistent_session),
         "new_chat_per_run": new_chat_per_run,
+        # The store refuses anything but "resume" or "fresh" with a 400.
+        "on_tab_close": body.get("on_tab_close", "resume"),
         "folder_id": folder_id,
         "chat_folder_id": chat_folder_id,
         # Dashboard-only template provenance (see CronJob.source_preset). The
@@ -1078,6 +1080,7 @@ async def api_cron_update(request: web.Request) -> web.Response:
         "minimal_context",
         "persistent_session",
         "new_chat_per_run",
+        "on_tab_close",
         "folder_id",
         "chat_folder_id",
     ):
