@@ -10352,7 +10352,9 @@
       "unknown_session": "an unlisted session",
       "busy_emptying": "Emptying the Trash. Some actions are paused until it finishes.",
       "empty_failed_next_step": "Try Delete forever again. Details are in the gateway log.",
-      "kept_identity_changed": "One batch changed on disk after you selected it, so it was kept."
+      "kept_identity_changed": "One batch changed on disk after you selected it, so it was kept.",
+      "claude_code_kept_one": "Claude Code also keeps at least {{size}} for {{count}} Claude chat. Storage does not remove it.",
+      "claude_code_kept_other": "Claude Code also keeps at least {{size}} for {{count}} Claude chats. Storage does not remove it."
     },
     "sessionsTab": {
       "agent": "Agent",

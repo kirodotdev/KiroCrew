@@ -333,6 +333,7 @@
   "pages.schedulePage.bulk_delete_removes_jobs_and_history",
   "pages.sessionStorage.age_option",
   "pages.sessionStorage.sweep_preview",
+  "pages.sessionStorage.claude_code_kept",
   "pages.sessionsTab.hidden_rows",
   "pages.settings.aboutPanel.commits_ahead",
   "pages.settings.aboutPanel.commits_behind",

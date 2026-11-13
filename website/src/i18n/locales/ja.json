@@ -17972,7 +17972,8 @@
       "unknown_session": "一覧にないセッション",
       "busy_emptying": "ゴミ箱を空にしています。完了するまで一部の操作は停止します。",
       "empty_failed_next_step": "「完全に削除」をもう一度お試しください。詳細はゲートウェイのログにあります。",
-      "kept_identity_changed": "選択後にディスク上で変化したバッチがあったため、保持しました。"
+      "kept_identity_changed": "選択後にディスク上で変化したバッチがあったため、保持しました。",
+      "claude_code_kept_other": "Claude Code は {{count}} 件の Claude チャット用に少なくとも {{size}} を保持しています。ストレージではこれを削除しません。"
     },
     "sessionsPage": {
       "page_title": "すべてのセッション",

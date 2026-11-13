@@ -18460,7 +18460,9 @@
       "unknown_session": "एक असूचीबद्ध सेशन",
       "busy_emptying": "ट्रैश खाली किया जा रहा है। पूरा होने तक कुछ क्रियाएँ रुकी रहेंगी।",
       "empty_failed_next_step": "«हमेशा के लिए हटाएँ» फिर आज़माएँ। विवरण गेटवे लॉग में हैं।",
-      "kept_identity_changed": "तुम्हारे चुनने के बाद डिस्क पर एक बैच बदल गया, इसलिए उसे रखा गया।"
+      "kept_identity_changed": "तुम्हारे चुनने के बाद डिस्क पर एक बैच बदल गया, इसलिए उसे रखा गया।",
+      "claude_code_kept_one": "Claude Code {{count}} Claude चैट के लिए कम से कम {{size}} भी रखता है। स्टोरेज इसे नहीं हटाता।",
+      "claude_code_kept_other": "Claude Code {{count}} Claude चैट के लिए कम से कम {{size}} भी रखता है। स्टोरेज इसे नहीं हटाता।"
     },
     "sessionsPage": {
       "page_title": "सभी सत्र",

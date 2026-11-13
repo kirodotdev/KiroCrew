@@ -118,6 +118,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "is_mirror_paused": ("function", False, "8f19901e86b9", "session_map_links"),
     "is_slack_paused": ("function", False, "1eda252b53bd", "session_map_links"),
     "mapped_sid": ("function", False, "f1d40e624ae4", "session_map"),
+    "mapped_sid_cwds": ("function", False, "c6867fd0b304", "session_map"),
     "mapped_sids_by_key": ("function", False, "8cab7a4db01b", "session_map"),
     "mark_sid_unlanded": ("function", False, "f4d175e0117d", "session_map"),
     "max_generation": ("function", False, "507f0cfc2b1b", "session_map"),

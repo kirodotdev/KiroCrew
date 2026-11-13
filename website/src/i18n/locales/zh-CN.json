@@ -17972,7 +17972,8 @@
       "unknown_session": "未列出的会话",
       "busy_emptying": "正在清空回收站，部分操作会暂停到完成为止。",
       "empty_failed_next_step": "请再次尝试“永久删除”。详细信息见网关日志。",
-      "kept_identity_changed": "有一批在你选择之后于磁盘上发生了变化，因此被保留。"
+      "kept_identity_changed": "有一批在你选择之后于磁盘上发生了变化，因此被保留。",
+      "claude_code_kept_other": "Claude Code 还为 {{count}} 个 Claude 对话保留了至少 {{size}}。存储不会移除这些内容。"
     },
     "sessionsPage": {
       "page_title": "全部会话",

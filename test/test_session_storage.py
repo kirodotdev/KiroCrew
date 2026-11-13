@@ -689,3 +689,165 @@ class TestFileLocksDoNotPileUp:
             "a concurrent caller got a DIFFERENT lock object for the same "
             "path while a writer held it — two writers could then race"
         )
+
+
+class TestClaudeCodeFigure:
+    """The report sizes Claude Code's own files for mapped Claude chats, and counts them nowhere else.
+
+    ``CLAUDE_CONFIG_DIR`` points at a temp dir, so the real ``~/.claude`` is never read.
+    The figure is driven through the handler's payload builders, the path a reader gets.
+    """
+
+    SID = "0f8fad5b-d9cb-469f-a165-70867728950e"
+    OTHER_SID = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+
+    @pytest.fixture()
+    def claude(self, stores: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        config = tmp_path / "cc"
+        config.mkdir()
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config))
+        work = tmp_path / "work"
+        work.mkdir()
+        return config, str(work)
+
+    @staticmethod
+    def _project(config: Path, cwd: str) -> Path:
+        import os
+        import re
+
+        # The CLI's spelling, restated so the test pins it independently.
+        return config / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", os.path.realpath(cwd))
+
+    def _seed(self, config: Path, cwd: str, sid: str) -> int:
+        """Write a session's three paths; return their summed size."""
+        project = self._project(config, cwd)
+        files = {
+            project / f"{sid}.jsonl": 3000,
+            project / sid / "subagents" / "agent-1.jsonl": 1000,
+            config / "file-history" / sid / "abc@v1": 500,
+        }
+        for path, size in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x" * size)
+        return sum(files.values())
+
+    @staticmethod
+    def _map(entries: dict[str, dict[str, str]]) -> None:
+        from kiro_crew.dashboard.handlers import session_storage as handler
+
+        target = handler.config_dir() / handler.SESSION_MAP_FILENAME
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(entries), encoding="utf-8")
+
+    @staticmethod
+    def _report() -> dict:
+        from kiro_crew.dashboard.handlers import session_storage as handler
+
+        return handler._report_payload()
+
+    @staticmethod
+    def _inventory() -> dict:
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers import session_storage as handler
+
+        state = SimpleNamespace(
+            running_session_keys=lambda: frozenset(),
+            conversation_log=SimpleNamespace(list_sessions=lambda: []),
+        )
+        return handler._inventory_payload(state)
+
+    def test_a_mapped_claude_chat_is_sized_over_its_three_paths_and_counted_once(
+        self, claude: tuple[Path, str]
+    ) -> None:
+        config, cwd = claude
+        size = self._seed(config, cwd, self.SID)
+        entry = {"sid": self.SID, "provider": "claude_code", "cwd": cwd}
+        self._map({"dashboard:chat-1": entry, "dashboard:chat-1-alias": dict(entry)})
+
+        expected = {"bytes": size, "sessions": 1}
+        assert self._report()["claude_code"] == expected
+        assert self._inventory()["claude_code"] == expected
+
+    def test_file_history_counts_toward_the_size(self, claude: tuple[Path, str]) -> None:
+        config, cwd = claude
+        size = self._seed(config, cwd, self.SID)
+        self._map({"dashboard:chat-1": {"sid": self.SID, "provider": "claude_code", "cwd": cwd}})
+        history = config / "file-history" / self.SID / "abc@v1"
+        history.write_bytes(b"x" * 9000)
+
+        assert self._report()["claude_code"] == {"bytes": size - 500 + 9000, "sessions": 1}
+
+    def test_an_unmapped_sid_another_harness_and_a_chat_without_cwd_are_not_counted(
+        self, claude: tuple[Path, str]
+    ) -> None:
+        config, cwd = claude
+        self._seed(config, cwd, self.SID)  # on disk, never mapped
+        self._seed(config, cwd, self.OTHER_SID)
+        third = "11111111-2222-3333-4444-555555555555"
+        self._seed(config, cwd, third)
+        self._map(
+            {
+                "dashboard:kiro": {"sid": self.OTHER_SID, "provider": "acp", "cwd": cwd},
+                "dashboard:codex": {"sid": self.OTHER_SID, "provider": "codex", "cwd": cwd},
+                "dashboard:no-cwd": {"sid": third, "provider": "claude_code"},
+            }
+        )
+
+        assert self._report()["claude_code"] == {"bytes": 0, "sessions": 0}
+
+    def test_a_mapped_chat_with_no_claude_files_is_not_a_session(
+        self, claude: tuple[Path, str]
+    ) -> None:
+        _config, cwd = claude
+        self._map({"dashboard:chat-1": {"sid": self.SID, "provider": "claude_code", "cwd": cwd}})
+
+        assert self._report()["claude_code"] == {"bytes": 0, "sessions": 0}
+
+    @pytest.mark.parametrize("linked", ["projects", "project", "leaf", "file-history"])
+    def test_a_symlinked_component_counts_nothing(
+        self, claude: tuple[Path, str], tmp_path: Path, linked: str
+    ) -> None:
+        import os
+        import shutil
+
+        config, cwd = claude
+        self._seed(config, cwd, self.SID)
+        self._map({"dashboard:chat-1": {"sid": self.SID, "provider": "claude_code", "cwd": cwd}})
+        project = self._project(config, cwd)
+        moved = {
+            "projects": config / "projects",
+            "project": project,
+            "leaf": project / f"{self.SID}.jsonl",
+            "file-history": config / "file-history",
+        }[linked]
+        elsewhere = tmp_path / "elsewhere"
+        shutil.move(str(moved), str(elsewhere))
+        try:
+            os.symlink(elsewhere, moved, target_is_directory=elsewhere.is_dir())
+        except (OSError, NotImplementedError):
+            pytest.skip("this host cannot create symlinks")
+
+        assert self._report()["claude_code"] == {"bytes": 0, "sessions": 0}
+
+    def test_no_session_row_or_total_includes_the_figure(
+        self, stores: tuple[Path, Path], claude: tuple[Path, str]
+    ) -> None:
+        crew_home, kiro_home = stores
+        config, cwd = claude
+        replay = _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        transcript = _transcript(crew_home, "dashboard_chat-1", size=128, age_days=40)
+        self._map({"dashboard:chat-1": {"sid": self.SID, "provider": "claude_code", "cwd": cwd}})
+        report_before, inventory_before = self._report(), self._inventory()
+        self._seed(config, cwd, self.SID)
+        session_storage.invalidate_scan_cache()
+        report_after, inventory_after = self._report(), self._inventory()
+
+        assert report_before["claude_code"] == {"bytes": 0, "sessions": 0}
+        assert report_after["claude_code"]["bytes"] > 0
+        for payload in (report_before, report_after, inventory_before, inventory_after):
+            del payload["claude_code"]
+        assert report_after == report_before
+        assert inventory_after == inventory_before
+        assert report_after["reclaimable_bytes"] == replay
+        assert report_after["total_bytes"] == replay + transcript

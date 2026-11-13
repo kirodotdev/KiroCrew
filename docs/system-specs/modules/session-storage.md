@@ -34,7 +34,7 @@ binding: `store_inventory.py` rebinds them, so a copy on the facade would go sta
 | `session_storage_parts/store_layout.py` | the trash, staging and manifest names, `BUCKET_DAYS`, `MIN_RECLAIM_AGE_DAYS`, `MUTATION_LOCK_NAME`, the unit-id shape, `SessionStorageError`, the index, unit, report and batch types, an empty's callbacks and `SKIP_*` codes, `BatchIdentity`, `trash_root` and the transcript directories, the archive index, and the tree walk (`_tree_files`, `_tree_bytes`) |
 | `session_storage_parts/batch_manifest.py` | a batch's manifest: the header and entries, `_manifest_records` under `_MANIFEST_RECORD_CAP`, `_read_manifest`, the summary and rewrite, `_manifest_rels`, `_rels_digest`, `_header_names_this_batch`, and making a batch durable (`_sync_batch`) |
 | `session_storage_parts/crew_staging.py` | a session's crew logs in the trash: `_stage_crew_logs`, putting them back, the holds file, the staged units no manifest lists (which nothing that removes the batch may remove), and discarding a batch's staging after an empty |
-| `session_storage_parts/store_inventory.py` | the read side: the cached scan (`_scan_units`, `_scan_raw`, `invalidate_scan_cache`), `_unit_paths`, `measure`, `list_units`, `select_reclaimable`, `cotenant_sids`, `reclaim_block_reason` and `list_trash` |
+| `session_storage_parts/store_inventory.py` | the read side: the cached scan (`_scan_units`, `_scan_raw`, `invalidate_scan_cache`), `_unit_paths`, `measure` and its Claude Code figure (`_claude_code_usage`), `list_units`, `select_reclaimable`, `cotenant_sids`, `reclaim_block_reason` and `list_trash` |
 | `session_storage_parts/pinned_delete.py` | deleting a batch's listed files by descriptor (`_FD_SAFE_DELETE`, `_delete_listed_files`), renaming a batch aside and back (`_stage_batch_by_name`), and the coarse path (`_coarse_remove`, `_sweep_staged`) |
 | `session_storage_parts/file_moves.py` | `_mutation_lock`, `_batch_dir`, the no-follow movers and the cross-filesystem copy, `_rollback`, `_canonical_origin`, `_origin_path` and `_unlisted_files` |
 | `session_storage_parts/batch_removal.py` | `staged_targets` and its `_approve_batch`, `empty_trash`, and removing a batch a restore or a rolled-back move emptied (`_remove_emptied_batch`) |
@@ -73,7 +73,55 @@ breakdown and the HTTP payload has no field from which one could be derived, so 
 client can only present a session as one thing with one size. An inventory row
 likewise carries a single `bytes`.
 `test_session_storage_api.py::TestReport::test_payload_never_splits_the_two_stores`
-pins the absence.
+pins the absence. Splitting ONE session's size across Crew's two stores stays
+forbidden. The separate `claude_code` figure below is not such a split: it is
+about another program's store in the user's home, which Storage never moves and
+which the reader can clear themselves.
+
+### What Claude Code keeps
+
+On a Claude chat, the `claude` CLI keeps a store of its own that Crew never writes
+(`agent_sdk/claude_transcripts.py`). Both report payloads (`GET
+/api/system/session-storage` and `/sessions`) carry `"claude_code": {"bytes": n,
+"sessions": m}`, from `StorageReport.claude_code_bytes` and
+`claude_code_sessions`. It is a read-only figure. It is added to no session row's
+`bytes`, to no total, bucket or age option, and to no `reclaimable_bytes`. Those
+keep meaning what a move takes.
+
+- **Which sessions.** The current sid of each entry in this instance's own
+  session map whose provider label is Claude's (`PROVIDER_LABEL_CLAUDE`) and that
+  carries both a sid and a cwd (`SessionMap.mapped_sid_cwds`). A sid two keys
+  name counts once. Co-tenant maps and crew-log units are not read. Some chats are
+  not counted although Claude Code's files stay on disk: a chat that left the
+  session map, one whose entry lost its sid (`clear_sid`) or its cwd
+  (`clear_cwd`), and the earlier sids of a chat from before a reset or a model
+  switch. So the figure is a lower bound.
+- **Which paths.** Exactly the three `claude_transcripts` spells:
+  `<root>/projects/<project>/<sid>.jsonl`, `<root>/projects/<project>/<sid>/` and
+  `<root>/file-history/<sid>/`, where the root is `claude_config_dir()` and the
+  project is `claude_project_dir_name(cwd)`. `file-history/<sid>/` counts toward
+  the size. `claude_session_paths` returns them through the same private gate
+  `delete_claude_session_files` uses before it deletes (a UUID sid, a spellable
+  project name, a resolvable root, no symlink at `projects/`, the project
+  directory, `file-history/` or a leaf, `_is_safe_path`), so a session the delete
+  would refuse counts 0. `projects/` and `file-history/` are never listed. Only the
+  per-session directories are walked, without following links (`_tree_bytes`). A
+  sid with none of the three paths present counts 0 bytes and is not a session.
+- **Cost.** It is computed in `measure()`, once per report request, on the worker
+  thread that builds the payload. No timer runs it and it is not part of the scan
+  cache.
+- **Never removed.** A Storage move, restore or empty leaves Claude Code's files
+  where they are. Reclaiming them is declined for now: it would need its own
+  issue, design and security review, because the operator's own Claude Code
+  writes the same directories. Decision:
+  [2026-11-13](../../decisions/2026-11-13-the-storage-report-shows-claude-codes-own-store-but-never-removes-it.md).
+- **Claude Code only.** No other harness's own store (codex rollouts, for
+  example) is counted.
+
+`test_session_storage.py::TestClaudeCodeFigure` pins the sessions, the paths, the
+symlink refusals and that no row or total changes. The Storage screen shows one
+line under its totals when `claude_code.sessions` is above 0
+(`pages.sessionStorage.claude_code_kept`).
 
 ### Halves are always reclaimed together
 

@@ -19436,7 +19436,11 @@
       "unknown_session": "сессия вне списка",
       "busy_emptying": "Корзина очищается. Некоторые действия приостановлены до завершения.",
       "empty_failed_next_step": "Повторите «Удалить навсегда». Подробности в журнале шлюза.",
-      "kept_identity_changed": "Одна партия изменилась на диске после выбора, поэтому она сохранена."
+      "kept_identity_changed": "Одна партия изменилась на диске после выбора, поэтому она сохранена.",
+      "claude_code_kept_one": "Claude Code также хранит не менее {{size}} для {{count}} чата Claude. Хранилище это не удаляет.",
+      "claude_code_kept_few": "Claude Code также хранит не менее {{size}} для {{count}} чатов Claude. Хранилище это не удаляет.",
+      "claude_code_kept_many": "Claude Code также хранит не менее {{size}} для {{count}} чатов Claude. Хранилище это не удаляет.",
+      "claude_code_kept_other": "Claude Code также хранит не менее {{size}} для {{count}} чата Claude. Хранилище это не удаляет."
     },
     "sessionsPage": {
       "page_title": "Все сессии",

@@ -18948,7 +18948,10 @@
       "unknown_session": "uma sessão não listada",
       "busy_emptying": "Esvaziando a lixeira. Algumas ações ficam pausadas até terminar.",
       "empty_failed_next_step": "Tente Excluir permanentemente novamente. Os detalhes estão no log do gateway.",
-      "kept_identity_changed": "Um lote mudou no disco depois de você selecioná-lo, por isso foi mantido."
+      "kept_identity_changed": "Um lote mudou no disco depois de você selecioná-lo, por isso foi mantido.",
+      "claude_code_kept_one": "O Claude Code também mantém pelo menos {{size}} para {{count}} conversa do Claude. O armazenamento não remove isso.",
+      "claude_code_kept_many": "O Claude Code também mantém pelo menos {{size}} para {{count}} conversas do Claude. O armazenamento não remove isso.",
+      "claude_code_kept_other": "O Claude Code também mantém pelo menos {{size}} para {{count}} conversas do Claude. O armazenamento não remove isso."
     },
     "sessionsPage": {
       "page_title": "Todas as sessões",
