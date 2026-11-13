@@ -577,8 +577,8 @@ describe('ui.show: point at an indexed location, never click it', () => {
     expect(r.action.enter.to({ pathname: '/schedule', search: '' })).toBe('/chat')
     const mcp = resolveGuideAction(show('mcp.add-server'))
     if (!mcp.ok) throw new Error('expected ok')
-    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=skills' })).toBe('/mcp')
-    expect(mcp.action.enter.to({ pathname: '/mcp', search: '' })).toBe('/mcp')
+    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=skills' })).toBe('/capabilities?tab=mcp-servers')
+    expect(mcp.action.enter.to({ pathname: '/capabilities', search: '?tab=mcp-servers' })).toBe('/capabilities?tab=mcp-servers')
     expect(alreadyAt('/chat', { pathname: '/chatter', search: '' })).toBe(false)
   })
 

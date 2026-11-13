@@ -12653,6 +12653,7 @@
       "prompts_description": "Plantillas de prompt reutilizables de {{registry}}",
       "prompts_label": "Prompts",
       "skills_description": "Archivos de conocimiento especializado que tu agente carga a demanda para tareas específicas",
+      "mcp_servers_description": "Servidores de herramientas a los que se conecta tu agente y cómo se comparten entre chats",
       "skills_label": "Habilidades",
       "skills_awaiting_review": "Habilidades pendientes de revisión ({{count}})",
       "skills_awaiting_review_failed": "No se pudieron comprobar las habilidades pendientes de revisión",

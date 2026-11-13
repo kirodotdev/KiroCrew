@@ -46,9 +46,9 @@ function mount(entries: string[]) {
 const where = () => screen.getByTestId('where').textContent
 
 describe('old Customize Connections links', () => {
-  it('replace the MCP Servers sub-tab with the MCP Servers page', async () => {
+  it('replace the MCP Servers sub-tab with Customize → MCP Servers', async () => {
     mount(['/before', '/capabilities?tab=mcp&view=mcp-servers#mcp-management'])
-    await waitFor(() => expect(where()).toBe('/mcp?view=sharing'))
+    await waitFor(() => expect(where()).toBe('/capabilities?tab=mcp-servers&view=sharing'))
     fireEvent.click(screen.getByRole('button', { name: 'back' }))
     await waitFor(() => expect(where()).toBe('/before'))
   })

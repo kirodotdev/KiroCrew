@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom'
-import { lazyPage, ConnectionsRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from '../shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from '../shell/routes'
 
 function Where() {
   const { pathname, search } = useLocation()
@@ -34,8 +34,16 @@ describe('shell route redirects', () => {
     expect(await at('/connections', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/settings\/connections$/)
   })
 
-  it('/connections?view=mcp-servers lands on the MCP Servers page', async () => {
-    expect(await at('/connections?view=mcp-servers', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/mcp$/)
+  it('/connections?view=mcp-servers lands on Customize → MCP Servers', async () => {
+    expect(await at('/connections?view=mcp-servers', '/connections', <ConnectionsRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp-servers$/)
+  })
+
+  it('/mcp lands on Customize → MCP Servers', async () => {
+    expect(await at('/mcp', '/mcp', <McpRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp-servers$/)
+  })
+
+  it('/mcp?view=sharing keeps its view on Customize → MCP Servers', async () => {
+    expect(await at('/mcp?view=sharing', '/mcp', <McpRedirect />)).toHaveTextContent(/^\/capabilities\?tab=mcp-servers&view=sharing$/)
   })
 
   it('/tasks lands on /projects with its query', async () => {

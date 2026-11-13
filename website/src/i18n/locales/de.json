@@ -12385,6 +12385,7 @@
       "prompts_description": "Wiederverwendbare Prompt-Vorlagen aus {{registry}}",
       "prompts_label": "Prompts",
       "skills_description": "Spezialisierte Wissensdateien, die dein Agent bei Bedarf für bestimmte Aufgaben lädt",
+      "mcp_servers_description": "Tool-Server, mit denen sich dein Agent verbindet, und wie sie zwischen Chats geteilt werden",
       "skills_label": "Fähigkeiten",
       "skills_awaiting_review": "Fähigkeiten warten auf Überprüfung ({{count}})",
       "skills_awaiting_review_failed": "Wartende Fähigkeiten konnten nicht geprüft werden",

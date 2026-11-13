@@ -92,7 +92,7 @@ import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -129,7 +129,6 @@ const LibraryPage = lazy(() => import('./pages/apps/LibraryPage'))
 const NotificationsPage = lazyPage(() => import('./pages/NotificationsPage'))
 const WebhooksPage = lazyPage(() => import('./pages/WebhooksPage'))
 const CapabilitiesPage = lazyPage(() => import('./pages/CapabilitiesPage'))
-const McpPage = lazyPage(() => import('./pages/McpPage'))
 const ArtifactsPage = lazyPage(() => import('./pages/ArtifactsPage'))
 const RemoteArtifactDetailPage = lazyPage(() => import('./pages/RemoteArtifactDetailPage'))
 const ArtifactDeployPage = lazyPage(() => import('./pages/ArtifactDeployPage'))
@@ -409,7 +408,6 @@ export default function App() {
       }
       const settingsSurface = NAV_ITEMS.find(n => n.id === 'settings')!
       const capabilitiesSurface = NAV_ITEMS.find(n => n.id === 'capabilities')!
-      const mcpSurface = NAV_ITEMS.find(n => n.id === 'mcp')!
       const searchLabel = slotOwners['quick-search']
         ? i18nT('app.open_command_bar')
         : i18nT('app.search_sessions_files_and_commands')
@@ -488,7 +486,6 @@ export default function App() {
               />
             )}
             {railRow(capabilitiesSurface)}
-            {railRow(mcpSurface)}
             {/* The account modal (balance, sign-in state): the desktop opens it
                 from the readout capsule, which the phone does not render, so the
                 rail carries it -- on exactly the readings the desktop segment
@@ -904,7 +901,7 @@ export default function App() {
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />
-            <Route path="/mcp" element={<McpPage />} />
+            <Route path="/mcp" element={<McpRedirect />} />
             {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
             <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
             {/* Static segments (library, detail, migrate) MUST stay registered

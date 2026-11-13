@@ -12117,6 +12117,7 @@
       "prompts_description": "{{registry}}から再利用可能なプロンプトテンプレート",
       "prompts_label": "プロンプト",
       "skills_description": "エージェントが特定のタスクで必要に応じて読み込む専門知識ファイル",
+      "mcp_servers_description": "エージェントが接続するツールサーバーと、チャット間での共有方法",
       "skills_label": "スキル",
       "skills_awaiting_review": "レビュー待ちのスキル ({{count}})",
       "skills_awaiting_review_failed": "レビュー待ちのスキルを確認できませんでした",

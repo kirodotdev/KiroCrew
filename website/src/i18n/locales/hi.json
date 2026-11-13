@@ -12385,6 +12385,7 @@
       "prompts_description": "{{registry}} से पुन: उपयोग योग्य प्रॉम्प्ट टेम्प्लेट",
       "prompts_label": "प्रॉम्प्ट",
       "skills_description": "विशिष्ट कार्यों के लिए तुम्हारा एजेंट माँग पर लोड करता है, ऐसी विशेष ज्ञान फ़ाइलें",
+      "mcp_servers_description": "टूल सर्वर जिनसे तुम्हारा एजेंट जुड़ता है, और वे चैट के बीच कैसे साझा किए जाते हैं",
       "skills_label": "स्किल्स",
       "skills_awaiting_review": "समीक्षा लंबित स्किल्स ({{count}})",
       "skills_awaiting_review_failed": "समीक्षा लंबित स्किल्स की जाँच नहीं हो सकी",

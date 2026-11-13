@@ -5563,6 +5563,7 @@
       "skills_awaiting_review": "Skills awaiting review ({{count}})",
       "skills_awaiting_review_failed": "Couldn't check for skills awaiting review",
       "skills_description": "Specialized knowledge files your agent loads on demand for specific tasks",
+      "mcp_servers_description": "Tool servers your agent connects to, and how they are shared across chats",
       "steering_label": "Steering",
       "steering_description": "Markdown conventions from ~/.kiro/steering and your project’s .kiro/steering, applied per each file’s inclusion mode",
       "hooks_label": "Hooks",
