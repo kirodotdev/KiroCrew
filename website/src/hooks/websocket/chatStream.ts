@@ -10,6 +10,7 @@ import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } fro
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
 import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { isTerminalErrorRow, noteTurnErrorRow, takeTurnErrored } from '../turnError'
+import { noteTurnActivity } from '../turnClock'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
 import { isWindowAway } from '../windowAway'
@@ -29,6 +30,7 @@ import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import type { FrameData } from './frames'
 import type { ChatMessage } from '../../types'
 import { readRelay } from '../../pages/chat/sessionRelay'
+import { opensTurn } from '../../pages/chat/RecoveryCard'
 
 export interface ChatStreamDeps {
   dispatch: AppDispatch
@@ -41,6 +43,9 @@ export interface ChatStreamDeps {
 export interface ChatStream {
   onChatMessage(data: FrameData): void
   onSteerPush(data: FrameData): void
+  /** `queue_pop`: a drain that turns the popped entry into the person's row
+   *  starts that turn's clock. The router still reduces the frame itself. */
+  onQueuePop(data: FrameData): void
   onChatChunk(data: FrameData): void
   onChatThinking(data: FrameData): void
   onToolCall(data: FrameData): void
@@ -130,6 +135,10 @@ export function useChatStream({ dispatch, queryClient, buffers, voice, reconnect
       // Recorded on or off screen, like the member record: the turn's
       // `chat_done` reads it to exempt a failed turn from the mute.
       if (data.slot) noteTurnErrorRow(data.slot, data)
+      // The row that begins a turn starts its clock (`opensTurn`, see `turnClock.ts`):
+      // a reconnect replay is history, and a steer, a note or a notice row continues a
+      // turn this window may have joined late.
+      if (data.slot && !reconnectingRef.current && opensTurn(data)) noteTurnActivity(data.slot)
       attendArrival(data.slot, data.ts, reconnectingRef.current, slot => {
         const slots = store.getState().dashboard.slots
         const marks = isMemberThreadSlot(slot, slots)
@@ -169,6 +178,14 @@ export function useChatStream({ dispatch, queryClient, buffers, voice, reconnect
         // its own to take it, and must not break the mute on this turn.
         takeTurnErrored(data.slot)
       }
+    },
+    onQueuePop(data) {
+      // No `chat_message` echo follows a drained user row (an idle crewmate
+      // send starts its turn this way), so the drain's pop is the turn's opener.
+      // Only the drain's pop carries `drain_writes_row`: a cancelled, revoked or
+      // swept entry's pop has none and starts nothing. A drain that writes its own
+      // row (`true`: a sub-agent result, a cron prompt) stamps through that row.
+      if (data.slot && !reconnectingRef.current && data.drain_writes_row === false) noteTurnActivity(data.slot)
     },
     onSteerPush(data) {
       // Mid-turn steer echo: show the user's steered text inline in the

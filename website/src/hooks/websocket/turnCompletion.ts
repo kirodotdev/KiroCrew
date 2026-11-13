@@ -11,6 +11,7 @@ import { dispatchMcNotification, TURN_DONE_KIND, shouldChimeOnTurnDone } from '.
 import { shouldNotifyOnChatComplete } from '../chatCompleteNotify'
 import { appsMutingSessions, isSlotMuted } from '../sessionMute'
 import { takeTurnErrored } from '../turnError'
+import { takeTurnSeconds } from '../turnClock'
 import { isMemberThreadSlot, takeMemberThreadSpoke } from '../unreadOnAttention'
 import { postNativeNotification } from '../../lib/nativeNotify'
 import { normalizeRunSessionKey } from '../../components/workflows/runModel'
@@ -47,6 +48,9 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       // Taken for EVERY chat_done (take-and-clear), muted or not, so a
       // failure never carries into the next turn's completion.
       const turnErrored = !!data.slot && takeTurnErrored(data.slot)
+      // The run's length, for the minimum-turn-length rule on the toast; taken
+      // below once the completion is known to end the run.
+      let turnSeconds: number | null = null
       // Keep transcript finalization independent from attention: a parent
       // can finish a turn while its children or workflow still owe work.
       // A frame's activity hint wins over coalesced snapshots; older
@@ -82,6 +86,11 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
         // live question card both mean the conversation paused for the
         // user rather than finished; the toast wording reads this too.
         completionNeedsInput = data.needs_input === true || questionPending
+        // A `continuing` completion raises no attention (`shouldChimeOnTurnDone`):
+        // its sub-agents, workflow, loop or queue still owe work, and the turn
+        // that delivers their result is the run's real finish. The stamp stays,
+        // so the clock spans the whole run rather than that last, short turn.
+        if (completionNeedsInput || !continuing) turnSeconds = takeTurnSeconds(data.slot)
         // Criterion 2: a completion that pauses for the USER (needs_input or a
         // live question card) still raises the turn-done chime and toast even
         // on a muted session -- the mute silences a routine "turn finished",
@@ -108,9 +117,12 @@ export function useTurnCompletion({ dispatch, queryClient, reconnectingRef }: Tu
       }
       // Native notifications can carry an OS sound too, so they share
       // the attention gate before applying the opt-in and away checks.
+      // A turn that stopped on a question or an error is announced whatever
+      // its length: the minimum only quiets routine finishes, as the mute does.
       if (completionNeedsAttention && shouldNotifyOnChatComplete({
         slot: data.slot,
         reconnecting: reconnectingRef.current,
+        turnSeconds: completionNeedsInput || turnErrored ? null : turnSeconds,
       })) {
         const doneSlot = data.slot as string
         // A session missing from the slot list keeps its key: its title is
