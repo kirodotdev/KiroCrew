@@ -373,6 +373,7 @@ EXPORTED_NAMES: tuple[str, ...] = (
     "_is_safe_presigned",
     "_is_self_cloud_destructive",
     "_is_self_gateway_restart",
+    "_is_git_pager",
     "_is_self_kill",
     "_is_self_module_flag",
     "_is_self_module_invocation",

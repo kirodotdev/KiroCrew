@@ -15,8 +15,16 @@ reader of a flat command substitution (``_static_substitution_output``) are reus
 the ssh self-target floor above this module.
 ``kiro_crew.security.argv_floor`` serves every name defined here, and a patch through it
 reaches this module (:mod:`kiro_crew._facade_mirror`). This module reads the shell reader,
-the inline-payload checks and the shared name vocabulary below it, and imports no other
-part of the argv floor.
+the inline-payload checks and the shared name vocabulary below it. It also reuses
+``argv_rules._program_args`` -- the shared execution-prefix wrapper table -- so the
+git-pager floor keeps no second, divergent wrapper list (a shorter inline copy had let
+``doas`` / ``pkexec`` / ... before ``git grep -O`` slip past); ``argv_rules`` is not an
+argv-floor owner and does not import this module, so the reuse adds no cycle. The
+git-global value options cannot be imported the same way: ``argv_floor_git`` owns
+``_GIT_ARG_FLAGS`` but sits ABOVE this module in ``argv_floor._OWNERS`` (the base layer),
+and the layer rule forbids importing upward, so the set is MIRRORED here and a test
+exercises every ``argv_floor_git._GIT_ARG_FLAGS`` entry through this floor so it cannot
+drift.
 """
 
 from __future__ import annotations
@@ -1194,6 +1202,746 @@ def _is_self_cloud_destructive(text_lower: str) -> bool:
 def _is_self_skills_authority_retire(text_lower: str) -> bool:
     """``kirocrew skills authority-retire`` behind interposed shell dressing."""
     return _matches_self_subcommand(text_lower, ("skills", "authority-retire"))
+
+
+#: A git config key that sets the pager: ``core.pager`` or any ``pager.<command>``.
+_GIT_PAGER_CONFIG_KEY_RE = re.compile(r"^(?:core\.pager|pager\.[^=\s]+)$")
+
+
+def _is_noop_pager_value(value: str) -> bool:
+    """True if a pager VALUE runs no distinct program, so a pager set to it is allowed.
+
+    The empty string runs nothing; ``cat`` copies its input unchanged (the value the
+    interactive-liveness advice proposes and the product's own git calls use). The
+    trusted absolute paths to cat that update-governance resolves ``core.pager=cat`` to
+    are allowed too: the root-owned ``/usr/bin/cat`` / ``/bin/cat``, and on Windows the
+    bare ``cat.exe`` plus the cat that Git for Windows installs under ``C:\\Program
+    Files\\Git\\usr\\bin`` or, for a 32-bit install, ``C:\\Program Files (x86)\\Git\\usr\\bin``
+    (matched with either slash and in any case, since ``shutil.which`` returns ``cat.EXE``
+    from ``PATHEXT``). Owner ruling: every other named program is refused, because the pager
+    name is swappable (an alias, a ``PATH`` shadow, a ``LESSOPEN`` hook), so an
+    attacker-placed ``*/cat`` (``/tmp/x/cat``) stays refused.
+    """
+    if value in ("", "cat", "/usr/bin/cat", "/bin/cat"):
+        return True
+    folded = value.replace("/", "\\").lower()
+    if folded == "cat.exe":
+        return True  # the bare name with its Windows extension, resolved like ``cat``
+    return any(
+        folded == root + "\\git\\usr\\bin\\" + name
+        for root in ("c:\\program files", "c:\\program files (x86)")
+        for name in ("cat.exe", "cat")
+    )
+
+
+def _env_sets_git_pager(token: str) -> bool:
+    """True if an environment word sets git's pager to a program that would run.
+
+    ``GIT_PAGER`` / ``PAGER`` name the pager directly: a no-op value
+    (:func:`_is_noop_pager_value`) runs no distinct program and is allowed, any other
+    non-empty value is refused (the name is swappable, so no other value is trusted). A
+    bare name with no ``=`` sets nothing and is allowed. ``GIT_CONFIG_PARAMETERS`` is
+    git's own list of single-quoted ``'key=value'`` (or ``'key'='value'``) entries: it is
+    read entry by entry, so a non-pager key (``'color.ui=never'``) is allowed and only a
+    pager key set to a program is refused; a value that does not parse is refused closed.
+    A ``GIT_CONFIG_KEY_n`` naming ``core.pager`` / ``pager.<cmd>`` is the env config trio,
+    refused closed here (the caller pairs it with its ``GIT_CONFIG_VALUE_n``). The env-var
+    NAME is matched case-insensitively; the pager value's case is preserved.
+    """
+    key, eq, value = token.partition("=")
+    key_l = key.lower()
+    if key_l in ("git_pager", "pager"):
+        return bool(eq) and not _is_noop_pager_value(value)
+    if key_l == "git_config_parameters" and eq:
+        import shlex
+
+        try:
+            entries = shlex.split(value)
+        except ValueError:
+            return True  # an unparseable config string -- refuse closed
+        for entry in entries:
+            entry_key, has_value, entry_value = entry.partition("=")
+            entry_key_l = entry_key.lower()
+            if not _GIT_PAGER_CONFIG_KEY_RE.match(entry_key_l):
+                continue
+            if not has_value:
+                return True  # a pager key with no value is =true, which pages
+            if _is_noop_pager_value(entry_value):
+                continue
+            if entry_key_l != "core.pager" and entry_value.lower() in ("false", "no", "off", "0"):
+                continue
+            return True
+        return False
+    if key_l.startswith("git_config_key_") and eq:
+        return bool(_GIT_PAGER_CONFIG_KEY_RE.match(value.lower()))
+    return False
+
+
+def _git_args_set_pager(args: "list[str]") -> "tuple[bool, bool, bool]":
+    """Scan a git command's ORIGINAL-case arguments (everything after ``git``).
+
+    Returns ``(route_refused, env_pager_unused, sets_core_pager)``. *route_refused* is
+    True when the arguments alone open or configure a pager that would run a program;
+    *env_pager_unused* is True when git would run no environment pager for this command
+    (a git-global ``--no-pager`` / ``-P``, a ``pager.<sub>`` set to a no-program value for
+    the subcommand being run, or a subcommand git never pages without ``-p``), so the
+    caller skips the environment pagers; *sets_core_pager* is True when
+    a git-global ``-c`` / ``--config-env`` sets ``core.pager`` (to any value), which git
+    honours over ``PAGER``.
+
+    Options are read in git's own grammar, which has two scopes. A GIT-GLOBAL option sits
+    BEFORE the subcommand: ``-c k=v`` / ``--config-env`` set config, the value options
+    (``-C``, ``--git-dir``, ``--work-tree``, ``--namespace``, ``--super-prefix``,
+    ``--exec-path``) consume the next word, and ``-p`` / ``--paginate`` / ``-P`` /
+    ``--no-pager`` toggle paging. After the subcommand the subcommand's OWN grammar
+    applies, so a ``-c`` that is ``git grep``'s count flag, or a ``-P`` that is its
+    Perl-regexp flag, is never mistaken for a git-global pager control. That scoping is
+    the whole point of this rewrite: a flat scan over-refused ``git grep -c core.pager``
+    (grep count + a pattern) and under-refused ``git -c core.pager=p log -P`` (log's -P
+    wrongly cancelling the real global config).
+
+    ``git grep -O`` / ``--open-files-in-pager`` opens the matching files in a program and
+    is ALWAYS refused -- ``-O`` is read case-sensitively (lowercase ``-o`` prints matching
+    text and runs no pager), ``grep``'s operand-taking short options (``-e`` / ``-f`` /
+    ``-m`` / ``-A`` / ``-B`` / ``-C``) consume their operand (attached, or the next token),
+    so an ``O`` in a pattern is not read as the pager option, and scanning stops at a
+    ``--`` operand terminator. ``--no-pager`` / ``-P`` never cancel ``grep -O`` (it opens
+    files whatever the output paging does).
+
+    A ``core.pager`` set to a no-op value (empty / ``cat``), or a ``pager.<cmd>`` set to a
+    no-op or a git false (``false`` / ``no`` / ``off`` / ``0``), runs no distinct program
+    and is allowed; any other named program is refused (the name is swappable). A key with
+    no value is ``=true`` and runs a pager, so it is refused; ``--config-env`` sources the
+    value from an env var the floor cannot read, so a pager key there is refused closed.
+    A program-naming config is cancelled only by a git-global ``--no-pager`` / ``-P``.
+    """
+    git_false = frozenset(("false", "no", "off", "0"))
+    grep_operand_opts = frozenset("efmABC")  # git grep short opts that take an operand
+    # git-GLOBAL options that take a SEPARATE-token operand before the subcommand, so the
+    # subcommand scan must step over that operand (``git --attr-source HEAD grep -O`` must
+    # not read ``HEAD`` as the subcommand). The shared core is argv_floor_git._GIT_ARG_FLAGS
+    # (mirrored here -- argv_floor_self is the BASE argv-floor layer in argv_floor._OWNERS
+    # and the layer rule test_argv_floor_facade forbids importing the higher argv_floor_git;
+    # a test pins every _GIT_ARG_FLAGS entry); git accepts more value-taking globals the
+    # floor must also consume, so those are added on top, documented.
+    global_value_opts = frozenset(
+        {"-c", "-C", "--git-dir", "--work-tree", "--namespace"}  # _GIT_ARG_FLAGS mirror
+    ) | frozenset({"--super-prefix", "--exec-path", "--attr-source", "--config-env"})
+
+    def _pager_key(key_l: str) -> bool:
+        return key_l == "core.pager" or (
+            key_l.startswith("pager.") and bool(_GIT_PAGER_CONFIG_KEY_RE.match(key_l))
+        )
+
+    def _value_runs_program(key_l: str, value: str, *, env_sourced: bool, has_eq: bool) -> bool:
+        if env_sourced or not has_eq:
+            return True  # --config-env value is unknowable; no '=' means =true
+        if key_l == "core.pager":
+            return not _is_noop_pager_value(value)
+        return not _is_noop_pager_value(value) and value.lower() not in git_false
+
+    # Config assignments collapse to the LAST value per key (git honours the last ``-c``
+    # for a key), so ``-c core.pager=less -c core.pager=cat`` ends at the no-op ``cat``.
+    config_state: "dict[str, bool]" = {}
+
+    def _record_config(spec: str, *, env_sourced: bool) -> None:
+        key, eq, value = spec.partition("=")
+        key_l = key.lower()
+        if _pager_key(key_l):
+            config_state[key_l] = _value_runs_program(
+                key_l, value, env_sourced=env_sourced, has_eq=bool(eq)
+            )
+
+    def _grep_opens_pager(rest: "list[str]") -> bool:
+        j = 0
+        while j < len(rest):
+            token = rest[j]
+            if token == "--":
+                return False
+            low = token.lower()
+            if low.startswith("--"):
+                name = low[2:].split("=", 1)[0]
+                if name and "open-files-in-pager".startswith(name):
+                    return True
+                if name in ("regexp", "file") and "=" not in token:
+                    j += 2  # the pattern / file is a separate-token operand
+                    continue
+                j += 1
+                continue
+            if token.startswith("-") and len(token) > 1:
+                consumed_next = False
+                for pos, ch in enumerate(token[1:]):
+                    if ch == "O":
+                        return True
+                    if ch in grep_operand_opts:
+                        consumed_next = pos + 2 >= len(token)
+                        break
+                j += 2 if consumed_next else 1
+                continue
+            j += 1
+        return False
+
+    def _config_writes_pager(cfg_args: "list[str]") -> bool:
+        """``git config`` WRITES a pager key to a program -- the legacy ``git config
+        <key> <value>`` and the git 2.46+ ``git config set <key> <value>`` grammars.
+
+        A read / unset / list (dashed flag OR the subcommand verb), a no-op / git-false
+        value, and a key with no value are allowed; a redirection (``2>/dev/null`` / ``>
+        file``; a ``| cat`` or ``|| true`` is already split off upstream) is removed, so
+        ``git config core.pager`` with a trailing redirect stays a READ.
+        """
+        read_verbs = frozenset(
+            (
+                "get",
+                "get-all",
+                "get-regexp",
+                "get-urlmatch",
+                "list",
+                "unset",
+                "unset-all",
+                "rename-section",
+                "remove-section",
+                "edit",
+                "get-color",
+                "get-colorbool",
+            )
+        )
+        reading_flags = frozenset(
+            (
+                "--get",
+                "--get-all",
+                "--get-regexp",
+                "--get-urlmatch",
+                "--unset",
+                "--unset-all",
+                "--list",
+                "-l",
+                "--edit",
+                "-e",
+                "--remove-section",
+                "--rename-section",
+                "--get-color",
+                "--get-colorbool",
+                "--name-only",
+            )
+        )
+        # Options that CONSUME a following operand, so a key/value after them is read
+        # correctly. ``--value`` / ``--comment`` are git 2.46+ ``config set`` options
+        # (``git config set --value '.*' core.pager ./p`` must not read ``.*`` as the key).
+        value_flags = frozenset(("--file", "-f", "--blob", "--type", "-t", "--value", "--comment"))
+        positionals: list[str] = []
+        i = 0
+        while i < len(cfg_args):
+            tok = cfg_args[i]
+            is_redirect, separate_target = _redirect_consumes_next(tok)
+            if is_redirect:
+                i += 2 if separate_target else 1
+                continue
+            tok = _strip_redirect(tok)  # drop an attached redirect suffix (key>/tmp/x)
+            if tok == "":
+                i += 1
+                continue
+            if tok.lower() in reading_flags:
+                return False
+            if tok in value_flags and i + 1 < len(cfg_args):
+                i += 2
+                continue
+            if tok.startswith("-"):
+                i += 1
+                continue
+            positionals.append(tok)
+            i += 1
+        if positionals and positionals[0].lower() in read_verbs:
+            return False  # `git config get|list|unset ...` reads, writes nothing
+        if positionals and positionals[0].lower() == "set":
+            positionals = positionals[1:]  # `git config set <key> <value>`
+        if len(positionals) < 2:
+            return False  # a read, or a key with no value
+        key_l, value = positionals[0].lower(), positionals[1]
+        if not _GIT_PAGER_CONFIG_KEY_RE.match(key_l):
+            return False
+        if key_l == "core.pager":
+            return not _is_noop_pager_value(value)
+        return not _is_noop_pager_value(value) and value.lower() not in git_false
+
+    # Subcommands git never runs through a pager unless ``-p`` / ``--paginate`` forces it:
+    # plumbing reads and the write / transport porcelain. Listing, log and diff commands
+    # (``log``, ``show``, ``diff``, ``branch``, ``tag``, ``stash``, ``blame``, ...) and any
+    # unknown word, which may be an alias, are left out, so they still count as paging.
+    non_paging = frozenset(
+        (
+            "add",
+            "am",
+            "apply",
+            "bisect",
+            "cat-file",
+            "checkout",
+            "cherry-pick",
+            "clean",
+            "clone",
+            "commit",
+            "describe",
+            "fetch",
+            "for-each-ref",
+            "fsck",
+            "gc",
+            "hash-object",
+            "init",
+            "ls-files",
+            "ls-remote",
+            "ls-tree",
+            "merge",
+            "merge-base",
+            "mv",
+            "prune",
+            "pull",
+            "push",
+            "rebase",
+            "remote",
+            "reset",
+            "restore",
+            "rev-list",
+            "rev-parse",
+            "revert",
+            "rm",
+            "show-ref",
+            "status",
+            "submodule",
+            "switch",
+            "symbolic-ref",
+            "update-index",
+            "update-ref",
+            "version",
+            "worktree",
+        )
+    )
+    disables_pager = False
+    forced_paging = False
+    # Phase 1: git-global options, up to the subcommand (the first bare word, or a
+    # value option's value). A ``--`` here means no subcommand at all. ``-P`` / ``-p``
+    # (and ``--no-pager`` / ``--paginate``) are evaluated last-wins.
+    index = 0
+    n = len(args)
+    while index < n:
+        token = args[index]
+        if token == "--":
+            index = n
+            break
+        if token in ("-P", "--no-pager"):
+            disables_pager = True
+            forced_paging = False
+            index += 1
+            continue
+        if token in ("-p", "--paginate"):
+            disables_pager = False  # a later pagination switch replaces the earlier
+            forced_paging = True
+            index += 1
+            continue
+        if token == "-c" and index + 1 < n:
+            _record_config(args[index + 1], env_sourced=False)
+            index += 2
+            continue
+        if token.startswith("-c") and not token.startswith("--") and len(token) > 2:
+            _record_config(token[2:], env_sourced=False)
+            index += 1
+            continue
+        if token.lower() == "--config-env" and index + 1 < n:
+            _record_config(args[index + 1], env_sourced=True)
+            index += 2
+            continue
+        if token.lower().startswith("--config-env="):
+            _record_config(token[len("--config-env=") :], env_sourced=True)
+            index += 1
+            continue
+        if token in global_value_opts and index + 1 < n:
+            index += 2
+            continue
+        if token.startswith("--"):  # a long flag (with or without an attached =value)
+            index += 1
+            continue
+        if token.startswith("-") and len(token) > 1:  # an unknown short global flag
+            index += 1
+            continue
+        break  # the subcommand
+    configs_pager = any(config_state.values())
+
+    # Phase 2: the subcommand. ``grep`` can OPEN a pager; ``config`` can WRITE one. Both
+    # run a program regardless of output paging, so neither is cancelled by ``-P`` / ``-p``.
+    opens_or_writes = False
+    sub = ""
+    if index < n:
+        sub = args[index].lower()
+        rest = args[index + 1 :]
+        if sub == "grep":
+            opens_or_writes = _grep_opens_pager(rest)
+        elif sub == "config":
+            opens_or_writes = _config_writes_pager(rest)
+    route_refused = opens_or_writes or (configs_pager and not disables_pager)
+    # Whether an ENVIRONMENT pager (GIT_PAGER / PAGER / the env trio) can run at all for
+    # this command. It cannot under ``--no-pager`` / ``-P``; nor when a ``pager.<sub>``
+    # for the command being run is set to a no-program value (``-c pager.log=false``
+    # turns log paging off, ``pager.log=cat`` pages through cat); nor, unless ``-p``
+    # forces paging, for a subcommand git never pages (``rev-parse``, ``status``,
+    # ``commit``, ...). An unknown word may be an alias that pages, so it still counts.
+    env_pager_unused = (
+        disables_pager
+        or config_state.get("pager." + sub) is False
+        or (not forced_paging and (not sub or sub in non_paging))
+    )
+    return route_refused, env_pager_unused, "core.pager" in config_state
+
+
+def _strip_heredoc_bodies(text: str) -> str:
+    """*text* with the body of every here-document fed to a non-shell program removed.
+
+    A here-document body is DATA on the consuming program's standard input, not a
+    command: ``git commit -m "$(cat <<'EOF'`` followed by a message that quotes
+    ``GIT_PAGER=less git log`` runs no pager. The body is dropped only when no word of the
+    command that opens it names a shell (``bash <<EOF`` runs its body, so that body is
+    kept and still read). A body is dropped only up to its own delimiter line (``<<-``
+    lets that line carry leading tabs); when no delimiter line follows, the rest of the
+    text is left as it is. Each line is read once, so the pass is linear.
+    """
+    if "<<" not in text:
+        return text
+    opener = re.compile(r"(?<!<)<<(?!<)(-?)[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+    boundary = re.compile(r"\$\(|`|;|\|\||&&|\||&|\(")
+    shells = frozenset(("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "fish", "busybox"))
+    lines = text.split("\n")
+    out: "list[str]" = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        for match in opener.finditer(line):
+            words = boundary.split(line[: match.start()])[-1].split()
+            keep = any(w.rsplit("/", 1)[-1].lower() in shells for w in words)
+            word, dash = match.group(3), match.group(1) == "-"
+            end = next(
+                (
+                    j
+                    for j in range(i, len(lines))
+                    if (lines[j].lstrip("\t") if dash else lines[j]) == word
+                ),
+                None,
+            )
+            if end is None:
+                out.extend(lines[i:])
+                return "\n".join(out)
+            out.extend(lines[i : end + 1] if keep else lines[end : end + 1])
+            i = end + 1
+    return "\n".join(out)
+
+
+def _join_quoted_newlines(text: str) -> str:
+    """*text* with every newline that sits INSIDE a quoted word turned into a space.
+
+    A newline inside quotes is data in the word (a multi-line ``git commit -m '...'``),
+    not a command boundary, so the segment split must not cut the word there and read
+    its second line as a command. A newline outside quotes, escaped or not, is kept as
+    it is. Applied per frame, after the payload walk has already unwrapped an
+    ``sh -c '...'`` payload, so a newline that separates the payload's own commands is
+    outside quotes by then and still separates. One pass over the text.
+    """
+    if "\n" not in text:
+        return text
+    return "".join(
+        " " if step.text == "\n" and step.state != 0 else step.text
+        for step in _iter_shell_chars(text)
+    )
+
+
+def _strip_line_comments(text: str) -> str:
+    """*text* with every shell ``#`` line comment removed, newlines kept.
+
+    A ``#`` starts a comment only at a word boundary outside quotes (``a#b`` is one
+    word), and the comment runs to the end of its line. Because a comment can only
+    begin where no quote is open, the shell state machine is re-entered on the text
+    AFTER each comment, so a stray quote inside dropped comment text cannot corrupt the
+    reading of the real command that follows. The newline that ends a comment is kept,
+    so line structure (and any trailing-escape splice signal) survives.
+    """
+    out: "list[str]" = []
+    rest = text
+    while rest:
+        cut: "int | None" = None
+        for step in _iter_shell_chars(rest):
+            if (
+                step.active
+                and step.char == "#"
+                and _shell_normalizer._opens_comment(rest, step.offset)
+            ):
+                out.append(rest[: step.offset])
+                nl = rest.find("\n", step.offset)
+                cut = len(rest) if nl < 0 else nl
+                break
+        if cut is None:
+            out.append(rest)
+            break
+        rest = rest[cut:]
+    return "".join(out)
+
+
+def _is_git_pager(text_lower: str, *, raw_text: "str | None" = None) -> bool:
+    """True if a git command opens or configures a pager, a program git would run.
+
+    ``git grep -O`` / ``--open-files-in-pager`` runs the pager on the matching files,
+    and ``core.pager`` / ``pager.<cmd>`` set through ``-c``, ``--config-env``,
+    ``GIT_PAGER``, ``PAGER``, ``GIT_CONFIG_PARAMETERS`` or a ``GIT_CONFIG_KEY_n`` env
+    word all name the program git pages through. The agent chooses that program, so each
+    is a route to run an arbitrary command through git; the operation is refused whatever
+    the pager VALUE names (the name is swappable, so there is no program allowlist), and
+    inside a nested ``eval`` / ``sh -c`` payload too.
+
+    Refused ONLY when a program actually runs. The no-program forms are allowed: the
+    lowercase ``git grep -o`` (prints matching text, not a pager), ``core.pager`` /
+    ``GIT_PAGER`` / ``PAGER`` set to the empty string, ``pager.<cmd>`` set to a git false
+    (``false`` / ``no`` / ``off`` / ``0``), and ``--no-pager`` / ``-P`` on a paging command
+    (which does not, however, cancel ``grep -O``).
+
+    *raw_text* is the command AS SUBMITTED. The argv is walked in ORIGINAL case so ``-O``
+    is distinguished from ``-o``; ``text_lower`` is used only for the cheap can-fire gate,
+    because the deny gate passes already-lower-cased text that has lost that distinction.
+
+    Liveness floor, not a security boundary. It stops the accidental pager forms that
+    hang a non-interactive session; it does not try to stop deliberate evasion (a shell
+    redirection, running a pager binary directly, or a program name assembled across a
+    command separator). Those are out of scope: the floor does not add machinery to chase
+    them, and stays linear in the length of the command it reads.
+    """
+    source = raw_text if raw_text is not None else text_lower
+    # A ``#`` at a word boundary outside quotes begins a comment that the shell drops
+    # to end of line, so its text is NOT a command. An annotated no-op -- the very form
+    # the product's liveness advice invites (``# core.pager=less would hang; use cat``
+    # then ``git -c core.pager=cat log``), or a trailing ``git grep foo # -O`` -- must not
+    # have the comment's words read as a pager route. Strip line comments before the walk;
+    # a comment can only START outside quotes, so the state machine is re-entered fresh at
+    # each one and a quote inside the dropped text cannot leak past it.
+    walk_source = _strip_line_comments(_strip_heredoc_bodies(source))
+    # Perf + robustness gate: a git pager route always carries the substring
+    # ``git`` -- the program basename git pages through, or a ``GIT_PAGER`` /
+    # ``GIT_CONFIG_*`` env word. When neither the raw text nor its quote-stripped
+    # form contains it AND no shell machinery could synthesise it, the floor
+    # provably cannot fire and the recursive payload walk is skipped. The
+    # machinery clause is what the earlier substring-only gate missed: a
+    # substitution/brace/escape spelling such as ``gi$()t grep -O./x`` carries no
+    # literal ``git`` yet resolves to it in the walk, so a ``$``/backtick/glob/
+    # escape present means "maybe" and runs the full scan (the safe direction,
+    # mirroring ``_self_floor_can_fire``).
+    joined = _shell_join_continuations(text_lower)
+    if (
+        "git" not in text_lower
+        and "git" not in _SELF_FLOOR_QUOTE_JUNK_RE.sub("", joined)
+        and not _SELF_FLOOR_MACHINERY_RE.search(joined)
+    ):
+        return False
+
+    def _carried_env(cmd: "list[str]") -> "list[str] | None":
+        """The env a command EXPORTS to later commands in its frame, or None.
+
+        A bare ``VAR=value ...`` command exports only when every word is an
+        assignment (``VAR=value`` alone sets the shell variable; ``VAR=value cmd``
+        sets it for ``cmd`` only -- caught by that command's own env prefix, not
+        here). ``export VAR=value`` exports its assignment words.
+        """
+        words = [t for t in cmd if not _ends_argv(t)]
+        if not words:
+            return None
+        if _shell_normalizer.ENV_ASSIGNMENT_RE.match(words[0]):
+            if all(_shell_normalizer.ENV_ASSIGNMENT_RE.match(w) for w in words):
+                return list(words)
+            return None
+        if _shell_normalizer._program_basename(words[0]).lower() == "export":
+            return [w for w in words[1:] if _shell_normalizer.ENV_ASSIGNMENT_RE.match(w)]
+        return None
+
+    # The gate must return a DECISION, never propagate. Unlike the self-name
+    # floors (which _self_floor_can_fire keeps away from the payload walk for
+    # non-self commands), this floor walks for every git command, so a raising
+    # walk would otherwise escape is_denied -- the rm floor guards the same way.
+    # Abstaining (False) is sound: a real pager route does not depend on a
+    # raising walk, and the regex/other tiers still decide.
+    def _opener_at_program_position(tok: str) -> bool:
+        """True if *tok*, seen where a PROGRAM word is expected (command so far empty),
+        is a subshell / group / function-definition opener or a ``#`` comment -- a real
+        command boundary. Judged by POSITION, not spelling: the SAME ``(`` / ``#`` AFTER
+        the program is an operand (``git grep -e '(' -O./p``, ``git grep -e '#' …``), and a
+        quoted one dequotes to the bare character, so only its program-position occurrence
+        may split. ``;`` / ``|`` are never judged here -- the quote-aware segment split
+        already cut the real ones, and any left is a quoted operand.
+        """
+        if tok.startswith("#"):
+            return True
+        stripped = tok.rstrip("{")
+        return stripped in {"", "("} or stripped.endswith("()")
+
+    try:
+        for frame_source, frame_tokens in _shell_payload_walk(walk_source):
+            # Pass (a): command boundaries taken BEFORE operands are dequoted, by
+            # splitting the frame SOURCE with the quote-aware segment splitter; the
+            # tokenised argv is used only WITHIN a segment, so a quoted separator in a
+            # grep pattern or a ``-c`` value (``git grep -e ';' -O``, ``-e '&'``) stays
+            # part of its command. Each segment is tokenised ONCE, on its own: the floor
+            # does NOT carry an assembled program across a separator (``g=git; $g grep
+            # -e ';' -O``), which is a constructed-command evasion the liveness floor
+            # leaves out of scope -- carrying it would re-tokenise a growing prefix per
+            # segment and make the walk quadratic. A same-line ``export`` is still caught
+            # by pass (b), which threads its env through ``extra_env`` linearly.
+            for segment in _shell_normalizer._split_push_command_segments(
+                _join_quoted_newlines(frame_source)
+            ):
+                command: list[str] = []
+                for token in _shell_normalizer._self_tokens(segment):
+                    # Only an opener at PROGRAM position ends the command (a subshell /
+                    # group / function body / ``#`` comment); a ``;`` / ``&`` / ``(`` /
+                    # ``#`` sitting in an operand dequotes to the same bare token and must
+                    # NOT split.
+                    if not command and _opener_at_program_position(token):
+                        command = []
+                        continue
+                    command.append(token)
+                if command and _git_command_sets_pager(command):
+                    return True
+            # Pass (b): the WHOLE-frame tokens, which resolve a variable-assembled program
+            # (``g=git; $g grep -O``) that per-segment re-tokenising cannot, split on
+            # ``_ends_argv``. Quoted separators here only UNDER-split (they can miss, never
+            # over-refuse), so the union of (a) and (b) adds detection, never a false
+            # refusal, and a real background ``&`` separating two commands is caught here.
+            env_b: list[str] = []
+            command = []
+            for token in frame_tokens:
+                if _ends_argv(token):
+                    # Keep a glued prefix (``cat;`` -> ``cat``) as this command's last arg
+                    # but DROP the separator itself, so a trailing ``;`` / ``||`` glued to
+                    # a value is not read as the config VALUE (that was a false refuse of
+                    # ``git config core.pager cat; …`` / ``… || true``). Pass (a) owns the
+                    # quote-aware boundary; this pass only ADDS the variable-resolved
+                    # program (``g=git; $g grep -O``) and a real background ``&`` split.
+                    stripped = token.rstrip(";|&")
+                    if stripped and stripped != token:
+                        command.append(stripped)
+                    if command and _git_command_sets_pager(command, extra_env=env_b):
+                        return True
+                    carried = _carried_env(command)
+                    if carried:
+                        env_b = env_b + carried
+                    command = []
+                else:
+                    command.append(token)
+            if command and _git_command_sets_pager(command, extra_env=env_b):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _git_command_sets_pager(command: "list[str]", *, extra_env: "list[str] | None" = None) -> bool:
+    """True if one argv *command* (program plus args) is a git pager route.
+
+    *command* carries ORIGINAL-case tokens so ``-O`` is told from ``-o``. The program is
+    found with :func:`argv_rules._program_args`, which steps over the leading
+    ``NAME=value`` env words and every execution-prefix wrapper in the shared wrapper
+    table (``command`` / ``env`` / ``sudo`` / ``doas`` / ``pkexec`` / ``runuser`` /
+    ``chroot`` / ``flock`` / ``xargs`` / ...), so a wrapped ``git`` is still found and a
+    pager reaching git through any known wrapper is not a bypass. ``_program_args`` drops
+    the env words it steps over, so this function re-collects every ``NAME=value`` before
+    the git program (the leading ones and those an ``env`` / ``sudo`` carries), and
+    *extra_env* adds env exported by an earlier command on the same line
+    (``export GIT_PAGER=...; git ...``). The program is matched case-insensitively
+    against ``git``.
+
+    ``git grep -O``, a program-naming ``-c`` / ``--config-env`` config, and a
+    ``git config`` writer (legacy or the git 2.46+ ``config set`` grammar) are all decided
+    by :func:`_git_args_set_pager`, which locates the subcommand AFTER git-global option
+    parsing so a leading ``-C`` / ``--no-pager`` does not hide the ``config`` writer. An
+    env pager (``GIT_PAGER`` / ``PAGER`` / the ``GIT_CONFIG`` trio) is refused here too,
+    UNLESS a git-global ``--no-pager`` / ``-P`` cancels it; each refusal is skipped for the
+    no-op forms (empty / ``cat`` pager, a git-false ``pager.<cmd>``).
+    """
+    # Imported here, not at module top, for the same reason rm_floor does: a top-level
+    # binding would make `_argv_rules` a name the argv_floor facade must declare, and the
+    # lazy form sidesteps that while staying cycle-free (argv_rules does not import this
+    # module). argv_rules is not an argv-floor owner, so the layer rule does not apply.
+    from . import argv_rules as _argv_rules
+
+    env: list[str] = list(extra_env or [])
+    # Find the program, stepping over leading NAME=value env words and EVERY
+    # execution-prefix wrapper, by REUSING argv_rules._program_args -- the shared
+    # wrapper table (command / env / sudo / doas / pkexec / runuser / chroot / flock /
+    # xargs / ...) the rest of the argv floor already uses. A wrapper it knows is then
+    # not a bypass here; a second, divergent inline copy had let `doas git grep -O`
+    # through because it listed only some of those names.
+    parsed = _argv_rules._program_args(command)
+    if parsed is None:
+        return False
+    program, args = parsed
+    if program.lower() != "git":
+        return False
+    # _program_args drops the NAME=value words it steps over, but an env pager
+    # (GIT_PAGER / PAGER / the GIT_CONFIG trio -- leading, or carried by env / sudo) is
+    # a route this floor must still see, so collect every assignment that precedes the
+    # git program. `args` is the tail after git, so git sits at this index.
+    git_index = len(command) - len(args) - 1
+    for token in command[:git_index]:
+        if _shell_normalizer.ENV_ASSIGNMENT_RE.match(token):
+            env.append(token)
+
+    # ``git config`` writers (legacy and the git 2.46+ ``config set`` grammar) and
+    # ``git grep -O`` are both decided inside _git_args_set_pager now -- it locates the
+    # subcommand AFTER git-global option parsing, so a ``git -C . config ...`` or
+    # ``git --no-pager config ...`` writer is not hidden by the leading globals.
+    route_refused, disables_pager, sets_core_pager = _git_args_set_pager(args)
+    if route_refused:
+        return True
+    if disables_pager:
+        return False
+    # Environment pager: the LAST assignment of each env-var NAME wins, so a superseded
+    # ``GIT_PAGER=cat`` after ``GIT_PAGER=less`` is the effective (allowed) value.
+    git_false = frozenset(("false", "no", "off", "0"))
+    effective: "dict[str, str]" = {}
+    for word in env:
+        name, eq, _value = word.partition("=")
+        if eq:
+            effective[name.lower()] = word
+    # The GIT_CONFIG_COUNT / GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n env trio sets config
+    # like ``-c``: PAIR each KEY_n with its VALUE_n and refuse a pager key only when the
+    # paired value runs a program, so the product's own no-op pin
+    # (``GIT_CONFIG_KEY_0=core.pager GIT_CONFIG_VALUE_0=cat``, or a git-false
+    # ``pager.<cmd>``) is allowed. A pager KEY_n with no paired VALUE_n is refused closed.
+    config_values = {
+        name[len("git_config_value_") :]: word.partition("=")[2]
+        for name, word in effective.items()
+        if name.startswith("git_config_value_")
+    }
+    for name, word in effective.items():
+        if not name.startswith("git_config_key_"):
+            continue
+        key_l = word.partition("=")[2].lower()
+        if not _GIT_PAGER_CONFIG_KEY_RE.match(key_l):
+            continue
+        paired = config_values.get(name[len("git_config_key_") :])
+        if paired is None:
+            return True  # a pager key whose value is unknowable -- refuse closed
+        if key_l == "core.pager":
+            sets_core_pager = True
+            if not _is_noop_pager_value(paired):
+                return True
+        elif not _is_noop_pager_value(paired) and paired.lower() not in git_false:
+            return True
+    # git picks its pager as GIT_PAGER, else core.pager, else PAGER, so PAGER is only
+    # the last fallback: a session that keeps ``PAGER=less`` for man pages and pins
+    # ``GIT_PAGER=cat`` or ``-c core.pager=cat`` runs no pager program in git.
+    pager_superseded = "git_pager" in effective or sets_core_pager
+    # The non-trio env pagers (GIT_PAGER / PAGER / GIT_CONFIG_PARAMETERS) keep the
+    # simple per-word rule.
+    return any(
+        _env_sets_git_pager(word)
+        for name, word in effective.items()
+        if not name.startswith(("git_config_key_", "git_config_value_"))
+        and name != "git_config_count"
+        and not (name == "pager" and pager_superseded)
+    )
 
 
 _DEV_MODE_CONFIRM_FLAG = "--confirm-out-of-install-root"

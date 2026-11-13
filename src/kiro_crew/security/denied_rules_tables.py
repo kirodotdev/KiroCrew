@@ -177,6 +177,7 @@ _SELF_PROTECTION_UNGATED_FLOOR_IDS: frozenset[str] = frozenset(
         "self-protection-gateway-restart",
         "self-protection-cloud",
         "self-protection-skills-authority-retire",
+        "self-protection-git-pager",
     }
 )
 
@@ -239,6 +240,14 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "program and its leading subcommands retire the auto-skill authority. This "
         "stopped-installation recovery must run from the operator's own terminal, so "
         "this floor has no catalog row and no opt-out."
+    ),
+    "self-protection-git-pager": (
+        "Matched structurally on the command's argv: a git command opens or configures a "
+        "pager, a program git runs on its output (git grep -O / --open-files-in-pager, or "
+        "core.pager / pager.<cmd> set through -c, --config-env, GIT_PAGER, PAGER or a "
+        "GIT_CONFIG env word). The pager program is chosen by the caller, so this is a "
+        "route to run an arbitrary command through git. Turn the pager off with "
+        "--no-pager instead. This floor has no catalog row and no opt-out."
     ),
     "self-protection-dev-mode-out-of-root-confirm": (
         "Matched structurally on the command's argv, not by the pattern text above: "

@@ -835,8 +835,17 @@ def is_denied(
         ("self-protection-gateway-restart", _argv._is_self_gateway_restart),
         ("self-protection-cloud", _argv._is_self_cloud_destructive),
         ("self-protection-skills-authority-retire", _argv._is_self_skills_authority_retire),
+        ("self-protection-git-pager", _argv._is_git_pager),
     ):
-        if predicate(lower):
+        # The git-pager floor also gets the command AS SUBMITTED: it tells `-O` (opens a
+        # pager) from `-o` (ordinary output) case-sensitively, and the lower-casing every
+        # other predicate reads has already collapsed them.
+        hit = (
+            predicate(lower, raw_text=tool_name)
+            if predicate is _argv._is_git_pager
+            else predicate(lower)
+        )
+        if hit:
             _emit_deny_event(tool_name, rule_id, lower)
             return _reason(
                 rule_id,

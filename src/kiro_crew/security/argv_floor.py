@@ -173,6 +173,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.security.argv_floor_self import (  # noqa: F401
         _DEV_MODE_CONFIRM_FLAG,
+        _GIT_PAGER_CONFIG_KEY_RE,
         _RAW_ASSIGNMENT_RE,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
@@ -181,9 +182,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SELF_IMPORT_RE,
         _SELF_MODULE_SPELLINGS,
         _bare_kill_raw_bodies,
+        _env_sets_git_pager,
+        _git_args_set_pager,
+        _git_command_sets_pager,
         _is_credential_mint,
         _is_dev_mode_out_of_root_confirm,
+        _is_git_pager,
         _is_kill_by_name_program,
+        _is_noop_pager_value,
         _is_self_cloud_destructive,
         _is_self_gateway_restart,
         _is_self_kill,
@@ -192,6 +198,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_self_restart,
         _is_self_skills_authority_retire,
         _is_self_update,
+        _join_quoted_newlines,
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
@@ -207,6 +214,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SelfModuleScan,
         _shell_payload_sources,
         _static_substitution_output,
+        _strip_heredoc_bodies,
+        _strip_line_comments,
     )
     from kiro_crew.security.argv_floor_ssh import (  # noqa: F401
         _ARITH_INT_LITERAL_RE,
