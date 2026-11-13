@@ -587,49 +587,61 @@ async def record_person_steer_result(
                 error=STEER_ITEM_TOO_LARGE,
             )
             return "", STEER_ITEM_TOO_LARGE
-        snapshot = await asyncio.to_thread(
-            functools.partial(work_ledger.snapshot_for_write, board_key, item_id=item_id)
-        )
-        try:
-            result = await asyncio.to_thread(
-                functools.partial(
-                    work_ledger.apply_person_steer, board_key, item_id, text, id_salt=id_salt
+
+        # Commit then record as one drained transaction, like the worker-report
+        # route: once ``apply_person_steer`` commits the event, a cancellation
+        # (shutdown) must not land between it and ``on_work_recorded``, or the
+        # steer event would sit in the cache with no crew-log entry and no undo,
+        # and the next rebuild would silently drop it. Draining finishes the
+        # append-or-restore before the cancellation is re-raised.
+        async def _commit_and_record() -> tuple[str, str]:
+            snapshot = await asyncio.to_thread(
+                functools.partial(work_ledger.snapshot_for_write, board_key, item_id=item_id)
+            )
+            try:
+                result = await asyncio.to_thread(
+                    functools.partial(
+                        work_ledger.apply_person_steer, board_key, item_id, text, id_salt=id_salt
+                    )
                 )
+            except WorkLedgerError:
+                _audit(
+                    board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_ITEM
+                )
+                return "", STEER_NO_ITEM
+            if result is None:
+                return "", STEER_ITEM_CLOSED
+            item, event = result["item"], result["event"]
+            board = await asyncio.to_thread(work_ledger.read_conductor, board_key)
+            established, board = await _board_header(board_key, board)
+            landed = established and await asyncio.to_thread(
+                crew_log_emit.on_work_recorded,
+                unit,
+                _entry_with_baseline(
+                    board_key,
+                    item,
+                    board,
+                    actor="person",
+                    by=board_key,
+                    action="steer",
+                    item_id=item.item_id,
+                    generation=getattr(board, "generation", None) or None,
+                    event=event.text,
+                    event_kind="steer",
+                    event_id=event.id or None,
+                    event_ts=event.ts or None,
+                ),
             )
-        except WorkLedgerError:
-            _audit(board_key, "crew_mode.steer", "denied", resources=item_id, error=STEER_NO_ITEM)
-            return "", STEER_NO_ITEM
-        if result is None:
-            return "", STEER_ITEM_CLOSED
-        item, event = result["item"], result["event"]
-        board = await asyncio.to_thread(work_ledger.read_conductor, board_key)
-        established, board = await _board_header(board_key, board)
-        landed = established and await asyncio.to_thread(
-            crew_log_emit.on_work_recorded,
-            unit,
-            _entry_with_baseline(
-                board_key,
-                item,
-                board,
-                actor="person",
-                by=board_key,
-                action="steer",
-                item_id=item.item_id,
-                generation=getattr(board, "generation", None) or None,
-                event=event.text,
-                event_kind="steer",
-                event_id=event.id or None,
-                event_ts=event.ts or None,
-            ),
-        )
-        if not landed:
-            await _refuse_unrecorded(
-                board_key, "crew_mode.steer", item.item_id, board_key, snapshot
-            )
-            return "", STEER_NOT_RECORDED
-        await asyncio.to_thread(_mark_recorded, board_key, item.item_id)
-        _audit(board_key, "crew_mode.steer", "ok", resources=item.item_id)
-    return item.item_id, ""
+            if not landed:
+                await _refuse_unrecorded(
+                    board_key, "crew_mode.steer", item.item_id, board_key, snapshot
+                )
+                return "", STEER_NOT_RECORDED
+            await asyncio.to_thread(_mark_recorded, board_key, item.item_id)
+            _audit(board_key, "crew_mode.steer", "ok", resources=item.item_id)
+            return item.item_id, ""
+
+        return await _drain_before_cancelling(_commit_and_record())
 
 
 # ── the person's answer to a worker's approval ask ───────────────────────
