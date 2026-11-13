@@ -314,7 +314,7 @@ def _verify_operational(
         ui.detail(f"Verification code: {prompt.code}")
     login.resume_login_daemon(instance_id, profile, region, target=target)
     try:
-        with ui.Spinner("Waiting for sign-in approval…"):
+        with ui.Spinner(f"Waiting for sign-in approval (up to {login.signin_wait_limit()})…"):
             signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
     finally:
         prompt.close()
@@ -701,15 +701,17 @@ def launch(
                 ui.detail(f"Verification code: {prompt.code}")
             ui.info("Approve in the browser to finish sign-in…")
             try:
-                with ui.Spinner("Waiting for sign-in approval…"):
+                with ui.Spinner(
+                    f"Waiting for sign-in approval (up to {login.signin_wait_limit()})…"
+                ):
                     signed = login.wait_until_logged_in(instance_id, profile, region, target=target)
             finally:
                 prompt.close()
             if signed:
                 ui.ok("Signed in.")
             else:
-                ui.warn("Sign-in not detected yet — you can finish it later.")
-                ui.detail("Re-run: kirocrew cloud connect (then sign in from the dashboard/SSM).")
+                ui.warn(f"Sign-in not approved within {login.signin_wait_limit()}.")
+                ui.detail(f"Sign in later with: {target.login_command()} (it shows a new code).")
         else:
             prompt.close()
             if prompt.identity_mismatch:
@@ -744,7 +746,7 @@ def launch(
     if signin_state == "unsigned":
         ui.warn(
             "Kiro backend is not signed in — new chats will error until you "
-            "sign in. Run: kirocrew cloud login"
+            f"sign in. Run: {target.login_command()}"
         )
 
     steps.step("Open the dashboard")
