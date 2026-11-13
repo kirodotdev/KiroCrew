@@ -1717,7 +1717,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _breaker_threshold,
     )
     from kiro_crew.messaging.dispatch_tools import (  # noqa: F401
-        _GUEST_RESET_TIMEOUT_SECS,
         _guest_resets_failed,
         _guest_spec_repair_tasks,
         _guest_spec_repairs_finished,
