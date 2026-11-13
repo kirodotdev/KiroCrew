@@ -129,6 +129,25 @@ class TestAddSourceFolder:
                 })
             assert resp.status == 403
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source_type", ["local_folder", "local_file"])
+    async def test_an_unencodable_name_is_a_400_not_a_500(self, store, tmp_path, source_type):
+        # JSON's \ud800 decodes to a str UTF-8 cannot encode, and the insert
+        # binds the name as UTF-8, so it answered 500 before.
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "a.md").write_text("x")
+        uri = str(vault) if source_type == "local_folder" else str(vault / "a.md")
+        watcher = MagicMock()
+        watcher._folder_watcher._walk = MagicMock(return_value=[])
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            resp = await client.post("/api/knowledge/sources", json={
+                "name": "n\ud800", "source_type": source_type, "uri": uri
+            })
+            assert resp.status == 400
+            assert (await resp.json()).get("code") == "text_not_encodable"
+        assert store.db.execute("SELECT COUNT(*) FROM sources").fetchone()[0] == 0
+
 
 class TestConfirmSource:
     @pytest.mark.asyncio
