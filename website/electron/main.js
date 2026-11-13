@@ -74,6 +74,17 @@ const {
   resumeCrewCompanion,
 } = require("./crew-companion/index");
 const { hostsDashboard, openDashboardSession } = require("./dashboard-session");
+// A session opened from outside the dashboard (a Crew Companion notification, an
+// app window) is a user-intent show: unhide the app a fullscreen tray-close hid,
+// then bring it in front, as the summon hotkey does.
+const SURFACE_APP = {
+  showApp: () => {
+    if (process.platform === "darwin" && typeof app.show === "function") app.show();
+  },
+  focusApp: () => {
+    if (process.platform === "darwin") app.focus({ steal: true });
+  },
+};
 const { openExternalSafely } = require("./external-scheme");
 const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
@@ -917,6 +928,7 @@ app.whenReady().then(async () => {
       fetchGatewayAuth: () => fetchMochiGatewayAuth(BACKEND_URL),
       glog,
       getDashboardWindow: () => windows.focusedDashboardWindow() || null,
+      surfaceApp: SURFACE_APP,
     });
   } catch (error) {
     glog("crew-companion: init failed — " + (error && error.message));
@@ -931,7 +943,7 @@ app.whenReady().then(async () => {
       log: glog,
       displayMemoryPath: path.join(app.getPath("userData"), "app-window-displays.json"),
       showDashboardSession: (slotKey) => openDashboardSession(
-        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey,
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
       ),
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
     });
