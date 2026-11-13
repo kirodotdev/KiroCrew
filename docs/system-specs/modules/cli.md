@@ -1058,6 +1058,13 @@ choosing one. For a new launch, the generated tag is
 written to the launch record (`cloud_launch_state.json`) before the long
 CloudFormation deploy starts, so an
 interrupted provisioning run can be found on the next launch attempt.
+With no `--region` passed, no crew on record (`LaunchState.last_tag` empty) and the
+Region resolving to the default `us-east-1` (the same check `cloud doctor` makes),
+`cloud launch` (so `kirocrew setup`'s launch step too) and `cloud list` warn that
+they use that default, that a Region set in the dashboard (Settings > Remote Crew, a
+browser preference) is not used, and the full `kirocrew cloud <verb> --region
+<region>` command. A crew on record silences it; `destroy` of a crew in `us-east-1`
+clears the tag and brings it back.
 
 Launch and connect require the local AWS Session Manager plugin for
 `AWS-StartPortForwardingSession`. If `session-manager-plugin` is missing,

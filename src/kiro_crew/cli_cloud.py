@@ -49,6 +49,28 @@ def _resolve(args: argparse.Namespace) -> tuple[str, str]:
     return profile, region
 
 
+def _region_is_unchosen_default(args: argparse.Namespace, region: str) -> bool:
+    """Whether *region* is the default only because nothing chose one.
+
+    ``--region`` chooses a Region, and so does a crew the last launch left on record.
+    """
+    return (
+        not getattr(args, "region", "")
+        and region == DEFAULT_REGION
+        and not LaunchState.load().last_tag
+    )
+
+
+def _note_unchosen_region(args: argparse.Namespace, region: str, verb: str) -> None:
+    """Say that an unchosen Region is the default, since no verb reads the dashboard's."""
+    if _region_is_unchosen_default(args, region):
+        ui.warn(f"No --region given: using Kiro Crew's default Region {region}.")
+        ui.detail(
+            "A Region set in the dashboard (Settings > Remote Crew) is not used here; "
+            f"run `kirocrew cloud {verb} --region <region>` to use it."
+        )
+
+
 def _resolve_tag(args: argparse.Namespace) -> str:
     """Resolve the instance tag: explicit --tag, else the last-launched tag."""
     tag = getattr(args, "tag", "") or ""
@@ -140,6 +162,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
     except ValidationError as exc:
         ui.fail(f"Invalid launch option: {exc}")
         return 2
+    _note_unchosen_region(args, region, "launch")
     return wizard.launch(
         profile=profile,
         region=region,
@@ -158,6 +181,7 @@ def _cloud_launch(args: argparse.Namespace) -> int:
 
 def _cloud_list(args: argparse.Namespace) -> int:
     profile, region = _resolve(args)
+    _note_unchosen_region(args, region, "list")
     try:
         rows = ec2.list_instances(profile, region)
     except AWSError as exc:
@@ -692,12 +716,7 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
     reach = iam.reachability_check(profile, region)
     if reach["reachable"]:
         ui.ok(f"AWS reachable — account {reach['account']} · {region}")
-        # Only an unchosen default: --region, or a crew the last launch left there, chose it.
-        if (
-            not getattr(args, "region", "")
-            and region == DEFAULT_REGION
-            and not LaunchState.load().last_tag
-        ):
+        if _region_is_unchosen_default(args, region):
             configured = aws.configured_region(profile)
             if configured and configured != region:
                 ui.warn(
