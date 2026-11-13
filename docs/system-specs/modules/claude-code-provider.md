@@ -461,6 +461,17 @@ missed: the seed then
 omits Crew's list as it does on a cold cache, so a versioned `[1m]` pick can resolve
 to the 200K window under that policy.
 
+The model-substitution retry is the one case that writes `model` on a cold cache.
+When `session/new` returns the policy advisory ("Model X is restricted ... Using Y
+instead") with no session, `_new_session_following_substitution` adopts Y and re-seeds
+with `model` set to Y as the backend spelled it. Without that key the user's own
+`settings.json` still names X, so the retry would be refused the same way. That is
+the state of every install whose pinned model is restricted from its first session,
+because no `session/new` has ever succeeded to warm the cache. The adapter reads
+`ANTHROPIC_MODEL` ahead of every settings file, so a restricted id set there is not
+replaced by this re-seed. Pinned by
+`test/test_acp_client_model_substitution.py::TestSubstitutionFollow::test_retry_on_cold_cache_seeds_the_substitute_model`.
+
 With `agent.model` at `auto` the seed writes no `model` key, so the adapter takes the
 model from the user's own settings (`ANTHROPIC_MODEL`, then `settings.model`). After
 `session/new` or `session/load`, Crew sends that reported id back to the adapter.
