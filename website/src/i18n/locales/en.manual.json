@@ -7808,6 +7808,7 @@
       "diff_env_added": "Env added: {{names}}",
       "diff_env_removed": "Env removed: {{names}}",
       "remove_mark": "Remove",
+      "stop_sharing": "Don't share this server",
       "footprint_failed": "Could not read how much memory MCP servers use.",
       "footprint_owner_only": "Memory figures are visible to the crew owner only.",
       "review_what_approve_does": "Approve: one copy runs this for all chats, outside their sandbox. Skip: it keeps running inside each chat.",

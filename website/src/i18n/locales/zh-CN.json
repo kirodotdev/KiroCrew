@@ -16209,6 +16209,7 @@
       "diff_env_added": "新增环境变量：{{names}}",
       "diff_env_removed": "删除环境变量：{{names}}",
       "remove_mark": "移除",
+      "stop_sharing": "不共享此服务器",
       "footprint_failed": "无法读取 MCP 服务器的内存占用。",
       "footprint_owner_only": "只有 crew 所有者可以查看内存数据。",
       "review_what_approve_does": "批准：为所有聊天只运行一份，在每个聊天的沙盒之外运行。跳过：它继续在每个聊天里各自运行。",
