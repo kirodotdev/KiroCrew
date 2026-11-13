@@ -33,6 +33,17 @@ describe('VoicePlaybackBar', () => {
     expect(screen.queryByTestId('voice-playback-bar')).toBeNull()
   })
 
+  it('wears the dock glass so the transcript behind it cannot show through the label', () => {
+    const store = mount()
+    act(() => { store.dispatch(setVoicePlaying(true)) })
+    const pane = screen.getByRole('status').parentElement!
+    // `glass-thick` is the blur-plus-tint step the other bars above the composer wear;
+    // a bare translucent tint is what let the text underneath bleed into the label.
+    expect(pane.classList.contains('glass-thick')).toBe(true)
+    expect(pane.classList.contains('glass-accent')).toBe(true)
+    expect(pane.className).not.toMatch(/\bbg-accent-subtle\b/)
+  })
+
   it.each([
     ['preparing', setVoicePreparing],
     ['playing', setVoicePlaying],
