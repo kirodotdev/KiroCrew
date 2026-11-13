@@ -244,33 +244,87 @@ def _ends_argv(token: str) -> bool:
     return "|" in token or ";" in token
 
 
-def _substitution_bodies(text: str) -> "list[str]":
-    """The body of each command substitution in *text*.
+_SUBSTITUTION_OPENERS = ("<(", ">(", "$(", "`")
 
-    ``$(...)`` is scanned with paren nesting so a nested substitution closing
-    first does not truncate the outer body; backticks are taken pairwise.  Only
-    the BODY is returned -- a bare ``kill`` must not be attributed a name that
-    merely appears in a LATER, unrelated command of the same line.
 
-    The nesting walk is QUOTE-AWARE, through the same
-    :func:`_matching_close_paren` span the git-publish boundary walk uses. A
-    private, quote-unaware copy of it truncates the body at a QUOTED ``)``, and
-    that loses the nested command entirely rather than merely mis-sizing the span:
-    ``git push origin my-feature > >(X=')' git push origin main)`` extracts the
-    body ``X='``, so the nested publish of a protected branch is never scanned
-    and ``is_denied`` returns None for a command bash executes. An UNPROVEN span
-    yields the whole remainder, which is the fail-closed direction -- scanning
-    text that is not really in the body can only add findings.
+def _only_single_quoted_openers(text: str) -> bool:
+    """True when every quote in *text* closes and every substitution opener in it sits
+    inside single quotes (``'...'`` or ``$'...'``), so bash opens no substitution."""
+    state = 0
+    for step in _iter_shell_chars(text):
+        state = step.state
+        if step.state == 1:  # inside '...' or $'...', the opening quote included
+            continue
+        for at in range(step.offset, step.offset + len(step.text)):
+            if text.startswith(_SUBSTITUTION_OPENERS, at):
+                return False
+    return state == 0
 
-    Quoting was not the whole of it. That span helper counted a ``)`` that shell
-    COMMAND GRAMMAR also puts there as an ordinary character, and two such
-    spellings were measured allowing a payload this module still refuses:
-    a ``#`` comment (``$(: # )`` closes on a later line) and a ``case`` pattern
-    (``$(case x in x) printf token;; esac)``). Both truncated the body before the
-    verb, so the value assembled from it was never recognised. The closer for the
-    BACKTICK form reads the same state machine now too, so the two spellings
-    cannot disagree.
+
+#: The message flags whose single-quoted value the program stores as text and never
+#: runs, per ``(first word, subcommand words)``.
+_MESSAGE_FLAGS: "dict[tuple[str, ...], tuple[str, ...]]" = {
+    ("git", "commit"): ("-m", "--message"),
+    ("git", "tag"): ("-m", "--message"),
+    **{
+        ("gh", group, verb): ("-b", "--body", "-t", "--title")
+        for group in ("pr", "issue")
+        for verb in ("create", "edit", "comment")
+    },
+}
+
+
+def _is_message_flag_command(text: str) -> bool:
+    """True when *text* is ONE simple ``git commit|tag`` or ``gh pr|issue
+    create|edit|comment`` command, its first word literally ``git``/``gh`` with no
+    global option before the subcommand, and every word holding a substitution
+    opener is the value of a message flag (``-m V``, ``-mV``, ``--message V``,
+    ``--message=V``; ``--body``/``-b``/``--title``/``-t`` for gh), with that value
+    exactly one bare single-quoted word."""
+    if any(step.active and step.char in ";&|(){}\n" for step in _iter_shell_chars(text)):
+        return False
+    words = _split_shell_words(text)
+    flags = _MESSAGE_FLAGS.get(tuple(words[:2])) or _MESSAGE_FLAGS.get(tuple(words[:3]))
+    if flags is None:
+        return False
+    i = 3 if words[0] == "gh" else 2
+    while i < len(words):
+        word = words[i]
+        if word in flags:
+            i += 1  # the next word is the flag's value
+            word = words[i] if i < len(words) else ""
+        else:
+            for flag in flags:
+                prefix = flag + "=" if flag.startswith("--") else flag
+                if word.startswith(prefix):
+                    word = word[len(prefix) :]
+                    break
+            else:
+                if any(opener in word for opener in _SUBSTITUTION_OPENERS):
+                    return False
+        if any(opener in word for opener in _SUBSTITUTION_OPENERS) and not (
+            word.startswith("'") and word.endswith("'") and word.count("'") == 2
+        ):
+            return False
+        i += 1
+    return True
+
+
+def _substitution_bodies(text: str, *, raw_source: bool = False) -> "list[str]":
+    """Return substitution bodies, not the unrelated commands after their closers.
+
+    Shared closers track quotes, nesting, comments and case arms; an unproven span
+    yields the whole remainder. In *raw_source*, a message-flag command
+    (:func:`_is_message_flag_command`) whose every opener sits inside single quotes
+    has no bodies, as in bash. That holds only for text with no ``$`` anywhere,
+    no ``#``, ``<<``, backslash or control byte (a newline, or a sentinel a caller
+    masked in) and whose every quote closes. Any other text, including text with a
+    live opener anywhere, gets the quote-blind openers for the whole text.
     """
+    if raw_source and not any(m in text for m in ("#", "<<", "$", "\\")):
+        if not any(ch < " " for ch in text) and _only_single_quoted_openers(text):
+            if _is_message_flag_command(text):
+                return []
     bodies: list[str] = []
     i = 0
     while i < len(text):
