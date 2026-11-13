@@ -124,7 +124,7 @@ Legend: ✅ met, ❌ not met, ❓ unknown (not measured), ➖ does not apply, �
 | R-MOD-3 | ❓ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | KAS #30003; advertised-selection harnesses `ADVERTISED_MODEL_SELECTION` `backends_models.py` |
 | R-SUB-1 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | offered only where `SESSION_SHARING` (`agent_sdk/backends_sessions.py`); others get dedicated sessions, so the rule holds |
 | R-SUB-2 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | codex #23094, claude #30085, kiro/KAS native |
-| R-SUB-3 | ➖ | ✅ | ✅ | ✅ | ➖ | ➖ | ➖ | ➖ | ➖ | `MATE_WORKER_KIT` = {kas, claude, codex} `agent_sdk/backends_members.py`; others fall back to KAS (H17) |
+| R-SUB-3 | ➖ | ✅ | ✅ | ✅ | ➖ | ➖ | ✅ | ➖ | ➖ | `MATE_WORKER_KIT` = {kas, claude, codex, pi} `agent_sdk/backends_members.py`; others fall back to KAS (H17) |
 | R-LIFE-1 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `SESSION_EVICTION` = {kiro, kas, codex} `backends_sessions.py`; claude `CLIENT_NEW_CONVERSATION` |
 | R-LIFE-2 | ✅ | ✅ | ✅ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | KAS deletes (`acp/harness/base.py`); codex rollout delete `acp/harness/codex.py`; claude `acp/client_claude_session.py`; kiro sweep (#31395) |
 | R-LIFE-3 | ✅ | ✅ | ❓ | ✅ | ❓ | ❓ | ❓ | ❓ | ❓ | `require_replay=self.is_kas_backend` `providers/acp_runtime_start.py`; kiro/codex answer not-found |

@@ -714,7 +714,7 @@ custom-rules:
         session it returns None and changes nothing, so it is not an H13 change
         to the kiro construction path.
         A pin this gateway CAN start but that cannot run a full crewmate (no
-        crewmate chat or no worker kit: goose, opencode, strands, pi, deepseek, copilot)
+        crewmate chat or no worker kit: goose, opencode, strands, deepseek, copilot)
         is the other half of H17 (rfc-crewmate-harness-follows-settings.md
         5.8): it is not refused, and that crewmate's DM chat and workers run on
         KAS, with an error log line and an error bell note naming the crewmate,

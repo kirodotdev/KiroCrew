@@ -153,21 +153,26 @@ set, build their `session/new` `mcpServers` array from `session_mcp_projection`,
 which reads the seam for a worker session by its key, so the worker's own servers
 reach it; a
 worker whose base is absent or unreadable is refused there (`WorkerKitUnreadable`),
-as on KAS, rather than run on the control plane alone. On codex the worker's
+as on KAS, rather than run on the control plane alone. pi, the one host in the set
+with no mirror, reads the same projection by the worker's key in Crew's own resolver
+(`AcpClient._mirrorless_member_mounts`): the worker's servers ride the per-session
+handoff to the gate extension, its pooled stubs pass the worker spec's `tools`
+allowlist, and an unreadable kit or a single-tool limit raises there instead of
+running the worker as plain chat. On codex the worker's
 servers are not the only ones: codex also starts the servers in the operator's
 own `config.toml` beside them. A mounted server takes the place of a
 `config.toml` server with the same name (`DISABLE_MCP_CONFIG_FILTERING`). Crew
 turns the `config.toml` servers off only for a `kirocrew-lite` background
 session, and codex-acp 2.3.0 has no per-session channel that would narrow them
-for a worker (`acp/harness/codex.py`, the `CODEX_CONFIG` residuals). On claude
-and codex the worker's
+for a worker (`acp/harness/codex.py`, the `CODEX_CONFIG` residuals). On claude,
+codex and pi the worker's
 prompt reaches the agent in the `[AGENT SYSTEM PROMPT]` block, which reads the same seam
 by the session key (`context_assembly.agent_spec._crewmate_worker_prompt`), so the
 worker's own principles and the Bot's prompt follow the base there too. The
 Bot's addition is measured against the on-disk worker base, as KAS's is, so a
 file that repeats that base (one copied from the default template) adds nothing. Only
 the hosts in `ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT`, whose mirrors project no
-spec prompt, get that addition; KAS's block stays the base, as its wire spec carries both. The
+spec prompt (pi has no mirror and reads none), get that addition; KAS's block stays the base, as its wire spec carries both. The
 rest of the spec reaches either only as far as the member path carries it, and the
 columns above say what that is. kiro-cli reads `--agent` off disk at spawn, from
 `~/.kiro/agents/`, so it cannot find the worker spec and is not in the set. A
@@ -802,7 +807,7 @@ same commit.
 | A remote MCP sign-in is offered only for the server the user names, and stays signed in across sessions. Unknowns: #29275 item 9. Pinned by `test/test_kas_mcp_sign_in.py`, `test/test_kas_mcp_secret_storage.py`, `test/test_chat_runner_mcp_sign_in_ask.py` | unknown | ok: host-auth callback (`ACP_BACKENDS_HOST_AUTH_CALLBACK`) and a stored-grant vault | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown |
 | A changed MCP server set reaches a RUNNING session. Pinned by `test/test_mcp_hot_reload.py`, `test/test_acp_strands_mcp_relaunch.py` | ok: file watcher (`ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`) | ok: projection re-sent (`ACP_BACKENDS_MCP_WIRE_REINJECT`) | ok: relaunch and `session/load` (`ACP_BACKENDS_MCP_RELAUNCH_RELOAD`) | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only | gap: next session only |
 | A spec with `"tools": []` gets no tools. Pinned by `test/test_agent_sdk_capabilities.py`, `test/test_pi_zero_tool_ban.py`, `test/test_claude_zero_tools.py`, `test/test_codex_zero_tools.py` | ok (`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`) | ok | ok | ok: no tool is mounted, so no settings allow rule can pre-approve one (`claude/zero-tools-refused-live.jsonl`) | partial: the session handle refuses every permission request (`AcpSessionHandle._deny_zero_tools`), but codex reads files, searches the web, runs sandboxed commands and calls self-approved tools of the MCP servers in the operator's `config.toml` without asking; a session-start notice says so | ok | gap: the refusal does not run (`honors_zero_tool_ban` is False): `memory`, `history` and `task` never ask, so a zero-tool spec could not be held to zero (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`) | ok | ok | ok | gap: it reads files without a permission request | gap: its file reads run without a permission request (`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`), so it is not in `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN` |
-| A Bot's worker runs on its Bot's spec and template policy. Pinned by `test/test_mate_worker_harnesses.py` | gap: refused before spawn | ok (`ACP_BACKENDS_MATE_WORKER_KIT`, `agent_sdk/backends_members.py`) | gap: refused (credential mask) | ok | ok (`codex/worker-kit-live.jsonl`) | gap: refused | gap: refused | gap: refused | gap: refused | gap: refused | gap: refused | gap: refused |
+| A Bot's worker runs on its Bot's spec and template policy. Pinned by `test/test_mate_worker_harnesses.py` | gap: refused before spawn | ok (`ACP_BACKENDS_MATE_WORKER_KIT`, `agent_sdk/backends_members.py`) | gap: refused (credential mask) | ok | ok (`codex/worker-kit-live.jsonl`) | gap: refused | gap: refused | ok (`pi/worker-kit-live.jsonl`) | gap: refused | gap: refused | gap: refused | gap: refused |
 | A per-template MCP addition reaches a session of an agent Crew does not own. Pinned by `test/test_template_mcp_additions.py` | gap: no per-session channel for a spec Crew does not own | ok (`ACP_BACKENDS_TEMPLATE_ADDITIONS_AT_SPAWN`) | gap: no live capture | ok | ok | gap: no live capture | gap: no live capture | gap: broker stubs only | gap: no live capture | gap: no live capture | gap: no live capture | gap: no live capture |
 | `/compact` works, and the auto-compact threshold is acted on. Pinned by `test/test_compaction_other_backends.py`, `test/test_auto_compact_gate.py` | ok (`ACP_BACKENDS_COMPACT`, `agent_sdk/backends_turns.py`) | ok: `/compact`, and the engine compacts on its own (`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`) | gap: no compaction path; the threshold is declined with a warning | ok | ok | ok | ok | ok | ok | gap: the session is recycled at the threshold (`ACP_BACKENDS_CONTEXT_RECYCLE`) | ok | gap: no verified compaction command; a manual `/compact` is declined |
 | `/clear` starts a fresh conversation. Pinned by `test/test_slash_command_no_channel.py` | ok: native | ok: answered by the dashboard (`ACP_BACKENDS_LOCAL_CLEAR`) | ok: answered by the dashboard | ok: answered by the dashboard (`ACP_BACKENDS_LOCAL_CLEAR`) | ok: answered by the dashboard | ok: answered by the dashboard | ok: answered by the dashboard | ok: answered by the dashboard | ok: the harness runs it | ok: answered by the dashboard | ok: answered by the dashboard | ok: answered by the dashboard |

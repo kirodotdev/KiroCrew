@@ -16,6 +16,7 @@ the corpus does and does not prove.
 | `steering-live.jsonl` | live | the initialize, `session/new` and set-model responses, a `tool_call` for a `bash` sleep, the `session/request_permission` forwarded from Kiro Crew's gate extension, the updates through `completed`, the extension's consumed-steer notification (an `agent_message_chunk` carrying `_meta.piAcp.notify`), the model's answer to the steer, `usage_update`, and the `end_turn` result |
 | `saved-spec-projection-live.jsonl` | live | the initialize and `session/new` responses of a crew member session on a saved spec the client confirmed, then one turn: a `tool_call` for the spec's own `mcp__probe_server__echo`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the server's answer, and the result |
 | `write-edit-live.jsonl` | live | a slice: the initialize response, then the `tool_call` and updates of a `write` call (`rawInput` `{path, content}`) and an `edit` call (`{path, edits}`), each naming the file relative to the working directory, and the completed updates' diff blocks; the shapes `dashboard/chat_turn/file_change_shapes.py` reads for the file-change chip |
+| `worker-kit-live.jsonl` | live | the initialize and `session/new` responses of a Bot's worker session, then one turn: a `tool_call` for the Bot's own `mcp__pixel_probe__probe_codeword`, the `session/request_permission` forwarded from the gate extension, the update through `completed` carrying the server's answer, the reply, `usage_update` and `session_info_update` frames, and the result |
 
 Every file is captured off `pi-acp` 0.0.34 spawning `pi` 1.4.0, the pair the Real
 Adapter lane pins in `test/real_adapters/package.json` (installed with `npm ci`
@@ -131,6 +132,38 @@ The recording host refuses user namespaces, so as for the zero-tool capture the
 routing's sandbox preflight was replaced with "no mask"; the gatewayd pooling was
 replaced by the spec's own entry, so the call is observable at the server. The seal,
 read-back, envelope nonce, permission path and member confirmation ran as shipped.
+
+## What the worker-kit capture establishes
+
+`worker-kit-live.jsonl` is the evidence `ACP_BACKENDS_MATE_WORKER_KIT` and
+`ACP_BACKENDS_MATE_WORKER_PROMPT_IN_CONTEXT` hold pi to. Taken off `pi-acp` 0.0.34
+spawning `pi` 1.4.0, both installed by `npm ci` in `test/real_adapters`, through Kiro
+Crew's own `PiLaunch` (the gate extension sealed and read back, the launcher, the
+per-session MCP handoff), against a scripted model named `scripted` on the loopback
+interface in pi's own `models.json`. The session was a Bot's WORKER: its key was
+recorded as Bot `pixel`'s worker, and its spec was `mate_worker.worker_session_spec`, a
+worker base (prompt `You are the worker.`, tools `[read]`, no servers) merged with
+`pixel`'s file (tools `[@pixel-probe]`, one stdio server whose one tool returns a
+codeword, and a prompt telling the worker to call it when asked for the codeword).
+
+The array was not written by hand: `AcpClient(acp_backend="pi")`'s own resolver
+composed `pixel-probe` for the worker's key, and the gate extension's registration
+receipt named it; the same resolve with no key, or for a key not recorded as a
+worker, composed nothing. The prompt was the `[AGENT SYSTEM PROMPT]` block
+`context_assembly.agent_spec._crewmate_worker_prompt` built for that worker, then the
+question. The scripted model calls the Bot's tool only when the Bot's sentence is in
+the request it was sent and the tool is in that request's own tool list; both held.
+The call raised `session/request_permission` through the gate first, the server
+logged `initialize`, `notifications/initialized`, `tools/list` and `tools/call`, and
+the reply was the server's codeword.
+
+This recording host has a working namespace sandbox, so the routing's preflight, the
+read-back's wrap and the Node probe's wrap ran as shipped; the driver spawned the
+adapter from the launch plan's argv, as `test/test_pi_real_adapter.py` does. The
+Bot's file and the worker's execution record were supplied in-process, the seams the
+worker spec reads. The capture proves no single-tool limit: pi has no per-tool deny
+channel, so pi stays out of `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS` and a worker whose
+Bot switches single tools off is refused before spawn.
 
 ## What the permission capture establishes
 
