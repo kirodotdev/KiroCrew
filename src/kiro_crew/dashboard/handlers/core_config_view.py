@@ -510,7 +510,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         await _hot_apply_after_write()
         return web.json_response({"ok": True, "restart_required": restart_required})
 
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     return web.json_response(_config_body(cfg, await _kas_in_use(cfg)))
 
 
