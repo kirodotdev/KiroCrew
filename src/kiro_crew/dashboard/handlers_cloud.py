@@ -37,9 +37,10 @@ from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import launch_job as lj
 from kiro_crew.cloud import login as login_mod
+from kiro_crew.cloud import sizes
 from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud import ssm
-from kiro_crew.cloud.aws import AWSError, CloudActionDenied
+from kiro_crew.cloud.aws import AWSError, CloudActionDenied, service_error_code
 from kiro_crew.cloud.launch_engine import RealLaunchEngine
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError, target_from_whoami
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
@@ -858,6 +859,36 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    tier = sizes.TIERS_BY_KEY.get(size_key)
+    if subnet_id and tier is not None:
+        # The same check ec2.deploy runs, here so a subnet the launch would refuse is
+        # reported under its field before anything is set up. Outside the launch lock:
+        # these are AWS calls, and holding it would stall cancel and the sign-in retry.
+        # An unknown size skips it; store.create below refuses that request.
+        instance_type = tier.instance_type
+
+        def _check_subnet() -> None:
+            region = ec2.validate_region(str(body.get("region", "")) or lj._default_region())
+            profile = ec2.validate_profile(str(body.get("profile", "")))
+            ec2.resolve_explicit_subnet(subnet_id, profile, region, instance_type)
+
+        try:
+            await _in_executor(_check_subnet)
+        except ValidationError as e:
+            _audit("launch_create", "denied", error=str(e))
+            return web.json_response(
+                {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
+            )
+        except AWSError as e:
+            # Only the subnet's own refusals go under its field: the check's own, or AWS
+            # naming the id. A credential, permission or network failure is the account's.
+            if e.stderr and not service_error_code(e.stderr).startswith("InvalidSubnetID"):
+                _audit("launch_create", "failure", error=str(e))
+                return web.json_response({"error": str(e), "code": "aws_call_failed"}, status=502)
+            _audit("launch_create", "denied", error=f"invalid subnet: {e}")
+            return web.json_response({"error": str(e), "code": "invalid_subnet"}, status=400)
+        except SandboxUnavailableError as exc:
+            return _sandbox_unavailable_response("launch_create", exc, "The subnet check")
     # One launch at a time. Without this a double-click or a retried request
     # creates two jobs with two tags and two CloudFormation stacks — two billed
     # instances, and the client cannot undo that after the fact. The check, the

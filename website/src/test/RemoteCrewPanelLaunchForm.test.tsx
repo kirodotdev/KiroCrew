@@ -2,7 +2,7 @@
  * The built-in launch form: an empty region field reads as empty and blocks
  * Launch, a launch that went out cannot be repeated by a second click on the
  * same settings, and the checklist says when it answers for other values than
- * the ones typed.
+ * the ones typed, and a subnet the gateway refuses is shown under its field.
  */
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -50,7 +50,7 @@ vi.mock('../api/client', () => {
     },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 
 const PREFLIGHT_OK = {
   reachable: true, account: '1234•••7890', arn: 'arn:aws:iam::x:user/dev',
@@ -297,6 +297,31 @@ describe('RemoteCrewPanel launch form', () => {
     await u.type(screen.getByRole('textbox', { name: 'Subnet ID (optional)' }), 'subnet-0123abcd')
     expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled()
     expect(api.cloudLaunch).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a refused subnet under the Subnet ID field until the field is edited', async () => {
+    const message = 'subnet subnet-0123abcd has no verified internet egress route (NAT or internet gateway).'
+    vi.mocked(api.cloudLaunch).mockRejectedValue(
+      new ApiError(400, message, JSON.stringify({ error: message, code: 'invalid_subnet' })),
+    )
+    const u = userEvent.setup()
+    await openSetup(u)
+    const subnet = await screen.findByRole('textbox', { name: 'Subnet ID (optional)' })
+    await u.type(subnet, 'subnet-0123abcd')
+    const launch = await screen.findByRole('button', { name: /^Launch$/ })
+    await waitFor(() => expect(launch).not.toBeDisabled())
+    await u.click(launch)
+
+    await waitFor(() => expect(subnet).toHaveAttribute('aria-invalid', 'true'))
+    const notice = document.getElementById(subnet.getAttribute('aria-describedby') ?? '')
+    expect(notice).toHaveTextContent(message)
+    // Shown once, under the field: not repeated in the page-top notice.
+    expect(screen.getAllByText(message)).toHaveLength(1)
+
+    await u.type(subnet, '0')
+    expect(subnet).not.toHaveAttribute('aria-invalid')
+    expect(subnet).not.toHaveAttribute('aria-describedby')
+    expect(screen.queryByText(message)).not.toBeInTheDocument()
   })
 
   it('names the missing region in the check line instead of leaving a gap', async () => {
