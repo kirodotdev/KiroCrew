@@ -343,7 +343,7 @@ class TestRegistryInstallStream:
         # Stub register_app to avoid touching real bridges
         monkeypatch.setattr(
             "kiro_crew.apps.routes.register_app",
-            lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}})(),
+            lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}, "mcp_servers": []})(),
         )
 
         async with self._make_client() as client:
@@ -558,7 +558,7 @@ class TestRegistryInstallStreamSecurity:
         )
         monkeypatch.setattr(
             "kiro_crew.apps.routes.register_app",
-            lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}})(),
+            lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}, "mcp_servers": []})(),
         )
 
         async with self._make_client() as client:
@@ -603,7 +603,7 @@ class TestRegistryInstallStreamSecurity:
         )
         monkeypatch.setattr(
             "kiro_crew.apps.routes.register_app",
-            lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}})(),
+            lambda name: type("R", (), {"to_dict": lambda self: {"ok": True}, "mcp_servers": []})(),
         )
 
         async with self._make_client() as client:

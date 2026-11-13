@@ -485,10 +485,27 @@ async def handle_enable_app(request: web.Request) -> web.Response:
                 if svc_warn:
                     resp.setdefault("warnings", []).append(_redact_warning(svc_warn))
 
+        # The record as enabled, not as read before the lock: a reinstall it waited on
+        # may have changed the servers.
+        enabled_info = await asyncio.to_thread(get_app, name) or {}
+        reach_chats = enabled_info.get("resources", "gateway") == "gateway" and bool(
+            enabled_info.get("manifest", {}).get("mcpServers")
+        )
         sel().log_api_access(
             caller="dashboard", operation="app_enable", outcome="completed", resources=name
         )
-        return web.json_response(resp)
+
+    # After the lock: a gateway-managed app's MCP servers are in the agent spec, or will be
+    # once its backend's health watch writes an HTTP one, so end as an MCP page write does
+    # and a chat already open gets them too (app-kit-platform §1).
+    if reach_chats:
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        try:
+            await _reach_sessions(request)
+        except Exception:  # noqa: BLE001 - the enable has committed
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+    return web.json_response(resp)
 
 
 async def handle_disable_app(request: web.Request) -> web.Response:

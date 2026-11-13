@@ -220,6 +220,23 @@ async def handle_registry_refresh(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _held_mcp_servers(info: dict[str, Any] | None) -> bool:
+    """Whether an open chat may hold the MCP servers of the app *info* describes: it is
+    enabled and declares ``mcpServers``."""
+    return bool(info and info.get("enabled") and (info.get("manifest") or {}).get("mcpServers"))
+
+
+async def _reach_open_chats(request: web.Request, name: str) -> None:
+    """End as an MCP page write does, so a chat already open gets *name*'s MCP change;
+    a failure is logged, since the install has committed."""
+    from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+    try:
+        await _reach_sessions(request)
+    except Exception:  # noqa: BLE001 - the install has committed
+        logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
+
+
 async def handle_registry_install(request: web.Request) -> web.Response:
     """POST /api/apps/registry/install — install an app from the registry.
 
@@ -256,7 +273,8 @@ async def handle_registry_install(request: web.Request) -> web.Response:
         # Read before the install writes the app: an app already installed makes
         # this install an update, which takes the app down to replace its files and
         # whose rewritten crons must reach the scheduler.
-        was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
+        prior = await asyncio.to_thread(get_app, name)
+        was_installed = prior is not None
         if was_installed:
             result = await _reinstall_from_registry(name, name)
         else:
@@ -318,6 +336,10 @@ async def handle_registry_install(request: web.Request) -> web.Response:
                 # adopted app takes a catalog update.
                 result.update(await _rerun_on_enable_after_update(request, result["name"]))
     result["registration"] = reg.to_dict()
+    # An update ends as handle_update_app does, so a chat already open gets the app's
+    # MCP change (app-kit-platform §1).
+    if was_installed and (reg.mcp_servers or _held_mcp_servers(prior)):
+        await _reach_open_chats(request, name)
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
     )
@@ -434,10 +456,14 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # Run install + drain concurrently. The complete lifecycle transaction —
     # install, resource registration, backend start — runs under one per-app
     # lock (install_from_registry is lock-free internally).
+    reach_open_chats = False
+
     async def _locked_install() -> dict[str, Any]:
+        nonlocal reach_open_chats
         async with app_lifecycle_lock(name):
             # Read before the install, as in handle_registry_install.
-            was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
+            prior = await asyncio.to_thread(get_app, name)
+            was_installed = prior is not None
             if was_installed:
                 r = await _reinstall_from_registry(name, name, log_lines=streaming_log)
             else:
@@ -464,6 +490,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     if was_installed:
                         # An update, as in handle_registry_install: onEnable runs again.
                         r.update(await _rerun_on_enable_after_update(request, r["name"]))
+                reach_open_chats = was_installed and bool(
+                    reg.mcp_servers or _held_mcp_servers(prior)
+                )
             return r
 
     install_task = asyncio.create_task(_locked_install())
@@ -513,7 +542,10 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         return resp
 
     # Resource registration + backend start already ran inside the locked
-    # transaction above; result carries "registration".
+    # transaction above; result carries "registration". An update ends as in
+    # handle_registry_install.
+    if reach_open_chats:
+        await _reach_open_chats(request, name)
     sel().log_api_access(
         caller="dashboard",
         operation="app_registry_install_stream",

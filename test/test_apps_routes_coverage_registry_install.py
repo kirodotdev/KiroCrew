@@ -201,7 +201,7 @@ class TestRegistryInstall:
 
         def _register(name: str) -> SimpleNamespace:
             calls.append("register")
-            return SimpleNamespace(to_dict=dict)
+            return SimpleNamespace(to_dict=dict, mcp_servers=[])
 
         monkeypatch.setattr(routes_mod, "install_from_registry", _reinstall)
         monkeypatch.setattr(routes_mod, "register_app", _register)
