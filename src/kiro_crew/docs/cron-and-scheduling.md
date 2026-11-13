@@ -309,11 +309,14 @@ The CLI has no flag for this. `kirocrew cron add` leaves `strict_schedule` at it
 | Pause | Pause button | `cron pause <id>` | `kirocrew cron pause <id>` |
 | Resume | Resume button | `cron resume <id>` | `kirocrew cron resume <id>` |
 | Run now | Run button | — | `kirocrew cron trigger <id>` |
+| Past runs | Runs view | — | `kirocrew cron history <id>` / `--all` |
 | Delete | Delete button | `cron remove <id>` | `kirocrew cron remove <id>` |
 | Delete an installer's job | Delete button | — | `kirocrew cron remove --managed-by <key>` |
 | Adopt / release | — | — | `kirocrew cron adopt <id> --session-of <slot>` / `--release` |
 
 `kirocrew cron trigger <id>` exits 0 when the run starts, 75 when the job is already running (try again later), and 1 on any other failure.
+
+`kirocrew cron history <id>` prints the job's latest runs, newest first: start time, status, duration, run id and the first line of the error or result. `-n 50` sets how many (default 20), `--status error` keeps the runs that did not succeed, `--all` reads every job's runs, `--run <run-id>` prints one full record with its trace, and `--json` prints `{"runs": [...], "total": N}`. It is read-only and hides the same credentials the Schedule page hides. Inside an agent's sandbox the run store is not readable, so the command exits 1 there instead of reporting no runs.
 
 `kirocrew cron add --managed-by <key>` registers a job for an external installer. The key is unique across the store: a second add with the same key is refused, so a re-install runs `kirocrew cron remove --managed-by <key>` first and then adds again. `kirocrew cron list` prints the key as `managed by: <key>`.
 

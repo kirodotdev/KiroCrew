@@ -627,10 +627,11 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
         "pause",
         "resume",
         "trigger",
+        "history",
         "preview",
     ):
         # Before the service below, which creates cron-history/ on a fresh data home.
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|history|preview}")
         return
 
     svc = CronService(base_dir=config_dir())
@@ -997,6 +998,12 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             # A busy job is worth retrying later, unlike a real failure, so it
             # gets its own code, 75 (EX_TEMPFAIL), a script can test without the text.
             sys.exit(75 if http_status == ALREADY_RUNNING_STATUS else 1)
+
+    elif action == "history":
+        # Local for the same facade reason as ``cron_trigger`` above.
+        from kiro_crew.cli_cron_history import cron_history
+
+        cron_history(svc, args)
 
     elif action == "preview":
         _cron_preview(args)

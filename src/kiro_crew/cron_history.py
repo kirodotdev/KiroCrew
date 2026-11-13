@@ -57,8 +57,9 @@ def _sandbox_confined() -> bool:
     """True when this process shows evidence of agent-shell confinement.
 
     ``cli.main`` pops ``KIROCREW_SANDBOX_ACTIVE`` before any subcommand runs, so
-    the launch mark it noted first is asked as well as the live probe. Used
-    only to pick a log level, never to grant anything.
+    the launch mark it noted first is asked as well as the live probe. It picks
+    a log level here, and ``kirocrew cron history`` reads an empty result as the
+    mask rather than as no runs when it is True. It never grants anything.
     """
     from kiro_crew import sandbox_launch_mark
     from kiro_crew.sandbox_unavailable import agent_confinement_evidence
