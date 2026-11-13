@@ -672,4 +672,49 @@ describe('SchedulePage cron folders', () => {
       expect(errorEl).toHaveTextContent(/could not be moved/)
     })
   })
+
+  it('clears the batch-move error once a retry of the failed jobs succeeds', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'Target', order: 1 }])
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob('j1', 'Job A'), mkJob('j2', 'Job B')],
+    })
+    vi.mocked(api).updateCron.mockRejectedValueOnce(new Error('Move failed'))
+    vi.mocked(api).updateCron.mockResolvedValue({})
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Job A')).toBeInTheDocument())
+    fireEvent.click(screen.getByLabelText('Select Job A'))
+    fireEvent.click(screen.getByLabelText('Select Job B'))
+    await openBatchMove()
+    await pickFolder('Target')
+    await screen.findByTestId('schedule-batch-move-error')
+
+    // The failed job stays selected; moving it again works.
+    await openBatchMove()
+    await pickFolder('Target')
+    await waitFor(() => expect(vi.mocked(api).updateCron).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.queryByTestId('schedule-batch-move-error')).toBeNull())
+  })
+
+  it('clears a single job move error once a retried move succeeds', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).cronFolders.mockResolvedValue([{ id: 'f1', name: 'Target', order: 1 }])
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob('j1', 'Moving Job')] })
+    vi.mocked(api).updateCron.mockRejectedValueOnce(new Error('zz-move-refused'))
+    vi.mocked(api).updateCron.mockResolvedValue({})
+    const moveViaRow = async () => {
+      fireEvent.keyDown(screen.getByLabelText('Actions'), { key: 'Enter' })
+      fireEvent.keyDown(await screen.findByText('Move to folder'), { key: 'ArrowRight' })
+      await pickFolder('Target')
+    }
+
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Moving Job')).toBeInTheDocument())
+    await moveViaRow()
+    expect(await screen.findByText(/zz-move-refused/)).toBeInTheDocument()
+    await moveViaRow()
+    await waitFor(() => expect(vi.mocked(api).updateCron).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText(/zz-move-refused/)).toBeNull())
+  })
 })
