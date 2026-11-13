@@ -18979,6 +18979,8 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Ein Ordner ohne Chats belegt eine Zeile statt zwei, und seine Schaltfläche für einen neuen Chat wandert in die Ordnerzeile",
         "folder_count_includes_subfolders": "Inhalt von Unterordnern in die Ordnerzahl einbeziehen",
         "folder_count_includes_subfolders_description": "Die Zahl eines Ordners zählt auch alles in seinen Unterordnern mit, sodass ein eingeklappter Ordner zeigt, wie viel er enthält",
+        "hide_empty_folders": "Leere Ordner ausblenden",
+        "hide_empty_folders_description": "In der Listenansicht bleiben Ordner ohne offene Sitzungen ausgeblendet, bis darin eine Sitzung erstellt oder dorthin verschoben wird, und werden beim Ziehen einer Sitzung angezeigt",
         "full_titles_on_scroll": "Vollständige Titel beim Scrollen anzeigen",
         "needs_me_hover_card": "Schnellantwort-Karte beim Hovern",
         "needs_me_hover_card_hint": "Wenn du auf einer Sitzung verweilst, die auf dich wartet, oder dort → drückst, öffnet sich eine Karte, mit der du antwortest, ohne diesen Chat zu verlassen.",
