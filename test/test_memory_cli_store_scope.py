@@ -1301,6 +1301,16 @@ class TestAVerbThatDidNothingExitsOne:
         assert exc.value.code == 1
         assert capsys.readouterr().out == "nosuch: not a declared memory store\n"
 
+    def test_backups_for_an_unknown_store_logs_no_traceback(
+        self, seeded, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The CLI's console handler shows WARNING records on stderr, so a logged
+        # resolution failure would print a traceback above the one-line answer.
+        caplog.set_level("WARNING")
+        with pytest.raises(SystemExit):
+            cc._memory_cmd(_ns(mem_action="backups", store="nosuch"))
+        assert [r.getMessage() for r in caplog.records if r.exc_info] == []
+
     def test_backups_for_a_declared_store_exits_zero(
         self, seeded, capsys: pytest.CaptureFixture[str]
     ) -> None:

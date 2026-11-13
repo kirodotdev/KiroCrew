@@ -293,8 +293,12 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
         # ``declared_store_names`` matches the order of the pass that wrote the backups.
         # ``owned_store_path`` makes an undeclared name, or a declared one whose path
         # is not that store's own file, one skipped row rather than a traceback.
-        for name in [only] if only else declared_store_names():
-            path = owned_store_path(name)
+        declared = declared_store_names()
+        for name in [only] if only else declared:
+            # An undeclared --store is answered here: ``owned_store_path`` would log
+            # its resolution failure with a traceback, which the CLI's console
+            # handler prints on stderr above the one-line answer.
+            path = owned_store_path(name) if name in declared else None
             if path is None:
                 print(f"{name}: not a declared memory store")
                 if only:
