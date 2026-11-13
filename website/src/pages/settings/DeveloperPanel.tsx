@@ -7,6 +7,7 @@ import { ContentSkeleton } from '../../components/ui'
 import { useLocalGateway } from '../../hooks/useLocalGateway'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
 import { DefaultMcpGrantsSection } from './DefaultMcpGrantsSection'
+import { SessionControlSection } from './SessionControlSection'
 import AutomaticCardSetting from '../chat/command-center/AutomaticCardSetting'
 import { i18nT } from '../../i18n/t'
 import { MCP_MANAGEMENT_PATH } from '../overview/McpShareRefusedNotice'
@@ -107,6 +108,8 @@ export function DeveloperPanel({ basePath }: { basePath?: string } = {}) {
               </SettingsSection>
               {/* The default agent's opt-in MCP sets (`DefaultMcpGrantsSection.tsx`). */}
               <DefaultMcpGrantsSection boxed />
+              {/* The agent.session_control switch (`SessionControlSection.tsx`). */}
+              <SessionControlSection />
               {localGatewaySupported && (
                 <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
                   <SettingsCard boxed>
