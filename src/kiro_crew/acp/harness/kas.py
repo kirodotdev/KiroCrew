@@ -54,6 +54,7 @@ from kiro_crew.acp.harness.base import (
     SpawnPlan,
     TeardownPolicy,
 )
+from kiro_crew.acp.harness_memory_env import apply_harness_memory_env
 from kiro_crew.acp.kas_agents import KasAgentTranslationError
 from kiro_crew.acp.kas_app_identity import resolve_app_identity_launches
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
@@ -983,6 +984,7 @@ class KasHarness(MembershipHarness):
             env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
+        apply_harness_memory_env(env)
         apply_child_env_defaults(env)
 
     @property

@@ -10696,6 +10696,11 @@
         "opencode": "OpenCode",
         "pi": "Pi",
         "strands": "Strands"
+      },
+      "harnessMemory": {
+        "label": "Harness memory",
+        "description": "Lets Kiro Agent remember what it learns across sessions and recall it in new chats. This is Kiro Agent's own memory, separate from {{productName}}'s. Takes effect when Kiro Agent restarts.",
+        "save_failed": "Could not save Harness memory. Try again."
       }
     },
     "appPage": {

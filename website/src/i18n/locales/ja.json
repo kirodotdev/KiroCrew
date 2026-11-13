@@ -15412,6 +15412,11 @@
         "save_failed": "この値を保存できませんでした。もう一度お試しください。",
         "title": "モデルプロバイダー",
         "value_missing": "参照先の値がシークレットにないため、新しい Strands セッションは拒否されます。新しい値を保存するか、削除してください。"
+      },
+      "harnessMemory": {
+        "label": "Harness メモリ",
+        "description": "Kiro Agent がセッションをまたいで学んだことを記憶し、新しいチャットで思い出せるようにします。これは Kiro Agent 自身のメモリで、{{productName}} のメモリとは別です。Kiro Agent の再起動後に反映されます。",
+        "save_failed": "Harness メモリを保存できませんでした。もう一度お試しください。"
       }
     },
     "developerPage": {

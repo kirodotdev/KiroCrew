@@ -15813,6 +15813,11 @@
         "save_failed": "Der Wert konnte nicht gespeichert werden. Versuche es erneut.",
         "title": "Modellanbieter",
         "value_missing": "Der Wert, auf den das verweist, ist nicht mehr in den Secrets, daher werden neue Strands-Sitzungen abgelehnt. Speichere einen neuen Wert oder entferne ihn."
+      },
+      "harnessMemory": {
+        "label": "Harness-Gedächtnis",
+        "description": "Lässt Kiro Agent sich über Sitzungen hinweg merken, was er lernt, und es in neuen Chats abrufen. Das ist das eigene Gedächtnis von Kiro Agent, getrennt von dem von {{productName}}. Wird wirksam, wenn Kiro Agent neu startet.",
+        "save_failed": "Harness-Gedächtnis konnte nicht gespeichert werden. Versuche es erneut."
       }
     },
     "developerPage": {

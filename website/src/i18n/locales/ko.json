@@ -15412,6 +15412,11 @@
         "save_failed": "이 값을 저장하지 못했습니다. 다시 시도하세요.",
         "title": "모델 제공자",
         "value_missing": "가리키는 값이 시크릿에 더 이상 없어 새 Strands 세션이 거부됩니다. 새 값을 저장하거나 제거하세요."
+      },
+      "harnessMemory": {
+        "label": "Harness 메모리",
+        "description": "Kiro Agent가 세션 간에 배운 내용을 기억하고 새 채팅에서 불러오게 합니다. Kiro Agent 자체의 메모리이며 {{productName}}의 메모리와 별개입니다. Kiro Agent를 다시 시작하면 적용됩니다.",
+        "save_failed": "Harness 메모리를 저장하지 못했습니다. 다시 시도하세요."
       }
     },
     "developerPage": {

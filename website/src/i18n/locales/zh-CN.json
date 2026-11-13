@@ -15412,6 +15412,11 @@
         "save_failed": "无法保存此值，请重试。",
         "title": "模型提供商",
         "value_missing": "此处引用的值已不在密钥中，因此新的 Strands 会话会被拒绝。请保存新值，或将其移除。"
+      },
+      "harnessMemory": {
+        "label": "Harness 记忆",
+        "description": "让 Kiro Agent 记住跨会话学到的内容，并在新对话中调用。这是 Kiro Agent 自己的记忆，与 {{productName}} 的记忆分开。Kiro Agent 重启后生效。",
+        "save_failed": "无法保存 Harness 记忆，请重试。"
       }
     },
     "developerPage": {
