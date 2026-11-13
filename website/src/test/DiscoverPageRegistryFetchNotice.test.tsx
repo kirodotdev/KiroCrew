@@ -48,6 +48,7 @@ vi.mock('../components/AppIcon', () => ({
 import DiscoverPage from '../pages/apps/DiscoverPage'
 
 const NOTICE = 'registry-fetch-notice'
+const CATALOG_UNREACHABLE = 'Could not reach the official app catalog, so the store is showing its offline list.'
 
 function renderPage(qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
@@ -110,6 +111,28 @@ describe('the registry fetch notice', () => {
     expect(await screen.findByTestId(NOTICE)).toHaveTextContent(
       'Renew the git credentials this machine uses for git.example.com',
     )
+  })
+
+  it('says the store is on its offline list on load, before any refresh', async () => {
+    // Offline the listing still answers 200 with the bundled seed rows, so its
+    // own flag is the only thing that can tell the user why the store is short.
+    listRegistry.mockResolvedValue({ ...listing([]), catalogUnavailable: true })
+    renderPage()
+
+    expect(await screen.findByTestId(NOTICE)).toHaveTextContent(CATALOG_UNREACHABLE)
+  })
+
+  it('names the offline catalog first, then a registry that also failed', async () => {
+    listRegistry.mockResolvedValue({
+      ...listing([{ name: 'team', ok: false, cause: 'auth', host: 'git.example.com', cached: false }]),
+      catalogUnavailable: true,
+    })
+    renderPage()
+
+    const notice = await screen.findByTestId(NOTICE)
+
+    expect(notice.textContent?.indexOf(CATALOG_UNREACHABLE)).toBe(0)
+    expect(notice).toHaveTextContent('Sign-in to git.example.com was refused for team.')
   })
 
   it('shows no notice when every registry fetched', async () => {

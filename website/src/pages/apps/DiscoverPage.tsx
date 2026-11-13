@@ -160,7 +160,7 @@ function DiscoverPageBody() {
   const {
     apps, appsError, registryError, loading,
     browseApps, featuredSections, categories, sources, updatables,
-    announceAppsChanged, registriesUnknown, registryFetchFailures,
+    announceAppsChanged, registriesUnknown, catalogUnavailable, registryFetchFailures,
   } = useAppsData()
 
   useEffect(() => {
@@ -243,13 +243,18 @@ function DiscoverPageBody() {
     else setError(prev => (prev === previous ? '' : prev))
   }
 
-  // Registries whose index fetch failed, as the listing reports them: their
-  // apps are missing from the shelf, or shown as last synced, and nothing else
-  // on the page says so. Shown whatever the banner above holds, because the
-  // banner speaks for one refresh and this notice for the listing on screen. A
-  // dismissal holds until the text changes, so a new failure or cause shows again.
+  // The sources the listing reports it could not read: the official catalog,
+  // when the shelf is the offline fallback, then the registries whose index
+  // fetch failed, whose apps are missing from the shelf or shown as last synced.
+  // Nothing else on the page says so. Shown whatever the banner above holds,
+  // because the banner speaks for one refresh and this notice for the listing on
+  // screen. A dismissal holds until the text changes, so a new failure or cause
+  // shows again.
   const [dismissedFetchNotice, setDismissedFetchNotice] = useState('')
-  const fetchNotice = registryListingFailureMessage(registryFetchFailures ?? [])
+  const fetchNotice = [
+    catalogUnavailable ? i18nT('pages.appsPage.store_catalog_unreachable') : '',
+    registryListingFailureMessage(registryFetchFailures ?? []),
+  ].filter(Boolean).join('\n')
   const showFetchNotice = fetchNotice !== '' && fetchNotice !== dismissedFetchNotice
   const handleRefresh = async () => {
     if (refreshing) return
