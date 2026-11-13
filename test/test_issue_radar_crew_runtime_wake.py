@@ -206,11 +206,15 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         with mock.patch.object(cr, "detect_new_work", new=then_opt_out):
             _, wake = await self._sweep(client)
         wake.assert_not_awaited()
+        self.assertEqual(
+            cr.read_wake_checks(OWNER, REPO, self.root)["mentions"].get("pending", {}), {}
+        )
 
         # Back on before any other sweep ran: the dropped ask must not come back.
         cs.write_settings(OWNER, REPO, {"crew_answer_mentions": True}, self.root)
-        _, wake = await self._sweep(client)
+        woken, wake = await self._sweep(client)
         wake.assert_not_awaited()
+        self.assertEqual(woken, {})
 
     async def test_a_boundary_second_split_across_pages_is_not_skipped(self):
         crew = _crew(self.root)
@@ -435,9 +439,13 @@ class TestNewWorkWakes(unittest.IsolatedAsyncioTestCase):
         await self._sweep(client)
         client.note(5, 101, "crew-bot", "Answered above, @crew-bot out.")
 
-        _, wake = await self._sweep(client)
+        woken, wake = await self._sweep(client)
 
         wake.assert_not_awaited()
+        self.assertEqual(woken, {})
+        self.assertEqual(
+            cr.read_wake_checks(OWNER, REPO, self.root)["mentions"].get("pending", {}), {}
+        )
 
     async def test_a_mention_on_a_busy_crew_stays_pending(self):
         crew = _crew(self.root)

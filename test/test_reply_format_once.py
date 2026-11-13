@@ -479,9 +479,12 @@ class TestEveryEventThatCanDropTheRules:
             _make_state,
             _patch_stats,
         )
+        from test_task_runner_compaction import _compacting_provider_factory, _managed
 
+        from kiro_crew.config import KiroCrewConfig
         from kiro_crew.dashboard import chat_runner
         from kiro_crew.dashboard.chat import _run_chat
+        from kiro_crew.dashboard.chat_utils import effective_session_key
         from kiro_crew.providers.base import EVENT_COMPACTION_STATUS as COMPACTED
         from kiro_crew.providers.base import EVENT_TEXT_CHUNK as TEXT
 
@@ -498,21 +501,27 @@ class TestEveryEventThatCanDropTheRules:
         client.agent_turn_pending = MagicMock(return_value=True)
         client.stream_unsolicited = MagicMock(side_effect=lambda *a, **kw: _async_iter(events))
         client.stream = MagicMock(side_effect=AssertionError("it sends no prompt"))
+        key = effective_session_key(slot)
 
-        with _patch_stats():
-            await _run_chat(
-                state,
-                slot,
-                "",
-                _agent_started=True,
-                _turn_actor=chat_runner.AGENT_STARTED_ACTOR,
-                _synthetic_payload=True,
-            )
-            if slot.task:
-                await slot.task
+        async with _managed(KiroCrewConfig(), _compacting_provider_factory()) as mgr:
+            await mgr.get_or_create(key)
+            mgr.release(key)
+            state.sessions.mark_needs_reinjection = mgr.mark_needs_reinjection
+            with _patch_stats():
+                await _run_chat(
+                    state,
+                    slot,
+                    "",
+                    _agent_started=True,
+                    _turn_actor=chat_runner.AGENT_STARTED_ACTOR,
+                    _synthetic_payload=True,
+                )
+                if slot.task:
+                    await slot.task
 
-        client.stream_unsolicited.assert_called_once()
-        state.sessions.mark_needs_reinjection.assert_called_once()
+            client.stream_unsolicited.assert_called_once()
+            assert mgr.consume_needs_reinjection(key) is True
+            assert mgr.consume_needs_reinjection(key) is False, "one-shot"
 
     @BOTH
     @pytest.mark.parametrize(
