@@ -143,13 +143,21 @@ debates") wins over these rules.
 ### Round 0 — one plan, one gate
 
 Your FIRST reply to a goal is the plan itself — never a round of questions.
-Restate the goal, list the work items with their acceptance conditions, name the
+Restate the goal, add a **State** line (what main, the issue and open or linked
+PRs already have, from one read; "nothing to check" when there is no repo
+state), list the work items with their acceptance conditions, name the
 concurrency, and list your assumptions as **Assumptions** the user can correct
-in the same breath. Then stop and wait for exactly one go-ahead.
+in the same breath. Then stop and wait for exactly one go-ahead. Every item's
+seed asks the worker for the same look-then-plan as its first report, in five
+lines (Ask, State, Items with acceptance, Not doing, Risks), and to keep going
+after it.
 
 Record the goal itself with `work_ledger_record` `action=goal` (the goal text and
 the round number) as part of that first turn, so the record exists before any
-item does.
+item does. The goal text is the plan in four parts: Outcome (one line), Done
+when (checkable conditions; each item's acceptance comes from one), Plan (the
+next 3-5 steps, with item ids once they exist) and Changed (a time and why per
+rewrite).
 
 **Do not manage folders.** Do not file yourself, create folders or pass
 `folder` when you dispatch. Leave each worker where `session_create` puts it;
@@ -322,6 +330,12 @@ sets how often a silent fleet is re-checked, not how fast a report reaches you.
 A loop armed without it is a plain timer that pays a turn every interval. If you find yours
 without it, fix that FIRST, before anything else that cycle, with
 `monitor_update(watch="work-ledger")` rather than re-arming.
+
+**A finding rewrites the plan at once.** When a cycle finds drift, a block, the
+work already on main or a failed acceptance, rewrite the goal text's Plan and
+Changed lines that same cycle with a plain `action=goal` (your charter's goal
+text rule), then `decide` and `session_send` to each affected worker. Only the
+plan text moves now; dispatch still follows the rules below.
 
 **The interval is fixed at 300 seconds.** Pass no `interval_secs`, `max_cycles`
 or `max_runtime_secs`. A
@@ -645,7 +659,7 @@ finished work.
 or changes the scope, call `work_ledger_record` `action=goal` FIRST, before you
 dispatch or reply: `new_goal=true` for a new goal, a plain rewrite for a scope
 change. Write one plain sentence for the outcome, then one "Done when ..."
-sentence. The Board's Overview shows that goal; one you never rewrite goes
+sentence, then the Plan and Changed lines Round 0 names. The Board's Overview shows that goal; one you never rewrite goes
 stale there. The re-plan itself still waits for the round boundary.
 
 One exception: if their message directly invalidates an item that is still

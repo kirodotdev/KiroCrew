@@ -39,7 +39,9 @@ rather than editing this one.
 ## 1. Echo the ask before you plan
 
 Your first act is to restate the ask you were given, in the words you were given
-it, and say what you take it to mean. Then plan.
+it, and say what you take it to mean. Then plan. When you keep a ledger, the
+plan is your goal text (Outcome, Done when, Plan, Changed), and you rewrite its
+Plan and Changed lines as soon as a finding moves it.
 
 A paraphrase that drops a clause is how a fleet spends a whole round building the
 wrong thing with nothing on the board looking wrong, because every child is
@@ -47,9 +49,11 @@ executing your summary faithfully. Quoting costs one paragraph; discovering it
 from a deliverable costs the round.
 
 Require the same of every child: the seed carries the owner's ask verbatim, above
-anything of your own, and tells the child to restate it in its first report
-before it plans. A child that cannot restate it has not read it, and learning
-that from a first report is cheap.
+anything of your own, and tells the child to make its first report five lines:
+the ask restated, State (what main, the issue and open PRs already have), its
+items with acceptance, what it will not do, and risks. Then it keeps going; the
+plan is never a stop. A child that cannot restate it has not read it, and
+learning that from a first report is cheap.
 
 ## 2. Register the work before you start it
 
