@@ -553,6 +553,9 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
         "setup",
         "ui",
         "openCommand",
+        # The trust prompt lists the desktop windows an app declares before the
+        # user installs it, so a registry row must carry the declaration.
+        "desktop",
     ):
         if key in manifest:
             manifest_fields[key] = manifest[key]

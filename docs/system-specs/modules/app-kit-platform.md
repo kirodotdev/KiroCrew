@@ -6794,7 +6794,10 @@ any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
 pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
-manifest's `agentReadOnlyDirs` (§39) and the backend SDK package (§40). An app reads `ctx.sdk_level` or the SDK export to detect an
+manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), and the desktop
+window host's spanning overlay, background window, panel gutter and the messages between
+an app's windows (§35). Several seams share level 7, so an app that needs one
+feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through
@@ -7526,7 +7529,10 @@ Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
 An app reaches the Electron desktop shell only through its manifest `desktop` block.
 The shell's window host serves that block for every app and names none: it never
 imports or runs app code in the main process. This is the seam a desktop app such as
-Mochi or Crew Companion moves onto (owner ruling, #26967, 2026-11-07, item 5).
+Mochi or Crew Companion moves onto (owner ruling, #26967, 2026-11-07, item 5; the
+spanning overlay and the background window are the 2026-11-13 ruling's item 3, comment
+6841699202: "decide directly; users' normal use must not be affected; grant what is
+needed").
 
 **The declaration.** `desktop.windows` (1 to 4) and `desktop.shortcuts` (0 to 4).
 A window has an `id` (`^[a-z][a-z0-9-]{0,31}$`), an `entry` (a `.js`/`.mjs` path under
@@ -7534,10 +7540,16 @@ the app's `ui/` directory, the base `contributes.panelTabs[].entry` uses, contai
 against the app root at install), a `kind` and optional `openOnEnable`. The kinds are a
 closed set. An `overlay` covers the display under the cursor: frameless, transparent,
 always on top, on every workspace, invisible to screen capture, non-focusable outside
-Windows, and click-through except over the hit regions its page reports. A `panel` is a
+Windows, and click-through except over the hit regions its page reports. With
+`displays: "all"` (default `"cursor"`) it spans every display instead, with one avatar
+the shell hands between them (below); an app has at most one such overlay. A `panel` is a
 frameless always-on-top window of a declared `width` (160 to 1600) and `height` (120 to
 1200) at `bottom-right`, `top-right` or `center` of that display's work area, optionally
-`transparent`. A shortcut has an `id`, an `accelerator` and the `window` it is
+`transparent`, with an optional `gutter` (0 to 48): the transparent margin around the
+card it draws, which placement beside an anchor leaves out. A `background` window is a
+page that is never shown: 16 by 16, never on screen, invisible to screen capture, never
+throttled, at most one per app. It owns work that must outlive any one display (a
+notification socket, a reminder poll). A shortcut has an `id`, an `accelerator` and the `window` it is
 delivered to. The accelerator must hold two different modifier keys on every
 platform (counted per platform: on macOS `CommandOrControl`, `Command` and `Super` are
 one key, elsewhere `CommandOrControl` and `Control` are), so at least one is not Shift,
@@ -7570,6 +7582,61 @@ only when a user action opened it (a shortcut, or `open()` from another of the a
 windows); one opened for `openOnEnable` is shown inactive, and an overlay never takes
 focus unless its page asks.
 
+**One avatar across every display.** A spanning overlay gets one copy per display,
+each covering that display's bounds; the avatar lives on exactly one, the active copy
+(`website/electron/app-window-span.js`). The active display is the one remembered for
+that app window, else the display under the cursor, else the primary; it is kept when a
+display is plugged in (which gets a copy of its own) and handed to a surviving copy when
+its display goes. On a display change the copies for the displays that exist open
+before the ones whose display went close, so removing the only display every copy was
+on (an undock) moves the window instead of closing it. Every other copy is told
+`{active: false}`, stays click-through and
+draws nothing. The avatar moves only by drag: right after a press the shell saw in it, the active copy calls
+`beginDrag({offsetX, offsetY, width, height})`, every copy then takes the pointer until
+the release, whatever regions it reports meanwhile (so whichever display sees the
+release can call `endDrag()`), and hears `onDrag("start")`,
+and the shell follows the global cursor at 16 ms, streaming `("move", x, y)` to the
+active copy. A crossing into a display that has a copy hands the avatar over at the
+crossing point: the old copy hears `{active: false}`, the new one
+`{active: true, x, y, dragging: true}`. A display with no copy yet keeps the avatar on
+its own display. The box may hang half its width off the left or right edge, never off
+the top or bottom. The release, or a 10-second safety stop, settles one last crossing,
+sends `("end", x, y)`, returns every copy to click-through and records the display, in a
+0600 `app-window-displays.json` in the shell's own data directory. A copy that loads
+mid-drag adopts the drag in flight, and one opened mid-drag on a plugged display takes
+the pointer and hears `onDrag("start")` when ready. A drag released over a copy still
+loading settles there: that copy's activation, when ready, is `{active: true, x, y}`.
+
+**Between an app's windows.** A page reaches another window only through the host and
+only within its own app. `send(id, message)` delivers one JSON message (64 Ki characters of JSON at most)
+to a window the app declares that is open; to the active copy of a spanning overlay,
+held in order (32 at most) until it is ready and following the avatar across a hand-off.
+`broadcast(message)` reaches every other ready window of the app, every copy included.
+Each page hears `onWindowChange(id, open)` when another of its app's windows opens
+(again, when a user brings an open panel forward) or closes, and on load hears which are
+already open. `close(id)` closes another of its app's windows and `closeAll()` all of
+them (the next tick reopens what is declared `openOnEnable` while the app is enabled).
+`open(id, {anchor})` opens a panel beside a box in the opener's page pixels: to its right
+when the box's centre is on the left half of the work area, else to its left, the card's
+top level with the box's, clamped 8 px inside the work area, 12 px from the box, with the
+gutter outside it and the panel no bigger than that work area
+(`website/electron/app-window-placement.js`, the one copy of that maths:
+the built-in companion's `crew-companion/panelPlacement.js` re-exports it). Such a panel is on every
+workspace, a panel already open is moved there and brought forward, and the panel hears
+`onPlaced({side})`. A transparent panel has no native shadow.
+
+**What a window the user is acting in may ask of the shell.** `showSession(slotKey)` raises the
+dashboard window and routes it to that session (`/chat?sid=`), or only raises it for
+`""`, and resolves true only when the dashboard is there to show it, so a caller keeps a
+notification it could not act on (`website/electron/dashboard-session.js`, the same
+check the kirocrew:// deep link uses). `openExternal(url)` hands an `https:` link to the
+OS browser and nothing else. Both move the user's focus, so each is answered only while
+the user is acting in the sender: the shell saw a mouse or key press start in that window
+within the last 2 s (Electron's `input-event` `mouseDown` or `rawKeyDown`, not a release or
+a key repeat, which page script cannot synthesize; never the regions or focus a page can
+set), and one press answers one request. A background page may do neither, and a window
+it opens does not take focus and takes no anchor (its page is never on screen).
+
 **The window.** Each window is created by the host with `contextIsolation`, `sandbox`,
 no Node, no webview, `app-window-preload.js` as its preload, window.open denied, and
 navigation and redirects pinned to its own document: the host's
@@ -7581,35 +7648,62 @@ throws renders nothing and closes the window. A browser tab on the same path has
 bridge and renders nothing. A window is shown only when its page calls `ready()`, and a
 main-frame error document or transport failure is latched hidden (§6) until a later
 answered tick reloads it. A crashed page is closed; an `openOnEnable` one is reopened at
-tick cadence.
+tick cadence. A background page that dies, or closes itself, is reopened at once while
+its app still declares it, at most once per tick interval; one that dies again sooner is
+reopened by the next tick, `openOnEnable` or not, unless it was closed on purpose in
+between (by `close(id)` or `closeAll()`), so a crash loop runs at tick cadence.
 
-**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (1), `app`,
-`window`, `kind`, `ready()`, `close()`, `open(id)`, `setHitRegions(rects)`,
-`setFocusable(bool)` and `onShortcut(cb)`. The identity is informational: the host
+**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (2), `app`,
+`window`, `kind`, `ready()`, `close(id?)`, `open(id, options?)`, `setHitRegions(rects)`,
+`setFocusable(bool)` and `onShortcut(cb)`; level 2 adds `closeAll()`, `send`,
+`broadcast`, `onMessage(cb(from, message))`, `onWindowChange`, `onPlaced`, `onActive`,
+`beginDrag`, `endDrag`, `onDrag`, `showSession` and `openExternal`. The identity is informational: the host
 resolves every message to the window that sent it, from its main frame, still showing
 its own document, and acts only within that window's own app declaration. A page can
 open only a window its own app declares, shape (hit regions, focus) only an overlay, and
 nothing from a sender the host did not create. Hit regions are at most 16 finite boxes
 in page pixels at the page's zoom; anything else leaves the overlay click-through.
 
-**Levelling.** The seam belongs to the desktop shell, which a browser-only host never
-offers, so it is versioned by the bridge's own `level` rather than `APP_SDK_LEVEL`: an
-app feature-detects the bridge, and a gateway that predates the block shows the shell
-no declaration, so nothing opens.
+**Levelling.** The bridge is versioned by its own `level`: an app feature-detects the
+bridge and checks `level` before a level 2 call, and a shell of either age drops a
+declaration its rules do not know whole, so nothing opens. The manifest grammar is App
+Kit seam level 7 (`APP_SDK_LEVEL`): a gateway below it refuses `displays`, `gutter` and
+`background` at install, so an adoption pin of an app that declares them needs
+`minAppSdkLevel` 7.
+
+**Shown at install.** A registry row carries the manifest's `desktop` block under
+`manifest` (`registry_pipeline/manifests.py`), and the trust prompt lists the shapes it declares (an overlay,
+one spanning every display, panels, a background page, global shortcuts) in its own box
+(`website/src/components/appstore/TrustAppDesktopBox.tsx`, read by
+`desktopRequest.ts`), with the grants, so the operator sees what will run on the desktop
+before saying yes.
 
 **What still runs in the shell.** Mochi and Crew Companion keep their main-process
-windows until each moves onto this seam (§9).
+windows until each moves onto this seam (§9). Every shell behaviour Crew Companion's
+`website/electron/crew-companion/` gives its avatar (one avatar across displays with
+drag hand-off, the hidden notification owner it relays through, the panel beside the
+avatar, the gallery, opening a session, opening an https link, turning itself off) has
+a generic counterpart above, so its own repository's copy needs no main-process code;
+the built-in keeps its windows until that copy is adopted, so nothing changes for a
+user before then. Its dashboard-routing check now lives in `dashboard-session.js`,
+which the built-in and the kirocrew:// deep link share.
 `website/electron/test/app-window-host-independence.test.js` pins the host free of
 every built-in name and of app-owned shell code, and pins the app-owned shell
 directories and `main.js` requires as rows that only shrink.
 
 Writers: `apps/desktop_manifest.py`, `apps/manifest.py`, `apps/discovery.py`,
-`website/electron/app-window-host.js`, `website/electron/app-window-host-rules.js`,
-`website/electron/app-window-preload.js`, `website/electron/main.js`,
+`apps/app_sdk_level.py`, `apps/registry_pipeline/manifests.py`, `website/electron/app-window-host.js`,
+`website/electron/app-window-host-rules.js`, `website/electron/app-window-preload.js`,
+`website/electron/app-window-span.js`, `website/electron/app-window-placement.js`,
+`website/electron/dashboard-session.js`, `website/electron/main.js`,
 `website/src/desktopWindow/desktopWindowTarget.ts`,
 `website/src/desktopWindow/DesktopWindowRoot.tsx`, `website/src/components/AppHost.tsx`,
+`website/src/components/appstore/TrustAppDesktopBox.tsx`,
+`website/src/components/appstore/desktopRequest.ts`, `website/src/app-sdk/sdkLevel.ts`,
 `website/src/main.tsx`. Tests: `test/test_app_manifest_desktop.py`,
 `website/electron/test/app-window-host.test.js`,
+`website/electron/test/app-window-host-span.test.js`,
+`website/src/test/TrustAppModalDesktop.test.tsx`,
 `website/electron/test/app-window-host-rules.test.js`,
 `website/electron/test/app-window-preload.test.js`,
 `website/electron/test/app-window-host-independence.test.js`,

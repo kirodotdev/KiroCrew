@@ -121,8 +121,11 @@ in the facade" column, and a responsibility no owner names gets a new file under
 
 A window or global shortcut an app needs is declared in its manifest `desktop`
 block and served by `app-window-host.js` (rules in `app-window-host-rules.js`,
-the page bridge in `app-window-preload.js`); main.js composes it next to the
-companion surfaces. A shell owner of a global shortcut (the summon hotkey,
+the page bridge in `app-window-preload.js`, the one-avatar-across-displays drag
+hand-off in `app-window-span.js`, placement beside an anchor in
+`app-window-placement.js`); main.js composes it next to the companion surfaces,
+with `dashboard-session.js` raising the dashboard on a session for a page that
+asks. A shell owner of a global shortcut (the summon hotkey,
 `mochi/shortcuts.js`) records the chords it is configured for in
 `shell-shortcut-reservations.js`, and the host never gives an app one of them. It names no app and runs no app code, and a new app never
 gets a directory of its own here. `mochi/` and `crew-companion/` predate it and

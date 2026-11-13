@@ -33,10 +33,10 @@ function withWindow(fields) {
 test("a valid declaration parses with the panel defaults spelled out", () => {
   const parsed = parseDesktopDeclaration(VALID);
   assert.deepStrictEqual(parsed.windows, [
-    { id: "pet", entry: "desktop/pet.mjs", kind: "overlay", openOnEnable: true },
+    { id: "pet", entry: "desktop/pet.mjs", kind: "overlay", openOnEnable: true, displays: "cursor" },
     {
       id: "panel", entry: "desktop/panel.mjs", kind: "panel", openOnEnable: false,
-      width: 420, height: 600, position: "top-right", transparent: false,
+      width: 420, height: 600, position: "top-right", transparent: false, gutter: 0,
     },
   ]);
   assert.deepStrictEqual(parsed.shortcuts, [
@@ -49,12 +49,32 @@ test("a valid declaration parses with the panel defaults spelled out", () => {
   );
 });
 
+test("a spanning overlay, a background window and a panel gutter parse", () => {
+  const parsed = parseDesktopDeclaration({
+    windows: [
+      { id: "pet", entry: "pet.mjs", kind: "overlay", displays: "all", openOnEnable: true },
+      { id: "brain", entry: "brain.mjs", kind: "background", openOnEnable: true },
+      { id: "panel", entry: "panel.mjs", kind: "panel", transparent: true, gutter: 48 },
+      { id: "other", entry: "other.mjs", kind: "overlay" },
+    ],
+  });
+  assert.deepStrictEqual(parsed.windows, [
+    { id: "pet", entry: "pet.mjs", kind: "overlay", openOnEnable: true, displays: "all" },
+    { id: "brain", entry: "brain.mjs", kind: "background", openOnEnable: true },
+    {
+      id: "panel", entry: "panel.mjs", kind: "panel", openOnEnable: false,
+      width: 400, height: 560, position: "bottom-right", transparent: true, gutter: 48,
+    },
+    { id: "other", entry: "other.mjs", kind: "overlay", openOnEnable: false, displays: "cursor" },
+  ]);
+});
+
 const REFUSED = [
   ["not an object", "yes"],
   ["no windows", {}],
   ["empty windows", { windows: [], shortcuts: [] }],
   ["unknown block key", { ...withWindow({}), menus: [] }],
-  ["a kind outside the closed set", withWindow({ kind: "background" })],
+  ["a kind outside the closed set", withWindow({ kind: "toast" })],
   ["a capitalised id", withWindow({ id: "Pet" })],
   ["a traversing entry", withWindow({ entry: "../escape.mjs" })],
   ["an absolute entry", withWindow({ entry: "/abs.mjs" })],
@@ -83,6 +103,31 @@ const REFUSED = [
       shortcuts: [
         { id: "a", accelerator: "Ctrl+Alt+K", window: "w" },
         { id: "b", accelerator: "alt+control+k", window: "w" },
+      ],
+    },
+  ],
+  ["an unknown display span", withWindow({ displays: "everywhere" })],
+  ["a display span on a panel", { windows: [{ id: "p", entry: "p.js", kind: "panel", displays: "all" }] }],
+  ["a gutter on an overlay", withWindow({ gutter: 8 })],
+  ["a gutter wider than the cap", { windows: [{ id: "p", entry: "p.js", kind: "panel", gutter: 49 }] }],
+  ["a boolean gutter", { windows: [{ id: "p", entry: "p.js", kind: "panel", gutter: true }] }],
+  ["panel fields on a background window", { windows: [{ id: "b", entry: "b.js", kind: "background", width: 400 }] }],
+  ["a display span on a background window", { windows: [{ id: "b", entry: "b.js", kind: "background", displays: "all" }] }],
+  [
+    "two overlays spanning every display",
+    {
+      windows: [
+        { id: "a", entry: "a.js", kind: "overlay", displays: "all" },
+        { id: "b", entry: "b.js", kind: "overlay", displays: "all" },
+      ],
+    },
+  ],
+  [
+    "two background windows",
+    {
+      windows: [
+        { id: "a", entry: "a.js", kind: "background" },
+        { id: "b", entry: "b.js", kind: "background" },
       ],
     },
   ],

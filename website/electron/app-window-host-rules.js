@@ -19,14 +19,18 @@ const ENTRY_RE = /^(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-
 const MAX_ENTRY_LEN = 200;
 const MAX_WINDOWS = 4;
 const MAX_SHORTCUTS = 4;
-const WINDOW_KINDS = new Set(["overlay", "panel"]);
+const WINDOW_KINDS = new Set(["overlay", "panel", "background"]);
+const OVERLAY_DISPLAYS = new Set(["cursor", "all"]);
 const PANEL_POSITIONS = new Set(["bottom-right", "top-right", "center"]);
 const PANEL_WIDTH = [160, 1600];
 const PANEL_HEIGHT = [120, 1200];
+const PANEL_GUTTER = [0, 48];
 const WINDOW_KEYS = new Set([
   "id", "entry", "kind", "openOnEnable", "width", "height", "position", "transparent",
+  "gutter", "displays",
 ]);
-const PANEL_ONLY_KEYS = ["width", "height", "position", "transparent"];
+const PANEL_ONLY_KEYS = ["width", "height", "position", "transparent", "gutter"];
+const OVERLAY_ONLY_KEYS = ["displays"];
 const SHORTCUT_KEYS = new Set(["id", "accelerator", "window"]);
 const BLOCK_KEYS = new Set(["windows", "shortcuts"]);
 
@@ -106,16 +110,22 @@ function parseWindow(raw) {
   const openOnEnable = raw.openOnEnable === undefined ? false : raw.openOnEnable;
   if (typeof openOnEnable !== "boolean") return null;
   const win = { id, entry, kind, openOnEnable };
+  if (kind !== "panel" && PANEL_ONLY_KEYS.some((k) => k in raw)) return null;
+  if (kind !== "overlay" && OVERLAY_ONLY_KEYS.some((k) => k in raw)) return null;
+  if (kind === "background") return win;
   if (kind === "overlay") {
-    return PANEL_ONLY_KEYS.some((k) => k in raw) ? null : win;
+    const displays = raw.displays === undefined ? "cursor" : raw.displays;
+    return OVERLAY_DISPLAYS.has(displays) ? { ...win, displays } : null;
   }
   const width = raw.width === undefined ? 400 : raw.width;
   const height = raw.height === undefined ? 560 : raw.height;
   const position = raw.position === undefined ? "bottom-right" : raw.position;
   const transparent = raw.transparent === undefined ? false : raw.transparent;
+  const gutter = raw.gutter === undefined ? 0 : raw.gutter;
   if (!inRange(width, PANEL_WIDTH) || !inRange(height, PANEL_HEIGHT)) return null;
   if (!PANEL_POSITIONS.has(position) || typeof transparent !== "boolean") return null;
-  return { ...win, width, height, position, transparent };
+  if (!inRange(gutter, PANEL_GUTTER)) return null;
+  return { ...win, width, height, position, transparent, gutter };
 }
 
 function parseShortcut(raw, windowIds, chords) {
@@ -149,6 +159,9 @@ function parseDesktopDeclaration(raw) {
     ids.add(win.id);
     windows.push(win);
   }
+  // One of each: the display the avatar is on, and the page outliving every display.
+  if (windows.filter((w) => w.displays === "all").length > 1) return null;
+  if (windows.filter((w) => w.kind === "background").length > 1) return null;
   const rawShortcuts = raw.shortcuts === undefined ? [] : raw.shortcuts;
   if (!Array.isArray(rawShortcuts) || rawShortcuts.length > MAX_SHORTCUTS) return null;
   const shortcuts = [];

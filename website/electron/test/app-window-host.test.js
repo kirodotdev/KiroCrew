@@ -177,7 +177,7 @@ test("an openOnEnable overlay opens hidden, sandboxed, on the host's own route",
   assert.strictEqual(prefs.sandbox, true);
   assert.strictEqual(prefs.nodeIntegration, false);
   assert.strictEqual(prefs.webviewTag, false);
-  assert.deepStrictEqual(prefs.additionalArguments, ["--kc-app-window=pets/pet/overlay/1"]);
+  assert.deepStrictEqual(prefs.additionalArguments, ["--kc-app-window=pets/pet/overlay/2"]);
   assert.deepStrictEqual(win.ignore[0], [true, { forward: true }]);
   assert.deepStrictEqual(win.focusable, [false]);
   assert.strictEqual(win.isVisible(), false, "not revealed before the page says ready");
