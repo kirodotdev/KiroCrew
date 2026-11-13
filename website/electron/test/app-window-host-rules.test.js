@@ -11,8 +11,10 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const {
+  CAPABILITIES,
   MAX_SHORTCUTS,
   MAX_WINDOWS,
+  approvedCapabilities,
   canonicalAccelerator,
   desktopDeclarations,
   parseDesktopDeclaration,
@@ -194,4 +196,23 @@ test("only enabled, available apps with a valid block are served", () => {
   assert.deepStrictEqual(lines, ["app-window-host: bad: desktop declaration refused"]);
   assert.deepStrictEqual([...desktopDeclarations({ apps: rows }).keys()], ["on"]);
   assert.strictEqual(desktopDeclarations("nope").size, 0);
+});
+
+test("a capability is served only when the manifest declares it AND the row approves it", () => {
+  const row = (declared, grant) => ({
+    name: "cap-app",
+    enabled: true,
+    manifest: { desktop: { windows: [{ id: "w", entry: "w.mjs", kind: "panel" }] }, permissions: { desktopCapabilities: declared } },
+    ...(grant === undefined ? {} : { desktopCapabilitiesGrant: grant }),
+  });
+  const caps = (r) => desktopDeclarations([r]).get("cap-app").capabilities;
+  assert.deepStrictEqual(CAPABILITIES, ["screenCapture", "localFiles", "gatewayChoice"]);
+  assert.deepStrictEqual(caps(row([...CAPABILITIES], { approved: [...CAPABILITIES] })), [...CAPABILITIES]);
+  assert.deepStrictEqual(caps(row(["localFiles", "screenCapture"], { approved: ["screenCapture"] })), ["screenCapture"]);
+  // Approved but no longer declared, unknown names, a gateway with no grant row.
+  assert.deepStrictEqual(caps(row([], { approved: ["localFiles"] })), []);
+  assert.deepStrictEqual(caps(row(["everything"], { approved: ["everything"] })), []);
+  assert.deepStrictEqual(caps(row(["localFiles"])), []);
+  assert.deepStrictEqual(caps(row("localFiles", { approved: "localFiles" })), []);
+  assert.deepStrictEqual(approvedCapabilities({}, {}), []);
 });

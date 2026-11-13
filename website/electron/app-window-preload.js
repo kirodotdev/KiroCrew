@@ -5,8 +5,11 @@
  *
  * Loaded only into windows app-window-host.js creates, which run sandboxed with
  * context isolation and no Node. It exposes `window.kirocrewDesktopWindow`: a few
- * fire-and-forget calls, one answered call (`showSession`) and a few events,
- * nothing else. The identity it reports is
+ * fire-and-forget calls, one answered call (`showSession`), a few events and (level
+ * 2) the capability calls, nothing else. Every capability call is answered only for
+ * a window whose app declares and holds that capability; elsewhere a reveal does
+ * nothing and the others resolve to `false` or `null`. The identity and
+ * `capabilities` it reports are
  * informational — the host resolves every message back to the window that sent
  * it and acts only within that window's app declaration, so a page that lies
  * about who it is changes nothing.
@@ -33,7 +36,12 @@ const CHANNELS = {
   drag: "app-window:drag",
   showSession: "app-window:show-session",
   openExternal: "app-window:open-external",
+  revealFile: "app-window:reveal-file",
+  openImage: "app-window:open-image",
+  listGateways: "app-window:list-gateways",
+  chooseGateway: "app-window:choose-gateway",
 };
+const CAPABILITIES = ["screenCapture", "localFiles", "gatewayChoice"];
 
 /** Subscribe *cb* to one host event; *map* turns its arguments into the callback's. */
 function subscribe(ipc, channel, cb, map) {
@@ -53,12 +61,19 @@ function box(r) {
   };
 }
 
-/** `--kc-app-window=<app>/<id>/<kind>/<level>`, set by the host on this window. */
+/** `--kc-app-window=<app>/<id>/<kind>/<level>[/<capability>,...]`, set by the host on this window. */
 function identityFrom(argv) {
   const prefix = "--kc-app-window=";
   const arg = (Array.isArray(argv) ? argv : []).find((a) => typeof a === "string" && a.startsWith(prefix));
-  const [app = "", id = "", kind = "", level = "0"] = arg ? arg.slice(prefix.length).split("/") : [];
-  return { app, window: id, kind, level: Number.parseInt(level, 10) || 0 };
+  const [app = "", id = "", kind = "", level = "0", caps = ""] = arg ? arg.slice(prefix.length).split("/") : [];
+  const listed = caps.split(",");
+  return {
+    app,
+    window: id,
+    kind,
+    level: Number.parseInt(level, 10) || 0,
+    capabilities: CAPABILITIES.filter((cap) => listed.includes(cap)),
+  };
 }
 
 function createBridge(ipc, identity) {
@@ -67,6 +82,8 @@ function createBridge(ipc, identity) {
     app: identity.app,
     window: identity.window,
     kind: identity.kind,
+    /** The capabilities this window was opened with (level 2). */
+    capabilities: Object.freeze([...(identity.capabilities || [])]),
     /** Reveal this window. Call once the first frame is painted. */
     ready: () => ipc.send(CHANNELS.ready),
     /** Close this window, or another window this app declares, by its id. */
@@ -147,6 +164,20 @@ function createBridge(ipc, identity) {
     showSession: (slotKey) => ipc.invoke(CHANNELS.showSession, String(slotKey || "")),
     /** Open an https link in the user's browser; the same rule as `showSession`. */
     openExternal: (url) => ipc.send(CHANNELS.openExternal, String(url)),
+    /** `localFiles`: show an existing local file in the system file manager. */
+    revealFile: (filePath) => ipc.send(CHANNELS.revealFile, String(filePath)),
+    /** `localFiles`: open a local image in the system viewer. Resolves whether it opened. */
+    openImage: (filePath) => ipc.invoke(CHANNELS.openImage, String(filePath)).then((ok) => ok === true, () => false),
+    /**
+     * `gatewayChoice`: the operator's crews, as `{state, gateways, chosen, showing}`,
+     * each gateway `{id, name, state, connected, appEnabled}`. Resolves null when refused.
+     */
+    listGateways: () => ipc.invoke(CHANNELS.listGateways).catch(() => null),
+    /**
+     * `gatewayChoice`: load this app's windows from crew *id* ("self" for this
+     * computer's gateway). Resolves `{ok, chosen, showing}` once the windows moved.
+     */
+    chooseGateway: (id) => ipc.invoke(CHANNELS.chooseGateway, String(id)).catch(() => ({ ok: false })),
   });
 }
 

@@ -920,6 +920,8 @@ def _freeze_declared(
     was written before. Each such family takes what the manifest declares at this
     read, which is what it granted until now, and the result is stored, so a later
     write to the agent-writable ``app.json`` is held back like any other widening.
+    An explicit-only family takes nothing even then: no owner saw it in a prompt
+    before approved sets existed, so it waits for the owner's approval.
     Built-ins never get here: they store their shipped set at every start.
 
     Nothing is stored inside a sandbox, during an update's tree swap, without a
@@ -935,7 +937,11 @@ def _freeze_declared(
         return recorded
     declared = _declared_grant_entries(grant_source(manifest))
     frozen = {
-        family: base[family] if family in base else declared[family]
+        family: (
+            base[family]
+            if family in base
+            else [] if family in _EXPLICIT_ONLY_FAMILIES else declared[family]
+        )
         for family in STAGED_GRANT_FAMILIES
     }
     try:

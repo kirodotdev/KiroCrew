@@ -8,7 +8,13 @@ browser-visible status/watch/plan surface.
 
 `defaultEnabled: false` and `platform.requiresDesktopApp: true` — it appears in
 the App Store, is opt-in, and its window surfaces need the Electron shell.
-`permissions`: `api`, `storage`, `events`, `cron`, `spawn`.
+`permissions`: `api`, `storage`, `events`, `cron`, `spawn`, and `desktopCapabilities`
+(`screenCapture`, `localFiles`, `gatewayChoice`): the shell features its windows use
+today (the snip surface, reveal-file and open-image, the instance switcher), declared so
+they are disclosed and approved like any app's (app-kit-platform §35). Its own
+main-process windows do not read that grant; they are the §9 exception until Mochi moves
+onto the window host. The reveal-file and open-image handlers run the shell's shared
+`website/electron/app-local-files.js`.
 
 The desktop pet keeps polling the gateway while disabled so enabling Mochi in
 the App Store takes effect without restarting the shell. Probe diagnostics are

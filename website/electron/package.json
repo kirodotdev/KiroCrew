@@ -236,6 +236,8 @@
       "tray-icon.js",
       "wsl-detection.js",
       "mochi-session-token.js",
+      "app-local-files.js",
+      "app-window-gateways.js",
       "app-window-host.js",
       "app-window-host-rules.js",
       "app-window-preload.js",

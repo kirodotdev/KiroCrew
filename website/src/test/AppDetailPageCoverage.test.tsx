@@ -860,7 +860,7 @@ describe('AppDetailPage — uncovered surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, {
       api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], linkOpenHosts: [], linkOpenFullUrl: [],
-      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [],
+      api: ['/api/memory'], events: ['log'], linkPreviewHosts: [], linkPreviewTextPatterns: [], linkPreviewFullUrl: [], messageActions: [], composerActions: [], selectionActions: [], workerAutoApprove: [], reachableByUserSessions: [], desktopCapabilities: [],
     }))
     expect(await screen.findByText('Approved: /api/memory, log. The app can use them now.')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve new permissions' })).not.toBeInTheDocument()
@@ -892,6 +892,26 @@ describe('AppDetailPage — uncovered surfaces', () => {
     expect(screen.getByText(/Can approve tool calls in the background sessions it starts itself/)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
     await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ workerAutoApprove: ['ownSlots'] })))
+  })
+
+  it('lists a held-back desktop capability and approves only that one', async () => {
+    getApp.mockResolvedValue(installedApp({
+      manifest: { displayName: 'Ledger Lens', permissions: { api: [], events: [], desktopCapabilities: ['localFiles', 'gatewayChoice', 'everything'] } },
+      approvedGrants: { api: [], events: [] },
+      desktopCapabilitiesGrant: { approved: ['localFiles'], staged: ['gatewayChoice'] },
+    }))
+    renderDetail()
+    await loaded()
+    expect(screen.getByTestId('staged-desktop-capability')).toHaveTextContent('In the desktop app, its windows can switch to another of your crews, on this computer or a remote one.')
+    const files = screen.getByTestId('desktop-capability-localFiles')
+    const gateways = screen.getByTestId('desktop-capability-gatewayChoice')
+    expect(files).toHaveTextContent('In the desktop app, its windows can show a file in your file manager and open an image in your image viewer.')
+    expect(files).not.toHaveTextContent('not approved')
+    expect(gateways).toHaveTextContent('not approved')
+    expect(screen.queryByTestId('desktop-capability-everything')).toBeNull()
+    expect(screen.getByTestId('desktop-capabilities')).toHaveTextContent('desktopCapabilities')
+    fireEvent.click(screen.getByRole('button', { name: 'Approve new permissions' }))
+    await waitFor(() => expect(enableApp).toHaveBeenCalledWith(NAME, false, expect.objectContaining({ desktopCapabilities: ['gatewayChoice'] })))
   })
 
   it('lists a held-back session reach verb and approves only that verb', async () => {

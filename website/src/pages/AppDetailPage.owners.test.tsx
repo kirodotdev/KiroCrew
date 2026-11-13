@@ -52,6 +52,7 @@ describe('AppDetailPage module boundary', () => {
       'AppDetailPageLocalOnlyNotice.tsx',
       'appDetailPageLabels.ts',
       'appDetailPageLocalSwitch.ts',
+      'appDetailPageStagedGrants.ts',
       'appDetailPageTypes.ts',
     ])
   })

@@ -946,6 +946,8 @@ app.whenReady().then(async () => {
         windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey, SURFACE_APP,
       ),
       openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
+      // Which crew each app's windows show is this computer's choice, kept by the shell.
+      gatewayStore: store,
     });
     appWindowHost.start();
   } catch (error) {

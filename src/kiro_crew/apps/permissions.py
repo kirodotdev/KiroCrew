@@ -334,6 +334,14 @@ def app_session_control_grant(app_name: str) -> SessionControlGrant:
     )
 
 
+#: How the install summary words each ``permissions.desktopCapabilities`` entry.
+_DESKTOP_CAPABILITY_WORDS = {
+    "screenCapture": "capture your screen",
+    "localFiles": "show and open your local files",
+    "gatewayChoice": "switch among your gateways",
+}
+
+
 def format_permissions_summary(manifest: AppManifest) -> str:
     """Format a human-readable permissions summary for display during install."""
     perms = manifest.permissions
@@ -358,6 +366,9 @@ def format_permissions_summary(manifest: AppManifest) -> str:
     if perms.reachableByUserSessions:
         verbs = " and ".join(perms.reachableByUserSessions)
         lines.append(f"  Your chats: may {verbs} the sessions this app runs")
+    if perms.desktopCapabilities:
+        words = ", ".join(_DESKTOP_CAPABILITY_WORDS[c] for c in perms.desktopCapabilities)
+        lines.append(f"  Desktop:   may {words}")
 
     if not lines:
         return "  No special permissions required"

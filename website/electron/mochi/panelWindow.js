@@ -24,6 +24,7 @@
 const { app, autoUpdater, BrowserWindow, ipcMain, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { revealLocalFile } = require("../app-local-files");
 const { mochiPageUrl } = require("./pageUrl");
 const { registerCaptureSurface } = require("../capture-trust");
 const { onQuitForUpdate } = require("../close-action");
@@ -603,13 +604,7 @@ function bindPanelIpc(baseUrl) {
    * silent — a renderer must not learn from the shell whether a path exists.
    */
   ipcMain.on("mochi-panel:reveal-file", (_e, filePath) => {
-    if (typeof filePath !== "string" || filePath === "") return;
-    try {
-      if (!fs.statSync(filePath).isFile()) return;
-    } catch {
-      return;
-    }
-    shell.showItemInFolder(filePath);
+    revealLocalFile({ fs, shell }, filePath);
   });
 
   /**

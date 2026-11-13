@@ -12,7 +12,7 @@ const assert = require("node:assert");
 const path = require("path");
 const Module = require("module");
 
-function loadPreload(argv) {
+function loadPreload(argv, invokeAnswer = () => true) {
   const exposed = {};
   const sent = [];
   const listeners = {};
@@ -22,7 +22,7 @@ function loadPreload(argv) {
       send: (channel, ...args) => sent.push([channel, ...args]),
       invoke: (channel, ...args) => {
         sent.push(["invoke", channel, ...args]);
-        return Promise.resolve(true);
+        return Promise.resolve(invokeAnswer(channel));
       },
       on: (channel, fn) => { (listeners[channel] = listeners[channel] || []).push(fn); },
       removeListener: (channel, fn) => {
@@ -54,14 +54,52 @@ test("the bridge exposes exactly the host calls, under one global", () => {
   const bridge = exposed.kirocrewDesktopWindow;
   assert.ok(Object.isFrozen(bridge));
   assert.deepStrictEqual(Object.keys(bridge).sort(), [
-    "app", "beginDrag", "broadcast", "close", "closeAll", "endDrag", "kind", "level",
-    "onActive", "onDrag", "onMessage", "onPlaced", "onShortcut", "onWindowChange", "open",
-    "openExternal", "ready", "send", "setFocusable", "setHitRegions", "showSession", "window",
+    "app", "beginDrag", "broadcast", "capabilities", "chooseGateway", "close", "closeAll", "endDrag",
+    "kind", "level", "listGateways", "onActive", "onDrag", "onMessage", "onPlaced", "onShortcut",
+    "onWindowChange", "open", "openExternal", "openImage", "ready", "revealFile", "send",
+    "setFocusable", "setHitRegions", "showSession", "window",
   ]);
   assert.deepStrictEqual(
     { app: bridge.app, window: bridge.window, kind: bridge.kind, level: bridge.level },
     { app: "pets", window: "pet", kind: "overlay", level: 2 },
   );
+  assert.deepStrictEqual(bridge.capabilities, []);
+});
+
+test("the capabilities a window was opened with are reported, known names only", () => {
+  const { exposed } = loadPreload(["--kc-app-window=pets/pet/overlay/2/gatewayChoice,anything,localFiles"]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(bridge.level, 2);
+  assert.deepStrictEqual(bridge.capabilities, ["localFiles", "gatewayChoice"]);
+  assert.ok(Object.isFrozen(bridge.capabilities));
+});
+
+test("each capability call reaches only its own channel, with coerced arguments", async () => {
+  const answers = {
+    "app-window:open-image": "yes",
+    "app-window:list-gateways": { state: "ready", gateways: [] },
+    "app-window:choose-gateway": { ok: true, chosen: "crew", showing: "crew" },
+  };
+  const { exposed, sent } = loadPreload(["--kc-app-window=pets/panel/panel/2/localFiles"], (c) => answers[c]);
+  const bridge = exposed.kirocrewDesktopWindow;
+  bridge.revealFile({ toString: () => "/tmp/a.txt" });
+  assert.strictEqual(await bridge.openImage("/tmp/a.png"), false, "only a literal true reads as opened");
+  assert.deepStrictEqual(await bridge.listGateways(), { state: "ready", gateways: [] });
+  assert.deepStrictEqual(await bridge.chooseGateway(7), { ok: true, chosen: "crew", showing: "crew" });
+  assert.deepStrictEqual(sent, [
+    ["app-window:reveal-file", "/tmp/a.txt"],
+    ["invoke", "app-window:open-image", "/tmp/a.png"],
+    ["invoke", "app-window:list-gateways"],
+    ["invoke", "app-window:choose-gateway", "7"],
+  ]);
+});
+
+test("a refused capability call resolves to its empty answer instead of throwing", async () => {
+  const { exposed } = loadPreload(["--kc-app-window=pets/panel/panel/2/"], () => Promise.reject(new Error("no handler")));
+  const bridge = exposed.kirocrewDesktopWindow;
+  assert.strictEqual(await bridge.openImage("/tmp/a.png"), false);
+  assert.strictEqual(await bridge.listGateways(), null);
+  assert.deepStrictEqual(await bridge.chooseGateway("crew"), { ok: false });
 });
 
 test("each call sends its own channel with coerced arguments", () => {

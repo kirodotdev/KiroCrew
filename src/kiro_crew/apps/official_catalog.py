@@ -48,6 +48,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.apps.desktop_capabilities import GRANT_FAMILY as DESKTOP_CAPABILITIES_KEY
+from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest import KEBAB_RE, app_name_error
 from kiro_crew.apps.store_links import sanitize_links
 from kiro_crew.apps.user_session_reach import GRANT_FAMILY as USER_SESSION_REACH_KEY
@@ -550,7 +552,8 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     """Project the explicit grants the trust prompt discloses before install.
 
     ``memberThreads`` rides along only with ``sessionApproval``, the grant it scopes.
-    ``reachableByUserSessions`` is a list of verbs, kept to the known ones.
+    ``reachableByUserSessions`` is a list of verbs and ``desktopCapabilities`` a list
+    of capabilities, each kept to the known ones.
     """
     permissions = entry.get("permissions")
     if not isinstance(permissions, dict):
@@ -560,6 +563,8 @@ def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | N
     }
     if reach := declared_verbs(permissions.get(USER_SESSION_REACH_KEY)):
         disclosed[USER_SESSION_REACH_KEY] = reach
+    if desktop := declared_capabilities(permissions.get(DESKTOP_CAPABILITIES_KEY)):
+        disclosed[DESKTOP_CAPABILITIES_KEY] = desktop
     if not disclosed:
         return None
     if disclosed.get("sessionApproval") and permissions.get("memberThreads") is True:

@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, MessagesSquare, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
+import { Code2, GitBranch, Loader2, MessagesSquare, Monitor, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -34,6 +34,7 @@ import { i18nT } from '../../i18n/t'
 import { findReport, isGatewayConnected, subscribeGatewayConnected } from '../../utils/errorReport'
 import { safeHref } from '../../utils/safeHref'
 import { sourceLabel, type RegistryApp } from './types'
+import { desktopCapabilityLine, knownDesktopCapabilities } from './desktopCapabilities'
 
 /** Machine-readable code the enable and registry-install paths return when trust is missing. */
 export const APP_EXECUTION_DENIED = 'app_execution_denied'
@@ -73,6 +74,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   reachableByUserSessions?: string[]
   /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
   desktop?: DesktopRequest
+  /** The `permissions.desktopCapabilities`: what its desktop windows may ask the desktop app for. */
+  desktopCapabilities?: string[]
   /**
    * True when the manifest widens `sessionApproval` to the owner's member
    * threads (`permissions.memberThreads`). Shown only inside the session
@@ -630,6 +633,7 @@ export default function TrustAppModal({
   // Only the verbs the gateway knows; anything else in a manifest grants nothing.
   const reachVerbs = (Array.isArray(app?.reachableByUserSessions) ? app.reachableByUserSessions : [])
     .filter(verb => verb === 'read' || verb === 'send')
+  const desktopCaps = knownDesktopCapabilities(app?.desktopCapabilities)
   // The badge's own rule (`sourceLabel`): a listing tag outranks the origin.
   const localInstall = !app?._registry && app?.origin === 'local'
   const state = terminalState({ failed, granted, detail, detailCode })
@@ -821,6 +825,18 @@ export default function TrustAppModal({
           {/* Shown with the grants because the windows run the app's own code on the
               desktop, over every other program, while the app is on. */}
           <TrustAppDesktopBox request={app.desktop} />
+          {desktopCaps.length > 0 && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3" data-testid="trust-desktop-capabilities">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Monitor size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.desktop_capabilities_heading')}</span>
+              </div>
+              {desktopCaps.map(cap => (
+                <p key={cap} className="text-text leading-relaxed">{desktopCapabilityLine(cap)}</p>
+              ))}
+              <p className="text-muted leading-relaxed">{i18nT('components.appstore.trustAppModal.desktop_capabilities_note')}</p>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">
