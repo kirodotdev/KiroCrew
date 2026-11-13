@@ -99,14 +99,11 @@ async function main() {
         notes: mdnbNotesList(NOTE_PATH, NOTE_TITLE),
         doc: mdnbNoteDoc(NOTE_PATH, NOTE_CONTENT),
       }),
+      // The stub's clear leaves no width preference, so frame 01 is the
+      // default mode.
+      localStorageEntries: { 'mdnb-active-vault': MDNB_VAULT_ID },
     })
     logPageProblems(page)
-    // Select the vault, and clear the width preference so frame 01 is the
-    // default mode whatever a previous run left behind.
-    await page.addInitScript(id => {
-      localStorage.setItem('mdnb-active-vault', id)
-      localStorage.removeItem('mdnb-full-width')
-    }, MDNB_VAULT_ID)
 
     await page.goto(base + '/md-notebook', { waitUntil: 'domcontentloaded' })
     await page.getByText(NOTE_TITLE).first().waitFor({ timeout: 15000 })

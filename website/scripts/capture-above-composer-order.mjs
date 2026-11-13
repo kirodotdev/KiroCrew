@@ -157,14 +157,10 @@ async function main() {
     wsServer = null
     page = await context.newPage()
     logPageProblems(page)
-    await stubDashboardApi(page, { folders, slots, theme, extra })
+    await stubDashboardApi(page, { folders, slots, theme, extra, localStorageEntries: { 'mc-active-slot': SLOT } })
     // AFTER the shared stub so this wins: the stub swallows /api/ws to stop a
     // retry storm, but this harness needs the socket to push the card frame.
     await page.routeWebSocket(/\/api\/ws/, ws => { wsServer = ws })
-    await page.addInitScript(slot => {
-      localStorage.setItem('mc-active-slot', slot)
-      localStorage.removeItem('kirocrew.tips.lastShownAt')
-    }, SLOT)
     await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(2500)
   }

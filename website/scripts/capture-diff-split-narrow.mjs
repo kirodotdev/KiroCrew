@@ -108,7 +108,21 @@ async function main() {
     return false
   }
 
-  await stubDashboardApi(page, { slots, extra })
+  // German locale: the longest header labels of the shipped catalogs.
+  await stubDashboardApi(page, {
+    slots, extra,
+    localStorageEntries: {
+      'mc-theme': 'dark',
+      'mc-onboarded': '1',
+      'mc-lang': 'de',
+      'mc-active-slot-chat': SURFACE.key,
+      'mc-chat-config': JSON.stringify({
+        pinLastPrompt: false,
+        fileChipStyle: 'expanded',
+        streamMode: 'immediate',
+      }),
+    },
+  })
   logPageProblems(page)
 
   const wrote = []
@@ -121,19 +135,6 @@ async function main() {
     wrote.push({ file, w, h, over: !!flag })
   }
 
-  // German locale: the longest header labels of the shipped catalogs.
-  await page.addInitScript(([key]) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', 'dark')
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-lang', 'de')
-    localStorage.setItem('mc-active-slot-chat', key)
-    localStorage.setItem('mc-chat-config', JSON.stringify({
-      pinLastPrompt: false,
-      fileChipStyle: 'expanded',
-      streamMode: 'immediate',
-    }))
-  }, [SURFACE.key])
   await page.goto(base + '/?sid=' + encodeURIComponent(SURFACE.key), { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(2600)
   await page.keyboard.press('Escape')

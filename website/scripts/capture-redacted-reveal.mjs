@@ -57,6 +57,7 @@ async function capture(browser, base, theme) {
   await page.routeWebSocket(/\/api\/ws/, () => {})
   await stubDashboardApi(page, {
     slots, theme,
+    localStorageEntries: { 'mc-active-slot': SLOT },
     extra: async (path, route) => {
       if (path === '/api/security/redacted-value') {
         if (mode === 'gone') json(route, { error: 'gone', code: 'reveal_unavailable' }, 410)
@@ -72,12 +73,6 @@ async function capture(browser, base, theme) {
     },
   })
   logPageProblems(page)
-  await page.addInitScript((t, slot) => {
-    localStorage.clear()
-    localStorage.setItem('mc-theme', t)
-    localStorage.setItem('mc-onboarded', '1')
-    localStorage.setItem('mc-active-slot', slot)
-  }, theme, SLOT)
   await page.goto(base + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForSelector('[data-testid="credential-tag"]', { timeout: 15000 })
   const coach = await page.locator('[data-testid="redaction-coach"]').textContent()
