@@ -740,15 +740,17 @@ def _candidate_dirs(kind: str) -> tuple[list[Path], bool]:
 
 
 def _listed_row(unit_id: str, *, with_type_counts: bool) -> dict[str, Any] | None:
-    """One unit's row, folded in a single pass, or ``None`` when it cannot be read.
+    """One unit's row, or ``None`` when it cannot be read.
 
-    ONE pass over the entries, feeding the ``status`` fold and counting types at
+    On a unit of one segment, without type counts, the row comes from the ``status``
+    fold (resumed from its savepoint) and the unit's last record. Otherwise it is ONE
+    pass over the entries, feeding the ``status`` fold and counting types at
     the same time. Counting in a second walk would double the read of every file
     in the listing, and re-deriving lifecycle here instead of folding would put a
     second implementation of "is this session open" next to the one the panel
     already shows.
 
-    No vocabulary is passed to ``iter_from``: a listing is a listing, and a unit
+    No vocabulary is passed to the walk: a listing is a listing, and a unit
     written by a newer writer must appear in it rather than take the whole list
     down. The fold simply ignores a type it does not branch on.
     """
@@ -758,24 +760,49 @@ def _listed_row(unit_id: str, *, with_type_counts: bool) -> dict[str, Any] | Non
         return None
     if handle is None:
         return None
-    counts: Counter[str] = Counter()
-    seen: dict[str, int] = {"ts": 0, "seq": 0}
-
-    def _tapped(entries: Any) -> Any:
-        for entry in entries:
-            counts[entry.type] += 1
-            seen["ts"] = entry.time
-            seen["seq"] = entry.seq
-            yield entry
-
-    try:
-        checkpoint = projections.advance(
-            projections.initial("status"), _tapped(handle.iter_from(1))
-        )
-    except (CrewLogError, OSError):
-        return None
-    status = projections.projection_of(checkpoint).value
     header = handle.header
+    status: "dict[str, Any] | None" = None
+    seen: dict[str, int] = {"ts": 0, "seq": 0}
+    if not with_type_counts and segment_first_seqs(KIND_SESSION, unit_id) == [1]:
+        # The status fold resumes from its savepoint, and the unit's last record says
+        # where the log ends, so a listed row costs the entries since the last listing
+        # instead of the whole unit. Any doubt (no settled tail, a fold that refuses,
+        # a fold that ends elsewhere) takes the walk below.
+        try:
+            tail = handle.tail_records(1)
+            folded = projections.fold_session(unit_id, ("status",)).projection("status")
+            # The fold skips a type it does not know, so its count stands for the walk's
+            # only when it covers every seq up to the last one.
+            last = tail[-1][0].seq if tail else 0
+            if (
+                last
+                and folded.seq == last
+                and isinstance(folded.value, dict)
+                and folded.value.get("entries") == last
+            ):
+                status = folded.value
+                seen = {"ts": tail[-1][0].time, "seq": tail[-1][0].seq}
+        except (CrewLogError, OSError):
+            status = None
+    counts: Counter[str] = Counter()
+    if status is None:
+        seen = {"ts": 0, "seq": 0}
+
+        def _tapped(entries: Any) -> Any:
+            for entry in entries:
+                counts[entry.type] += 1
+                seen["ts"] = entry.time
+                seen["seq"] = entry.seq
+                yield entry
+
+        try:
+            checkpoint = projections.advance(
+                projections.initial("status"),
+                _tapped(handle.iter_from(1)),
+            )
+        except (CrewLogError, OSError):
+            return None
+        status = projections.projection_of(checkpoint).value
     row: dict[str, Any] = {
         "unit": unit_id,
         "slot": getattr(header, "slot", None) or status.get("slot") or "",
