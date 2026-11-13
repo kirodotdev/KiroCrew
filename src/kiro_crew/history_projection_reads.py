@@ -1264,6 +1264,30 @@ class TranscriptReadProjection:
         with self._log._locked(key):
             return self._log._last_row_ts(key)
 
+    # How many newest rows the speech read looks through. A system row lands a
+    # handful of rows after the answer it follows; a window this size is far past
+    # that, and bounds the read on a transcript whose tail is all tool rows.
+    _SPEECH_TS_WINDOW = 64
+
+    def last_speech_row_ts(self, key: str) -> str | None:
+        """Return the timestamp of the newest SPEECH row, skipping system rows.
+
+        Speech is what ``is_speech_row`` accepts: a user or assistant row with
+        visible text, so a compaction or watchdog-recycle notice, a tool row or a
+        sub-agent envelope appended after an answer does not move it. ``None``
+        when the newest rows hold no speech: the caller cannot place the
+        conversation, and treats that as "no evidence it moved on".
+        """
+        from kiro_crew.dashboard.system_notices import is_speech_row
+
+        with self._log._locked(key):
+            tail = self._log._read_tail_messages(self._log._path(key), self._SPEECH_TS_WINDOW, None)
+        for row in reversed(tail):
+            if is_speech_row(row.get("role"), row.get("content"), row.get("meta")):
+                timestamp = row.get("ts")
+                return timestamp if isinstance(timestamp, str) and timestamp else None
+        return None
+
     def last_message_preview(
         self,
         key: str,

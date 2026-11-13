@@ -410,9 +410,36 @@ class TestAbstainsRatherThanRefuses:
         token = mint_options_token(state, OWNER)
         broken = _state(tmp_path)
         broken.conversation_log = MagicMock()
-        broken.conversation_log.last_row_ts.side_effect = OSError("disk gone")
+        broken.conversation_log.last_speech_row_ts.side_effect = OSError("disk gone")
 
         assert await options_control_is_stale(broken, token, THREAD) is False
+
+    @pytest.mark.asyncio
+    async def test_a_system_row_after_the_answer_does_not_supersede_the_control(self, tmp_path):
+        """A watchdog-recycle or compaction notice lands after the answer, not from the user."""
+        state = _state(tmp_path)
+        _turn(state, "the question's turn")
+        token = mint_options_token(state, OWNER)
+        state.conversation_log.append(
+            OWNER,
+            "assistant",
+            "♻️ This session was recycled by the watchdog (idle).",
+            extra_meta={"kind": "compaction"},
+        )
+
+        assert await options_control_is_stale(state, token, THREAD) is False
+
+    @pytest.mark.asyncio
+    async def test_speech_after_a_system_row_still_supersedes_the_control(self, tmp_path):
+        state = _state(tmp_path)
+        _turn(state, "the question's turn")
+        token = mint_options_token(state, OWNER)
+        state.conversation_log.append(
+            OWNER, "assistant", "♻️ recycled.", extra_meta={"kind": "compaction"}
+        )
+        _turn(state, "the user moved on")
+
+        assert await options_control_is_stale(state, token, THREAD) is True
 
     def test_a_conversation_with_no_transcript_mints_nothing(self, tmp_path):
         """Nothing to compare against yet, so post untokened rather than guess."""

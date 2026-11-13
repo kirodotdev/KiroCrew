@@ -357,6 +357,10 @@ async def options_control_is_stale(
     conversation stood at the time; the transcript on disk says where it stands
     now. A conversation that has moved on has superseded its own question.
 
+    "Now" is the newest SPEECH row, not the newest row: a compaction or
+    watchdog-recycle notice appended after the answer says nothing of the
+    conversation, and counting it struck a card nobody had answered.
+
     Nothing in gateway memory takes part, which is what makes this survive a
     restart -- the token is in the Slack message and the comparand is a persisted
     transcript row, so neither half is lost when the process dies. The counter a
@@ -387,7 +391,7 @@ async def options_control_is_stale(
         log = getattr(state, "conversation_log", None)
         if log is None:
             return False
-        current_ts = await asyncio.to_thread(log.last_row_ts, asker_key)
+        current_ts = await asyncio.to_thread(log.last_speech_row_ts, asker_key)
         if not current_ts:
             return False
         return transcript_sort_key(current_ts) > transcript_sort_key(minted_ts)
