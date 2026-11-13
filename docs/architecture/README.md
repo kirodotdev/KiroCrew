@@ -15,6 +15,8 @@ they explain structure and rationale and link out to
 | [context-management.md](context-management.md) | What reaches the model's context: the first-turn block order and its budgets, what repeats per turn, a sub-agent's scope, why a custom agent sees no skills, and how a crew member's session is built. |
 | [security-deep-dive.md](security-deep-dive.md) | The security model as a whole: threat model, trust boundaries, and how the layers compose. |
 | [resource-protection.md](resource-protection.md) | Process limits, sandbox resource controls, and rate limiting. |
+| [harness-requirements.md](harness-requirements.md) | The checklist of what every harness must do, each row with the PRs that taught it, its edge cases, and the test that checks it. |
+| [harness-gap-analysis.md](harness-gap-analysis.md) | Where each harness stands against that checklist (met, not met, unknown), and a ranked list of the fixes that close the most gaps. |
 
 `design-notes/` holds narrow design records that have no owning module spec: see
 [its index](design-notes/README.md).
