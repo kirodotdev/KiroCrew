@@ -332,8 +332,8 @@ def _memory_backup_cmd(action: str, args: argparse.Namespace) -> None:
 
             # An undeclared --store is refused here: ``owned_store_path`` would log
             # its resolution failure with a traceback above the one-line refusal.
-            declared = target_store in declared_store_names()
-            path = owned_store_path(target_store) if declared else None
+            is_declared = target_store in declared_store_names()
+            path = owned_store_path(target_store) if is_declared else None
             if chosen or path is None:
                 raise ValueError("Cancel requires an available memory store and cannot use --from")
             cancelled = memory_backup.cancel_pending_restore(path)
