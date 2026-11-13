@@ -971,6 +971,9 @@ function KasLoginFlow({
   const forgetModelList = useCallback(() => {
     clearCachedModels()
     void queryClient.resetQueries({ queryKey: ['available-models'] })
+    // The usage reading names the previous account too (the Kiro sign-in card
+    // shows its e-mail): drop it rather than show that name until the next poll.
+    void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
   }, [queryClient])
 
   const authorized = pollQuery.data?.status === 'authorized'

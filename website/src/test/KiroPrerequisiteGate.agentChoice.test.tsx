@@ -267,13 +267,16 @@ describe('KiroPrerequisiteGate agent choice', () => {
       vi.mocked(api.kirocrewConfig).mockResolvedValue({ agent: { acp_backend: 'claude' } })
       return {}
     })
-    render()
+    const { queryClient } = render()
+    queryClient.setQueryData(['kiro-usage'], { used: 1, limit: 10, bonusCredits: [], email: 'old-login@example.com' })
 
     fireEvent.click(await screen.findByRole('button', { name: 'Use other coding agents' }))
     fireEvent.click(await screen.findByRole('button', { name: /Use Claude Code/ }))
 
     await waitFor(() => expect(api.patchConfig).toHaveBeenCalledWith('agent.acp_backend', 'claude'))
     expect(await screen.findByText('Dashboard loaded')).toBeInTheDocument()
+    // The usage reading named the old harness's login (#36156): dropped with the switch.
+    expect(queryClient.getQueryData(['kiro-usage'])).toBeUndefined()
   })
 
   it('keeps a failed switch in the row of the agent it was attempted for, naming the save as what failed', async () => {

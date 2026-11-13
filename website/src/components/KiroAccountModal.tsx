@@ -15,7 +15,7 @@ import { configuredAcpBackend, kasInUse, type AcpBackendConfig } from '../api/ac
 import { failedWithNoData } from '../api/queryState'
 import { fmtCurrency, fmtDateFields, fmtNumber, fmtPercent, fmtTime } from '../i18n/format'
 import { i18nT } from '../i18n/t'
-import { safeGetItem, safeSetItem } from '../utils/safeStorage'
+import { usePersistedBool } from '../hooks/usePersistedBool'
 import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
 import { useGuardedLeave } from './NavigationLeaveGuard'
@@ -115,7 +115,8 @@ interface KiroAccountModalProps {
 }
 
 const KIRO_ACCOUNT_URL = 'https://app.kiro.dev/settings/account'
-const KIRO_ACCOUNT_EMAIL_HIDDEN_KEY = 'kirocrew:account-email-hidden'
+/** The e-mail hide toggle, read through `usePersistedBool(key, true)` here and on the Kiro sign-in card, which live-syncs both. */
+export const KIRO_ACCOUNT_EMAIL_HIDDEN_KEY = 'kirocrew:account-email-hidden'
 
 function formatResetDate(value: string): string {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -288,17 +289,8 @@ function BonusCredits({ grants }: { grants: KiroBonusCreditGrant[] }) {
 }
 
 function AccountIdentity({ usage }: { usage: KiroAccountUsage }) {
-  const [emailHidden, setEmailHidden] = useState(
-    () => safeGetItem(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY) !== '0',
-  )
-
-  const toggleEmailVisibility = () => {
-    setEmailHidden(hidden => {
-      const next = !hidden
-      safeSetItem(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, next ? '1' : '0')
-      return next
-    })
-  }
+  const [emailHidden, setEmailHidden] = usePersistedBool(KIRO_ACCOUNT_EMAIL_HIDDEN_KEY, true)
+  const toggleEmailVisibility = () => setEmailHidden(!emailHidden)
 
   // A reading names the user and its provider; the account-only state names
   // only the provider (its account type).
