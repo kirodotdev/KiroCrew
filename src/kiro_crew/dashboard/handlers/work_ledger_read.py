@@ -175,12 +175,14 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
             f"read, so it is no longer one to return it to: {why}.",
         )
     _audit(key, "work_ledger_read", "ok", resources=f"{len(rows)} item(s)")
+    warnings = _repeated_query_warnings(request, "work_ledger_read")
     if published_only:
-        return web.json_response(
-            _published_payload(
-                record, [(item, bool(row.get("stale"))) for item, row in zip(shown, rows)]
-            )
+        published = _published_payload(
+            record, [(item, bool(row.get("stale"))) for item, row in zip(shown, rows)]
         )
+        if warnings:
+            published["warnings"] = warnings
+        return web.json_response(published)
     # ``goal_items_used`` is derived, never stored: the goal's item count, read
     # off the header. The compact read carries it so a round report can state
     # the goal's total from a patrol that reads only the status columns.
@@ -199,6 +201,8 @@ async def api_work_ledger_get(request: web.Request) -> web.Response:
     else:
         # The whole board, never the filtered rows.
         payload["accept_batch"] = work_ledger.accept_batch(items)
+    if warnings:
+        payload["warnings"] = warnings
     return web.json_response(payload)
 
 
@@ -305,6 +309,8 @@ async def api_work_ledger_accept_eval(request: web.Request) -> web.Response:
         if name in document:
             answer[name] = document[name]
     answer["published_fields_only"] = True
+    if warnings := _repeated_query_warnings(request, "work_ledger_accept_eval"):
+        answer["warnings"] = warnings
     _audit(key, "work_ledger_accept_eval", "ok", resources=f"{len(answer['results'])} result(s)")
     return web.json_response(answer)
 
@@ -442,6 +448,29 @@ _COMPACT_ROW_FIELDS: tuple[str, ...] = (
 #: layer sends.
 _QUERY_TRUE = frozenset({"1", "true", "yes", "on"})
 _QUERY_FALSE = frozenset({"0", "false", "no", "off"})
+
+
+def _repeated_query_warnings(request: web.Request, operation: str) -> list[str]:
+    """One warning per query parameter given more than once; logs each.
+
+    Both read routes take a parameter's FIRST value, and a repeat is accepted
+    rather than refused, so ``?state=open&state=closed`` filters by ``open`` alone.
+    The warning tells the caller its later values were not applied. It names the
+    parameter and the count only, never a value, because the accept_eval answer
+    is posted into a channel.
+    """
+    warnings: list[str] = []
+    for name in dict.fromkeys(request.query):
+        count = len(request.query.getall(name))
+        if count > 1:
+            logger.warning(
+                "%s: query parameter %r given %d times; only the first value was used",
+                operation,
+                name,
+                count,
+            )
+            warnings.append(f"{name} was given {count} times; only the first value was used")
+    return warnings
 
 
 def _read_options(
