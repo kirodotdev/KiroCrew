@@ -807,7 +807,20 @@ def _url_payload_command(n: int) -> str:
 #: row only, and ``is_denied`` judges that row on the view while its events keep the
 #: command as submitted. Every other row, an operator's copy, and the rm floor for
 #: ``/`` and ``~`` read the full text. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_997
+#: Raised by 778, from 35,997, to 36,775, for the ``self-protection-git-pager``
+#: liveness floor: a structural predicate refusing a git command that opens or
+#: configures a pager (``git grep -O``, ``-c`` / ``--config-env`` / ``git config`` /
+#: ``GIT_PAGER`` / ``PAGER`` / the GIT_CONFIG env trio and ``GIT_CONFIG_PARAMETERS``,
+#: through execution-prefix wrappers and a same-line ``export``), read in git's own
+#: grammar and pager precedence (``GIT_PAGER``, then ``core.pager``, then ``PAGER``; no
+#: environment pager for a subcommand git never pages or one whose ``pager.<sub>`` is off)
+#: with a newline inside a quoted word kept in its word, and
+#: empty / ``cat`` / trusted-absolute ``cat`` / git-false values allowed; a cheap
+#: git-absent gate, an exception guard on the payload walk, ``#`` line-comment and
+#: non-shell here-document body stripping, one tokenise per command segment so the walk
+#: stays linear, its ungated-floor id and note, and the facade manifests restating
+#: ``_is_git_pager`` and its helpers. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_775
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

@@ -288,6 +288,13 @@ class TestSelfProtectionFlagInterposition:
     }
     _FLAGS = ("-v", "-vv", "--verbose", "--no-jail", "-v --no-jail")
 
+    # Ungated floors that are NOT a `kirocrew <subcommand>` shape: they match a
+    # structural argv predicate of their own, so they carry no interposed-flag
+    # template and no `_SUBCOMMANDS` entry. ``self-protection-git-pager`` refuses a
+    # git command that opens or configures a pager; its denial cases live in
+    # ``test_argv_floor_git_grep_pager.py``.
+    _NON_SUBCOMMAND_UNGATED_FLOORS = {"self-protection-git-pager"}
+
     @staticmethod
     def _effective():
         from kiro_crew import security
@@ -306,7 +313,12 @@ class TestSelfProtectionFlagInterposition:
     def test_every_ungated_floor_has_a_template_and_no_row(self):
         from kiro_crew import security
 
-        assert set(self._UNGATED_TEMPLATES) == set(security._SELF_PROTECTION_UNGATED_FLOOR_IDS)
+        assert set(self._UNGATED_TEMPLATES) | self._NON_SUBCOMMAND_UNGATED_FLOORS == set(
+            security._SELF_PROTECTION_UNGATED_FLOOR_IDS
+        )
+        # Every ungated floor, subcommand or structural, reports a note.
+        for rule_id in security._SELF_PROTECTION_UNGATED_FLOOR_IDS:
+            assert security._SELF_PROTECTION_FLOOR_NOTES.get(rule_id), rule_id
         # Disjoint by construction: an id in both sets would gate a floor on a
         # row lookup again, which is the silent-allow trap the split removed.
         assert not security._SELF_PROTECTION_UNGATED_FLOOR_IDS & {
@@ -534,11 +546,23 @@ class TestSelfProtectionFlagInterposition:
         """
         from kiro_crew import security
 
-        assert set(self._SUBCOMMANDS) == set(security._SELF_PROTECTION_UNGATED_FLOOR_IDS), (
+        assert (
+            set(self._SUBCOMMANDS)
+            == set(security._SELF_PROTECTION_UNGATED_FLOOR_IDS)
+            - self._NON_SUBCOMMAND_UNGATED_FLOORS
+        ), (
             "every ungated kirocrew-subcommand floor must register its words in "
             "_SUBCOMMANDS (and every _SUBCOMMANDS entry must be an ungated floor), "
-            "or the shell-dressing walks silently skip it"
+            "or the shell-dressing walks silently skip it; structural (non-subcommand) "
+            "ungated floors are listed in _NON_SUBCOMMAND_UNGATED_FLOORS instead"
         )
+        # The structural (non-subcommand) ungated floors fire on their own argv shape.
+        # ``-O`` (capital) opens the pager and is refused; lowercase ``-o`` is ordinary
+        # output and is allowed, so the predicate is called on original-case argv here.
+        assert security._is_git_pager("git grep -O less -- x")
+        assert not security._is_git_pager("git grep -o less -- x")
+        assert security._is_git_pager("git -c core.pager=less log")
+        assert not security._is_git_pager("git --no-pager grep foo -- x")
         flag_keyed_floor_ids = {"self-protection-dev-mode-out-of-root-confirm"}
         gated_subcommand_ids = {
             rule_id
