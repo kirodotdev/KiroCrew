@@ -9681,6 +9681,7 @@
         "theme_mode": "",
         "sso_login_flags": "",
         "theme_color": "",
+        "instance_label": "",
         "language": "",
         "recent_tint_count": 0,
         "show_unread_dot": true,
@@ -11140,6 +11141,20 @@
       "tags": [],
       "label": "Theme Color",
       "help": "Dashboard color theme slug (e.g. 'kiro', 'emerald', 'monokai'). Empty = unset (frontend falls back to localStorage or 'kiro').",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.instance_label",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Instance Label",
+      "help": "A short name for this gateway (e.g. 'pod-a', 'Lab box'), shown in the browser tab title and favicon and sent as the origin of a session transferred to another instance. Empty = unset (the tab title and icon stay as they are and a transfer names the host).",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""

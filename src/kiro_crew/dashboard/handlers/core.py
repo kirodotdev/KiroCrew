@@ -291,7 +291,7 @@ async def logo(request: web.Request) -> web.StreamResponse:
 
 
 async def api_branding(request: web.Request) -> web.Response:
-    """GET /api/dashboard/branding — bot name and avatar config.
+    """GET /api/dashboard/branding — bot name, instance label and avatar config.
 
     Reads the config the live watcher has already adopted. Every dashboard tab
     asks for branding, and ``KiroCrewConfig.load()`` rebuilds every config
@@ -320,6 +320,7 @@ async def api_branding(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
+            "instance_label": cfg.dashboard.instance_label,
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
             "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),

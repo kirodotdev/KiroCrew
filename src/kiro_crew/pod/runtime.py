@@ -1291,6 +1291,10 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
     if not isinstance(data, dict):
         return None
     _apply_seed_config_floor(data)
+    # A copied instance label names the seed's gateway, not this pod: kept, the
+    # pod's tab and its transfers would claim to be that gateway.
+    if isinstance(data.get("dashboard"), dict):
+        data["dashboard"].pop("instance_label", None)
     return data
 
 

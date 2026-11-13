@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.config import live
 from kiro_crew.config.paths import data_home
 from kiro_crew.instances.constants import SESSION_BUNDLE_CONTEXT_KEYS
 
@@ -286,12 +287,16 @@ _IMPORT_TITLE_MARKER = "⇄ "
 def local_instance_label() -> str:
     """A short human label for THIS instance, used as a transfer's ``origin``.
 
-    The local instance is implicit in the registry and has no configured name
-    (instances.md §1), so there is nothing to read: the host's first DNS label
-    is the most recognisable stand-in and is short enough to sit in a session
-    title. Falls back to ``"another instance"`` rather than raising, because a
-    missing label must never fail a transfer.
+    ``dashboard.instance_label`` when it is set, read from the config the live
+    watcher has adopted. The local instance is never a registry record
+    (instances.md §1), so with no label the host's first DNS label is the most
+    recognisable stand-in and is short enough to sit in a session title. Falls
+    back to ``"another instance"`` rather than raising, because a missing label
+    must never fail a transfer.
     """
+    cfg = live.snapshot()
+    if cfg is not None and cfg.dashboard.instance_label:
+        return cfg.dashboard.instance_label
     try:
         return platform.node().split(".")[0] or "another instance"
     except Exception:

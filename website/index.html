@@ -391,6 +391,9 @@
       var l = localStorage.getItem('mc-lang');
       if (l && /^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8}){0,2}$/.test(l)) document.documentElement.lang = l;
     } catch (e) {}
+    // Name this gateway in the tab before React mounts, from the instance label
+    // it last served (dashboard.instance_label). Synced by useBranding.
+    try { var il = localStorage.getItem('mc-instance-label'); if (il) document.title = il + ' — ' + document.title; } catch (e) {}
   </script>
 </head>
 <body>

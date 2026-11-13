@@ -68,6 +68,20 @@ class TestSeedSanitization:
         out = rt.sanitized_seed_config(seed)
         assert out is not None and out["tunnel"] == {"enabled": False, "relay_enabled": False}
 
+    def test_drops_the_seed_homes_instance_label(self, tmp_path: Path) -> None:
+        """A pod seeded from a labelled home must not name itself as that home."""
+        seed = self._write(
+            tmp_path / "s", {"dashboard": {"instance_label": "Live box", "theme_color": "emerald"}}
+        )
+        out = rt.sanitized_seed_config(seed)
+        assert out is not None and out["dashboard"] == {"theme_color": "emerald"}
+
+    def test_the_boot_floor_keeps_a_pods_own_instance_label(self) -> None:
+        """A scenario pod re-runs the floor on every boot; its own label survives."""
+        data = {"dashboard": {"instance_label": "pod-a"}}
+        rt._apply_seed_config_floor(data)
+        assert data["dashboard"]["instance_label"] == "pod-a"
+
     def test_adds_tunnel_when_absent(self, tmp_path: Path) -> None:
         seed = self._write(tmp_path / "s", {"dashboard": {"port": 5476}})
         out = rt.sanitized_seed_config(seed)
