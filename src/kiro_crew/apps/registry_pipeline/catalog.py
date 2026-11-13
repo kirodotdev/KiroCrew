@@ -811,6 +811,8 @@ async def list_registry() -> list[dict[str, Any]]:
                         _entry_git_url(row),
                         _entry_git_url(entries[idx]),
                     )
+    except official_catalog.CatalogUnavailable as exc:
+        official_catalog.log_unavailable(logger, "no official catalog inventory this listing", exc)
     except Exception:  # noqa: BLE001 - degrade, never 500 the store
         # No catalog inventory this listing. That is the behaviour the store had
         # before this module existed (seed + built-ins discovered on disk), and it
@@ -930,6 +932,9 @@ def _catalog_installable_rows() -> dict[str, dict[str, Any]]:
             for row in official_catalog.inventory(entries)
             if isinstance(row.get("name"), str)
         }
+    except official_catalog.CatalogUnavailable as exc:
+        official_catalog.log_unavailable(logger, "cannot confirm catalog install coordinates", exc)
+        return {}
     except Exception:  # noqa: BLE001 - degrade to the seed, never 500 the store
         logger.warning("cannot confirm the catalog's install coordinates", exc_info=True)
         return {}
