@@ -53,12 +53,8 @@ class TestBuiltinAgentNamesAreNamespaced:
                     f"collide with any other install claiming that global name"
                 )
                 checked += 1
-        if checked == 0:
-            # No shipped builtin declares an agent yet, so there is nothing to
-            # check — but a guard that passes on an empty sample is worthless, so
-            # say so out loud rather than pass silently. The first agent-declaring
-            # builtin turns this on.
-            pytest.skip("no builtin declares agents yet — guard is vacuous")
+        # A guard that passes on an empty sample is worthless.
+        assert checked, "no shipped builtin declares an agent -- the guard is vacuous"
 
 
 class TestUserAgentEditsSurviveRefresh:
@@ -184,10 +180,7 @@ class TestUserAgentEditsSurviveRefresh:
         }
         root = _REPO_ROOT / "src/kiro_crew/apps/builtins"
         templates = sorted(root.glob("*/agents/*.json"))
-        if not templates:
-            # Same reasoning as the namespacing guard above: nothing ships an
-            # agent template yet, and a silent pass would hide that.
-            pytest.skip("no builtin ships an agent template yet")
+        assert templates, "no builtin ships an agent template -- the guard is vacuous"
         for tpl in templates:
             keys = set(json.loads(tpl.read_text(encoding="utf-8")))
             undecided = keys - _FRAMEWORK_OWNED_AGENT_KEYS - preferences
