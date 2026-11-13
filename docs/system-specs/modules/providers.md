@@ -1019,6 +1019,13 @@ message; that bind is forced only by `needs_reinjection` (see
 [context-management](../../architecture/context-management.md)). It shares the
 limit in the paragraph above.
 
+`EssentialDelivery.report_next_send(prompt, report)` is how the Context tab's
+"Prompt as sent" (`prompt_trace`, [metrics](metrics.md)) learns what the agent
+read: the next `stream` calls `report` once with the text it hands `send`, after
+the envelope swap. It fires only when that stream's message is the very object
+passed, so a slash command, or a prompt that failed before reaching the delivery,
+drops it rather than filing another text under the turn.
+
 ### Native harness notifications relied on
 
 This dedup depends on the harness reporting every native context loss it

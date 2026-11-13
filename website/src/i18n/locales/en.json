@@ -8301,6 +8301,12 @@
       "start_row_show": "Show",
       "start_row_shown": "Shown above",
       "picked_gone": "Turn {{n}} has left the chart, so the newest turn is shown.",
+      "prompt_heading": "Prompt as sent",
+      "prompt_masked": "The text this turn sent the agent, with secrets masked.",
+      "prompt_not_kept": "This turn's prompt is no longer kept. Only a chat's newest turns are kept, in memory, none for an incognito or temporary chat, and a restart clears them.",
+      "prompt_owner_only": "Only the dashboard owner can read a turn's prompt.",
+      "prompt_too_long": "This turn's prompt was too long to keep, so it can't be shown.",
+      "prompt_loading": "Loading the prompt…",
       "turn_start_latest": "Turn {{n}} · session start · latest"
     },
     "devFleetPage": {

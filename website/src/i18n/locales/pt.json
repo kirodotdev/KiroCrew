@@ -15553,6 +15553,12 @@
       "start_row_show": "Mostrar",
       "start_row_shown": "Exibido acima",
       "picked_gone": "O turno {{n}} saiu do gráfico, então o mais recente é exibido.",
+      "prompt_heading": "Prompt como foi enviado",
+      "prompt_masked": "O texto que este turno enviou ao agente, com os segredos mascarados.",
+      "prompt_not_kept": "O prompt deste turno não está mais guardado. Só os turnos mais recentes de um chat ficam guardados, na memória, nenhum de um chat anônimo ou temporário, e uma reinicialização os apaga.",
+      "prompt_owner_only": "Só o proprietário do painel pode ler o prompt de um turno.",
+      "prompt_too_long": "O prompt deste turno era longo demais para ser guardado, então não pode ser mostrado.",
+      "prompt_loading": "Carregando o prompt…",
       "turn_start_latest": "Turno {{n}} · início da sessão · mais recente"
     },
     "crewBoard": {

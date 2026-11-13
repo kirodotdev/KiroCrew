@@ -155,6 +155,12 @@ export function createTelemetryEndpoints({ get, post, j, jfetch: fetch }: Client
      *  left the 30 kept turns. */
     telemetryContextTurn: (slot: string, turn: number) =>
       fetch('/api/telemetry/context-trace?slot=' + encodeURIComponent(slot) + '&turn=' + encodeURIComponent(String(turn))).then(j),
+    /** The text one turn sent the agent, secrets masked; the dashboard owner only.
+     *  403 `owner_only` for anyone else, 404 `not_kept` once the gateway no longer
+     *  holds it (newest turns only, in memory, none for a restricted chat), 404
+     *  `too_long` when the prompt was over the gateway's size cap and never kept. */
+    telemetryPromptAsSent: (slot: string, turn: number): Promise<{ text: string }> =>
+      fetch('/api/telemetry/prompt-as-sent?slot=' + encodeURIComponent(slot) + '&turn=' + encodeURIComponent(String(turn))).then(j),
     /** Per-turn usage rows for one session — the Spend table's drill-down.
      *  Same always-written row store as the context trace; the dashboard reads
      *  every row (the endpoint's app-ownership filter applies to app callers).

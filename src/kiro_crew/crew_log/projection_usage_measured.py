@@ -868,6 +868,22 @@ def context_turn(ctx: dict[str, Any], ordinal: int) -> dict[str, Any] | None:
     return None
 
 
+def context_turn_number(ctx: dict[str, Any], ordinal: int) -> int | None:
+    """The turn number the composer stamped on the kept turn with *ordinal*, or None
+    when no turn holds it or that turn ran on an earlier unit: a slot that starts its
+    conversation over counts its turn numbers from the start again."""
+    if ordinal <= 0:
+        return None
+    rows = int(ctx["trend_rows"])
+    for row in [ctx["start"], *(list(ctx["trend"])[TREND_TURNS - rows :] if rows else [])]:
+        if int(row[_ORD]) == ordinal:
+            return int(row[_TURN]) if int(row[_UNIT]) == int(ctx["unit"]) else None
+    newest = int(ctx["turn_ord"]) or int(ctx["turns"])
+    if ctx["turns"] and ordinal == newest and int(ctx["turn_unit"]) == int(ctx["unit"]):
+        return int(ctx["turn_no"])
+    return None
+
+
 def context_peak(ctx: dict[str, Any], since_ms: int) -> tuple[int, int]:
     """The fullest turn closed at or after *since_ms*, as ``(used, window)`` from that
     one reading; ``(0, conf_window)`` when no reading falls inside.
