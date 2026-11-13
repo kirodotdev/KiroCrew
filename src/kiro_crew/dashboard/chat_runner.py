@@ -229,6 +229,7 @@ from kiro_crew.dashboard.chat_turn.segment_flush import (
     _turn_settle_answer,
 )
 from kiro_crew.dashboard.chat_turn.session_events import (
+    _keep_cleared_turns,
     _on_agent_switched,
     _on_clear_status,
     _on_compaction_status,
@@ -1271,7 +1272,9 @@ async def _run_chat(
             elif event.kind == EVENT_COMPACTION_STATUS:
                 await _on_compaction_status(turn, event)
             elif event.kind == EVENT_CLEAR_STATUS:
-                await _on_clear_status(turn, event)
+                _clear_is_ours = await _on_clear_status(turn, event)
+                if _clear_is_ours:
+                    await _keep_cleared_turns(turn)
                 _replay_pending = turn._replay_pending
             elif event.kind == EVENT_AGENT_SWITCHED:
                 _flow = await _on_agent_switched(turn, event)

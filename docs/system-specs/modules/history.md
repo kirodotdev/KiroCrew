@@ -1445,7 +1445,11 @@ no longer destroy older turns.
   disk. Memory trimming (`_MAX_SLOT_MESSAGES`) may fold a leading window message
   into the frozen prefix (`_disk_older_count += …`) only for messages actually
   persisted (`min(excess, _disk_window_len)`); an unpersisted overflow is logged
-  rather than silently counted as on-disk.
+  rather than silently counted as on-disk. A native clear (`_keep_cleared_turns`)
+  saves the slot, then folds into the frozen prefix the window's rows up to the
+  one that was last before the save (a row appended during the save stays in
+  the window) and the other writers' lines that save kept (none when a row
+  arrived), so the cleared turns stay in the transcript and in both chat reads.
 - **`slot._disk_older_durable_count`**: the durable-only position base — how
   many non-transient rows (`state._TRANSIENT_ROLES`) have left the window off
   the front. Maintained at every site that sets or advances
