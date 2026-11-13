@@ -132,6 +132,7 @@ def plan_page(
     total: int,
     window: int,
     cursor: DeltaCursor | None,
+    byte_floor: int = 0,
 ) -> PagePlan:
     """Decide what a cursor-mode response serves.
 
@@ -139,6 +140,9 @@ def plan_page(
     absolute index *page_start*; ``None`` is a row that renders as nothing (an
     empty streaming run). *identities* are the same rows' identities, ``None``
     where none vouches for the render. *window* is the reader's page size.
+    *byte_floor* is the absolute index of the oldest row the page's byte budget
+    keeps: the window starts no earlier, so a cursor read is bounded by bytes
+    like a plain one and its ``from``/``next_before`` stay the first row sent.
 
     When the fragments do not line up one-to-one with ``[page_start, total)`` no
     position can be trusted: the whole composed page is served as a replacement
@@ -159,13 +163,16 @@ def plan_page(
             return None
         return [i for i in seg if i is not None]
 
-    new_from = max(page_start, total - window)
+    new_from = max(page_start, total - window, byte_floor)
     applied = False
     if (
         cursor is not None
         and cursor.since - cursor.start <= DELTA_MAX_SPAN
         and page_start <= cursor.start
         and cursor.since <= total
+        # A window reaching older than the held span holds rows the reader does
+        # not have, so it is served whole: a held cursor never narrows a read.
+        and new_from >= cursor.start
     ):
         held = _span(cursor.start, cursor.since)
         applied = (

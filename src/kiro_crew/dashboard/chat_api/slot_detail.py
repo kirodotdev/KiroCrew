@@ -1283,7 +1283,8 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # has been filled in the background, it is rendered without the memo.
     memo_scope = (slot_history_key(slot), before, limit_raw is None and before_raw is None)
     # A page (a limit or a cursor position) is also bounded by bytes; the whole-history
-    # read is not, and a cursor read keeps its row-position contract.
+    # read is not. A cursor read is cut inside the planner (``byte_floor``), which
+    # keeps its row-position contract.
     paged = not cursor_mode and (limit_raw is not None or before_raw is not None)
     use_memo, fill = wire_render.plan_read(memo_scope)
 
@@ -1324,6 +1325,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     total=total,
                     window=limit,
                     cursor=delta_cursor,
+                    byte_floor=first + _oldest_over_byte_budget(fragments),
                 )
                 messages_json = "[" + ", ".join(plan.fragments) + "]"
             elif use_memo or paged:
