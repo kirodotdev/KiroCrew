@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """A crewmate's conductor keeps what the root conductor has, or says why not.
 
-Two agents conduct work through a work ledger: ``kirocrew-conductor`` (Crew Mode,
-Ultra chats) and ``kirocrew-mate-conductor`` (every crewmate's own chat). They are
+Two agents conduct work through a work ledger: ``kirocrew-conductor`` (the plain
+and child conductor) and ``kirocrew-mate-conductor`` (every crewmate's own chat). They are
 built by different installers (``agent_materialization/conductor_agents.py`` and
 ``agent_materialization/service_agents.py``) and prompted from different files, so
 a change that lands on one is easy to leave off the other. These tests fail when
@@ -27,6 +27,12 @@ reason.
 The direction is one way: the crewmate's conductor carries much the root one does
 not (cron, guide and mate servers, the default built-ins, its front-desk wording),
 and that is not drift.
+
+Ultra Mode runs a third agent, ``kirocrew-team-lead`` (``crew_mode.DEFAULT_CREW_MODE_AGENT``).
+Its system prompt carries none of the shared rules: it reaches them only through
+the ``team-lead`` skill, which points at ``goal-conductor``. The last section holds
+that chain and each shared rule's counterpart in ``goal-conductor/SKILL.md``
+(:data:`ULTRA_SKILL_ANCHORS`).
 """
 
 from __future__ import annotations
@@ -488,3 +494,120 @@ def test_every_allowlist_entry_is_still_a_difference(specs) -> None:
         live |= {f"{kind}:{n}" for n in names}
     stale = sorted(set(ALLOWLIST) - live)
     assert stale == [], f"ALLOWLIST entries that name no difference: {stale}"
+
+
+# -- Ultra Mode's team lead ---------------------------------------------------- #
+
+_SKILLS_DIR = Path(agent.__file__).parent / "builtin_skills"
+
+#: Each shared rule's counterpart in ``goal-conductor/SKILL.md``: anchor phrases,
+#: matched after :func:`_words`, so rewording around them does not break the test.
+#: ``kirocrew-team-lead`` reaches these rules only through that skill. A new
+#: ``_LEDGER_CONDUCTOR_RULES`` key lands here with its anchors, or in
+#: :data:`ULTRA_GAPS` with a reason. That is the extension point for a new shared
+#: rule (``host_pressure``, ``resource_wave``) or a reworded one: add its key or
+#: an anchor here.
+ULTRA_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
+    "acceptance": ("verify every done with the evaluator", "never by believing the claim"),
+    "dispatch_create": ("work_ledger_record action=create, with the item's title and its",),
+    "dispatch_bind": ("work_ledger_record action=bind with that item_id and",),
+    "dispatch_seed": ("session_send the seed prompt",),
+    "bind_before_seed": (
+        "bind before you seed",
+        "an unbound running worker is neither visible nor recoverable",
+    ),
+    "patrol_watch": ('watch="work-ledger"', 'monitor_update(watch="work-ledger")'),
+    "patrol_bounds": ("pass no interval_secs, max_cycles or max_runtime_secs",),
+    "patrol_final_report": (
+        "one final report: what landed, what is left, and the links",
+        "autonudge_stop",
+    ),
+    "act_by_status": ("act on three statuses, and only three", "compact=true"),
+    "claimed_pr": ("claimed pr is never read as the bar", "action=accept"),
+    "read_message_detail": ("session_read_message for detail the record does not carry",),
+    "close_item": ("work_ledger_record action=close with the item's state",),
+    # The rule IS "read goal-conductor"; its Ultra counterpart is the chain itself.
+    "skill_first": ("name: goal-conductor",),
+}
+
+#: Shared rules the team lead does not reach today, as ``key -> (anchor, reason)``.
+#: The anchor is the rule's own phrase; once ``goal-conductor/SKILL.md`` carries it
+#: the entry is stale and the test says so. Remove it then and add the key above.
+ULTRA_GAPS: dict[str, tuple[str, str]] = {
+    "dependent_calls": (
+        "depends on another goes in a later step",
+        "the team-lead prompt and both skills lack the general rule; only accept_eval's "
+        "settle step says 'in a later step'",
+    ),
+    "patrol_requested": (
+        "confirms receipt only",
+        "the skill reads patrol= outcomes but never says a 'requested' reply is not a retry cue",
+    ),
+}
+
+
+def _skill_text(name: str) -> str:
+    return _words((_SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8"))
+
+
+def test_every_shared_rule_has_an_ultra_counterpart_or_a_named_gap() -> None:
+    rules = set(agent._LEDGER_CONDUCTOR_RULES)
+    mapped = set(ULTRA_SKILL_ANCHORS)
+    gaps = set(ULTRA_GAPS)
+    assert mapped & gaps == set(), f"keys both mapped and gapped: {sorted(mapped & gaps)}"
+    assert sorted(rules - mapped - gaps) == [], (
+        f"shared rules with no Ultra Mode counterpart: {sorted(rules - mapped - gaps)}. "
+        f"kirocrew-team-lead reaches shared rules only through goal-conductor/SKILL.md: "
+        f"add the key to ULTRA_SKILL_ANCHORS with phrases from the skill, or to ULTRA_GAPS "
+        f"with a reason."
+    )
+    assert (
+        sorted((mapped | gaps) - rules) == []
+    ), f"entries that name no shared rule: {sorted((mapped | gaps) - rules)}"
+
+
+def test_goal_conductor_skill_carries_each_mapped_rule() -> None:
+    skill = _skill_text("goal-conductor")
+    missing = sorted(
+        f"{key}: {anchor!r}"
+        for key, anchors in ULTRA_SKILL_ANCHORS.items()
+        for anchor in anchors
+        if anchor not in skill
+    )
+    assert missing == [], (
+        f"goal-conductor/SKILL.md lost the Ultra Mode counterpart of shared rules: {missing}. "
+        f"Restore the rule in the skill, or update the anchor if it was only reworded."
+    )
+
+
+def test_every_ultra_gap_is_still_a_gap() -> None:
+    skill = _skill_text("goal-conductor")
+    closed = sorted(key for key, (anchor, _why) in ULTRA_GAPS.items() if anchor in skill)
+    assert closed == [], f"ULTRA_GAPS entries the skill now carries; move them: {closed}"
+
+
+def test_the_anchor_check_sees_a_lost_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Positive control: an anchor the skill does not hold is reported by key."""
+    monkeypatch.setitem(ULTRA_SKILL_ANCHORS, "close_item", ("a phrase no skill holds",))
+    with pytest.raises(AssertionError, match="close_item"):
+        test_goal_conductor_skill_carries_each_mapped_rule()
+
+
+def test_ultra_mode_reaches_goal_conductor_through_team_lead(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ultra's default agent is the team lead; its prompt sends it to ``team-lead``,
+    that skill sends it to ``goal-conductor``, and its spec maps both."""
+    from kiro_crew import crew_mode
+    from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME
+
+    assert crew_mode.DEFAULT_CREW_MODE_AGENT == "kirocrew-team-lead"
+    prompt = _words(agent._TEAM_LEAD_SYSTEM_PROMPT)
+    assert "read the team-lead skill" in prompt
+    assert "procedure is goal-conductor" in prompt
+    assert "read goal-conductor first" in _skill_text("team-lead")
+
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    service_agents._install_team_lead_agent()
+    spec = json.loads((tmp_path / TEAM_LEAD_AGENT_FILENAME).read_text(encoding="utf-8"))
+    assert {"team-lead", "goal-conductor"} <= _skill_keys(spec)
