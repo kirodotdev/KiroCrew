@@ -66,6 +66,10 @@ export interface LocalRowIndex {
   /** Each unpinned row's position in the order it is drawn in now, whatever the
    *  sort: where a manual drop's insertion line goes. */
   drawnIndex: ReadonlyMap<string, number>
+  /** The chat open in the main pane, or null. Opening a chat marks it read, so the
+   *  Unread chip lets it through while it is open instead of dropping the row the
+   *  person is working in. No other chip changes when a chat is opened. */
+  openKey: string | null
 }
 
 export interface SidebarRowFilters {
@@ -613,6 +617,7 @@ function makeDimensions(
   searchRanks: ReadonlyMap<string, number> | null,
   folderOf: SidebarRows['folderOf'],
   clears: SidebarRowClears,
+  openKey: string | null,
 ): FilterDimension[] {
   const { tags, models, creators, search, status, folders: folderFilter } = filters
   // A paused filter keeps its chip but narrows nothing, so only the unpaused ones count.
@@ -638,6 +643,8 @@ function makeDimensions(
     return !!folderId && folderFilter.pinnedSubtree.has(folderId)
   }
   const pinnedBypass = (slot: Slot): boolean => matches.pinned(slot) || inPinnedFolder(slot)
+  const isOpen = (slot: Slot): boolean => openKey !== null && localKeyOf(slot) === openKey
+  const passesChip = (key: SessionFilterKey, slot: Slot): boolean => matches[key](slot) || (key === 'unread' && isOpen(slot))
   return [
     {
       // Tags. Unlike the folder filter this does NOT go inert while searching: it
@@ -685,15 +692,16 @@ function makeDimensions(
     },
     {
       // Status chips. Active chips OR together: a row passes when any active chip
-      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`).
+      // matches it. A pinned row passes whatever the chips say (see `pinnedBypass`),
+      // and the Unread chip passes the open chat (`LocalRowIndex.openKey`).
       // `hides` restates the exemption too: `excluded` is list membership, not this
       // dimension's verdict, so a pinned row the SEARCH dropped would otherwise read as
       // hidden by the chips and a reveal would clear them.
-      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => matches[key](slot)),
+      filtersRow: slot => activeStatus.length === 0 || pinnedBypass(slot) || activeStatus.some(key => passesChip(key, slot)),
       narrows: () => activeStatus.length > 0,
       exemptsPinned: true,
       isSearch: false,
-      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && excluded(slot),
+      hides: (slot, excluded) => activeStatus.length > 0 && !pinnedBypass(slot) && !(activeStatus.includes('unread') && isOpen(slot)) && excluded(slot),
       clear: () => clears.status(),
     },
     {
@@ -907,7 +915,7 @@ function makeViews(model: ViewModel): SidebarRows['views'] {
 export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRows | null): SidebarRows {
   const prev = previous ? memosOf.get(previous) : undefined
   const { rows, local, filters, clears, crewGroups, sortKey, clock, frozen } = inputs
-  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex } = local
+  const { folderOf: slotFolders, pinned, pinnedRank, unread, running, recent, searchRanks, manualRank, drawnIndex, openKey } = local
   const { tags, search, status, folders: folderFilter } = filters
   // Read here, outside every compute: the drag freeze is the one place a build reads
   // the previous one's output.
@@ -931,8 +939,8 @@ export function buildSidebarRows(inputs: SidebarRowInputs, previous?: SidebarRow
     filters.creators.passes, filters.creators.active,
     search.text, search.folderMatches, searchRanks,
     statusMatches.value, isRowStatusHidden.value, folderFilter.hiddenSubtree, folderFilter.pinnedSubtree, slotFolders,
-    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides,
-  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears))
+    clears.tags, clears.models, clears.creators, clears.search, clears.status, clears.folder, clears.hides, openKey,
+  ], () => makeDimensions(filters, statusMatches.value, isRowStatusHidden.value, searchRanks, folderOf, clears, openKey))
 
   // Before the filter pass, as the chip counts always were: both read the clock for a
   // peer row's recency, and this keeps the two reads in their order.

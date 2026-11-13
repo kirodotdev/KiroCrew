@@ -519,7 +519,7 @@ function ChatSidebar({
     rows: allRows,
     local: {
       folderOf: slotFolders, pinned, pinnedRank, unread: unreadSet, running: runningSet, recent: recentSet,
-      searchRanks: searchRanked, manualRank, drawnIndex,
+      searchRanks: searchRanked, manualRank, drawnIndex, openKey: activeSlot ?? null,
     },
     filters: {
       tags: { resolved: activeTagIds, raw: filterTagIds },
