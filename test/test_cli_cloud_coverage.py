@@ -381,6 +381,45 @@ class TestDoctor:
         assert calls == ([(["configure", "get", "region"], "dev", "")] if warned else [])
 
 
+@pytest.mark.parametrize("verb", ["launch", "list"])
+@pytest.mark.parametrize(
+    ("flag", "recorded", "tag", "noted"),
+    [
+        ("", "", "", True),
+        ("sa-east-1", "", "", False),
+        ("", "sa-east-1", "crew-a", False),
+        ("", "us-east-1", "crew-a", False),
+        # After `destroy`: the record keeps its Region and clears the tag.
+        ("", "sa-east-1", "", False),
+        ("", "us-east-1", "", True),
+    ],
+)
+def test_an_unchosen_default_region_is_named_with_the_command_to_pass(
+    monkeypatch, verb, flag, recorded, tag, noted
+):
+    """No verb reads the dashboard's Region, so an unchosen default says so."""
+    monkeypatch.setattr(cli_cloud, "_resolve", _REAL_RESOLVE)
+    if recorded:
+        LaunchState.record(profile="dev", region=recorded, last_tag=tag)
+    shown: list[tuple[str, str]] = []
+    for kind in ("warn", "detail"):
+        monkeypatch.setattr(cli_cloud.ui, kind, lambda msg, k=kind: shown.append((k, msg)))
+    monkeypatch.setattr(cli_cloud, "discover_local_identity", lambda: {})
+    monkeypatch.setattr(cli_cloud.wizard, "launch", lambda **_kw: 0)
+    monkeypatch.setattr(ec2, "list_instances", lambda *_a, **_k: [])
+    handler = {"launch": cli_cloud._cloud_launch, "list": cli_cloud._cloud_list}[verb]
+    assert handler(_args(profile="dev", region=flag)) == 0
+    note = [
+        ("warn", "No --region given: using Kiro Crew's default Region us-east-1."),
+        (
+            "detail",
+            "A Region set in the dashboard (Settings > Remote Crew) is not used here; "
+            f"run `kirocrew cloud {verb} --region <region>` to use it.",
+        ),
+    ]
+    assert [line for line in shown if "Region" in line[1]] == (note if noted else [])
+
+
 class TestEnsurePlugin:
     @pytest.fixture(autouse=True)
     def _plugin_missing(self, _floor_monkeypatch):
