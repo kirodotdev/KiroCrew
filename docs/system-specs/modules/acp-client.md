@@ -5662,6 +5662,14 @@ namespace): the outer namespace launcher's seccomp filter deliberately denies mo
 and unshare. It also avoids nesting Seatbelt on macOS. The env opt-in alone does
 not grant a sandbox waiver: the existing mask preflight and OS wrap still apply.
 
+While the adapter does not offer `external-sandbox`, a new codex chat shows one
+notice row saying shell commands, git included, fail. The row comes from
+`KNOWN_LIMITATIONS` in `agent_sdk/backends_routing.py`: plain data per harness
+(the missing config value, the message, the adapter package, the first fixed
+release or `""` while none exists), read by `known_limitation_issue` through the
+same offer test `permission_value_for` uses (`offers_config_value`). Tests:
+`test/test_codex_known_limitation_notice.py`.
+
 ### Codex MCP result envelopes
 
 The parser extracts `rawOutput.result.content` text from successful Codex MCP
