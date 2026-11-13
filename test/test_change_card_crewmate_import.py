@@ -188,6 +188,9 @@ def test_import_shares_the_create_state_read_and_partial_line():
         line
         == "Created Bot “Q” without its goal or anything after it. Undo removes the Bot and what was saved"
     )
+    shown = {"name": "Q", "goal": "g", "dashboard_template": "builtin:standup"}
+    line = catalog.result_summary("crewmate.import", shown, "partial", "t", failed_step=2)
+    assert line.startswith("Created Bot “Q” without its dashboard or anything after it")
 
 
 def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(
