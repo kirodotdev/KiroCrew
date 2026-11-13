@@ -193,7 +193,10 @@ Crew's sign-in alone (entered through `kiro-cli-chat`,
 `acp.kas_route.crew_sign_in_starts_spawn`) once kiro-cli's gate refuses:
 there `/api/models` serves the same recording and starts no cold probe, so a
 model-list read spawns nothing, and a cold read answers `auto` until the first
-chat spawns. The bundle route runs no
+chat spawns. One cold read there keeps the gate's 503 instead: the one whose
+kiro-cli check only timed out (`kiro_probe_timed_out`). A timeout passes on a
+later read, and on a 503 the dashboard keeps the list it holds and reads again,
+where it would save `auto` over that list and stop reading. The bundle route runs no
 entitlement narrowing on the recording: the select already lists what the
 signed-in account is served, and `_entitled_kiro_models` reads the newest live
 `acp`-namespace provider, which can be a retained kiro-cli session after a

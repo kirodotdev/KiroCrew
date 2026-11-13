@@ -326,6 +326,53 @@ class TestTheCrewSignInRelay:
         (row,) = _body(await agents.api_models(_request()))
         assert row["model_name"] == "auto"
 
+    @staticmethod
+    def _timed_out() -> web.Response:
+        """The gate's own answer when its kiro-cli check timed out."""
+        from kiro_crew.dashboard import kiro_readiness
+
+        return web.json_response(kiro_readiness._KIRO_PROBE_TIMED_OUT_RESPONSE, status=503)
+
+    async def test_a_timed_out_check_with_nothing_recorded_keeps_the_gates_503(
+        self, relay, monkeypatch
+    ):
+        """A timeout passes on a later read, so the 503 keeps the dashboard on the
+        list it holds and reading again. A cold ``auto`` here would be saved over
+        that list and end the retry."""
+        monkeypatch.setattr(
+            agents, "reject_if_kiro_unverified", AsyncMock(return_value=self._timed_out())
+        )
+        resp = await agents.api_models(_request())
+        assert resp.status == 503
+        assert _body(resp)["code"] == "kiro_probe_timed_out"
+
+    async def test_a_timed_out_check_still_serves_a_recorded_list(self, relay, monkeypatch):
+        _record({"id": "auto", "rate": 1}, {"id": "model-x", "rate": 2})
+        monkeypatch.setattr(
+            agents, "reject_if_kiro_unverified", AsyncMock(return_value=self._timed_out())
+        )
+        resp = await agents.api_models(_request())
+        assert resp.status == 200
+        assert [r["model_name"] for r in _body(resp)] == ["auto", "model-x"]
+
+    async def test_a_timed_out_check_keeps_its_503_when_the_account_switches_mid_read(
+        self, relay, monkeypatch
+    ):
+        """The recording turns cold when the vault names another account after
+        the persist await: the timed-out gate's 503 stands there too."""
+        _record({"id": "auto", "rate": 1}, {"id": "model-a", "rate": 2})
+        monkeypatch.setattr(
+            agents, "reject_if_kiro_unverified", AsyncMock(return_value=self._timed_out())
+        )
+
+        def _persist_then_switch() -> None:
+            monkeypatch.setattr(catalog, "vault_identity", lambda: "fingerprint-of-account-b")
+
+        with patch.object(model_registry, "persist_advertised_models", _persist_then_switch):
+            resp = await agents.api_models(_request())
+        assert resp.status == 503
+        assert _body(resp)["code"] == "kiro_probe_timed_out"
+
     async def test_the_launcher_relay_keeps_the_refusal(self, relay, monkeypatch):
         """Through the launcher kiro-cli's own sign-in starts the relay, so the
         gate's 503 and its ``kiro-cli login`` remedy stand."""
