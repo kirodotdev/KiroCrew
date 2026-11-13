@@ -835,6 +835,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             if isinstance(_ro_exceptions := section.get("sandbox_readonly_exceptions"), list)
             else section.default("sandbox_readonly_exceptions")
         ),
+        load_installed_powers=section.read("load_installed_powers", _safe_bool),
         apps_trusted=(
             [a for a in _trusted if isinstance(a, str) and a]
             if isinstance(_trusted := section.get("apps_trusted"), list)

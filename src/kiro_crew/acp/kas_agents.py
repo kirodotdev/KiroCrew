@@ -199,6 +199,7 @@ from kiro_crew.mcp_oauth_projection import (
     registry_withheld,
     servers_with_discarded_oauth,
 )
+from kiro_crew.mcp_provenance import without_local_power_entries
 from kiro_crew.platform.governance import (
     may_grant_builtin_at_gate_now,
     may_skip_gate_for_session,
@@ -842,7 +843,7 @@ def _project_mcp_servers(
     relayed = _relayed_env_references()
     warned_about_the_marker = False
     launch_key = launch_key or session_key
-    for name, entry in servers.items():
+    for name, entry in without_local_power_entries(servers).items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
         managed = name in MANAGED_MCP_SERVER_NAMES
