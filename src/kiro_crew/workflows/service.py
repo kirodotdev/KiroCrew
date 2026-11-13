@@ -1762,9 +1762,10 @@ class WorkflowService:
         else:
             derived_id = prior.derived_from_workflow_id
             derived_revision = prior.derived_from_revision
+        # A rerun keeps the limits its run was launched with unless the caller names one.
         started = await self._runner(
             new_id,
-            timeout_secs=timeout_secs,
+            timeout_secs=timeout_secs if timeout_secs is not None else prior.timeout_secs,
             memory_scope=memory_scope,
             session_key=origin,
             default_agent=default_agent,
@@ -1779,6 +1780,7 @@ class WorkflowService:
             now=self._now_fn(),
             name=f"{prior.name} ({label})",
             args=prior.args,
+            budget_total=prior.budget_total,
             author=origin,
             session_key=origin,
             replay_results=replay_results,
