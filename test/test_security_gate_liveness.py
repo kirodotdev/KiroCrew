@@ -811,7 +811,23 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 179, from 36,018, for ``s3_direction`` reading a SEQUENCE of statements
+#: instead of one command: the quote-aware statement split (reusing
+#: ``shell_commands.read_commands``), the plain single-assignment resolver, the
+#: per-statement transfer classification, the short list of inert programs a
+#: non-transfer statement may run (with no ``>`` or ``<`` redirect), and its
+#: structural gate (refusing a pipe, a
+#: background ``&``, a subshell, a command substitution and an unquoted
+#: here-document), the refusal of names bash sets itself (``_``, ``RANDOM``,
+#: ``BASH*``), plus their comments and the rewritten module docstring.
+#: The reader only ever NARROWS a row it fully read; an upload anywhere on the line,
+#: an unresolvable variable, a here-document body that holds an upload or an unclear
+#: split keeps the deny. Re-measured.
+#: Raised by 48, from 36,197, for ``s3_direction`` reading assignments and
+#: ``$NAME`` / ``${NAME}`` references with plain string code instead of regex
+#: (``_is_assignment_prefix``, ``_lone_assignment``, a one-pass ``_substitute``).
+#: Raised by 8, from 36,245, for ``_substitute``'s cap on how much text resolving adds.
+_PACKAGE_LINE_BUDGET = 36_253
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
