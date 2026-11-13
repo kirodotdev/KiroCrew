@@ -62,6 +62,7 @@ import { REMOTE_CREW_SETTINGS_PATH, remoteCrewAddFromPath } from '../lib/remoteC
 import { useNativeHistoryStep } from './platform/nativeHistoryStep'
 import { useCrewDeepLink, usePaneOpenSlot } from '../lib/crewDeepLink'
 import { labelCurrentRouteEntry } from '../lib/routeHistoryLabels'
+import { isUntitledSession } from '../utils/sessionDisplayTitle'
 import AppIcon from '../components/AppIcon'
 import AppNavStateIcon from './nav/AppNavStateIcon'
 import { useUpdateFlow } from './updates/updateFlow'
@@ -975,11 +976,12 @@ export function useAppShell() {
   // the surface registry.
   const totalAttention = builtinAttention + Object.values(appBadges).reduce((a, b) => a + b, 0)
   // The active session's title, for the tab title below. A slot whose title
-  // is still its key has no real title yet (same rule as the chat popout).
+  // is its key or the backend placeholder has no real title yet (same rule
+  // as the chat popout).
   const activeSessionTitle = useAppSelector(s => {
     const key = s.chat.activeSlot
     const title = key ? slotRowByKey(s.dashboard.slots, key)?.title : undefined
-    return title && title !== key ? title : ''
+    return key && title && !isUntitledSession({ key, title }) ? title : ''
   })
 
   // Browser push notification on new notification — see src/hooks/useNativeNotification.ts
