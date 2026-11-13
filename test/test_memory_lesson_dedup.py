@@ -212,9 +212,10 @@ def test_shadow_writes_the_copy_and_counts_the_fold(store) -> None:
     assert "lessons_merged" not in receipt
     assert _counts(store, "shadow")["text_folds"] == 1
     ids = [v for k, v in _meta(store).items() if k.startswith(mld.IDS_PREFIX)][0]
-    assert ids == [
+    assert [{k: v for k, v in i.items() if k not in ("at", "sk")} for i in ids] == [
         {"key": _lesson_key(RULE_CASE), "leader": _lesson_key(RULE), "step": "text", "rules": 1}
     ]
+    assert all("at" in i for i in ids)
     # Ids and counts only: no lesson text reaches the log.
     assert "linter" not in json.dumps(_meta(store)).lower()
 
@@ -381,7 +382,8 @@ def test_shadow_counts_the_retirement_and_retires_nothing(store, monkeypatch) ->
     store.backfill_missing_embeddings(pace=False)
     assert set(_live(store)) == {old, new}
     ids = [v for k, v in _meta(store).items() if k.startswith(mld.IDS_PREFIX)][0]
-    assert {"key": new, "leader": old, "step": "vector", "rules": 1} in ids
+    bare = [{k: v for k, v in i.items() if k != "at"} for i in ids]
+    assert {"key": new, "leader": old, "step": "vector", "rules": 1} in bare
 
 
 def test_a_vector_below_the_threshold_keeps_the_row(store, monkeypatch) -> None:

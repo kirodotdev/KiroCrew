@@ -11,15 +11,30 @@ Read-only. It reads only what the stages already record and writes nothing:
   and window keys (``rules_changed_at``, ``rules_version``), through a
   ``mode=ro`` connection.
 
-The report carries ids-free counts only. It never reads a sample row, an id row or
-the Dreaming approval list, so no memory text reaches it. A missing or unreadable
-source is "no data", never an error.
+The report carries ids-free counts only. The counters come from ``read_meta``,
+which never selects a sample row, an id row or the Dreaming approval list. The
+outcome scorecard comes from ``read_trace``, which pulls only the ``key``,
+``path``, ``kind``, ``sk``, ``at`` and ``ts`` fields out of the id, control and
+kind-sample rows inside SQLite (``json_each``), so a sample's value text never
+leaves the database. A missing or unreadable source is "no data", never an error.
 
 Session starts come from the receipts (``phase == "session_start"`` lines of the
-store) since each stage's window start, because the write-stage logs carry no
-session key. The stage-log counters are per data home, so a render stage's days
-and line counts cover every store; its change rate comes from the store's own
-sampled lines.
+store) since each stage's window start. The stage-log counters are per data home,
+so a render stage's days and line counts cover every store; its change rate comes
+from the store's own sampled lines.
+
+The scorecard joins what a stage would drop with what followed
+(:mod:`kiro_crew.memory_shadow_trace`). A dropped item is *missed* when a later
+outcome line names its key: a ``memory_recall`` that delivered it, or a
+``learn_add`` that came within the re-teach bar of it. A render stage drops per
+session, so its item is a session tag and key and only that session's outcomes
+count; a write stage changes the store, so its item is the key and any later
+outcome counts. The control sample, rows the stage keeps, is scored the same way.
+Activity section ids (``projects:<hash>``) are not scored: no outcome can name
+them. Verdict: ``wait`` until the bar (:data:`DAYS_BAR` days,
+:data:`SESSIONS_BAR` session starts), a control sample and at least one outcome
+line in the window exist; then ``pass`` when the miss rate is at
+most :data:`MISS_BAR` and at most the control's, else ``fail``.
 """
 
 from __future__ import annotations
@@ -41,6 +56,14 @@ logger = logging.getLogger(__name__)
 #: The RFC's bar before a stage may move to enforce: days observed and session starts.
 DAYS_BAR: Final = 14
 SESSIONS_BAR: Final = 200
+#: The most a stage may miss of what it drops: one item in :data:`_MISS_BAR_ITEMS`.
+_MISS_BAR_ITEMS: Final = 100
+MISS_BAR: Final = 1 / _MISS_BAR_ITEMS
+
+VERDICT_OFF: Final = "off"
+VERDICT_WAIT: Final = "wait"
+VERDICT_PASS: Final = "pass"
+VERDICT_FAIL: Final = "fail"
 
 STATUS_OFF: Final = "off"
 STATUS_WAITING: Final = "waiting"
@@ -60,6 +83,8 @@ class Stage:
     source: str
     mode_from: Callable[[object], str]
     bias: str = ""
+    #: The id-row ``path`` values that are a drop or demotion; ``None`` for every entry.
+    drop_paths: tuple[str, ...] | None = None
 
 
 STAGES: Final[tuple[Stage, ...]] = (
@@ -85,11 +110,17 @@ STAGES: Final[tuple[Stage, ...]] = (
         "memory_tier_log:",
         _modes.lesson_tier_policy_mode_from,
         "upper bound: shadow asks for no quote, so every standing rule counts as demoted",
+        ("consolidation",),
     ),
     Stage("member_lesson_dedup", "memory_dedup_log:", _modes.member_lesson_dedup_mode_from),
     Stage("dream", "memory_dream:", _modes.dream_mode_from),
 )
 STAGE_NAMES: Final[tuple[str, ...]] = tuple(s.name for s in STAGES)
+#: Stages with no outcome trace yet: Dreaming proposes but records nothing to join.
+_UNTRACED: Final = frozenset({"dream"})
+_KIND_STATE: Final = "state"
+#: Outcome receipt kinds, as :mod:`kiro_crew.injection_receipts` names them.
+_OUTCOMES: Final = ("recall", "learn_add")
 
 
 # ── Parsing helpers ─────────────────────────────────────────────────────────
@@ -158,7 +189,7 @@ def read_receipts(receipt_dir: Path, since: datetime | None) -> list[dict]:
     Shards are named by local day, so a shard one day before *since* is still read
     and each line is filtered on its own ``ts``.
     """
-    keep = ("ts", "session_key", "phase", "memory_store") + tuple(
+    keep = ("ts", "session_key", "sk", "phase", "memory_store", *_OUTCOMES) + tuple(
         s.name for s in STAGES if s.source == SOURCE_RECEIPTS
     )
     floor = (since.date() - timedelta(days=1)).isoformat() if since else ""
@@ -219,6 +250,184 @@ def read_meta(db_path: Path | None) -> dict[str, str]:
         return {}
     finally:
         conn.close()
+
+
+def read_trace(db_path: Path | None) -> list[tuple[str, str, dict]]:
+    """``(row key, role, fields)`` for every id, control and kind-sample entry.
+
+    Opened ``mode=ro``. ``json_each`` unpacks each row inside SQLite and only the
+    ``key``, ``path``, ``kind``, ``sk``, ``at`` and ``ts`` fields are selected, so a
+    sample's value text is never read. *role* is ``ids``, ``control`` or
+    ``samples``. A missing file or table is ``[]``.
+    """
+    if db_path is None or not db_path.exists():
+        return []
+    patterns: list[str] = []
+    for stage in STAGES:
+        if stage.source == SOURCE_RECEIPTS or stage.name in _UNTRACED:
+            continue
+        role = "samples" if stage.name == "kind_routing" else "ids"
+        patterns.append(f"{stage.source}{role}:*")
+        patterns.append(f"{stage.source}control:*")
+    where = " OR ".join("m.key GLOB ?" for _ in patterns)
+    fields = ("key", "path", "kind", "sk", "at", "ts")
+    select = ", ".join(f"json_extract(j.value, '$.{name}')" for name in fields)
+    try:
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    except (sqlite3.Error, StdlibSQLiteError):
+        return []
+    out: list[tuple[str, str, dict]] = []
+    try:
+        rows = conn.execute(
+            f"SELECT m.key, {select} FROM memory_meta m, "  # nosec B608: placeholders only
+            "json_each(CASE WHEN json_valid(m.value) THEN m.value ELSE '[]' END) j "
+            f"WHERE ({where}) AND j.type = 'object'",
+            patterns,
+        ).fetchall()
+    except (sqlite3.Error, StdlibSQLiteError):
+        logger.debug("no trace rows in %s", db_path, exc_info=True)
+        return []
+    finally:
+        conn.close()
+    for row in rows:
+        row_key = str(row[0])
+        role = row_key.rsplit(":", 2)[-2] if row_key.count(":") >= 2 else ""
+        out.append((row_key, role, {n: v for n, v in zip(fields, row[1:]) if v is not None}))
+    return out
+
+
+# ── Outcome scoring ─────────────────────────────────────────────────────────
+
+
+def _end_of_day(day: str | None) -> datetime | None:
+    """An entry with no timestamp sits at the end of its row's day, so no outcome
+    earlier that day is read as following it."""
+    if day is None:
+        return None
+    start = datetime.fromisoformat(day).replace(tzinfo=timezone.utc)
+    return start + timedelta(days=1) - timedelta(microseconds=1)
+
+
+def _outcomes(lines: list[dict], store: str) -> dict[str, list[tuple[datetime, str]]]:
+    """``{memory key: [(ts, session tag), ...]}`` over the outcome lines of *store*."""
+    out: dict[str, list[tuple[datetime, str]]] = {}
+    for line in lines:
+        kind = line.get("phase")
+        field = line.get(kind) if isinstance(kind, str) and kind in _OUTCOMES else None
+        if not isinstance(field, dict) or not _store_matches(line, store):
+            continue
+        ids = field.get("ids")
+        sk = line.get("sk")
+        tag = sk if isinstance(sk, str) else ""
+        for key in dict.fromkeys(ids if isinstance(ids, list) else ()):
+            if isinstance(key, str):
+                out.setdefault(key, []).append((line["ts"], tag))
+    return out
+
+
+def _first_seen(units: dict, unit: tuple[str, str], at: datetime) -> None:
+    if unit not in units or at < units[unit]:
+        units[unit] = at
+
+
+def _score(
+    units: dict[tuple[str, str], datetime],
+    outcomes: dict[str, list[tuple[datetime, str]]],
+    per_session: bool,
+) -> dict:
+    """Of *units* (``(session tag, key) -> first time``), how many a later outcome names."""
+    missed = 0
+    for (tag, key), at in units.items():
+        missed += any(
+            ts > at and (not per_session or sk == tag) for ts, sk in outcomes.get(key, ())
+        )
+    total = len(units)
+    return {"items": total, "missed": missed, "rate": round(missed / total, 4) if total else None}
+
+
+def _render_units(stage: Stage, lines: list[dict], store: str, start) -> tuple[dict, dict]:
+    from kiro_crew.memory_shadow_trace import session_tag
+
+    dropped: dict = {}
+    control: dict = {}
+    for line in lines:
+        field = line.get(stage.name)
+        if not isinstance(field, dict) or field.get("mode") != _SHADOW_MODE:
+            continue
+        if not _store_matches(line, store) or (start is not None and line["ts"] < start):
+            continue
+        tag = session_tag(line.get("session_key"))
+        drops = [k for k in field.get("would_drop") or () if isinstance(k, str)]
+        drops += [p[1] for p in field.get("pairs") or () if isinstance(p, list) and len(p) == 2]
+        for key in drops:
+            if _traceable(key):
+                _first_seen(dropped, (tag, key), line["ts"])
+        for key in field.get("control") or ():
+            if _traceable(key):
+                _first_seen(control, (tag, key), line["ts"])
+    return dropped, control
+
+
+def _traceable(key: object) -> bool:
+    """Whether an outcome line could ever name *key*: a memory key, not an
+    activity section id such as ``projects:<hash>``, which no recall returns."""
+    return isinstance(key, str) and bool(key) and ":" not in key
+
+
+def _write_units(stage: Stage, trace: list, start) -> tuple[dict, dict]:
+    dropped: dict = {}
+    control: dict = {}
+    for row_key, role, fields in trace:
+        if not row_key.startswith(stage.source):
+            continue
+        key = fields.get("key")
+        if not isinstance(key, str):
+            continue
+        at = _instant(fields.get("at") or fields.get("ts")) or _end_of_day(
+            _day(row_key.rsplit(":", 1)[-1])
+        )
+        if at is None or (start is not None and at < start):
+            continue
+        if role == "control":
+            _first_seen(control, ("", key), at)
+        elif role == "samples":
+            target = dropped if fields.get("kind") == _KIND_STATE else control
+            _first_seen(target, ("", key), at)
+        elif stage.drop_paths is None or fields.get("path") in stage.drop_paths:
+            _first_seen(dropped, ("", key), at)
+    return dropped, control
+
+
+def _over(missed: int, items: int, bar_missed: int, bar_items: int) -> bool:
+    """``missed / items > bar_missed / bar_items`` without rounding either side."""
+    return missed * bar_items > bar_missed * items
+
+
+def _verdict(card: dict, outcomes_in_window: int) -> tuple[str, str]:
+    if card["mode"] == "off":
+        return VERDICT_OFF, ""
+    if card["stage"] in _UNTRACED:
+        return VERDICT_WAIT, "no outcome trace"
+    if card["days"] < DAYS_BAR or card["sessions"] < SESSIONS_BAR:
+        return (
+            VERDICT_WAIT,
+            f"{card['days']}/{DAYS_BAR} days, {card['sessions']}/{SESSIONS_BAR} sessions",
+        )
+    miss, ctrl = card["miss"], card["control"]
+    if not ctrl["items"]:
+        return VERDICT_WAIT, "no control sample"
+    # No outcome line in the window means nothing was observed, not nothing missed.
+    if not outcomes_in_window:
+        return VERDICT_WAIT, "no outcome trace in window"
+    if miss["items"] and _over(miss["missed"], miss["items"], 1, _MISS_BAR_ITEMS):
+        return VERDICT_FAIL, f"miss {miss['missed'] / miss['items']:.2%} > {MISS_BAR:.0%}"
+    if miss["items"] and _over(miss["missed"], miss["items"], ctrl["missed"], ctrl["items"]):
+        return (
+            VERDICT_FAIL,
+            f"miss {miss['missed'] / miss['items']:.2%} > "
+            f"control {ctrl['missed'] / ctrl['items']:.2%}",
+        )
+    return VERDICT_PASS, ""
 
 
 # ── Per-stage scorecards ────────────────────────────────────────────────────
@@ -400,6 +609,8 @@ def build_report(
     stage_log = read_stage_log(receipt_dir)
     lines = read_receipts(receipt_dir, since)
     meta = read_meta(db_path)
+    trace = read_trace(db_path)
+    outcomes = _outcomes(lines, store)
     cards = []
     for s in STAGES:
         if stage is not None and s.name != stage:
@@ -416,11 +627,35 @@ def build_report(
             card["status"] = STATUS_ENOUGH
         else:
             card["status"] = STATUS_WAITING
+        start = _instant(card["window_start"])
+        if s.source == SOURCE_RECEIPTS:
+            dropped, control = _render_units(s, lines, store, start)
+        else:
+            dropped, control = _write_units(s, trace, start)
+        # A unit the stage also drops (a dedup vector fold of a row first kept) is
+        # not a kept row, so it leaves the control. Whole units: a render stage
+        # keeps a row in one session and may drop it in another.
+        control = {u: t for u, t in control.items() if u not in dropped}
+        per_session = s.source == SOURCE_RECEIPTS
+        card["miss"] = _score(dropped, outcomes, per_session)
+        card["control"] = _score(control, outcomes, per_session)
+        in_window = sum(
+            1
+            for line in lines
+            if line.get("phase") in _OUTCOMES
+            and _store_matches(line, store)
+            and (start is None or line["ts"] >= start)
+        )
+        card["verdict"], card["verdict_reason"] = _verdict(card, in_window)
         cards.append(card)
     return {
         "store": store,
         "since": since.isoformat() if since else None,
-        "bar": {"days": DAYS_BAR, "sessions": SESSIONS_BAR},
+        "bar": {"days": DAYS_BAR, "sessions": SESSIONS_BAR, "miss": MISS_BAR},
+        "outcomes": {
+            k: sum(1 for line in lines if line.get("phase") == k and _store_matches(line, store))
+            for k in _OUTCOMES
+        },
         "stages": cards,
     }
 
@@ -437,7 +672,14 @@ _COLUMNS: Final = (
     ("seen", 6),
     ("changed", 7),
     ("rate", 6),
+    ("miss", 11),
+    ("ctrl", 11),
 )
+
+
+def _fraction(score: dict) -> str:
+    """``missed/items``, or ``-`` when nothing was scored."""
+    return f"{score['missed']}/{score['items']}" if score["items"] else "-"
 
 
 def _row(cells: Iterable[str]) -> str:
@@ -448,11 +690,11 @@ def render_text(report: dict[str, Any]) -> list[str]:
     """The report as terminal lines."""
     since = report["since"][:10] if report["since"] else "window start"
     out = [f"Memory shadow report  store={report['store']}  since={since}", ""]
-    out.append(_row(name for name, _ in _COLUMNS) + "  status")
+    out.append(_row(name for name, _ in _COLUMNS) + "  verdict")
     for card in report["stages"]:
         head = [card["stage"], card["mode"]]
         if not card["data"]:
-            out.append(_row(head + ["-"] * (len(_COLUMNS) - 2)) + f"  {card['status']} (no data)")
+            out.append(_row(head + ["-"] * (len(_COLUMNS) - 2)) + f"  {card['verdict']} (no data)")
             continue
         rate = f"{card['rate'] * 100:.0f}%" if card["rate"] is not None else "-"
         cells = head + [
@@ -463,13 +705,13 @@ def render_text(report: dict[str, Any]) -> list[str]:
             str(card["base"]),
             str(card["changed"]) if card["changed"] is not None else "-",
             rate,
+            _fraction(card["miss"]),
+            _fraction(card["control"]),
         ]
-        status = card["status"]
-        if status == STATUS_WAITING:
-            status += (
-                f" ({card['days']}/{DAYS_BAR} days, {card['sessions']}/{SESSIONS_BAR} sessions)"
-            )
-        out.append(_row(cells) + "  " + status)
+        verdict = card["verdict"]
+        if card["verdict_reason"]:
+            verdict += f" ({card['verdict_reason']})"
+        out.append(_row(cells) + "  " + verdict)
     notes = [c for c in report["stages"] if c["bias"]]
     if notes:
         out.append("")
@@ -478,7 +720,10 @@ def render_text(report: dict[str, Any]) -> list[str]:
     out.append(
         "seen = lines (render stages: sampled receipt lines) or items the stage looked at; "
         "changed = how many the new policy would change. "
-        f"Bar: >={DAYS_BAR} days and >={SESSIONS_BAR} session starts."
+        "miss = dropped items a later recall or re-teach named, of all dropped; "
+        "ctrl = the same for a sample of kept items. "
+        f"Pass: >={DAYS_BAR} days, >={SESSIONS_BAR} session starts, "
+        f"miss <={MISS_BAR:.0%} and <= ctrl."
     )
     if len(report["stages"]) == 1:
         card = report["stages"][0]

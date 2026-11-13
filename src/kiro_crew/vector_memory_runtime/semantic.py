@@ -1365,6 +1365,7 @@ def get_semantic_context(
                 would_add=[k for k in kept if k not in shown],
                 would_drop=[k for k in shown if k not in kept],
                 part=_relevance_rule.PART_FACTS,
+                kept=[k for k in shown if k in kept],
             )
         else:
             injection_receipts.record_stage(

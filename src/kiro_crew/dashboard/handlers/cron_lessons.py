@@ -467,12 +467,17 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # the lesson it compares with: does this rule repeat one shadow would demote?
         # Only a person re-teaches: an agent's own write counts only when the chat's
         # latest input row is the person's (the origin gate's fail-closed rule).
+        from kiro_crew import injection_receipts
+        from kiro_crew import memory_shadow_trace as _trace
         from kiro_crew import memory_tier_policy as _tier_policy
         from kiro_crew.memory_origin_gate import TURN_HUMAN, triggering_turn
 
         tier_mode = _tier_policy.configured_mode()
-        if (
-            tier_mode == _tier_policy.MODE_SHADOW
+        # The shadow report's re-teach signal for every stage: the stored lessons
+        # this rule comes within the re-teach bar of, read before the write too.
+        teach = rule_emb is not None and _trace.observing()
+        by_person = (
+            (tier_mode == _tier_policy.MODE_SHADOW or teach)
             and rule_emb is not None
             and (
                 request.get("internal_auth") is not True
@@ -481,8 +486,21 @@ async def api_lessons_create(request: web.Request) -> web.Response:
                 )
                 == TURN_HUMAN
             )
-        ):
-            await asyncio.to_thread(_tier_policy.record_reteach, vs, rule_emb, tier_mode)
+        )
+        if by_person and tier_mode == _tier_policy.MODE_SHADOW:
+            await asyncio.to_thread(
+                _tier_policy.record_reteach, vs, rule_emb, tier_mode, session_key=sk
+            )
+        if by_person and teach:
+            neighbours = await asyncio.to_thread(_trace.reteach_neighbours, vs, rule_emb)
+            injection_receipts.schedule_write(
+                injection_receipts.build_outcome_line(
+                    injection_receipts.LEARN_ADD,
+                    session_key=sk,
+                    store=_lesson_silo or "",
+                    ids=neighbours,
+                )
+            )
         # Persist the lesson immediately so the request returns fast. The
         # contradiction sweep below makes a per-candidate LLM call (~27s each);
         # running it inline would exceed the MCP client's 30s timeout while the
@@ -526,7 +544,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         reason = result.reason
         stored = result.stored
         if origin is not None and origin.gate.loggable:
-            await asyncio.to_thread(record_origin_gate, vs, origin.gate)
+            await asyncio.to_thread(record_origin_gate, vs, origin.gate, session_key=sk)
         # Redacted through the SAME chain this handler already applies to a lesson's
         # rule and category below (`_redact_memory_field`, which walks a list). A
         # superseded rule is stored user text leaving the process, so a credential or

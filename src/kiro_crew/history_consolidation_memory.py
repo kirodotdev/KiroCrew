@@ -1452,7 +1452,7 @@ def _write_structured_memory(
         # Under the same hold as every other write of this pass: a switch turned
         # off, or a lease lost, before the run's first commit refuses the log too.
         with self._publication_hold_checked(key, commit_state) as publication:
-            if record_kind_routing(vector_store, routing, source):
+            if record_kind_routing(vector_store, routing, source, session_key=key):
                 publication.mark_committed()
 
     # Episodic entries

@@ -418,6 +418,7 @@ async def log_shadow_kinds(
     ask: LabelCall,
     hold: Callable[[], ContextManager[Any]],
     source: str,
+    session_key: str = "",
 ) -> None:
     """Label an already-written pass's *routing* once, then write its log under *hold*.
 
@@ -436,7 +437,7 @@ async def log_shadow_kinds(
 
     def write() -> None:
         with hold() as publication:
-            if record_kind_routing(store, labelled, source):
+            if record_kind_routing(store, labelled, source, session_key=session_key):
                 publication.mark_committed()
 
     await run_in_memory_background_pool(write)
@@ -590,7 +591,11 @@ def _same_value(stored: str, value: object) -> bool:
 
 
 def _sample(
-    decision: KindDecision, store_name: str, now: datetime, prior: PriorState | None
+    decision: KindDecision,
+    store_name: str,
+    now: datetime,
+    prior: PriorState | None,
+    session_tag: str = "",
 ) -> dict:
     sample: dict = {
         "key": decision.key,
@@ -600,6 +605,8 @@ def _sample(
         "ts": now.isoformat(),
         "rules": RULES_VERSION,
     }
+    if session_tag:
+        sample["sk"] = session_tag
     if prior is not None:
         stored = prior.values.get(decision.key)
         sample["existed"] = stored is not None
@@ -636,7 +643,11 @@ def _reservoir_seen(db: "sqlite3.Connection", day: str) -> int:
 
 
 def _add_samples(
-    db: "sqlite3.Connection", routing: KindRouting, store_name: str, now: datetime
+    db: "sqlite3.Connection",
+    routing: KindRouting,
+    store_name: str,
+    now: datetime,
+    session_tag: str = "",
 ) -> None:
     """Fold this pass into today's reservoir, then trim every sample row to the caps.
 
@@ -670,12 +681,12 @@ def _add_samples(
     for decision in routing.decisions:
         seen += 1
         if len(current) < room:
-            current.append(_sample(decision, store_name, now, routing.prior))
+            current.append(_sample(decision, store_name, now, routing.prior, session_tag))
             changed = True
             continue
         slot = _RNG.randrange(seen)
         if slot < room:
-            current[slot] = _sample(decision, store_name, now, routing.prior)
+            current[slot] = _sample(decision, store_name, now, routing.prior, session_tag)
             changed = True
     entry = {"day": day, "rules": RULES_VERSION, "seen": seen}
     _upsert(db, RESERVOIR_KEY, json.dumps(entry, sort_keys=True), now.isoformat())
@@ -746,13 +757,15 @@ def record_kind_routing_in_transaction(
     source: str,
     *,
     now: datetime | None = None,
+    session_key: str = "",
 ) -> bool:
     """Write *routing*'s counters, samples and refusals inside the caller's transaction.
 
     The caller holds ``store._db_lock`` and an open transaction, and commits. The
     log runs under its own savepoint and never raises, so a log that cannot be
     written leaves the caller's writes, and its transaction, as they were.
-    Returns whether anything was written.
+    Returns whether anything was written. Each sample carries the tag of
+    *session_key* (:func:`kiro_crew.memory_shadow_trace.session_tag`), never the key.
     """
     if routing.mode == MODE_OFF or not routing.decisions:
         return False
@@ -764,7 +777,9 @@ def record_kind_routing_in_transaction(
         if routing.mode == MODE_SHADOW:
             _sync_rules_version(db, instant)
             store_name = getattr(store, "_memory_store_name", None) or "default"
-            _add_samples(db, routing, str(store_name), instant)
+            from kiro_crew.memory_shadow_trace import session_tag
+
+            _add_samples(db, routing, str(store_name), instant, session_tag(session_key))
         _audit_refusals(db, routing, source)
     except Exception:
         db.execute("ROLLBACK TO memory_kind_log")
@@ -781,6 +796,7 @@ def record_kind_routing(
     source: str,
     *,
     now: datetime | None = None,
+    session_key: str = "",
 ) -> bool:
     """Write *routing*'s log in its own transaction; return whether it committed.
 
@@ -793,7 +809,9 @@ def record_kind_routing(
         with store._db_lock:
             store.db.execute("BEGIN IMMEDIATE")
             try:
-                wrote = record_kind_routing_in_transaction(store, routing, source, now=now)
+                wrote = record_kind_routing_in_transaction(
+                    store, routing, source, now=now, session_key=session_key
+                )
                 store.db.commit()
             except BaseException:
                 store.db.rollback()

@@ -247,7 +247,10 @@ def test_the_log_counts_by_mode_and_path_and_keeps_ids_only_in_shadow(tmp_path) 
     }
     ids = log[mog.IDS_PREFIX + "2026-10-01"]
     assert [i["key"] for i in ids] == list(shadow.demoted_keys), "enforce adds no ids"
-    assert all(set(i) == {"key", "path", "rules"} for i in ids), "ids and counts only, no text"
+    assert all(
+        set(i) == {"key", "path", "rules", "at"} for i in ids
+    ), "ids and counts only, no text"
+    assert all(i["at"] == _T0.isoformat() for i in ids)
     assert ALWAYS["rule"] not in json.dumps(log)
 
 
@@ -435,7 +438,7 @@ async def _run_pass(monkeypatch, mode: str) -> tuple[str, list, list]:
 
     monkeypatch.setattr(executors, "run_in_memory_background_pool", inline)
     monkeypatch.setattr(mog, "configured_mode", lambda: mode)
-    monkeypatch.setattr(mog, "record_origin_gate", lambda s, g: recorded.append(g) or True)
+    monkeypatch.setattr(mog, "record_origin_gate", lambda s, g, **_: recorded.append(g) or True)
     monkeypatch.setattr(
         consolidation_write_offload, "save_lessons", lambda _c, raw, *a, **k: saved.append(raw)
     )

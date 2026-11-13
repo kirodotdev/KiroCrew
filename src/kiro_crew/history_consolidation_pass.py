@@ -1293,7 +1293,7 @@ async def _consolidate(
 
             def _record_origin() -> None:
                 with self._publication_hold_checked(key, commit_state) as publication:
-                    if record_origin_gate(origin_store, origin):
+                    if record_origin_gate(origin_store, origin, session_key=key):
                         publication.mark_committed()
 
             await _run_in_memory_background_pool(_record_origin)
@@ -1303,7 +1303,7 @@ async def _consolidate(
 
             def _record_tier() -> None:
                 with self._publication_hold_checked(key, commit_state) as publication:
-                    if _tier_policy.record_tier_policy(tier_store, tier):
+                    if _tier_policy.record_tier_policy(tier_store, tier, session_key=key):
                         publication.mark_committed()
 
             await _run_in_memory_background_pool(_record_tier)
@@ -1320,6 +1320,7 @@ async def _consolidate(
                 lambda prompt: self._call_llm(prompt, session_key=key, **store_kw),
                 lambda: self._publication_hold_checked(key, commit_state),
                 f"consolidation:{key}",
+                session_key=key,
             )
 
         # Auto skill detection — a SEPARATE LLM pass over the full-session

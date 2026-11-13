@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from typing import Any, Callable
@@ -28,6 +29,7 @@ from ._shared import (
     require_owner_dashboard_request,
     resolve_lesson_memory_store,
     resolve_requested_memory_store,
+    resolve_session_memory_mode,
     vector_memory_for_store,
 )
 from .cron import _is_temporary_transcript, _recognize_session
@@ -169,6 +171,34 @@ def _memory_recall_keep(
     )
 
 
+async def _record_recall_outcome(
+    state: Any, session: str, store: str, payload: dict, lessons: list[str]
+) -> None:
+    """Write the recall outcome line the shadow report joins on; never raises.
+
+    Only the delivered facts' memory keys and the session's tag, never the query or
+    any row text, and only while a memory stage is on. An incognito or temporary
+    session writes nothing.
+    """
+    from kiro_crew import injection_receipts
+    from kiro_crew import memory_shadow_trace as trace
+
+    try:
+        ids = trace.recall_ids(payload, lessons)
+        if not ids or not trace.observing():
+            return
+        mode = await resolve_session_memory_mode(state, session)
+        if not injection_receipts.records_session(mode):
+            return
+        injection_receipts.schedule_write(
+            injection_receipts.build_outcome_line(
+                injection_receipts.RECALL, session_key=session, store=store, ids=ids
+            )
+        )
+    except Exception:  # noqa: BLE001 -- an observation must never fail the recall
+        logger.debug("recall outcome not recorded", exc_info=True)
+
+
 #: Context budget for the recall response. Named because the bounding runs TWICE on this
 #: path -- once before the receipt is committed and once inside the serializer -- and two
 #: literals could drift into a receipt bounded to a different budget than the response.
@@ -247,17 +277,28 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         decision_pending: list = []
         session = request.headers.get("X-Session-Key", "")
         enter_work_phase("admission")
-        result = (
-            await run_in_embed_pool(
-                tier.recall,
-                query,
-                cap=3000,
-                project_dir=str(project) if project else None,
-                keep=_memory_recall_keep(state, session, query, decision_pending, name),
-                conversation_id=session,
+        # A private collection names the lessons the recall rendered for the shadow
+        # trace's outcome line; it is read only by that line, and opened only while
+        # a stage is on so a recall with every flag off runs exactly as before.
+        from kiro_crew import injection_receipts
+        from kiro_crew import memory_shadow_trace as trace
+
+        tracing = bool(session) and tier is not None and trace.observing()
+        with injection_receipts.collect() if tracing else contextlib.nullcontext({}) as sink:
+            result = (
+                await run_in_embed_pool(
+                    tier.recall,
+                    query,
+                    cap=3000,
+                    project_dir=str(project) if project else None,
+                    keep=_memory_recall_keep(state, session, query, decision_pending, name),
+                    conversation_id=session,
+                )
+                if tier is not None
+                else {}
             )
-            if tier is not None
-            else {}
+        recalled_lessons = list(
+            (sink.get(injection_receipts.RECALLED_LESSONS) or {}).get("ids") or ()
         )
         if vector_unavailable:
             result["vector_status"] = "unavailable"
@@ -357,6 +398,8 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         await asyncio.to_thread(commit_receipt, session, decision_pending, payload=payload)
     # After the answer is final; never changes it (record_* swallows its own errors).
     record_memory_recalled("tool", hit=recall_payload_hit(payload))
+    if session and request.get("internal_auth") is True and "store" not in request.query:
+        await _record_recall_outcome(state, session, name or "", payload, recalled_lessons)
     return web.json_response(
         payload,
         dumps=lambda body: recall_json(body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP),

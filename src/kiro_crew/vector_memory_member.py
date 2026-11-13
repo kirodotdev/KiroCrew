@@ -749,11 +749,15 @@ def apply_consolidation(
             if metadata_rejected:
                 receipt["metadata_rejected"] = metadata_rejected
             if kind_routing is not None:
-                record_kind_routing_in_transaction(self, kind_routing, source)
+                record_kind_routing_in_transaction(
+                    self, kind_routing, source, session_key=session_key
+                )
             if dedup.mode != lesson_dedup.MODE_OFF:
                 dedup.count("lessons", receipt["lessons"] + receipt.get("lessons_merged", 0))
                 lesson_dedup.remember_pending_in_transaction(self.db, new_lessons)
-                lesson_dedup.record_in_transaction(self.db, dedup)
+                lesson_dedup.record_in_transaction(
+                    self.db, dedup, session_key=session_key, kept=new_lessons
+                )
             self.db.execute(
                 "INSERT INTO memory_consolidations VALUES (?,?,?,?,?,?)",
                 (

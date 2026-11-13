@@ -1220,9 +1220,11 @@ def get_lessons_context(
         return f"{header}]\n{body}\n{_EXPLICIT_LESSONS_FOOTER}"
 
     if not cap:
+        injection_receipts.note_recalled_lessons(ranked)
         return render(ranked)
     whole = render(ranked)
     if len(whole) <= cap:
+        injection_receipts.note_recalled_lessons(ranked)
         return whole
 
     # Each entry is judged against the RENDERED block, frame included, so an
@@ -1239,6 +1241,7 @@ def get_lessons_context(
         # silent. It exceeds *cap*; ``truncate_explicit_lessons`` shortens it
         # for a caller that needs the block to fit.
         selected = ranked[:1]
+    injection_receipts.note_recalled_lessons(selected)
     return render(selected)
 
 
