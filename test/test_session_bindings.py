@@ -55,7 +55,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_FACTORY_CONFIG_PATHS": ("data", False, "", "config_apply"),
     "_POOL_DISCARD_TIMEOUT": ("data", False, "", "runtimes"),
     "_POOL_HEALTH_INTERVAL": ("data", False, "", "runtimes"),
-    "__init__": ("function", False, "6e578750eb89", "session"),
+    "__init__": ("function", False, "9bc1dff874d6", "session"),
     "_acquire_after_identity_check": ("function", False, "32919eb17bc7", "claims"),
     "_active_dashboard_slots": ("property", False, "9b594013b706", "state_views"),
     "_advance_session_generation": ("function", False, "028659ce42ac", "claims"),
