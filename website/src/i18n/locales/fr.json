@@ -6230,7 +6230,10 @@
       "resume": "Reprendre la lecture",
       "stop": "Arrêter la lecture",
       "restart": "Relire",
-      "restartFromStart": "Relire depuis le début"
+      "restartFromStart": "Relire depuis le début",
+      "speedAppliesNext": "S’applique à ce qui sera lu ensuite. Appuie sur « Relire » pour entendre toute la réponse à cette vitesse.",
+      "speedLoadFailed": "Impossible de charger ta vitesse de lecture.",
+      "speedSaveFailed": "Impossible d’enregistrer la vitesse. Ta vitesse précédente est conservée."
     },
     "avatarBuilder": {
       "apply": "Appliquer",

@@ -11,6 +11,7 @@ import { setVoicePlaying, setVoicePreparing, setVoicePaused, setVoiceAudio, sele
 import { api } from '../../api/client'
 import { VoicePcmPlayer, voiceBoundary, createVoiceRequestId } from '../../lib/voicePlayback'
 import { reportVoiceFailure } from '../../lib/voiceFailure'
+import { voiceSpeedMultiplier } from '../../lib/voiceSpeed'
 import { speakOnClient, stopClientSpeech, pauseClientSpeech, resumeClientSpeech, clientSpeechAvailable } from '../../lib/clientSpeech'
 import { opensTurn } from '../../pages/chat/RecoveryCard'
 import type { ChatMessage } from '../../types'
@@ -114,6 +115,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
   const activeAudioRef = useRef<HTMLAudioElement | null>(null)
   const playAttemptRef = useRef(0)
   const autoSpeakRef = useRef(false)
+  const speechRateRef = useRef<string | undefined>(undefined)
   // Speech offsets belong to one concrete message. A segment for another slot
   // must not reset the active message, and a new post-tool segment must start
   // from zero even while the previous message remains in the transcript.
@@ -171,6 +173,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           dispatch(setVoicePlaying(playing))
         },
         onError: failCode => reportVoiceFailure({ slot, code: failCode }),
+        rate: voiceSpeedMultiplier(speechRateRef.current),
       })
       if (started) {
         clientSpeakingRef.current = true
@@ -378,7 +381,10 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
     }
 
     const refreshAutoSpeak = () => {
-      api.voiceConfig().then(c => { autoSpeakRef.current = !!c.autoSpeak }).catch(() => {})
+      api.voiceConfig().then(c => {
+        autoSpeakRef.current = !!c.autoSpeak
+        speechRateRef.current = c.rate
+      }).catch(() => {})
     }
 
     return {
@@ -521,7 +527,9 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
         }
         const onVoiceConfigChanged = (e: Event) => {
           const detail = (e as CustomEvent).detail
-          autoSpeakRef.current = !!detail?.autoSpeak
+          if (typeof detail?.rate === 'string') speechRateRef.current = detail.rate
+          if (!detail || !('autoSpeak' in detail)) return
+          autoSpeakRef.current = !!detail.autoSpeak
           if (!autoSpeakRef.current) stopVoice()
         }
         window.addEventListener('voice-stop', onVoiceStop)

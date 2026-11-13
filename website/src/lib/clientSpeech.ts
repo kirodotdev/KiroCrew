@@ -64,11 +64,13 @@ export function resumeClientSpeech(): void {
 /** Speak *text* on the client. `onPlaying` brackets the audible span (true at
  * start, false when speech ends, errors, or is cancelled) so the caller can
  * drive the same "playing" state the gateway path uses, and `onError` fires
- * only on a genuine synthesis error (not on a user cancel). Returns whether
- * speech was started at all. */
+ * only on a genuine synthesis error (not on a user cancel). `rate` is the speech
+ * rate multiplier (1 is normal); the engine fixes it once speech has started, so
+ * a later change applies to the next reply. Returns whether speech was started
+ * at all. */
 export function speakOnClient(
   text: string,
-  { onPlaying, onError }: { onPlaying: (playing: boolean) => void; onError: (code: string) => void },
+  { onPlaying, onError, rate }: { onPlaying: (playing: boolean) => void; onError: (code: string) => void; rate?: number },
 ): boolean {
   if (!clientSpeechAvailable()) return false
   const spoken = text.trim()
@@ -82,6 +84,7 @@ export function speakOnClient(
   } catch {
     return false
   }
+  if (rate) utterance.rate = rate
   activeUtterance = utterance
   const settle = (playing: boolean) => {
     if (activeUtterance !== utterance) return

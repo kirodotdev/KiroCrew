@@ -282,6 +282,52 @@ finishes. Cancelled work keeps its slot until the request task has unwound.
 `test/test_voice_streaming.py` covers request identity, cancellation before and
 during synthesis, and malformed requests.
 
+## Speaking speed
+
+The playback bar's speed control (`components/VoiceSpeedControl.tsx`) lives in
+the bar's second row, beside Read again (see "Playback bar, Pause and Resume").
+It is a labelled radio group ("Speed") of the presets in
+`lib/voiceSpeed.ts` (80%, 100%, 120%, 150%). Choosing one saves it with
+`PUT /api/voice/config` as the `rate` percentage, the same `voice_reply.rate`
+that Settings → Voice → Speed edits. The presets are a subset of the rates that
+dropdown lists (`VOICE_RATE_OPTIONS`, shared by both), so Settings always shows
+the rate chosen on the bar. Each option shows its rate as a locale-formatted
+percentage, and the checked one is the saved rate; a rate set in Settings that is
+not a preset leaves none checked. Tab reaches the checked option, the arrow keys,
+Home and End move focus between options without saving, and Space or Enter
+chooses, so passing over an option never writes it. The control shares the
+`['voiceConfig']` query with the Settings page, so the two always agree and the
+choice survives reloads. The options are disabled until the saved rate has
+loaded. While a save is pending they stay focusable but carry `aria-disabled`
+and `aria-busy` and ignore every choice, so the option just chosen keeps focus
+and optimistic updates cannot overlap. Choosing the checked option saves
+nothing. Load and save failures use compact `ErrorNotice` rows under the group,
+worded for the bar ("Couldn't load your reading speed.", "Couldn't save the
+speed. Your previous speed is kept."); load offers Retry, while a save failure
+restores the previous rate and leaves the group available to retry.
+Every settlement invalidates and refetches `['voiceConfig']`, then broadcasts
+the rate the gateway actually stored. The choice also broadcasts
+`voice-config-changed` with only
+`{ rate }`; the playback owner records it for the client-speech fallback and
+ignores any such event that carries no `autoSpeak`, so a speed change never
+stops the reading. Read again replays through the same synthesis path, so the
+replayed sentences use the rate saved at that moment.
+
+The gateway applies the rate when it synthesizes, so pitch stays natural for
+every provider, and reads the saved value on each request: the new speed
+applies to sentences synthesized after the choice. Audio already synthesized or
+queued keeps its old speed, and a reply the built-in engine renders as one
+file (a manual Read aloud) keeps it until the next reply. The Web Speech
+fallback sets `utterance.rate` once when it starts, so it also applies from the
+next reply. Because a choice can therefore change nothing audible right away,
+a saved choice shows a one-line polite status under the group: "Applies to what
+is read next. Press Read again to hear the whole reply at this speed." Read
+again resynthesizes or respeaks the reply from its first sentence on every path,
+so it plays at the new rate. The note is empty until the first saved choice,
+clears while the next choice saves, stays empty after a failed save, and goes
+away with the bar. Its live region is always mounted but takes no space while
+empty, so the group never moves when it appears.
+
 ## Interruption
 
 `ChatPage` dispatches `voice-stop` when it sends a message and before a manual
@@ -343,16 +389,18 @@ In a Sessions chat, `VoicePlaybackBar` sits above the composer while
 `voicePlaying` or `voicePreparing` is set. It shows "Preparing audio…" or
 "Reading aloud" in two rows inside one glass pane. The first row holds the
 status and two buttons: Pause reading / Resume reading, then Stop reading. The
-second row, set off by a hairline and aligned to the end, holds Read again alone,
-so no row has more than two buttons. Stop dispatches `voice-stop`, Read again
+second row, set off by a hairline and aligned to the end, holds the Speed radio
+group (see "Speaking speed") and Read again, with the speed note and error rows
+under them. A single-choice group is one control, not a row of actions, so no row
+has more than two buttons. Stop dispatches `voice-stop`, Read again
 dispatches `voice-restart` (see above). Pause dispatches `voice-pause`; the store flag
 `voicePaused` then turns the same button into Resume reading, which dispatches
 `voice-resume`, and the status text reads "Paused". The toggle is one element,
 so keyboard focus stays on it. The bar is a container: while it is narrower than
 680 px (a phone, or a narrow dock), the Pause / Resume and Stop labels hide
 visually and remain the buttons' accessible names, so the status text always has
-room, in every locale. Read again, alone on its row, keeps its label until the
-viewport is narrower than 360 px.
+room, in every locale. Read again keeps its label; where the second row is too
+narrow for it beside the Speed group, it wraps onto its own line under the group.
 
 `voicePaused` is the single source of truth. The playback owner sets it first
 and then holds every engine at its current position, so Resume continues from

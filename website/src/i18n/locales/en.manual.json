@@ -1750,7 +1750,10 @@
       "resume": "Resume reading",
       "stop": "Stop reading",
       "restart": "Read again",
-      "restartFromStart": "Read again from the start"
+      "restartFromStart": "Read again from the start",
+      "speedAppliesNext": "Applies to what is read next. Press Read again to hear the whole reply at this speed.",
+      "speedLoadFailed": "Couldn't load your reading speed.",
+      "speedSaveFailed": "Couldn't save the speed. Your previous speed is kept."
     },
     "avatarBuilder": {
       "apply": "Apply",

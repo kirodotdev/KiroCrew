@@ -5890,7 +5890,10 @@
       "resume": "読み上げを再開",
       "stop": "読み上げを停止",
       "restart": "もう一度読む",
-      "restartFromStart": "最初からもう一度読み上げる"
+      "restartFromStart": "最初からもう一度読み上げる",
+      "speedAppliesNext": "この後に読み上げる部分から適用されます。返信全体をこの速度で聞くには「もう一度読む」を押してください。",
+      "speedLoadFailed": "読み上げ速度を読み込めませんでした。",
+      "speedSaveFailed": "速度を保存できませんでした。以前の速度のままです。"
     },
     "avatarBuilder": {
       "apply": "適用",

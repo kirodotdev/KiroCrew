@@ -5890,7 +5890,10 @@
       "resume": "继续朗读",
       "stop": "停止朗读",
       "restart": "重新朗读",
-      "restartFromStart": "从头重新朗读"
+      "restartFromStart": "从头重新朗读",
+      "speedAppliesNext": "从接下来朗读的内容开始生效。点击“重新朗读”即可以此速度收听整条回复。",
+      "speedLoadFailed": "无法加载你的朗读速度。",
+      "speedSaveFailed": "无法保存速度。已保留之前的速度。"
     },
     "avatarBuilder": {
       "apply": "应用",
