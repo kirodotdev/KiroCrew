@@ -204,6 +204,7 @@ export default function SessionGridView({
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
           onOpenFull={(slot, anchorTs, anchorMid) => onCollapse(slot, anchorTs, anchorMid, true)}
+          onSessionOpen={(slot) => onCollapse(slot, undefined, undefined, true)}
           openSideChat={openSideChat}
           leading={paneLeading}
           onFileOpen={openFileForPane}

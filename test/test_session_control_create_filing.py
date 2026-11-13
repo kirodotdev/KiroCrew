@@ -592,6 +592,10 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         "app",
         "forked_from",
         "forked_from_created_at",
+        # Fork-only lineage: set only beside forked_from, so a plain newborn has none.
+        "fork_point_mid",
+        "fork_point_ts",
+        "fork_direction",
         "linked_session_key",
         # The relay-archive binding, written all-three-or-none by both the
         # full save and the merge. A plain local newborn carries none of it.

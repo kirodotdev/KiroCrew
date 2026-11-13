@@ -27,7 +27,8 @@ Writes: ``_app``, ``_auto_tagged``, ``_binding``, ``_channel_runtime_origin``, `
 ``_title_low_signal``, ``_title_origin``, ``_title_refresh_mark``,
 ``_title_retry_pending``, ``_title_task``, ``_titled``,
 ``_welcome_preview``, ``_welcomed_agent``, ``agent_kind``, ``app_agent_owner``, ``backend``,
-``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``forked_from``, ``instance_id``,
+``channel_origin``, ``created_at``, ``crew_mode_agent``, ``executor``, ``fork_direction``,
+``fork_point_mid``, ``fork_point_ts``, ``forked_from``, ``instance_id``,
 ``jev_route``, ``memory_store``,
 ``remote_slot``, ``served_model``.
 Reads only: ``model``.
@@ -454,6 +455,13 @@ def init_session_fields(self: _ChatSlot) -> None:
     # The parent transcript's created_at when forked: a chat later created
     # on the parent's key after a permanent delete has another.
     self.forked_from_created_at = ""
+    # Where in the parent the fork was cut: the ``meta.mid`` and ``ts`` of the
+    # parent's last row at or before the cut, and ``"head"`` or ``"tail"``. All
+    # None on a slot that is not a fork, and on a fork made before they were
+    # recorded. A row with no ``mid`` leaves only the timestamp to find it by.
+    self.fork_point_mid = None
+    self.fork_point_ts = None
+    self.fork_direction = None
     self._fork_lock = asyncio.Lock()  # serialises concurrent forks on this slot
     # Serialises explicit model-pick transactions (check → mutate → live
     # switch → rollback) on this slot: picks interleaving at the set_model

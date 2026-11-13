@@ -844,6 +844,26 @@ def _read_forked_from(r: _Read) -> None:
     _restore_fork_lineage(r.slot, r.meta)
 
 
+# The line is agent-writable and the client draws a marker from these values, so a
+# value outside the bound reads back as none.
+def _read_fork_point_mid(r: _Read) -> None:
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    r.slot.fork_point_mid = cp.fork_point_text(r.meta.get("fork_point_mid"))
+
+
+def _read_fork_point_ts(r: _Read) -> None:
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    r.slot.fork_point_ts = cp.fork_point_text(r.meta.get("fork_point_ts"))
+
+
+def _read_fork_direction(r: _Read) -> None:
+    from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
+
+    r.slot.fork_direction = cp.fork_direction(r.meta.get("fork_direction"))
+
+
 def _read_linked_session_key(r: _Read) -> None:
     # Rebinds the slot to the session its conversation runs on; skipped, the
     # slot would answer from a dashboard-only session and the channel thread
@@ -1380,6 +1400,32 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: s.forked_from_created_at if s.forked_from is not None else ""),
         why="validated and restored with forked_from by its leading row",
     ),
+    # Where the fork was cut, kept beside the parent it names so a restored fork
+    # still marks its point in the parent's transcript.
+    Field(
+        "fork_point_mid",
+        _ALL,
+        attr="fork_point_mid",
+        line=_truthy(lambda s: s.fork_point_mid),
+        merge=_truthy(lambda s: s.fork_point_mid),
+        read=_read_fork_point_mid,
+    ),
+    Field(
+        "fork_point_ts",
+        _ALL,
+        attr="fork_point_ts",
+        line=_truthy(lambda s: s.fork_point_ts),
+        merge=_truthy(lambda s: s.fork_point_ts),
+        read=_read_fork_point_ts,
+    ),
+    Field(
+        "fork_direction",
+        _ALL,
+        attr="fork_direction",
+        line=_truthy(lambda s: s.fork_direction),
+        merge=_truthy(lambda s: s.fork_direction),
+        read=_read_fork_direction,
+    ),
     # Nothing re-creates a channel slot's binding on restart (no injection
     # re-fires), so without it the slot comes back unbound, as a dashboard-only
     # copy of the thread.
@@ -1520,6 +1566,9 @@ LINE_ORDER: tuple[str, ...] = (
     "queued_prompts",
     "forked_from",
     "forked_from_created_at",
+    "fork_point_mid",
+    "fork_point_ts",
+    "fork_direction",
     "linked_session_key",
     "channel_origin",
     "tab_id",
@@ -1566,6 +1615,9 @@ MERGE_ORDER: tuple[str, ...] = (
     "channel_origin",
     "forked_from",
     "forked_from_created_at",
+    "fork_point_mid",
+    "fork_point_ts",
+    "fork_direction",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "executor",
