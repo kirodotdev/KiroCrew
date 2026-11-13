@@ -124,7 +124,11 @@ export function SharingHero({
   const handoffHint = useMcpHandoffHint()
   const now = footprint?.using_now_bytes
   const withSharing = footprint?.with_sharing_bytes
-  const showNumbers = typeof now === 'number' && typeof withSharing === 'number'
+  // Each figure shows when it was measured, on its own: with sharing off no stub
+  // runs to price "with sharing" until the gateway has read one, and that is when
+  // the reading now matters most. No placeholder stands in for a missing one.
+  const showNow = typeof now === 'number'
+  const showWithSharing = showNow && typeof withSharing === 'number'
   const showBanner = on && (staleCount > 0 || !!reloadNote || !!reloadError)
   return (
     <section
@@ -185,7 +189,7 @@ export function SharingHero({
         handoffHint={handoffHint}
       />
 
-      {showNumbers && (
+      {showNow && (
         <dl className="flex min-w-0 flex-wrap items-end gap-x-4 gap-y-2">
           <div className="min-w-0">
             <dt className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
@@ -195,17 +199,21 @@ export function SharingHero({
               {i18nT('pages.mcpManagement.gb_value', { value: gib(now) })}
             </dd>
           </div>
-          <span aria-hidden="true" className="pb-1.5 text-[18px] text-[var(--muted)]">
-            →
-          </span>
-          <div className="min-w-0">
-            <dt className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-              {i18nT('pages.mcpManagement.with_sharing')}
-            </dt>
-            <dd className="m-0 font-mono text-[22px] font-semibold tabular-nums text-[var(--accent)]">
-              {i18nT('pages.mcpManagement.gb_value_approx', { value: gib(withSharing) })}
-            </dd>
-          </div>
+          {showWithSharing && (
+            <>
+              <span aria-hidden="true" className="pb-1.5 text-[18px] text-[var(--muted)]">
+                →
+              </span>
+              <div className="min-w-0">
+                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                  {i18nT('pages.mcpManagement.with_sharing')}
+                </dt>
+                <dd className="m-0 font-mono text-[22px] font-semibold tabular-nums text-[var(--accent)]">
+                  {i18nT('pages.mcpManagement.gb_value_approx', { value: gib(withSharing) })}
+                </dd>
+              </div>
+            </>
+          )}
         </dl>
       )}
 

@@ -1423,7 +1423,12 @@ approval, and a never-pooled one are not named.
 
 On the page, the hero card holds the page-wide sharing switch and the
 measured memory figures (`GET /api/mcp-gateway/footprint`, owner only, PSS read
-from `/proc`; hidden when any process cannot be read). Turning that switch on
+from `/proc`; both hidden when any process cannot be read). "Using now" shows
+whenever it was read, on its own; "with sharing" shows only when it was read
+too. With sharing off no stub runs to price it, so the gateway reads one: it
+starts a single stub that registers on a private socket served by nothing,
+reads its PSS, stops it and keeps that reading for the gateway run
+(`mcp_gateway/footprint_probe.py`, Linux only). Turning that switch on
 asks first and names every server it shares: the ones enabled by hand, and the
 shareable ones nobody chose for, each pinned to the launch read for it. It
 never enables a server turned off by hand (a `false` entry in

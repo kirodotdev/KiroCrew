@@ -108,13 +108,10 @@ describe('the hero numbers', () => {
     expect(screen.getByText(M('with_sharing'))).toBeTruthy()
   })
 
-  it.each([
-    ['the reading now', { using_now_bytes: null }],
-    ['the reading with sharing', { with_sharing_bytes: null }],
-  ])('hides the number row when %s is missing', async (_label, over) => {
+  it('hides the number row when the reading now is missing', async () => {
     vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
     vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
-    const read = vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue(footprint(over) as never)
+    const read = vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue(footprint({ using_now_bytes: null }) as never)
 
     mount()
     await findSharing()
@@ -122,6 +119,19 @@ describe('the hero numbers', () => {
     await footprintSettled()
     expect(screen.queryByText(M('using_now'))).toBeNull()
     expect(screen.queryByText(M('with_sharing'))).toBeNull()
+  })
+
+  it('shows the reading now on its own when nothing measured the one with sharing', async () => {
+    vi.spyOn(api, 'mcpGatewayStatus').mockResolvedValue(status() as never)
+    vi.spyOn(api, 'mcpGatewayServers').mockResolvedValue({ servers: [server()] } as never)
+    vi.spyOn(api, 'mcpGatewayFootprint').mockResolvedValue(footprint({ with_sharing_bytes: null }) as never)
+
+    mount()
+    expect(await screen.findByText(M('gb_value', { value: '5.4' }), undefined, { timeout: 5000 })).toBeTruthy()
+    expect(screen.getByText(M('using_now'))).toBeTruthy()
+    // No placeholder figure, no arrow pointing at nothing.
+    expect(screen.queryByText(M('with_sharing'))).toBeNull()
+    expect(screen.queryByText('→')).toBeNull()
   })
 
   it('hides the number row and says so when the footprint request fails', async () => {
