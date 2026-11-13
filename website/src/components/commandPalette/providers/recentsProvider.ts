@@ -9,7 +9,7 @@ import { api } from '../../../api/client'
 import { useSimplifiedToolNames } from '../../../hooks/useSimplifiedToolNames'
 import { useAppDispatch, useAppSelector, useAppStore } from '../../../store'
 import { selectSlotsWithLiveLastTs } from '../../../store/slotLastTs'
-import { resumeFromHistory, switchSlot } from '../../../store/chatSlice'
+import { resumeFromHistory, selectSlotStreamState, switchSlot } from '../../../store/chatSlice'
 import { createChatForView, reportCreateFailure, showCreatedChat } from '../../../lib/createdChatView'
 import { useAskingNavigate } from '../../NavigationLeaveGuard'
 import { focusComposerForOpenedSession, focusComposerForResumedSession } from '../../../pages/chat/composerFocus'
@@ -184,7 +184,8 @@ function shortMsg(slot: ChatSlot): string {
  * agent name and last-message live in dedicated Result fields (top metadata
  * line + line-3 preview); this only decides the status line 3 accent:
  *  - needs-approval → amber "Approve" pill + " <action>"
- *  - running        → accent pulsing dot + "Thinking…"
+ *  - running        → accent pulsing dot + "Thinking…", or the chat footer's
+ *                     "Compacting…" while the slot's run state is compacting
  *  - your-turn      → last-message preview + right blue dot
  *  - idle           → last-message preview
  */
@@ -195,6 +196,9 @@ export function sessionStatus(
   // Defaults to the ChatSettings default (on) so callers that don't care about
   // the preference keep the purpose-first behavior.
   simplifiedToolNames = true,
+  // The slot's run state is compacting: the status detail still holds the
+  // phase from before the compaction, so only this says one is running.
+  compacting = false,
 ): {
   style?: 'pill' | 'dot'
   colorVar?: string
@@ -227,9 +231,10 @@ export function sessionStatus(
       style: 'dot',
       colorVar: '--accent',
       pulse: true,
-      label:
-        toolStatusLabel(statusDetail, simplifiedToolNames, i18next.language) ||
-        i18nT('components.commandPalette.providers.recentsProvider.thinking'),
+      label: compacting
+        ? i18nT('pages.chat.chatFooter.compacting')
+        : toolStatusLabel(statusDetail, simplifiedToolNames, i18next.language) ||
+          i18nT('components.commandPalette.providers.recentsProvider.thinking'),
     }
   }
   if (unread.includes(slot.key) || slot.waiting_for_input) {
@@ -260,12 +265,17 @@ export function useRecentsProvider(): ResourceProvider {
   const unread = useAppSelector((s) => s.dashboard.unreadSlots)
   const slotStatusDetail = useAppSelector((s) => s.chat.slotStatusDetail ?? {})
   const simplifiedToolNames = useSimplifiedToolNames()
+  // A joined string, so the selector's result compares by value between renders.
+  const compactingKeys = useAppSelector((st) =>
+    slots.filter((s) => selectSlotStreamState(st, s.key) === 'compacting').map((s) => s.key).join('\n'),
+  )
 
   return useMemo(() => {
     const { ordered: orderedSlots, hasEmptyNew } = prepareCurrentSlots(slots)
     // Dedupe Older against ALL live slots (not just rendered ones) so a
     // filtered-out empty duplicate can't resurface as a history row.
     const currentKeys = new Set(liveSlots.map((s) => normalizeKey(s.key)))
+    const compacting = new Set(compactingKeys.split('\n'))
 
     return {
       id: 'recents',
@@ -310,7 +320,7 @@ export function useRecentsProvider(): ResourceProvider {
           // An untitled slot that already has messages is a real conversation
           // and keeps its normal row treatment.
           const isNew = isEmptyNewSlot(s)
-          const st = isNew ? {} : sessionStatus(s, unread, slotStatusDetail[s.key], simplifiedToolNames)
+          const st = isNew ? {} : sessionStatus(s, unread, slotStatusDetail[s.key], simplifiedToolNames, compacting.has(s.key))
           return {
             id: `recents:cur:${s.key}`,
             providerId: 'recents',
@@ -425,5 +435,5 @@ export function useRecentsProvider(): ResourceProvider {
         return [...current, ...planned, ...older]
       },
     }
-  }, [dispatch, store, navigate, askingNavigate, queryClient, slots, liveSlots, unread, slotStatusDetail, simplifiedToolNames])
+  }, [dispatch, store, navigate, askingNavigate, queryClient, slots, liveSlots, unread, slotStatusDetail, simplifiedToolNames, compactingKeys])
 }
