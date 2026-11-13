@@ -137,6 +137,38 @@ def _append_footer_actions(
     return footer_blocks
 
 
+async def seal_stream(
+    slack: SlackClientOps,
+    channel: str,
+    ts: str,
+    final_text: str | None,
+    footer_blocks: list[dict] | None,
+) -> bool:
+    """Stop a Slack stream, with *footer_blocks* at the bottom of the answer message.
+
+    True only when Slack took the footer in the seal, so the caller posts none of
+    its own. On False (no footer asked for, or the footer seal refused, e.g.
+    ``message_not_in_streaming_state`` once the stream's 10 minutes are up) the
+    stream is sealed bare and the caller posts the footer as its own message: one
+    footer per turn, never zero or two. Never raises: the seal is decoration.
+
+    shortcut: a footer seal Slack applied but whose reply was lost (a timeout, or
+    ``internal_error``) reads as refused, so the footer is posted a second time;
+    read the message back before posting if that shows up in practice.
+    """
+    if footer_blocks:
+        try:
+            if await slack.stop_stream(channel, ts, final_text, blocks=footer_blocks):
+                return True
+        except Exception:
+            logger.warning("Slack stop_stream with the footer failed", exc_info=True)
+    try:
+        await slack.stop_stream(channel, ts, final_text)
+    except Exception:
+        logger.warning("Slack stop_stream failed at finalize", exc_info=True)
+    return False
+
+
 async def _maybe_auto_title_slack(
     slack: SlackClientOps,
     sessions: SessionManager,

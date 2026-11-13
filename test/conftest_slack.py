@@ -226,8 +226,11 @@ class MockSlackClient(SlackClientOps):
         )
         return True
 
-    async def stop_stream(self, channel, ts, final_text=None):
-        self.actions.append(("stop_stream", {"channel": channel, "ts": ts, "text": final_text}))
+    async def stop_stream(self, channel, ts, final_text=None, blocks=None):
+        action = {"channel": channel, "ts": ts, "text": final_text}
+        if blocks is not None:
+            action["blocks"] = blocks
+        self.actions.append(("stop_stream", action))
         return True
 
     async def set_thread_title(self, channel, thread_ts, title):

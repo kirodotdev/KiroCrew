@@ -271,8 +271,17 @@ class SlackClientOps(ABC):
         """Append text to a streaming message. Returns True on success."""
         return False
 
-    async def stop_stream(self, channel: str, ts: str, final_text: str | None = None) -> bool:
-        """Stop a streaming message. Returns True on success."""
+    async def stop_stream(
+        self,
+        channel: str,
+        ts: str,
+        final_text: str | None = None,
+        blocks: list[dict] | None = None,
+    ) -> bool:
+        """Stop a streaming message. Returns True on success.
+
+        ``blocks`` render at the bottom of the finalized message.
+        """
         return False
 
     async def append_task(
@@ -959,12 +968,21 @@ class RealSlackClient(SlackClientOps):
             logger.debug("chat.appendStream task_update failed", exc_info=True)
             return False
 
-    async def stop_stream(self, channel: str, ts: str, final_text: str | None = None) -> bool:
+    async def stop_stream(
+        self,
+        channel: str,
+        ts: str,
+        final_text: str | None = None,
+        blocks: list[dict] | None = None,
+    ) -> bool:
         """Stop a streaming message via chat.stopStream.
 
         We intentionally do NOT call chat.update after stopping — the streamed
         content already has rich formatting (syntax-highlighted code blocks, etc.)
         that chat.update would downgrade to plain mrkdwn.
+
+        ``blocks`` (e.g. the timing footer) render at the bottom of the finalized
+        message. False means Slack did not take them either.
         """
         if turn_muted(channel, ts=ts):
             return False
@@ -972,6 +990,8 @@ class RealSlackClient(SlackClientOps):
             # Each chunk is new content; see update_message.
             require_channel(channel)
             body: dict[str, Any] = {"channel": channel, "ts": ts}
+            if blocks:
+                body["blocks"] = blocks
             self._inject_team(channel, body)
             await self._web.api_call("chat.stopStream", json=body)
             return True
