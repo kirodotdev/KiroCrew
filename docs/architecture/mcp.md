@@ -2026,6 +2026,25 @@ overlay a Bot's chat would get no stub at all, so on Codex, which mounts Crew's
 own servers only as stubs, a routed `kirocrew-mate` would never reach the chat
 ([providers](../system-specs/modules/providers.md#codex-dashboard-session-mount)).
 
+The worker spec itself, `kirocrew-mate-worker.json`, gets one overlay as well,
+`<overlay_dir>/mates/kirocrew-mate-worker.json`, which every Bot's worker shares.
+Crew writes that file, so no Bot owner record names it, and its stubs carry
+`--agent kirocrew-mate-worker`, the agent whose task profile the worker's own
+tool calls already get. Only a server one backend may serve for every Bot goes in
+(`mate_overlays._shared_by_every_worker`): a managed server that reads its caller
+from each call (`mcp_discovery._MANAGED_SERVERS_CALLER_AWARE`), or a server Crew
+does not launch. Any other `kirocrew-*` server, an edition's own one for example,
+may read `KIROCREW_SESSION_KEY` from its own process, which a shared backend
+leaves empty, so it stays out and each session launches it as before. The stub
+set and `pooling_enabled` decide the rest as they do for any spec, so with pooling
+off each worker still gets a backend of its own. What is shared follows the pool
+key, which has no agent or principal dimension (`mcp_gateway/pool.py`): every Bot
+of a gateway runs as that gateway's OS user, the one `os_uid` partition its
+ordinary chats share too. The overlay sits in `mates/`, so the by-name lookup that
+claude and codex workers use never reads it and their servers are unchanged. An
+`~/.kiro/agents` spec named `kirocrew-mate-worker` blocks it like any identity
+collision below.
+
 What the pass does with a Bot file is what it does with an agent spec: the
 same hardened reader, the same `_rewrite_single_spec`, the same launch approvals
 (an unapproved launch stays unwrapped), the same env-sidecar ledger and prune,
@@ -2036,7 +2055,8 @@ wait for a restart). It differs in four places. The stub's `--agent` identity is
 (`env_sidecar_name(agent, server)`) and caller identity are the Bot's own. A
 file gets no settings injection: the worker's servers are its Bot file's. A
 file is taken only when it is a plain file (no symlink) in a plain folder, is not
-the Bot conductor or worker spec, and is named by this instance's Bot owner
+the Bot conductor or worker spec (the worker spec is taken on its own terms,
+above), and is named by this instance's Bot owner
 record. A symlinked or non-folder `~/.kiro/mates/agents`, a symlinked Bot
 file and a file off the record are skipped with a log line and treated as
 absent, as the agents loop treats a source its hardened reader refuses: the pass
@@ -2075,10 +2095,13 @@ key on a positive `backend == kas` check, and `session_servers` answers
 `kirocrew-mate-worker` with that key only through
 `mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. Every other host
 passes no key and keeps the by-name lookup it had. The record must be a
-Bot's worker, its Bot must own its file (`mate_file_for_member`), and
-the overlay must carry that Bot's identity. Only a wrapped server the
-Bot ADDS is returned (a base server wins the merge), and only one the
-governed merged worker spec still mounts unmuted and not registry-governed
+Bot's worker. A base server's stub comes from the worker spec's overlay, which
+must carry the name `kirocrew-mate-worker`. A server the Bot ADDS comes from the
+Bot's own overlay (a base server wins the merge); when the Bot owns a file
+(`mate_file_for_member`) that overlay must carry the Bot's identity, or the worker
+gets no stub at all. A Bot with no file gets the base stubs alone, and either
+overlay carrying another name yields no stub. A stub is returned only while the
+governed merged worker spec still mounts its server unmuted and not registry-governed
 (`mcp_cleanup.mcp_entry_is_registry_governed`): the overlay is the last pass's,
 so an entry retyped `type: registry` since must not keep its old local stub.
 Each carries that spec's

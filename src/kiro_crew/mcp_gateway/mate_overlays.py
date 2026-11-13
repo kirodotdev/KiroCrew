@@ -26,8 +26,13 @@ the same launch approvals and the same sidecar ledger, under three separations:
   apply: the worker's own ``kirocrew-mate-worker``, the profile its session's
   tool calls get, AND the identity itself. Every one must permit the call.
 * A worker session finds its overlay through its own execution record
-  (:func:`worker_overlay_spec`), never through the shared agent name, and only the
-  servers the crewmate ADDS reach it, carrying the governed merged spec's
+  (:func:`worker_overlay_spec`), never through the shared agent name. Its base
+  servers' stubs come from the worker spec's own overlay,
+  ``<overlay_dir>/mates/kirocrew-mate-worker.json``, written under the worker's
+  name and shared by every crewmate's worker; a server that reads its session
+  from its own process is left out of it (:func:`_shared_by_every_worker`) and
+  launches per session. The servers the crewmate ADDS come from the crewmate's
+  own overlay. Each carries the governed merged spec's
   ``disabledTools`` rather than the file's and never an ``autoApprove`` (on KAS
   the tool restriction itself is the merged spec's ``excludedTools``).
 * A crewmate whose file id an ``~/.kiro/agents`` spec also has gets no overlay:
@@ -189,7 +194,8 @@ def list_mate_sources(mate_dir: Path) -> MateSources:
 
     Taken: a plain ``<id>.json`` / ``<id>.md`` that is not the mate conductor or
     worker spec and that the crewmate owner record names (an id this instance
-    wrote). Skipped with a log line, and treated as absent rather than as a
+    wrote), and the plain worker spec ``kirocrew-mate-worker.json`` itself, which
+    no record names. Skipped with a log line, and treated as absent rather than as a
     doubt: a symlinked or non-folder *mate_dir*, a symlinked file, and an id the
     record does not name. The set stays complete (cacheable) and sets no
     ``live_incomplete``, as the agents loop treats a source its hardened reader
@@ -223,10 +229,16 @@ def list_mate_sources(mate_dir: Path) -> MateSources:
 
     taken: list[Path] = []
     for path in listing:
-        if is_mate_service_agent(path.stem):
+        worker = path.name == MATE_WORKER_AGENT_FILENAME
+        if is_mate_service_agent(path.stem) and not worker:
             continue
         if not _is_plain_file(path):
             logger.warning("crewmate file %s is a symlink or not a file; no overlay for it", path)
+            continue
+        if worker:
+            # Crew writes the worker spec (``service_agents``) and no owner record
+            # names it. Its one overlay serves the base servers of every worker.
+            taken.append(path)
             continue
         try:
             on_record = crewmate_file_on_record(path.stem)
@@ -354,7 +366,8 @@ def _write_each(
     # file in *target_dir* (a case-insensitive folder), never just for folding.
     claimed: dict[str, str] = {}
     for path in sources.files:
-        identity = mate_identity(path.stem)
+        worker = path.name == MATE_WORKER_AGENT_FILENAME
+        identity = MATE_WORKER_AGENT if worker else mate_identity(path.stem)
         overlay_name = f"{path.stem}.json"
         if identity in taken:
             logger.warning(
@@ -402,6 +415,14 @@ def _write_each(
         claimed.setdefault(overlay_name.casefold(), overlay_name)
         # The file's own ``name`` is not trusted for the identity: it is the id.
         spec["name"] = identity
+        if worker:
+            # One stub here serves every crewmate's worker, so a server that reads
+            # its session from its own process stays out and launches per session.
+            spec["mcpServers"] = {
+                server: entry
+                for server, entry in _servers(spec.get("mcpServers")).items()
+                if _shared_by_every_worker(server)
+            }
         wrapped = publish(spec, target_dir / overlay_name)
         if wrapped is None:
             out.incomplete = True
@@ -468,11 +489,16 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
     """The overlay worker session *session_key* injects stubs from, or ``None``.
 
     Positive identity: the session's own execution record must be a crewmate's
-    worker (``mate_worker.is_own_worker_execution``), its crewmate must own a file
-    (``mate_file_for_member``), and that file's overlay must carry its identity.
-    Only a wrapped server the crewmate ADDS is returned (a base server always wins
-    the merge), and only one the governed merged worker spec still mounts
-    unmuted and not registry-governed (``mcp_cleanup.mcp_entry_is_registry_governed``),
+    worker (``mate_worker.is_own_worker_execution``). Its stubs come from two
+    overlays. A base server's comes from the worker spec's own overlay, which
+    every crewmate's worker shares and which carries the worker's name, so a
+    crewmate with no file of its own gets those too. A server the crewmate ADDS
+    comes from its own overlay (a base server always wins the merge); when the
+    crewmate owns a file (``mate_file_for_member``), that file's overlay must
+    carry its identity, or the worker gets no stub at all. Either overlay
+    carrying another name yields no stub. Each stub is one the governed merged
+    worker spec still mounts unmuted and not registry-governed
+    (``mcp_cleanup.mcp_entry_is_registry_governed``),
     so a stub from an earlier pass is not injected for an entry since retyped
     ``type: registry``. Each takes that spec's ``disabledTools`` in place of the file's and
     drops ``autoApprove``, which the KAS projection strips too, since a
@@ -494,18 +520,26 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
         execution = read_session_execution(session_key)
         if not mate_worker.is_own_worker_execution(execution):
             return None
-        name = mate_worker.mate_file_for_member(str(execution.member_id))  # type: ignore[union-attr]
-        if not _is_file_id(name):
-            # No file, or a binding that names a path rather than a file id.
-            return None
         mates = mate_overlay_dir(overlay_dir)
         if mate_dir_refused(mates):
             return None
-        overlay = _read_mate_overlay(mates / f"{name}.json")
-        if overlay is None:
+        shared = _read_mate_overlay(mates / f"{MATE_WORKER_AGENT}.json")
+        if shared is not None and shared.get("name") != MATE_WORKER_AGENT:
+            logger.warning("the worker spec's overlay carries another identity; no stubs")
             return None
-        if overlay.get("name") != mate_identity(name):
-            logger.warning("crewmate overlay for %r carries another identity; no stubs", name)
+        own: dict[str, Any] | None = None
+        name = mate_worker.mate_file_for_member(str(execution.member_id))  # type: ignore[union-attr]
+        if name:
+            if not _is_file_id(name):
+                # A binding that names a path rather than a file id.
+                return None
+            own = _read_mate_overlay(mates / f"{name}.json")
+            if own is None:
+                return None
+            if own.get("name") != mate_identity(name):
+                logger.warning("crewmate overlay for %r carries another identity; no stubs", name)
+                return None
+        elif shared is None:
             return None
         base = agent_specs.load_agent_spec(paths_mod.mate_agents_dir(), MATE_WORKER_AGENT)
         merged = mate_worker.worker_session_spec({**base, "prompt": ""}, session_key)
@@ -519,14 +553,21 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
     base_servers = _servers(base.get("mcpServers"))
     governed = _servers(merged.get("mcpServers"))
     stubs: dict[str, Any] = {}
-    for server, entry in _servers(overlay.get("mcpServers")).items():
+    # A base server's stub is the worker spec's overlay's, an added one's the
+    # crewmate's own: a base server always wins the merge.
+    picks = [
+        (server, entry, from_base)
+        for overlay, from_base in ((shared, True), (own, False))
+        for server, entry in _servers((overlay or {}).get("mcpServers")).items()
+    ]
+    for server, entry, from_base in picks:
         if not isinstance(entry, dict) or not (
             entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
         ):
             continue
         mounted = governed.get(server)
         if (
-            server in base_servers
+            (server in base_servers) != from_base
             or not isinstance(mounted, dict)
             or mcp_entry_is_muted(mounted)
             or mcp_entry_is_registry_governed(mounted)
@@ -544,4 +585,21 @@ def worker_overlay_spec(overlay_dir: Path, session_key: str | None) -> dict[str,
         else:
             shaped.pop("disabledTools", None)
         stubs[server] = shaped
-    return {"name": overlay["name"], "mcpServers": stubs}
+    return {"name": own["name"] if own is not None else MATE_WORKER_AGENT, "mcpServers": stubs}
+
+
+def _shared_by_every_worker(server: str) -> bool:
+    """Whether one gateway backend may serve worker base server *server* for every crewmate.
+
+    A Kiro Crew server that reads its caller from each call qualifies
+    (``mcp_discovery_managed._MANAGED_SERVERS_CALLER_AWARE``), and so does a
+    server Kiro Crew does not launch, which knows no session. Any other
+    ``kirocrew-*`` server, an edition's own one for example, may read
+    ``KIROCREW_SESSION_KEY`` from its own process, which a shared backend leaves
+    empty, so it stays per session.
+    """
+    from kiro_crew.mcp_discovery_managed import _MANAGED_SERVERS_CALLER_AWARE
+
+    # shortcut: the kirocrew- prefix stands in for "Kiro Crew's own code"; ask the
+    # edition seam instead once its servers can declare that they read the caller per call.
+    return server in _MANAGED_SERVERS_CALLER_AWARE or not server.startswith("kirocrew-")
