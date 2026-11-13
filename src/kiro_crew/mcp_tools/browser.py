@@ -159,11 +159,14 @@ def _args_are_scalar(op_args: dict[str, Any]) -> bool:
     """Reject non-scalar op arguments (e.g. an object-valued ``type.text``).
 
     Every browser op takes string/number/bool values (a url, a ref, text, a
-    key) or a list of those; none takes a nested object. An object would reach
-    the page and render as ``[object Object]``, so refuse it here rather than
-    inserting garbage into the page.
+    key) or a list of those; the one nested object is ``type``'s ``steps``.
+    Any other object would reach the page and render as ``[object Object]``, so
+    refuse it here rather than inserting garbage into the page.
     """
-    for value in op_args.values():
+    for name, value in op_args.items():
+        if name == "steps":
+            # ``type``'s steps are objects; the gateway shape-checks them (``ops._type_steps``).
+            continue
         if value is None or isinstance(value, (str, int, float, bool)):
             continue
         if isinstance(value, list) and all(

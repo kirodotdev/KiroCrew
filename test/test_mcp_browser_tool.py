@@ -161,6 +161,16 @@ def test_list_of_scalars_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
     assert out == 'Browser select_option: {"selected": ["a"]}'
 
 
+def test_type_steps_objects_are_posted_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    sent: list[tuple[str, str, dict, str, float]] = []
+    monkeypatch.setattr(mod, "_post_command", _capture_post(sent, 200, _ok({"steps": 2})))
+    args = {"steps": [{"text": "a"}, {"key": "Tab", "modifiers": ["Shift"]}]}
+    mod.browser("browser", {"op": "type", "args": args})
+    assert [(op, posted) for _, op, posted, _, _ in sent] == [("type", args)]
+    refused = {"ok": False, "code": "password_field", "error": "step 2 (x): no", "step": 2}
+    assert "step 2" in mod._settle("type", 200, refused)
+
+
 # --- the navigate gate -------------------------------------------------------
 
 
