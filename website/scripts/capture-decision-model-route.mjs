@@ -8,7 +8,7 @@
  *
  * Two surfaces, because the feature is a choice and its receipt:
  *
- *  - the PICKER. `Auto (Jev)` sits beside `auto`, and it is drawn only when the
+ *  - the PICKER. `Auto (decision model)` sits beside `auto`, and it is drawn only when the
  *    dashboard config reports `decisions_enabled: true` AND the keystone consent
  *    reports `enabled: true`. The `withheld` pass serves the SAME rows with the
  *    fleet answer flipped to false and ASSERTS the row is absent, because "the
@@ -319,7 +319,7 @@ async function main() {
       `${theme}: a routing failure is shown on the row rather than only in the log`,
     )
 
-    // ── The picker's `Auto (Jev)` entry ──
+    // ── The picker's `Auto (decision model)` entry ──
     const capsule = page.locator('[title^="Model:"]').first()
     await capsule.waitFor({ timeout: 25000 })
     await capsule.click()
@@ -335,7 +335,7 @@ async function main() {
     console.log('wrote', `${OUT}/04-picker-${theme}.png`)
 
     // Selected by the row's ID, not its visible text: `auto:jev` renders the
-    // label "Auto (Jev)", so a text assertion would be locale-dependent.
+    // label "Auto (decision model)", so a text assertion would be locale-dependent.
     const rows = await page.$$eval('[role="option"]', els =>
       els.map(el => el.querySelector('[data-model-id]')?.getAttribute('data-model-id') ?? ''))
     check(rows[0] === 'auto:jev', `${theme}: the routed entry is the picker's first row (got ${rows.slice(0, 3).join(', ')})`)

@@ -1,11 +1,17 @@
-"""``capabilities.decisions`` — the one switch that withdraws the Jev seam.
+"""``capabilities.decisions`` -- the ceiling over every decision model.
 
 The keystone ``decisions_consent.json`` is the OWNER's answer to "may my messages
-be sent to Jev". This module resolves a DIFFERENT question: may this machine run
-the seam at all. The two are not the same decision and neither substitutes for the
-other — an owner on a managed laptop can consent in good faith to a paid external
-endpoint their fleet has not approved, so the fleet needs a ceiling that stands
-above the keystone rather than a second copy of it.
+be sent to the decision model". This module resolves a DIFFERENT question: may this
+machine run the seam at all, and with which decision model. The two are not the same
+decision and neither substitutes for the other: an owner on a managed laptop can
+consent in good faith to a paid external endpoint their fleet has not approved, so
+the fleet needs a ceiling that stands above the keystone rather than a second copy
+of it.
+
+The row's ``enabled`` is the full off switch. Its ``providers`` list
+(:data:`PROVIDERS_LIST`) is the per-model allow list: each decision model the picker
+offers has its own entry (:func:`provider_id`), and every check below that reads the
+row for the configured provider also asks that provider's entry.
 
 Consulted at TWO chokepoints, because either alone is a half-control:
 
@@ -63,6 +69,23 @@ DECISIONS_SCOPE = "capabilities.decisions"
 #: hosted row.
 DECISIONS_LOCAL_SCOPE = "capabilities.decisions_local"
 
+#: The per-model allow list: an inner ruleset of :data:`DECISIONS_SCOPE` with one
+#: entry per decision model the picker offers, asked as ``providers:<id>``. The ids
+#: are the picker's own: :data:`PROVIDER_HOSTED` for the hosted provider, each local
+#: preset id (``local_models.LOCAL_MODELS``), :data:`PROVIDER_SAGEMAKER` and
+#: :data:`PROVIDER_CUSTOM`. A ceiling that does not name the list permits every one,
+#: so the standalone default is unchanged. "No model" (:data:`PROVIDER_NONE`) is never
+#: asked: it sends and runs nothing, so it is the way out under any ceiling.
+PROVIDERS_LIST = "providers"
+#: Allow-list id of the hosted provider; the stored preset id, so it never moves.
+PROVIDER_HOSTED = "jev"
+#: Allow-list id of any ``sagemaker://`` address, valid or not.
+PROVIDER_SAGEMAKER = "sagemaker"
+#: Allow-list id of a hand-written address the picker cannot name.
+PROVIDER_CUSTOM = "custom"
+#: "No model": never asked about, never refused.
+PROVIDER_NONE = "none"
+
 #: Tool name the SEL ``governance_decision`` row carries, so an operator reading
 #: the trail can tell this decision apart from the consent rows beside it.
 AUDIT_TOOL = "dashboard_config_decisions"
@@ -80,6 +103,40 @@ AUDIT_TOOL = "dashboard_config_decisions"
 DASHBOARD_SURFACE_KEY = "dashboard:ui"
 
 _UNEVALUABLE_REASON = "governance unavailable (fail-closed)"
+
+
+def provider_id(endpoint: object, model: object) -> str:
+    """The allow-list id (:data:`PROVIDERS_LIST`) of the decision model *endpoint*/*model* name.
+
+    :data:`PROVIDER_HOSTED` for the hosted default, a local preset id for the address
+    the provider route builds for that preset, :data:`PROVIDER_SAGEMAKER` for any
+    ``sagemaker://`` address (the scheme alone picks the SageMaker client, so a
+    malformed one is still that provider), :data:`PROVIDER_NONE` for "No model", and
+    :data:`PROVIDER_CUSTOM` for anything else. *endpoint* is the configured address
+    with the unset fallback already applied (``gate.configured_endpoint``).
+
+    Read from the address's shape. That is enough for an allow list: a preset-shaped
+    address is sent to only while the runtime attests that preset's server on it
+    (``gate._consented_for``), so the entry it answers to is the model that answers.
+    """
+    from kiro_crew.decisions import local_models
+    from kiro_crew.decisions.impl_sagemaker import is_sagemaker_endpoint
+
+    if is_sagemaker_endpoint(endpoint):
+        return PROVIDER_SAGEMAKER
+    return local_models.active_id(endpoint, model)
+
+
+def provider_ids() -> tuple[str, ...]:
+    """Every allow-list id a decision model can have, in the picker's order."""
+    from kiro_crew.decisions import local_models
+
+    return (
+        PROVIDER_HOSTED,
+        *(m.id for m in local_models.LOCAL_MODELS),
+        PROVIDER_SAGEMAKER,
+        PROVIDER_CUSTOM,
+    )
 
 
 def names_local_preset(endpoint: object, model: object) -> bool:
@@ -124,13 +181,26 @@ def is_local_preset(endpoint: object, model: object, *, serving: bool = True) ->
     return status["state"] == STATE_RUNNING if serving else status["state"] != STATE_IDLE
 
 
-def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY, *, local: bool = False) -> bool:
+def is_decisions_denied(
+    surface_key: str = DASHBOARD_SURFACE_KEY,
+    *,
+    local: bool = False,
+    provider: str | None = None,
+) -> bool:
     """Return whether the ceiling withdraws the decision seam for *surface_key*.
 
     *local* adds :data:`DECISIONS_LOCAL_SCOPE` on top of :data:`DECISIONS_SCOPE`
     when a local preset answers; without it only the hosted row is read. Callers derive it from the
     configured provider with :func:`is_local_preset` -- the runtime's attestation --
     never from request input or the configured address alone.
+
+    *provider* is the allow-list id of the decision model the question is about
+    (:func:`provider_id`); it adds the ``providers:<id>`` item of
+    :data:`PROVIDERS_LIST`, so a model the list does not allow is denied exactly as a
+    pinned row is. ``None`` or :data:`PROVIDER_NONE` asks no item. With an item the
+    rows and the item are answered inside one policy-generation bracket, as
+    :func:`denied_sides` answers its two rows, so a policy swap between them cannot
+    pair one policy's row permit with another's list permit.
 
     *surface_key* is what a profile binds on. The two dashboard callers leave it at
     the default, because on an HTTP request the equivalent header is caller-supplied
@@ -167,9 +237,46 @@ def is_decisions_denied(surface_key: str = DASHBOARD_SURFACE_KEY, *, local: bool
     ``governance_decision`` row, and which rows appear must not depend on the
     other row's answer.
     """
+    if provider is None or provider == PROVIDER_NONE:
+        if local:
+            return any(denied_sides(surface_key))
+        return _row_denied(surface_key, DECISIONS_SCOPE)
+    _prime_profiles()
+    before = _answer_generation()
+    denied = [_row_denied(surface_key, DECISIONS_SCOPE)]
     if local:
-        return any(denied_sides(surface_key))
-    return _row_denied(surface_key, DECISIONS_SCOPE)
+        denied.append(_row_denied(surface_key, DECISIONS_LOCAL_SCOPE))
+    denied.append(_row_denied(surface_key, DECISIONS_SCOPE, f"{PROVIDERS_LIST}:{provider}"))
+    if not any(denied) and (before is None or _answer_generation() != before):
+        logger.debug("decisions governance answer moved mid-evaluation; denying the model")
+        _audit_unevaluable(surface_key, DECISIONS_SCOPE)
+        return True
+    return any(denied)
+
+
+def permitted_providers(surface_key: str = DASHBOARD_SURFACE_KEY) -> dict[str, bool]:
+    """``{provider id: whether the list allows it}`` for every id :func:`provider_ids` names.
+
+    The :data:`PROVIDERS_LIST` answer alone, without the rows: the settings read that
+    decides what the picker offers ANDs it with each option's own row and host
+    answers. Asked without an SEL row per id, like the picker's per-region host probe
+    (:func:`targets_denied` with ``audit=False``): these are offers, not requests, and
+    every request that acts on an answer (the provider and consent writes, the send
+    path) asks through :func:`is_decisions_denied`, which audits. One policy-generation
+    bracket covers every id; if it moved, every id reads as refused for this read.
+    Blocking: call off the event loop.
+    """
+    ids = provider_ids()
+    _prime_profiles()
+    before = _answer_generation()
+    answers = {
+        pid: not _row_denied(surface_key, DECISIONS_SCOPE, f"{PROVIDERS_LIST}:{pid}", audit=False)
+        for pid in ids
+    }
+    if before is None or _answer_generation() != before:
+        logger.debug("decisions governance answer moved mid-read; offering no model")
+        return dict.fromkeys(ids, False)
+    return answers
 
 
 def denied_sides(surface_key: str = DASHBOARD_SURFACE_KEY) -> tuple[bool, bool]:

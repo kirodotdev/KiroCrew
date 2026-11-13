@@ -1,5 +1,5 @@
 /**
- * The Decisions (Jev) card's scope switches past the tool-argument one: the whole-transcript
+ * The Decision models card's scope switches past the tool-argument one: the whole-transcript
  * scope on compaction.keep, the recalled-memory scope on memory.recall and the evidence
  * scope on nudge.wake, plus what a scope write does while it is in flight, when it is
  * refused and beside the main switch. Split from decisionsCard.test.tsx, which keeps the
@@ -407,9 +407,9 @@ describe('the recalled-memory scope switch', () => {
     stubGateway({ enabled: false })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to the decision model/i)).toBeInTheDocument()
     })
-    const note = screen.getByText(/sent over the internet to Jev/i).textContent ?? ''
+    const note = screen.getByText(/sent over the internet to the decision model/i).textContent ?? ''
     expect(note).toMatch(/your messages and your skills' names and descriptions/)
     expect(note).toMatch(/Every other kind of data has its own switch below and stays off/)
   })
@@ -561,9 +561,9 @@ describe('a refused scope write says so', () => {
     stubGateway({ enabled: true })
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+      expect(screen.getByText(/sent over the internet to the decision model/i)).toBeInTheDocument()
     })
-    const note = screen.getByText(/sent over the internet to Jev/i).textContent ?? ''
+    const note = screen.getByText(/sent over the internet to the decision model/i).textContent ?? ''
     expect(note).toMatch(/own switch below/)
     expect(note).not.toMatch(/\b(one|two|three|four|five) further/i)
     // The promise is "each category has its own switch", so every point that declares

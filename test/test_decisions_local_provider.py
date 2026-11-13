@@ -721,10 +721,10 @@ class TestConsentCarry:
             events.append(f"write {endpoint}")
             return real_write(endpoint, *a, **k)
 
-        def carry(endpoint):
+        def carry(endpoint, *a, **k):
             time.sleep(0.2)  # a slow carry is the window another switch would use
             events.append(f"carry {endpoint}")
-            return real_carry(endpoint)
+            return real_carry(endpoint, *a, **k)
 
         monkeypatch.setattr(mod, "_write_provider", write)
         monkeypatch.setattr(mod, "_carry_consent", carry)

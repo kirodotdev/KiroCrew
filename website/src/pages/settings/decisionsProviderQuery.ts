@@ -30,3 +30,35 @@ export function isRefusedHostedDefault(data: {
 export function isRefusedSageMaker(data: { configured_refused?: boolean; configured_endpoint?: string }): boolean {
   return data.configured_refused === true && (data.configured_endpoint ?? '').trim().startsWith('sagemaker://')
 }
+
+/** Preset id for the hosted provider; the gateway's `capability.PROVIDER_HOSTED`. */
+export const PRESET_HOSTED = 'jev'
+/** Allow-list id of a hand-written address; the gateway's `capability.PROVIDER_CUSTOM`. */
+export const PROVIDER_CUSTOM = 'custom'
+
+/**
+ * Whether the administrator's policy allows decision model `id`.
+ *
+ * The gateway's per-model answer (`provider_permitted`) when it sends one. An older
+ * gateway sends the three side answers instead, which are read as before: hosted
+ * by `hosted_permitted`, SageMaker by `sagemaker_permitted`, a local preset by
+ * `local_permitted`. An absent answer allows, which is what that gateway did.
+ * "No model" is always allowed: it sends and runs nothing.
+ */
+export function providerPermitted(
+  data: {
+    provider_permitted?: Record<string, boolean>
+    hosted_permitted?: boolean
+    local_permitted?: boolean
+    sagemaker_permitted?: boolean
+  },
+  id: string,
+): boolean {
+  if (id === PRESET_NONE) return true
+  const answer = data.provider_permitted?.[id]
+  if (typeof answer === 'boolean') return answer
+  if (id === PRESET_HOSTED) return data.hosted_permitted !== false
+  if (id === 'sagemaker') return (data.sagemaker_permitted ?? data.hosted_permitted) !== false
+  if (id === PROVIDER_CUSTOM) return true
+  return data.local_permitted !== false
+}

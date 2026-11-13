@@ -66,7 +66,7 @@ export interface SettingEntryScore {
  * re-append it.
  */
 /**
- * Registry id of the Decisions (Jev) main toggle — the card's own switch.
+ * Registry id of the Decision models main toggle: the card's own switch.
  *
  * The card carries more rows than this one; :data:`DECISIONS_SETTING_IDS` below is
  * the whole governed set, and the predicate reads that.
@@ -78,10 +78,10 @@ export interface SettingEntryScore {
  * that the page has the row, so an unfiltered corpus would land the user on a section
  * where nothing is there — which reads as a broken page rather than an absent feature.
  */
-export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
+export const DECISIONS_SETTING_ID = 'developer.decision-models'
 
 /**
- * Every registry id the Decisions (Jev) card owns, the main toggle included.
+ * Every registry id the Decision models card owns, the main toggle included.
  *
  * The card is one governed unit: `capabilities.decisions` withdraws the WHOLE card,
  * so a search that knows the feature is denied must withhold the address field and
@@ -96,14 +96,14 @@ export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
  */
 export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
   DECISIONS_SETTING_ID,
-  'developer.jev-api-key',
+  'developer.typesafe-api-key',
   'developer.earlier-conversation-one-decision-may-carry-in-characters',
   // The per-point consent switches. Declared in `settingsManual` because the card draws
   // them from one component labelled by scope, so the extractor cannot see them -- but
   // they are the card's rows and the fleet ceiling withdraws them with it.
-  'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
-  'developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction',
-  'developer.also-send-snippets-of-recalled-memories-so-jev-can-drop-the-ones-that-do-not-help',
+  'developer.also-send-tool-call-arguments-so-the-decision-model-can-flag-risky-calls',
+  'developer.also-send-the-conversation-and-tool-call-inputs-so-the-decision-model-can-score-compaction',
+  'developer.also-send-snippets-of-recalled-memories-so-the-decision-model-can-drop-the-ones-that-do-not-help',
   // The judge provider and model selects in `DecisionsPointPanel.tsx`, the card's
   // detail half. The point panel only mounts when the card is rendered, so the
   // ceiling that withdraws the card also withdraws these -- a search hit here would

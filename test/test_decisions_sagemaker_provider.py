@@ -335,7 +335,9 @@ class TestSageMakerPut:
     ):
         from kiro_crew.decisions import capability
 
-        monkeypatch.setattr(capability, "is_decisions_denied", lambda *, local=False: not local)
+        monkeypatch.setattr(
+            capability, "is_decisions_denied", lambda *, local=False, provider=None: not local
+        )
         status, body = await _put(GOOD)
         assert status == 403
         assert body["code"] == "decisions_capability_denied"

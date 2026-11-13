@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { resolveLegacyHighlightId } from '../../hooks/useSettingHighlight'
-import { AlertTriangle, CircleDot } from 'lucide-react'
+import { AlertTriangle, CircleDot, ShieldOff } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -11,11 +11,8 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsLink } from '../../components/SettingsLink'
 import { Suspense, lazy } from 'react'
 import { SettingsCard, SettingsToggle, SettingsInput } from '../../components/settings'
-import { SecretField } from '../../components/SecretField'
-import { Btn } from '../../components/ui'
 import { useAvailableModelsQuery } from '../../hooks/useAvailableModels'
 import {
-  DECISIONS_API_KEY_SECRET,
   DECISIONS_BUCKET_PATH,
   DECISIONS_LANE_LLM,
   DECISIONS_MODEL_ROUTE_PATH,
@@ -30,7 +27,13 @@ import {
   type DecisionPointRow,
 } from './decisionsPreview'
 import { fmtPercent } from '../../i18n/format'
-import { DECISIONS_PROVIDER_QUERY_KEY, PRESET_NONE, isRefusedHostedDefault } from './decisionsProviderQuery'
+import {
+  DECISIONS_PROVIDER_QUERY_KEY,
+  PRESET_NONE,
+  PROVIDER_CUSTOM,
+  isRefusedHostedDefault,
+  providerPermitted,
+} from './decisionsProviderQuery'
 import { i18nT } from '../../i18n/t'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 
@@ -60,15 +63,16 @@ const DecisionsProviderPicker = lazy(async () => ({
 }))
 
 /**
- * Decisions (Jev) — Settings › Developer › Feature Previews.
+ * Decision models: Settings › Developer › Feature Previews.
  *
  * ## Why it is a list and a detail
  *
  * This card used to be one column of prose: a switch, four paragraphs about what
  * leaves the machine, a second switch, an address, and one read-only row naming the
- * single thing Jev decided. Every point that shipped afterwards had to land in the
- * same column, so the card grew into a wall in which the reader's actual question —
- * "what does Jev decide for me, and is that one on" — was the hardest thing to find.
+ * single thing a decision model decided. Every point that shipped afterwards had to
+ * land in the same column, so the card grew into a wall in which the reader's actual
+ * question ("what does the decision model decide for me, and is that one on") was
+ * the hardest thing to find.
  *
  * So it takes the shape `AgentBackendTab` already uses for the same problem: the
  * POINTS are a list, one row each, and the panel beside it belongs to whichever row
@@ -105,9 +109,11 @@ const DecisionsProviderPicker = lazy(async () => ({
  * ## The global block, and why its switch is not inside the disclosure
  *
  * Above the list sits what the whole seam shares: the main consent switch, where
- * decisions are sent, the credential, the sampling share and the prior-conversation
- * budget. The last four are behind a disclosure that is CLOSED by default, because a
- * reader opening this card is asking about points and not about a char budget.
+ * decisions are sent, the sampling share and the prior-conversation budget. The last
+ * two are behind a disclosure that is CLOSED by default, because a reader opening
+ * this card is asking about points and not about a char budget. A credential is not
+ * shared: the hosted provider's API key lives in that provider's own entry of the
+ * picker (`DecisionsHostedKeyField.tsx`), the one model it is sent to.
  *
  * The SWITCH is not, and neither is the sentence saying what leaves the machine.
  * Consent to send conversation text off the machine is the one fact on this card a
@@ -121,10 +127,8 @@ const DecisionsProviderPicker = lazy(async () => ({
  *   `/api/decisions/consent`. Not a config path: `config.json` is writable by an
  *   auto-approved agent shell, so a switch there could be flipped by a
  *   prompt-injected agent (see `decisionsPreview.ts`).
- * - **The credential** — the dashboard SECRETS VAULT, as the one entry
- *   `TYPESAFE_API_KEY`. `provider.api_key` honours `secret://TYPESAFE_API_KEY` and
- *   nothing else, so no key is ever written to `config.json` and none is ever read
- *   back: the field shows set or unset, never a value.
+ * - **The hosted provider's credential**: the dashboard SECRETS VAULT, written from
+ *   that provider's entry in the picker (`DecisionsHostedKeyField.tsx`).
  * - **Everything else** — `config.json`, through the config PATCH the settings page
  *   already uses. Those values grant nothing on their own: they can only narrow what
  *   consent allows, or name a model the provider must already advertise.
@@ -134,14 +138,19 @@ const DecisionsProviderPicker = lazy(async () => ({
  * gateway preserves the recorded switch for an absent field and refuses the write
  * unless consent is already in force for the address config names.
  *
- * ## Governance, and the one state that hides rather than explains
+ * ## Governance: a plain notice, never a silently greyed switch
  *
- * `capabilities.decisions` is a fleet ceiling resolved server-side and reported as
- * `decisions_enabled` on `GET /api/dashboard/config`. A fleet that pinned the seam
- * off gets NO CARD — not a disabled one — because a ceiling is not a state the user
- * can act on. A FAILED read is not a withdrawal and must not be silent: the card
- * fades and says the read failed, because nothing has been denied and the reader can
- * retry.
+ * `capabilities.decisions` is the administrator's ceiling, resolved server-side and
+ * reported as `decisions_enabled` on `GET /api/dashboard/config`. A ceiling that
+ * turns decision models off gets the card's name and one plain sentence saying the
+ * administrator turned them off, and no control: a ceiling is not a state the user
+ * can act on, but it is one they must be able to read. Only a definite `false`
+ * draws it; an absent answer (an older gateway, a read still in flight) draws no
+ * card, since neither is a basis for offering an egress switch. The per-model allow
+ * list is the picker's to show: each model the administrator does not allow is
+ * drawn greyed with that wording. A FAILED read is not a withdrawal and must not be
+ * silent: the card fades and says the read failed, because nothing has been denied
+ * and the reader can retry.
  */
 
 /** DOM ids, so each control and panel can name what describes it. */
@@ -155,13 +164,18 @@ const BUCKET_INPUT_ID = 'decisions-bucket-slider'
  *
  * Settings search highlights a control and then strips the `highlight` param, so a
  * target behind a closed <details> is a link that reports success and shows nothing,
- * with no way to retry. These two open it. Resolved through the same legacy-id rewrite
+ * with no way to retry. These open it. Resolved through the same legacy-id rewrite
  * the highlight hook applies, so a bookmark saved against an older label still lands.
  */
 const DISCLOSED_SETTING_IDS = new Set([
-  'developer.jev-api-key',
   'developer.earlier-conversation-one-decision-may-carry-in-characters',
 ])
+
+/**
+ * The registry id of the hosted provider's API key field. A highlight aimed at it
+ * opens that provider's entry in the picker, which is where the field is drawn.
+ */
+const HOSTED_KEY_SETTING_ID = 'developer.typesafe-api-key'
 
 /** The one notice any failed write on this card renders into. */
 const SAVE_ERROR_TESTID = 'decisions-save-error'
@@ -170,9 +184,6 @@ const SAVE_ERROR_TESTID = 'decisions-save-error'
 const domSafe = (id: string) => id.replace(/[^a-zA-Z0-9]+/g, '-')
 const pointRowId = (id: string) => `decisions-point-row-${domSafe(id)}`
 const pointStatusId = (id: string) => `decisions-point-status-${domSafe(id)}`
-
-/** Masked stand-in for a stored credential; the value itself is never sent back. */
-const SECRET_PREVIEW = '••••••••'
 
 export function DecisionsCard() {
   const qc = useQueryClient()
@@ -184,6 +195,8 @@ export function DecisionsCard() {
   const disclosureTargeted =
     highlightTarget !== null &&
     DISCLOSED_SETTING_IDS.has(resolveLegacyHighlightId(highlightTarget))
+  const hostedKeyTargeted =
+    highlightTarget !== null && resolveLegacyHighlightId(highlightTarget) === HOSTED_KEY_SETTING_ID
   // `capabilities.decisions`, resolved server-side and reported by the endpoint the
   // dashboard already fetches. FAIL CLOSED on `=== true`: an absent field is an
   // older gateway or a read that has not landed, and neither is permission to offer
@@ -201,12 +214,6 @@ export function DecisionsCard() {
     // A 404 is the answer "this gateway predates the keystone", not a transient
     // failure worth retrying: the card renders it as the update notice.
     retry: false,
-  })
-  // Names only — the vault never exposes a value, which is what lets this card show
-  // set/unset without ever holding the credential.
-  const secretsQ = useQuery<{ names?: string[] }>({
-    queryKey: ['secrets'],
-    queryFn: () => api.secretsList(),
   })
   const view = readDecisions(consentQ.data, configQ.data)
   // Shared with the picker through the query key: the card reads it only to decide
@@ -251,24 +258,6 @@ export function DecisionsCard() {
   // refetch lands and the drag stutters -- and every tick in between is a config
   // write. The draft holds the position and one write goes out on release.
   const [bucketDraft, setBucketDraft] = useState<number | null>(null)
-  const [apiKeyDraft, setApiKeyDraft] = useState('')
-  const [apiKeyEditing, setApiKeyEditing] = useState(false)
-  // Whether the trash has been pressed and the reader has not yet confirmed. A
-  // separate flag from the write itself: removing a vault entry cannot be undone,
-  // so the question has to be asked BEFORE the DELETE goes out.
-  const [apiKeyConfirmRemove, setApiKeyConfirmRemove] = useState(false)
-  // Arming swaps the focused Remove key for the confirm row and Keep it swaps it
-  // back, so each would drop focus to the page. Same handoff as Settings >
-  // Secrets: Keep it takes focus on arm (the safe choice), Remove key on Keep it.
-  const apiKeyRemoveRef = useRef<HTMLButtonElement>(null)
-  const apiKeyCancelRemoveRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    if (apiKeyConfirmRemove) apiKeyCancelRemoveRef.current?.focus()
-  }, [apiKeyConfirmRemove])
-  const cancelApiKeyRemove = () => {
-    setApiKeyConfirmRemove(false)
-    requestAnimationFrame(() => apiKeyRemoveRef.current?.focus())
-  }
 
   /* ── Writes ──────────────────────────────────────────────────────────────── */
   // The address on screen travels with the click, so consent binds to what the owner
@@ -302,22 +291,6 @@ export function DecisionsCard() {
     mutationFn: (chars: number) => api.saveDecisionsHistoryBudget(chars),
     onSettled: () => qc.invalidateQueries({ queryKey: ['decisionsConsent'] }),
   })
-  const secretMut = useMutation({
-    mutationFn: (value: string) => api.secretsSave(DECISIONS_API_KEY_SECRET, value),
-    onSuccess: () => {
-      setApiKeyDraft('')
-      setApiKeyEditing(false)
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['secrets'] }),
-  })
-  const secretDelMut = useMutation({
-    mutationFn: () => api.secretsDelete(DECISIONS_API_KEY_SECRET),
-    onSettled: () => {
-      setApiKeyConfirmRemove(false)
-      return qc.invalidateQueries({ queryKey: ['secrets'] })
-    },
-  })
-
   // One write per gesture, and none at all when the drag ended where it started.
   const commitBucket = () => {
     const next = bucketDraft
@@ -330,26 +303,19 @@ export function DecisionsCard() {
   // "Old gateway" and "could not read the settings" are different facts and must not
   // share a sentence: the first is fixed by updating, the second by retrying.
   const backendMissing = consentQ.isError && isNotFoundError(consentQ.error)
-  // Every read this card draws from, including the two auxiliary ones. The secrets
-  // index is the load-bearing case: `apiKeySet` is derived from it, so a transient
-  // failure renders a key that EXISTS as unset and then offers Save -- which is an
-  // invitation to overwrite a credential the reader has just been told is absent. A
-  // read that did not succeed must never present itself as "no key set", so its
-  // failure joins the notice rather than resolving to a default.
-  const secretsFailed = secretsQ.isError
+  // The hosted provider's key field reads the vault index itself and says so when
+  // that read fails, so the index is not one of this card's reads.
   // The reads the SWITCH ITSELF stands on: the keystone it writes, the address that
   // write is bound to, and the governance answer. A failure in one of these means the
   // card cannot say what is recorded, so it must not offer to write it.
   const consentReadFailed =
     configQ.isError || dashCfgQ.isError || (consentQ.isError && !backendMissing)
-  // Every read the card draws from anywhere. The vault index and the advertised model
-  // list are AUXILIARY: they decide what the shared block and the tier pickers may
-  // offer, and neither is needed to turn the seam off.
+  // Every read the card draws from anywhere. The advertised model list is AUXILIARY:
+  // it decides what the tier pickers may offer, and is not needed to turn the seam off.
   // A 404 on the consent route is a READ that did not answer too, so it joins this
   // rather than rendering a note of its own outside the notice: one predicate, one
   // notice. Its MESSAGE differs, because "could not read, reload" is not true of it.
-  const readFailed =
-    consentReadFailed || secretsFailed || modelsQ.isError || backendMissing
+  const readFailed = consentReadFailed || modelsQ.isError || backendMissing
   const loading = configQ.isLoading || consentQ.isLoading
   const frozen = loading || readFailed || !view.supported
   // The main switch is held ONLY by the reads it needs. Holding it on an auxiliary
@@ -478,21 +444,14 @@ export function DecisionsCard() {
     setHighlighted(ids[next])
   }
 
-  // Withdrawn by governance: no card at all, not a disabled one. A failed read is not
-  // a withdrawal and falls through to `readFailed`, which fades the card and renders
-  // the notice (AUTOSDE `errors-use-error-notice`). Still-loading keeps hiding it: an
-  // unanswered ceiling is no basis for offering an egress switch.
+  // Turned off by the administrator: the card's name and one plain sentence, no
+  // control. Only a definite `false` draws it (see the file comment).
+  if (dashCfgQ.data?.decisions_enabled === false) return <DecisionsAdminDisabledNotice />
+  // Not yet answered, or an older gateway: no card. A failed read is not a withdrawal
+  // and falls through to `readFailed`, which fades the card and renders the notice
+  // (AUTOSDE `errors-use-error-notice`).
   if (!governancePermits && !dashCfgQ.isError) return null
 
-  const apiKeySet = (secretsQ.data?.names ?? []).includes(DECISIONS_API_KEY_SECRET)
-  // Whether the vault index is KNOWN, as opposed to absent-by-default. Every
-  // credential control is gated on it: without a successful read the card cannot tell
-  // "no key" from "could not ask", and the two want opposite offers.
-  const apiKeyKnown = secretsQ.isSuccess && !secretsFailed
-  // A removal in flight is the other reason to hold the credential controls: the
-  // DELETE and a POST would otherwise be outstanding together, and a server free to
-  // reorder them can land the delete last and erase the key just saved.
-  const apiKeyBusy = !apiKeyKnown || secretMut.isPending || secretDelMut.isPending
   const bucket = view.bucket ?? 100
   // With no decision model chosen there is nothing to consent to sending to; the
   // gateway refuses an enabling write, and the switch says so instead of offering one.
@@ -597,9 +556,21 @@ export function DecisionsCard() {
           {i18nT('pages.developer.featurePreviewsTab.decisions_custom_loopback_no_key')}
         </p>
       )}
+      {/* A hand-written address the administrator's allow list refuses: the picker
+          cannot name it, so the refusal is said here, beside the pointer. */}
+      {view.supported && providerQ.data?.active === PROVIDER_CUSTOM && !providerPermitted(providerQ.data, PROVIDER_CUSTOM) && (
+        <p className="text-[12px] text-warn" data-testid="decisions-custom-blocked">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_custom_blocked')}
+        </p>
+      )}
       {view.supported && (
         <Suspense fallback={<div className="h-24" aria-hidden />}>
-          <DecisionsProviderPicker frozen={frozen} cardReadFailed={readFailed} consentOn={view.enabled && !view.endpointMoved} />
+          <DecisionsProviderPicker
+            frozen={frozen}
+            cardReadFailed={readFailed}
+            consentOn={view.enabled && !view.endpointMoved}
+            openHostedKey={hostedKeyTargeted}
+          />
         </Suspense>
       )}
       {/* The redirected-config state: consent stands for one address, config.json now
@@ -632,11 +603,9 @@ export function DecisionsCard() {
           )}
         />
       )}
-      {(consentMut.isError || scopeMut.isError || configMut.isError || budgetMut.isError || secretMut.isError || secretDelMut.isError) && (
-        // No hand-off: a save failure is exactly when `apiKeyDraft` holds a
-        // credential the vault has not taken yet, and asking the agent unmounts this
-        // card, so the button would offer help at the cost of the typed key. The
-        // notice states the failure and the reader retries with the draft intact.
+      {(consentMut.isError || scopeMut.isError || configMut.isError || budgetMut.isError) && (
+        // No hand-off: the budget box may hold a typed draft, and asking the agent
+        // unmounts this card. The notice states the failure and the reader retries.
         // A scope write names the switch it was about. "Could not save this setting"
         // over a card with several switches names none of them, and this notice renders
         // at the foot of the card rather than beside the control, so the label is the
@@ -663,73 +632,6 @@ export function DecisionsCard() {
             {i18nT('pages.developer.featurePreviewsTab.decisions_global')}
           </summary>
           <div id={GLOBAL_PANEL_ID} className="mt-1.5 flex flex-col gap-1">
-            {/* The credential, into the VAULT and never into config.json. Set or unset
-                is all the card can show, because the vault does not hand a value back
-                — which is the property that makes an agent-writable config safe to
-                leave naming `secret://TYPESAFE_API_KEY`. */}
-            {/* The rotate icon names the verb and not the noun, and beside a stored
-                credential those read differently -- "replace the stored key" and
-                "discard what I just typed" differ by whether work is lost -- so this
-                one passes its own label.
-
-                Removal ASKS FIRST. `cleared` stays false and the trash opens a
-                confirmation instead of writing, which is the same shape the Secrets
-                panel uses for this very vault: `cleared` drives the field's DEFERRED
-                "will be removed on save" strip, and that strip offers Undo. A vault
-                entry is not deferred and not recoverable -- the value is never handed
-                back -- so reflecting the in-flight DELETE there rendered an Undo for
-                something already done, in exactly the window a reader who reconsiders
-                would reach for it. The question goes before the write; `editing` still
-                closes while the write runs, so Save cannot appear under it. */}
-            <SecretField
-              label={i18nT('pages.developer.featurePreviewsTab.decisions_api_key_label')}
-              description={i18nT('pages.developer.featurePreviewsTab.decisions_api_key_desc')}
-              isSet={apiKeySet && apiKeyKnown}
-              preview={SECRET_PREVIEW}
-              replaceLabel={i18nT('pages.developer.featurePreviewsTab.decisions_api_key_replace')}
-              value={apiKeyDraft}
-              onChange={setApiKeyDraft}
-              editing={apiKeyEditing && !secretDelMut.isPending && !apiKeyConfirmRemove}
-              onEditingChange={setApiKeyEditing}
-              cleared={false}
-              onClearedChange={next => {
-                if (next && !apiKeyBusy) setApiKeyConfirmRemove(true)
-              }}
-              permanentRemoval={{
-                label: i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove'),
-                text: i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove'),
-                buttonRef: apiKeyRemoveRef,
-                confirmation: apiKeyConfirmRemove ? (
-                  <>
-                    <span className="text-[13px] text-warn">
-                      {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove_confirm')}
-                    </span>
-                    <Btn danger disabled={apiKeyBusy} onClick={() => secretDelMut.mutate()}>
-                      {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_delete')}
-                    </Btn>
-                    <Btn
-                      ref={apiKeyCancelRemoveRef}
-                      disabled={secretDelMut.isPending}
-                      onClick={cancelApiKeyRemove}
-                    >
-                      {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_remove_cancel')}
-                    </Btn>
-                  </>
-                ) : undefined,
-              }}
-            />
-            {apiKeyKnown && !secretDelMut.isPending && !apiKeyConfirmRemove && (!apiKeySet || apiKeyEditing) && (
-              <button
-                type="button"
-                className="self-start rounded-md border border-border bg-bg-elevated px-2 py-1 text-[12px] text-text hover:border-border-strong disabled:opacity-40"
-                // Held while EITHER write is outstanding, not just the save: a delete
-                // and a post in flight together is the shape that loses the new key.
-                disabled={!apiKeyDraft || apiKeyBusy}
-                onClick={() => secretMut.mutate(apiKeyDraft)}
-              >
-                {i18nT('pages.developer.featurePreviewsTab.decisions_api_key_save')}
-              </button>
-            )}
             {/* The sampling share. A slider because the value is a proportion a reader
                 dials rather than a number they know, and it can only ever NARROW what
                 consent already allows — which is why it is a config value at all.
@@ -1010,6 +912,27 @@ export function DecisionsCard() {
           </div>
         </div>
       )}
+    </SettingsCard>
+  )
+}
+
+/**
+ * What the card draws when the administrator turned decision models off: its name
+ * and one plain sentence, no switch and no picker. `role="status"` because it is a
+ * fact about this machine, announced once, not an error to act on.
+ */
+function DecisionsAdminDisabledNotice() {
+  return (
+    <SettingsCard>
+      <div className="flex flex-col gap-1" role="status" data-testid="decisions-admin-disabled">
+        <p className="m-0 text-[13px] font-semibold text-text">
+          {i18nT('pages.developer.featurePreviewsTab.decisions')}
+        </p>
+        <p className="m-0 flex items-start gap-1.5 text-[12px] text-text">
+          <ShieldOff size={13} className="mt-0.5 flex-none" aria-hidden="true" />
+          <span>{i18nT('pages.developer.featurePreviewsTab.decisions_admin_disabled')}</span>
+        </p>
+      </div>
     </SettingsCard>
   )
 }
