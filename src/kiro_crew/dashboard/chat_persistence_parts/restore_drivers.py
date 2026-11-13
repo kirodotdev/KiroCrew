@@ -42,6 +42,7 @@ if TYPE_CHECKING:
         _sanitize_open_slot_key,
         _sync_dashboard_slots,
         _transcripts_may_be_remote_only,
+        _window_tail,
         crew_bound_on_disk,
         effective_session_key,
         foreground_slot_keys,
@@ -227,7 +228,11 @@ def _prefetch_open_slot_inputs(
                 )
     return (
         *_prefetch_rehydrate_inputs(
-            conv_log, history_key, kiro_model_map=kiro_model_map, with_status=True
+            conv_log,
+            history_key,
+            kiro_model_map=kiro_model_map,
+            with_status=True,
+            tail_window_above=_window_tail.TAIL_WINDOW_THRESHOLD_BYTES,
         ),
         None,
     )

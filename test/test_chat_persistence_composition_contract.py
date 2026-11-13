@@ -416,7 +416,7 @@ _SIGNATURES: dict[str, str] = {
     "_on_config_change": "(change: 'object') -> 'None'",
     "_pin_private_agent_assignment": "(session_key: 'str', agent: 'str', config: 'KiroCrewConfig', *, conversation_log=None, native_context: 'bool' = False, authorized_store: 'str | None' = None, memory_mode: 'str' = 'persistent', validate_only: 'bool' = False) -> 'str'",
     "_prefetch_recent_session": "(conv_log: 'ConversationLog', key: 'str', session: 'dict', *, folders_only: 'bool', cutoff: 'float | None', row_tail: 'Callable[[ConversationLog, str, dict, str, tuple[str, str] | None], list[dict] | None] | None' = None) -> 'tuple[dict | None, list[dict] | None, tuple[str, str] | None, str | None, bool, list[dict] | None]'",
-    "_prefetch_rehydrate_inputs": "(conv_log: 'ConversationLog', history_key: 'str', *, adopt_closed: 'bool' = False, kiro_model_map: 'dict[str, str] | None' = None, with_status: 'bool' = False) -> 'tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool]'",
+    "_prefetch_rehydrate_inputs": "(conv_log: 'ConversationLog', history_key: 'str', *, adopt_closed: 'bool' = False, kiro_model_map: 'dict[str, str] | None' = None, with_status: 'bool' = False, tail_window_above: 'int | None' = None) -> 'tuple[dict, bool, list[dict] | None, dict[str, str] | None, tuple[str, str] | None, str | None, bool]'",
     "_queue_snapshot_is_stale": "(slot: '_ChatSlot', queue_write_basis: 'str') -> 'bool'",
     "_read_mcp_app_claims": "(session_key: 'str') -> 'list[set[str]]'",
     "_read_open_slots_keys": "() -> 'list[object]'",

@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, NamedTuple
 from kiro_crew.dashboard.state import _TRANSIENT_ROLES
 
 if TYPE_CHECKING:
-    from pathlib import Path
 
     from kiro_crew.history import ConversationLog
 
@@ -36,6 +35,10 @@ _TRANSIENT_ROLE = re.compile(
 )
 
 
+#: A fully read tab whose transcript chain is larger than this loads only its newest window.
+TAIL_WINDOW_THRESHOLD_BYTES = 16 * 1024 * 1024
+
+
 class WindowTail(NamedTuple):
     """The newest *rows* of a transcript of *total* rows, *older_durable* of the older ones durable."""
 
@@ -44,18 +47,28 @@ class WindowTail(NamedTuple):
     older_durable: int
 
 
-def _may_hold_transient_rows(path: Path) -> bool:
-    """Whether *path* may hold a row with a transient role. BLOCKING."""
+def _may_hold_transient_rows(conv_log: ConversationLog, key: str) -> bool:
+    """Whether *key*'s file may hold a row with a transient role. BLOCKING.
+
+    Searches only the bytes past the prefix the page-index sidecar already proved
+    clear, and records the new clear prefix when the search finds none.
+    """
+    path = conv_log._path(key)
+    start = conv_log._read_projection.transient_free_prefix(key)
     try:
         with open(path, "rb") as handle:
-            if handle.seek(0, 2) == 0:
+            size = handle.seek(0, 2)
+            if size == 0:
                 return False
             with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as view:
-                return _TRANSIENT_ROLE.search(view) is not None  # type: ignore[call-overload]
+                if _TRANSIENT_ROLE.search(view, start) is not None:  # type: ignore[call-overload]
+                    return True
     except FileNotFoundError:
         return False
     except (OSError, ValueError):
         return True
+    conv_log._read_projection.mark_transient_free(key, size)
+    return False
 
 
 def read_row_page(
@@ -72,7 +85,7 @@ def read_row_page(
     """
     try:
         keys = conv_log.chained_keys(key) or [key]
-        if any(_may_hold_transient_rows(conv_log._path(k)) for k in keys):
+        if any(_may_hold_transient_rows(conv_log, k) for k in keys):
             return None
         probe = conv_log.read_messages_chained_page(key, limit=0)
         end = probe.total if before is None else max(0, min(before, probe.total))
@@ -97,12 +110,20 @@ def read_window_tail(conv_log: ConversationLog, key: str, window: int) -> Window
     """
     try:
         keys = conv_log.chained_keys(key) or [key]
-        if any(_may_hold_transient_rows(conv_log._path(k)) for k in keys):
-            return None
         page = conv_log.read_messages_chained_page(key, limit=window)
+        if any(_may_hold_transient_rows(conv_log, k) for k in keys):
+            return None
     except Exception:  # noqa: BLE001 -- the full read is the authority; let it answer
         return None
     older = page.total - len(page.messages)
     if older < 0:
         return None
     return WindowTail(page.messages, page.total, older)
+
+
+def chain_bytes(conv_log: ConversationLog, key: str) -> int:
+    """The summed size of *key*'s chained transcript files; ``0`` when unreadable. BLOCKING."""
+    try:
+        return sum(conv_log._path(k).stat().st_size for k in conv_log.chained_keys(key) or [key])
+    except OSError:
+        return 0
