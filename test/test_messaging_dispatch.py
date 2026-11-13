@@ -686,9 +686,10 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
     def test_a_hung_reset_does_not_hold_the_repair(self, monkeypatch) -> None:
         """Every guest turn is refused while a repair runs, so a reset that never
         returns is abandoned after its bound and the repair still finishes."""
+        from kiro_crew.agent_materialization import service_agents
         from kiro_crew.messaging import dispatch_tools
 
-        monkeypatch.setattr(dispatch_tools, "_GUEST_RESET_TIMEOUT_SECS", 0)
+        monkeypatch.setattr(service_agents, "_SPEC_REPAIR_RESET_TIMEOUT_SECS", 0)
         self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
         sessions = self._Sessions({self._KEY: D.TOOLLESS_TURN_AGENT})
 
@@ -712,9 +713,10 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
         not vouch for it: that provider is refused and reset, a fresh one is not."""
         import pytest
 
+        from kiro_crew.agent_materialization import service_agents
         from kiro_crew.messaging import dispatch_tools
 
-        monkeypatch.setattr(dispatch_tools, "_GUEST_RESET_TIMEOUT_SECS", 0)
+        monkeypatch.setattr(service_agents, "_SPEC_REPAIR_RESET_TIMEOUT_SECS", 0)
         monkeypatch.setattr(dispatch_tools, "_guest_resets_failed", {})
         rows = self._sel_rows(monkeypatch)
         self._tamper(mcpServers={"creds-agent": {"command": "creds"}})
@@ -888,8 +890,10 @@ class TestToollessTurnReadsTheGuestSpecOnDisk:
 
 class TestBackgroundTurnRefusesATooledLiteSpec:
     """A ``kirocrew-lite`` turn runs only on a spec that mounts nothing, on every
-    turn; otherwise the session is reset and released and the acquire fails, so
-    the caller reads it as nothing sent."""
+    turn. A ``kirocrew-lite.json`` that mounts something is rewritten from its
+    template before the spawn; one that still mounts something is refused, its
+    session reset and released, and the acquire fails, so the caller reads it as
+    nothing sent."""
 
     @staticmethod
     def _install_lite(monkeypatch) -> Path:
@@ -908,6 +912,7 @@ class TestBackgroundTurnRefusesATooledLiteSpec:
             self.provider = provider
             self.new = new
             self.calls: list[str] = []
+            self.reset_keys: list[str] = []
 
         async def get_or_create(self, _key: str, **_kw: Any):
             self.calls.append("get_or_create")
@@ -916,8 +921,12 @@ class TestBackgroundTurnRefusesATooledLiteSpec:
         def get_agent(self, _key: str) -> str:
             return "kirocrew-lite"
 
-        async def reset(self, _key: str, **_kw: Any) -> None:
+        def get_provider(self, _key: str) -> Any:
+            return self.provider
+
+        async def reset(self, key: str, **_kw: Any) -> None:
             self.calls.append("reset")
+            self.reset_keys.append(key)
 
         def release(self, _key: str) -> None:
             self.calls.append("release")
@@ -933,28 +942,348 @@ class TestBackgroundTurnRefusesATooledLiteSpec:
         client._native_skill_projection = None
         return SimpleNamespace(client=client, last_prompt_stats=None)
 
-    async def _run(self, sessions: Any) -> bool:
+    async def _run(self, sessions: Any, session_key: str | None = None) -> bool:
         from unittest.mock import patch
 
         from kiro_crew.llm_helpers import background_turn
 
         with patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async"):
-            async with background_turn(sessions, task="t", agent="kirocrew-lite"):
+            async with background_turn(
+                sessions, task="t", agent="kirocrew-lite", session_key=session_key
+            ):
                 return True
 
+    @staticmethod
+    def _decline_repair(monkeypatch) -> None:
+        """Fail the pre-spawn rewrite the way a data home that does not own the
+        agents directory does, so a tooled spec stays tooled."""
+        from kiro_crew import agent as agent_module
+        from kiro_crew.agent_materialization import auto_approve
+
+        def refuse(*_a: Any, **_k: Any) -> None:
+            raise agent_module.SharedAgentHomeRefused("this data home does not own it")
+
+        monkeypatch.setattr(auto_approve, "write_governed_spec", refuse)
+
     def _tamper(self, monkeypatch, **changes: Any) -> None:
+        """Install the lite spec, apply *changes*, and decline its repair."""
         import json
 
         path = self._install_lite(monkeypatch)
         spec = json.loads(path.read_text())
         spec.update(changes)
         path.write_text(json.dumps(spec))
+        self._decline_repair(monkeypatch)
 
     def test_the_template_spec_runs(self, monkeypatch) -> None:
         self._install_lite(monkeypatch)
         sessions = self._Sessions(self._provider(), new=True)
         assert asyncio.run(self._run(sessions)) is True
         assert "reset" not in sessions.calls
+
+    def test_an_injected_server_is_rewritten_away_and_the_next_turn_runs(self, monkeypatch) -> None:
+        """A tool that writes its own server into every spec in the agents
+        directory: the file is put back to its template. With no projection the
+        check only re-reads that file, so the turn right after the rewrite, whose
+        session may have started on the old file, is refused and reset; the next
+        turn starts."""
+        import json
+
+        import pytest
+
+        path = self._install_lite(monkeypatch)
+        template = json.loads(path.read_text())
+        injected = {
+            **template,
+            "tools": ["@creds-agent"],
+            "allowedTools": ["@creds-agent"],
+            "mcpServers": {"creds-agent": {"command": "creds", "args": ["mcp", "start-server"]}},
+            "permissions": {
+                "rules": [{"capability": "mcp", "match": ["creds-agent/*"], "effect": "allow"}]
+            },
+            "toolsSettings": {},
+        }
+        path.write_text(json.dumps(injected))
+        warm = self._Sessions(self._provider(), new=False)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(warm))
+        assert warm.calls == ["reset", "reset", "get_or_create", "reset", "release"]
+        assert warm.reset_keys == ["_bg", "_consolidate", "_bg"]
+        assert json.loads(path.read_text()) == template
+        sessions = self._Sessions(self._provider(), new=True)
+        assert asyncio.run(self._run(sessions)) is True
+        assert "reset" not in sessions.calls
+
+    @pytest.mark.parametrize("turn_key", ["_bg", "_consolidate", "memory-consolidation:x"])
+    def test_a_rewrite_resets_both_background_sessions(self, monkeypatch, turn_key: str) -> None:
+        """``_bg`` and ``_consolidate`` outlive a turn and can start without the
+        pre-spawn read, so a rewrite made during any turn resets both, then the
+        turn's own refusal resets the turn's session."""
+        import json
+
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        path.write_text(json.dumps({**spec, "mcpServers": {"creds-agent": {"command": "creds"}}}))
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions, session_key=turn_key))
+        assert sessions.reset_keys == ["_bg", "_consolidate", turn_key]
+        assert json.loads(path.read_text()) == spec
+
+    def test_a_turn_reading_the_file_while_a_rewrite_resets_is_refused(self, monkeypatch) -> None:
+        """A second ``_bg`` turn whose pre-spawn read sees the rewritten file before
+        the rewrite has reset the sessions that loaded the old one cannot vouch for
+        the warm session it would take, so it is refused and never yields."""
+        import json
+
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        path.write_text(json.dumps({**spec, "mcpServers": {"creds-agent": {"command": "creds"}}}))
+        sessions = self._Sessions(self._provider(), new=False)
+        second: list[str] = []
+        reset = sessions.reset
+
+        async def _reset_during_a_second_turn(key: str, **kw: Any) -> None:
+            if not second:
+                second.append(key)
+                try:
+                    second.append("yielded" if await self._run(sessions) else "")
+                except RuntimeError as exc:
+                    second.append(str(exc))
+            await reset(key, **kw)
+
+        sessions.reset = _reset_during_a_second_turn  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert json.loads(path.read_text()) == spec
+        assert len(second) == 2 and "not acquired" in second[1], second
+
+    def test_a_rewrite_begun_after_the_pre_spawn_read_voids_it(self, monkeypatch) -> None:
+        """The pre-spawn read saw the template; the server was injected, the session
+        started on it, and another turn rewrote the file before the read after the
+        start. That read then sees the template, so it cannot vouch either."""
+        import json
+
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        sessions = self._Sessions(self._provider(), new=True)
+        other: list[str] = []
+        get_or_create = sessions.get_or_create
+
+        async def _injected_and_rewritten_during_spawn(key: str, **kw: Any):
+            if not other:
+                other.append(key)
+                path.write_text(json.dumps({**spec, "mcpServers": {"c": {"command": "creds"}}}))
+                try:
+                    await self._run(sessions, session_key="_consolidate")
+                except RuntimeError as exc:
+                    other.append(str(exc))
+            return await get_or_create(key, **kw)
+
+        sessions.get_or_create = _injected_and_rewritten_during_spawn  # type: ignore[method-assign]
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert json.loads(path.read_text()) == spec, "the other turn rewrote it"
+        assert len(other) == 2 and "not acquired" in other[1], other
+
+    def test_a_cancelled_turn_still_finishes_its_rewrite_resets(self, monkeypatch) -> None:
+        """A turn cancelled while its rewrite resets the first session leaves the
+        rewrite running: the second session is still reset, and only then does a
+        later turn's pre-spawn read vouch again."""
+        import json
+
+        from kiro_crew import llm_helpers
+
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        path.write_text(json.dumps({**spec, "mcpServers": {"creds-agent": {"command": "creds"}}}))
+        sessions = self._Sessions(self._provider(), new=True)
+        reset = sessions.reset
+        monkeypatch.setattr(llm_helpers, "_lite_rewrites", {"begun": 0, "running": 0})
+
+        async def main() -> list[int]:
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def _held_reset(key: str, **kw: Any) -> None:
+                entered.set()
+                await release.wait()
+                await reset(key, **kw)
+
+            sessions.reset = _held_reset  # type: ignore[method-assign]
+            turn = asyncio.ensure_future(self._run(sessions))
+            await entered.wait()
+            turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
+            seen = [llm_helpers._lite_rewrites["running"]]
+            release.set()
+            await asyncio.gather(*llm_helpers._lite_rewrite_tasks)
+            return [*seen, llm_helpers._lite_rewrites["running"]]
+
+        assert asyncio.run(asyncio.wait_for(main(), FALLBACK_TIMEOUT_SECS)) == [1, 0]
+        assert sessions.reset_keys == ["_bg", "_consolidate"]
+        assert json.loads(path.read_text()) == spec
+
+    def test_a_hung_reset_does_not_hold_the_rewrite(self, monkeypatch) -> None:
+        """No background turn is vouched for while a rewrite runs, so a reset of
+        ``_bg`` or ``_consolidate`` that never returns is abandoned after its bound:
+        the turn that triggered the rewrite is refused, the rewrite finishes, and a
+        later ``_bg`` turn runs."""
+        import json
+
+        from kiro_crew import llm_helpers
+        from kiro_crew.agent_materialization import service_agents
+
+        monkeypatch.setattr(service_agents, "_SPEC_REPAIR_RESET_TIMEOUT_SECS", 0)
+        monkeypatch.setattr(llm_helpers, "_lite_rewrites", {"begun": 0, "running": 0})
+        monkeypatch.setattr(llm_helpers, "_lite_resets_failed", {})
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        path.write_text(json.dumps({**spec, "mcpServers": {"creds-agent": {"command": "creds"}}}))
+        sessions = self._Sessions(self._provider(), new=True)
+        reset = sessions.reset
+
+        async def _repair_resets_hang(key: str, **kw: Any) -> None:
+            if "get_or_create" not in sessions.calls:
+                await asyncio.Event().wait()
+            await reset(key, **kw)
+
+        sessions.reset = _repair_resets_hang  # type: ignore[method-assign]
+
+        async def _turn() -> bool:
+            return await asyncio.wait_for(self._run(sessions), FALLBACK_TIMEOUT_SECS)
+
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(_turn())
+        assert llm_helpers._lite_rewrites["running"] == 0
+        assert json.loads(path.read_text()) == spec
+        assert asyncio.run(_turn()) is True
+
+    def test_a_turn_cancelled_in_its_check_after_a_repair_leaves_its_session_refused(
+        self, monkeypatch
+    ) -> None:
+        """A ``_consolidate`` cold start in flight across a repair registers after the
+        repair's resets. Cancelled inside the check after its start, that turn vouched
+        for nothing, so the next turn on the session is refused and resets it although
+        the file, the counts and its own pre-spawn read are clean; the turn after runs."""
+        import json
+
+        from kiro_crew import llm_helpers
+
+        monkeypatch.setattr(llm_helpers, "_lite_rewrites", {"begun": 0, "running": 0})
+        monkeypatch.setattr(llm_helpers, "_lite_resets_failed", {})
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        sessions = self._Sessions(self._provider(), new=True)
+        get_or_create = sessions.get_or_create
+        check = llm_helpers._lite_spec_unconfirmed
+        repair_turn: list[str] = []
+
+        async def _repaired_during_spawn(key: str, **kw: Any):
+            if not repair_turn:
+                repair_turn.append(key)
+                path.write_text(json.dumps({**spec, "mcpServers": {"c": {"command": "creds"}}}))
+                try:
+                    await self._run(sessions, session_key="_bg")
+                except RuntimeError as exc:
+                    repair_turn.append(str(exc))
+            return await get_or_create(key, **kw)
+
+        async def main() -> list[str]:
+            in_check = asyncio.Event()
+
+            async def _held_in_check(sessions_: Any, key: str, client: Any, **kw: Any) -> bool:
+                if key == "_consolidate" and kw["authored_before_spawn"] is False:
+                    in_check.set()
+                    await asyncio.Event().wait()
+                return await check(sessions_, key, client, **kw)
+
+            monkeypatch.setattr(llm_helpers, "_lite_spec_unconfirmed", _held_in_check)
+            sessions.get_or_create = _repaired_during_spawn  # type: ignore[method-assign]
+            turn = asyncio.ensure_future(self._run(sessions, session_key="_consolidate"))
+            await in_check.wait()
+            turn.cancel()
+            (cancelled,) = await asyncio.gather(turn, return_exceptions=True)
+            sessions.get_or_create = get_or_create  # type: ignore[method-assign]
+            outcomes = [type(cancelled).__name__]
+            for _ in range(2):
+                try:
+                    outcomes.append("ran" if await self._run(sessions, "_consolidate") else "")
+                except RuntimeError as exc:
+                    outcomes.append(str(exc))
+            return outcomes
+
+        outcomes = asyncio.run(asyncio.wait_for(main(), FALLBACK_TIMEOUT_SECS))
+        assert len(repair_turn) == 2 and "not acquired" in repair_turn[1], repair_turn
+        assert json.loads(path.read_text()) == spec
+        assert outcomes[0] == "CancelledError"
+        assert "not acquired" in outcomes[1], outcomes
+        assert sessions.reset_keys[-1] == "_consolidate", "the unvouched session is reset"
+        assert outcomes[2] == "ran", "a reset that returned forgets it"
+        assert llm_helpers._lite_resets_failed == {}
+
+    @pytest.mark.parametrize("failing", ["repair", "refusal"])
+    def test_a_session_a_failed_reset_left_registered_stays_refused(
+        self, monkeypatch, failing: str
+    ) -> None:
+        """A reset that raised, the repair's or a refusal's, left the process that may
+        have loaded the injected server registered: the next turn on it is refused
+        although the file reads clean, and once a reset returns the turn after runs."""
+        import json
+
+        from kiro_crew import llm_helpers
+
+        monkeypatch.setattr(llm_helpers, "_lite_rewrites", {"begun": 0, "running": 0})
+        monkeypatch.setattr(llm_helpers, "_lite_resets_failed", {})
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        injected = {**spec, "mcpServers": {"c": {"command": "creds"}}}
+        sessions = self._Sessions(self._provider(), new=True)
+        reset, get_or_create = sessions.reset, sessions.get_or_create
+        failed: list[str] = []
+
+        async def _consolidate_reset_fails_once(key: str, **kw: Any) -> None:
+            if key == "_consolidate" and not failed:
+                failed.append(key)
+                raise RuntimeError("reset failed before it took the session out")
+            await reset(key, **kw)
+
+        async def _injected_during_spawn(key: str, **kw: Any):
+            path.write_text(json.dumps(injected))
+            return await get_or_create(key, **kw)
+
+        sessions.reset = _consolidate_reset_fails_once  # type: ignore[method-assign]
+        if failing == "repair":
+            path.write_text(json.dumps(injected))
+            with pytest.raises(RuntimeError, match="not acquired"):
+                asyncio.run(self._run(sessions, session_key="_bg"))
+        else:
+            sessions.get_or_create = _injected_during_spawn  # type: ignore[method-assign]
+            with pytest.raises(RuntimeError, match="not acquired"):
+                asyncio.run(self._run(sessions, session_key="_consolidate"))
+            sessions.get_or_create = get_or_create  # type: ignore[method-assign]
+            path.write_text(json.dumps(spec))
+        assert failed == ["_consolidate"]
+        assert json.loads(path.read_text()) == spec
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions, session_key="_consolidate"))
+        assert sessions.reset_keys[-1] == "_consolidate"
+        assert asyncio.run(self._run(sessions, session_key="_consolidate")) is True
+
+    def test_the_read_after_the_rewrite_still_decides(self, monkeypatch) -> None:
+        """A rewrite the file does not keep (another writer puts its server back
+        at once) is refused before the session starts, as with no repair."""
+        import json
+
+        from kiro_crew import agent as agent_module
+
+        path = self._install_lite(monkeypatch)
+        spec = json.loads(path.read_text())
+        path.write_text(json.dumps({**spec, "mcpServers": {"creds-agent": {"command": "creds"}}}))
+        monkeypatch.setattr(agent_module, "repair_lite_agent_spec", lambda: True)
+        sessions = self._Sessions(self._provider(), new=True)
+        with pytest.raises(RuntimeError, match="not acquired"):
+            asyncio.run(self._run(sessions))
+        assert "get_or_create" not in sessions.calls
 
     def test_a_tooled_spec_on_a_cold_start_is_refused(self, monkeypatch) -> None:
         import pytest
@@ -998,6 +1327,7 @@ class TestBackgroundTurnRefusesATooledLiteSpec:
 
         path = self._install_lite(monkeypatch)
         os.link(path, path.with_name("lite-hardlink.json.bak"))
+        self._decline_repair(monkeypatch)
         sessions = self._Sessions(self._provider(), new=True)
         with pytest.raises(RuntimeError, match="not acquired"):
             asyncio.run(self._run(sessions))
@@ -1026,6 +1356,7 @@ class TestBackgroundTurnRefusesATooledLiteSpec:
         with pytest.raises(RuntimeError, match="not acquired"):
             asyncio.run(self._run(sessions))
         assert sessions.calls == []
+        assert not (agents / agent_module._LITE_AGENT_FILENAME).exists(), "no third claimant"
 
     def test_a_missing_lite_spec_is_left_to_the_post_start_check(self) -> None:
         from kiro_crew.agent_sdk.agent_specs import authored_spec_toolless_verdict
@@ -1041,6 +1372,7 @@ class TestBackgroundTurnRefusesATooledLiteSpec:
             raise asyncio.CancelledError
 
         monkeypatch.setattr(llm_helpers, "_lite_spec_unconfirmed", _cancelled)
+        monkeypatch.setattr(llm_helpers, "_lite_resets_failed", {})
         self._install_lite(monkeypatch)
         sessions = self._Sessions(self._provider(), new=True)
         with pytest.raises(asyncio.CancelledError):
