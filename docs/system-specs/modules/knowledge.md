@@ -342,7 +342,11 @@ lets the second add delete the first document's items. It routes
 through `IngestionPipeline.ingest_file` — one ingestion path — and content and title are
 redacted before they cross into the store. Adds are serialised by a module lock, because
 new items are attributed to a document by diffing the source's item ids around the
-ingest.
+ingest. A document over `knowledge.max_ingest_file_mb` is refused as `status: error`
+(`POST /api/knowledge/agent-document` answers 400 `document_rejected`) carrying the
+pipeline's size message: nothing is stored, its intent marker is cleared (kept while an
+earlier attempt's orphans remain), and the pipeline's WARNING is its only application-log
+record.
 
 **The Auto-added row has nothing to sync.** Kiro Crew fetches nothing for it: its
 documents arrive only when the agent submits text. Its uri `agent://` is a control uri,

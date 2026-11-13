@@ -7,6 +7,7 @@ covers every write path, and the per-sweep chunk budget.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -26,7 +27,11 @@ from kiro_crew.knowledge.agent_source import (
     set_state,
 )
 from kiro_crew.knowledge.folder_watcher import FolderWatcher
-from kiro_crew.knowledge.ingestion import DUPLICATE_JOB_STATUS, IngestionPipeline
+from kiro_crew.knowledge.ingestion import (
+    DUPLICATE_JOB_STATUS,
+    FileTooLargeError,
+    IngestionPipeline,
+)
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -173,6 +178,36 @@ class TestAddDocument:
         assert res["status"] == "deferred"
         assert "import_chunk_budget" in res["reason"]
         assert res["reason"].isascii()
+
+    @pytest.mark.asyncio
+    async def test_add_refuses_an_oversized_document_as_error(
+            self, pipeline, kstore, caplog):
+        # A document over knowledge.max_ingest_file_mb is the caller's refused
+        # document (the route's 400 document_rejected), not a gateway fault: the
+        # pipeline's one WARNING is the whole log story, nothing is stored, and
+        # this attempt's intent marker is cleared.
+        from unittest.mock import patch
+        caplog.set_level(logging.WARNING)
+        with patch("kiro_crew.knowledge.ingestion._max_ingest_file_mb",
+                   return_value=0.001):
+            try:
+                res = await add_agent_document(
+                    pipeline, title="Big", content="x" * 4096,
+                    source_uri="test://Big")
+            except FileTooLargeError as exc:
+                pytest.fail(f"the size refusal escaped add_agent_document: {exc}")
+        assert res["status"] == "error"
+        assert "knowledge.max_ingest_file_mb" in res["error"]
+        source_id, _ = ensure_agent_source(kstore)
+        for table in ("agent_ingest_intent", "agent_item_state"):
+            assert kstore.db.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE source_id = ?",
+                (source_id,)).fetchone()[0] == 0, table
+        assert _items(kstore, source_id) == []
+        assert any(r.levelno == logging.WARNING
+                   and "Skipping oversized file" in r.getMessage()
+                   for r in caplog.records)
+        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
 
     @pytest.mark.asyncio
     async def test_second_identical_add_ingests_once(self, pipeline, kstore):
