@@ -1722,11 +1722,65 @@ notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
 [`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), level 6
 adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`),
 and level 7 adds the manifest's `agentReadOnlyDirs` (see
-[manifest-reference.md](manifest-reference.md#agent-read-only-directories)); each level
+[manifest-reference.md](manifest-reference.md#agent-read-only-directories)) and the
+[backend SDK](#backend-sdk-kiro_crewappsbackend_sdk); each level
 includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
+
+### Backend SDK (`kiro_crew.apps.backend_sdk`)
+
+The host controls your backend's own Python may call when no `ctx` seam fits: a
+sensitive-path check, a no-follow read, an atomic write, outbound redaction, an audit
+row, a sandboxed child process and the cross-platform process and lock helpers. Each
+name calls the control the Gateway itself enforces, so a check tightened in a later
+release reaches your app with the upgrade. Use these instead of a private `kiro_crew`
+name: a private name moves between releases, and these do not.
+
+It works the same in a hooks backend (in the Gateway process) and in an `entryPoint`
+backend the Gateway spawns on its own interpreter. A backend on its own venv
+interpreter cannot import it. Feature-detect it, and keep your own refusal when it is
+absent or older than level 7:
+
+```python
+import importlib
+
+def backend_sdk():
+    try:
+        sdk = importlib.import_module("kiro_crew.apps.backend_sdk")
+    except ImportError:
+        return None
+    return sdk if getattr(sdk, "SDK_LEVEL", 0) >= 7 else None
+
+def read_attachment(path: str, root: str) -> bytes | None:
+    sdk = backend_sdk()
+    if sdk is None or sdk.is_sensitive_path(path):
+        return None  # no gate to ask, or the gate refused: do not read it
+    return sdk.read_bytes_nofollow(path, within_root=root, max_bytes=5_000_000)
+```
+
+| Name | What it does |
+|---|---|
+| `is_sensitive_path(path)` | `True` when `path` is inside a location the Gateway never reads or writes (credential homes, its own policy files). Refuse on `True`. |
+| `contains_sensitive_path(directory)` | `True` when such a location lies under `directory`. Check it before a bulk operation rooted there (`git add -A`, an archive, a recursive copy). |
+| `read_bytes_nofollow(path, *, within_root=None, max_bytes=None, within_root_is_canonical=False)` | The file's bytes, or `None` when refused: a link at the last component, a hardlinked or non-regular file, a sensitive path, or a file whose opened descriptor resolves outside `within_root`. Raises `FileTooLargeError` past `max_bytes`. |
+| `atomic_write(path, content, *, fsync=False, mode=None, newline=None, restrict_to_owner=False)` | Writes through a temp file and one rename, so a reader never sees a torn file. `restrict_to_owner=True` makes the file owner-only on every platform. |
+| `ensure_owner_only_dir(path)` | `mkdir -p`, owner-only (`0700`) inside the data home and a plain `mkdir -p` elsewhere. |
+| `scrub_outbound(text)` | The same pass as [`ctx.scrub.outbound`](#content-scrubbing-ctxscrub), with the same rules: send only `.text`, and do not send when it raises. |
+| `audit_log(app_name=None)` | The same writer as [`ctx.audit`](#audit-events-ctxaudit). Without a name it uses `KIROCREW_APP_NAME`, which a spawned backend always has; with neither it raises `LookupError`. `record(...)` never raises. |
+| `run_sandboxed(argv, *, mode="standard", env=None, strip_python_env=False, **run_kwargs)` | Runs `argv` to completion in the Gateway's OS sandbox, with its resource limits and a scrubbed environment, and returns a `subprocess.CompletedProcess`. `run_kwargs` are the `subprocess.run` keywords that shape stdio, the working directory and the result (`input`, `capture_output`, `timeout`, `check`, `cwd`, `stdin`, `stdout`, `stderr`, `text`, `encoding`, `errors`, `universal_newlines`, `bufsize`); any other keyword raises `TypeError` and starts nothing. Past `timeout` the child is killed (its whole tree on Windows), but a POSIX descendant that outlives it is not: use `run_sandboxed_async` for a child that leaves work running in the background. `mode` is `"standard"` or `"strict"`; anything else raises `ValueError`. Raises `SandboxUnavailableError` when the host cannot sandbox the child, and then no child starts. |
+| `run_sandboxed_async(argv, *, mode="standard", env=None, strip_python_env=False, input=None, timeout=None, cwd=None)` | The same for an event loop, with stdout and stderr captured as bytes. The child starts in its own process group, so past `timeout`, or on a cancel, the child and its descendants are killed, a descendant that outlived the child included (one that called `setsid()` is outside the group), and `subprocess.TimeoutExpired` (or the cancel) is raised. |
+| `sandboxed_argv(...)`, `sandboxed_argv_async(...)` | Only the preparation, `(argv, env, cleanup)`, for a child whose output you stream yourself. Run that argv with that env, and delete `cleanup`, when it is not `None`, after the child exits. |
+| `kill_and_reap(proc, *, timeout=None)` | Kills a child and its descendants and waits for it, for a `communicate()` you abandoned on a timeout or a cancel. On POSIX the descendants are reached through the child's own process group, so start it with `start_new_session=True`; a descendant that outlives an already-reaped child is not reached. `run_sandboxed_async` covers that case itself. |
+| `is_link_or_junction(path)`, `first_linked_ancestor(path)` | A symlink (or Windows junction) at `path`, or the first linked ancestor above it. |
+| `rmtree_force(path)` | Removes a tree, read-only files included; `True` when it is gone. Never raises. |
+| `file_lock(fd, *, exclusive=True, required=False, wait=True, timeout=None)` | An advisory lock for a `with` block. It raises rather than run the block unlocked, so call it from a worker thread when it may wait. |
+| `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_POSIX` | The platform flags. |
+
+The sandbox has no option to show a hidden directory or open a sealed one for
+writing: those choices are the Gateway's. None of these names needs a permission,
+because none of them adds reach. Your manifest declares nothing for them.
 
 ### Lessons
 

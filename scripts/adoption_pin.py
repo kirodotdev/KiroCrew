@@ -41,6 +41,7 @@ from typing import Any
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT / "src"))
 
+from kiro_crew.apps import backend_sdk  # noqa: E402
 from kiro_crew.apps import builtin_adoption_fetch as fetch  # noqa: E402
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL  # noqa: E402
 from kiro_crew.apps.builtin_adoption_checks import pinned_tree_refusal  # noqa: E402
@@ -71,6 +72,14 @@ _CONTEXT_NAME = re.compile(r"ctx|context", re.IGNORECASE)
 
 #: The text form, for a source file this interpreter cannot parse.
 _SEAM_TEXT = re.compile(r"[.\"'](%s)\b" % "|".join(_CONTEXT_SEAMS))
+
+#: The public backend SDK package and the level that publishes it (app-kit-platform.md
+#: §40). An app reaches it by a dotted import, a ``from kiro_crew.apps import
+#: backend_sdk``, an attribute of an imported parent or a string lookup, so a file
+#: that names both the root package and the package's own name counts, in any form.
+_BACKEND_SDK_MODULE = backend_sdk.__name__
+_BACKEND_SDK_ROOT = _BACKEND_SDK_MODULE.split(".", 1)[0]
+_BACKEND_SDK_LEAF = re.compile(r"\b%s\b" % re.escape(_BACKEND_SDK_MODULE.rsplit(".", 1)[1]))
 
 #: Directories a backend never imports from, so a test fake's ``ctx.turns`` is no use.
 _UNSCANNED_DIRS = frozenset({"tests", "test", "node_modules", ".git"})
@@ -118,10 +127,10 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
 
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
     ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
-    ``agentReadOnlyDirs`` at level 7) and the
-    context seams any non-test ``.py`` file reaches. A miss lets a pin adopt on a
-    host without the seam, so the scan errs wide: a false hit only asks for a
-    higher ``--min-sdk-level``.
+    ``agentReadOnlyDirs`` at level 7), the context seams any non-test ``.py`` file
+    reaches, and the backend SDK package (level 7) any of them names. A miss lets a
+    pin adopt on a host without the seam, so the scan errs wide: a false hit only
+    asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -147,6 +156,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
             source = path.read_text(encoding="utf-8", errors="replace")
             for seam in _source_seams(source):
                 uses.setdefault(f"ctx.{seam}", _CONTEXT_SEAMS[seam])
+            if _BACKEND_SDK_ROOT in source and _BACKEND_SDK_LEAF.search(source):
+                uses.setdefault(_BACKEND_SDK_MODULE, backend_sdk.BACKEND_SDK_LEVEL)
     return uses
 
 
