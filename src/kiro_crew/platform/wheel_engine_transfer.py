@@ -163,7 +163,8 @@ def _read_bounded(
         _raise_if_cancelled(cancel)
         if time.monotonic() >= deadline:
             raise WheelUpdateError(f"{url} did not finish within {total_secs:.0f}s") from exc
-        raise WheelUpdateError(f"could not fetch {url}: {exc}") from exc
+        why = asset_downloader.network_failure_cause(exc) or exc
+        raise WheelUpdateError(f"could not fetch {url}: {why}") from exc
     finally:
         if undo is not None:
             undo()

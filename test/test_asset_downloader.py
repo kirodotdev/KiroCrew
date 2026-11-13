@@ -438,6 +438,22 @@ class TestRedaction:
         assert type(exc).__name__ in reason
         assert "mirror.example" in reason
 
+    def test_an_unreachable_host_is_named_with_the_cause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _open(request, timeout=None):  # noqa: ANN001 - OpenerDirector.open signature
+            raise urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+
+        monkeypatch.setattr(
+            "kiro_crew.asset_downloader.build_opener",
+            lambda *a, **k: SimpleNamespace(open=_open),
+        )
+        url = "https://user:sup3rsecret@mirror.example/a.bin"
+        ok, reason = dl.download_to(tmp_path / "a.bin", url, sha256="0" * 64)
+        assert ok is False
+        assert reason == f"HTTPS download failed from {dl.redact_url(url)}: connection refused"
+        assert "sup3rsecret" not in reason
+
 
 class TestSameHostRedirects:
     """A url is authorized against ONE host, so a redirect may not change it."""

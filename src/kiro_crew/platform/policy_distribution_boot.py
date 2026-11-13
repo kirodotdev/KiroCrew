@@ -20,6 +20,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+from kiro_crew.asset_downloader import network_failure_cause
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
     MIN_REFRESH_INTERVAL_SECS,
@@ -482,8 +483,9 @@ def _load_by_fetch(dist: PolicyDistribution, cached: Optional[CachedPolicy]) -> 
         # ``_sanitize_detail``, not ``_redact_source``: the exception text is the
         # ENDPOINT's, and an error page or a proxy echoing the request can carry the
         # Authorization header back. Redacting only the configured source would print it.
+        why = network_failure_cause(exc) or exc
         reason = _sanitize_detail(
-            f"could not fetch the ceiling from {dist.source}: {exc}", dist.source
+            f"could not fetch the ceiling from {dist.source}: {why}", dist.source
         )
         logger.warning("%s", reason)
         return _LoadOutcome(ceiling=_from_cache_on_outage(dist, cached, reason), reason=reason)
