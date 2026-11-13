@@ -16,8 +16,8 @@ import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { GatewayStatus } from '../settings/mcpManagementModel'
 
-/** The MCP Servers page on its Sharing view, where a refused launch is approved. */
-export const MCP_MANAGEMENT_PATH = '/mcp?view=sharing'
+/** Customize → MCP Servers on its Sharing view, where a refused launch is approved. */
+export const MCP_MANAGEMENT_PATH = '/capabilities?tab=mcp-servers&view=sharing'
 
 /** How often the open notice re-reads gateway status. */
 export const STATUS_POLL_MS = 30_000

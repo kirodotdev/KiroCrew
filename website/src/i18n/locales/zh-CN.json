@@ -12117,6 +12117,7 @@
       "prompts_description": "来自 {{registry}} 的可复用提示词模板",
       "prompts_label": "提示词",
       "skills_description": "agent 按需加载、用于特定任务的专业知识文件",
+      "mcp_servers_description": "智能体连接的工具服务器，以及它们在各个对话间的共享方式",
       "skills_label": "技能",
       "skills_awaiting_review": "待审阅的技能（{{count}}）",
       "skills_awaiting_review_failed": "无法检查待审阅的技能",

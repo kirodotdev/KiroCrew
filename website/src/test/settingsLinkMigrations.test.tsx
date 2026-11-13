@@ -40,7 +40,7 @@ describe('Settings-link migrations', () => {
     // the rendered text equals what the Capabilities page itself renders.
     const rail = i18nT('nav.agent_capabilities')
     expect(i18nT('apps.mochi.settingsPanel.mcp_empty', mcpServersVars())).toContain(
-      `${i18nT('nav.mcp_servers')} → ${i18nT('pages.mcpPage.view_servers')}`,
+      `${rail} → ${i18nT('nav.mcp_servers')}`,
     )
     expect(i18nT('apps.mdNotebook.knowledge.connectHelp', capabilitiesVars('knowledge'))).toContain(
       `${rail} → ${i18nT('pages.capabilitiesPage.knowledge_label')}`,

@@ -261,7 +261,7 @@ function resolveMcpOpenAdd(params: Record<string, unknown>): GuideActionResoluti
           textKey: 'components.guideLayer.step_mcp_custom_json',
         },
       ],
-      enter: { kind: 'navigate', to: () => '/mcp' },
+      enter: { kind: 'navigate', to: () => '/capabilities?tab=mcp-servers' },
     },
   }
 }

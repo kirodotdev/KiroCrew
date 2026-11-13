@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:f021b002d75be7e88864a15e7573a30be74322147feeabe4aa87c0dd097d7fad"
+export const GUIDE_BUILD_DIGEST = "sha256:dee07d29532a0a5493b52a4288a0e75f874035d6caf6b8ca894345b41a7328bc"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -1746,7 +1746,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/mcp",
+        "route": "/capabilities?tab=mcp-servers",
         "steps": [
           {
             "id": "any:mcp.servers-view",
@@ -1769,7 +1769,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/mcp",
+        "route": "/capabilities?tab=mcp-servers",
         "steps": [
           {
             "id": "any:mcp.servers-view",
@@ -1792,7 +1792,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
     "placements": [
       {
         "id": "any",
-        "route": "/mcp",
+        "route": "/capabilities?tab=mcp-servers",
         "steps": [
           {
             "id": "any:mcp.servers-view",

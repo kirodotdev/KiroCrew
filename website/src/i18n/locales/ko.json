@@ -12117,6 +12117,7 @@
       "prompts_description": "{{registry}}에서 가져온 재사용 가능한 프롬프트 템플릿",
       "prompts_label": "프롬프트",
       "skills_description": "특정 작업에 필요할 때 에이전트가 불러오는 전문 지식 파일",
+      "mcp_servers_description": "에이전트가 연결하는 도구 서버와 채팅 간에 공유되는 방식",
       "skills_label": "스킬",
       "skills_awaiting_review": "검토 대기 중인 스킬 ({{count}})",
       "skills_awaiting_review_failed": "검토 대기 중인 스킬을 확인하지 못했습니다",

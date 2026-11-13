@@ -24,11 +24,11 @@ export function capabilitiesVars(tab: CapabilitiesTab): { capabilities: string; 
   }
 }
 
-/** The same two placeholders for the MCP Servers rail entry and its Servers
- *  view, where an MCP server is added, enabled and checked. */
+/** The same two placeholders for Customize → MCP Servers, where an MCP
+ *  server is added, enabled and checked. */
 export function mcpServersVars(): { capabilities: string; tab: string } {
   return {
-    capabilities: i18nT('nav.mcp_servers'),
-    tab: i18nT('pages.mcpPage.view_servers'),
+    capabilities: i18nT('nav.agent_capabilities'),
+    tab: i18nT('nav.mcp_servers'),
   }
 }

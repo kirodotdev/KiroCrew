@@ -18,6 +18,7 @@ superseded-by: []
   2026-11-10, for a personal single-user tool. Claims about today's code were
   checked at `8f6fe6dbfe` (main).
 - Author: iamwhatever
+- Amended 2026-11-12 (owner decision): MCP Servers is a Customize tab beside Skills (`/capabilities?tab=mcp-servers`), not its own rail row. `/mcp` redirects there and keeps `?view=`. §4 below is superseded on placement only; the page content (§5) is unchanged.
 
 ## 1. Today
 

@@ -1,5 +1,5 @@
 /**
- * MCP Management lives at the top of the MCP Servers page (`/mcp`).
+ * MCP Management lives at the top of Customize → MCP Servers (`McpPage`).
  *
  * The decision that stubs MCP servers and shares their backends used to live on
  * the Developer internals pages (`mcp-pool`), then below the servers list on a
@@ -76,7 +76,7 @@ function wrapDeveloper(entry: string) {
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/developer" element={<DeveloperPage />} />
-          <Route path="/mcp" element={<Where />} />
+          <Route path="/capabilities" element={<Where />} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -145,12 +145,12 @@ describe('MCP Management on the MCP Servers page', () => {
 describe('old links land on the new pages', () => {
   it('/developer?tab=mcp-pool opens the Sharing view', async () => {
     wrapDeveloper('/developer?tab=mcp-pool')
-    expect(await screen.findByTestId('where')).toHaveTextContent('/mcp?view=sharing')
+    expect(await screen.findByTestId('where')).toHaveTextContent('/capabilities?tab=mcp-servers&view=sharing')
   })
 
   it('maps every Customize ?tab=mcp form, keeping the other params', () => {
-    expect(legacyConnectionsTarget('?tab=mcp&view=mcp-servers', '')).toBe('/mcp')
-    expect(legacyConnectionsTarget('?tab=mcp&view=mcp-servers', '#mcp-management')).toBe('/mcp?view=sharing')
+    expect(legacyConnectionsTarget('?tab=mcp&view=mcp-servers', '')).toBe('/capabilities?tab=mcp-servers')
+    expect(legacyConnectionsTarget('?tab=mcp&view=mcp-servers', '#mcp-management')).toBe('/capabilities?tab=mcp-servers&view=sharing')
     expect(legacyConnectionsTarget('?tab=mcp', '')).toBe('/settings/connections')
     expect(legacyConnectionsTarget('?tab=mcp&provider=github', '')).toBe('/settings/connections?provider=github')
     expect(legacyConnectionsTarget('?tab=skills', '')).toBeNull()

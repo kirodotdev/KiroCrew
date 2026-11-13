@@ -12653,6 +12653,7 @@
       "prompts_description": "Modelos de prompt reutilizáveis de {{registry}}",
       "prompts_label": "Prompts",
       "skills_description": "Arquivos de conhecimento especializado que seu agente carrega sob demanda para tarefas específicas",
+      "mcp_servers_description": "Servidores de ferramentas aos quais seu agente se conecta e como eles são compartilhados entre conversas",
       "skills_label": "Habilidades",
       "skills_awaiting_review": "Habilidades aguardando revisão ({{count}})",
       "skills_awaiting_review_failed": "Não foi possível verificar as habilidades aguardando revisão",
