@@ -17,7 +17,11 @@ from __future__ import annotations
 
 from kiro_crew.agent_sdk import host_auth, native_allow_stores
 from kiro_crew.apps import credential_masks
-from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES, fenced_home_dirs
+from kiro_crew.identity_stores import (
+    AUTH_SQLITE_DB,
+    AUTH_SQLITE_SIDECAR_SUFFIXES,
+    fenced_home_dirs,
+)
 from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 
 # ── Sensitive Paths ──
@@ -480,6 +484,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # the doctor open the directory directly rather than through this gate, so
     # both keep working; nothing legitimate reads a marker through a file tool.
     "cron-running",
+    # The hook store (``hooks._HOOKS_FILE``). Every entry names a command the
+    # GATEWAY executes in its own identity on a lifecycle event, so a file-tool
+    # write is persistent code execution and a read enumerates the commands the
+    # host already trusts. ``hook_runtime`` and the hooks routes open it directly
+    # rather than through this gate, and it stays read-write inside the sandbox
+    # (``sandbox._CREW_SANDBOX_VISIBLE_LEAVES``) because the in-sandbox
+    # ``register_hook`` MCP tool writes it; that direct writer does not route
+    # through this gate either. `hooks.json.lock` is covered as a derived
+    # keystone artifact.
+    "hooks.json",
     # Saved workflow definitions are executable capabilities whose presence is
     # authorized only by an explicit dashboard action. Same-UID owner-only file
     # modes do not stop an agent file tool from planting or rewriting a valid
@@ -997,7 +1011,12 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # are written by the gateway, and reading them decides nothing inside the sandbox.
     f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
-    for leaf in ("mcp-launch-approvals", "mcp/resolved", "gateway_id", "skill-projection")
+    for leaf in (
+        "mcp-launch-approvals",
+        "mcp/resolved",
+        "gateway_id",
+        "skill-projection",
+    )
 ]
 
 
