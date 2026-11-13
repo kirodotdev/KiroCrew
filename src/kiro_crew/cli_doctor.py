@@ -582,9 +582,7 @@ def _reconcile_memory() -> None:
 
     An explicit repair, the one write ``doctor`` makes besides ``--bundle``'s zip.
     """
-    from contextlib import closing
-
-    from kiro_crew import memory_record_metadata, memory_stores
+    from kiro_crew import memory_record_metadata, memory_stores, sqlite_wal
     from kiro_crew._sqlite_compat import sqlite3
 
     path = memory_stores.resolve_store_path(memory_stores.DEFAULT_MEMORY_STORE)
@@ -592,9 +590,22 @@ def _reconcile_memory() -> None:
         print(f"  ⏭ no memory database at {path}")
         return
     try:
-        with closing(sqlite3.connect(str(path), timeout=30)) as db:
+        db = sqlite3.connect(str(path), timeout=30)
+        # The gateway may be writing through this -wal: this close must not delete it.
+        kept = sqlite_wal.keep_wal_on_close(db)
+        try:
             with db:
+                # One transaction with the pass, as a store's own open does it: a
+                # database from before the metadata tables gets them first.
+                db.execute("BEGIN IMMEDIATE")
+                if not memory_record_metadata.schema_is_current(db):
+                    memory_record_metadata.ensure_schema(db)
                 changed = memory_record_metadata.reconcile(db, full=True)
+        finally:
+            if kept:
+                db.close()
+            else:
+                sqlite_wal.close_keeping_wal(db)
     except sqlite3.Error as exc:
         print(f"  ❌ memory reconcile failed: {exc}")
         sys.exit(1)

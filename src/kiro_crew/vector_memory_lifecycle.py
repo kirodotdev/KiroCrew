@@ -620,6 +620,12 @@ def _schema_steps(self: VectorMemoryStore, migrated: list[int]) -> list[Callable
         # their physical rows or version series; old binaries remain readable.
         if not record_meta.schema_is_current(self.db):
             steps.append(functools.partial(record_meta.ensure_schema, self.db))
+        # A store with no rows is marked in the same one commit that builds it, so a
+        # later start has nothing to scan. The step only joins schema work that is
+        # already pending: an up-to-date file must not take the write lock for it, so
+        # any other store is marked by reconcile, which never waits for the lock.
+        if steps and record_meta.marker_wanted_for_empty_store(self.db):
+            steps.append(functools.partial(record_meta.install_marker_if_empty, self.db))
         if self._lineage == memory_schema.LINEAGE_CREW:
             # Before its migrations run, a crew file has no memory_meta to read,
             # so the stamp step is planned and reads the stamps when it runs.

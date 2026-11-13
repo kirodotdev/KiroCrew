@@ -1154,7 +1154,7 @@ What each `init()` leaves on disk:
 | `schema_version` | `{1, 2, 3}` | `{1001}` |
 | tables | `semantic_memory`, `episodic_memories`, `memory_events`, `memory_meta`, `schema_version` | `memory_items`, `memory_events`, `memory_meta`, `schema_version` |
 | views | none | `semantic_memory`, `episodic_memories` |
-| triggers | none | none |
+| triggers | the four `memory_reconcile_*` change-noting triggers (installed by the open-time metadata pass, not by the schema) | the same four, on `memory_items` |
 | `memory_meta` stamp rows | none | `schema_lineage`, `store_name` |
 
 **Schema setup is one transaction, and a migration step must not commit.**
@@ -1175,6 +1175,23 @@ own transaction. Reconcile skips rows whose content hash is unchanged, and the h
 bound selects only records over `V1_ACCEPTED_REVISION_LIMIT` before it deletes anything.
 Under implicit transactions any DML takes the write lock even when it matches no row, so
 a steady-state open issues none and does not wait on another writer (#21056).
+
+Reconcile does not re-hash every row on every start. A completed full pass installs four
+triggers (`memory_reconcile_<relation>_ins` / `_upd`, on the relation, or on `memory_items`
+narrowed by `kind` in the crew lineage) that note the primary key of each row whose hashed
+columns may have changed in `memory_reconcile_dirty`, and a per-relation row in
+`memory_reconcile_state` (binary version plus a hash of the trigger SQL). A store with no
+rows is marked by the schema step in the same one commit that builds it. While the marker
+and the exact trigger text match, a start re-checks only the noted rows; a missing or
+different marker, version or layout, a missing trigger or notes table, a restore (the
+staged copy's marker is deleted) or `kirocrew doctor --reconcile-memory` runs the full
+pass. Both passes scan without a write lock. The marker, or the clearing of the notes, is
+written only when no other connection committed since the scan began (`data_version`) and
+the write lock is free right now: it is taken with `busy_timeout=0`, so a busy store is
+left for the next start and an open never waits on a writer. Up to `_DIRTY_KEEP` (500)
+noted rows are re-checked on each start without clearing them, so ordinary use leaves the
+steady-state open write-free. A hard DELETE is not noted; the full pass never swept
+orphan metadata rows either.
 
 **Which lineage a file gets is decided once, structurally, inside `init()` — and the
 ordering there is the load-bearing part.** `memory_schema.detect_lineage(db)` reads

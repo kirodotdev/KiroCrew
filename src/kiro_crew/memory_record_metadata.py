@@ -192,8 +192,14 @@ _SCHEMA_OBJECTS: tuple[tuple[str, str], ...] = (
 
 def ensure_schema(db: sqlite3.Connection) -> None:
     """Create additive tables/indexes without executescript's implicit COMMIT."""
+    rebuilt = not db.execute(
+        "SELECT 1 FROM sqlite_schema WHERE name='memory_record_meta'"
+    ).fetchone()
     for _name, statement in _SCHEMA_OBJECTS:
         db.execute(statement)
+    if rebuilt:
+        # A table made anew holds no metadata for rows the marker calls checked.
+        invalidate_marker(db)
 
 
 def schema_is_current(db: sqlite3.Connection) -> bool:
@@ -745,6 +751,21 @@ def invalidate_marker(db: sqlite3.Connection) -> None:
         db.execute("DELETE FROM memory_reconcile_state")
 
 
+def strip_reconcile_state(db: sqlite3.Connection) -> None:
+    """Remove the triggers, marker and notes: a copy that leaves the host carries none.
+
+    The next start on a restored copy finds no marker and runs the full pass. The
+    snapshot redactor rewrites keys in place, which would fire the triggers and
+    collide with a note already held for the original key.
+    """
+    for (name,) in db.execute(
+        "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'memory_reconcile_%'"
+    ).fetchall():
+        db.execute(f"DROP TRIGGER IF EXISTS {name}")
+    db.execute("DROP TABLE IF EXISTS memory_reconcile_state")
+    db.execute("DROP TABLE IF EXISTS memory_reconcile_dirty")
+
+
 def _marker_is_trusted(db: sqlite3.Connection) -> bool:
     """Whether the stored marker, triggers and layout all match this binary and file."""
     try:
@@ -814,6 +835,46 @@ def _install_marker(db: sqlite3.Connection) -> None:
     db.execute("DELETE FROM memory_reconcile_dirty")
 
 
+#: Noted rows a start re-checks without clearing them (and so without a write).
+_DIRTY_KEEP = 500
+
+
+def _take_write_lock(db: sqlite3.Connection) -> bool:
+    """Begin a write transaction without waiting: a busy store is left for the next start."""
+    if db.in_transaction:
+        return True
+    timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+    db.execute("PRAGMA busy_timeout=0")
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        db.execute(f"PRAGMA busy_timeout={int(timeout)}")
+
+
+def marker_wanted_for_empty_store(db: sqlite3.Connection) -> bool:
+    """Whether a store with no marker holds no rows, so its first schema pass can mark it.
+
+    Reads only. A populated store is not marked here: its first start scans it.
+    """
+    if db.execute("SELECT 1 FROM sqlite_schema WHERE name='memory_reconcile_state'").fetchone():
+        return False
+    for relation, _kind, _pk in _RECONCILED:
+        if db.execute("SELECT 1 FROM sqlite_schema WHERE name=?", (relation,)).fetchone() and (
+            db.execute(f"SELECT 1 FROM {relation} LIMIT 1").fetchone()
+        ):
+            return False
+    return True
+
+
+def install_marker_if_empty(db: sqlite3.Connection) -> None:
+    """Mark a store that has no rows yet, inside the caller's schema transaction."""
+    if marker_wanted_for_empty_store(db):
+        _install_marker(db)
+
+
 def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
     """Backfill metadata, or journal writes made by an older compatible binary.
 
@@ -823,9 +884,10 @@ def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
     a new version, a restore, a missing or foreign marker, ``full=True``) re-checks
     every row. Like the pass it replaced, the scan holds no write lock, so a store
     with nothing to journal opens while another connection writes. The marker (or
-    the clearing of the noted rows) is written only if no other connection
-    committed since the scan began (``data_version``): a write that landed during
-    the scan might not be covered, so the next start repeats the pass instead.
+    the clearing of the noted rows) is written only if the write lock is free right
+    now (it is never waited for) and no other connection committed since the scan
+    began (``data_version``): a write that landed during the scan might not be
+    covered, so the next start repeats the pass instead.
     """
     version_before = db.execute("PRAGMA data_version").fetchone()[0]
     # Judged before the tables are (re)created: a dropped notes table lost writes.
@@ -833,7 +895,7 @@ def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
     if incremental and not db.execute("SELECT 1 FROM memory_reconcile_dirty").fetchone():
         return 0
     changed = 0
-    scanned = 0
+    noted = 0
     for relation, kind, pk in _RECONCILED:
         if incremental:
             idents = [
@@ -842,6 +904,7 @@ def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
                     "SELECT ident FROM memory_reconcile_dirty WHERE relation=?", (relation,)
                 )
             ]
+            noted += len(idents)
             names = [c[1] for c in db.execute(f"PRAGMA table_info({relation})")]
             rows: Iterable[Any] = (
                 r
@@ -854,7 +917,6 @@ def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
             rows = cursor
         skipped = 0
         for values in rows:
-            scanned += 1
             row = dict(zip(names, values))
             if not isinstance(row[pk], str) or not row[pk]:
                 # SQLite lets a TEXT PRIMARY KEY hold NULL, and older importers
@@ -870,13 +932,13 @@ def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
                 relation,
                 "id" if kind == "episode" else "key",
             )
-    if not incremental and not scanned:
-        return changed  # an empty store has nothing to mark; the first rows are checked next start
-    try:
-        if not db.in_transaction:
-            db.execute("BEGIN IMMEDIATE")
-    except sqlite3.OperationalError:
-        return changed  # a writer holds the lock; the next start repeats the pass
+    if incremental and not db.in_transaction and noted <= _DIRTY_KEEP:
+        # shortcut: up to _DIRTY_KEEP noted rows are re-checked on each start, so a
+        # start after ordinary use issues no write; raise the cap if a start's
+        # re-check ever shows in a profile.
+        return changed
+    if not _take_write_lock(db):
+        return changed  # a writer holds the lock; the notes stay for the next start
     if db.execute("PRAGMA data_version").fetchone()[0] != version_before:
         return changed
     if incremental:
