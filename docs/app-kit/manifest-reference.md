@@ -1974,20 +1974,35 @@ in-gateway code your app runs.
 - On Linux the mask is placed when a sandboxed process starts, so a file created after
   that is not masked for that process. A temp file you write beside a listed file is not
   listed either.
-- An entry names a file. A directory at a listed path refuses every sandboxed spawn, so
-  list the files inside it instead (`"tokens/oauth.json"`).
+- An entry names a file, unless it is one name ending in `/` (`"state/"`): that entry
+  names a directory, masked whole, so every file inside it is covered, including the temp
+  file a save writes beside its target before renaming it over. Keep a credential you
+  rewrite by rename in a listed directory: a rename over a listed FILE detaches its mask
+  from every running sandboxed process until it ends. Before each sandboxed process
+  starts, Kiro Crew creates a listed directory that is absent inside your `data/` folder
+  (created when the app is installed), so it is masked before your backend first writes
+  into it. Replace the files inside a listed directory, never the directory itself: one
+  you remove and create again is in view of every sandboxed process that started before.
+  While your app is installed but its `data/` folder is missing, no sandboxed
+  process starts. A process that started before your app was installed is not masked for
+  it until it ends. A file or a link at a
+  directory entry's name refuses every sandboxed spawn, and so does a directory at a file
+  entry's name. An entry inside a listed directory is refused.
 - Your backend gets a listed file back only while it is absent or has a single name. A
   file with a second hard link stays masked for your backend too, until the extra link is
-  removed.
+  removed. A listed directory comes back while it is absent or a real directory; the
+  files inside it are not checked for a second name, as for Kiro Crew's own masked
+  directories.
 - The masks follow your data when Kiro Crew moves it: during an update, and after an
   uninstall that keeps your data. Kiro Crew keeps a copy of the list beside your app
   folder for that, `apps/.<name>-credential-masks.json`.
-- On macOS a sandboxed process cannot rename or remove the folders above a listed file
+- A sandboxed process cannot rename or remove the folders above a listed file
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.
 - Hosts at App Kit seam level 3 or later honour the field; read `ctx.sdk_level` and
-  treat a lower level as "nothing masks the file".
+  treat a lower level as "nothing masks the file". A directory entry needs level 8: an
+  older host refuses to install a manifest that has one.
 
 ## Agent read-only directories
 
@@ -2012,8 +2027,10 @@ own backend still writes it, and so does any in-gateway code your app runs.
   directory, no leading `/`, no `.`, `..` or empty segment, no backslash, colon,
   control character or lone surrogate, no segment starting or ending with a space or
   ending with a dot, at most 240 bytes and 16 segments. At most 32 entries.
-- An entry cannot be, or sit beneath, one of your `credentialMasks` files: a mask names
-  a file, so the manifest is refused. A directory that holds a masked file is fine.
+- An entry cannot be, or sit beneath, one of your `credentialMasks` entries: a file
+  mask names a file, and a directory mask (`"state/"`) already hides everything under
+  it, so the manifest is refused. A directory that holds a masked file is fine. A
+  trailing `/` is not a form here: `"notes/"` is refused as an empty segment.
 - It can only add a fence. A listed path outside your data directory is refused, and
   the field never makes anything writable or visible that Kiro Crew fences.
 - A symlink at a listed directory, or at a directory between the data home and it,

@@ -1629,7 +1629,12 @@ credential file as they refuse a core one with no core row naming the app; an in
 app's declaration does not reach the gate, because its manifest is sandbox-writable and
 read per spawn, which a static list cannot follow. A declared leaf is HIDDEN in the
 spawn plan, so `test_sandbox_governance_mask.py`'s pin that every tool-gate crew entry has
-a sandbox disposition holds for it. The
+a sandbox disposition holds for it. A directory entry (`"state/"`, seam level 8) is masked
+whole instead: a non-directory at its name refuses the spawn, the Linux spawn prep creates
+it when absent in each of the app's existing data directories, `data/` and the move-aside
+spelling (`sandbox_staging._materialize_declared_mask_dirs`), so its mask is in place
+before the backend first writes into it, an app tree with neither data directory refuses
+the spawn, and its backend gets it back while it is absent or a real directory. The
 installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops
 that app's masks from its next spawn; that residual is stated, not sealed.
 

@@ -401,6 +401,12 @@ def install_app(
         refusal = gateway_data_dir_obstruction(dest)
         if refusal:
             raise InstalledTreeRefused(refusal)
+        # Created as soon as the tree is published, before any record write that can
+        # fail, so a tree never stays on disk without its data directory: the sandbox
+        # refuses every spawn while an app declaring a credential-mask directory has
+        # none (``sandbox_staging._materialize_declared_mask_dirs``). A failure here
+        # removes the tree below.
+        app_data_dir(name)
     except InstalledTreeRefused as exc:
         # Nothing preserved is inside `dest`: a restored `data/` IS a directory,
         # so the refusal only fires where none was put back.
@@ -462,7 +468,7 @@ def install_app(
     # Written before the record, so no record ever sits beside a missing set.
     #
     # One unit: a failed write part-way through (disk full, permissions) must not
-    # leave a record with no secret or no data dir, read as installed. Only what
+    # leave a record with no secret, read as installed. Only what
     # this block wrote is undone; the copied tree, with any preserved ``data/``,
     # stays for the next install of this name to take over.
     #
@@ -473,9 +479,6 @@ def install_app(
     try:
         _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
         _write_installed(name, meta)
-
-        # Create data directory
-        app_data_dir(name)
 
         # Generate and write app secret for token-based auth (App Kit §5.1)
         # circular import: token_auth -> dashboard -> bridges -> manager

@@ -6982,7 +6982,8 @@ pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 a
 manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
 an app's windows and `permissions.desktopCapabilities` (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
-transport), and `ctx.chat_slots` (§41). Several seams share level 7, so an app that needs one
+transport), and `ctx.chat_slots` (§41); level 8 adds directory entries in `credentialMasks`
+(§37). Several seams share level 7, so an app that needs one
 feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -8196,11 +8197,55 @@ spawn already established for the code it executes, and only that source's manif
 read, so an installed app holding a built-in's name never gets back what the built-in
 declared.
 
+**Directory entries (seam level 8).** An entry of one name ending in `/` (`"state/"`)
+names a DIRECTORY, masked whole, so every file in it is covered, including the temp a
+writer stages beside its target and renames over it. A file entry cannot cover that temp,
+and a rename over a masked file detaches its mask from every live session (the residual
+`security.md` records), so an app that rewrites a credential by rename keeps it in a
+declared directory; that is the shape Notes' own core state directory has.
+`credential_masks.is_directory_entry` and `entry_path` read the grammar; the leaf carries
+no `/` and `declared_crew_dir_leaves` lists the directory ones. Only the `credentialMasks`
+kind accepts the form (`DeclarationKind.directory_entries`); the engine's other
+declaration, `agentReadOnlyDirs` (§39), still refuses a `/` ending. A deeper directory entry
+(`a/b/`) is refused, so the one directory to create always sits directly in a data
+directory, and an entry at or beneath a directory entry is refused (`_overlap_error`; at
+runtime `valid_entries` drops the covered one and keeps the directory). Before each Linux
+spawn `sandbox_staging._materialize_declared_mask_dirs` creates every absent declared
+directory (0700) in each of the app's data directories that is a real directory:
+`apps/<name>/data/` and the move-aside `apps/.<name>-data-tmp/`, which holds the data while
+an install, update or keep-data uninstall replaces the tree and is moved back as a whole.
+It never creates `apps/<name>` or a data directory itself: the lifecycle moves the data
+aside and back by rename, and a `data/` made while it is away would turn the move back into
+a move into it (a keep-data uninstall restores with `shutil.move` once the app tree is
+gone). An app tree on disk with a data directory at neither spelling refuses the spawn,
+because the `data/` it gets next would hold the directory unmasked for that agent's whole
+session. `install_app` calls `app_data_dir` right after publishing the tree, before any
+record write that can fail, and removes the tree when it cannot, so that state is the
+instant between the two or an install killed there; installing the app again (after an
+uninstall when it has a record) clears it. A link at any component from the data home down refuses the spawn too, and
+every directory seen is noted as a required mask target. The namespace launcher skips an
+absent directory, so without this a directory the backend made after an agent spawned
+would be in that agent's view. The
+alias pass refuses a non-directory at a directory entry and still refuses a directory at a
+file entry. The backend gets a directory entry back while it is absent or a real directory
+(`_liftable_declared_dir`). The hard-link pass judges regular files at the declared names
+only, so the files inside a declared directory get what a core `HIDDEN` directory's files
+get: nothing outside the backend can name them. The tool gate needs no change: a
+directory leaf in `security._CREW_SECRET_LEAVES` already fences what is under it. An older
+host's grammar refuses the `/` ending (an empty segment), so it refuses to install such a
+manifest rather than run the app with the directory unmasked; `scripts/adoption_pin.py`
+reports a directory entry as a level-8 use.
+
 **Residual.** The installed tree is sandbox-writable, so a mask is as strong as the
 manifest that declares it: an agent that rewrites an installed app's `app.json` drops
 that app's masks from the next spawn, as it could rewrite the app's code. Sealing an
 installed tree is a sandbox widening for the operator to choose. A declared file absent
-at spawn is not masked for that spawn, as for a core file leaf.
+at spawn is not masked for that spawn, as for a core file leaf. Likewise a session that
+started while nothing of an app was on disk (before its install, or after a purge) carries
+none of its masks, directory entries included: a namespace gains no mount after launch, so
+a directory the app creates later is in that session's view until it ends. For the same
+reason a backend replaces the files inside a declared directory, never the directory: one
+it removes and creates again is in the view of every session that started before.
 
 **Built-ins.** None declares one yet. Ops Mission Control's provider tokens live at the
 data-home root, outside its data directory, so they keep their core rows until the
@@ -8313,9 +8358,10 @@ best-effort, `update_app` and a keep-data `uninstall_app` strictly, before the d
 moves). `AppManifest.validate` refuses a bad entry, `signing_payload` covers a non-empty
 declaration (sorted; absent when empty) and `to_dict` and the built-in snapshot keep it.
 The two declarations never read each other's records. One cross-check joins them: an
-entry at or beneath one of the same manifest's `credentialMasks` files is refused
-(`agent_readonly_dirs.mask_conflict_errors`), because a mask names a file and the sandbox
-creates an absent read-only directory, and `_establish_app_readonly_dirs` never creates
+entry at or beneath one of the same manifest's `credentialMasks` entries is refused
+(`agent_readonly_dirs.mask_conflict_errors`), because a file mask names a file and the
+sandbox creates an absent read-only directory, and a directory mask (§37) already hides
+everything under it; and `_establish_app_readonly_dirs` never creates
 one there for a manifest that skipped validation.
 
 **The tool gate.** `security.paths.sensitive_write_path_refusal` adds every declared

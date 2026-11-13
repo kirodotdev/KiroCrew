@@ -175,9 +175,11 @@ def _hardlink_refused_leaves() -> frozenset[str]:
     """Every leaf an extra hard link refuses on: the core set and every app-declared mask.
 
     An app declares a mask because the file's bytes are a credential, which is this set's
-    membership rule, so every declared leaf is in it. A declared entry names a FILE: one
-    that is a directory refuses the spawn (:func:`_refuse_aliased_masked_leaves`), so no
-    declared directory hides files these passes never judged.
+    membership rule, so every declared leaf is in it. A file entry that is a directory
+    refuses the spawn (:func:`_refuse_aliased_masked_leaves`), so no declared FILE hides
+    files these passes never judged. A directory entry is a directory by declaration and
+    these passes judge regular files only, so it gets what a core ``HIDDEN`` directory gets
+    (:mod:`kiro_crew.apps.credential_masks`).
     """
     return _CREW_HARDLINK_REFUSED_LEAVES | frozenset(_app_declared_leaves())
 
@@ -839,6 +841,7 @@ def _refuse_aliased_masked_leaves(
         ) from exc
     refused = _hardlink_refused_leaves()
     declared = frozenset(_app_declared_leaves()).difference(_CREW_HIDDEN_LEAVES)
+    declared_dirs = credential_masks.declared_crew_dir_leaves().difference(_CREW_HIDDEN_LEAVES)
     for leaf in _hidden_leaves():
         # TOLERATED leaves are VISITED, not excluded. Excluding them from the walk is what
         # made the exception silent: a symlinked ``.env`` -- live channel tokens, under the
@@ -921,8 +924,17 @@ def _refuse_aliased_masked_leaves(
                 "reads and writes reached an unmasked target. Remove the link and keep a "
                 "real directory or file under this name."
             )
-        if leaf in declared and stat.S_ISDIR(info.st_mode):
-            # A declared entry names a FILE. A directory there would be masked whole while
+        if leaf in declared_dirs and not stat.S_ISDIR(info.st_mode):
+            # A directory entry is masked as a directory, and its backend writes into it.
+            # Anything else at the name would be masked as what it is, so the backend's
+            # first write would fail, or land beside a mask of the wrong kind.
+            raise SandboxCeilingUnsealable(
+                f"the path {safe_terminal_line(target)} is not a DIRECTORY, but an app's "
+                "credentialMasks entry ending in '/' names one. Move it aside so the "
+                "directory can be created."
+            )
+        if leaf in declared and leaf not in declared_dirs and stat.S_ISDIR(info.st_mode):
+            # A file entry names a FILE. A directory there would be masked whole while
             # the hard-link pass judges regular files only, so a second name for a file
             # inside it would go unjudged.
             raise SandboxCeilingUnsealable(

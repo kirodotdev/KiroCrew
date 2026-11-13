@@ -130,11 +130,11 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
     ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
     ``agentReadOnlyDirs``, an exact ``permissions.api`` entry and
-    ``permissions.chatSlots`` and ``permissions.desktopCapabilities`` at level 7),
-    the context seams any non-test ``.py`` file reaches, and the backend SDK
-    package (level 7) any of them names. A miss lets a pin adopt on a host without
-    the seam, so the scan errs wide: a false hit only asks for a higher
-    ``--min-sdk-level``.
+    ``permissions.chatSlots`` and ``permissions.desktopCapabilities`` at level 7, a
+    directory entry in ``credentialMasks`` at level 8), the context seams any non-test
+    ``.py`` file reaches, and the backend SDK package (level 7) any of them names. A miss
+    lets a pin adopt on a host without the seam, so the scan errs wide: a false hit only
+    asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -145,7 +145,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     for flag in ("agentTurns", "workerAutoApprove"):
         if permissions.get(flag) is True:
             uses[f"app.json permissions.{flag}"] = 2
-    if raw.get("credentialMasks"):
+    masks = raw.get("credentialMasks")
+    if masks:
         uses["app.json credentialMasks"] = 3
     if raw.get("agentReadOnlyDirs"):
         uses["app.json agentReadOnlyDirs"] = 7
@@ -158,6 +159,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
         uses["app.json permissions.chatSlots"] = 7
     if permissions.get("desktopCapabilities"):
         uses["app.json permissions.desktopCapabilities"] = 7
+    if isinstance(masks, list) and any(isinstance(m, str) and m.endswith("/") for m in masks):
+        uses["app.json credentialMasks directory"] = 8
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):

@@ -57,6 +57,7 @@ from kiro_crew.sandbox_seals import (
     _refuse_linked_models_leaf,
 )
 from kiro_crew.sandbox_staging import (
+    _materialize_declared_mask_dirs,
     _materialize_env_mask_target,
     _materialize_live_target_mask_target,
     _materialize_maskable_dirs,
@@ -795,6 +796,9 @@ def namespace_argv(
     # The mask loop has the same guard (``isdir``), so the on-demand hidden
     # directories get the same treatment for the same reason.
     _materialize_maskable_dirs(_required_targets)
+    # The same for the directories apps declare in ``credentialMasks``, under their own
+    # ``data/``: a directory the backend creates after this spawn would otherwise be in view.
+    _materialize_declared_mask_dirs(_required_targets)
     # The Notes move runs BEFORE the stubs below: it reads real state at the bare names
     # (and empties the legacy PAT in place), and the materialiser then plants the stub
     # the launcher masks at any bare name left absent. A failed move is logged, not raised.

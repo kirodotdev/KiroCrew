@@ -18,9 +18,10 @@ import stat
 from pathlib import Path
 from typing import NamedTuple
 
+from kiro_crew.apps import credential_masks
 from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.config.paths import config_dir
-from kiro_crew.sandbox_aliases import _masked_crew_home_roots
+from kiro_crew.sandbox_aliases import _first_linked_component_below, _masked_crew_home_roots
 from kiro_crew.sandbox_leaves import (
     _AUTH_STORE_STAGING_LEAF,
     _CREW_HOME_PREFIXES,
@@ -109,6 +110,118 @@ def _materialize_maskable_dirs(established: list[str] | None = None) -> list[str
             ) from exc
         created.append(target)
         _note_established(established, target)
+    return created
+
+
+def _materialize_declared_mask_dirs(established: list[str] | None = None) -> list[str]:
+    """Create each absent declared directory inside its app's existing data directory.
+
+    The directory counterpart for :mod:`kiro_crew.apps.credential_masks`' directory
+    entries. The namespace launcher's mask loop skips an absent directory, so a directory
+    the app's backend creates after an agent spawned would be in view of that agent for
+    the rest of its session. So every declared directory exists before every Linux spawn,
+    created (0700) in each data directory the app has: ``apps/<name>/data/`` and the
+    lifecycle's move-aside ``apps/.<name>-data-tmp/``, which holds the data while ``data/``
+    is away (both spellings are masked, and either can be the one moved back). Only the
+    declared directory itself, never ``apps/<name>`` or either data directory: the
+    lifecycle moves its data aside and back by rename, and a ``data/`` made here while it
+    is away would turn the move back into a move INTO it. Only under the live data home.
+    Seatbelt needs nothing here: its denies hold for a name that does not exist yet.
+
+    An app whose tree is on disk with its data directory at neither spelling refuses the
+    spawn: it is mid-install, in the instant between publishing the tree and creating
+    ``data/`` (``install_app`` does both before any record write that can fail), or an
+    install was killed there, and the ``data/`` it gets next would hold the directory
+    unmasked for the rest of this agent's session. With no tree either, nothing of the app is on disk and the
+    entry is skipped (``app-kit-platform.md`` §37 records what a session started then sees).
+
+    Fail-closed like :func:`_materialize_maskable_dirs`: a link above the name or at it, a
+    non-directory at the name, or a creation failure other than the benign race refuses
+    the spawn, because launching anyway would leave the directory unmasked once the
+    backend creates it. Every declared directory this pass saw present is noted in
+    *established*, so the launcher requires its mask.
+    """
+    created: list[str] = []
+    entries = sorted(
+        (app, credential_masks.crew_leaf(app, entry), credential_masks.staged_crew_leaf(app, entry))
+        for app, declared in credential_masks.declared_masks().items()
+        for entry in declared
+        if credential_masks.is_directory_entry(entry)
+    )
+    if not entries:
+        return created
+    try:
+        root = str(config_dir())
+    except Exception as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot resolve the crew data home to create the declared mask directories: {exc}"
+        ) from exc
+
+    def in_data_dir(leaf: str) -> str | None:
+        """*leaf* in the data home when the data directory holding it is a real directory.
+
+        Refuses the spawn on a link at any component from the data home down, and on a data
+        directory that cannot be stat'ed, so nothing is created through a link or guessed.
+        """
+        target = os.path.join(root, leaf)
+        linked = _first_linked_component_below(root, leaf)
+        if linked is not None:
+            raise SandboxCeilingUnsealable(
+                f"the declared mask directory {safe_terminal_line(target)} passes through a "
+                f"component that is a LINK ({safe_terminal_line(linked)}), so it cannot be "
+                "created where the mask binds. Replace the link with a real directory."
+            )
+        try:
+            data_is_dir = stat.S_ISDIR(os.lstat(os.path.dirname(target)).st_mode)
+        except FileNotFoundError:
+            data_is_dir = False
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the data directory of the declared mask directory "
+                f"{safe_terminal_line(target)}: {safe_terminal_line(str(exc))}"
+            ) from exc
+        return target if data_is_dir else None
+
+    for app, *leaves in entries:
+        targets = [path for leaf in leaves if (path := in_data_dir(leaf))]
+        if not targets and os.path.lexists(os.path.join(root, credential_masks.APPS_LEAF, app)):
+            raise SandboxCeilingUnsealable(
+                f"app {app!r} declares the credential-mask directory "
+                f"{safe_terminal_line(os.path.join(root, leaves[0]))}, but its data directory "
+                "is missing: the app is being installed, or an install of it stopped part-way. "
+                "Launching now would leave that directory unmasked once the data directory is "
+                "created. Retry when the install finishes; if this persists, install "
+                f"{app!r} again (uninstall it first if it is listed as installed)."
+            )
+        for target in targets:
+            try:
+                info = os.lstat(target)
+            except FileNotFoundError:
+                info = None
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot stat the declared mask directory {safe_terminal_line(target)}: "
+                    f"{safe_terminal_line(str(exc))}"
+                ) from exc
+            if info is not None:
+                if not stat.S_ISDIR(info.st_mode):
+                    _require_real_dir_nofollow(target)  # raises, naming what is there
+                _note_established(established, target)
+                continue
+            try:
+                os.mkdir(target, 0o700)
+            except FileExistsError:
+                # Something won the create race: it must be a real directory, judged
+                # without following a link.
+                _require_real_dir_nofollow(target)
+            except OSError as exc:
+                raise SandboxCeilingUnsealable(
+                    f"cannot create the declared mask directory {safe_terminal_line(target)}: "
+                    f"{safe_terminal_line(str(exc))}"
+                ) from exc
+            else:
+                created.append(target)
+            _note_established(established, target)
     return created
 
 

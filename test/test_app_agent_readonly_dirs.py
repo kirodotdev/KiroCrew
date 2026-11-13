@@ -124,10 +124,37 @@ class TestTheManifestField:
                 "agentReadOnlyDirs": [entry, "d"],
             }
         )
-        errors = [e for e in manifest.validate() if "credentialMasks file" in e]
+        errors = [e for e in manifest.validate() if "credentialMasks entry" in e]
         assert errors == [
-            "agentReadOnlyDirs[0] must not be or sit beneath a credentialMasks file (private)"
+            "agentReadOnlyDirs[0] must not be or sit beneath a credentialMasks entry (private)"
         ]
+
+    @pytest.mark.parametrize("entry", ["state", "state/inner"])
+    def test_a_dir_at_or_beneath_a_masked_directory_refuses_the_manifest(self, entry):
+        """A masked directory hides what is under it, so a read-only seal there fences nothing."""
+        manifest = AppManifest.from_dict(
+            {
+                "name": "demo",
+                "version": "1.0.0",
+                "credentialMasks": ["state/"],
+                "agentReadOnlyDirs": [entry, "d"],
+            }
+        )
+        errors = [e for e in manifest.validate() if "credentialMasks entry" in e]
+        assert errors == [
+            "agentReadOnlyDirs[0] must not be or sit beneath a credentialMasks entry (state/)"
+        ]
+
+    def test_a_trailing_slash_is_not_a_read_only_directory_form(self):
+        """Only ``credentialMasks`` has directory entries; here ``/`` is an empty segment."""
+        manifest = AppManifest.from_dict(
+            {"name": "demo", "version": "1.0.0", "agentReadOnlyDirs": ["notes/", "ok"]}
+        )
+        assert manifest.agentReadOnlyDirs == ["ok"]
+        assert any(
+            e.startswith("agentReadOnlyDirs[0] must not contain an empty")
+            for e in manifest.validate()
+        )
 
     def test_both_built_ins_declare_the_directories_core_used_to_fence(self):
         assert agent_readonly_dirs.declared_dirs(installed=False) == {

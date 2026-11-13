@@ -1795,7 +1795,8 @@ and level 7 adds the manifest's `agentReadOnlyDirs` (see
 [manifest-reference.md](manifest-reference.md#desktop-windows)), the exact
 `permissions.api` entry (`=/api/example`, see the path matcher above),
 [`ctx.chat_slots`](#chat-slots-ctxchat_slots) and the manifest's
-`permissions.desktopCapabilities`; each level
+`permissions.desktopCapabilities`, and level 8 adds directory entries in
+`credentialMasks` (`"state/"`); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
