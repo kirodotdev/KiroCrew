@@ -200,6 +200,10 @@ class InstanceRefused(InstanceError):
     """A write was refused, with the reason a user can be told."""
 
 
+class PinUnsupported(InstanceRefused):
+    """This platform cannot walk a directory chain without following links."""
+
+
 class NothingStaged(InstanceRefused):
     """An apply found no staged page: it was kept, discarded or expired."""
 
@@ -543,7 +547,9 @@ def _write(directory: Path, name: str, body: str) -> None:
 
 
 @contextmanager
-def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
+def _locked(
+    directory: Path, *, lock_file: str = _LOCK_FILE, pinned_dir: int | None = None
+) -> Iterator[None]:
     """Exclusive lock over one instance directory, bounded against a live holder.
 
     The same shape the session ledger's lock has, and for the same reasons: a dedicated
@@ -552,9 +558,12 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
     must not interleave -- each reads the current version to compute the next, so an
     interleaving produces two writes claiming the same ``instance_version`` and one of
     the two pages is lost with nothing recorded.
+
+    *pinned_dir* is a descriptor of *directory* the caller already opened with no link
+    followed; the lock file is then made relative to it and nothing is created by name.
     """
-    pinned: int | None = None
-    if directory.parent == data_home() / _SESSION_DASHBOARDS_DIR:
+    pinned: int | None = os.dup(pinned_dir) if pinned_dir is not None else None
+    if pinned is None and directory.parent == data_home() / _SESSION_DASHBOARDS_DIR:
         _refuse_linked_session_dir(directory)
         pinned = _pinned_session_dir(directory)
     if pinned is None:
@@ -1203,6 +1212,87 @@ def adopt(slug: str, template_id: str, *, session_id: str = "") -> Instance:
             from_version=0,
             session_id=session_id,
         )
+
+
+def _open_member_dashboard(slug: str) -> int | None:
+    """The member's ``dashboard`` directory, opened one ``O_NOFOLLOW`` step at a time.
+
+    ``None`` when it does not exist. A link anywhere below the data home is refused,
+    and the walk starts at the descriptor of the home, so nothing is re-joined by name.
+    """
+    if is_session_key(slug) or slug in (".", "..") or Path(slug).name != slug:
+        raise InstanceError("a member slug is one path segment")
+    if not pinned_fs.supports_pinned_walk():
+        raise PinUnsupported("this platform cannot remove a dashboard without following links")
+    fd = pinned_fs.open_dir_pinned(data_home(), what="data home", refusal=InstanceError)
+    try:
+        for part in ("members", slug, "dashboard"):
+            child = os.open(part, pinned_fs.dir_flags(), dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except FileNotFoundError:
+        os.close(fd)
+        return None
+    except OSError as exc:
+        os.close(fd)
+        raise InstanceError("a linked dashboard path is not followed") from exc
+    return fd
+
+
+def remove_adopted(slug: str, template_id: str, adopted_version: int) -> bool:
+    """Remove the dashboard an import card adopted, only while it is still that page.
+
+    The page is removed only when the record still names *template_id* at exactly
+    *adopted_version*: any later apply, edit or rollback is the owner's and stays, and
+    ``False`` says so. The record and every retained version go through descriptors
+    pinned at the member's own ``dashboard`` directory (a link anywhere on the way is
+    refused), never by name, and the lock is held for the whole removal. A staged preview
+    and the history file go with them, so a later adopt on the same slug starts again at
+    version 1 with no row of the removed import; only the empty directory and its lock file
+    stay. If the adopt landed on a leftover instance of an older Bot with the same slug,
+    that older history (every retained version) is removed too; accepted. shortcut: a
+    package page snapshot under ``crew-panels`` is left to its own pruning.
+
+    Raises :class:`PinUnsupported` where the walk cannot be pinned (native Windows): the
+    caller leaves the page and goes on, as a plain Bot delete does.
+    """
+    pinned = _open_member_dashboard(slug)
+    if pinned is None:
+        return False
+    try:
+        with _locked(instance_dir(slug), pinned_dir=pinned):
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                with os.fdopen(os.open(_RECORD_FILE, flags, dir_fd=pinned), "rb") as handle:
+                    raw = json.loads(handle.read().decode("utf-8"))
+            except FileNotFoundError:
+                return False
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise InstanceError("the dashboard record cannot be read") from exc
+            template = raw.get("template") if isinstance(raw, dict) else None
+            if not isinstance(template, dict) or template.get("id") != template_id:
+                return False
+            if raw.get("instance_version") != adopted_version:
+                return False
+            os.unlink(_RECORD_FILE, dir_fd=pinned)
+            for leftover in (_PREVIEW_FILE, _HISTORY_FILE):
+                try:
+                    os.unlink(leftover, dir_fd=pinned)
+                except FileNotFoundError:
+                    pass
+            try:
+                versions_fd = os.open(_VERSIONS_SUBDIR, pinned_fs.dir_flags(), dir_fd=pinned)
+            except FileNotFoundError:
+                return True
+            try:
+                for name in os.listdir(versions_fd):
+                    os.unlink(name, dir_fd=versions_fd)
+            finally:
+                os.close(versions_fd)
+            os.rmdir(_VERSIONS_SUBDIR, dir_fd=pinned)
+            return True
+    finally:
+        os.close(pinned)
 
 
 def _pointer_of(record: Instance) -> dict[str, Any] | None:
