@@ -285,7 +285,7 @@ class TestIdleEviction:
 
         built = _build_memory_config({"embedding_idle_evict_secs": configured})
         assert built.embedding_idle_evict_secs == configured
-        assert _build_memory_config({}).embedding_idle_evict_secs == 3600
+        assert _build_memory_config({}).embedding_idle_evict_secs == 600
 
     def test_close_stops_the_evictor(self, tmp_path: Path, monkeypatch):
         threads_before = _live_embed_threads()
