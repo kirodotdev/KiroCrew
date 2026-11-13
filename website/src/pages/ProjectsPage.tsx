@@ -383,7 +383,12 @@ export default function ProjectsPage() {
   }
 
   const cancelPlan = async () => {
-    try { await api.cancelPlan() } finally { setIsPlanning(false); sessionStorage.removeItem('tr-planning') }
+    // A refused cancel leaves the plan running, so the banner stays and says why.
+    setPlanError('')
+    let r: ActionResult
+    try { r = await api.cancelPlan() } catch (e) { setPlanError(errText(e)); return }
+    if (r && r.ok === false) { setPlanError(r.error || i18nT('pages.projectsPage.action_failed')); return }
+    setIsPlanning(false); sessionStorage.removeItem('tr-planning')
   }
 
   const handleRun = (input: string, source: string) => {

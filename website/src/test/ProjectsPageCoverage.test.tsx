@@ -349,6 +349,25 @@ describe('ProjectsPage — planning lifecycle', () => {
     expect(sessionStorage.getItem('tr-planning')).toBeNull()
   })
 
+  it('keeps the planning banner and says why when the cancel is refused', async () => {
+    sessionStorage.setItem('tr-planning', '1')
+    vi.mocked(api.cancelPlan).mockRejectedValueOnce(new Error('zz-cancel-refused'))
+    renderWithProviders(<ProjectsPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByText(/zz-cancel-refused/)).toBeInTheDocument()
+    expect(await screen.findByText(/Generating execution plan/)).toBeInTheDocument()
+    expect(sessionStorage.getItem('tr-planning')).toBe('1')
+  })
+
+  it('keeps the planning banner when the cancel answers not ok', async () => {
+    sessionStorage.setItem('tr-planning', '1')
+    vi.mocked(api.cancelPlan).mockResolvedValueOnce({ ok: false, error: 'zz-no-cancel' })
+    renderWithProviders(<ProjectsPage />)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(await screen.findByText(/zz-no-cancel/)).toBeInTheDocument()
+    expect(await screen.findByText(/Generating execution plan/)).toBeInTheDocument()
+  })
+
   it('ticks the planning banner dots', async () => {
     sessionStorage.setItem('tr-planning', '1')
     vi.useFakeTimers()
