@@ -787,6 +787,26 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
     )
     # What the warm welcome last read about each item's pull request, with its read time.
     facts_by_item = await asyncio.to_thread(pr_facts, requested, items)
+    # Done or stopped: the item states and whether the conductor's patrol is still on.
+    from kiro_crew import conductor_patrol
+    from kiro_crew.autonudge import get_instance
+    from kiro_crew.dashboard import conductor_mode_run
+
+    open_items, accepted, not_done = conductor_mode_run.item_counts(item.state for item in items)
+    run = conductor_mode_run.run_facts(
+        open_items=open_items,
+        accepted=accepted,
+        not_done=not_done,
+        # The current goal's own creates; a header from before that count says nothing.
+        goal_items=(
+            None
+            if record.goal_items_base == work_ledger.LEGACY_GOAL_BASE
+            else record.goal_items_used
+        ),
+        patrol=conductor_mode_run.patrol_of(
+            get_instance(), (conductor_patrol.nudge_slot_for(state, key) or "", key)
+        ),
+    )
 
     payload = {
         "conductor": record.to_dict(),
@@ -794,6 +814,7 @@ async def _build_board(state: DashboardState, requested: str, key: str, caller: 
         "items": rows,
         "asks": asks,
         "pr_facts": facts_by_item,
+        "run": run,
         # The ONE capability the page actually reads, because it changes what the
         # page renders: no take-over button is rendered while this is false.
         #

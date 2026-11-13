@@ -8,12 +8,12 @@
  *  and the pending question cards. No model call. */
 import { useCallback, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, Check, ChevronDown, ChevronLeft, ChevronRight, Loader, Loader2, MessageCircleQuestionMark, MessageSquare, Pause, CircleStop, X } from 'lucide-react'
 import { safeGetItem, safeSetItem } from '../../../utils/safeStorage'
 import { useCrewBack, type CrewBack } from '../../../components/crew/useCrewBack'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../../components/ui/dropdown-menu'
 import { api } from '../../../api/client'
-import type { CrewWorker } from '../../../types'
+import type { CrewWorker, ConductorModeRun } from '../../../types'
 import type { SessionSummary } from '../../../types/sessionSummary'
 import { timedPoll, usePollRule } from '../../../lib/pollRule'
 import { crewBoardQueryKey, CREW_BOARD_POLL_MS, type WorkBoardItem, type WorkBoardResponse } from '../../../api/crewBoard'
@@ -36,6 +36,7 @@ import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 import { useCrewMode } from '../../../hooks/usePreviewFlag'
 import { CrewMemberContinue, CrewPauseRow } from './CrewPauseControl'
+import { conductorModeRunState, type ConductorModeRunState } from '../../../lib/conductorModeRun'
 
 export interface ConductorModeCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
@@ -244,7 +245,7 @@ export function goalScope(text: string): string {
   return m ? m[1].trim() : ''
 }
 
-type MilestoneState = 'done' | 'needs_you' | 'running' | 'waiting' | 'quiet' | 'stuck' | 'next'
+type MilestoneState = 'done' | 'not_done' | 'needs_you' | 'running' | 'waiting' | 'quiet' | 'stuck' | 'next'
 
 /** A report a worker said only a person can move (`reason` approval / needs_human). */
 const PERSON_REASONS = new Set(['approval', 'needs_human'])
@@ -271,11 +272,13 @@ export function reportAnswered(item: WorkBoardItem): boolean {
 }
 
 export function milestoneState(item: WorkBoardItem, waiting: boolean): MilestoneState {
-  // A closed item is finished whatever its last report said. Then the person;
-  // then a session working again reads as running even after an earlier
-  // "done" report. A report counts only until the conductor decides on it
+  // A closed item is finished whatever its last report said: done when
+  // accepted, not done when rejected or abandoned. Then the person; then a
+  // session working again reads as running even after an earlier "done"
+  // report. A report counts only until the conductor decides on it
   // (`decided_at` at or after the report hands it back).
-  if (item.state === 'accepted' || item.terminal) return 'done'
+  if (item.state === 'accepted') return 'done'
+  if (item.terminal) return 'not_done'
   const open = item.status === 'progress' || item.status === 'blocked' || item.status === 'question'
   // Needs you only when the person must act: a pending approval of the item's
   // member (`waiting`), or an unanswered blocked / question report whose reason
@@ -317,6 +320,8 @@ function minutesBetween(a: string | null | undefined, b: string | number | null 
 
 const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--ok)_18%,transparent)] crew-tone-ok"><Check size={12} strokeWidth={3} /></span>,
+  // Closed without being accepted: finished, so calm, but never the done check.
+  not_done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--muted)_18%,transparent)] text-muted"><X size={12} strokeWidth={2.5} /></span>,
   needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
   running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] conductor-mode-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
@@ -336,6 +341,9 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       {item.pr != null && <span className="shrink-0 conductor-mode-accent">{i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}</span>}
       {link && <a className="shrink-0 conductor-mode-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
     </>
+  } else if (state === 'not_done') {
+    const text = i18nT(item.state === 'rejected' ? 'components.crewMode.conductor_mode_ms_not_done_rejected' : 'components.crewMode.conductor_mode_ms_not_done_abandoned')
+    sub = <span className="truncate" title={firstSentence(item.summary) || text}>{text}</span>
   } else if (state === 'stuck' || (state === 'waiting' && onConductor(item))) {
     // Who acts next, not the worker's own words: a stuck row says why and how to
     // restart it, and a row the conductor owns says the main chat is on it.
@@ -377,7 +385,7 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
   // "now" only for a turn in flight; a loop between checks shows the time since its report.
   const right = state === 'running' && item.alive === 'running' ? i18nT('components.crewMode.conductor_mode_ms_now')
     : state === 'next' ? i18nT('components.crewMode.conductor_mode_ms_next')
-      : state === 'done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
+      : state === 'done' || state === 'not_done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
         : fmtMinutes(minutesBetween(item.last_report_at || item.created_at, now))
   return (
     <li className="flex items-start gap-2.5 py-1.5" data-testid="conductor-mode-milestone" data-state={state}>
@@ -391,6 +399,43 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
       </span>
       <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'conductor-mode-accent font-medium' : 'text-muted'}`}>{right}</span>
     </li>
+  )
+}
+
+const RUN_ICON: Record<ConductorModeRunState, JSX.Element> = {
+  paused: <Pause size={12} aria-hidden="true" className="shrink-0 crew-tone-paused" />,
+  waiting: <AlertTriangle size={12} aria-hidden="true" className="shrink-0 crew-tone-warn" />,
+  working: <Loader size={12} aria-hidden="true" className="shrink-0 conductor-mode-accent motion-safe:animate-spin" />,
+  done: <Check size={12} strokeWidth={3} aria-hidden="true" className="shrink-0 crew-tone-ok" />,
+  // A stop sign, never a hollow square that reads as a checkbox.
+  stopped: <CircleStop size={12} aria-hidden="true" className="shrink-0 text-muted" />,
+}
+
+const RUN_WORD: Record<ConductorModeRunState, string> = {
+  paused: 'components.crewMode.conductor_mode_paused',
+  waiting: 'components.crewMode.conductor_mode_run_waiting',
+  working: 'components.crewMode.conductor_mode_run_working',
+  done: 'components.crewMode.conductor_mode_run_done',
+  stopped: 'components.crewMode.conductor_mode_run_stopped',
+}
+
+/** The run's state in one line at the top of Overview: the word, then for a
+ *  settled run one plain sentence with no numbers. The way back to the main chat
+ *  is the panel's own Back row. No line says a final report exists: a stop at a
+ *  limit or by a person sends none, and the board cannot tell. */
+function RunLine({ state, run }: { state: ConductorModeRunState; run: ConductorModeRun | undefined }) {
+  const detail = state === 'done'
+    ? [i18nT((run?.not_done ?? 0) > 0 ? 'components.crewMode.conductor_mode_run_done_some' : 'components.crewMode.conductor_mode_run_done_all')]
+    : state === 'stopped'
+      ? [i18nT(run?.at_limit ? 'components.crewMode.conductor_mode_run_stopped_limit' : 'components.crewMode.conductor_mode_run_stopped_detail'), i18nT('components.crewMode.conductor_mode_run_continue')]
+      : []
+  return (
+    <div className="space-y-0.5" data-testid="conductor-mode-run" data-state={state}>
+      {/* Done with milestones not done keeps the check but not its green: the run ended, not everything landed. */}
+      <p className="flex items-center gap-1.5 text-[13px] font-semibold text-text">{state === 'done' && (run?.not_done ?? 0) > 0
+        ? <Check size={12} strokeWidth={3} aria-hidden="true" className="shrink-0 text-muted" /> : RUN_ICON[state]}{i18nT(RUN_WORD[state])}</p>
+      {detail.length > 0 && <p className="text-[12px] text-text/85" data-testid="conductor-mode-run-detail">{detail.join(' ')}</p>}
+    </div>
   )
 }
 
@@ -680,6 +725,13 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
   // "moving" only while a milestone runs; with nothing running, stuck or quiet
   // (waiting or next only) there is no pulse.
   const moving = openMs.some(m => m.state === 'running')
+  // The run's one state: what is live here first, then the gateway's verdict.
+  // The main chat's own tool approval waits on the person too, though its turn still runs.
+  const rootSlot = slots.find(s => s.key === root)
+  const runState = conductorModeRunState({
+    paused: !!pause, needsYou: needCount > 0 || !!rootSlot?.pending_approval, hasGoal: !!goalText, items: items.length, run: board.data?.run,
+    working: moving || c.running > 0 || !!rootSlot?.running,
+  })
   const openItem = (item: WorkBoardItem) => {
     const w = workers.find(x => x.ledger_item === item.item_id)
     return w && !w.remote_crew ? () => open(w) : undefined
@@ -711,6 +763,7 @@ export default function ConductorModeCrewPanel({ root, viewing, active, onAct }:
           {/* (1) Overview: the ledger's goal in one line, and what "done" means. */}
           <section data-testid="conductor-mode-overview" className="space-y-0.5">
             <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_overview')}</h3>
+            {runState && <RunLine state={runState} run={board.data?.run} />}
             <p className="text-[14px] font-semibold text-text line-clamp-1 break-words" title={goalFull}>{goal || i18nT('components.crewMode.conductor_mode_goal_none')}</p>
             {/* "Done when" needs something to finish: no goal and no milestone, no line. */}
             {(goalText || items.length > 0) && <p className="text-[12px] text-text/85 line-clamp-1" title={doneText}>{doneText}</p>}
