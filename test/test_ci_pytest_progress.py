@@ -345,7 +345,7 @@ class TestCIProgress(unittest.TestCase):
         self.assertEqual(job["strategy"]["matrix"]["group"], list(range(1, count + 1)))
         command = next(s["run"] for s in job["steps"] if s.get("name", "").startswith("Run tests"))
         for flag in [
-            "-n auto",
+            "-n 4",
             "--timeout=180",
             "--no-cov",
             "--max-worker-restart=0",
@@ -353,6 +353,7 @@ class TestCIProgress(unittest.TestCase):
             "-p scripts.ci_file_shards",
         ]:
             self.assertIn(flag, command)
+        self.assertNotIn("-n auto", command)
         self.assertIn("-p scripts.ci_pytest_progress", command)
         self.assertTrue(
             all(

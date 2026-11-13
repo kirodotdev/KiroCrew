@@ -216,7 +216,7 @@ def test_shard_selection_and_checks_stay_intact(jobs):
     assert command == (
         "-p scripts.ci_pytest_progress -p scripts.ci_file_shards "
         '--ci-progress-dir "$RUNNER_TEMP/pytest-progress" '
-        '-q -n auto --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
+        '-q -n 4 --timeout=180 --no-cov --max-worker-restart=0 -m "not ipv6_required and not real_venv" '
         '--file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}'
     )
     assert step["shell"] == "bash"
