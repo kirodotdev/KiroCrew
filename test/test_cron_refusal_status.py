@@ -77,6 +77,8 @@ def _run_cron_runs(
         # counted. This is the reachable shape of the double count.
         ds = MagicMock()
         ds.has_slot = MagicMock(return_value=True)
+        # No tab bound yet: prefetch_cron_history skips the read for a bound one.
+        ds.get_slot = MagicMock(return_value=None)
         ds.conversation_log.read_messages = MagicMock(
             side_effect=RuntimeError("history read failed")
         )

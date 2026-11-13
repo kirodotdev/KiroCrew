@@ -218,8 +218,13 @@ class TestApiCronToChat:
         # unread rather than taking this transcript's.
         state = _make_state(history_messages=[{"role": "assistant", "content": "world"}])
 
+        reads = []
+
         def _read_while_rebound(_key):
-            state.get_or_create_slot("cron-deleted123").linked_session_key = "cron:other"
+            # The first read is the display floor's, before the tab is bound.
+            reads.append(_key)
+            if len(reads) > 1:
+                state.get_or_create_slot("cron-deleted123").linked_session_key = "cron:other"
             return {"_type": "metadata", "turn_timeout_secs": 28800}, True
 
         state.conversation_log.get_metadata_status.side_effect = _read_while_rebound
@@ -324,7 +329,7 @@ class TestBindCronSlotDismissed:
         job.agent_id = "agent"
         job.memory_store = ""
         with (
-            patch.object(cron_inject, "hydrate_slot_from_history", lambda s, h: None),
+            patch.object(cron_inject, "hydrate_slot_from_history", lambda s, h, hidden: None),
             patch.object(
                 cron_inject,
                 "_restore_dismissed_source_links",
