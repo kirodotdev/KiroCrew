@@ -1,12 +1,12 @@
 ---
 title: Native OpenTelemetry traces for every turn, step and session, with credits and correlation IDs
-status: in-progress
+status: partial
 author: kyleseaman, with devmate
 created: 2026-11-05
-last-audited: 2026-11-10
-audited-at: ed80c1d0f2
+last-audited: 2026-11-12
+audited-at: 386875ed0d
 doc-pr: 31433
-implementation-prs: [31460]
+implementation-prs: [31460, 35077]
 tracking-issues: [1643]
 supersedes: []
 superseded-by: []
@@ -14,12 +14,18 @@ superseded-by: []
 
 # RFC: Native OpenTelemetry traces
 
-- Status: in-progress. Phase 1a was accepted on 2026-11-10 by the RFC's author and owner Kyle Seaman
-  (@kyleseaman), who asked for the build on 2026-11-09. Phase 1a is in review as
-  [#31460](https://github.com/kirodotdev/KiroCrew/pull/31460); nothing is on main yet. The later phases keep this
-  design and land PR by PR. Code facts are measured at `9996c57111`; the status was re-verified at `ed80c1d0f2`.
-- Tracking issue: [#1643](https://github.com/kirodotdev/KiroCrew/issues/1643) (`tier:T3`: a maintainer's design
-  sign-off is needed before any change merges).
+- Status: partial. The whole RFC, every phase, was accepted on 2026-11-11 by the RFC's author and owner Kyle
+  Seaman (@kyleseaman), recorded publicly in
+  [a comment on #1643](https://github.com/kirodotdev/KiroCrew/issues/1643#issuecomment-6827891210). This extends the
+  phase 1a acceptance of 2026-11-10
+  ([#34685](https://github.com/kirodotdev/KiroCrew/pull/34685)). Phases 1a and 1b are on main, via
+  [#31460](https://github.com/kirodotdev/KiroCrew/pull/31460) and
+  [#35077](https://github.com/kirodotdev/KiroCrew/pull/35077). Phases 2 to 9 are not built; they land PR by PR on this
+  design. Phase 9, opt-in content capture (§9.1), still goes through Sensitive Change Review when it is built. Code
+  facts are measured at `9996c57111`, before phase 1a; the status was re-verified at `386875ed0d`.
+- Tracking issue: [#1643](https://github.com/kirodotdev/KiroCrew/issues/1643) (`tier:T3`). A maintainer signed off
+  on phases 1a and 1b, when bolichen97 approved #31460 and #35077; each later phase still needs a maintainer's
+  approval on its PR.
 - Related: [#24884](https://github.com/kirodotdev/KiroCrew/pull/24884) (execution correlation identities in hooks;
   open). This design uses its field names but does not depend on it.
   [rfc-crew-log-telemetry-export.md](rfc-crew-log-telemetry-export.md) (crew-log folds for metrics; draft).
