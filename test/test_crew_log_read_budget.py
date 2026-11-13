@@ -244,6 +244,8 @@ _COLD_FOLD_API = frozenset(
         "fold_slot_checkpoint",
         "fold_tree_checkpoint",
         "_fold_slot_cold",
+        # The shared prime of a slot's queued cells: it folds cold cells over one walk.
+        "prime_slot_projections",
     }
 )
 #: The API's own modules, which define it and delegate inside it.
@@ -259,7 +261,11 @@ _CHILD_ONLY_FUNCTIONS: "dict[str, frozenset[str]]" = {
 #: child process; never raise one or add a file.
 PINNED_COLD_FOLD_CALLERS: "dict[str, int]" = {
     "apps/builtins/issue_radar/backend/crew_store_log.py": 1,
-    "crew_log/slot_prime.py": 1,
+    # ``_prime_joined``: the cold group's cells built from one shared walk (``_fold_slot_cold``).
+    "crew_log/projection_slot_share.py": 1,
+    # The background prime: its own cold read, and the shared prime of the cells queued
+    # with it (``_prime_siblings`` -> ``prime_slot_projections``).
+    "crew_log/slot_prime.py": 2,
     "dashboard/card_lifecycle.py": 2,
     "dashboard/handlers/agent_panel_dashboard.py": 2,
     "dashboard/handlers/agent_panel_read.py": 2,

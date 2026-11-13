@@ -177,6 +177,7 @@ underneath.
 | `claude` | `claude_code.py` | `mcpServers` [1]; `model`, `availableModels`, `permissions.defaultMode`, in `settings.local.json` [2] | `tools` → the array's allowlist [3]; `disabledTools` → `permissions.deny` rules (`mcp__<server>__<tool>`, each name written as Claude Code writes it, any character outside `[A-Za-z0-9_-]` as `_`), so a narrowed server stays MOUNTED | `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `codex` | `codex.py` | `mcpServers`, narrowed three ways [4]; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, except Crew's control plane [7] | `availableModels` — harness-owns-the-vocabulary; `permissions.defaultMode` — fixed-by-governance (`mode=read-only`); `autoApprove` — gate-preserving; `prompt` — context-instead; `resources` — no-reader [6]; `hooks` — no channel; `toolsSettings` — no channel [11] |
 | `opencode` | `opencode.py` | `mcpServers`, no transport filter; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → a `deny` rule in the seeded `permission` config, server kept mounted; withheld whole only when a lower config source outranks the rule [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` fixed at `ask` and read back off the harness's own resolved config |
+| `mimocode` | `mimocode.py` (its own projection, the same rules as `opencode`) | as `opencode` | as `opencode`, except `hooks` | as `opencode`, with the config seeded through `MIMOCODE_CONFIG_CONTENT` and read back from `mimo debug config`; `hooks` — withheld, because some of the harness's own tools never ask, so a hook fired from the permission request would miss them |
 | `goose` | `goose.py` | `mcpServers`, the one channel measured as a round trip rather than as an accepted element; `model` [5] | `tools` → the array's allowlist [3]; `disabledTools` → the server is withheld whole, control plane included [7]; `hooks` → fired by Crew's turn loop | as `codex` except `hooks`, with `permissions.defaultMode` carried as `GOOSE_MODE` in the child's environment |
 | `pi` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
 | `deepseek` | none | — | — | no projection of the spec — kind `broker-only` [8]; `model` and `prompt` still arrive [9] |
@@ -204,10 +205,26 @@ entirely, so claude closes the gap before any call exists: a session whose
 built-in is mounted), `strictMcpConfig` (no user, project or plugin server) and
 bypass off, an empty wire array is required, and an adapter below the
 session-options floor is stopped before its first prompt. `codex` is served by
-`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`, which carries
-`spec_denied_tools` but no `zero_tools` and no equivalent refusal, so nothing
-closes the gap on a codex session. An agent spec relying on `tools: []` on codex
-is not enforced at all.
+`AcpRuntime` / `AcpSessionHandle` rather than `AcpClient`. The runtime copies
+`zero_tools` onto the handle on `session/new` and `session/load`, and
+`AcpSessionHandle._deny_zero_tools` refuses EVERY permission request on such a
+session: a command, a file change, an MCP call and a native child's request.
+The refusal comes before any hook, trust grant or auto-approve can answer the
+request. On codex the ban is partial. In `mode=read-only` codex-acp asks nothing
+before a passive read, a hosted web search or a command its sandbox allows, so
+those calls still run.
+codex also starts the MCP servers in your own Codex `config.toml`, whatever Crew
+mounts, and runs a tool of theirs without asking when codex approves it itself
+(`readOnlyHint`, `default_tools_approval_mode` or a trusted entry).
+A new codex session with `tools: []` gets a notice that says so, and codex is
+not in `ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`.
+`mimocode` is mirrored and enforced like `opencode`, but the refusal does not run on
+its sessions: some of MiMo Code's own tools (`memory`, `history`, `task`) never send
+a permission request, so no refusal could make `tools: []` hold
+(`ACP_BACKENDS_UNASKED_NATIVE_TOOLS`, subtracted from
+`ACP_BACKENDS_HONOR_ZERO_TOOL_BAN`). A call that asks is judged like any other, so an
+agent spec relying on `tools: []` on mimocode is not enforced; the pool does not run
+on it.
 
 The knowledge and research pool spawns zero-tool agents and does not rely on the
 native ban alone. On kiro-cli, `--agent` resolves against the project checkout
@@ -420,7 +437,9 @@ is the part worth knowing before you switch:
   Crew's gate instead of being pre-approved inside the harness.
 - **`hooks` reaches only three mirrors, and `resources` only half-reaches.**
   `hooks` is `translated` on `goose`, `opencode` and `strands`, where Crew's turn loop fires
-  it, and `no-channel` on `claude` and `codex`. Neither URI scheme is loaded natively, but a mapped
+  it, and `no-channel` on `claude` and `codex`. On `mimocode` it is `withheld`: that
+  fork's projection follows opencode's rules, but some of its tools never ask, so
+  Crew does not fire hooks there. Neither URI scheme is loaded natively, but a mapped
   `skill://` still arrives as Crew's injected skill directory, per the note above,
   so an agent whose skills come from its spec keeps them on a mirrored harness. A
   `file://` steering glob is not loaded from the spec; a custom agent's new
@@ -506,6 +525,14 @@ itself:
   session falls back to KAS's `vibe` mode. Crew's own `kirocrew-lite` is the one
   exception and gets the short `_KAS_FALLBACK_PROMPT` brief for its one-shot text
   tasks.
+
+On Windows these Crew readers of a `file://` declaration take `file:///C:/...`,
+the form `Path.as_uri()` writes, as the absolute `C:/...`: the KAS and
+session-start prompt readers, the skill projection, the steering globs, the
+member essentials, an app's prompt policy and a local file link in a reply. Only
+the `/` before the drive is dropped and nothing is percent-decoded
+(`file_uri.file_uri_path_text`); each reader's own containment and
+sensitive-path checks are unchanged.
 
 The managed default (`kirocrew`) spec does NOT point `prompt` at the
 operating-contract template. `build_agent_config` and `_refresh_dynamic_fields`
@@ -645,7 +672,7 @@ routinely holds tokens, and a remote entry's `headers` can hold a static
 author survives only when it is exactly `true` or `false` (any case), its key is
 not credential-shaped (`TOKEN`, `SECRET`, `PASSWORD`, `KEY`, `accessKey` …), and the
 credential redactor would not rewrite it. So `FEATURE_X_ENABLED=true` reaches the
-server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A new chat shows a one-line notice only for a local (command) server Crew and the edition do not ship whose env the local launcher could not carry, and only when turning on Share for it fixes that (no lost key is one the gateway keeps from a shared server): it names the server, never a key, a value or a config term, and points to Share in Customize → Connections → MCP Management. A remote (url) server whose headers stay withheld (an `sse` entry, below) is named in the log only, since nothing on Crew's side supplies them. A value that is exactly `${NAME}`
+server, and `LOG_LEVEL=debug`, a number, a URL or `API_KEY=…` does not; withheld keys are named in the log. A new chat shows a one-line notice only for a local (command) server Crew and the edition do not ship whose env the local launcher could not carry, and only when turning on Share for it fixes that (no lost key is one the gateway keeps from a shared server): it names the server, never a key, a value or a config term, and points to Share in MCP Servers → Sharing. A remote (url) server whose headers stay withheld (an `sse` entry, below) is named in the log only, since nothing on Crew's side supplies them. A value that is exactly `${NAME}`
 survives on any server when the edition lists `NAME` through
 `McpToolingProvider.kas_relayed_env_references()` (the public build lists none);
 KAS resolves it at spawn, so only the name crosses the wire. Any other reference

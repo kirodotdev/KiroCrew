@@ -955,6 +955,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_carve,
         _memory_cmd,
         _memory_create_store,
+        _memory_dream,
         _memory_forget,
         _memory_search_embedding,
         _memory_search_history,

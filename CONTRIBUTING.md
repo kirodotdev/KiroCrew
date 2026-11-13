@@ -178,7 +178,7 @@ copy, which only the next stage replaces. See the runtime dist resolution notes 
 
 | Env var | Purpose | Default |
 |---------|---------|---------|
-| `KIROCREW_HOME` | Config/data directory override | `~/.kiro/crew` |
+| `KIROCREW_HOME` | Config/data directory override. Some folders stay under `~/.kiro` whatever it is set to (see [Folders beside the data home](docs/guides/install.md#folders-beside-the-data-home)) | `~/.kiro/crew` |
 | `KIROCREW_PORT` | Dashboard port override | `5476` |
 | `KIROCREW_KIRO_BIN` | Explicit path to the `kiro-cli` binary (overrides PATH auto-detection) | auto-detected |
 | `KIROCREW_ALLOWED_LOOPBACK_PORTS` | Extra loopback ports trusted as browser origins (comma-separated), e.g. `3000` for the Vite dev server. Every page served on a listed port can act as you in the dashboard | none |

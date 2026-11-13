@@ -661,7 +661,12 @@ def iss_ok(client: Client, iss: str | None) -> bool:
 
     if not iss:
         return not client.iss_param
-    return same_issuer(iss, client.issuer)
+    try:
+        return same_issuer(iss, client.issuer)
+    except ValueError:
+        # The callback's ``iss`` is vendor text: one urlsplit refuses is a
+        # mismatch, never an exception whose traceback would log it.
+        return False
 
 
 # --- token endpoint ----------------------------------------------------------

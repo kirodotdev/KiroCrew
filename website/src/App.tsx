@@ -92,7 +92,7 @@ import KiroAccountModal from './components/KiroAccountModal'
 
 import { i18nT } from './i18n/t'
 import { isAppNavId } from './appNotificationBadges'
-import { lazyPage, ConnectionsRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
+import { lazyPage, ConnectionsRedirect, McpRedirect, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
@@ -137,7 +137,7 @@ const EmbedSettingsPage = lazyPage(() => import('./pages/EmbedSettingsPage'))
 const DeveloperPage = lazyPage(() => import('./pages/DeveloperPage'))
 const SchedulePage = lazyPage(() => import('./pages/SchedulePage'))
 const AppPage = lazyPage(() => import('./pages/AppPage'))
-const AppDetailPage = lazyPage(() => import('./pages/AppDetailPage'))
+const AppDetailPage = lazyPage(() => import('./pages/AppDetailRoute'))
 const MigrationPage = lazyPage(() => import('./pages/MigrationPage'))
 const HooksPage = lazyPage(() => import('./pages/HooksPage'))
 
@@ -892,7 +892,7 @@ export default function App() {
             <Route path="/overview" element={<Navigate to="/settings/overview" replace />} />
             <Route path="/crew-board" element={<ErrorBoundary><Suspense fallback={null}><CrewBoardPage /></Suspense></ErrorBoundary>} />
             <Route path="/schedule" element={<SchedulePage />} />
-            {/* Agents and Connections live in the Agent Capabilities panel. */}
+            {/* Agents live in the Agent Capabilities panel; Connections is a Settings tab. */}
             <Route path="/agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/mc-agents" element={<Navigate to="/capabilities" replace />} />
             <Route path="/connections" element={<ConnectionsRedirect />} />
@@ -901,6 +901,7 @@ export default function App() {
             <Route path="/hooks" element={<HooksPage />} />
             <Route path="/webhooks" element={<ErrorBoundary><WebhooksPage /></ErrorBoundary>} />
             <Route path="/capabilities" element={<CapabilitiesPage />} />
+            <Route path="/mcp" element={<McpRedirect />} />
             {/* Instances setup moved into Settings; switching happens via the header tab strip. */}
             <Route path="/instances" element={<Navigate to="/settings/instances" replace />} />
             {/* Static segments (library, detail, migrate) MUST stay registered

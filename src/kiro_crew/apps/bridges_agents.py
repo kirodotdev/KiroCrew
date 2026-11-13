@@ -45,6 +45,7 @@ from kiro_crew.config.loader import (
     publish_materialized_agents,
     schedule_materialized_agents_refresh,
 )
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.mcp_utils import without_mcp_refs
 from kiro_crew.platform.governance import may_skip_gate_now, strip_ungoverned_auto_approve
 from kiro_crew.sel import sel
@@ -139,7 +140,7 @@ def _apply_agent_prompt(
     raw = per_agent.get("prompt")
     if not isinstance(raw, str) or not raw:
         return agent_data
-    path = Path(raw[len("file://") :] if raw.startswith("file://") else raw)
+    path = Path(file_uri_path_text(raw) if raw.startswith("file://") else raw)
     if not path.is_absolute():
         logger.warning("Agent %s: prompt path is not absolute, ignoring: %s", agent_name, raw)
         return agent_data
@@ -682,8 +683,56 @@ def snapshot_app_agent_configs(app_name: str) -> dict[str, dict[str, Any]]:
     return snapshot
 
 
+#: Suffix of the template record kept beside each materialized app agent spec,
+#: ``<agents dir>/<app>--<agent>.template`` (:func:`_template_record`). Not ``.json``,
+#: so kiro-cli and every spec scan skip it, as they skip the ``.lock`` beside the spec.
+_TEMPLATE_RECORD_SUFFIX = ".template"
+
+
+def _user_owned_agent_keys(
+    prior: Mapping[str, Any] | None, record: Mapping[str, Any] | None
+) -> set[str]:
+    """The keys of the on-disk config *prior* that are the user's.
+
+    Every key outside :data:`_FRAMEWORK_OWNED_AGENT_KEYS` whose value is not the one
+    the template record *record* says the template wrote. With no record (a spec
+    written before records existed) that is every such key.
+    """
+    if not prior:
+        return set()
+    missing = object()
+    return {
+        key
+        for key, value in prior.items()
+        if key not in _FRAMEWORK_OWNED_AGENT_KEYS
+        and (record is None or record.get(key, missing) != value)
+    }
+
+
+def _template_record(
+    fresh: Mapping[str, Any],
+    prior: Mapping[str, Any] | None,
+    record: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """The template record to keep beside the spec: what this registration wrote
+    from the template, *fresh*, for each key the user does not own.
+
+    A key the user owns stays out even when the new template happens to equal
+    their value, so a later template that changes it again cannot take it back.
+    """
+    owned = _user_owned_agent_keys(prior, record)
+    return {
+        key: value
+        for key, value in fresh.items()
+        if key not in _FRAMEWORK_OWNED_AGENT_KEYS and key not in owned
+    }
+
+
 def _preserve_user_agent_edits(
-    name: str, prior: dict[str, Any] | None, fresh: dict[str, Any]
+    name: str,
+    prior: dict[str, Any] | None,
+    fresh: dict[str, Any],
+    template_record: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Carry a user's own edits in an existing agent config across a refresh.
 
@@ -696,19 +745,17 @@ def _preserve_user_agent_edits(
 
     Same split the managed-MCP refresh uses (``agent._refresh_dynamic_fields``):
     keys the framework derives are refreshed because a stale one is a BUG, and
-    every other key present in the on-disk file wins over the template.
+    every other key the user owns in the on-disk file wins over the template.
 
-    "Can only have gotten there by the user" would be the natural reading of that
-    second half, and it is WRONG — the previous boot's materialization wrote the
-    template's own values there too. Nothing here records what the last template
-    wrote, so there is no provenance to tell a hand edit from a stale copy of the
-    template. Rather than introduce that provenance (a sidecar file to keep in
-    sync, for the sake of two keys), the ownership line is drawn by what a key
-    MEANS:
+    The previous registration wrote the template's own values into the file too,
+    so a value on disk is not by itself the user's. *template_record* tells them
+    apart (:func:`_template_record`, kept beside the spec): a value that still
+    equals what the record says the template wrote follows the new template, which
+    may also drop the key. Any other value is the user's
+    (:func:`_user_owned_agent_keys`), and with no record every value on disk is.
 
-    * A **preference** (``model``, ``description``, extra ``toolsSettings``) is
-      preserved. A template change that never reaches an existing install is the
-      intended outcome — the user's choice outranks the template's default.
+    * A **preference** (``model``, ``description``, extra ``toolsSettings``) the
+      user changed is preserved: their choice outranks the template's default.
     * **Containment** (``managedToolPolicy``, ``includeMcpJson``) is framework-owned
       and always refreshed, because preserving it is wrong in BOTH directions: a
       template that later tightens ``managedToolPolicy.exclude`` would never reach
@@ -725,10 +772,11 @@ def _preserve_user_agent_edits(
     if not prior:
         return fresh
 
+    owned = _user_owned_agent_keys(prior, template_record)
     merged = dict(fresh)
     kept: list[str] = []
     for key, value in prior.items():
-        if key in _FRAMEWORK_OWNED_AGENT_KEYS:
+        if key not in owned:
             continue
         if merged.get(key) != value:
             merged[key] = value
@@ -1051,6 +1099,10 @@ def _register_agents(
             prior_on_disk = _read_agent_config(link_path)
             if prior_on_disk is None and prior_configs:
                 prior_on_disk = prior_configs.get(link_name)
+            # What the previous registration wrote from the template. It sits in the
+            # agents directory, which the sandbox seals read-only like the spec.
+            record_path = link_path.with_suffix(_TEMPLATE_RECORD_SUFFIX)
+            prior_record = _read_agent_config(record_path)
 
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.
@@ -1086,7 +1138,8 @@ def _register_agents(
                 # value is the one carried across the refresh.
                 merged = _enforce_declared_mcp_tools(merged, manifest)
                 merged = _apply_agent_prompt(merged, agent_name, policy, app_name, app_root)
-                merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged)
+                record = _template_record(merged, prior_on_disk, prior_record)
+                merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged, prior_record)
                 # LAST governance pass, on the map that is about to be written. By this
                 # point `autoApprove` could have come from the app's own manifest, the
                 # per-agent MCP policy, a materialized managed ref, or a preserved
@@ -1137,6 +1190,13 @@ def _register_agents(
                     if _agent._declined_foreign_spec_write(link_path):
                         continue
                     atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                    try:
+                        atomic_write(record_path, json.dumps(record, indent=2) + "\n")
+                    except OSError as exc:
+                        # The spec is in place and the previous record stays, so a
+                        # value this write took from a changed template reads as the
+                        # user's next time and is kept.
+                        logger.warning("Could not write %s: %s", record_path.name, exc)
                 _audit_declared_mcp_tools(app_name, agent_name, manifest, merged)
                 registered.append(_namespace(app_name, agent_name))
                 # The DECLARED name only — kiro-cli enumerates agents by their
@@ -1182,6 +1242,12 @@ def _deregister_agents(app_name: str) -> int:
             try:
                 entry.unlink()
                 removed += 1
+            except OSError:
+                pass
+        elif entry.name.startswith(prefix) and entry.name.endswith(_TEMPLATE_RECORD_SUFFIX):
+            # The template record goes with its spec (_template_record).
+            try:
+                entry.unlink()
             except OSError:
                 pass
     # The launch copies the app's palette sessions ran under (apps.agent_launch)

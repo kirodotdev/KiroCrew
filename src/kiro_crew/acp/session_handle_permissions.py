@@ -1,8 +1,8 @@
 """Permission requests and in-band refusals.
 
-The permission event, approve and reject, the spec-disabled deny and tripwire, the
-unidentifiable, unreadable and unretained MCP identity refusals, the reject audit, and
-session permission routing.
+The permission event, approve and reject, the zero-tool deny and its session-start
+notice, the spec-disabled deny and tripwire, the unidentifiable, unreadable and
+unretained MCP identity refusals, the reject audit, and session permission routing.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
@@ -18,7 +18,7 @@ Instance fields read: ``_config_options``, ``_runtime``, ``_session_id``, ``_ses
 ``_tool_call_tool_name``, ``kas_crew_answered``, ``kas_crew_answered_commands``,
 ``kas_hook_held``, ``kas_spec_denies``, ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``,
 ``kas_spec_shell_readonly``, ``kas_crew_answered_paths``, ``kas_crew_answered_read_paths``,
-``_bound_cwd``, ``mirror_used``, ``spec_denied_tools``.
+``_bound_cwd``, ``mirror_used``, ``spec_denied_tools``, ``spec_zero_tools``.
 """
 
 from __future__ import annotations
@@ -43,6 +43,7 @@ from kiro_crew.acp._dispatch import (
 from kiro_crew.acp.client import AcpError, AcpToolGateUnroutable, _loggable_request_id
 from kiro_crew.acp.client_permissions import once_for_always
 from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     OPTION_ALLOW_ALWAYS,
     OPTION_ALLOW_ONCE,
@@ -287,6 +288,84 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int, reason: str
             request_id,
             {"outcome": {"outcome": OUTCOME_CANCELLED}},
         )
+
+
+#: The session-start notice for a zero-tool spec, per backend whose ban this driver can
+#: enforce only in part. codex-acp 2.3.0 asks ``session/request_permission`` before a
+#: command, a file change or an MCP call that needs approval, and ``_deny_zero_tools``
+#: refuses each one. It does not ask before a passive read, a hosted web search or a
+#: command that its sandbox allows, so those calls run. codex also starts the MCP servers in the
+#: operator's own ``config.toml`` whatever Crew mounts, and runs a tool of theirs that
+#: it approves itself (``readOnlyHint``, ``default_tools_approval_mode``, a trusted
+#: entry) without asking. That residual is why codex is not
+#: in ``ACP_BACKENDS_HONOR_ZERO_TOOL_BAN``. A backend not named here gets the refusal
+#: and no notice.
+PARTIAL_ZERO_TOOL_BAN_NOTICES: dict[str, str] = {
+    ACP_BACKEND_CODEX: (
+        'ℹ️ This agent declares "tools": []. Crew cannot remove the built-in tools of '
+        "Codex, so Crew refuses every tool call that Codex asks permission for. Codex "
+        "can still read files, search the web, run commands that its sandbox allows, and "
+        "call MCP tools from your Codex config.toml that it approves itself, without "
+        "asking."
+    ),
+}
+
+
+def zero_tool_ban_notice(self: AcpSessionHandle) -> str:
+    """The session-start notice that this session's ``"tools": []`` ban is partial, else ``""``.
+
+    Read once by the dashboard on a new session (``_notice_steer_upgrade``). Empty
+    for a spec that declares tools and for a backend not in
+    :data:`PARTIAL_ZERO_TOOL_BAN_NOTICES`.
+    """
+    if not self.spec_zero_tools:
+        return ""
+    return PARTIAL_ZERO_TOOL_BAN_NOTICES.get(self._runtime.acp_backend, "")
+
+
+async def _deny_zero_tools(self: AcpSessionHandle, event: AcpEvent) -> bool:
+    """Refuse EVERY permission request when the agent spec declares ``"tools": []``.
+
+    The counterpart of ``AcpClient._deny_zero_tools`` on this driver. A mirrored host
+    here (codex) turns ``tools`` into an MCP allowlist only, and has no wire channel
+    that removes its own shell and file tools. So the ban is honoured at the
+    permission request. A command, a file change, an MCP call and a native child's
+    request routed to this handle are all answered with the adapter's reject option,
+    in the dispatch loop before the event is yielded. No hook, trust grant or
+    auto-approve sees the request, so none of them can approve it.
+
+    Runs before :meth:`_deny_spec_disabled_tool`: a zero-tool spec allows nothing,
+    so it has no per-tool deny set for that check to read.
+
+    The ban is partial, because a call that the adapter runs without asking never
+    reaches this (see :data:`PARTIAL_ZERO_TOOL_BAN_NOTICES`). Returns True when the
+    request was refused (audited, then rejected on the wire), False when the spec
+    declares tools and the caller decides.
+    """
+    if not self.spec_zero_tools:
+        return False
+    # An MCP approval names no tool of its own; its trusted identity does.
+    identity = identified_mcp_call(event)
+    name = (
+        f"mcp__{identity[0]}__{identity[1]}"
+        if identity is not None
+        else event.wire_title or event.title or "unknown"
+    )
+    logger.warning(
+        'session permission: refusing %r -- the agent spec declares "tools": [] and '
+        "this backend has no channel that removes its own tools, so the ban is "
+        "enforced at the permission request [session=%s]",
+        redact_text(str(name)[:4096])[:120],
+        self._session_id,
+    )
+    self._audit_handle_reject(
+        event.request_id,
+        name,
+        "spec_zero_tools",
+        sub_session_id=event.sub_session_id or "",
+    )
+    await self.reject_tool(event.request_id)
+    return True
 
 
 async def _deny_spec_disabled_tool(self: AcpSessionHandle, event: AcpEvent) -> bool:

@@ -48,7 +48,12 @@ from typing import TypedDict
 
 from kiro_crew import mcp_grant, mcp_grant_kas
 from kiro_crew.config.loader import data_home
-from kiro_crew.connections.registry import Provider, get_visible_providers, is_preregistered
+from kiro_crew.connections.registry import (
+    REDIRECT_HOSTS,
+    Provider,
+    get_visible_providers,
+    is_preregistered,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +97,19 @@ _RECONCILE_LOCK = threading.Lock()
 _UNPERSISTED_RECORD: dict[str, str] | None = None
 
 
+class SignInRedirect(TypedDict, total=False):
+    """Where a provider's sign-in returns, for an org admin's redirect allowlist.
+
+    ``exact`` is the one redirect Crew's own sign-in registers. ``anyPort`` lists
+    loopback origins instead when Kiro CLI or the KAS engine runs the sign-in:
+    that runtime picks the port per sign-in, so only a host on any port can be
+    allowed.
+    """
+
+    exact: str
+    anyPort: list[str]
+
+
 class ConnectionStatus(TypedDict, total=False):
     """One visible provider's authorization verdict as served to the dashboard.
 
@@ -111,7 +129,7 @@ class ConnectionStatus(TypedDict, total=False):
     #: not yet entered a usable OAuth client. Present only when true. The card renders
     #: an instruction instead of Connect: a mint would fail at the vendor with a
     #: registration error no user can act on, so the row says what the missing step
-    #: is and where it lives (Settings → OAuth Apps).
+    #: is and where it lives (Settings → Connections).
     needsClientConfig: bool
     #: True on a connected row while chats run on KAS (and the row has no
     #: ``backendLacksOauth``) whose grant no KAS chat reads from the vault: a
@@ -146,6 +164,35 @@ class ConnectionStatus(TypedDict, total=False):
     #: Present only when true. Test runs on kiro-cli's grant and is refused for such
     #: a row, so the card does not offer it.
     crewHeld: bool
+    #: Where this provider's sign-in returns (:class:`SignInRedirect`). Present
+    #: only for a registry entry with an ``org_admin_guide``.
+    signInRedirect: SignInRedirect
+
+
+def _sign_in_redirects(
+    providers: list[Provider], crew_managed: frozenset[str]
+) -> dict[str, SignInRedirect]:
+    """slug -> :class:`SignInRedirect` for each provider with an ``org_admin_guide``. Blocking.
+
+    A Crew-held card's Connect registers :func:`crew_oauth_dcr.redirect_uri`, the
+    call :func:`crew_oauth_dcr.prepare` makes, so the address shown is the one the
+    vendor sees. *crew_managed* is the same ``crew_oauth.owns`` answer Connect reads.
+    """
+    out: dict[str, SignInRedirect] = {}
+    exact = ""
+    for provider in providers:
+        if not provider.get("org_admin_guide"):
+            continue
+        slug = str(provider["slug"])
+        if slug not in crew_managed:
+            out[slug] = {"anyPort": [f"http://{host}" for host in REDIRECT_HOSTS]}
+            continue
+        if not exact:
+            from kiro_crew.connections.crew_oauth_dcr import redirect_uri
+
+            exact = redirect_uri()
+        out[slug] = {"exact": exact}
+    return out
 
 
 def _client_config_map(providers: list[Provider]) -> dict[str, bool]:
@@ -606,6 +653,7 @@ async def collect_connection_statuses(
     grants, saved = await asyncio.to_thread(_grant_presence_maps, providers, kas_chats)
     # Crew holds these grants itself, so the KAS caveat does not apply to them.
     crew_managed = await asyncio.to_thread(_crew_managed_slugs, providers)
+    redirects = await asyncio.to_thread(_sign_in_redirects, providers, crew_managed)
     client_configured = await asyncio.to_thread(_client_config_map, providers)
     backend_oauth = (
         await asyncio.to_thread(chat_backend_honors_preregistered_oauth)
@@ -634,6 +682,8 @@ async def collect_connection_statuses(
             entry["grantIndeterminate"] = True
         if slug in crew_managed or slug in kas_sign_ins:
             entry["crewHeld"] = True
+        if slug in redirects:
+            entry["signInRedirect"] = redirects[slug]
         if not backend_oauth and is_preregistered(provider) and slug not in crew_managed:
             # A caveat, not a refusal: the mint runs on kiro-cli, so the grant it
             # writes is real for kiro-cli chats. Whether a KAS chat can use it is

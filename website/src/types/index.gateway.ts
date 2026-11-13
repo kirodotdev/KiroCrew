@@ -156,6 +156,8 @@ export interface StatusData {
   /** The person armed an update (Update when I restart): the gateway applies it at its
    *  next start, before it serves anything. `null` when nothing is armed. */
   update_armed_version?: string | null
+  /** Unix seconds the armed update was armed; the desktop reads it to tell a fresh arm from a stale one. */
+  update_armed_at?: number | null
   /** Why the last boot-time apply failed; the old version is running. */
   pending_apply_error?: string | null
   update_progress?: { step: string; detail: string } | null

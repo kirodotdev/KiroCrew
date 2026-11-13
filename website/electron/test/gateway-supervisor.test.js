@@ -30,6 +30,7 @@ test("module has no top-level Electron dependency and its factory accepts fakes"
     "start",
     "connect",
     "mintLocalToken",
+    "ownsLocalListener",
     "fetchRemoteToken",
     "entryUrl",
     "probePrimaryPortOwner",

@@ -4,7 +4,8 @@ failure streak that refuses a repeat, and ``POST /api/chat/slots/{slot}/end-wait
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
@@ -112,7 +113,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
 
     from kiro_crew import crew_mode, crew_pause
     from kiro_crew.dashboard.handlers.crew_pause import (
-        _root_lock,
+        _ROOT_LOCKS,
         drain_held_queue,
         memory_ready_for_drain,
     )
@@ -130,7 +131,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
             # them would leave a refused Continue no record to hold the member on.
             started = slot._turns_started
             for root in crew_pause.roots_naming(slot.key):
-                await root_locks.enter_async_context(_root_lock(root))
+                await root_locks.enter_async_context(_ROOT_LOCKS.hold(root))
             if slot._turns_started != started and not crew_pause.holds_turn(slot.key):
                 # The Resume all this waited behind already handed the member back.
                 return web.json_response({"ok": True, "slot": slot.key})
@@ -226,10 +227,13 @@ async def continue_slot_turn(
     slot: _ChatSlot,
     *,
     directive_user_origin: bool,
+    directive_channel_origin: bool = False,
     via: str = "",
     require_interrupted: bool = False,
     allow_restored_queue: bool = False,
     before_dispatch: Callable[[], None] | None = None,
+    prepare_dispatch: Callable[[], Awaitable[None]] | None = None,
+    dispatch_guard: Callable[[], AbstractContextManager[Any]] | None = None,
     extra_meta: dict[str, Any] | None = None,
     replaced: Callable[[], bool] | None = None,
 ) -> str:
@@ -251,7 +255,12 @@ async def continue_slot_turn(
     disk (``RESTORED_QUEUE_KEY=True``); agent tools leave it off to keep the
     original refusal. ``before_dispatch`` runs
     synchronously under the slot lock immediately before the queue insert and
-    may raise :class:`SlotContinueRefusal`. ``via`` is recorded on the
+    may raise :class:`SlotContinueRefusal`. ``prepare_dispatch`` is awaited
+    under the lock after the sub-agent probe, for a re-check that cannot run on
+    the event loop, and may raise it too. ``dispatch_guard`` wraps the final
+    synchronous stretch (before_dispatch, containment snapshot, insert).
+    ``directive_channel_origin`` stamps the recovery entry as channel text, so a
+    resumed turn keeps the channel's narrower authority. ``via`` is recorded on the
     ``dashboard_continue`` audit line when set. ``extra_meta`` is merged into
     the queue entry's ``meta`` (session control stamps the sending slot there,
     so a drain-time drop is reported back to it). ``replaced`` is checked after
@@ -339,6 +348,14 @@ async def continue_slot_turn(
             raise SlotContinueRefusal(
                 "sub-agents are running", "slot_subagents_running", response=subagents_denied
             )
+        if prepare_dispatch is not None:
+            # After the last probe: a re-check that must await (a policy read
+            # kept off the event loop). It may raise SlotContinueRefusal; the
+            # synchronous before_dispatch below still runs with no await between
+            # it and the insert.
+            await prepare_dispatch()
+            if replaced is not None and replaced():
+                raise SlotContinueRefusal("not found", "slot_not_found", status=404)
         if not _has_conversation(slot):
             raise SlotContinueRefusal("nothing to continue", "slot_empty")
         # The same session start has already failed twice in a row with nothing
@@ -377,35 +394,59 @@ async def continue_slot_turn(
                 "turn_not_failed",
             )
         resume = _MANUAL_RESUME_MSG if interrupted else _MANUAL_CONTINUE_MSG
-        if before_dispatch is not None:
-            # Synchronous, under the lock, with no await between it and the
-            # insert below: a caller whose authority was decided before the lock
-            # (session control) re-checks it at the last point where refusing
-            # still changes nothing.
-            before_dispatch()
-        # circular import: session_control imports this package's modules at module level.
-        from kiro_crew.dashboard import card_send
-        from kiro_crew.dashboard.session_control import containment_meta
+        resume_payload = ""
+        resend_meta: dict[str, Any] = {}
+        unsent = unsent_resend(slot.messages, slot._unsent_resends) if interrupted else None
+        if unsent is not None:
+            # Function-local: this owner runs on chat_handlers' globals, which do
+            # not carry this name.
+            from kiro_crew.dashboard.chat_utils import RecoveryPayload
 
-        # Admission stamp + provenance: recovery-kind entries are subject
-        # to drain re-validation like any other externally admitted content, and
-        # provenance follows the CALLER — the same request-identity split as
-        # api_chat. An app hitting Continue on its own slot must not gain the
-        # authenticated-human flag that gates session-mutating effects.
-        # The request being continued is a Dashboard card's: so is the continuation, with
-        # the same limits (the drain reads the mark off the entry).
-        _card_meta = (
-            {card_send.CARD_ORIGIN_META_KEY: True}
-            if card_send.latest_user_row_is_card(slot.messages)
-            else {}
-        )
-        slot.queue_insert(
-            0,
-            resume,
-            kind=SYNTHETIC_RECOVERY_KIND,
-            meta={**containment_meta(state, slot), **(extra_meta or {}), **_card_meta},
-            directive_user_origin=directive_user_origin and not _card_meta,
-        )
+            resume, resend_meta = unsent
+            resume_payload = RecoveryPayload.ORIGINAL
+        # ``dispatch_guard`` (when given) is entered around the final check, the
+        # containment snapshot and the insert -- all synchronous -- and may raise
+        # SlotContinueRefusal on entry (a caller that must not wait on a lock the
+        # snapshot's readers take refuses instead of stalling the loop).
+        from contextlib import nullcontext  # this part runs on the facade's globals
+
+        with dispatch_guard() if dispatch_guard is not None else nullcontext():
+            if before_dispatch is not None:
+                # Synchronous, under the lock, with no await between it and the
+                # insert below: a caller whose authority was decided before the lock
+                # (session control) re-checks it at the last point where refusing
+                # still changes nothing.
+                before_dispatch()
+            # circular import: session_control imports this package's modules at module level.
+            from kiro_crew.dashboard import card_send
+            from kiro_crew.dashboard.session_control import containment_meta
+
+            # Admission stamp + provenance: recovery-kind entries are subject
+            # to drain re-validation like any other externally admitted content, and
+            # provenance follows the CALLER — the same request-identity split as
+            # api_chat. An app hitting Continue on its own slot must not gain the
+            # authenticated-human flag that gates session-mutating effects.
+            # The request being continued is a Dashboard card's: so is the continuation, with
+            # the same limits (the drain reads the mark off the entry).
+            _card_meta = (
+                {card_send.CARD_ORIGIN_META_KEY: True}
+                if card_send.latest_user_row_is_card(slot.messages)
+                else {}
+            )
+            slot.queue_insert(
+                0,
+                resume,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=resume_payload,
+                meta={
+                    **containment_meta(state, slot),
+                    **(extra_meta or {}),
+                    **resend_meta,
+                    **_card_meta,
+                },
+                directive_user_origin=directive_user_origin and not _card_meta,
+                directive_channel_origin=directive_channel_origin,
+            )
 
     # The queue entry is already committed; audit failure must not strand it.
     try:
@@ -477,6 +518,35 @@ def session_start_failure_streak(messages: list[dict]) -> int:
         if role in ("user", "assistant") and m.get("content") and not is_system_notice(role, meta):
             break
     return streak
+
+
+def unsent_resend(
+    messages: list[dict], record: tuple[dict[str, Any], str, dict[str, Any]] | None
+) -> tuple[str, dict[str, Any]] | None:
+    """The message the last turn failed to send, as text and queue meta, or None.
+
+    A ``memory_unavailable`` error is raised while the turn's context is still
+    being prepared, so the agent's own session never holds that message, and the
+    generic resume body would have it finish the request before this one. When
+    it is a person's own dashboard prompt the agent did not consume, the failing
+    turn records its error row with the text and attachment lists it was handed
+    in the slot's ``_unsent_resends`` (``turn_failures._unsent_resend``).
+
+    The resend is that record's text, never a row's: a row can be rewritten in
+    place or rebuilt from disk under the same ``mid``. It is offered only while
+    the newest turn-anchor row IS the recorded error row object, so a rebuilt
+    window, a later turn or a restart keeps Resume's usual body.
+    """
+    if record is None:
+        return None
+    error_row, text, meta = record
+    # Rows that open, answer or end a turn. Any other row (a preparation chip, a
+    # skill load, a wire-only marker) is passed over on the way back.
+    anchor_roles = ("user", "inject", "nudge", "subagent", "assistant", "tool", "error")
+    anchor = next((m for m in reversed(messages) if m.get("role") in anchor_roles), None)
+    if anchor is not error_row:
+        return None
+    return text, dict(meta)
 
 
 def _is_stop_event(m: dict) -> bool:

@@ -23,9 +23,10 @@ from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.config import KiroCrewConfig, config_dir
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
+from kiro_crew.file_uri import file_uri_path_text
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, validate_file_path
-from kiro_crew.platform_compat import IS_WINDOWS, first_linked_ancestor, is_link_or_junction
+from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 from kiro_crew.validation import is_registered_agent_name
 
 logger = logging.getLogger(__name__)
@@ -93,23 +94,8 @@ ResourceDeclaration = str | dict[str, object]
 
 
 def _file_uri_path(uri: str) -> Path:
-    """The path a ``file://`` declaration names, ``~`` expanded.
-
-    ``Path.as_uri()`` spells a Windows file ``file:///C:/x``. Windows reads the
-    ``/C:/x`` left after the scheme as rooted but drive-less, so there the ``/``
-    before the drive is dropped and the declaration is the absolute ``C:/x``.
-    """
-    text = uri[7:]
-    drive = text[1:2]
-    if (
-        IS_WINDOWS
-        and text[:1] == "/"
-        and drive.isascii()
-        and drive.isalpha()
-        and text[2:4] in (":/", ":\\")
-    ):
-        text = text[1:]
-    return Path(text).expanduser()
+    """The path a ``file://`` declaration names, ``~`` expanded."""
+    return Path(file_uri_path_text(uri)).expanduser()
 
 
 class MemberEssentialContextError(ValueError):

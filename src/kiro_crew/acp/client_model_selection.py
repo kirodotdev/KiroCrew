@@ -32,13 +32,16 @@ from kiro_crew import model_registry, model_scope
 from kiro_crew.acp import launch_tuning, runtime_models
 from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
+from kiro_crew.acp.harness.mimocode import mimocode_model_rows
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpProcessDied
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_MIMOCODE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
+    ACP_BACKENDS_MODEL_SELECT_UNCHECKED,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     METHOD_INITIALIZE,
     METHOD_SESSION_NEW,
@@ -311,6 +314,8 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     # ``availableModels``; nothing may be appended after this block
     # without re-adding that malformed-payload guard.
     captured = parse_advertised_models({"models": models})
+    if self.backend == ACP_BACKEND_MIMOCODE:
+        captured = mimocode_model_rows(captured)
     if captured:
         self._available_models = captured
         self._available_models_captured_at = time.monotonic()
@@ -533,6 +538,8 @@ async def _entitlement_probe_answer(self: AcpClient) -> tuple[list[dict[str, str
     )
     answered_at = time.monotonic()
     fresh = advertised_models_from_session(resp, self.backend)
+    if self.backend == ACP_BACKEND_MIMOCODE:
+        fresh = mimocode_model_rows(fresh)
     probe_sid = str(resp.get("sessionId") or "")
     if probe_sid:
         policy = harness_for(self.backend).teardown
@@ -597,7 +604,21 @@ async def _push_model_config_option(self: AcpClient, model_id: str, *, strict: b
     # Each push describes only itself; the split below sets it again.
     self.model_pin_partial = ""
     last_exc: AcpError | None = None
-    for cand in self._model_config_candidates(model_id):
+    candidates = self._model_config_candidates(model_id)
+    if self.backend in ACP_BACKENDS_MODEL_SELECT_UNCHECKED:
+        # This harness accepts any value and then fails every prompt on one it
+        # cannot resolve, so its acceptance proves nothing. Judge the value
+        # against the advertised select here instead: only the advertised
+        # spelling is written, and a value the select does not carry takes the
+        # refusal path below without touching the wire. A cold cache has
+        # nothing to judge against and keeps the ladder as it was.
+        advertised = self._advertised_model_ids()
+        if advertised:
+            resolved = runtime_models.resolve_pin_spelling_on(
+                model_id, advertised, backend=self.backend
+            )
+            candidates = [resolved] if resolved else []
+    for cand in candidates:
         try:
             await self.set_config_option("model", cand)
         except AcpError as exc:
@@ -655,9 +676,13 @@ async def _push_model_config_option(self: AcpClient, model_id: str, *, strict: b
             ),
         ) from last_exc
     logger.warning(
-        "ACP model %s rejected by the adapter; staying on the backend default %s "
-        "(advertised: %s)",
+        "ACP model %s %s; staying on the backend default %s (advertised: %s)",
         _rejected_log,
+        (
+            "is not in the advertised model list and was not sent"
+            if not candidates
+            else "rejected by the adapter"
+        ),
         self._resolved_model_id or DEFAULT_MODEL,
         ", ".join(advertised_ids) or "none",
     )

@@ -40,9 +40,9 @@ from kiro_crew.notifications.bridge_approval_note import (
 TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex")
 
 #: The transports whose owner may answer a bridged approval by replying ``approve``
-#: or ``deny`` to it (RFC bridge actions, B4d). Each needs an inbound reader that
+#: or ``deny`` to it (RFC bridge actions, B4d, B4g). Each needs an inbound reader that
 #: knows which message a reply quotes; the others stay read-only until they get one.
-REPLY_TRANSPORTS: tuple[str, ...] = ("telegram",)
+REPLY_TRANSPORTS: tuple[str, ...] = ("discord", "telegram")
 
 #: The marker a critical note's first line carries.
 _CRITICAL_MARKER = "🚨"
@@ -71,29 +71,48 @@ def reply_owner(state: Any, transport: str) -> str:
         return ""
 
 
-#: The most a reply note may render to, in characters: below Telegram's per-message
-#: cap with room for the delivery leg's display pass, so the note is one message and
-#: a reply to it can only quote the message that carries the prompt.
+#: The most a reply note may render to, in characters, per reply transport: below
+#: the transport's per-message cap with room for the delivery leg's display pass, so
+#: the note is one message and a reply to it can only quote the message that carries
+#: the prompt. Telegram's counts the rendered HTML; Discord sends markdown as written
+#: and the delivery leg chunks it at 1900.
 _ONE_MESSAGE = 3500
+_ONE_DISCORD_MESSAGE = 1800
 
 #: The fewest characters of a cut detail still shown with a prompt: below it, what
 #: an Approve would run is not readable enough to consent to, so no prompt is sent.
 _MIN_SHOWN = 100
 
 
-def render_reply_text(head: str, detail: str) -> str:
+def _fits_one_message(transport: str, text: str) -> bool:
+    """Whether *text* is one message on reply transport *transport*, as sent. MAY BLOCK.
+
+    Discord's is measured after the delivery leg's display pass
+    (``messaging.renderer.display_safe_for``), whose mention defang lengthens it.
+    """
+    if transport == "discord":
+        from kiro_crew.discord.transport import DISCORD_CAPABILITIES
+        from kiro_crew.messaging.renderer import display_safe_for
+
+        return len(display_safe_for(text, DISCORD_CAPABILITIES)) <= _ONE_DISCORD_MESSAGE
+    # Lazy: the Telegram renderer is not needed until a note is bound.
+    from kiro_crew.telegram.renderer import md_to_telegram_html_safe
+
+    return len(text) <= _ONE_MESSAGE and len(md_to_telegram_html_safe(text)) <= _ONE_MESSAGE
+
+
+def render_reply_text(head: str, detail: str, transport: str) -> str:
     """*head* (the note) plus what will run and how to answer, as one message, or ``""``.
 
     *detail* is scrubbed for display FIRST, so the cut can never sever a credential
     the scan would have caught, then collapsed to one line and cut the way
     Telegram's own approval card shows a call's input; every backtick is followed
     by a zero-width space, so untrusted input can neither close the code fence nor
-    render as markup. The cut shrinks until the whole text renders to one
-    Telegram message; ``""`` when it would have to fall below :data:`_MIN_SHOWN`,
-    and then the note carries no prompt. MAY BLOCK: run it off the loop.
+    render as markup. The cut shrinks until the whole text is one message on
+    *transport*; ``""`` when it would have to fall below :data:`_MIN_SHOWN`, and
+    then the note carries no prompt. MAY BLOCK: run it off the loop.
     """
-    # Lazy: the Telegram renderer is not needed until a note is bound.
-    from kiro_crew.telegram.renderer import md_to_telegram_html_safe
+    # Lazy: the shared display scrub and the input cut live with Telegram's renderer.
     from kiro_crew.telegram.renderer_approval import _APPROVAL_INPUT_CHARS
     from kiro_crew.telegram.renderer_display import _display_safe
 
@@ -103,7 +122,7 @@ def render_reply_text(head: str, detail: str) -> str:
         part = shown if len(shown) <= cut else shown[: cut - 1].rstrip() + "…"
         part = part.replace("`", "`\u200b")
         text = f"{head}\n\n```\n{part}\n```\nReply **approve** or **deny** to this message."
-        if len(text) <= _ONE_MESSAGE and len(md_to_telegram_html_safe(text)) <= _ONE_MESSAGE:
+        if _fits_one_message(transport, text):
             return text
         cut //= 2
     return ""
@@ -154,7 +173,9 @@ class TransportBridgeSink:
         text = render_transport_text(note)
         if token:
             # Off the loop: the display scan reads the whole, model-authored detail.
-            reply_text = await asyncio.to_thread(render_reply_text, text, action_detail)
+            reply_text = await asyncio.to_thread(
+                render_reply_text, text, action_detail, self.transport
+            )
             text, token = (reply_text, token) if reply_text else (text, "")
         posted: list[tuple[str, str]] = []
         sent, code, detail = await messaging._deliver_channel_dm(
@@ -166,11 +187,13 @@ class TransportBridgeSink:
             posted=posted,
         )
         registry = getattr(self._state, "bridge_actions", None)
-        if token and registry is not None:
-            # Every delivered part, keyed by its chat and message id: a reply quotes
-            # one message, and a message id alone repeats across chats.
-            for conversation_id, message_id in posted:
-                registry.link_message(self.transport, f"{conversation_id}:{message_id}", token)
+        if token and registry is not None and len(posted) == 1:
+            # Keyed by its chat and message id: a reply quotes one message, and a
+            # message id alone repeats across chats. Only a note that went out as ONE
+            # message is linked: a part without the prompt is not consent, so a note
+            # the leg still split, whatever lengthened it, answers nothing.
+            [(conversation_id, message_id)] = posted
+            registry.link_message(self.transport, f"{conversation_id}:{message_id}", token)
         if sent:
             return
         if not code:

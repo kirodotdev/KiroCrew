@@ -1011,6 +1011,14 @@ notifications, and whether the queued frame surfaces before or after the next
 prompt is written, has not been established by a live run (see "Native harness
 notifications relied on" below).
 
+A delivery holds one envelope. A turn that carries member essentials binds
+those. A turn with no member owner, on a provider that reports its compaction
+(`LLMProvider.reports_compaction`), binds its `[REPLY FORMAT RULES]` block
+instead, so the same receipt keeps the engine from being sent the rules on every
+message; that bind is forced only by `needs_reinjection` (see
+[context-management](../../architecture/context-management.md)). It shares the
+limit in the paragraph above.
+
 ### Native harness notifications relied on
 
 This dedup depends on the harness reporting every native context loss it

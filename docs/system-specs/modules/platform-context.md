@@ -781,8 +781,9 @@ Wired sites:
   cannot disable or weaken the outer sandbox. A transient adapter error falls
   back to the original executable (outer sandbox still applies); a
   `PlatformCompositionError` propagates fail-closed.
-  `kiro_cli.mandatory_mcps_drop_allowed` resolves both the spawned path and the
-  pinned install through the same seam before its checks, so the Tool Search
+  `kiro_cli.mandatory_mcps_drop_allowed` resolves the spawned path and the
+  install it is compared with (the pin, or the `PATH`-only install) through the
+  same seam before its checks, so the Tool Search
   deferral gate judges the executable that will run, not the launcher.
 - `hooks.py` — the deny check routes through `current_context().security.is_denied`;
   the kiro-hooks egress (`dashboard/handlers/hooks_scripts.py`) scrubs command/matcher

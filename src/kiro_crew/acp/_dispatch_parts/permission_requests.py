@@ -977,6 +977,15 @@ def build_permission_event(
             # the cut -- but earns no durable trust, since a value was not seen
             # whole.
             _raw_params_trusted = envelope is not None and not envelope["truncated"]
+    # A harness whose tools spell an argument the gates read under another name
+    # (MiMo's ``notebook_path``, ``patch_text``) gains the canonical spelling here,
+    # beside its own, so the path and patch checks judge it. Table-driven by
+    # backend: a backend with no row gets its params back untouched. Imported at
+    # the one call, so the dispatch facade re-binds no per-backend table that only
+    # this line reads.
+    from kiro_crew.acp.harness_tool_names import canonical_tool_params
+
+    _resolved_raw_params = canonical_tool_params(harness_backend, _resolved_raw_params)
 
     # Trusted MCP server + tool identity recovered from the preceding tool_call
     # (identity is never read off the permission payload). .get() (not .pop()) mirrors the
@@ -1189,9 +1198,9 @@ def build_permission_event(
         # Only from the envelope's owner: a project's own tool named ``shell``
         # must not meet an ``execute_bash`` matcher as the built-in shell.
         _harness_tool_id = strands_identity.harness_tool_id if strands_identity else ""
-    # goose, opencode and claude state no such id; the tool name their tool_call
-    # frame stated stands in for it, qualified so it is read through that
-    # backend's table.
+    # goose, opencode, claude and codex state no such id; the tool name their
+    # tool_call frame stated stands in for it, qualified so it is read through
+    # that backend's table.
     elif not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
         _harness_tool_id = qualified_harness_tool_id(
             harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers

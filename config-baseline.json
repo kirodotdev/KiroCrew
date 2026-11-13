@@ -1068,7 +1068,7 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli applies it through the agent overlay; KAS receives it in the ACP initialize request, enabled only when the spawn agent's spec grants the tool_search loader. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0; any other executable, an older or unknown version keeps them resident. On Kiro Crew's own KAS engine bundle they always defer: that engine keeps its tools array fixed when a tool loads. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on any other ACP backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli applies it through the agent overlay; KAS receives it in the ACP initialize request, enabled only when the spawn agent's spec grants the tool_search loader. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. Crew's servers defer only when the spawn runs the pinned kiro-cli install or its kiro-cli-chat, and both are >= 2.27.0, or runs a KIROCREW_KIRO_BIN override or a kiro-cli found only on PATH that is itself >= 2.27.0 (and, when named kiro-cli on macOS or Linux, >= 3.0.0); a PATH install is checked inside the sandbox, which Windows lacks. Any other executable, an older or unknown version keeps them resident, and so does every spawn after a request is refused for a changed tool list, until restart. On Kiro Crew's own KAS engine bundle they always defer: that engine keeps its tools array fixed when a tool loads. To override the never-defer list, set ASBX_KIRO_MANDATORY_MCPS (comma-separated server names) in the gateway's environment. No effect on any other ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -2371,7 +2371,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Watchdog RSS Limit (MiB)",
-      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled.",
+      "help": "Recycle a session when its process tree resident memory exceeds this many MiB (default 4096). 0 disables; the internal background runtime recycles at 1536 MiB, or at this value when it is lower. Busy sessions (turn in flight) are never recycled. A process above the limit when the watchdog takes its size, at its second reading of it, is left running and recycled only once it doubles: so with many MCP servers or a long first turn. Not so for a process read under the limit more than about twelve minutes before, or for a chat recycled in the last 24 hours.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 4096
@@ -2750,6 +2750,7 @@
         "rule_authority_order": "off",
         "member_lesson_dedup": "off",
         "relevance_rule": "off",
+        "dream": "off",
         "inject_memory": true,
         "inject_lessons": true,
         "inject_lessons_per_turn": false,
@@ -3437,6 +3438,23 @@
         "off",
         "shadow",
         "enforce"
+      ],
+      "defaultValue": "off"
+    },
+    {
+      "path": "memory.dream",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Dreaming",
+      "help": "Whether an offline pass looks over stored lessons and facts for copies, near-copies, work status and old untagged rules while no chat turn is running. 'off' (default) schedules and reads nothing. 'propose' runs at most once a day per store, 200 rows and 10 minutes at a time, and writes an approval list (kirocrew memory dream list); nothing in it is applied, and lessons you taught are never proposed for change.",
+      "hasChildren": false,
+      "enumValues": [
+        "off",
+        "propose"
       ],
       "defaultValue": "off"
     },
@@ -4451,6 +4469,9 @@
         "otlp_endpoint": "",
         "otlp_endpoints": [],
         "traces_enabled": false,
+        "traces_otlp_endpoint": "",
+        "traces_otlp_headers_secret": {},
+        "traces_otlp_headers_env": {},
         "beacon_enabled": true,
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
@@ -4576,10 +4597,80 @@
       "sensitive": false,
       "tags": [],
       "label": "Traces Enabled",
-      "help": "Record OpenTelemetry traces of agent turns: one trace per turn, with the model, credits, tokens where reported, and one span per tool call. Off by default, and off loads nothing. When on, spans go to a local JSONL sink under ~/.kiro/crew/traces only (no network egress), pruned by the Retention and Max Total Size settings above, which the traces directory gets as its own budget. Never records prompt or reply text, tool arguments or output, file paths, or MCP server and tool names. Independent of the metrics 'enabled' switch.",
+      "help": "Record OpenTelemetry traces of agent turns: one trace per turn, with the model, credits, tokens where reported, and one span per tool call. Off by default, and off loads nothing. When on, spans go to a local JSONL sink under ~/.kiro/crew/traces, pruned by the Retention and Max Total Size settings above, which the traces directory gets as its own budget; they leave the host only when Traces OTLP Endpoint below (or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT / OTEL_EXPORTER_OTLP_ENDPOINT) names a collector. Never records prompt or reply text, tool arguments or output, file paths, or MCP server and tool names. Independent of the metrics 'enabled' switch.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "telemetry.traces_otlp_endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Traces OTLP Endpoint",
+      "help": "Opt-in OTLP/HTTP traces URL, the full path included (e.g. https://cloud.langfuse.com/api/public/otel/v1/traces or https://xray.us-east-1.amazonaws.com/v1/traces). EMPTY = spans stay on this host (default). Read only while Traces Enabled is on; then it wins over the OTEL_EXPORTER_OTLP_TRACES_ENDPOINT and OTEL_EXPORTER_OTLP_ENDPOINT variables. Must be https:// unless the host is loopback, and carries no user:password or query. Obeys the capabilities.telemetry otlp_hosts policy, and an LTS build ignores it. Requires the otlp package extra.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_secret",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Traces OTLP Headers (vault)",
+      "help": "Header name -> the name of a Settings -> Secrets entry holding that header's whole value, e.g. {\"Authorization\": \"LANGFUSE_OTLP_AUTH\"} where the entry holds 'Basic <base64 public:secret>', or an X-Ray API key as 'Bearer <key>'. Read when the exporter is built; no value is stored here or logged. An entry that is missing, or a value that is not an entry name, turns export off. Sent to Traces OTLP Endpoint only, never to an endpoint from the environment.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_secret.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_env",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "Traces OTLP Headers (environment)",
+      "help": "Header name -> the environment variable holding its value, as headers_env does for a metrics destination. Read when the exporter is built, never logged; an unset variable turns export off. Sent to Traces OTLP Endpoint only.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "telemetry.traces_otlp_headers_env.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "telemetry.beacon_enabled",
@@ -6990,6 +7081,7 @@
         "session_folder": "",
         "auto_link_sessions": false,
         "agent_sessions": false,
+        "code_channel_dispatch": false,
         "code_channels": false,
         "code_channel_defaults": {
           "folder": null,
@@ -7348,6 +7440,22 @@
       ],
       "label": "Agent Sessions",
       "help": "Run Slack threads as Slack agent sessions: threads show a live status and title, and Slack's native Stop button cancels the turn. Adds the agent view (features.agent_view), the assistant:write scope and the agent-session events to the generated app manifest; an installed app needs that manifest update and a reinstall before it takes effect, and until then Slack behaves as before. Slack cannot switch an app back from agent_view to assistant_view. Off by default; no restart.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "slack.code_channel_dispatch",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "slack"
+      ],
+      "label": "Code Channel Dispatch",
+      "help": "Let a Slack code channel's own session hand work to worker sessions: create them, bind them to its work ledger and follow their status. Only on turns the owner started, only for workers it created itself, one level deep, filed in the channel's folder, with the channel's own approval mode and never more; channels shared beyond this workspace are excluded. Needs slack.code_channels on as well; turning that on does not turn this on. Off keeps the full channel containment: a conductor in a code channel cannot hand off work. Off by default, and a missing, unreadable or malformed value reads as off. Takes effect on the next call; no restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -10123,6 +10231,20 @@
       "tags": [],
       "label": "Feature preview: remote_crew_chat",
       "help": "Turn on the 'remote_crew_chat' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.feature_previews.secrets_vault",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: secrets_vault",
+      "help": "Turn on the 'secrets_vault' feature preview.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

@@ -1441,9 +1441,16 @@ class WorkflowRunner:
                 agent_errors=dict(ctx.agent_errors),
                 source=source,
             )
-        except Exception as exc:  # script raised — captured, not propagated
+        except BaseException as exc:  # script raised — captured, not propagated
+            # ``BaseException`` is in the script's builtins, so a script can raise
+            # one. A closing coroutine must not await, so it goes straight up; an
+            # interrupt or exit of this process is recorded first, then goes up.
+            if isinstance(exc, GeneratorExit):
+                raise
             await _pre_terminal()
             emit(stream.run_failed(now, error=repr(exc), where="exec"))
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             return RunResult(
                 run_id,
                 ok=False,
@@ -1680,4 +1687,6 @@ class WorkflowRunner:
             fallback_title=fallback_title,
             fallback_folder_id=fallback_folder_id,
             admission_closed=admission_closed,
+            timeout_secs=self._timeout_secs,
+            budget_total=budget_total,
         )

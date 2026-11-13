@@ -88,5 +88,5 @@ echo "   Authorized redirect URIs (one per Google card):"
 for uri in $REDIRECT_URIS; do echo "     $uri"; done
 echo "   Click Create and copy the Client ID and Client secret."
 echo
-echo "Last: Kiro Crew -> Settings -> OAuth Apps -> any Google card. Paste both once and Save;"
+echo "Last: Kiro Crew -> Settings -> Connections -> Google. Paste both once and Save;"
 echo "'Also save on ...' (on by default) fills the other five."

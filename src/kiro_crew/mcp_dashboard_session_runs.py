@@ -398,6 +398,23 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         )
     if resp.get("autocompact_pct") is not None:
         on_model += f", auto-compacting at {resp['autocompact_pct']:g}%"
+    opened = f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
+    guidance = str(resp.get("guidance") or "")
+    if guidance:
+        # A code channel's conductor: it cannot read the worker's transcript, so
+        # it is told what it CAN do (the state read and the worker's link).
+        link = str(resp.get("dashboard_link") or "")
+        link_line = f" Dashboard: {link}" if link else ""
+        # A first message that did not land is still named (the conductor's only
+        # word that its worker got nothing); the rest of that line points at a
+        # transcript read this caller is not given.
+        failed = resp.get("delivery_error")
+        undelivered = (
+            _first_message_line({"message": ""}, resp) + " "
+            if args.get("message") is not None and isinstance(failed, dict)
+            else ""
+        )
+        return redact(f"{opened}{undelivered}{guidance}{link_line}" + reply_line(resp))
     # A Crew Mode chat's worker is in the sidebar but filed in no folder.
     where = (
         "the user's sidebar, unfiled (this chat is in Ultra Mode)"
@@ -405,7 +422,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         else "the user's sidebar"
     )
     return redact(
-        f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
+        opened
         + _first_message_line(
             {"message": args["message"]} if args.get("message") is not None else {}, resp, where
         )
@@ -1077,10 +1094,11 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             )
             continue
         mark = {"working": "\U0001f503", "queued": "\u23f8\ufe0f"}.get(status, "\U0001f4a4")
+        extra = _status_activity_suffix(row)
         if row.get("pending_approval"):
             status_lines.append(
                 f"  \u270b `{target}` ({title}) — {status}, "
-                f"{_pending_approval_phrase(row)}{queued}"
+                f"{_pending_approval_phrase(row)}{queued}{extra}"
             )
             continue
         # A turn admitted to a released worker reads `working` before its
@@ -1096,7 +1114,9 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
             if status == "idle" and row.get("looping")
             else ""
         )
-        status_lines.append(f"  {mark} `{target}` ({title}) — {status}{queued}{looping}{released}")
+        status_lines.append(
+            f"  {mark} `{target}` ({title}) — {status}{queued}{looping}{released}{extra}"
+        )
     status_lines.extend(quality_notes)
     return redact("\n".join(status_lines))
 
@@ -1158,6 +1178,29 @@ def _run_session_release(args: dict[str, Any], ctx: ToolContext) -> str:
         f"\U0001f513 Released `{target}` from `{previous}` — it stands on its own "
         "in the sidebar again, keeping whatever it opened under itself."
     )
+
+
+def _status_activity_suffix(row: dict[str, Any]) -> str:
+    """``, last activity 40s ago — <link>`` from a live status row's own fields.
+
+    Both are state, never transcript text: the server stamps the newest row's
+    age, and attaches a credential-free dashboard link only for a code channel's
+    conductor. Absent fields add nothing, so ordinary rows read as before.
+    """
+    parts = ""
+    since = row.get("since_activity_s")
+    if isinstance(since, int) and not isinstance(since, bool) and since >= 0:
+        if since < 120:
+            age = f"{since}s"
+        elif since < 7200:
+            age = f"{since // 60}m"
+        else:
+            age = f"{since // 3600}h"
+        parts += f", last activity {age} ago"
+    link = row.get("dashboard_link")
+    if isinstance(link, str) and link:
+        parts += f" — {link}"
+    return parts
 
 
 def _pending_approval_phrase(resp: dict[str, Any]) -> str:
@@ -1402,3 +1445,51 @@ def _run_work_dispatch(args: dict[str, Any], ctx: ToolContext) -> str:
         + _worker_capabilities_line(opened.resp or {})
         + _worker_capabilities_line(sent)
     )
+
+
+def _render_session_queue(resp: dict[str, Any]) -> str:
+    """Render a ``/api/session-control/queue`` body as compact text.
+
+    The route has already redacted and cut every excerpt; this only formats the
+    listing and leads with what the action did.
+    """
+    state_line = "still working" if resp.get("running") else "idle"
+    count = int(resp.get("count") or 0)
+    # The title is editable text too, so it is collapsed like the entry rows below.
+    target_text = " ".join(str(resp.get("target") or "").split())
+    title_text = " ".join(str(resp.get("title") or "").split())
+    head = f"\U0001f4e5 `{target_text}` — {title_text} ({state_line}), {count} queued"
+    lines: list[str] = []
+    if resp.get("moved"):
+        lines.append(f"Moved queued entry {resp['moved']} to position {resp.get('position')}.")
+    lines.append(head)
+    entries = [e for e in (resp.get("entries") or []) if isinstance(e, dict)]
+    if not entries:
+        lines.append("The queue is empty.")
+    # A local, not a module name: the facade must bind every module name an owner defines.
+    from_labels = {"yours": "yours ", "person": "person", "other": "other "}
+    for e in entries:
+        label = from_labels.get(str(e.get("from")), "other ")
+        # Every whitespace run, CR, CRLF and U+2028 included, becomes one space: an
+        # entry's text is untrusted, and a line break in it would render as an extra
+        # listing row with a forged position, id and owner label.
+        excerpt = " ".join(str(e.get("excerpt") or "").split())
+        entry_id = " ".join(str(e.get("id") or "").split())
+        lines.append(f"{e.get('position')}  {entry_id}  {label}  \"{excerpt}\"")
+    if resp.get("omitted"):
+        lines.append(f"({resp['omitted']} more queued entries not shown.)")
+    return "\n".join(lines)
+
+
+def _run_session_queue(args: dict[str, Any], ctx: ToolContext) -> str:
+    action = args.get("action") or "list"
+    body: dict[str, Any] = {"target": args["target"], "action": action}
+    if args.get("entry") is not None:
+        body["entry"] = args["entry"]
+    if args.get("position") is not None:
+        body["position"] = args["position"]
+    try:
+        resp = ctx.client.post("/api/session-control/queue", body, session_key=ctx.caller_key)
+    except DashboardError as refused:
+        return f"Error: could not {action} that session's queue: {refused.error}"
+    return _render_session_queue(resp)

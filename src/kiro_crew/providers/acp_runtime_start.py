@@ -65,6 +65,7 @@ from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.messaging.link import telemetry_channel_of
 from kiro_crew.platform_compat import pid_exists
 from kiro_crew.providers.cleanup import _is_safe_path
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.providers.acp import AcpProvider
@@ -472,6 +473,7 @@ async def _load_session_with_retry(
     channel_id: str = "",
     require_replay: bool = False,
     crew_agent: str | None = None,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> AcpSessionHandle | None:
     """Resume via session/load, retrying past a stale native session lock.
 
@@ -505,6 +507,7 @@ async def _load_session_with_retry(
             channel_id=channel_id,
             require_replay=require_replay,
             crew_agent=crew_agent,
+            start_priority=start_priority,
         )
 
     swept = False
@@ -952,6 +955,7 @@ async def _start_kiro_runtime_impl(
                         channel_id=self._owning_channel_id() or "",
                         require_replay=self.is_kas_backend,
                         crew_agent=self._crew_agent,
+                        start_priority=start_priority,
                     )
                 finally:
                     if cloud_hold is not None:

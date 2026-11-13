@@ -38,6 +38,7 @@ import { useAppRailOrder } from './nav/appRail'
 import { setRailWidth, railWidthFor } from '../hooks/useRailWidth'
 import { useFocusChrome } from './focus/focusChrome'
 import { useNativeNotification } from '../hooks/useNativeNotification'
+import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
@@ -400,16 +401,29 @@ export function useAppShell() {
     privacyAcked,
     privacyAckVersion,
     themeBootReady,
+    themeBootRead,
     markOnboarded,
     markImportOnboarded,
     markPrivacyAcked,
   } = useTheme()
-  const firstRun = useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion, themeBootReady, markOnboarded })
+  // First run's chapters write the host's flags, so they wait for the host's own
+  // answer. A failed boot read leaves only this browser's flags, which a new
+  // browser does not have; it may go on only where they already say first run
+  // is done.
+  const firstRun = useFirstRunChapters({
+    onboarded, importOnboarded, privacyAcked, privacyAckVersion,
+    themeBootReady: themeBootReady && (themeBootRead || onboarded),
+    hostStateUnread: themeBootReady && !themeBootRead && !onboarded,
+    markOnboarded,
+  })
   // Decided once per document: the URL does not change under a mounted App.
   const lookPreviewFrame = isLookPreviewFrame()
   // Capture Electron update lifecycle events app-wide so UpdateModal fires on
   // any page, not just after the user has opened Settings > About.
   useUpdateSubscription()
+  // Finish an agent update request's approved install wherever the user is
+  // when its download lands, not only on Settings > About.
+  useAgentInstallLatch()
   // Notify the main process whenever the gateway status reports a security
   // policy provider governs this install's updates, so the feed lane stands down.
   usePolicyGovernedNotification()

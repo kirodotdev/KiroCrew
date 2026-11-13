@@ -650,6 +650,7 @@ class SessionManager:
     get_approval_policy = _claims.get_approval_policy
     approval_revocation = _claims.approval_revocation
     get_agent = _claims.get_agent
+    starting_agent = _claims.starting_agent
     get_agent_selection = _claims.get_agent_selection
     set_approval_policy = _claims.set_approval_policy
     # -- Background, warm-pool and companion runtimes (session_parts.runtimes).
@@ -857,6 +858,7 @@ class SessionManager:
         self,
         cfg: KiroCrewConfig,
         provider_factory: ProviderFactory | None = None,
+        session_map: SessionMap | None = None,
     ):
         self._cfg = cfg
         # Baseline for adopt-on-change (see _sync_autocompact_pct). Captured here
@@ -909,7 +911,11 @@ class SessionManager:
         self._lifecycle_state = SessionLifecycleState()
         self._compaction_state = CompactionState()
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
-        self._session_map = SessionMap()
+        # A caller on the event loop builds the map in a worker thread and hands
+        # it in: its startup read retries a Windows sharing violation only off
+        # the loop (``read_bytes_with_retry``), and the map holds no asyncio
+        # primitives, so building it there is safe.
+        self._session_map = session_map if session_map is not None else SessionMap()
         # What each turn-permit holding owes at its release: whether its engine
         # noted that it landed, and the inline marks that release confirms or
         # revokes (``kiro_crew.parent_turns``).

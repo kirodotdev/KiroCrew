@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import ssl
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -144,6 +145,42 @@ class TestMapResponse:
             {"resourceType": "TOKEN", "currentUsage": 7, "usageLimit": 50},
         ]}
         assert "bonus_limit" not in api._map_response(data)
+
+    def test_extracts_bonuses_nested_in_the_credit_pool(self):
+        # The shape GetUsageLimits returns: grants nested under the CREDIT entry.
+        expires = time.time() + 49.5 * 86400
+        data = {"usageBreakdownList": [{
+            "resourceType": "CREDIT", "currentUsage": 0, "usageLimit": 50,
+            "bonuses": [
+                {"bonusCode": "kiroween-2026-abc", "displayName": "kiroween-2026",
+                 "currentUsage": 103.9, "usageLimit": 4000.0, "status": "ACTIVE",
+                 "expiresAt": expires},
+                {"displayName": "spent last year", "currentUsage": 10.0,
+                 "usageLimit": 10.0, "status": "EXPIRED", "expiresAt": expires},
+                {"displayName": "no expiry given", "currentUsage": 1.0, "usageLimit": 5.0},
+                "not a grant",
+            ],
+        }]}
+        out = api._map_response(data)
+        assert out["credits_plan"] == 50.0
+        assert out["bonus_credits"] == [
+            {"name": "kiroween-2026", "used": 103.9, "total": 4000.0, "days_left": 49},
+            {"name": "no expiry given", "used": 1.0, "total": 5.0},
+        ]
+        assert (out["bonus_label"], out["bonus_used"], out["bonus_limit"]) == (
+            "kiroween-2026", 103.9, 4000.0,
+        )
+
+    def test_skips_nested_bonuses_without_a_usable_name_or_limit(self):
+        data = {"usageBreakdownList": [{
+            "resourceType": "CREDIT", "currentUsage": 0, "usageLimit": 50,
+            "bonuses": [
+                {"bonusCode": "code-only", "currentUsage": 1.0, "usageLimit": 5.0},
+                {"displayName": "zero limit", "currentUsage": 0.0, "usageLimit": 0.0},
+                {"displayName": "bad\x1bname", "currentUsage": 1.0, "usageLimit": 5.0},
+            ],
+        }]}
+        assert "bonus_credits" not in api._map_response(data)
 
     def test_warns_on_two_credit_typed_pools(self, caplog):
         # The exact payload nobody has captured: TWO entries typed literally

@@ -58,7 +58,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_effort_model": ("property", False, "bb418bb7ece8", "acp"),
     "_emit_kiro_startup_metric": ("function", False, "4c7cfd604f41", "acp_runtime_start"),
     "_inline_turn_finished_cleanly": ("function", False, "a6632a57e602", "acp_turns"),
-    "_load_session_with_retry": ("function", True, "ec3e52973dd1", "acp_runtime_start"),
+    "_load_session_with_retry": ("function", True, "1568673b0925", "acp_runtime_start"),
     "_member_session_key": ("function", False, "bb418bb7ece8", "acp_runtime_start"),
     "_note_zero_tool_servers": ("function", True, "b60c5fea256e", "acp_runtime_start"),
     "_owning_channel_id": ("function", False, "f21e39ec5ffb", "acp_runtime_start"),
@@ -122,6 +122,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_goose_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kas_backend": ("property", False, "a6632a57e602", "acp"),
     "is_kiro_backend": ("property", False, "a6632a57e602", "acp"),
+    "is_mimocode_backend": ("property", False, "a6632a57e602", "acp"),
     "is_opencode_backend": ("property", False, "a6632a57e602", "acp"),
     "is_pi_backend": ("property", False, "a6632a57e602", "acp"),
     "is_strands_backend": ("property", False, "a6632a57e602", "acp"),
@@ -167,6 +168,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "prompts_written": ("property", False, "8dc15be1dfda", "acp"),
     "reapply_live_effort": ("function", True, "581451d2b011", "acp_model_effort"),
     "reject_tool": ("function", True, "8f224062db90", "acp"),
+    "reports_compaction": ("property", False, "a6632a57e602", "acp"),
     "reports_effort_support": ("data", False, "", ""),
     "reports_turn_usage": ("property", False, "a6632a57e602", "acp"),
     "served_model": ("property", False, "bb418bb7ece8", "acp"),
@@ -205,6 +207,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "watch_agent_turns": ("function", False, "42d751137554", "acp_turns"),
     "withheld_credentials_notice": ("property", False, "bb418bb7ece8", "acp"),
     "work_scratch_dir": ("property", False, "d921fd8d443d", "acp"),
+    "zero_tool_ban_notice": ("property", False, "bb418bb7ece8", "acp"),
 }
 
 #: Class-level annotations the split adds: fields first set by a member an owner defines,

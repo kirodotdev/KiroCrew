@@ -7,7 +7,7 @@ session; a server nobody curated is added by hand on the same page and behaves t
 same way afterwards. The page also reports whether each one is actually answering,
 which is usually the question you came with.
 
-Open it from the sidebar: **Customize → Connections**. The older
+Open it from the sidebar: **Settings → Connections**. The older
 `/connections` address still works and redirects there.
 
 The gallery ships on. To remove every Connections surface from an install, set
@@ -28,7 +28,7 @@ Of those, **15** render a card today. Two conditions decide which:
 | Entry state | Card | Why |
 |---|---|---|
 | Launch gate passed | **Connect** | A human has walked the whole flow on this provider and recorded its revoke surface. Seven entries: Notion, Linear, Atlassian, Stripe, Vercel, GitLab, TickTick |
-| Needs an operator-registered OAuth app | **Configure OAuth app** | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
+| Needs an operator-registered OAuth app | **Set up <provider>** (e.g. **Set up GitHub**) | The vendor refuses runtime client registration, so the card is an instruction rather than an offer. One Google OAuth client can serve all six Google cards; paste it into each. Eight entries: GitHub, Asana, Gmail, Google Drive, Google Calendar, Google Sheets, Google Docs and Google Slides |
 | Launch gate not yet walked | hidden | The entry exists so the nightly metadata check covers it; nothing about it is claimed to you yet |
 | Vendor admits clients by allowlist or waitlist | hidden | No per-install app can satisfy it, which is a dead end rather than an instruction. Four entries: Figma, Canva, Dropbox, Square |
 
@@ -272,7 +272,7 @@ For the two vendors needing an operator-registered app, the split is:
 | Client ID | `config.json`, under `connections.oauth_clients.<slug>.client_id` |
 | Client secret | the encrypted vault, as `CONNECTIONS_<SLUG>_CLIENT_SECRET` |
 
-Enter both under **Settings → OAuth Apps**, which also shows the exact redirect URI
+Enter both under **Settings → Connections**, which also shows the exact redirect URI
 to register in the vendor console. The panel is write-only for the secret: it never
 reads one back, so a screenshot of it leaks nothing. An environment pair
 (`KIROCREW_CONNECTIONS_<SLUG>_CLIENT_ID` and `_CLIENT_SECRET`) overrides both, for
@@ -283,6 +283,74 @@ Do not hand-write a client secret into a server entry instead. A secret there si
 plaintext in a file the agent can read. See [Secrets vault](secrets-vault.md) for what
 the vault refuses the agent, and [Blocked commands](blocked-commands.md) for what
 happens when the agent tries to read one anyway.
+
+## Atlassian organization admin checklist
+
+An Atlassian organization admin can limit which apps may sign in to Atlassian's
+MCP server and what they may do there. With those limits on, an Atlassian
+sign-in from Kiro Crew, or its tool calls, fail until the admin allows this
+install. This section is the list to hand that admin. It mixes two sources, and
+each part says which: what Kiro Crew does (from its source), and what Atlassian
+Administration offers (from Atlassian's docs, not walked by Kiro Crew on a real
+organization).
+
+**1. The redirect address (Kiro Crew).** The Atlassian card shows the address
+this install signs in with, under the warning triangle beside **Connect**. Copy
+it from there. Which address applies depends on what runs the sign-in:
+
+| What runs the sign-in | When | Redirect address | Domain entry the admin needs |
+|---|---|---|---|
+| Kiro Crew itself, local | The **GitHub sign-in by Kiro Crew** feature preview (`dashboard.feature_previews.crew_oauth`, which also covers the Atlassian card) is on, chats run on a backend Kiro Crew bridges such as Kiro Agent, and `dashboard.url` is not a public HTTPS address | `http://127.0.0.1:48100/callback` | `http://127.0.0.1:*/**` covers it |
+| Kiro Crew itself, on a gateway with a public HTTPS `dashboard.url` | As above, with `dashboard.url` set to `https://<dashboard host>` | `https://<dashboard host>/api/connections/oauth/callback` | `https://<dashboard host>/**`, its own entry |
+| Kiro CLI or the KAS engine | Every other case | A loopback address whose port that runtime picks at each sign-in | `http://127.0.0.1:*/**` and `http://localhost:*/**` |
+
+**2. What to allow in Atlassian Administration (Atlassian's docs).** Everything
+below lives at [admin.atlassian.com](https://admin.atlassian.com): pick the
+organization, then **Connectors → Atlassian MCP server**.
+
+- **Domains.** The list of redirect patterns allowed to sign in. Atlassian
+  describes `http://localhost:*/**` and `http://127.0.0.1:*/**` as the entries
+  that let local clients finish an OAuth sign-in, which an admin may keep or
+  remove, and an **Allow Atlassian supported domains** switch an admin may turn
+  off. If the entry from the table is missing, the admin adds it with **Add
+  domain**. An `https://` address always needs its own entry; `http://` is
+  accepted only for `localhost` and `127.0.0.1`.
+- **Permissions.** Read, Write and Search, each allowed or blocked per app
+  (Jira, Confluence and others). Allow the ones the agent should use.
+- **Authentication.** OAuth 2.1 is the default and is what Kiro Crew uses. The
+  API token switch does not affect it.
+- **IP allowlist.** Managed elsewhere in Atlassian Administration, not on the MCP
+  server page. If the organization uses one, MCP requests must come from an
+  allowed address. Kiro Crew's requests to Atlassian leave from the machine that
+  runs the gateway, so that machine's public address is the one to allow.
+  Atlassian notes the consent page can still appear from a blocked address; the
+  tool calls then fail.
+
+**3. What the sign-in asks for (Kiro Crew).** When Kiro Crew runs the sign-in
+itself, it asks for every scope Atlassian's server advertises, because
+Atlassian's sign-in challenge names none and the catalogue recommends none. That
+is about 40 scopes today, each shaped `<verb>:<product>:agent-interface`, for
+example `read:jira:agent-interface`, `write:jira:agent-interface`,
+`delete:jira:agent-interface` and `manage:jira:agent-interface`, plus scopes for
+Confluence, Jira Service Management, Bitbucket, Loom, Talent, Assets and more,
+and `offline_access`. The live list is the `scopes_supported` field of
+[Atlassian's resource document](https://mcp.atlassian.com/.well-known/oauth-protected-resource/v2/mcp).
+When Kiro CLI or the KAS engine runs the sign-in, that runtime chooses
+the scopes. The scope verbs do not map one to one onto the Permissions tab: the
+tab has Read, Write and Search, while the scopes also say `delete` and `manage`,
+and Atlassian's docs do not say which permission governs those.
+
+**4. When Atlassian refuses.** If Atlassian sends the sign-in back refused with
+`access_denied`, the card says that either the consent was declined or the
+organization's admin does not allow the connection, because that answer means
+either. Whether an admin block arrives that way or on a page of Atlassian's own
+has not been checked on a real organization. The exact messages Atlassian shows,
+and what the admin changes for each, are in
+[Troubleshooting](troubleshooting.md#atlassian-says-access-denied-your-organization-admin).
+
+Atlassian's own pages: [Control Atlassian MCP server settings](https://support.atlassian.com/security-and-access-policies/docs/control-atlassian-rovo-mcp-server-settings/),
+[Configure Atlassian MCP server permissions](https://support.atlassian.com/security-and-access-policies/docs/configure-atlassian-mcp-server-permissions/)
+and [Available Atlassian MCP server domains](https://support.atlassian.com/security-and-access-policies/docs/available-atlassian-rovo-mcp-server-domains/).
 
 ## Health: what a row's badge means
 
@@ -398,7 +466,7 @@ reset control — do not edit the user's MCP config to work around it.
 ## Sharing MCP servers across chats
 
 Each chat normally starts its own copy of every stdio MCP server. **MCP
-Management**, under the server list on **Customize → Connections → MCP Servers**,
+Management**, at the top of **MCP Servers** above the server list,
 lets all your chats use one copy of a server instead, which saves memory when many
 chats are open. A shared copy runs outside each chat's sandbox, with your access, so
 share a server only if you added it yourself and its command is what you expect.
@@ -417,7 +485,8 @@ them in a dialog, each with **Approve** (one copy runs it for all chats, outside
 their sandbox) and **Skip** (it keeps running inside each chat). There is no
 approve-all.
 
-**Advanced** holds the rest. In **Per-server sharing**, each row has a switch in
+The **Sharing** view, beside **Servers** under the card, holds the rest. In
+**Per-server sharing**, each row has a switch in
 the **Share** column, named **Enable MCP sharing** (`mcp_gateway.stub_servers`,
 which [MCP Apps](mcp-apps.md) calls routing). Turning it on reads the command the
 server runs and approves exactly that launch; the row's **Details** shows it, with

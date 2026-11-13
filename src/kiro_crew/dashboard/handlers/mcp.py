@@ -1377,6 +1377,13 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
             loaded = await asyncio.to_thread(_load_config_or_refusal, path)
             if isinstance(loaded, web.Response):
                 return loaded
+        # The store too: every apply writes it, and a toggle that read it as empty
+        # would write back only its own entry.
+        loaded = await asyncio.to_thread(
+            _load_config_or_refusal, _kirocrew_mcp_json(), name="the Kiro Crew mcp.json"
+        )
+        if isinstance(loaded, web.Response):
+            return loaded
         try:
             await asyncio.to_thread(_refuse_commented_config, *_user_mcp_config_paths())
         except UnicodeDecodeError:
@@ -1466,6 +1473,11 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
 
         async with _get_mcp_lock():
             for change in changes:
+                # Phases 0 and 1 skip a non-object change; this loop read it
+                # with `.get` and raised (500). Reported like an empty name.
+                if not isinstance(change, dict):
+                    results.append({"error": "change must be an object", "change": change})
+                    continue
                 name = str(change.get("name", "")).strip()
                 if not name:
                     results.append({"error": "empty name", "change": change})

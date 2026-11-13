@@ -120,6 +120,7 @@ from kiro_crew.dashboard.chat_api.app_admission import (  # noqa: F401
     _app_slot_acquisition_recheck,
     _deny_app_session_settings,
     _deny_app_yolo,
+    _loading_refusal,
     _reauthorize_after_await,
     _slot_not_found,
 )
@@ -130,7 +131,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     _send_binds_agent,
     _send_harness_command,
     _send_id_of,
-    _send_writes_persona,
     _settle_send_race,
     _sweep_stale_permissions,
     api_chat,
@@ -149,6 +149,7 @@ from kiro_crew.dashboard.chat_api.continue_turn import (  # noqa: F401
     api_chat_slot_end_wait,
     continue_slot_turn,
     session_start_failure_streak,
+    unsent_resend,
 )
 from kiro_crew.dashboard.chat_api.crew_steer import (  # noqa: F401
     _CREW_PERSON_STEER,
@@ -307,6 +308,7 @@ from kiro_crew.dashboard.chat_api.slot_guards import (  # noqa: F401
     _CommitToken,
     _record_explicit_agent_selection,
     _reset_slot_session_or_warn,
+    _send_writes_persona,
     _slot_replaced_while_queued,
     _subagents_attached_detail,
     _subagents_attached_response,
@@ -504,6 +506,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _redact_meta,
     _redact_meta_for_role,
     _remove_queued_by_id,
+    _reorder_queued_rows,
     _resettle_restricted_key,
     _sync_dashboard_slots,
     chunk_generation,
@@ -594,6 +597,7 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
 from kiro_crew.dashboard.slot_persistence.metadata_line import (  # noqa: F401
     autocompact_commits,
     tighten_line_for_appends,
+    turn_timeout_commits,
 )
 from kiro_crew.dashboard.slot_persistence.takeover_ordering import (  # noqa: F401
     close_metadata_under_lock,

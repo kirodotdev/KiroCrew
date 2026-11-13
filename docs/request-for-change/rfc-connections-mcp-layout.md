@@ -18,6 +18,7 @@ superseded-by: []
   2026-11-10, for a personal single-user tool. Claims about today's code were
   checked at `8f6fe6dbfe` (main).
 - Author: iamwhatever
+- Amended 2026-11-12 (owner decision): MCP Servers is a Customize tab beside Skills (`/capabilities?tab=mcp-servers`), not its own rail row. `/mcp` redirects there and keeps `?view=`. §4 below is superseded on placement only; the page content (§5) is unchanged.
 
 ## 1. Today
 
@@ -139,7 +140,20 @@ The owner clarified this on 2026-11-10, and it binds the code PR.
      six the same way. A partial failure names the products that failed and
      offers a retry.
    - **The opt-out.** "Use for every Google card" can be turned off, and
-     then a save writes one slug alone. Remove stays per slug.
+     then a save writes one slug alone.
+   - **Remove clears all six.** The page has one Google entry (owner
+     decision, 2026-11-10), so it has one Remove. Remove on that entry
+     deletes the stored client for every Google slug that has one; a client
+     set by the environment stays. A product with either half set by the
+     environment is skipped, as the shared Save skips it: a partly owned one
+     has its own form and Remove on the entry, and the shared Remove would
+     otherwise wipe the stored half that pairs with the environment's. A
+     product holding a different stored client than the one the entry shows
+     (saved on its own earlier) also gets its own form and Remove, and the
+     shared Save and Remove leave it alone. A
+     per-slug Remove would leave five live
+     clients the page offers no control to clear. Grants are not touched:
+     they follow the upstream revoke rule below.
    - **Storage is unchanged.** Each slug keeps its own record
      (`connections.oauth_clients.<slug>.client_id`, the vault's
      `CONNECTIONS_<SLUG>_CLIENT_SECRET`), and environment overrides still

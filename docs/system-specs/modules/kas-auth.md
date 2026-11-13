@@ -50,12 +50,12 @@
 > route in plain words; beside the card's sign-in button the copy points at that button.
 > Any other wording, the launcher form included, keeps its English. `kirocrew doctor`'s
 > `kas auth:` row names the route ("KAS through kiro-cli's relay") and prints the
-> same remedy when kiro-cli's own store is what answers. A terminal names the card
+> Kiro sign-in when kiro-cli's own store is what answers. A terminal names the card
 > second, since a host reached by ssh may have no browser: `kirocrew chat`'s error
-> reads `host_auth.KAS_TERMINAL_SIGN_IN` ("Sign in with `kirocrew kas login` (or in
-> the dashboard: ...)") in place of the card (`host_auth.for_terminal`), and
-> doctor's bundle-route remedy is built from that constant. The dashboard keeps the
-> sentence it translates. A stored Kiro CLI pick
+> and that doctor row read `host_auth.KAS_TERMINAL_SIGN_IN` ("Sign in with
+> `kirocrew kas login` (or in the dashboard: ...)") in place of the card
+> (`host_auth.for_terminal`), and doctor's bundle-route remedy is built from that
+> constant. The dashboard keeps the sentence it translates. A stored Kiro CLI pick
 > (`agent.acp_backend == "kiro"`) is not moved: it keeps kiro-cli's sign-in.
 
 ## Why this exists
@@ -247,6 +247,18 @@ port (or device code via `StartDeviceAuthorization`); `CreateToken`. Endpoints:
 `https://oidc.<region>.amazonaws.com` (Builder ID region `us-east-1`). Scopes:
 `codewhisperer:completions|analysis|conversations`. Start URLs: Builder ID
 `https://view.awsapps.com/start`; internal `https://amzn.awsapps.com/start`.
+
+A sign-in reuses the registration its own slot's stored token carries, as kiro-cli
+does, instead of calling `RegisterClient` again (`builder_id.stored_client`): only
+one from the same region whose `client_secret_expires_at` is more than
+`REUSE_MARGIN_SECS` (a week) away, because the new sign-in keeps that lapse and every
+refresh after it is refused. A lapsed one, one in its last week, one from another
+region, an entry stored before the expiry was kept, and an empty slot all register a
+new client. So does any `StartDeviceAuthorization` error on the stored client other
+than `StartUrlRejectedError`, so a registration AWS refuses never blocks a
+sign-in. Sign-out deletes the token and its registration with it; slots never share
+one. The registration's scopes are not recorded, so changing `OIDC_SCOPES` must also
+stop this reuse.
 
 An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 (`auth/service._canonical_start_url`, through the cloud login target's
@@ -651,7 +663,12 @@ engine instead ([aws-control.md](aws-control.md)).
   cancel does not settle, the signed-in view says so with a notice that offers
   Try again. "Use a different sign-in" is the smaller link back to the chooser.
   The code screen shows when the code stops working, from the begin answer's
-  `expires_at`.
+  `expires_at`. A poll the gateway never answered (a fetch rejection, or a
+  502/503/504 with no `code`, from a fronting proxy: a restart or a dropped link,
+  `api/queryClient.ts` `isUnansweredRead`) ends on the failure screen with a
+  sentence saying the connection to Kiro Crew was lost and to start over, never
+  the browser's "Failed to fetch"; a coded answer, such as the poll's 502
+  `auth_service_unreachable`, keeps its own text.
 - The persistent signal for a lapsed sign-in is the app-level **Kiro sign-in
   notice** (`website/src/components/KiroSignInNotice.tsx`, mounted in `App.tsx`
   above every route beside `CrashReportNotice`), because the card above lives on

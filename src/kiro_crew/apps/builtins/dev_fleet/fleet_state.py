@@ -192,10 +192,25 @@ async def _head_contained_in_pr(path: str, branch_oid: str, pr_head_oid: str) ->
 _PR_HEAD_LOOKUP_LIMIT = 10
 
 
+#: The terminal PR states a head-OID lookup may be gated on. OPEN is never one:
+#: an open PR is live work, so no destructive caller may be handed its head.
+_PR_HEAD_LOOKUP_STATES = frozenset({"MERGED", "CLOSED"})
+
+
 async def _fetch_pr_head_oid(
-    branch: str, repo: str | None = None, rows: list[dict] | None = None
+    branch: str,
+    repo: str | None = None,
+    rows: list[dict] | None = None,
+    *,
+    state: str = "MERGED",
 ) -> str | None:
-    """Fetch the headRefOid of the PR for *branch* -- FRESH and MERGED-gated.
+    """Fetch the headRefOid of the PR for *branch* -- FRESH and *state*-gated.
+
+    *state* is the terminal state the caller's verdict rests on: ``MERGED``
+    (the default, every removal path) or ``CLOSED`` (the closed-unmerged prune
+    preview, which binds its verdict to the head of the CLOSED PR it found).
+    Every property below holds for both; only the state the returned OID must
+    come from differs.
 
     Destructive callers (prune/removal) rely on this as the authoritative
     check, so three properties must hold:
@@ -207,9 +222,10 @@ async def _fetch_pr_head_oid(
       (b) STATE AND HEAD OID FROM THE SAME RESPONSE -- both come out of one
           JSON row (``gh pr list``, or the batch), so the OID always describes
           the PR whose state was checked, never a different fetch.
-      (c) NON-MERGED RETURNS None -- a branch name reused for new work resolves
-          to an OPEN PR, so its worktree is never authorized for removal on the
-          strength of a stale MERGED verdict.
+      (c) ANY OTHER STATE RETURNS None -- a branch name reused for new work
+          resolves to an OPEN PR, so its worktree is never authorized for
+          removal on the strength of a stale MERGED (or CLOSED) verdict, and a
+          *state* other than MERGED or CLOSED is refused outright.
 
     ``gh pr list --head <branch> --state all`` is the query because it still
     finds a merged PR and its head OID after the head branch is deleted (the
@@ -229,6 +245,8 @@ async def _fetch_pr_head_oid(
     lookup refuses rather than rule on a possibly-truncated view. A head with
     that many PRs does not occur in practice.
     """
+    if state not in _PR_HEAD_LOOKUP_STATES:
+        return None
     owner_repo = repo or await _get_owner_repo()
     if not owner_repo or not branch:
         return None
@@ -272,8 +290,10 @@ async def _fetch_pr_head_oid(
     # does not describe -- refuse rather than authorize removal.
     if any(pr.get("state") == "OPEN" for pr in prs):
         return None
+    # gh sorts newest first, so with several PRs in *state* the newest one's
+    # head is returned; the caller's containment check still has to pass.
     for pr in prs:
-        if pr.get("state") == "MERGED":
+        if pr.get("state") == state:
             return pr.get("headRefOid")
     return None
 

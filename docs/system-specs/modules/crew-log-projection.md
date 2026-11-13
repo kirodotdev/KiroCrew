@@ -65,6 +65,7 @@ only its registry entry (`_FOLDS`, in `crew_log/projection_registry.py`) beside 
 | `crew_log/projection_session.py` | folding one session's log on the projection kernel (`SessionProjections`, `fold_session`) and its savepoint |
 | `crew_log/projection_unit_mark_cache.py` | an older unit's `_UnitMark`, reused while one `lstat` of its directory and of each segment still match |
 | `crew_log/projection_slot_memo.py` | a slot's folds kept warm: the memo, its locks, the revision counter, resume and persist |
+| `crew_log/projection_slot_share.py` | one walk of a slot's units for every cold or stale cell the prime has queued for that slot (`prime_slot_projections`) |
 | `crew_log/projection_readers.py` | reading a slot's and a tree's folds (`fold_slot_checkpoint`, `read_slot_projection`, `units_in_succession`, `read_tree_projection`) |
 | `crew_log/projection_session_memo.py` | a session's folds kept warm, and `read_projection` |
 
@@ -1293,6 +1294,19 @@ request retries once, and after two failures in a row the cell waits 60 s before
 attempt. The eager worker's `_advance` takes the same path, so a cold cell never stalls
 the fold worker either, and `eager.drain` (the shutdown barrier) also waits for primes.
 
+When a prime starts, it also takes every other cell of the same slot that is queued
+behind it and folds them over one shared walk (`projection_slot_share.prime_slot_projections`):
+the cold cells read every unit once, and the cells resumed from a savepoint beside the
+newest unit read that unit's tail once, from the lowest savepoint. Each cell is then built by its
+own pass's steps, so its state, savepoint and watermark are the per-cell pass's. A
+cell whose lock another pass holds is left out (the lock is tried, never waited for). A
+cell that is warm, resumed beside an older unit, or alone in its group takes its own
+pass, and its lock is released before the walk. Every cell the walk holds is marked cold
+while held, so a `cold=False` read of it answers "not ready" at once. If the shared walk
+raises, nothing is installed and each cell folds alone. While the backfill child is
+usable (the gateway default), only the resumed cells share; the cold cells are left to
+the child, which still folds one cell per run.
+
 The dashboard's `CrewLogPublisher` holds three subscriptions -- `FOLD_ADVANCED` scoped to
 `slot`, `FOLD_ADVANCED` scoped to `session`, and an unfiltered `TREE_ADVANCED` -- and keeps
 their disposers so a second install in one process swaps all three instead of doubling
@@ -1578,8 +1592,10 @@ resident (`SessionTreeProjection`), so a poll does not scan. The per-poll lineag
 of `GET /api/sessions/memory` is `ensure_seeded(live_sids)` then `nodes()`, an in-memory
 read; the `SessionTree` scan above runs only as the cold seed when no checkpoint can be
 used. The projection is checkpointed in `session-tree.json` under the store's
-`projections` directory (`CHECKPOINT_VERSION` 5: edges, scans, spawns with their own scan cache, and a root binding; a
-version or root mismatch discards the file and re-seeds). It is kept current by hooks
+`projections` directory (`CHECKPOINT_VERSION` 6: edges, spawns, a per-unit mark, and a root binding; a
+version or root mismatch discards the file and re-seeds). The mark is the `ResumePoint` the last boot's
+`CrewLog.iter_from` walk of that unit reached, so a boot reads each unit through `iter_from`
+from that point; a unit with no mark, or whose segments changed under it, is read in full. It is kept current by hooks
 rather than by rescans: the emitter's `record_opened` on every `session/opened`, the
 `session/adopted` / `session/released` edge records (`reconcile_edge`), the
 `session/spawned` records (`record_spawned`, re-read by `reconcile_edge` too), and
@@ -1599,7 +1615,7 @@ of its responsibility:
 | Owner | Holds |
 |---|---|
 | `crew_log/session_tree_projection_checkpoint.py` | the checkpoint: `CHECKPOINT_NAME`, `CHECKPOINT_VERSION`, the store identity a payload is bound to (`_current_root`), the row codec with the string bounds every door into the state applies (`_within_bounds`, `_edge_within_bounds`), `_load_checkpoint`, `_save_checkpoint`, and the debounced write (`_schedule_checkpoint`, `flush_checkpoint`, `cancel_pending_checkpoint`) |
-| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`, `_replay_spawned`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
+| `crew_log/session_tree_projection_seed.py` | the cold start: `ensure_seeded`, the tail replay (`_replay_tail`), the install over commits made while the scan ran, and the timed re-attempt of a seed that raised (`SEED_RETRY_COOLDOWN_SECS`) |
 
 The module is a mirror facade (`kiro_crew._facade_mirror`). An owner function whose first
 parameter is `self` is bound as the `SessionTreeProjection` attribute of the same name, so

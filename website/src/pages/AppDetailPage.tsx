@@ -32,7 +32,7 @@ import { isRegistrySourced } from '../components/appstore/types'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
-import { backendRefusedNotice } from '../components/appstore/backendRefused'
+import { appActionNotice, backendRefusedNotice } from '../components/appstore/backendRefused'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { useActionsInFlight } from '../hooks/useActionsInFlight'
@@ -102,9 +102,6 @@ export default function AppDetailPage() {
    * Stays until the next action, which is the user's chance to act on it.
    */
   const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
-  // The page is reused across /apps/detail/:name, so a refusal belongs to the
-  // app it was reported for and goes when the route names another one.
-  useEffect(() => { setBackendRefusedMsg('') }, [name])
   const reconsentMsg = app?.sessionApprovalConsentPending
     ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
     : ''
@@ -688,7 +685,7 @@ export default function AppDetailPage() {
     const shownMemberThreads = memberThreads ?? app?.manifest?.permissions?.memberThreads === true
     const result = await api.enableApp(name, consent, undefined, consent && shownMemberThreads)
     recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
-    setBackendRefusedMsg(backendRefusedNotice(app ? appDisplayName(app) : name, result))
+    setBackendRefusedMsg(appActionNotice(app ? appDisplayName(app) : name, result, 'enable'))
     await load({ keepView: true })
     window.dispatchEvent(new Event('mc:apps-changed'))
   }, [app, load])
@@ -828,7 +825,7 @@ export default function AppDetailPage() {
         await runEnable(app.name, memberThreads)
         return
       }
-      if (action === 'disable') await api.disableApp(app.name)
+      if (action === 'disable') setBackendRefusedMsg(appActionNotice(appDisplayName(app), await api.disableApp(app.name), 'disable'))
       else if (action === 'update') updateResult = await api.updateApp(app.name)
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
@@ -1268,7 +1265,7 @@ export default function AppDetailPage() {
                     workerAutoApprove: stagedWorkerAutoApprove ? ['ownSlots'] : [],
                     reachableByUserSessions: stagedUserSessionReach,
                   })
-                  setBackendRefusedMsg(backendRefusedNotice(appDisplayName(app), result))
+                  setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))
                   await load({ keepView: true })
                   window.dispatchEvent(new Event('mc:apps-changed'))

@@ -55,7 +55,7 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "b84baaa24675", "session_handle_class"),
+    "__init__": ("function", False, "a01004fc4c51", "session_handle_class"),
     "_accept_oauth_request": ("function", False, "668a15b0478d", "session_handle_mcp"),
     "_active_tool_calls": ("property", False, "d150141e37db", "session_handle_class"),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "session_handle_model_selection"),
@@ -95,6 +95,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_consult_oracle_offloaded": ("function", True, "a74b2cf7aa76", "session_handle_watchdog"),
     "_crew_agent_name": ("function", False, "9854751dbafb", "session_handle_model_selection"),
     "_deny_spec_disabled_tool": ("function", True, "2dfacffa6279", "session_handle_permissions"),
+    "_deny_zero_tools": ("function", True, "2dfacffa6279", "session_handle_permissions"),
     "_died": ("function", False, "687ef4e00210", "session_handle_lifecycle"),
     "_dispatch_events": ("function", "agen", "883a50b3b1fa", "session_handle_dispatch"),
     "_drain_post_compaction_metadata": (
@@ -394,6 +395,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "wait_mounted_mcp": ("function", True, "8a1f54daaf86", "session_handle_mcp"),
     "wait_turn_done": ("function", True, "0ae71757d428", "session_handle_turn"),
     "want_mcp_sign_in_named": ("function", False, "ce7410240196", "session_handle_mcp"),
+    "zero_tool_ban_notice": ("function", False, "bb418bb7ece8", "session_handle_permissions"),
 }
 
 #: Class-level annotations the split adds: fields first set by a member an owner defines,

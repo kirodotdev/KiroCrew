@@ -149,19 +149,34 @@ class TestSessionDecider:
         monkeypatch.setattr(approval, "APPROVAL_TIMEOUT_S", 0.01)
         pending = PendingApprovals("webex")
         decider = SessionApprovalDecider(pending, session_key="webex:a@b.com")
+        pending.reserve("webex:a@b.com", 1)
         assert await decider(_event(1)) is False
         assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_TIMEOUT
         # The registry's own API keeps its bool contract and exposes the cause.
+        pending.reserve("webex:a@b.com", 2)
         assert await pending.decide_with_cause("webex:a@b.com", _event(2)) == (
             False,
             DENY_CAUSE_APPROVAL_TIMEOUT,
         )
+        pending.reserve("webex:a@b.com", 3)
         assert (await pending.decide_with_cause("webex:a@b.com", _event(3)))[0] is False
+
+    @pytest.mark.asyncio
+    async def test_an_undelivered_prompt_is_denied_at_once_as_undeliverable(self):
+        """No renderer reserved the request (a muted conversation's
+        SilentRenderer drops the prompt): denied now with the undeliverable
+        cause, not after the full window as an expiry."""
+        pending = PendingApprovals("webex")
+        decider = SessionApprovalDecider(pending, session_key="webex:a@b.com")
+        assert await asyncio.wait_for(decider(_event(1)), timeout=FALLBACK_TIMEOUT_SECS) is False
+        assert decider.last_deny_cause == DENY_CAUSE_APPROVAL_UNDELIVERABLE
+        assert pending.has_pending("webex:a@b.com") is False
 
     @pytest.mark.asyncio
     async def test_a_click_records_no_cause(self):
         pending = PendingApprovals("webex")
         decider = SessionApprovalDecider(pending, session_key="webex:a@b.com")
+        pending.reserve("webex:a@b.com", 1)
         task = asyncio.create_task(decider(_event(1)))
         await asyncio.sleep(0)
         assert pending.resolve("webex:a@b.com", False, request_id=1) is True

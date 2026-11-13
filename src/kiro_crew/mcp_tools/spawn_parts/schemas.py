@@ -30,6 +30,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.mcp_core_parts.identity import _resolve_session_key
+from kiro_crew.mcp_listing_relay import built_for_a_tool_server
 from kiro_crew.mcp_tools.catalog import loaded_binding
 from kiro_crew.spawn_label import SPAWN_LABEL_MAX_CHARS
 
@@ -197,7 +198,9 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
     _cap_hint = ""
     _agent_hint = ""
     if not names_only:
-        _live_cap = host_status.adaptive_exec_cap()
+        # A list the gateway builds for a tool server to relay reads as that server's
+        # own, so it prints the ceiling sentence below, never the gateway's.
+        _live_cap = 0 if built_for_a_tool_server() else host_status.adaptive_exec_cap()
         if _live_cap > 0:
             _cap_hint = (
                 f" You can run up to {_live_cap} sub-agents concurrently right now (the "

@@ -155,6 +155,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     "_has_reader": ("property", False, False, "(self) -> 'bool'"),
     "_trust": ("property", False, False, "(self) -> 'bool'"),
     "_trust_reads": ("property", False, False, "(self) -> 'bool'"),
+    "_turn_timeout_hydrated": ("property", False, False, "(self) -> 'bool'"),
     "_note_enqueue": ("function", False, False, "(self) -> 'None'"),
     "_pr_source_links": ("function", False, False, "(self) -> 'list[dict]'"),
     "_retry_deferred_release": ("function", False, False, "(self) -> 'int'"),
@@ -396,6 +397,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "todo_task_text": ("function", False, False, "(self, task_id: 'str') -> 'str | None'"),
     "turn_running": ("property", False, False, "(self) -> 'bool'"),
+    "_turn_lineage_generation": ("function", False, False, "(self) -> 'int'"),
+    "turn_timeout_secs": ("property", False, False, "(self) -> 'int | None'"),
     "unattended": ("property", False, False, "(self) -> 'bool'"),
     "unregister_approval": (
         "function",
@@ -416,6 +419,7 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
 #: A fresh ``_ChatSlot("k")`` before the split: field -> ("value", repr) for a plain
 #: value, or ("type", qualified type name) for an object, a clock or a minted id.
 _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
+    "__weakref__": ("value", "None"),
     "_acp_client": ("value", "None"),
     "_acp_pipe_death_retries": ("value", "0"),
     "_active_fallback_model": ("value", "''"),
@@ -573,6 +577,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_pending_steers": ("value", "[]"),
     "_pending_subagent_failures": ("value", "[]"),
     "_pending_synthesis": ("value", "False"),
+    "_pending_thread_parent": ("value", "None"),
     "_pending_variants": ("value", "[]"),
     "_poisoned_reset_used": ("value", "False"),
     "_posttoken_retry_used": ("value", "False"),
@@ -683,17 +688,19 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_turn_channel_narrowed": ("value", "False"),
     "_turn_channel_origin": ("value", "False"),
     "_turn_generation": ("value", "0"),
+    "_turn_lineage": ("type", "builtins.tuple"),
     "_turn_in_flight_generation": ("value", "0"),
     "_turn_in_flight_prompt": ("value", "None"),
+    "_restored_turn_marker": ("value", "None"),
     "_turn_owner_sent": ("value", "False"),
     "_turn_agent_started": ("value", "False"),
     "_turn_reply_mids": ("value", "[]"),
     "_turn_retries": ("value", "{}"),
-    "_turn_timeout_hydrated": ("value", "True"),
     "_turn_user_sent": ("value", "False"),
     "_turn_wrote_text": ("value", "False"),
     "_turns_started": ("value", "0"),
     "_unknown_row_fields_bytes": ("value", "0"),
+    "_unsent_resends": ("value", "None"),
     "_unstarted_generation": ("value", "-1"),
     "_wait_contested": ("value", "False"),
     "_wait_last_ping": ("value", "0.0"),
@@ -745,7 +752,6 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "theme_consent_sha": ("value", "None"),
     "title": ("value", "'k'"),
     "total_messages": ("value", "0"),
-    "turn_timeout_secs": ("value", "None"),
     "workspace": ("value", "'default'"),
 }
 

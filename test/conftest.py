@@ -268,6 +268,7 @@ from conftest_opt_in import (  # noqa: E402,F401 -- bound for pytest and importe
     named_cron_caller,
     opened,
     plant_day_link,
+    rss_runtimes_read_under_ceiling,
     short_sock_dir,
 )
 
@@ -651,6 +652,27 @@ def _registry_governance_reachability_unknown(_floor_monkeypatch):
     _floor_monkeypatch.setattr(kiro_cli, "registry_governance_known_unreachable", lambda: False)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_unreachable_cache", None)
     _floor_monkeypatch.setattr(kiro_cli, "_governance_warm_running", False)
+
+
+@pytest.fixture(autouse=True)
+def _tool_deferral_state_starts_empty(_floor_monkeypatch):
+    """Start every test with no tools-list refusal on record and no PATH probe answer.
+
+    Both are process slots that decide whether a kiro-cli spawn defers Kiro Crew's
+    own MCP servers: a refusal one test feeds the error classifier would keep
+    every later test's spawn on the full list, and the probe would run the
+    runner's own kiro-cli inside the sandbox on a thread. The boot hook that
+    warms the probe starts that thread from any test that boots a gateway, and it
+    would outlive the test, so it is off here too. The tests of each put their
+    own answer in with ``monkeypatch``.
+    """
+    from kiro_crew import kiro_cli, kiro_cli_path_probe
+
+    _floor_monkeypatch.setattr(kiro_cli, "_tools_list_refused_at", None)
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "_versions", {})
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "_in_flight", set())
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "_sandboxed_version", lambda _binary: None)
+    _floor_monkeypatch.setattr(kiro_cli_path_probe, "warm", lambda: None)
 
 
 @pytest.fixture(autouse=True)

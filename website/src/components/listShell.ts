@@ -33,8 +33,18 @@ export const LIST_TITLE_CLS = 'sessions-panel-title text-sm font-semibold text-t
  *  so the first row starts just below the glass at rest and slides under it on
  *  scroll; the 8px fallback is the plain `p-2` for a body mounted with no dock.
  *  The same value is the scroll-padding, so a row brought in by `scrollIntoView`
- *  (a deep-linked crewmate, the open session) lands below the dock, not under it. */
-export const LIST_BODY_CLS = 'flex-1 min-h-0 overflow-y-auto scrollbar-none p-2 pt-[var(--list-dock-h,0.5rem)] scroll-pt-[var(--list-dock-h,0.5rem)]'
+ *  (a deep-linked crewmate, the open session) lands below the dock, not under it.
+ *
+ *  `isolate` makes the body a stacking context, so the pinned folder headers
+ *  inside it (`.folder-row-sticky`) paint in the body's own scrolled layer.
+ *  Without it they paint in the card's stacking context, and WebKit moves each
+ *  one with the scroll through a separate chain of layers that adds a clip for
+ *  every FolderBody (`overflow: clip`) above it. iOS Safari stopped painting
+ *  subfolder headers in that chain mid-scroll while their rows stayed visible.
+ *  The dock (z-30) still paints over the whole body, so nothing inside the body
+ *  can paint above the dock: menus, tips, cards and drag ghosts portal to the
+ *  overlay root. */
+export const LIST_BODY_CLS = 'flex-1 min-h-0 overflow-y-auto scrollbar-none isolate p-2 pt-[var(--list-dock-h,0.5rem)] scroll-pt-[var(--list-dock-h,0.5rem)]'
 
 /** A row's box: the rounded hover/selection surface. */
 export const ROW_BOX_CLS = 'pl-3.5 pr-3 py-2 rounded-md'

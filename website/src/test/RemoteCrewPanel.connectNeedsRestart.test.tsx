@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
+import { setUpdateProgress } from '../store/dashboardSlice'
 import { RemoteCrewPanel } from '../pages/settings/RemoteCrewPanel'
 
 // The panel reads its instance list from this client. When management is on but
@@ -142,6 +143,23 @@ describe('RemoteCrewPanel — the not-active-yet banner', () => {
     await u.click(restart)
     await u.click(restart)
     expect(await screen.findByTestId('remote-crew-restart-failed')).toHaveTextContent('The restart launcher cannot run here.')
+    expect(restart).toBeEnabled()
+    expect(restart).not.toHaveTextContent(/Restarting/)
+  })
+
+  it('shows a restart the gateway refused after its 200, and leaves the button ready (#35351)', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue({ active: false, warm_set_cap: 5, instances: [MANUAL_INSTANCE] })
+    vi.mocked(api.restartGateway).mockResolvedValue({ ok: true, status: 'restarting' })
+    const u = userEvent.setup()
+    const { store } = renderWithProviders(<RemoteCrewPanel />)
+
+    const restart = await screen.findByTestId('remote-crew-restart-gateway')
+    await u.click(restart)
+    await u.click(restart)
+    await waitFor(() => expect(restart).toHaveTextContent(/Restarting/))
+    act(() => { store.dispatch(setUpdateProgress({ step: 'restarting', detail: 'Restarting server…' })) })
+    act(() => { store.dispatch(setUpdateProgress({ step: 'error', detail: 'The gateway entry point is gone.' })) })
+    expect(await screen.findByTestId('remote-crew-restart-failed')).toHaveTextContent('The gateway entry point is gone.')
     expect(restart).toBeEnabled()
     expect(restart).not.toHaveTextContent(/Restarting/)
   })

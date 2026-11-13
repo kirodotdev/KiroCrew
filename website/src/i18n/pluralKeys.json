@@ -177,6 +177,7 @@
   "components.searchBar.result_position",
   "components.skillBrowserModal.file",
   "components.skillBrowserModal.installed_files",
+  "components.skillBrowserModal.reinstalled_files",
   "components.tabCloseMenu.close_terminals_body",
   "components.webPreviewPanel.annotate_clear_confirm",
   "components.webPreviewPanel.annotations_count",
@@ -403,6 +404,8 @@
   "pages.settings.chatPanel.follow_default_more",
   "pages.membersPage.goals_heartbeat_per_day",
   "appSdk.newMessagesDivider.new_messages",
+  "appSdk.issues.comments",
+  "appSdk.issues.linked_changes",
   "pages.chatPage.jump_to_new",
   "pages.chat.fileBrowserRail.uploading_count",
   "pages.chat.fileBrowserRail.uploaded_count",
@@ -547,5 +550,7 @@
   "pages.developer.agentBackendTab.card_summary_safety_notes",
   "components.publishHub.expiry_after_days",
   "components.publicPublishAckModal.exposure_window_provider_expiry",
-  "components.jobLogsView.idle_runs_hidden"
+  "components.jobLogsView.idle_runs_hidden",
+  "pages.overview.skillsTab.budget_group_counting_detail",
+  "pages.overview.skillsTab.budget_group_cold_detail"
 ]

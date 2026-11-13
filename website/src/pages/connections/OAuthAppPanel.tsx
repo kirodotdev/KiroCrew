@@ -1,9 +1,10 @@
-// Settings → OAuth Apps: the operator's OAuth clients for providers whose
-// remote MCP server refuses dynamic client registration (GitHub, Asana, ...).
+// The OAuth app part of a Connections card: the operator's OAuth client for a
+// provider whose remote MCP server refuses dynamic client registration (GitHub,
+// Asana, ...). It opens in place on that provider's card in Settings →
+// Connections; the Google entry has one for all six Google products.
 //
-// One card per pre-registered registry provider. Each card is the single place
-// a registration runbook points to ("enter the credentials under Settings →
-// Connections → <Provider>"), so it carries everything that runbook's last step
+// It is the single place a registration runbook points to ("enter the
+// credentials under Settings → Connections → <Provider>"), so it carries everything that runbook's last step
 // needs: the exact redirect URI to copy into the vendor console, the Client ID
 // field, the Client secret field, where the stored halves came from (dashboard
 // vs environment) and a link back to the runbook itself.
@@ -12,34 +13,33 @@
 // the secret goes to the encrypted vault through PUT /api/connections/oauth-clients
 // and is only ever reported back as a boolean. Neither half is a user's OAuth
 // grant -- that stays with kiro-cli, unchanged.
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { BookOpen, Check, Copy, Lock, Trash2 } from 'lucide-react'
-import { SettingsCard, SettingsInput, SettingsSection, SettingsToggle } from '../../components/settings'
+import { BookOpen, Check, Copy, Lock, Terminal, Trash2 } from 'lucide-react'
+import { SettingsInput, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import AgentSpecNotRewrittenNotice, { agentSpecNotRewritten } from '../../components/AgentSpecNotRewrittenNotice'
-import { api, type ConnectionOAuthClient, type ConnectionOAuthClientSave } from '../../api/client'
+import { api, ApiError, type ConnectionOAuthClient, type ConnectionOAuthClientSave } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
 import { fmtList } from '../../i18n/format'
-import { CONNECTION_PROVIDERS } from '../connections/registry'
+import { CONNECTION_PROVIDERS } from './registry'
+import { isGoogleSlug } from './connectionsLinks'
 
 export const OAUTH_CLIENTS_QUERY_KEY = ['connections', 'oauth-clients'] as const
 
 /** Repository docs are the runbook's home; the link resolves against main. */
 const RUNBOOK_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/'
 
-/** `[data-setting-id]` the gallery card deep-links to for one provider. */
+/** The Google entry's setup scripts and private-app guide, on main. */
+const GOOGLE_SETUP_SCRIPT = 'https://github.com/kirodotdev/KiroCrew/blob/main/scripts/google-oauth-setup'
+const GOOGLE_PRIVATE_APP_GUIDE = `${RUNBOOK_BASE}oauth-app-registration/google.md`
+
+/** `[data-setting-id]` the settings search entry for one card waits for. */
 export function oauthClientSettingId(slug: string): string {
   return `connections-oauth-client-${slug}`
-}
-
-/** The six Google cards (Gmail, Drive, Calendar, Sheets, Docs, Slides) can all
- *  use one Google OAuth client, so a save on one may fill the others. */
-export function isGoogleSlug(slug: string): boolean {
-  return slug === 'gmail' || slug.startsWith('google-')
 }
 
 function envName(slug: string, half: 'CLIENT_ID' | 'CLIENT_SECRET'): string {
@@ -102,16 +102,78 @@ class PartialShareError extends Error {
   }
 }
 
-function ClientCard({ client, index, readOnly, shareWith }: { client: ConnectionOAuthClient; index: number; readOnly: boolean; shareWith: ConnectionOAuthClient[] }) {
+interface RedirectRow { slug: string; name: string; uri: string }
+
+/** Set by the Connections page; outside it a draft has no hand-off to guard. */
+export const OAuthDraftsContext = createContext<(settingSlug: string, dirty: boolean) => void>(() => {})
+/** Set by the Connections page. A client save or delete the backend accepts
+ *  cancels that slug's in-flight sign-in (`cancel_mint`); its poll then reads
+ *  `idle`, which never settles a wait, so the page drops those waits itself. */
+export const OAuthClientWrittenContext = createContext<(slugs: string[]) => void>(() => {})
+
+/** One form's unsaved input, as `ClientCard` holds it. */
+export interface OAuthDraftValues { clientId: string; secret: string; secretClear: boolean }
+/** Set by the Connections page, which outlives the forms it swaps; outside it
+ *  nothing is kept, so a draft never outlives the page that holds it. */
+export interface OAuthDraftValueStore {
+  get: (key: string) => OAuthDraftValues | undefined
+  set: (key: string, values: OAuthDraftValues) => void
+}
+export const OAuthDraftValuesContext = createContext<OAuthDraftValueStore>({ get: () => undefined, set: () => {} })
+
+/** The backend committed the write (and cancelled the sign-in) but could not
+ *  rebuild the agent spec, so it still answers 500. */
+function writeCommitted(e: unknown): boolean {
+  if (!(e instanceof ApiError)) return false
+  try {
+    return (JSON.parse(e.body) as { code?: unknown }).code === 'projection_refresh_failed'
+  } catch {
+    return false
+  }
+}
+
+function ClientCard({ client, readOnly, shareWith, settingSlug, redirects }: {
+  client: ConnectionOAuthClient
+  readOnly: boolean
+  shareWith: ConnectionOAuthClient[]
+  /** The settings search id this part answers to (`google` for the Google entry). */
+  settingSlug: string
+  /** Every product's redirect URI for the Google entry; one row otherwise. */
+  redirects: RedirectRow[]
+}) {
   const qc = useQueryClient()
+  const clientWritten = useContext(OAuthClientWrittenContext)
+  // Runs one PUT or DELETE and tells the page when the backend committed it,
+  // including a commit whose agent-spec rebuild then failed.
+  const written = async <T,>(slug: string, call: () => Promise<T>): Promise<T> => {
+    try {
+      const r = await call()
+      clientWritten([slug])
+      return r
+    } catch (e) {
+      if (writeCommitted(e)) clientWritten([slug])
+      throw e
+    }
+  }
   const provider = CONNECTION_PROVIDERS.find(p => p.slug === client.slug)
-  const name = provider?.name ?? client.slug
+  const google = redirects.length > 1
+  // The Google entry's one part speaks for every Google product, not the first.
+  const name = google ? i18nT('pages.connectionsPage.google_entry_name') : provider?.name ?? client.slug
   // Draft state mirrors the channel panels: the id is edited in place, the
   // secret is write-only with a deferred clear, and a save remounts the secret
   // field (formKey) so a stored value never lingers in the draft.
-  const [clientId, setClientId] = useState(client.client_id ?? '')
-  const [secret, setSecret] = useState('')
-  const [secretClear, setSecretClear] = useState(false)
+  // A page that swaps one form for another (the config read landing, or the
+  // gallery flag changing) remounts this card; the page's draft store hands
+  // the new one what the old one held, so a typed id or secret survives.
+  const drafts = useContext(OAuthDraftValuesContext)
+  const draftKey = `${settingSlug}:${client.slug}`
+  const kept = drafts.get(draftKey)
+  const [clientId, setClientId] = useState(kept?.clientId ?? client.client_id ?? '')
+  const [secret, setSecret] = useState(kept?.secret ?? '')
+  const [secretClear, setSecretClear] = useState(kept?.secretClear ?? false)
+  useEffect(() => {
+    drafts.set(draftKey, { clientId, secret, secretClear })
+  }, [drafts, draftKey, clientId, secret, secretClear])
   const [formKey, setFormKey] = useState(0)
   const [error, setError] = useState<string | null>(null)
   // The change was saved but the agent spec did not follow it.
@@ -146,7 +208,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
 
   const saveMut = useMutation({
     mutationFn: async (body: ConnectionOAuthClientSave) => {
-      const own = await api.connectionsOAuthClientSave(client.slug, body)
+      const own = await written(client.slug, () => api.connectionsOAuthClientSave(client.slug, body))
       // Only a whole pair travels: a non-empty Client ID plus a new secret.
       // Anything less (an id alone, a secret with no id, a clear) would leave
       // another card's half next to this card's, so it stays on this card.
@@ -161,7 +223,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
       for (const peer of shareWith) {
         if (peer.client_id_source === 'env' || peer.client_secret_source === 'env') continue
         try {
-          const r = await api.connectionsOAuthClientSave(peer.slug, shared)
+          const r = await written(peer.slug, () => api.connectionsOAuthClientSave(peer.slug, shared))
           if (agentSpecNotRewritten(r)) result = r
         } catch {
           failed.push(CONNECTION_PROVIDERS.find(p => p.slug === peer.slug)?.name ?? peer.slug)
@@ -193,11 +255,45 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
       setError(e instanceof Error ? e.message : String(e))
     },
   })
+  // The Google part removes the stored client of every Google product its Save
+  // writes, which skips any product with a half set by the environment (see the
+  // loop below). Its own slug always gets the DELETE: DELETE clears only what
+  // is stored, so an override on it stays.
+  const ownStored = !!(client.client_id || client.client_secret_set) && !(envId && envSecret)
+  const sharedGoogle = shareWith.length > 0
+  // Only peers the delete loop below would reach count: one with a half set by
+  // the environment is skipped there, so it cannot make Remove look possible.
+  const anyClient = ownStored || shareWith.some(peer =>
+    peer.client_id_source !== 'env' && peer.client_secret_source !== 'env' && (peer.client_id || peer.client_secret_set))
   const deleteMut = useMutation({
-    mutationFn: () => api.connectionsOAuthClientDelete(client.slug),
+    mutationFn: async () => {
+      let result = ownStored || sharedGoogle
+        ? await written(client.slug, () => api.connectionsOAuthClientDelete(client.slug))
+        : undefined
+      let firstError: unknown
+      for (const peer of shareWith) {
+        // A product with any half set by the environment is skipped, the same
+        // as the shared Save: a partly owned one has its own form and Remove
+        // below this one, and deleting here would wipe the stored half that
+        // pairs with the environment's.
+        if (peer.client_id_source === 'env' || peer.client_secret_source === 'env') continue
+        try {
+          const r = await written(peer.slug, () => api.connectionsOAuthClientDelete(peer.slug))
+          if (agentSpecNotRewritten(r)) result = r
+        } catch (e) {
+          firstError ??= e
+        }
+      }
+      if (firstError !== undefined) {
+        void qc.invalidateQueries({ queryKey: OAUTH_CLIENTS_QUERY_KEY })
+        throw firstError
+      }
+      return result
+    },
     onSuccess: (r) => {
       setNotApplied(agentSpecNotRewritten(r))
-      setClientId('')
+      // Remove clears only stored halves: an environment-set Client ID stays.
+      setClientId(envId ? (client.client_id ?? '') : '')
       setSecret('')
       setSecretClear(false)
       setFormKey(k => k + 1)
@@ -217,6 +313,13 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
   const trimmedId = clientId.trim()
   const idChanged = trimmedId !== (client.client_id ?? '') && !envId
   const dirty = idChanged || secret.length > 0 || secretClear || retryShared
+  // Tell the page: while any form holds unsaved input, no card offers the
+  // chat hand-off, which navigates away and would drop it.
+  const reportDraft = useContext(OAuthDraftsContext)
+  useEffect(() => {
+    reportDraft(settingSlug, dirty)
+    return () => reportDraft(settingSlug, false)
+  }, [reportDraft, settingSlug, dirty])
   const handleSave = () => {
     const body: ConnectionOAuthClientSave = {}
     // A new secret always travels with the id it was typed next to, so no
@@ -229,23 +332,29 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
     saveMut.mutate(body)
   }
 
+  // Labels held in variables on purpose: the settings index skips them, so a
+  // generic "Client ID" entry cannot highlight a field inside a closed card.
+  // settingsManual.ts indexes each provider's OAuth app, and that highlight
+  // opens the card first.
+  const clientIdLabel = i18nT('pages.settings.connectionsPanel.client_id')
+  const clientSecretLabel = i18nT('pages.settings.connectionsPanel.client_secret')
   const secretDescription = client.confidential
     ? i18nT('pages.settings.connectionsPanel.client_secret_required', { provider: name })
     : i18nT('pages.settings.connectionsPanel.client_secret_optional', { provider: name })
 
   return (
-    <SettingsCard index={index}>
+    <>
       {/* `data-setting-label` is the anchor the settings search registry's manual
-          entry for this card (settingsManual.ts, labelKey oauth_app + the provider
-          name as suffix) resolves to; `data-setting-id` is what the gallery's deep
-          link waits for. */}
+          entry for this part (settingsManual.ts, labelKey oauth_app + the provider
+          name as suffix) resolves to; `data-setting-id` is what a search hit or an
+          old OAuth Apps link waits for once the card has opened this part. */}
       <div
-        data-setting-id={oauthClientSettingId(client.slug)}
+        data-setting-id={oauthClientSettingId(settingSlug)}
         data-setting-label={i18nT('pages.settings.connectionsPanel.oauth_app')}
         className="space-y-3"
       >
         <div className="flex items-center justify-between gap-3">
-          <h4 className="m-0 text-sm font-semibold text-text-strong">{name}</h4>
+          <h4 className="m-0 text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.connectionsPanel.oauth_app')}</h4>
           <span className={`inline-flex items-center gap-1 text-[11px] font-medium ${client.configured ? 'text-ok' : 'text-muted'}`}>
             {client.configured ? <Check className="w-3.5 h-3.5" aria-hidden="true" /> : <Lock className="w-3.5 h-3.5" aria-hidden="true" />}
             {client.configured
@@ -255,25 +364,51 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
         </div>
         <p className="m-0 text-[12.5px] text-muted">
           {i18nT('pages.settings.connectionsPanel.card_intro', { provider: name })}{' '}
-          <a
-            href={`${RUNBOOK_BASE}${client.registration_guide}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 text-accent hover:underline"
-          >
-            <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
-            {i18nT('pages.settings.connectionsPanel.open_runbook', { provider: name })}
-          </a>
+          {google ? (
+            <>
+              <a href={GOOGLE_PRIVATE_APP_GUIDE} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-accent hover:underline">
+                <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
+                {i18nT('pages.connectionsPage.google_private_app_guide')}
+              </a>{' '}
+              {/* The PowerShell twin on Windows, the shell script elsewhere. */}
+              <a
+                href={`${GOOGLE_SETUP_SCRIPT}${typeof navigator !== 'undefined' && /Win/.test(navigator.platform) ? '.ps1' : '.sh'}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-accent hover:underline"
+              >
+                <Terminal className="w-3.5 h-3.5" aria-hidden="true" />
+                {i18nT('pages.connectionsPage.google_setup_script')}
+              </a>
+            </>
+          ) : (
+            <a
+              href={`${RUNBOOK_BASE}${client.registration_guide}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-accent hover:underline"
+            >
+              <BookOpen className="w-3.5 h-3.5" aria-hidden="true" />
+              {i18nT('pages.settings.connectionsPanel.open_runbook', { provider: name })}
+            </a>
+          )}
         </p>
 
         <div className="space-y-1">
-          <div className="text-[12px] font-medium text-text">{i18nT('pages.settings.connectionsPanel.redirect_uri')}</div>
-          <CopyRedirectUri value={client.redirect_uri} />
+          <div className="text-[12px] font-medium text-text">
+            {google ? i18nT('pages.connectionsPage.google_redirect_uris') : i18nT('pages.settings.connectionsPanel.redirect_uri')}
+          </div>
+          {redirects.map(row => (
+            <div key={row.slug} className="min-w-0">
+              {google && <div className="text-[11.5px] text-muted">{row.name}</div>}
+              <CopyRedirectUri value={row.uri} />
+            </div>
+          ))}
           <p className="m-0 text-[11.5px] text-muted">{i18nT('pages.settings.connectionsPanel.redirect_uri_help')}</p>
         </div>
 
         <SettingsInput
-          label={i18nT('pages.settings.connectionsPanel.client_id')}
+          label={clientIdLabel}
           description={envId
             ? i18nT('pages.settings.connectionsPanel.set_by_environment', { name: envName(client.slug, 'CLIENT_ID') })
             : i18nT('pages.settings.connectionsPanel.client_id_help')}
@@ -288,7 +423,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
           // this half is read-only for a different reason -- the environment
           // owns it. A disabled masked input with the env-var note says that.
           <SettingsInput
-            label={i18nT('pages.settings.connectionsPanel.client_secret')}
+            label={clientSecretLabel}
             description={i18nT('pages.settings.connectionsPanel.set_by_environment', { name: envName(client.slug, 'CLIENT_SECRET') })}
             value="••••••••"
             onChange={() => {}}
@@ -297,7 +432,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
         ) : (
           <SecretField
             key={`secret-${formKey}`}
-            label={i18nT('pages.settings.connectionsPanel.client_secret')}
+            label={clientSecretLabel}
             description={secretDescription}
             placeholder={i18nT('pages.settings.connectionsPanel.client_secret_placeholder')}
             isSet={client.client_secret_set}
@@ -328,7 +463,8 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
               ? i18nT('pages.settings.connectionsPanel.share_google_partial_title', { products: fmtList(partialFailed, { style: 'narrow' }) })
               : i18nT('pages.settings.connectionsPanel.save_failed')}
             message={partialFailed
-              ? i18nT('pages.settings.connectionsPanel.share_google_partial', { provider: name })
+              // The product the save landed on, not the entry's "Google".
+              ? i18nT('pages.settings.connectionsPanel.share_google_partial', { provider: provider?.name ?? client.slug })
               : error}
           />
         )}
@@ -346,7 +482,9 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
                 <span className="text-[13px] text-warn">
                   {i18nT('pages.settings.connectionsPanel.remove_confirm', { provider: name })}
                 </span>
-                <Btn danger onClick={() => deleteMut.mutate()} disabled={deleteMut.isPending}>
+                {/* Not while a shared Save is still writing: its later PUTs would
+                    recreate the clients this Remove just deleted. */}
+                <Btn danger onClick={() => deleteMut.mutate()} disabled={deleteMut.isPending || saveMut.isPending}>
                   {i18nT('pages.settings.connectionsPanel.remove_confirm_action')}
                 </Btn>
                 <Btn ref={removeCancelRef} onClick={() => setRemoveConfirm(false)} disabled={deleteMut.isPending}>
@@ -356,7 +494,7 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
             ) : (
               <Btn
                 onClick={() => setRemoveConfirm(true)}
-                disabled={deleteMut.isPending || (!client.client_id && !client.client_secret_set) || (envId && envSecret)}
+                disabled={deleteMut.isPending || saveMut.isPending || !anyClient}
                 aria-label={i18nT('pages.settings.connectionsPanel.remove_client', { provider: name })}
               >
                 <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
@@ -374,45 +512,89 @@ function ClientCard({ client, index, readOnly, shareWith }: { client: Connection
           </div>
         )}
       </div>
-    </SettingsCard>
+    </>
   )
 }
 
-export function ConnectionsPanel({ readOnly = false }: { readOnly?: boolean }) {
+/**
+ * The OAuth app part for `slugs`: one provider, or the six Google products,
+ * which share one form (a save fills every product unless the person opts out)
+ * and list every product's redirect URI.
+ */
+export function OAuthAppPanel({ slugs, settingSlug, readOnly = false }: { slugs: string[]; settingSlug: string; readOnly?: boolean }) {
   const { data, isLoading, error } = useQuery({
     queryKey: OAUTH_CLIENTS_QUERY_KEY,
     queryFn: api.connectionsOAuthClients,
   })
-  const clients = data?.clients ?? []
-  const googleClients = clients.filter(c => isGoogleSlug(c.slug))
-
+  if (error && !data) {
+    // A first-load failure: nothing is typed yet, so the hand-off can destroy
+    // nothing and the agent is the right next step.
+    return (
+      <ErrorNotice
+        title={i18nT('pages.settings.connectionsPanel.load_failed')}
+        message={error instanceof Error ? error.message : String(error)}
+        askAgent
+      />
+    )
+  }
+  if (isLoading) return <p className="m-0 text-[12.5px] text-muted">{i18nT('pages.settings.connectionsPanel.loading')}</p>
+  // In `slugs` order: the first listed slug is the one this part saves.
+  const clients = slugs.flatMap(slug => (data?.clients ?? []).filter(c => c.slug === slug))
+  // The form edits the first product the environment does not own, so an
+  // environment-set Gmail does not lock the shared Google form.
+  const primary = clients.find(c => c.client_id_source !== 'env' && c.client_secret_source !== 'env') ?? clients[0]
+  if (!primary) return <p className="m-0 text-[12.5px] text-muted">{i18nT('pages.settings.connectionsPanel.none')}</p>
+  // A failed REFETCH keeps the cached list and the form, so drafts survive;
+  // the notice has no hand-off, which would navigate away from them.
+  const refetchError = error ? (
+    <ErrorNotice
+      title={i18nT('pages.settings.connectionsPanel.load_failed')}
+      message={error instanceof Error ? error.message : String(error)}
+      className="mb-3"
+    />
+  ) : null
+  // A Google product whose stored client differs from the one this part
+  // shows (saved on its own before the products shared one form) gets its own
+  // card below, like a partly environment-owned one, and stays out of this
+  // part's shared Save and Remove: they would overwrite or delete a client the
+  // person never saw here.
+  const ownForm = (c: ConnectionOAuthClient) => c !== primary && (
+    (c.client_id_source === 'env') !== (c.client_secret_source === 'env')
+    || (c.client_id_source !== 'env' && !!c.client_id && c.client_id !== (primary.client_id ?? ''))
+  )
   return (
-    <div className="space-y-6">
-      <SettingsSection title={i18nT('pages.settings.connectionsPanel.title')}>
-        <p className="m-0 text-[12.5px] text-muted">{i18nT('pages.settings.connectionsPanel.intro')}</p>
-        {error && (
-          // A list-load failure: nothing is typed yet, so the hand-off can destroy
-          // nothing and the agent is the right next step.
-          <ErrorNotice
-            title={i18nT('pages.settings.connectionsPanel.load_failed')}
-            message={error instanceof Error ? error.message : String(error)}
-            askAgent
-          />
-        )}
-        {isLoading && <p className="m-0 text-[12.5px] text-muted">{i18nT('pages.settings.connectionsPanel.loading')}</p>}
-        {!isLoading && !error && clients.length === 0 && (
-          <p className="m-0 text-[12.5px] text-muted">{i18nT('pages.settings.connectionsPanel.none')}</p>
-        )}
-        {clients.map((client, index) => (
+    <>
+    {refetchError}
+    <ClientCard
+      key={primary.slug}
+      client={primary}
+      readOnly={readOnly}
+      shareWith={isGoogleSlug(primary.slug) ? clients.filter(c => c.slug !== primary.slug && !ownForm(c)) : []}
+      settingSlug={settingSlug}
+      redirects={clients.map(c => ({
+        slug: c.slug,
+        name: CONNECTION_PROVIDERS.find(p => p.slug === c.slug)?.name ?? c.slug,
+        uri: c.redirect_uri,
+      }))}
+    />
+    {/* A Google product with one half set by the environment cannot take the
+        shared save (it would pair a stored half with the environment's), and
+        one holding a different stored client must not be overwritten by it.
+        Each keeps its own form here; an environment's half is shown read-only
+        and never written. */}
+    {clients
+      .filter(ownForm)
+      .map(c => (
+        <div key={c.slug} className="mt-4 border-t border-border pt-4">
           <ClientCard
-            key={client.slug}
-            client={client}
-            index={index + 1}
+            client={c}
             readOnly={readOnly}
-            shareWith={isGoogleSlug(client.slug) ? googleClients.filter(c => c.slug !== client.slug) : []}
+            shareWith={[]}
+            settingSlug={c.slug}
+            redirects={[{ slug: c.slug, name: CONNECTION_PROVIDERS.find(p => p.slug === c.slug)?.name ?? c.slug, uri: c.redirect_uri }]}
           />
-        ))}
-      </SettingsSection>
-    </div>
+        </div>
+      ))}
+    </>
   )
 }

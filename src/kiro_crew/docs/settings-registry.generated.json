@@ -399,6 +399,14 @@
       "route": "/settings/channels/whatsapp?highlight=channels.how-the-agent-joins-in-whatsapp"
     },
     {
+      "id": "channels.let-code-channels-start-helper-agents-slack",
+      "label": "Let code channels start helper agents (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channel_dispatch",
+      "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+      "configKey": "slack.code_channel_dispatch"
+    },
+    {
       "id": "channels.messages-database-path-imessage",
       "label": "Messages database path (iMessage)",
       "tab": "channels",
@@ -1217,24 +1225,6 @@
       "hint": "Draw a cursor that glides to each target and pulses when it clicks, so you can follow along on screen. Purely visual — it changes nothing about what the agent is allowed to do, and it only appears for clicks that move the real pointer."
     },
     {
-      "id": "connections.client-id",
-      "label": "Client ID",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.client-id"
-    },
-    {
-      "id": "connections.client-secret",
-      "label": "Client secret",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.client-secret"
-    },
-    {
-      "id": "connections.client-secret-2",
-      "label": "Client secret",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.client-secret-2"
-    },
-    {
       "id": "connections.oauth-client-github",
       "label": "OAuth app",
       "tab": "connections",
@@ -1249,46 +1239,11 @@
       "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
     },
     {
-      "id": "connections.oauth-client-gmail",
+      "id": "connections.oauth-client-google",
       "label": "OAuth app",
       "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-gmail",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-drive",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-drive",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-calendar",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-calendar",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-sheets",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-sheets",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-docs",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-docs",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
-    },
-    {
-      "id": "connections.oauth-client-google-slides",
-      "label": "OAuth app",
-      "tab": "connections",
-      "route": "/settings/connections?highlight=connections.oauth-client-google-slides",
-      "description": "Client ID, client secret and redirect URI for a provider that needs a registered OAuth app"
+      "route": "/settings/connections?highlight=connections.oauth-client-google",
+      "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
     },
     {
       "id": "developer.agent-harness-for-worker-chats",
@@ -1403,7 +1358,7 @@
       "label": "GitHub sign-in by Kiro Crew",
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.github-sign-in-by-kiro-crew",
-      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
+      "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Settings > Connections.",
       "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access."
     },
     {
@@ -1458,6 +1413,13 @@
       "tab": "developer",
       "route": "/settings/developer/feature-previews?highlight=developer.run-kas-on-kiro-crew-s-own-engine",
       "description": "Uses the KAS engine version this Kiro Crew release was tested with, instead of the Kiro CLI. Applies to every new session on this Kiro Crew, not just this device. Signs in with your Kiro account from Settings → Agent Harness. Takes effect when Kiro Crew restarts."
+    },
+    {
+      "id": "developer.secrets-vault-redesign",
+      "label": "Secrets vault redesign",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.secrets-vault-redesign",
+      "description": "Shows Secrets as a list beside the open item, and lets you save logins and notes."
     },
     {
       "id": "developer.send-pending-approvals-to-chat-apps",

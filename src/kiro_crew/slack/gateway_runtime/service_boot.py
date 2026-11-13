@@ -49,6 +49,7 @@ if TYPE_CHECKING:
         MemoryStore,
         RealSlackClient,
         SessionManager,
+        SessionMap,
         SkillsLoader,
         Task,
         TaskRunner,
@@ -146,7 +147,10 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     CONSTRUCTION deliberately stays on the loop thread:
     ``SessionManager.__init__`` creates asyncio primitives (locks,
     semaphores, queues), so hopping the whole method into a worker thread
-    would trade a blocking bug for a thread-affinity one. (Other sync
+    would trade a blocking bug for a thread-affinity one. The session map,
+    which holds no asyncio primitives, is the exception: it is built in a
+    worker thread so its startup read can retry a Windows sharing violation.
+    (Other sync
     filesystem steps — e.g. agent-config install — remain on the loop;
     they are bounded small-file work, not usage-scaled. The builtin-skills
     sync verifies user-owned trees before replacing them, so it runs as a
@@ -346,7 +350,18 @@ async def _init_services(self: GatewayOrchestrator) -> None:
     self.conv_log.init()
     self.ctx_builder.conversation_log = self.conv_log
 
-    self.sessions = SessionManager(self._cfg, provider_factory=factory)  # type: ignore[arg-type]
+    # The map's startup read runs in a worker thread, the one place
+    # ``read_bytes_with_retry`` rides out a Windows sharing violation; built on
+    # the loop, one contended read would refuse every session-map write.
+    session_map = await asyncio.to_thread(SessionMap)
+    self.sessions = SessionManager(  # type: ignore[arg-type]
+        self._cfg, provider_factory=factory, session_map=session_map
+    )
+    # A turn's build names the MCP servers its session cannot use yet, and
+    # records on the session that the turn is told.
+    from kiro_crew.agent_sdk.mcp_problems import TurnMcpStatesReader
+
+    self.ctx_builder.mcp_states_for_session = TurnMcpStatesReader(self.sessions)
 
     self.consolidator = HistoryConsolidator(
         log=self.conv_log,

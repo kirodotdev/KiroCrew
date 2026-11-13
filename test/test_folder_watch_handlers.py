@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -57,6 +58,40 @@ def _make_app(store, watcher=None):
 
 
 class TestAddSourceFolder:
+    @pytest.mark.asyncio
+    async def test_a_folder_spelled_with_a_trailing_slash_or_dot_is_added_once(self, store, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        watcher = MagicMock()
+        watcher._folder_watcher = MagicMock()
+        watcher._folder_watcher._walk = MagicMock(return_value=[])
+
+        # The platform separator, as the handler builds its alternate spellings
+        # with os.sep.
+        trailing, dotted = f"{vault}{os.sep}", f"{vault}{os.sep}."
+        async with TestClient(TestServer(_make_app(store, watcher))) as client:
+            first = await client.post("/api/knowledge/sources", json={
+                "source_type": "local_folder", "uri": trailing
+            })
+            assert first.status == 201
+            first_id = (await first.json())["id"]
+            for spelling in (str(vault), trailing, dotted):
+                resp = await client.post("/api/knowledge/sources", json={
+                    "source_type": "local_folder", "uri": spelling
+                })
+                data = await resp.json()
+                if spelling == trailing:
+                    # The exact stored spelling keeps its existing answer.
+                    assert resp.status == 409 and data["id"] == first_id
+                else:
+                    # Another spelling of it is answered with that row, not refused.
+                    assert resp.status == 200
+                    assert data["status"] == "exists"
+                    assert data["id"] == first_id
+
+        uris = [r["uri"] for r in store.db.execute("SELECT uri FROM sources").fetchall()]
+        assert uris == [trailing]
+
     @pytest.mark.asyncio
     async def test_folder_returns_pending_confirmation(self, store, tmp_path):
         vault = tmp_path / "vault"

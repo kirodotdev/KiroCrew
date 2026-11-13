@@ -23,6 +23,7 @@ import time
 import uuid
 from typing import Any
 
+from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME
 from kiro_crew.dashboard.chat_folder_order import next_folder_order
 from kiro_crew.dashboard.chat_folders_records import MAX_CHAT_FOLDERS
 
@@ -225,12 +226,21 @@ async def session_folder_principal(caller_history_key: str) -> str:
 
 
 def _clean_name(display_name: str, fallback: str) -> str:
+    # The last resort reads the shared constant, not a second copy of the word:
+    # the label was renamed from "Mate" to "Bot" once already, and a duplicate
+    # literal is how one surface keeps the old name after the next rename.
     name = (display_name or "").strip()[:100]
-    return name or fallback.strip()[:100] or "Bot"
+    return name or fallback.strip()[:100] or ASSISTANT_DEFAULT_DISPLAY_NAME
 
 
 def display_name_for_principal(principal: str) -> str:
-    """The display name of the mate behind *principal*, or ``""``. Blocking (config read)."""
+    """The label of the mate behind *principal*, or ``""``. Blocking (config read).
+
+    The label is ``agent_files.member_label``'s, so the home folder is named
+    what the Bots page and the mate's own thread call it. The first mate with no
+    display name reads "Bot", never its ``mate`` key.
+    """
+    from kiro_crew.agent_files import member_label
     from kiro_crew.config import KiroCrewConfig
 
     if not is_mate_principal(principal):
@@ -238,7 +248,7 @@ def display_name_for_principal(principal: str) -> str:
     store = principal[len(MEMBER_PRINCIPAL_PREFIX) :]
     for name, agent in KiroCrewConfig.load().agents.items():
         if str(getattr(agent, "memory_store", "") or "") == store:
-            return str(getattr(agent, "display_name", "") or "") or str(name)
+            return member_label(name, agent)
     return ""
 
 

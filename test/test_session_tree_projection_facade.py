@@ -85,7 +85,6 @@ MOVED_MEMBERS = {
         "_seed",
         "_seed_inner",
         "_replay_tail",
-        "_replay_spawned",
         "_arm_seed_retry",
         "_start_seed_retry_timer",
     ),
@@ -122,7 +121,6 @@ BASE_MEMBER_KINDS = {
     "_seed": "function",
     "_seed_inner": "function",
     "_replay_tail": "function",
-    "_replay_spawned": "function",
     "_changed": "function",
     "_announce": "function",
     "_schedule_checkpoint": "function",
@@ -156,14 +154,9 @@ BASE_BOUND_SIGNATURES = {
     "_seed_inner": "(self, live_sids: \"'tuple[str, ...]'\") -> 'None'",
     "_replay_tail": (
         "(self, loaded: 'dict[str, OpenedRecord]', loaded_edges: 'dict[tuple[str, str], "
-        "EdgeRecord]', loaded_scans: \"'dict[str, ScanIdentity] | None'\" = None, *, faults: "
+        "EdgeRecord]', loaded_spawned: \"'dict[tuple[str, str], EdgeRecord] | None'\" = None, "
+        "loaded_marks: \"'dict[str, ScanIdentity] | None'\" = None, *, faults: "
         "\"'_ScanFaults | None'\" = None) -> \"'_ReplayResult'\""
-    ),
-    "_replay_spawned": (
-        "(self, records: 'dict[str, OpenedRecord]', loaded_spawned: 'dict[tuple[str, str], "
-        "EdgeRecord]', loaded_scans: \"'dict[str, ScanIdentity]'\", *, faults: \"'_ScanFaults | "
-        "None'\" = None) -> \"'tuple[dict[tuple[str, str], EdgeRecord], dict[str, "
-        "ScanIdentity], bool]'\""
     ),
     "_arm_seed_retry": "(self, root: \"'str | None'\", epoch: 'int') -> 'None'",
     "_start_seed_retry_timer": "(self, delay: 'float', fire: \"'Any'\") -> 'None'",
@@ -178,7 +171,7 @@ BASE_MODULE_NAMES = frozenset("""
     TREE_UNIT_CAP TreeNode TreeReading _LIVE_PROJECTIONS _LoadedCheckpoint _ReplayResult
     _ScanFaults _checkpoint_path _current_root _edge_from_json _edge_to_json
     _edge_within_bounds _load_checkpoint _projection _projection_lock _record_from_json
-    _record_to_json _save_checkpoint _scans_from_json _store_name _within_bounds
+    _marks_from_json _record_to_json _save_checkpoint _store_name _within_bounds
     edge_supersedes fold_tree forget_unit inherited_parent log_exception_text log_rank_of
     logger projection reconcile_unit_edge record_adopted record_opened record_released
     record_spawned replace reset_for_tests retract_unit_parent spawned_creator

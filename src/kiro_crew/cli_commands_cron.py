@@ -617,9 +617,24 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
     from kiro_crew.cron import job_zone_name
 
+    action = getattr(args, "cron_action", None)
+    if action not in (
+        "list",
+        "adopt",
+        "add",
+        "update",
+        "remove",
+        "pause",
+        "resume",
+        "trigger",
+        "preview",
+    ):
+        # Before the service below, which creates cron-history/ on a fresh data home.
+        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
+        return
+
     svc = CronService(base_dir=config_dir())
 
-    action = getattr(args, "cron_action", None)
     if action == "list":
         # Read-only on folders: the filter resolves an EXISTING folder and never
         # creates one, and an unknown or ambiguous reference is an error rather
@@ -986,9 +1001,6 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
     elif action == "preview":
         _cron_preview(args)
 
-    else:
-        print("Usage: kirocrew cron {list|add|update|remove|pause|resume|trigger|preview}")
-
 
 def _cron_preview(args: argparse.Namespace) -> None:
     """Dry-run a script cron with real MCP tools but suppressed hooks."""
@@ -1033,7 +1045,23 @@ def _cron_preview(args: argparse.Namespace) -> None:
     # Registered before exec, as the production child does: dataclasses resolves
     # a postponed annotation through sys.modules[cls.__module__].
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        # A script that fails to import (a syntax error, a missing module) is the
+        # common case while debugging one: report it like the function-error path
+        # below, not as a traceback through the CLI, and still audit the run.
+        sys.modules.pop(spec.name, None)
+        print(f"Error: cannot load {script_path}: {type(e).__name__}: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sel().log_api_access(
+            caller="cli",
+            operation="cron.preview",
+            outcome="error",
+            source="cli",
+            resources=f"script={script_path}:{func_name}",
+        )
+        sys.exit(1)
     func = getattr(module, func_name, None)
     if func is None:
         print(f"Error: function '{func_name}' not found in {script_path}", file=sys.stderr)

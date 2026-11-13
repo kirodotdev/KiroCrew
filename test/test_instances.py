@@ -467,6 +467,9 @@ class TestSshTunnelMultiplexing:
             + "  Port 2222\n"
             + "  IdentityFile ~/.ssh/some-key.pem\n"
             + "  ProxyCommand /bin/true %h %p\n"
+            + "  LocalForward 8888 localhost:8888\n"
+            + "  ExitOnForwardFailure yes\n"
+            + "  LogLevel QUIET\n"
         )
         args = _ssh_args(_build_ssh_tunnel_argv(self._HOST, 7779, 7879))
         resolved = _ssh_effective_config(tmp_path, config, args, self._HOST)
@@ -476,9 +479,15 @@ class TestSshTunnelMultiplexing:
         assert resolved.get("port") == "2222"
         assert "some-key.pem" in resolved.get("identityfile", "")
         assert resolved.get("proxycommand", "").startswith("/bin/true")
+        # The host block's forward rides along with the tunnel's own, so one on
+        # another port already bound elsewhere must not end the tunnel.
+        forwards = resolved.get("localforward", "").splitlines()
+        assert "[127.0.0.1]:7779 [127.0.0.1]:7879" in forwards
+        assert "8888 [localhost]:8888" in forwards
         # The argv's own pins are still in force alongside the inherited values.
         assert resolved.get("batchmode") == "yes"
-        assert resolved.get("exitonforwardfailure") == "yes"
+        assert resolved.get("exitonforwardfailure") == "no"
+        assert resolved.get("loglevel") == "INFO"
         assert resolved.get("addressfamily") == "inet"
 
 

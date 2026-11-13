@@ -1323,9 +1323,27 @@ servers:
   `mcpServers`, `tools`, `allowedTools`, `prompt`. Each is derived from the
   manifest, the per-app policy, or the running install — a stale value is a bug,
   not a preference.
-- **Everything else on disk wins**: `model`, `description`, extra
-  `toolsSettings`… it can only be there because the user put it there. Preserved
-  keys are logged so the reason a template change did not appear is visible.
+- **Everything else on disk wins when the user owns it**: `model`, `description`,
+  `toolsSettings`, `excludedTools`, `permissions`… The previous registration wrote
+  the template's own values there too, so each registration keeps a **template
+  record** beside the spec, `<app>--<agent>.template` (`_template_record`): what it
+  wrote from the template for these keys. A value on disk that still equals the
+  record follows the new template, which may also drop the key. Any other value is
+  the user's (`_user_owned_agent_keys`) and is kept, and the record leaves that key
+  out from then on, so a later template that happens to equal the user's value and
+  then changes it again cannot take it back. A spec with no record (written before
+  records existed) keeps every value on disk, and those keys stay the user's from
+  then on. Preserved keys are logged so the reason a template change did not appear
+  is visible.
+
+The record is not `.json`, so kiro-cli and every spec scan skip it. It sits in the
+agents directory, which the sandbox seals read-only like the spec, and is written
+after the spec, under the same lock, only when the spec write succeeded. A failed
+record write leaves the previous record, so a value that write took from a changed
+template reads as the user's next time and is kept. `_deregister_agents` removes the
+record with the spec. The prune of an agent a new version dropped removes only the
+spec; its record stays until the app is disabled or uninstalled and is ignored
+meanwhile, because with no spec beside it there is nothing to compare.
 
 The prior file is snapshotted BEFORE the replace (the write path unlinks a legacy
 symlink first, so reading afterwards would find nothing). An unreadable prior file
@@ -1346,16 +1364,20 @@ Pinned by `test_an_update_keeps_an_agent_file_it_cannot_rewrite` and
 `test_an_update_that_needs_consent_leaves_no_agent_file`.
 
 This keeps a user's `model` or `description` across a registry update, a pin-follow
-of an adopted former built-in, or a local update. Disable and re-enable still start
-from the template: a disabled app keeps no agent file, so the same is true when an
-update newly asks for `sessionApproval` and suspends the app. No route passes
+of an adopted former built-in, or a local update, and brings a template value the
+user did not change up to the new version. Pinned by
+`test_an_update_refreshes_what_the_user_did_not_edit` and
+`test_an_edit_stays_the_users_when_a_later_template_matches_it`. Disable and
+re-enable still start from the template: a disabled app keeps no agent file, so the
+same is true when an update newly asks for `sessionApproval` and suspends the app.
+No route passes
 `register_app`'s `prior_agent_configs` (a `snapshot_app_agent_configs` taken before
 a deregister that deletes the files).
 
 Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`,
-`_read_agent_config`; the update route `apps/routes_install.py::handle_update_app`
-with `apps/routes_lifecycle.py::_reinstall_from_registry` and
-`_prune_dropped_resources`.
+`_template_record`, `_read_agent_config`; the update route
+`apps/routes_install.py::handle_update_app` with
+`apps/routes_lifecycle.py::_reinstall_from_registry` and `_prune_dropped_resources`.
 
 ## 4. A generated prompt is pinned through the app's policy
 
@@ -5510,6 +5532,39 @@ Writers: `website/src/app-sdk/PullRequestPanel.tsx`, `website/src/app-sdk/index.
 `website/src/components/PullRequestPanel.tsx`, `website/src/components/CommentThreads.tsx`,
 `website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
 
+## 18h. The issue list reaches an app through the SDK, behind the declared list
+
+`useIssues`, `IssueList` and `IssueCard` on `@kirocrew/app-sdk`
+(`website/src/app-sdk/issues/`) list the issues `POST /api/source/issues` returns, through
+one query shape (`IssueSearchRequest`) and one row shape (`IssueSummary`,
+`website/src/types/index.sources.ts`). The views draw GitHub, GitLab, Jira and Linear
+rows, all four of which the route serves. They are App Kit seam level 6.
+
+The transport is chosen the way §18g chooses the pull-request client, from the
+published identity: an **external** app posts through its scoped client once
+`apiPathAllowed` covers `/api/source/issues`; a **builtin** page uses the dashboard's
+`api.fetchIssues`; **no identity** is the refusal. The refusal is an
+`AppApiPermissionError` from the hook, rendered by `IssueList` as an `ErrorNotice`
+naming the path, and the query stays disabled, so no request is sent. The matcher
+stops at a slash boundary, so `/api/source/issue` (one issue) does not admit the list.
+
+`useIssues` is a `useInfiniteQuery` keyed by the query minus `cursor`, with the
+response's `nextCursor` as the page parameter: a changed query or filter starts again
+from the first page. `IssueList`'s filter bar edits a copy of its `query` prop (state,
+assignee including `me`, labels, text), and a new prop replaces the edits.
+
+Provider strings are rendered as React text with `dir="auto"`. Every link and avatar
+url passes `safeHttpUrl` (http(s), no userinfo) before it becomes an `href` or `src`;
+a row whose url fails it renders without a link. The two views load behind a
+`React.lazy` boundary for the reason §18g gives. `AppSdkIssues.test.tsx` pins the three
+transport answers, the singular-path refusal, paging and its reset, both views for all
+four providers, and the text and url rules.
+
+Writers: `website/src/app-sdk/issues/`, `website/src/app-sdk/index.ts`,
+`website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/api/client/sourceControl.ts`,
+`website/src/types/index.sources.ts`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/app_sdk_level.py`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
@@ -6714,7 +6769,7 @@ the set of seams a built-in's code needed from core, published generically. Noth
 any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 (`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`), pinned equal by
 `test/test_app_sdk_level_mirror.py`. Level 2 adds `ctx.lifecycle` (§32b) and the SDK's
-pull-request panel (§18g). An app reads `ctx.sdk_level` or the SDK export to detect an
+pull-request panel (§18g); level 6 adds the SDK's issue list (§18h). An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
 **Structural routes.** `RouteRegistry` reads each item a `routes` hook returns through

@@ -381,7 +381,12 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
 
 
 async def _repair_member_memory(self: GatewayOrchestrator) -> None:
-    """Run one paced repair loop across already-open V1 and V2 stores."""
+    """Run one paced repair loop across already-open V1 and V2 stores.
+
+    Each visit also gives Dreaming (``memory.dream``) its turn; with the flag off
+    that reads the flag and nothing else.
+    """
+    from kiro_crew import memory_dream
     from kiro_crew.executors import memory_background_executor
 
     loop = asyncio.get_running_loop()
@@ -396,6 +401,13 @@ async def _repair_member_memory(self: GatewayOrchestrator) -> None:
         except Exception:
             if not self._memory_repair_stop.is_set():
                 logger.warning("Memory embedding repair deferred", exc_info=True)
+        try:
+            await memory_dream.gateway_visit(self)
+        except asyncio.CancelledError:
+            self._memory_repair_stop.set()
+            raise
+        except Exception:
+            logger.warning("Dreaming visit deferred", exc_info=True)
         await asyncio.sleep(30)
 
 

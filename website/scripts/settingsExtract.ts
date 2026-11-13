@@ -146,8 +146,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // SecurityPanel.tsx mounts as its banner. No extractable primitive; mapped so
   // the hand-written `security.config-pending` entry stays anchored to its source.
   'SecurityPanelConfigPending.tsx': 'security',
-  'ConnectionsPanel.tsx': 'connections',
+  'OAuthAppPanel.tsx': 'connections',
   'SecretsPanel.tsx': 'secrets',
+  // Draws the tab while the Secrets vault redesign preview is off.
+  'SecretsPanelLegacy.tsx': 'secrets',
   'NotificationsPanel.tsx': 'notifications',
   'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
@@ -534,6 +536,8 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'developer'), file: 'KiroSignInCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
+    // A Connections card's OAuth app part, opened in place on Settings → Connections.
+    { dir: path.join(srcDir, 'pages', 'connections'), file: 'OAuthAppPanel.tsx' },
   ]
 }
 

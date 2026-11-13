@@ -13,6 +13,8 @@ interface FirstRunFlags {
   /** Server-only; `null` until theme boot answers (see `useTheme`). */
   privacyAckVersion?: number | null
   themeBootReady: boolean
+  /** The host's first-run state could not be read; nothing may open from this browser's flags. */
+  hostStateUnread?: boolean
   markOnboarded: () => void
 }
 
@@ -21,7 +23,7 @@ interface FirstRunFlags {
  * Customize tour. Derived from the completion flags on every
  * change, so the hand-offs below and the derive effect cannot disagree.
  */
-export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion = null, themeBootReady, markOnboarded }: FirstRunFlags) {
+export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, privacyAckVersion = null, themeBootReady, hostStateUnread = false, markOnboarded }: FirstRunFlags) {
   // The E2E Playwright suite depends on this onboarding gate: playwright/auth.setup.ts
   // seeds localStorage['mc-onboarded']='1' so the first-run "Choose your look" modal
   // never overlays the shell and intercepts every spec's interactions. If this flag is
@@ -84,11 +86,11 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
       return
     }
     if (usage.status === 'loading') return
-    // A failed status read shows the notice too, in its neutral "what can be
-    // collected" form with the read error on screen: failing quietly would hide
-    // both the notice and the failure. Its Continue records no notice version,
-    // so a working read on a later load still decides properly.
-    if (usage.status === 'error' || (usage.status === 'ready' && usage.recordingOn)) {
+    // Only a read that answered opens the notice. A failed read says nothing
+    // about what is on, and this user has already passed the chapter, so a
+    // failure (the first load after the sign-in runs out is one) must not put it
+    // back on screen. Nothing is stored either, so the next load decides again.
+    if (usage.status === 'ready' && usage.recordingOn) {
       privacyExit.current = 'close'
       setNotice('show')
     } else {
@@ -115,6 +117,10 @@ export function useFirstRunChapters({ onboarded, importOnboarded, privacyAcked, 
   // Dismiss onboarding when server reports user is already onboarded
   // (handles the race: boot fetch completes after useState initializer ran).
   useEffect(() => { if (onboarded) setShowOnboarding(false) }, [onboarded])
+  // The tour's seed above reads this browser's flags before the host answers;
+  // when the host cannot be read those flags are all there is, so the seeded
+  // tour closes rather than finish first run from them.
+  useEffect(() => { if (hostStateUnread) setShowOnboarding(false) }, [hostStateUnread])
   // Seeds — and re-derives — which first-run chapter is open from the three
   // completion flags. Chapter order is Import setup → Privacy → Customize/tour,
   // so each chapter opens only once its predecessor is marked done. Runs on
@@ -255,6 +261,9 @@ export function FirstRunChapters({ firstRun, onboarded, privacyAcked, markOnboar
         // Hidden, not acknowledged: privacyAcked stays false, so the chapter
         // opens again at the next load.
         onAskAgent={() => setShowPrivacy(false)}
+        // Off by the user's own setting: Continue's ack is recorded without the
+        // screen, and onContinue above moves on as it would.
+        passWhenOff
       />
 
       {/* First-run chapter 3 — Customize + feature tour (theme → about you →

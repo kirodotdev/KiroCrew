@@ -258,6 +258,19 @@ export const PREVIEW_DASHBOARD_STALE_WAKE = `${PREVIEW_FLAG_PREFIX}dashboard-sta
 export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-sharing`
 
 /**
+ * The Secrets vault redesign: Settings > Secrets as a list-detail pane
+ * (`SecretsPanel.tsx`) that also stores logins and notes.
+ *
+ * Default OFF, and OFF is the single-page panel on `main`
+ * (`SecretsPanelLegacy.tsx`), with the tab hosting no sub-nav. The gateway reads
+ * the same switch (`dashboard.feature_previews.secrets_vault`) for
+ * `GET /api/secrets`: off, the listing is names only with no `items`, as before.
+ * The typed write is not gated: it is additive, so a plain `{name, value}`
+ * write keeps its old shape and the legacy panel works against it unchanged.
+ */
+export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -281,6 +294,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_DASHBOARD_STALE_WAKE,
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
+  PREVIEW_SECRETS_VAULT,
 ]
 
 /**

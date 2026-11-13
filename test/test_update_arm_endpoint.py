@@ -15,6 +15,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew import update_next_start
+from kiro_crew.dashboard.handlers import updates
 from kiro_crew.dashboard.state import DashboardState
 
 
@@ -43,7 +44,9 @@ def _verdict():
 
     original = dict(_update_info)
     _update_info.clear()
-    _update_info.update({"latest_version": "9.9.9", "update_available": True})
+    _update_info.update(
+        {"latest_version": "9.9.9", "update_available": True, "check_status": "succeeded"}
+    )
     yield
     _update_info.clear()
     _update_info.update(original)
@@ -158,6 +161,151 @@ async def test_there_is_nothing_to_arm_when_the_check_found_no_update(
     assert resp.status == 409
     assert json.loads(resp.body)["code"] == "no_update"
     assert update_next_start.read().armed is False
+
+
+@pytest.mark.asyncio
+async def test_before_the_first_check_the_arm_runs_it_and_arms_its_version(
+    tmp_path, monkeypatch, spies
+) -> None:
+    from kiro_crew.dashboard.handlers import _update_info
+
+    _update_info.clear()
+
+    async def _check() -> None:
+        _update_info.update(
+            {"latest_version": "9.9.9", "update_available": True, "check_status": "succeeded"}
+        )
+
+    monkeypatch.setattr(updates, "_do_update_check", _check)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 202
+    assert update_next_start.read().armed_version == "9.9.9"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "code"),
+    [("unchecked", "update_check_pending"), ("failed", "arm_check_failed")],
+)
+async def test_an_arm_without_a_check_result_is_refused_and_writes_nothing(
+    tmp_path, monkeypatch, spies, status, code
+) -> None:
+    from kiro_crew.dashboard.handlers import _update_info
+
+    _update_info.clear()
+    _update_info.update({"check_status": status})
+    monkeypatch.setattr(updates, "_do_update_check", AsyncMock(return_value=None))
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 409
+    assert json.loads(resp.body)["code"] == code
+    assert update_next_start.read().armed is False
+    assert not update_next_start._state_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_a_check_that_names_no_version_arms_nothing(tmp_path, monkeypatch, spies) -> None:
+    from kiro_crew.dashboard.handlers import _update_info
+
+    _update_info.update({"latest_version": ""})
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start"})
+
+    assert resp.status == 409
+    assert json.loads(resp.body)["code"] == "update_check_pending"
+    assert not update_next_start._state_path().exists()
+
+
+@pytest.mark.asyncio
+async def test_a_desktop_hosted_gateway_records_the_version_the_desktop_names(
+    tmp_path, monkeypatch, spies
+) -> None:
+    from kiro_crew.dashboard.handlers import _update_info
+
+    _update_info.clear()
+    monkeypatch.setenv("KIROCREW_DESKTOP_GATEWAY", "1")
+    check = AsyncMock()
+    monkeypatch.setattr(updates, "_do_update_check", check)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start", "version": "2.0.0"})
+
+    assert resp.status == 202
+    assert json.loads(resp.body)["version"] == "2.0.0"
+    assert update_next_start.read().armed_version == "2.0.0"
+    check.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_version_from_a_gateway_the_desktop_does_not_host_is_not_trusted(
+    tmp_path, monkeypatch, spies
+) -> None:
+    monkeypatch.delenv("KIROCREW_DESKTOP_GATEWAY", raising=False)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "next-start", "version": "2.0.0"})
+
+    assert resp.status == 202
+    assert update_next_start.read().armed_version == "9.9.9"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [3, "x" * 65])
+async def test_a_malformed_version_is_refused(tmp_path, monkeypatch, spies, version) -> None:
+    resp, _state = await _post(tmp_path, monkeypatch, {"version": version})
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "invalid_body"
+    assert update_next_start.read().armed is False
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_naming_the_stamp_disarms_and_a_stale_stamp_does_not(
+    tmp_path, monkeypatch, spies
+) -> None:
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    armed = update_next_start.arm("9.9.9")
+
+    resp, _state = await _post(
+        tmp_path, monkeypatch, {"when": "cancel", "armed_at": armed.armed_at - 1.0}
+    )
+    assert resp.status == 409
+    assert json.loads(resp.body)["code"] == "arm_changed"
+    assert update_next_start.read().armed is True
+
+    resp, _state = await _post(
+        tmp_path, monkeypatch, {"when": "cancel", "armed_at": armed.armed_at}
+    )
+    assert resp.status == 200
+    assert update_next_start.read().armed is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stamp", ["soon", True, [1]])
+async def test_a_malformed_cancel_stamp_is_refused(tmp_path, monkeypatch, spies, stamp) -> None:
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    update_next_start.arm("9.9.9")
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "cancel", "armed_at": stamp})
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "invalid_body"
+    assert update_next_start.read().armed is True
+
+
+@pytest.mark.asyncio
+async def test_cancel_needs_no_check_result(tmp_path, monkeypatch, spies) -> None:
+    from kiro_crew.dashboard.handlers import _update_info
+
+    _update_info.clear()
+    check = AsyncMock()
+    monkeypatch.setattr(updates, "_do_update_check", check)
+
+    resp, _state = await _post(tmp_path, monkeypatch, {"when": "cancel"})
+
+    assert resp.status == 200
+    check.assert_not_called()
 
 
 @pytest.mark.asyncio

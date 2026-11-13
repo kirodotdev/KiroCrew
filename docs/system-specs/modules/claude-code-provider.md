@@ -1079,10 +1079,13 @@ before the client starts, and a restricted session never takes a warm-pool child
 native resume, so every `session/new` it sends carries the variable. A sub-agent
 spawned with `include_memory=false` gets the same envelope in any memory mode, never
 takes a warm-pool child, and keeps it across a continuation, a reset successor and a
-compaction restart. Not covered: a live chat tightened to
-incognito or temporary while its claude session runs, which keeps the envelope it
-started with until its next `session/new`. Contract tests:
-`test_claude_auto_memory_envelope.py`.
+compaction restart. A Side Chat or reply thread opened on an incognito or temporary
+chat starts its own session with `include_memory=False`, so it gets the same envelope;
+the Side Chat's binding carries that restriction, so a side session kept from before
+the parent was tightened is destroyed and cold-started (a thread cold-starts every
+turn). Not covered: a live chat tightened to incognito or temporary while its claude
+session runs, which keeps the envelope it started with until its next `session/new`.
+Contract tests: `test_claude_auto_memory_envelope.py`.
 
 ### `/clear` is answered by the dashboard
 

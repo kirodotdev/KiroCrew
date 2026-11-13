@@ -16,6 +16,7 @@ from kiro_crew.dashboard.mcp_banner_dedupe import (
     forget_mcp_banner,
     rejected_banner_is_repeat,
 )
+from kiro_crew.dashboard.mcp_oauth_expiry_watch import watch_open_oauth_banners
 from kiro_crew.dashboard.mcp_oauth_provenance import record_emitted
 from kiro_crew.dashboard.urls import is_loopback
 from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
@@ -289,13 +290,37 @@ def _record_session_mcp_event(
     ``fanout_no_owner`` comes from ``AcpEvent.runtime_global``: the banner is
     still surfaced for an ownerless event, only the report mutation is gated —
     the same split the compaction path already makes.
+
+    A transport that folds each frame as it arrives (``folded_on_arrival``) has
+    already recorded the state this event names, and maybe a newer one, so the
+    event is not written to its report again: it only republishes. The slot
+    drops a payload equal to the one it holds, so a repeat pushes nothing.
     """
     report = _session_mcp_report(provider)
-    if report is None or not report.record_event(
-        kind, server_name, error, fanout_no_owner=fanout_no_owner
-    ):
+    if report is None:
         return
+    if not report.folded_on_arrival:
+        report.record_event(kind, server_name, error, fanout_no_owner=fanout_no_owner)
     _publish_session_mcp_report(state, slot, provider)
+
+
+def _watch_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", provider: Any) -> None:
+    """Republish this slot's MCP report each time the session's servers move it.
+
+    The report follows its servers during a turn and between turns, and most of
+    those moves (a server that simply connects) yield no turn event. Called at
+    turn admission, after the report was published once: the hook belongs to the
+    session's current report, so each turn sets it on the report it will read.
+    """
+
+    def republish() -> None:
+        # Only while the slot still shows THIS session's report: a reset clears
+        # the stored copy, and a late frame must not bring it back.
+        session_id = str(getattr(provider, "session_id", "") or "")
+        if session_id and slot._mcp_report_session_id == session_id:
+            _publish_session_mcp_report(state, slot, provider)
+
+    provider.set_mcp_report_changed_hook(republish)
 
 
 def _redact_acp_string(s: str) -> str:
@@ -579,6 +604,10 @@ def _emit_mcp_oauth_request(
         "msg msg-info",
         meta=meta,
     )
+    # The read gate withdraws this link on the next fetch once `minted_by` is no
+    # longer the live child, but an open tab does not refetch. This watch tells
+    # it as soon as that happens, however the child ended.
+    watch_open_oauth_banners(state, slot)
 
 
 def _supersede_open_mcp_oauth_banners(

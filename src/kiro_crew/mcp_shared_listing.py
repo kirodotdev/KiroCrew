@@ -31,6 +31,7 @@ from kiro_crew.mcp_caller import (
     CallerContext,
     caller_identity_capability,
 )
+from kiro_crew.mcp_listing_relay import RelayedFrames
 from kiro_crew.mcp_shared_policy import (
     ToolPolicy,
     _ambient_audit_session,
@@ -186,6 +187,18 @@ def listable_tools(
         except Exception as sel_exc:
             logger.warning("SEL audit failed for unfiltered listing: %s", sel_exc)
         return tools
+    return within_policy(server_name, tools, policy)
+
+
+def within_policy(
+    server_name: str, tools: list[dict[str, Any]], policy: ToolPolicy
+) -> list[dict[str, Any]]:
+    """*tools* minus what a resolved *policy* withholds from *server_name*'s session.
+
+    The one filter of a tool list. :func:`listable_tools` applies it to the list a
+    server built, and the gateway applies it to the list it builds for a server to
+    relay (``kiro_crew.mcp_listing_relay``), so the two cannot filter differently.
+    """
     if policy.excluded:
         tools = [t for t in tools if t.get("name") not in policy.excluded]
     included = policy.include_for(server_name)
@@ -226,7 +239,12 @@ class _EarlyState:
 _EARLY = _EarlyState()
 
 
-def serve_before_handlers(server: StdioServer, *, wait_secs: float = EARLY_FRAME_WAIT_SECS) -> None:
+def serve_before_handlers(
+    server: StdioServer,
+    *,
+    wait_secs: float = EARLY_FRAME_WAIT_SECS,
+    relayed: RelayedFrames | None = None,
+) -> None:
     """Answer *server*'s ``initialize`` and ``tools/list`` now, from this process's stdin.
 
     Called by the server's entry before it imports the tool handlers. It answers the two
@@ -237,6 +255,10 @@ def serve_before_handlers(server: StdioServer, *, wait_secs: float = EARLY_FRAME
 
     The answers are the dispatch loop's own (:func:`initialize_result`,
     :func:`listable_tools`), so a client cannot tell which of the two wrote them.
+
+    *relayed* is what the entry already read from stdin while it answered with the
+    gateway's copy of those answers (``kiro_crew.mcp_listing_relay``). Nothing more is
+    read here then: its frames become the ones the loop takes, in their order.
     """
     if _EARLY.served:
         return
@@ -245,6 +267,11 @@ def serve_before_handlers(server: StdioServer, *, wait_secs: float = EARLY_FRAME
     _EARLY.frames = early
     if server.before_first_request is not None:
         server.before_first_request()
+    if relayed is not None:
+        early.init_params = relayed.init_params
+        early.pending.extend(relayed.pending)
+        early.pump = relayed.pump
+        return
     snapshot_stdout_fd()
     stdin = sys.stdin
     try:

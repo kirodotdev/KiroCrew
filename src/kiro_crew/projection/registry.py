@@ -213,20 +213,24 @@ class ProjectionRegistry:
         # one deep copy per definition, then in place per event, with the same per-cell
         # watermark rule ``_fold_one`` applies -- and installed once at the end. A cold
         # session fold reaches here over the whole log, and stepping each event through
-        # ``apply`` copied the growing state once per entry: O(N^2). A RESUMED pass keeps
-        # ``apply``: its tail is only what arrived since the savepoint, and a restored
-        # state is untrusted -- a fold's copier is what refuses one malformed below its
-        # top level, which the savepoint readers rely on to retire the file. A registry
-        # with any definition lacking ``apply_owned`` (the member event log's, driven
-        # live by other threads) keeps this path too.
+        # ``apply`` copied the growing state once per entry: O(N^2). A RESUMED pass of
+        # such a registry goes through :meth:`_fold_tail_resumed`: a restored state is
+        # untrusted -- a fold's copier is what refuses one malformed below its top level,
+        # which the savepoint readers rely on to retire the file -- so it still meets
+        # ``apply``, but only until ``apply`` hands back a copy; that copy is the pass's
+        # own. A stale savepoint makes the tail as long as the log, and copying per entry
+        # there was O(tail x state). A registry with any definition lacking
+        # ``apply_owned`` (the member event log's, driven live by other threads) keeps
+        # ``_fold_one``.
         # Every cell, not the floor: a bundle mixing one fold at seq 0 with another
         # resumed further along has a floor of 0, and that resumed state is exactly the
         # untrusted one the copier must still see.
         owned = [getattr(defn, "apply_owned", None) for defn in defns]
         with self._lock:
             cold = all(self._cells[(defn.key, store)].observed_seq <= 0 for defn in defns)
-        if cold and all(fn is not None for fn in owned):
-            self._fold_tail_owned(store, defns, owned, tail_from(floor))
+        if all(fn is not None for fn in owned):
+            fold_tail = self._fold_tail_owned if cold else self._fold_tail_resumed
+            fold_tail(store, defns, owned, tail_from(floor))
             return floor
         for event in tail_from(floor):
             self._fold_one(store, event, emit=False)
@@ -252,6 +256,57 @@ class ProjectionRegistry:
                     continue
                 states[i] = folder(states[i], event)
                 marks[i] = seq
+        self._install_tail(store, defns, seeds, started, states, marks)
+
+    def _fold_tail_resumed(
+        self,
+        store: str,
+        defns: list[ProjectionDefinition],
+        owned: list[Any],
+        events: Iterable[Any],
+    ) -> None:
+        """A resumed :meth:`prime_checkpointed` tail: ``apply`` until it copies, then in place.
+
+        The restored state meets ``apply`` -- and so the fold's copier -- on every entry
+        until one moves it, exactly as :meth:`_fold_one` would step it; the copy that
+        entry returned is this pass's alone, so the rest of the tail edits it with
+        ``apply_owned``. One ``view`` per moved definition at the end stands in for the
+        one :meth:`_fold_one` rendered per change: a state no reader can render is still
+        refused here, without paying a render of the whole state per entry.
+        """
+        with self._lock:
+            seeds = [self._cells[(defn.key, store)] for defn in defns]
+        states = [cell.state for cell in seeds]
+        marks = [cell.observed_seq for cell in seeds]
+        started = list(marks)
+        mine = [False] * len(defns)
+        for event in events:
+            seq = self._seq_of(event)
+            for i, defn in enumerate(defns):
+                if seq <= marks[i]:
+                    continue
+                marks[i] = seq
+                if mine[i]:
+                    states[i] = owned[i](states[i], event)
+                    continue
+                stepped = defn.apply(states[i], event)
+                mine[i] = stepped is not states[i]
+                states[i] = stepped
+        for defn, state, moved in zip(defns, states, mine):
+            if moved:
+                defn.view(state)
+        self._install_tail(store, defns, seeds, started, states, marks)
+
+    def _install_tail(
+        self,
+        store: str,
+        defns: list[ProjectionDefinition],
+        seeds: list[_Cell],
+        started: list[int],
+        states: list[Any],
+        marks: list[int],
+    ) -> None:
+        """Install a privately folded tail's states over the cells it started from."""
         # Install only over the cell this pass started from, still at the seq it started
         # at. A ``drive`` that landed on this store while the tail folded outside the
         # lock has advanced that cell (``_fold_one`` edits the cell object), and

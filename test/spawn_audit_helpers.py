@@ -140,6 +140,22 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # ``test_the_version_child_is_wrapped_like_the_read_back`` in
         # ``test/test_acp_opencode_backend.py`` pins that.
         "acp/harness/opencode.py::_opencode_reported_major",
+        # MiMo Code's routing read-back and version probe: the same two shapes as
+        # the opencode pair above, in MiMo Code's own launch module. ONE fixed argv
+        # each -- the resolved ``mimo`` binary plus the literal words in
+        # ``_MIMOCODE_CONFIG_READBACK_ARGS`` (``debug config``) or ``_MIMOCODE_VERSION_ARGS``
+        # (``--version``) -- no shell, a 30s / 15s timeout, and the session work dir
+        # as cwd. The read-back's only variable input is the child's
+        # ``MIMOCODE_CONFIG_CONTENT``, composed by ``_mimocode_routing_config`` from this
+        # core's permission-setting table; the probe carries no seed. Both children
+        # get this harness's strip and pin of ``MIMOCODE_*`` variables, and the
+        # read-back refuses before spawning when a refused variable is set. Both are
+        # SANDBOX-WRAPPED by their callers through ``wrap_argv_async`` with the
+        # session's credential mask, and both run on a worker thread --
+        # ``test_the_read_back_and_the_version_probe_run_wrapped_and_off_the_loop``
+        # in ``test/test_acp_mimocode_backend.py`` pins that.
+        "acp/harness/mimocode.py::_verify_mimocode_routing",
+        "acp/harness/mimocode.py::_mimocode_reported_version",
         # The pi gate read-back, the same shape as the opencode one above. ONE fixed
         # argv -- Kiro Crew's own gate launcher (a file this core wrote into the
         # sandbox run directory, execing the resolved ``pi`` binary) plus the three
@@ -233,6 +249,12 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # the child; on a running loop the same call runs in one worker thread. No
         # process is created here.
         "kiro_cli.py::_sandboxed_probe",
+        # Same pattern again, for a kiro-cli found only through ``PATH``: one fixed
+        # ``--version`` argv, and the ``asyncio.run`` drives
+        # ``kiro_prerequisite._run_process`` in strict mode with
+        # ``require_crew_sandbox``, so the file an agent may have planted is run
+        # inside Kiro Crew's own sandbox or not at all. No process is created here.
+        "kiro_cli_path_probe.py::_sandboxed_version",
         # The subprocess-pool child interpreter: ONE fixed argv, ``sys.executable -I -S
         # -c <leaf source>``, where the source is the text of a module-relative
         # constant script (the sensitive-path resolver's
@@ -798,6 +820,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # the process identity could not signal our own already-running child.
         "cloud/ssm.py::_kill_tree_windows",
         "cloud/ssm.py::_run_install_command",
+        # After a step of the operator-confirmed plugin install fails, with no
+        # terminal: the fixed argv `sudo -n true`, no shell, stdio on DEVNULL, only
+        # the exit code read, to word the failure.
+        # Same classification as `_run_install_command` beside it.
+        "cloud/ssm.py::_sudo_cannot_prompt",
         "cloud/ssm.py::open_port_forward",
         # Local identity probe: `<resolved kiro-cli> whoami --format json`, a
         # fixed argv with no shell and no agent-reachable input — the binary

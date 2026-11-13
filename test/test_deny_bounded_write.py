@@ -1626,6 +1626,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "Permission requested for tool: %s (req=%s)",
             "approve_tool: security floor rejected req=%s: %s",
             "auto-approve identity gate rejected req=%s: %s",
+            "approve_tool: mimocode mcp control refused req=%s",
         ],
         "src/kiro_crew/acp/client_claude_seed.py": [],
         "src/kiro_crew/acp/client_claude_session.py": [],

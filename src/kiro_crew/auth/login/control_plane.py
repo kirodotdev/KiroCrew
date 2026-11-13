@@ -57,7 +57,7 @@ _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 # profile served from us-east-1 OR from eu-central-1. At sign-in the profile ARN,
 # the only thing that names the profile's real region, does not exist yet, so
 # sign-in asks every host here, the login region's first
-# (:func:`_discovery_hosts`). After sign-in the ARN's own region picks the host.
+# (:func:`control_plane_urls`). After sign-in the ARN's own region picks the host.
 _CPS_ENDPOINTS = {
     "us-east-1": "https://management.us-east-1.kiro.dev/",
     "eu-central-1": "https://management.eu-central-1.kiro.dev/",
@@ -99,16 +99,16 @@ def control_plane_url(region: str) -> str:
 
     After sign-in it is keyed by :func:`profile_region`, the region parsed from the
     resolved profile ARN, which names the profile's control plane. At sign-in it
-    only picks which host :func:`_discovery_hosts` asks first.
+    only picks which host :func:`control_plane_urls` asks first.
     """
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
 
 
-def _discovery_hosts(region: str) -> list[str]:
-    """CPS hosts to ask at sign-in: the login region's own first, then every other.
+def control_plane_urls(region: str) -> list[str]:
+    """Every CPS host sign-in asks for *region*'s profiles, in the order it asks them.
 
-    The order only decides which host is asked first, so the common single-region
-    case resolves on the first host. Each known host appears once, so a profile on
+    The login region's own host comes first, so the common single-region case
+    resolves on the first host. Each known host appears once, so a profile on
     another control plane is still found.
     """
     return list(dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()]))
@@ -189,7 +189,7 @@ async def list_available_profiles(
 ) -> ProfileListing:
     """Return the caller's Kiro profiles from the first control plane that has any.
 
-    Every CPS host is asked, *region*'s own first (:func:`_discovery_hosts`), because
+    Every CPS host is asked, *region*'s own first (:func:`control_plane_urls`), because
     the Identity Center region does not name the control plane serving the profile (a
     us-east-1 instance can hold an eu-central-1 profile). Each host's listing follows
     ``nextToken`` until a page lists a profile (:func:`_list_profiles_at`). A host that
@@ -200,10 +200,9 @@ async def list_available_profiles(
     listed none, the empty result names those hosts and the pages they took, for the
     diagnostic log.
     """
-    urls = _discovery_hosts(region)
     errors: list[ControlPlaneError] = []
     empty: list[ProfileListing] = []
-    for url in urls:
+    for url in control_plane_urls(region):
         try:
             listing = await _list_profiles_at(url, access_token, session)
         except ControlPlaneError as err:

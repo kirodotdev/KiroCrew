@@ -1,5 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
+// Leaf modules, not `../api/client`: most tests mock that module with a bare
+// factory, and the second read below must not depend on exports they leave out.
+import { ApiError } from '../api/apiError'
+import { pendingRefresh } from '../api/refreshOnce'
 import type { BeaconStatus } from './PrivacyDisclosure'
 
 /**
@@ -17,6 +21,8 @@ export const PRIVACY_NOTICE_VERSION = 2
 /** GET /api/telemetry/collection, the fields the notice reads. */
 interface CollectionStatus {
   enabled?: boolean
+  /** A `config.local.json` entry decides the switch. */
+  overlay_override?: boolean
   env_pinned?: boolean
   env_var?: string
   /** Recording would also send metrics to a configured destination. */
@@ -44,6 +50,28 @@ export interface UsageDataState {
   offReason: UsageOffReason | null
   /** The env var to name when `offReason` is `env`. */
   envVar: string
+  /** Off, and a `config.local.json` entry holds a switch off (not the user's own setting). */
+  overlayOff?: boolean
+}
+
+/**
+ * One status read, tried once more when the gateway refused it because the
+ * dashboard sign-in had run out. On that refusal the client starts renewing the
+ * sign-in and hands the refusal back unchanged (`checkSessionExpired`), so the
+ * first read after a lapse fails while the same read a moment later answers.
+ * The second read waits for a renewal that is still running. A renewal that
+ * failed, or a second read that fails, leaves the read failed.
+ */
+async function readAfterRenewal<T>(read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (e) {
+    // A proxy's own sign-in page sets `authRequired` too, and no renewal clears it.
+    if (!(e instanceof ApiError && e.authRequired && !e.edgeChallenge)) throw e
+    const renewal = pendingRefresh()
+    if (renewal && !(await renewal).ok) throw e
+    return read()
+  }
 }
 
 /**
@@ -59,13 +87,13 @@ export interface UsageDataState {
 export function useUsageDataState(enabled: boolean): UsageDataState {
   const beaconQ = useQuery<BeaconStatus>({
     queryKey: ['beaconStatus'],
-    queryFn: () => api.beaconStatus(),
+    queryFn: () => readAfterRenewal(() => api.beaconStatus()),
     enabled,
     retry: false,
   })
   const collectionQ = useQuery<CollectionStatus>({
     queryKey: ['telemetryCollection'],
-    queryFn: () => api.collectionStatus(),
+    queryFn: () => readAfterRenewal(() => api.collectionStatus()),
     enabled,
     retry: false,
   })
@@ -88,5 +116,6 @@ export function useUsageDataState(enabled: boolean): UsageDataState {
   if (beacon.governance_override) offReason = 'governance'
   else if (envVar === 'DO_NOT_TRACK') offReason = 'do_not_track'
   else if (envVar) offReason = 'env'
-  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar }
+  const overlayOff = !!(beacon.overlay_override || collection.overlay_override)
+  return { status: 'ready', on: false, recordingOn: false, heartbeatOn: false, exportOn: false, offReason, envVar, overlayOff }
 }

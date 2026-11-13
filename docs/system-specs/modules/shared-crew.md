@@ -820,7 +820,9 @@ the Crew. `test_no_external_requested_by_attribution_is_emitted` pins it.
 
 ### Session list query
 
-`session_query.query_sessions` runs over the whole persisted catalog: machine
+`session_query.query_sessions` runs over the whole persisted catalog, which the
+route reads from the listing index (`routes_identity._catalog_rows`, through
+`ConversationLog.list_sessions_indexed`): machine
 transcripts are dropped, then the search (`q`, case-insensitive over title and
 key) and the creator filter, then the page is cut. Order is newest `modified`
 first with a key digest as the tiebreak. The cursor is a keyset position, so one

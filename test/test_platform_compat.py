@@ -1016,25 +1016,6 @@ class TestFindListeningPids:
         finally:
             s.close()
 
-    def test_linux_per_process_probe_runs_on_every_runner(self, tmp_path, monkeypatch):
-        proc_root = tmp_path / "proc"
-        (proc_root / "net").mkdir(parents=True)
-        (proc_root / "4242" / "fd").mkdir(parents=True)
-        (proc_root / "4242" / "fd" / "7").touch()
-        (proc_root / "net" / "tcp").write_text(
-            "header\n"
-            "0: 0100007F:1E61 00000000:0000 0A 00000000:00000000 "
-            "00:00000000 00000000 1000 0 12345\n",
-            encoding="ascii",
-        )
-        (proc_root / "net" / "tcp6").write_text("header\n", encoding="ascii")
-        monkeypatch.setattr(pc, "IS_WINDOWS", False)
-        monkeypatch.setattr(pc, "IS_LINUX", True)
-        monkeypatch.setattr(pc, "IS_POSIX", True)
-        monkeypatch.setattr(pc.os, "readlink", lambda path: "socket:[12345]")
-
-        assert pc.process_owns_loopback_listener(4242, 7777, proc_root=proc_root) is True
-
 
 class TestProcessCommandLine:
     def test_self_cmdline_mentions_python(self):

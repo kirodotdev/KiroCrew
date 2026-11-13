@@ -261,6 +261,17 @@ def kas_route() -> Any:
     return resolve_kas_route()
 
 
+def crew_sign_in_starts_spawn() -> bool:
+    """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
+
+    ``acp.kas_route.crew_sign_in_starts_spawn``, for the dashboard. Blocking
+    (vault, config and kiro-cli reads); never raises.
+    """
+    from kiro_crew.acp.kas_route import crew_sign_in_starts_spawn as starts
+
+    return starts()
+
+
 def last_kas_route() -> dict[str, Any] | None:
     """The route the last KAS spawn in this process took, as plain data, or ``None``."""
     from kiro_crew.acp.kas_route import last_spawn_route

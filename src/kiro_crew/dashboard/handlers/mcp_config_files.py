@@ -255,17 +255,17 @@ def _string_identifier(body: dict, field: str) -> tuple[str, web.Response | None
 _KIROCREW_MCP_JSON: Path | None = None
 
 
-def _mcp_config_corrupt() -> web.Response:
-    """The global mcp.json did not parse."""
+def _mcp_config_corrupt(name: str = "global mcp.json") -> web.Response:
+    """The MCP config *name* (the global mcp.json unless said) did not parse."""
     return web.json_response(
-        {"error": "cannot parse global mcp.json", "code": "config_corrupt"}, status=500
+        {"error": f"cannot parse {name}", "code": "config_corrupt"}, status=500
     )
 
 
-def _mcp_config_unreadable() -> web.Response:
-    """The global mcp.json exists but could not be read."""
+def _mcp_config_unreadable(name: str = "global mcp.json") -> web.Response:
+    """The MCP config *name* (the global mcp.json unless said) exists but could not be read."""
     return web.json_response(
-        {"error": "cannot read global mcp.json", "code": "config_unreadable"}, status=500
+        {"error": f"cannot read {name}", "code": "config_unreadable"}, status=500
     )
 
 
@@ -291,7 +291,9 @@ def _read_global_mcp_text() -> str:
     return read_bytes_with_retry(_GLOBAL_MCP_JSON).decode("utf-8")
 
 
-def _load_config_or_refusal(path: Path) -> dict[str, Any] | web.Response:
+def _load_config_or_refusal(
+    path: Path, *, name: str = "global mcp.json"
+) -> dict[str, Any] | web.Response:
     """Read a user MCP config for a read-modify-write, or the reply refusing it.
 
     A missing file is an empty document. A file that does not decode, does not
@@ -301,17 +303,18 @@ def _load_config_or_refusal(path: Path) -> dict[str, Any] | web.Response:
     stay untouched. A file that exists but cannot be read is refused as
     unreadable (:func:`_mcp_config_unreadable`). Comments parse here; the
     writers refuse a commented file separately (:func:`_refuse_commented_config`).
+    *name* is how the refusal names the file.
     """
     try:
         data = loads_user_jsonc(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {"mcpServers": {}}
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return _mcp_config_corrupt()
+        return _mcp_config_corrupt(name)
     except OSError:
-        return _mcp_config_unreadable()
+        return _mcp_config_unreadable(name)
     if not isinstance(data, dict) or not isinstance(data.setdefault("mcpServers", {}), dict):
-        return _mcp_config_corrupt()
+        return _mcp_config_corrupt(name)
     return data
 
 

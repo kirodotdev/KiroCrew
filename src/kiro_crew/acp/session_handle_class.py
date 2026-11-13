@@ -246,6 +246,8 @@ class AcpSessionHandle:
 
     _restore_withdrawn = _sh_permissions._restore_withdrawn
     reject_tool = _sh_permissions.reject_tool
+    _deny_zero_tools = _sh_permissions._deny_zero_tools
+    zero_tool_ban_notice = _sh_permissions.zero_tool_ban_notice
     _deny_spec_disabled_tool = _sh_permissions._deny_spec_disabled_tool
     _tripwire_spec_disabled_tool = _sh_permissions._tripwire_spec_disabled_tool
     _refuse_unidentifiable_mcp_approval = _sh_permissions._refuse_unidentifiable_mcp_approval
@@ -291,6 +293,7 @@ class AcpSessionHandle:
         crew_agent: str = "",
         session_key: str = "",
         bound_cwd: str = "",
+        mcp_report: McpSessionReport | None = None,
     ) -> None:
         self._session_id = session_id
         # The Kiro Crew session that OWNS this ACP session, threaded from the
@@ -732,11 +735,12 @@ class AcpSessionHandle:
         # See kiro_crew.acp.mcp_reattempt.
         self._mcp_reattempt_waiting: set[str] = set()
         self._mcp_reattempt_counts: dict[str, int] = {}
-        # What THIS session's MCP servers reported at init — parity with
-        # AcpClient._mcp_report. On the shared runtime the frames are staged
-        # per sessionId before this handle's queue exists, so the report is
-        # genuinely this session's and not the process's.
-        self._mcp_report = McpSessionReport()
+        # What THIS session's MCP servers reported — parity with
+        # AcpClient._mcp_report. The runtime creates it together with this
+        # session's queue and folds each frame that names the session into it
+        # as the frame arrives (``AcpRuntime._fold_mcp_frame``), so it is this
+        # session's and not the process's, and nothing here folds a frame again.
+        self._mcp_report = mcp_report if mcp_report is not None else McpSessionReport()
         # (server, tool) pairs this session's agent spec switches off, set by the
         # runtime from the mirror's session projection. The wire cannot carry the
         # restriction on a mirrored host -- there is no per-tool deny channel in
@@ -745,6 +749,12 @@ class AcpSessionHandle:
         # ``_deny_spec_disabled_tool`` a single falsy read on those sessions.
         # Mirrors ``AcpClient._spec_denied_tools``.
         self.spec_denied_tools: frozenset[tuple[str, str]] = frozenset()
+        # True when the same projection says the spec declares ``"tools": []``. Then
+        # ``_deny_zero_tools`` refuses EVERY permission request of this session, the
+        # harness's own shell and file tools included, because a mirrored host has no
+        # wire channel that removes them. False for every host with no mirror.
+        # Mirrors ``AcpClient._spec_zero_tools``.
+        self.spec_zero_tools: bool = False
         # The parsed agent spec this session's mirrored array was built from, set by
         # the runtime from the same projection. None on a host with no mirror. A
         # member session's loaded-check reads this, never a re-read of the file.

@@ -598,12 +598,14 @@ class TestApiSecretsSet:
         # A real .vault directory (not a link), so the symlink branch is not taken.
         (tmp_path / ".vault").mkdir()
 
-        async def _raise_enospc(_self: SecretVault, _name: str, _value: str) -> str:
+        async def _raise_enospc(
+            _self: SecretVault, _name: str, _item_type: str, _fields: object
+        ) -> str:
             raise OSError(errno.ENOSPC, "No space left on device")
 
         with (
             patch("kiro_crew.dashboard.handlers.secrets.config_dir", return_value=str(tmp_path)),
-            patch.object(SecretVault, "set_with_revision", _raise_enospc),
+            patch.object(SecretVault, "set_item_with_revision", _raise_enospc),
         ):
             async with TestClient(TestServer(app)) as client:
                 resp = await client.post(

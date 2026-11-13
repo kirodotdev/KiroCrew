@@ -410,9 +410,9 @@ class TestModeBinding:
         stale: list[int] = []
         real = AcpRuntime._wait_managed_mcp
 
-        async def spy(self, handle, params, agent, timeout, stale_report_frames):
+        async def spy(self, handle, params, agent, timeout, stale_report_frames, *rest):
             stale.append(stale_report_frames)
-            await real(self, handle, params, agent, timeout, stale_report_frames)
+            await real(self, handle, params, agent, timeout, stale_report_frames, *rest)
 
         monkeypatch.setattr(AcpRuntime, "_wait_managed_mcp", spy)
         runtime = AcpRuntime(

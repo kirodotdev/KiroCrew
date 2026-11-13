@@ -41,7 +41,7 @@ from kiro_crew.dashboard.source_providers.gerrit import (
     host_credential_name as gerrit_host_credential_name,
 )
 from kiro_crew.platform_compat import is_link_or_junction
-from kiro_crew.secrets import SecretVault
+from kiro_crew.secrets import SecretVault, items
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ def _connections_client_secret_owned(name: str) -> web.Response | None:
     return web.json_response(
         {
             "error": "this secret belongs to a Connections OAuth app; change it under "
-            "Settings → OAuth Apps",
+            "Settings → Connections",
             "code": "managed_by_connections",
             "slug": slug,
         },
@@ -201,6 +201,22 @@ async def _channel_credential_owned(request: web.Request, name: str) -> web.Resp
     )
 
 
+#: The feature preview (``dashboard.feature_previews``) that adds typed items to
+#: the listing. Off, ``GET /api/secrets`` answers exactly as before it existed.
+SECRETS_VAULT_PREVIEW = "secrets_vault"
+
+
+def _secrets_vault_preview_on() -> bool:
+    """Whether :data:`SECRETS_VAULT_PREVIEW` is ``true``. Blocking; unreadable reads as off."""
+    from kiro_crew.edition_locks import feature_previews
+
+    try:
+        previews = feature_previews(KiroCrewConfig.load().dashboard.feature_previews)
+    except Exception:  # noqa: BLE001 -- an unreadable config reads as off
+        return False
+    return isinstance(previews, dict) and previews.get(SECRETS_VAULT_PREVIEW) is True
+
+
 def _managed_secret_config() -> tuple[list[str], bool, bool, bool, list[str]]:
     """Return managed-consumer config without making vault listing fail."""
     try:
@@ -289,7 +305,7 @@ def _managed_secret_catalog(
             name = GERRIT_GLOBAL_CREDENTIAL_NAME
         catalog.append({"name": name, "kind": _MANAGED_KIND_GERRIT_HTTP_CREDENTIAL, "host": host})
     # Connections OAuth client secrets. Listed only when STORED: the entry field
-    # lives on Settings → OAuth Apps, so the Secrets panel's job is to label an
+    # lives on Settings → Connections, so the Secrets panel's job is to label an
     # existing entry with its owner (not offer an empty slot), and keep a cleanup
     # from reading it as a stray user secret. ``host`` carries the provider slug,
     # the same way the Jira rows carry their host.
@@ -394,8 +410,45 @@ def _sanitize_for_log(value: str) -> str:
     return _CONTROL_CHAR_RE.sub(_escape, value)
 
 
+def _list_items(vault: SecretVault) -> list[dict[str, object]]:
+    """Every stored item with its type, revision and public fields, sorted by name.
+
+    A ``login`` carries its username and URLs (:func:`items.public_view`);
+    those sit inside the ciphertext, so the typed entries are decrypted here,
+    on the gateway, for the owner. No password, notes, note text or secret
+    value is ever in the response.
+    Blocking file IO: call via ``asyncio.to_thread``.
+    """
+    rows = sorted(vault.list_items(), key=lambda row: row["name"])
+    typed = [row["name"] for row in rows if row["type"] != items.ITEM_TYPE_SECRET]
+    # One entry that fails to decrypt must not hide the rest, nor itself: it
+    # is listed as corrupt, so it can be deleted. A missing or unreadable key
+    # still raises (the listing fails as before), because then every entry is
+    # fine and the fix is restoring the key, not deleting anything.
+    contents, unreadable = vault.get_items_readable(typed)
+    out: list[dict[str, object]] = []
+    for row in rows:
+        item: dict[str, object] = dict(row)
+        found = contents.get(row["name"])
+        if row["name"] in unreadable:
+            item["fields"] = {}
+            item["corrupt"] = True
+        elif found is not None:
+            item_type, plaintext = found
+            try:
+                item["fields"] = items.public_view(item_type, plaintext.reveal())
+            except items.ItemError:
+                # The ciphertext authenticated but its content is not the
+                # object its type promises: list the row so it can be deleted,
+                # with nothing to show for it.
+                item["fields"] = {}
+                item["corrupt"] = True
+        out.append(item)
+    return out
+
+
 async def api_secrets_list(request: web.Request) -> web.Response:
-    """GET /api/secrets — list stored secret names (values are never exposed)."""
+    """GET /api/secrets — list stored items (credential values are never exposed)."""
     denied = await _owner_only(request, "secrets_list")
     if denied is not None:
         return denied
@@ -405,7 +458,30 @@ async def api_secrets_list(request: web.Request) -> web.Response:
     # duration of that read, stalling every other request. `SecretVault.set` and
     # `.delete` already offload internally via `asyncio.to_thread`; this is the
     # one read path that does not, so it is wrapped here.
-    names = sorted(await asyncio.to_thread(vault.list_names))
+    # Preview off: names only, read without decrypting, as before typed items.
+    listed: list[dict[str, object]] | None = None
+    if not await asyncio.to_thread(_secrets_vault_preview_on):
+        names: list[str] = sorted(await asyncio.to_thread(vault.list_names))
+    else:
+        try:
+            listed = await asyncio.to_thread(_list_items, vault)
+        except (OSError, ValueError) as exc:
+            # The key (or the store) cannot be read, so no typed item can be
+            # shown. One typed error, not every item marked corrupt: the fix is
+            # restoring the key, and nothing should be deleted. The OS message
+            # names a local path, so it is logged and never returned.
+            logger.warning("Vault listing failed: %s", exc)
+            return web.json_response(
+                {
+                    "error": (
+                        "The vault could not be read. If you restored a backup, "
+                        "restore its .vault_key file too, then reload."
+                    ),
+                    "code": "vault_unreadable",
+                },
+                status=500,
+            )
+        names = [str(item["name"]) for item in listed]
     (
         jira_hosts,
         jira_global_applicable,
@@ -430,6 +506,8 @@ async def api_secrets_list(request: web.Request) -> web.Response:
         wakatime_enabled,
         gerrit_hosts,
     )
+    if listed is not None:
+        payload["items"] = listed
     if unused:
         payload["unused"] = unused
     if managed_config_error:
@@ -438,9 +516,15 @@ async def api_secrets_list(request: web.Request) -> web.Response:
 
 
 async def api_secrets_set(request: web.Request) -> web.Response:
-    """POST /api/secrets — store or update a secret.
+    """POST /api/secrets — store or update a secret or a typed item.
 
-    Body: {"name": "...", "value": "..."}
+    Body: ``{"name": "...", "value": "..."}`` stores a plain ``secret``.
+    ``{"name": "...", "type": "login" | "note" | "secret", "fields": {...}}``
+    stores a typed item; the field set per type and its validation are
+    :func:`items.validate_item`. Updating an item of the same type, a field
+    the listing never shows (:data:`items.KEPT_WHEN_ABSENT`) that the body
+    leaves out keeps its stored value. Both write the same kind of vault entry for a
+    ``secret``.
     """
     denied = await _owner_only(request, "secrets_set")
     if denied is not None:
@@ -462,16 +546,46 @@ async def api_secrets_set(request: web.Request) -> web.Response:
 
     name = body.get("name")
     value = body.get("value")
+    item_type = body.get("type", items.ITEM_TYPE_SECRET)
+    fields = body.get("fields")
 
     if not isinstance(name, str):
         return web.json_response(
             {"error": "Secret name must be a string", "code": "invalid_name_type"},
             status=400,
         )
-    if not isinstance(value, str):
+    if not isinstance(item_type, str) or item_type not in items.ITEM_TYPES:
         return web.json_response(
-            {"error": "Secret value must be a string", "code": "invalid_value_type"},
+            {
+                "error": f"Item type must be one of {sorted(items.ITEM_TYPES)}",
+                "code": "invalid_type",
+            },
             status=400,
+        )
+    if fields is None:
+        # The plain-secret body: ``value`` is the one field.
+        if not isinstance(value, str):
+            return web.json_response(
+                {"error": "Secret value must be a string", "code": "invalid_value_type"},
+                status=400,
+            )
+        # Reject a value that is empty or whitespace-only, but store the ORIGINAL
+        # value unchanged: a credential can legitimately contain leading/trailing
+        # whitespace, and trimming it before storage would corrupt the secret and
+        # break downstream authentication. Only the emptiness *check* strips.
+        if not value.strip():
+            return web.json_response(
+                {"error": "Secret value is required", "code": "missing_value"}, status=400
+            )
+        if item_type != items.ITEM_TYPE_SECRET:
+            return web.json_response(
+                {"error": f"A {item_type} item needs 'fields'", "code": "missing_fields"},
+                status=400,
+            )
+        fields = {items.FIELD_VALUE: value}
+    elif not isinstance(fields, dict):
+        return web.json_response(
+            {"error": "Item fields must be an object", "code": "invalid_fields"}, status=400
         )
 
     name = name.strip()
@@ -480,13 +594,16 @@ async def api_secrets_set(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "Secret name is required", "code": "missing_name"}, status=400
         )
-    # Reject a value that is empty or whitespace-only, but store the ORIGINAL
-    # value unchanged: a credential can legitimately contain leading/trailing
-    # whitespace, and trimming it before storage would corrupt the secret and
-    # break downstream authentication. Only the emptiness *check* strips.
-    if not value.strip():
+    # ``#`` separates the name from a field in ``secret://NAME#FIELD``, so a
+    # name carrying one could never be referenced.
+    if items.REFERENCE_FIELD_SEPARATOR in name:
         return web.json_response(
-            {"error": "Secret value is required", "code": "missing_value"}, status=400
+            {
+                "error": "Secret name must not contain '#' (it separates the field in a "
+                "secret://NAME#FIELD reference)",
+                "code": "invalid_name",
+            },
+            status=400,
         )
     owned = _connections_client_secret_owned(name) or _wakatime_oauth_tokens_owned(name)
     if owned is not None:
@@ -500,7 +617,11 @@ async def api_secrets_set(request: web.Request) -> web.Response:
     # The revision names THIS write (a digest of its ciphertext, never the
     # value), so a caller that may delete it later can delete exactly it.
     try:
-        revision = await vault.set_with_revision(name, value)
+        revision = await vault.set_item_with_revision(name, item_type, fields)
+    except items.ItemError as exc:
+        # Validated inside the vault write, after a field the request left
+        # out has been filled from the stored item (items.KEPT_WHEN_ABSENT).
+        return web.json_response({"error": str(exc), "code": exc.code}, status=400)
     except OSError as exc:
         # The vault write can fail for two different reasons, and the page must
         # not be told the wrong fix. ``atomic_write`` refuses to write through a
@@ -541,7 +662,7 @@ async def api_secrets_set(request: web.Request) -> web.Response:
             status=500,
         )
     logger.info("Vault entry '%s' stored via dashboard", _sanitize_for_log(name))
-    return web.json_response({"ok": True, "name": name, "revision": revision})
+    return web.json_response({"ok": True, "name": name, "type": item_type, "revision": revision})
 
 
 async def api_secrets_delete(request: web.Request) -> web.Response:

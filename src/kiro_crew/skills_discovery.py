@@ -529,7 +529,14 @@ def project_skill_tree_present(project_dir: str | Path | None) -> bool:
         return False
     if not skill_trust.project_skills_enabled() or not skill_trust.is_project_trusted(project_dir):
         return False
-    fd = _open_project_dir_chain(Path(project_dir) / ".kiro" / "skills")
+    # Open the tree under the canonical key the trust check matched, as the
+    # catalog does: the no-follow chain refuses every link component, so the
+    # raw spelling would refuse a trusted project whose path runs through a
+    # symlinked ancestor (a home directory that is itself a link, say).
+    key = skill_trust.canonical_key(project_dir)
+    if key is None:
+        return False
+    fd = _open_project_dir_chain(Path(key) / ".kiro" / "skills")
     if fd is None:
         return False
     os.close(fd)

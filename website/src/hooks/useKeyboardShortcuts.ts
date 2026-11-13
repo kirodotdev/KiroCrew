@@ -64,7 +64,7 @@ export const SHORTCUTS_ENABLED_EVENT = 'mc-keyboard-shortcuts-changed'
 export const MAC_CTRL_DIGITS_KEY = 'mc-mac-ctrl-digits'
 
 /** True on macOS where Option+number produces characters (UK: ⌥3→#, ⌥2→€). */
-function isMacPlatform(): boolean {
+export function isMacPlatform(): boolean {
   return /Mac|iPhone|iPad/.test(navigator?.platform ?? '') || /Macintosh/.test(navigator?.userAgent ?? '')
 }
 // Frozen at module load for the chord-shape decisions (modifier choice, gate
@@ -307,6 +307,8 @@ export const SHORTCUT_LABEL_KEY: Record<string, string> = {
   // Reused: the ChatInput control this chord fires.
   'optimize-prompt': 'components.chatInput.optimize_prompt',
   'edit-last-message': 'hooks.useKeyboardShortcuts.edit_last_message',
+  // Reused: the "+" menu tile this chord opens.
+  'upload-file': 'components.chatInput.upload_file',
   'list-indent': 'hooks.useKeyboardShortcuts.indent_list_line',
   'list-outdent': 'hooks.useKeyboardShortcuts.outdent_list_line',
   'agent-monitor': 'hooks.useKeyboardShortcuts.open_agent_monitor',

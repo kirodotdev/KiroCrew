@@ -122,11 +122,13 @@ EVIDENCE_MCP_SUBTREE_ACTIVE = "mcp subtree active"
 
 # kirocrew-core tools that ping ``/api/session-keepalive`` for their whole run
 # and can read ``mcp subtree active``: ``mcp_tools/spawn_parts/wave.py``
-# ``spawn_sub_agents``, bounded by its own collection timeout, so the tool
-# branch never cuts it off on the opaque-MCP bound. The core ``wait`` pings too
-# but never reaches that reading (``wait_tool_verdict`` answers first), so it
-# is not listed. Matched on the adapter identity, never on the title.
-_KEEPALIVE_TOOL_NAMES: frozenset[str] = frozenset({"spawn_sub_agents"})
+# ``spawn_sub_agents``, bounded by its own collection timeout, and
+# ``mcp_tools/control_parts/mcp_wait.py`` ``mcp_server_wait``, bounded by
+# ``MCP_SERVER_WAIT_SECS``, so the tool branch never cuts either off on the
+# opaque-MCP bound. The core ``wait`` pings too but never reaches that reading
+# (``wait_tool_verdict`` answers first), so it is not listed. Matched on the
+# adapter identity, never on the title.
+_KEEPALIVE_TOOL_NAMES: frozenset[str] = frozenset({"spawn_sub_agents", "mcp_server_wait"})
 
 # Tool names that are known to wrap a model call (e.g. kiro-cli's use_subagent
 # which starts a sub-agent turn inside the current tool call). The

@@ -584,17 +584,30 @@ describe('CrewGoalsPane', () => {
     expect(screen.queryByTestId('crew-goals-new-goal')).toBeNull()
   })
 
-  it.each(['unknown', 'response-late', 'transport-error'] as const)('keeps the New goal modal open on a %s receipt and says the delivery is unconfirmed', async status => {
+  it.each(['unknown', 'response-late', 'transport-error'] as const)('on a %s receipt says the delivery is unconfirmed and offers the chat, never a second send', async status => {
     memberGoals.get.mockResolvedValue(record())
     const onSendToChat = vi.fn().mockResolvedValue(status)
     const onSent = vi.fn()
-    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" onSendToChat={onSendToChat} onSent={onSent} />)
+    const { rerender } = renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" onSendToChat={onSendToChat} onSent={onSent} />)
     fireEvent.click(await screen.findByTestId('crew-goals-add'))
     fireEvent.click(screen.getByTestId('crew-goals-new-goal-send'))
-    expect(await screen.findByTestId('crew-goals-new-goal-unconfirmed')).toBeInTheDocument()
+    const notice = await screen.findByTestId('crew-goals-new-goal-unconfirmed')
+    // The dialog has no composer, so the notice claims none.
+    expect(notice).toHaveTextContent('Delivery not confirmed — open the chat and check the conversation before sending it again.')
     expect(screen.queryByTestId('crew-goals-new-goal-error')).toBeNull()
-    expect(screen.getByRole('dialog', { name: 'New goal' })).toBeInTheDocument()
+    const dialog = screen.getByRole('dialog', { name: 'New goal' })
     expect(onSent).not.toHaveBeenCalled()
+    // The thread re-confirming after the reset withdraws the send callback;
+    // Open chat sends nothing, so it stays live.
+    rerender(<CrewGoalsPane slug="scout" member="scout" name="Scout" onSent={onSent} />)
+    // No Send while unconfirmed: the one button opens the chat instead.
+    expect(within(dialog).queryByTestId('crew-goals-new-goal-send')).toBeNull()
+    const open = within(dialog).getByTestId('crew-goals-new-goal-open-chat')
+    expect(open).toHaveTextContent('Open chat')
+    expect(open).toBeEnabled()
+    fireEvent.click(open)
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(onSent).toHaveBeenCalledTimes(1)
     expect(onSendToChat).toHaveBeenCalledTimes(1)
   })
 

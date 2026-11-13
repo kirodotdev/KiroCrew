@@ -24,6 +24,7 @@ import pytest
 from source_corpus import parsed_candidates
 
 import kiro_crew.session_map as session_map_mod
+from kiro_crew import session_map_store
 from kiro_crew.session_map import SESSION_MAP_FILENAME, SessionMap
 
 SRC = Path(session_map_mod.__file__).resolve().parent
@@ -283,21 +284,25 @@ class TestLockHoldIsBounded:
         for i in range(300):
             session_map.set(f"dashboard:seed-{i}", f"sid-{i}")
 
-        real_read = Path.read_text
+        # ``_load`` reads through ``read_bytes_with_retry`` (the Windows
+        # sharing-violation retry), so that is the seam made slow. Patching the
+        # name ``session_map_store`` imported pins that ``_load`` uses it: a
+        # read that bypassed the helper would never park here.
+        real_read = session_map_store.read_bytes_with_retry
         reading = threading.Event()
         release = threading.Event()
 
-        def slow_read(self, *a, **kw):
-            if self.name == SESSION_MAP_FILENAME:
+        def slow_read(path, *a, **kw):
+            if Path(path).name == SESSION_MAP_FILENAME:
                 reading.set()
                 release.wait(timeout=10)
-            return real_read(self, *a, **kw)
+            return real_read(path, *a, **kw)
 
         loop_side_done = threading.Event()
 
         def worker() -> None:
             with patch("kiro_crew.session_map.config_dir", return_value=tmp_path):
-                with patch.object(Path, "read_text", slow_read):
+                with patch.object(session_map_store, "read_bytes_with_retry", slow_read):
                     SessionMap()
 
         t = threading.Thread(target=worker)
@@ -336,16 +341,31 @@ class TestLockHoldIsBounded:
             if "_guarded" not in decorators:
                 continue
             for node in ast.walk(fn):
-                if not isinstance(node, ast.Call):
-                    continue
-                func = node.func
-                if isinstance(func, ast.Attribute) and func.attr in {"read_text", "loads", "load"}:
-                    offenders.append(f"{fn.name} -> {func.attr}")
+                name = _called_name(node)
+                if name in _MAP_FILE_READERS:
+                    offenders.append(f"{fn.name} -> {name}")
         assert offenders == [], (
             f"guarded methods read/parse the map file: {offenders}. Reading the "
             "file is the one unbounded step in this class; holding the lock "
             "across it lets an off-loop construction stall every gateway task."
         )
+
+    def test_load_reads_the_map_file_through_the_retry_helper(self):
+        """`_load` reads via `read_bytes_with_retry`, never a bare `Path` read.
+
+        The helper rides out a transient Windows sharing violation; a bare read
+        would turn one into the refuse-writes state until a restart. It is also
+        the seam the construction test above makes slow.
+        """
+        load = next(
+            fn
+            for fn in _session_map_class().body
+            if isinstance(fn, ast.FunctionDef) and fn.name == "_load"
+        )
+        called = {_called_name(node) for node in ast.walk(load)} - {None}
+        assert "read_bytes_with_retry" in called
+        bare = called & {"read_text", "read_bytes", "open"}
+        assert bare == set(), f"_load reads the map file without the retry helper: {bare}"
 
     def test_load_runs_only_from_init(self):
         """`_load`'s safety rests on the instance being unpublished.
@@ -369,6 +389,23 @@ class TestLockHoldIsBounded:
             f"_load is called from {callers}; it is unguarded ONLY because the "
             "instance is not yet shared with any other thread."
         )
+
+
+#: Calls that read or parse the map file, by the name they are called through.
+_MAP_FILE_READERS = frozenset(
+    {"read_text", "read_bytes", "read_bytes_with_retry", "loads", "load", "loads_user_json"}
+)
+
+
+def _called_name(node: ast.AST) -> str | None:
+    """The bare name a call is made through: ``f(...)`` and ``x.f(...)`` both give ``f``."""
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    return None
 
 
 def _owner_trees() -> list[ast.Module]:

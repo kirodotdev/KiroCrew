@@ -949,6 +949,34 @@ _US_CPS = "https://management.us-east-1.kiro.dev/"
 _EU_CPS = "https://management.eu-central-1.kiro.dev/"
 
 
+@pytest.mark.asyncio
+async def test_poll_idc_refused_profile_lookup_logs_what_it_asked(tmp_path, monkeypatch, caplog):
+    """A refused lookup names the start URL, region and control planes in its final line.
+
+    Without them a browser approved as another user, a wrong start URL and a wrong
+    region all leave the same line, and the log cannot say which one happened.
+    """
+    refused = _FakeResp(403, {"message": "forbidden"})
+    service, _ = _service(
+        tmp_path,
+        responses=[_FakeResp(200, {"accessToken": "at-log", "expiresIn": 3600}), refused, refused],
+    )
+    begin = await _begin_oidc(
+        service, monkeypatch, "idc", start_url="https://acme.awsapps.com/start", region="eu-west-1"
+    )
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.auth.service"):
+        await service.poll_device(begin["login_id"])
+    [line] = [
+        r.getMessage()
+        for r in caplog.records
+        if "could not resolve IdC profile ARN" in r.getMessage()
+    ]
+    assert "start URL https://acme.awsapps.com/start" in line
+    assert "region eu-west-1" in line
+    assert f"control planes asked: {_EU_CPS}, {_US_CPS}" in line
+    assert "at-log" not in line
+
+
 @pytest.mark.parametrize(
     "region, home, other",
     [("us-east-1", _US_CPS, _EU_CPS), ("eu-west-1", _EU_CPS, _US_CPS)],
@@ -1345,16 +1373,16 @@ def test_discovery_hosts_probe_every_control_plane_region_first():
     eu = "https://management.eu-central-1.kiro.dev/"
 
     # A region with its own CPS is probed first, then the rest.
-    assert control_plane._discovery_hosts("eu-central-1") == [eu, us]
-    assert control_plane._discovery_hosts("us-east-1") == [us, eu]
+    assert control_plane.control_plane_urls("eu-central-1") == [eu, us]
+    assert control_plane.control_plane_urls("us-east-1") == [us, eu]
 
     # eu-west-1 has no CPS of its own: it still probes BOTH control planes (the
     # old region->host map would have pinned it to one and missed the other).
-    assert set(control_plane._discovery_hosts("eu-west-1")) == {us, eu}
+    assert set(control_plane.control_plane_urls("eu-west-1")) == {us, eu}
     # An unknown region likewise probes every known host -- no host is dropped.
-    assert set(control_plane._discovery_hosts("ap-southeast-2")) == {us, eu}
+    assert set(control_plane.control_plane_urls("ap-southeast-2")) == {us, eu}
     # Every host appears exactly once.
-    hosts = control_plane._discovery_hosts("eu-west-1")
+    hosts = control_plane.control_plane_urls("eu-west-1")
     assert len(hosts) == len(set(hosts)) == 2
 
 

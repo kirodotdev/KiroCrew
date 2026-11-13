@@ -225,6 +225,7 @@ def _build_token_record(
     delivered: bool | None = None,
     transcript: str = "",
     harness: str = "",
+    acp_session_id: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -269,6 +270,11 @@ def _build_token_record(
     the field a row needs to tell a Codex turn from a kiro-cli one, since both
     record ``provider: acp``. ``""`` and ``unknown`` leave the key off the row,
     as on rows written before the field existed.
+
+    ``acp_session_id`` is the ACP session the turn ran in
+    (:func:`kiro_crew.crew_log.emit_state.session_id_of` on the live provider):
+    one per conversation, where a cron job, a heartbeat or a channel thread
+    reuses one ``slot`` for every run. ``""`` leaves the key off the row.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -324,6 +330,8 @@ def _build_token_record(
         record["transcript"] = transcript
     if harness and harness != HARNESS_UNKNOWN:
         record["harness"] = harness
+    if acp_session_id:
+        record["acp_session_id"] = acp_session_id
     return record
 
 
@@ -484,6 +492,10 @@ def persist_token_record(
     offloads the blocking write off the event loop.
     """
     try:
+        # Function-local: the crew log is optional and this module sits on the
+        # dashboard's boot path, which must load no kiro_crew.crew_log module.
+        from kiro_crew.crew_log.emit_state import session_id_of
+
         model = _resolve_model(model, model_source)
         now = datetime.now().astimezone()
         _write_token_record(
@@ -500,6 +512,7 @@ def persist_token_record(
                 elapsed_ms=elapsed_ms,
                 app=app,
                 harness=harness_of(model_source),
+                acp_session_id=session_id_of(model_source),
             ),
             now,
         )
@@ -570,6 +583,9 @@ async def persist_token_record_async(
     unrecorded, which reads as a healthy gap rather than a missing one.
     """
     try:
+        # Function-local for the boot-path reason given in persist_token_record.
+        from kiro_crew.crew_log.emit_state import session_id_of
+
         model = _resolve_model(model, model_source)
         # The harness is read off model_source, the live provider every surface
         # already hands in to name the model that ran: it is the one object here
@@ -592,6 +608,8 @@ async def persist_token_record_async(
             delivered=delivered,
             transcript=transcript,
             harness=harness,
+            # The conversation the turn belongs to, off the same provider.
+            acp_session_id=session_id_of(model_source),
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
@@ -867,6 +885,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,

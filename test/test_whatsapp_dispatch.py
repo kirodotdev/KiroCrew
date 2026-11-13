@@ -532,6 +532,46 @@ def test_busy_session_folds_into_current_reply_when_steerable():
     assert any("folded" in t.lower() for _, t in transport.sent)
 
 
+@pytest.mark.parametrize("voice", [False, True], ids=["photo", "voice-note"])
+def test_a_busy_message_whose_text_names_its_media_is_not_steered(tmp_path, voice):
+    """The transport deletes the media once dispatch returns, before the running
+    turn reads a steer, so a steered path names a deleted file. A voice note's
+    text is its transcript and names no file, so it still folds in."""
+    from kiro_crew.messaging.attachments import IngestResult, append_attachment_context
+    from kiro_crew.whatsapp.transport_dispatch import BUSY_NOTE
+
+    class Steering(FakeProvider):
+        supports_steer = True
+
+        def __init__(self):
+            super().__init__()
+            self.steered: list[str] = []
+
+        def has_active_turn(self):
+            return True
+
+        async def steer(self, text):
+            self.steered.append(text)
+            return True
+
+    # Built the way whatsapp/transport.py builds it from the ingest result.
+    if voice:
+        transcript = "[Voice memo transcription]\nuse the other one\n[End of transcription]"
+        result = IngestResult(audio_paths=[str(tmp_path / "note.ogg")], text_blocks=[transcript])
+    else:
+        result = IngestResult(image_paths=[str(tmp_path / "photo.jpg")])
+    text = append_attachment_context("" if voice else "see this", result)
+    inbound = _msg(text)
+    inbound.attachments = list(result.temp_paths)
+    provider = Steering()
+    d, _client, _sessions, transport = _make(provider=provider, busy=True)
+    asyncio.run(d.handle_message(inbound))
+    assert provider.steered == ([text] if voice else [])
+    assert [t for _, t in transport.sent] == (
+        ["Folded into the current reply."] if voice else [BUSY_NOTE]
+    )
+
+
 def test_busy_flips_free_reprocesses_the_message():
     """If the session frees between is_busy checks, the message is re-handled."""
     provider = FakeProvider("late reply")

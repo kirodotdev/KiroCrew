@@ -226,6 +226,11 @@ WAIT_SCHEMA = ToolSchema(
     ],
 )
 
+MCP_SERVER_WAIT_SCHEMA = ToolSchema(
+    tool_name="mcp_server_wait",
+    fields=[FieldSpec("server", str, required=True, max_len=MAX_SHORT_STRING)],
+)
+
 REGISTER_HOOK_SCHEMA = ToolSchema(
     tool_name="register_hook",
     fields=[
@@ -710,5 +715,31 @@ SESSION_SUMMARY_SCHEMA = ToolSchema(
     tool_name="session_summary",
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+    ],
+)
+
+# A queue id is ``uuid4().hex[:12]`` (``slot_queue_repository``). The field has no
+# shape check: ``queue_target`` only compares it for equality with the ids already
+# in the queue, so any other string ends in ``entry_not_found``.
+QUEUE_ENTRY_ID_MAX_CHARS = 64
+
+SESSION_QUEUE_SCHEMA = ToolSchema(
+    tool_name="session_queue",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec(
+            "action",
+            str,
+            required=False,
+            allowed=frozenset({"list", "move"}),
+            default="list",
+        ),
+        FieldSpec(
+            "entry",
+            str,
+            required=False,
+            max_len=QUEUE_ENTRY_ID_MAX_CHARS,
+        ),
+        FieldSpec("position", int, required=False, min_val=0, max_val=10_000),
     ],
 )

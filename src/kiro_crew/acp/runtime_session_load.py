@@ -10,9 +10,10 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 ``_session_queues``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
-``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
-``_kas_telemetry_sent``,
-``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
+``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_fold_mcp_frame``,
+``_initialized``, ``_kas_telemetry_sent``,
+``_mcp_gateway_overlay``, ``_open_mcp_report``, ``_pid``, ``_pool_lookup``,
+``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``,
 ``_write_remote_token``.
@@ -32,10 +33,10 @@ from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
 from kiro_crew.acp.mcp_session_report import (
     active_custom_agent,
-    mounted_servers,
     required_managed_servers,
     roster_names,
 )
+from kiro_crew.acp.mcp_start_wait import first_prompt_brief_wait, left_to_first_turn
 from kiro_crew.acp.runtime_session_setup import (
     _disable_check_scope,
     _drop_withdrawn_stubs,
@@ -60,6 +61,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
+from kiro_crew.start_priority import StartPriority
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -79,6 +81,7 @@ async def load_session(
     session_key: str = "",
     channel_id: str = "",
     require_replay: bool = False,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> AcpSessionHandle:
     """Resume a prior session via session/load — mirrors AcpClient.
 
@@ -139,6 +142,7 @@ async def load_session(
     # mirrored host's projection resolves the agent spec against this directory.
     session_work_dir = str(await self._session_work_dir(cwd))
     denied_tools: frozenset[tuple[str, str]] = frozenset()
+    zero_tools = False
     mirrored_snapshot: Any = None
     consumed_spec: Any = None
     ref_spec: Any = None
@@ -172,6 +176,7 @@ async def load_session(
         crew_bridged = list(mirrored.crew_bridged)
         stub_token = mirrored.stub_token
         denied_tools = mirrored.denied_tools
+        zero_tools = mirrored.zero_tools
         mirrored_snapshot = mirrored.derived_spec_snapshot
         consumed_spec = mirrored.agent_spec
         ref_spec = mirrored.ref_spec
@@ -421,11 +426,16 @@ async def load_session(
     # arriving AFTER this point (from future prompt() calls) reach the queue.
     # The load response itself routes via _pending_requests, not the session
     # queue, so this reorder is safe.
+    # session/load re-initializes this session's servers, so the resumed
+    # session gets its own report against the roster load re-declared. Opened
+    # with the queue and no await in between, as create_session does.
+    report = self._open_mcp_report(resume_sid, wire_servers)
     queue: asyncio.Queue[JsonRpcMessage | None] = asyncio.Queue()
     self._session_queues[resume_sid] = queue
     self._session_cwds[resume_sid] = str(session_work_dir)
     for msg in buffered_init:
         queue.put_nowait(msg)
+        self._fold_mcp_frame(resume_sid, msg)
 
     # Mirrors create_session: a resumed session gets the same
     # canonical-crew watchdog snapshot, resolved off-loop.
@@ -439,6 +449,7 @@ async def load_session(
         crew_agent=_crew,
         session_key=session_key,
         bound_cwd=str(load_params["cwd"]),
+        mcp_report=report,
     )
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
@@ -451,6 +462,7 @@ async def load_session(
     # Mirrors create_session: the resumed session re-declares the array, so it
     # re-derives the deny set that array came with and re-checks the generation.
     handle.spec_denied_tools = denied_tools
+    handle.spec_zero_tools = zero_tools
     handle.consumed_agent_spec = consumed_spec
     handle.mirror_used = mirrored is not None
     # Mirrors create_session: the re-registered batch is what this session now
@@ -490,9 +502,6 @@ async def load_session(
     except Exception:
         await self.terminate_session(resume_sid)
         raise
-    # session/load re-initializes this session's servers, so the resumed
-    # session gets its own report against the roster load re-declared.
-    handle.mcp_session_report().begin_session(wire_servers)
     self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers, mcp_json)
     # Mirrors create_session: load re-declares the servers, so re-record them.
     handle.record_mcp_launches(ref_spec, wire_servers)
@@ -539,6 +548,7 @@ async def load_session(
         # then consumed without being recorded, leaving the panel at a false
         # "no report" for the rest of the session.
         staged_before_switch = handle.queued_frame_count()
+        reported_before_switch = handle.mcp_session_report().fold_mark()
         self._switched_model_record().pop(resume_sid, None)
         activated_alias = await self._activate_mode_bracketed(
             resume_sid,
@@ -557,6 +567,9 @@ async def load_session(
         mode_switched = mode_wire != _current and (
             bool(_current) or self._harness.notification_aliases.mcp_readiness
         )
+        if mode_switched:
+            # See create_session: those frames were the previous agent's roster.
+            handle.mcp_session_report().forget_reported(reported_before_switch)
     elif mode_agent:
         # Guard (A) — see create_session. A resumed session always echoes a
         # `modes` list (checked above), so an absent agent means its config
@@ -584,6 +597,7 @@ async def load_session(
             active_agent,
             budget,
             staged_before_switch if mode_switched else 0,
+            start_priority,
         )
     elif self._expect_mcp_reports:
         await handle.drain_init(stale_report_frames=staged_before_switch if mode_switched else 0)
@@ -638,6 +652,7 @@ async def _wait_managed_mcp(
     agent: str,
     timeout: float,
     stale_report_frames: int,
+    start_priority: StartPriority = StartPriority.BACKGROUND,
 ) -> None:
     # *params* carries the batch as sent, so its entry is keyed by the wire id.
     wire_agent = kas_wire_agent_id(agent)
@@ -671,11 +686,18 @@ async def _wait_managed_mcp(
                 stale_report_frames=stale_report_frames,
                 no_report_ceiling=None if self._expect_mcp_reports else 0.0,
             )
-        # Best effort, never required: Connections and user servers also belong
-        # in turn 1's catalog, but a slow or dead one must not block the start.
-        rest = tuple(n for n in mounted_servers(params, wire_agent) if n not in required)
-        if rest:
-            await handle.wait_mounted_mcp(rest, MOUNTED_MCP_WAIT_SECS)
+        # Best effort, never required: a slow or dead one must not block the start.
+        # Which servers, and why not the user's own when a person is waiting:
+        # ``first_prompt_brief_wait``.
+        brief = first_prompt_brief_wait(params, wire_agent, required, start_priority)
+        if brief:
+            await handle.wait_mounted_mcp(brief, MOUNTED_MCP_WAIT_SECS)
+        # The agent's own servers a person-waited start skipped: its first turn
+        # is told of them, or holds its prompt for them (same rule).
+        left, more = left_to_first_turn(params, wire_agent, required, start_priority)
+        if left:
+            report = handle.mcp_session_report()
+            report.left_to_turn, report.left_omitted = left, more
     except BaseException:
         # No handle escapes on failure. A fresh session/new has no history
         # to preserve, so evict it from the host and reap its MCP children.

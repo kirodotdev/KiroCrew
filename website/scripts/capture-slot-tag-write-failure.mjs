@@ -71,7 +71,7 @@ await page.getByRole('menuitem', { name: /^tags/i }).first().click()
 // and the inline notice appears. The notice is an `ErrorNotice` alert region —
 // wait for it rather than sleeping, so the shot cannot race the render.
 const dialog = page.getByRole('dialog')
-await dialog.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+await dialog.getByRole('option', { name: /Review/ }).click()
 await dialog.getByRole('alert').filter({ hasText: FAILURE }).first()
   .waitFor({ state: 'visible', timeout: 5000 })
 

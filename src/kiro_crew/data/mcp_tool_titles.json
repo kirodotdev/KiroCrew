@@ -21,6 +21,7 @@
     "kiro_cli_logs": "Read kiro-cli logs",
     "task_run": "Start task",
     "wait": "Wait",
+    "mcp_server_wait": "Wait for MCP server",
     "route_crew": "Route to crew",
     "select_crew": "Select crew",
     "register_hook": "Register webhook",
@@ -137,7 +138,8 @@
     "session_release": "Release session",
     "session_read_message": "Read session message",
     "session_summary": "Read session summary",
-    "work_dispatch": "Dispatch work item"
+    "work_dispatch": "Dispatch work item",
+    "session_queue": "Manage session queue"
   },
   "kirocrew-cron": {
     "cron_list": "List schedules",

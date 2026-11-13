@@ -5,8 +5,10 @@ served from the engine's own ``model`` select (recorded by the session drivers
 into ``agent_sdk.kas_model_catalog``), gated on the bundle's readiness (installed
 engine + Crew's vault), with the select's ``rateMultiplier`` as the credit
 multiplier and a context window only where a source knows one, and without the
-kiro-cli catalog's entitlement narrowing. The kiro-cli route is dispatched exactly
-as before: its readiness gate still runs and the bundle handler is never reached.
+kiro-cli catalog's entitlement narrowing. The kiro-cli route is dispatched as
+before, its readiness gate still running, except KAS's relay started on Crew's
+sign-in alone once kiro-cli's gate refuses: it is served the same recording, and
+nothing is spawned.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -210,6 +212,15 @@ class TestTheList:
 
 @pytest.mark.asyncio
 class TestDispatchFromApiModels:
+    @pytest.fixture(autouse=True)
+    def _no_crew_sign_in_relay(self, _floor_monkeypatch):
+        # A refused gate asks whether the relay starts on Crew's sign-in, which
+        # reads the host's sign-in stores; these cases are not that relay. The
+        # floor's MonkeyPatch (D11), so a test's ``monkeypatch.undo()`` keeps it.
+        _floor_monkeypatch.setattr(
+            bundle, "_crew_sign_in_starts_spawn", lambda: False, raising=False
+        )
+
     async def test_the_bundle_route_never_reaches_the_kiro_cli_gate_spawn_or_narrowing(self, ready):
         """The engine's select is the signed-in account's own list, so the kiro-cli
         catalog narrowing never runs here: after a hot switch of the backend it
@@ -262,6 +273,80 @@ class TestDispatchFromApiModels:
         ):
             resp = await agents.api_models(_request())
         assert resp is sentinel
+
+
+@pytest.mark.asyncio
+class TestTheCrewSignInRelay:
+    """KAS's relay entered through ``kiro-cli-chat`` draws its credential from
+    Crew's vault, so kiro-cli's refusal does not decide its picker: once the
+    kiro-cli gate refuses, the recording is served and nothing spawns."""
+
+    @staticmethod
+    def _refused() -> web.Response:
+        return web.json_response(
+            {"error": "sign in", "code": agents.KIRO_PREREQUISITE_REQUIRED_CODE}, status=503
+        )
+
+    @pytest.fixture
+    def relay(self, monkeypatch):
+        """KAS on the relay, kiro-cli's gate refusing, the spawn on Crew's sign-in."""
+        from kiro_crew.dashboard.handlers import models_cold_probe
+
+        monkeypatch.setattr(
+            "kiro_crew.crewmate_harness.models_route", lambda *a: (ACP_BACKEND_KAS, False)
+        )
+        monkeypatch.setattr(agents.KiroCrewConfig, "load", lambda: _cfg(ACP_BACKEND_KAS, False))
+        # No kiro-cli catalog cached, so the kiro-cli path asks its gate first.
+        monkeypatch.setattr(agents._catalog_cache, "models", None)
+        monkeypatch.setattr(
+            agents, "reject_if_kiro_unverified", AsyncMock(return_value=self._refused())
+        )
+        # raising=False: the seam is named before the fix exists, so a revert
+        # fails on the assertion rather than on the patch.
+        monkeypatch.setattr(bundle, "_crew_sign_in_starts_spawn", lambda: True, raising=False)
+        monkeypatch.setattr(catalog, "vault_identity", lambda: _ID)
+
+        async def _spawn_must_not_run():
+            raise AssertionError("kiro-cli --list-models spawned on a refused gate")
+
+        monkeypatch.setattr(agents, "_fetch_kiro_catalog", _spawn_must_not_run)
+        monkeypatch.setattr(
+            models_cold_probe,
+            "start_cold_model_probe",
+            lambda *a: pytest.fail("a cold probe spawned on the relay"),
+        )
+
+    async def test_a_refused_gate_serves_the_recording(self, relay):
+        _record({"id": "auto", "rate": 1}, {"id": "model-x", "rate": 2})
+        resp = await agents.api_models(_request())
+        assert resp.status == 200
+        assert [r["model_name"] for r in _body(resp)] == ["auto", "model-x"]
+
+    async def test_cold_answers_auto_and_starts_no_probe(self, relay):
+        (row,) = _body(await agents.api_models(_request()))
+        assert row["model_name"] == "auto"
+
+    async def test_the_launcher_relay_keeps_the_refusal(self, relay, monkeypatch):
+        """Through the launcher kiro-cli's own sign-in starts the relay, so the
+        gate's 503 and its ``kiro-cli login`` remedy stand."""
+        monkeypatch.setattr(bundle, "_crew_sign_in_starts_spawn", lambda: False)
+        resp = await agents.api_models(_request())
+        assert resp.status == 503
+        assert _body(resp)["code"] == agents.KIRO_PREREQUISITE_REQUIRED_CODE
+
+    async def test_a_passing_gate_keeps_the_kiro_cli_path(self, relay, monkeypatch):
+        """A host signed in both ways, before the warm-up probe lands: the gate's
+        own probe passes, so the kiro-cli catalog path answers, never the recording."""
+        _record({"id": "auto", "rate": 1}, {"id": "model-x", "rate": 2})
+        monkeypatch.setattr(agents, "reject_if_kiro_unverified", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            bundle, "_crew_sign_in_starts_spawn", lambda: pytest.fail("read on a passing gate")
+        )
+        failure = ("kiro-cli catalog failed", "model_list_unavailable")
+        monkeypatch.setattr(agents._catalog_cache, "recent_failure", lambda: failure)
+        resp = await agents.api_models(_request())
+        assert resp.status == 503
+        assert _body(resp)["code"] == "model_list_unavailable"
 
 
 @pytest.mark.asyncio

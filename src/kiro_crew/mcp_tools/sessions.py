@@ -223,7 +223,7 @@ def _crew_get_session(crew: str, key: str, max_messages: int, session_key: str) 
     lines = [f"\U0001f4dc Conversation `{key}` on crew '{crew}':", ""]
     for m in msgs:
         role = str(m.get("role", "?")).title()
-        lines.append(f"**{role}:** {m.get('content', '')}")
+        lines.append(f"**{role}:** {m.get('content') or ''}")
         lines.append("")
     return mcp_core._redact_history_output("\n".join(lines))
 
@@ -268,7 +268,10 @@ def search_chat_history(name: str, args: dict[str, Any]) -> str:
     # not a fixed limit*3 over-fetch: heavy incognito/workspace/date drops on
     # the first page could otherwise starve a caller whose real matches rank
     # lower, returning "no results" while hits exist.
-    ranked: list[dict] = cl.search_sessions(query, limit=mcp_core._search_history_scan(query))
+    # The excerpt is built below for the rows kept, so the ranking reads none.
+    ranked: list[dict] = cl.search_sessions(
+        query, limit=mcp_core._search_history_scan(query), snippets=False
+    )
     # Said in the reply, empty or not: a session older than the scan window was
     # never searched, and "no matches" must not read as "not in history".
     coverage_note = search_coverage_note(ranked)
@@ -483,7 +486,7 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
     lines = [f"\U0001f4dc Conversation: **{title}**  ·  `{key}`", ""]
     for m in messages:
         role = str(m.get("role", "?")).title()
-        lines.append(f"**{role}:** {m.get('content', '')}")
+        lines.append(f"**{role}:** {m.get('content') or ''}")
         lines.append("")
 
     output = mcp_core._redact_history_output("\n".join(lines))

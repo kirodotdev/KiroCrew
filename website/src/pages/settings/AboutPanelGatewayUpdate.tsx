@@ -22,6 +22,7 @@ import { useAppSelector } from '../../store'
 import { fmtRelative } from '../../i18n/format'
 import { InAppUpdateFlow, RestartGatewayButton, copyCommand } from './AboutPanelUpdateFlow'
 import { useDialogFocusTrap } from '../../hooks/useDialogFocusTrap'
+import { useRestartRefusal } from '../../hooks/useRestartRefusal'
 
 // AboutPanel.tsx owns this dialog's Escape (it refuses while an apply or
 // restart is in flight), so the trap is wired with Escape off and a stable
@@ -205,15 +206,22 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   // Same error shape as gwApply: os.execv kills the connection, so a bare
   // network failure after the POST is the expected path, and only an ApiError
   // (a real server rejection) is a failure worth showing.
+  const restartRefusal = useRestartRefusal(detail => {
+    setRestarting(false)
+    setApplyError(detail || i18nT('pages.settings.aboutPanel.restart_failed'))
+  })
   const gwRestart = useMutation({
     mutationFn: () => api.restartGateway(),
+    onMutate: () => restartRefusal.begin(),
     onSuccess: () => setRestarting(true),
     onError: (e: unknown) => {
       setApplyDirty(false)
       // The person declined the "work is running" confirmation: a quiet cancel.
-      if (e instanceof WorkConfirmDeclined) return
-      if (e instanceof ApiError) setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
-      else setRestarting(true)
+      if (e instanceof WorkConfirmDeclined) return restartRefusal.end()
+      if (e instanceof ApiError) {
+        restartRefusal.end()
+        setApplyError(e.message || i18nT('pages.settings.aboutPanel.restart_failed'))
+      } else setRestarting(true)
     },
   })
   // Gateway channel switch (stable | insider | nightly). Unlike the desktop

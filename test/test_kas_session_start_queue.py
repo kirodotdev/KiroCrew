@@ -24,15 +24,18 @@ them never becomes ready.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 
 import pytest
 
-from kiro_crew.acp import runtime_session_load
+from kiro_crew.acp import runtime_session_load, session_handle_mcp
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import ACP_BACKEND_KAS, EVENT_TEXT_CHUNK, METHOD_KAS_SESSION_DELETE
-from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+from kiro_crew.agent_sdk.mcp_problems import session_mcp_states
+from kiro_crew.start_priority import StartPriority
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, finished
 
 _CORE = "kirocrew-core"
 
@@ -236,13 +239,14 @@ def _write_agent(tmp_path, monkeypatch, slow: int, named: tuple[str, ...] = ()) 
     return names
 
 
-async def _start(tmp_path):
+async def _start(tmp_path, start_priority: StartPriority = StartPriority.BACKGROUND):
     runtime = AcpRuntime(
         work_dir=tmp_path / "ws", agent="kirocrew", sandbox_mode="off", acp_backend=ACP_BACKEND_KAS
     )
     try:
         await runtime.spawn()
-        return runtime, await runtime.create_session(cwd=tmp_path / "ws")
+        session = await runtime.create_session(cwd=tmp_path / "ws", start_priority=start_priority)
+        return runtime, session
     except BaseException:
         # A start that fails or is cancelled never hands the runtime to its test,
         # so the stub process is ended here.
@@ -313,6 +317,28 @@ class TestSessionStartBehindSlowServers:
             await runtime.kill()
 
     @pytest.mark.asyncio
+    async def test_a_late_server_reaches_the_report_with_nothing_reading_the_session(
+        self, queue_stub, tmp_path, monkeypatch
+    ):
+        """Between turns nobody takes frames off the session's queue. The report
+        follows the server all the same, and its reader is told when it moved."""
+        names = _write_agent(tmp_path, monkeypatch, 4)
+        runtime, handle = await _start(tmp_path)
+        try:
+            report = handle.mcp_session_report()
+            assert report.not_ready() == {"connecting": names}
+            changes: list[dict] = []
+            report.on_change = lambda: changes.append(report.not_ready())
+
+            await runtime._send_and_await("_test/release", {}, timeout=FALLBACK_TIMEOUT_SECS)
+            await async_wait_until(lambda: report.not_ready() == {})
+
+            assert changes and changes[-1] == {}
+            assert set(names) <= set(report.payload()["ready"])
+        finally:
+            await runtime.kill()
+
+    @pytest.mark.asyncio
     async def test_an_agent_with_only_kiro_crews_server_starts_in_itself(
         self, queue_stub, tmp_path, monkeypatch
     ):
@@ -327,6 +353,87 @@ class TestSessionStartBehindSlowServers:
         assert seen["start_mode"] == "kirocrew"
         assert seen["batch"] == ["kirocrew"]
         assert seen["set_mode"] == "kirocrew"
+
+
+async def _answer(handle, prompt: str = "ping") -> str:
+    return "".join(
+        [
+            event.text
+            async for event in handle.prompt(prompt, timeout=FALLBACK_TIMEOUT_SECS)
+            if event.kind == EVENT_TEXT_CHUNK
+        ]
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
+class TestTheFirstPromptOfAStartAPersonWaitedOn:
+    """The start did not wait for the agent's own servers; its first turn decides.
+
+    A turn that was told which servers are still starting is sent at once. One
+    that was not (``kirocrew chat``, a side question) holds its prompt for them,
+    as the start did before it stopped waiting.
+    """
+
+    @pytest.fixture(autouse=True)
+    def cap(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(
+            session_handle_mcp, "MOUNTED_MCP_WAIT_SECS", FALLBACK_TIMEOUT_SECS
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_was_not_told_is_sent_once_the_servers_report(
+        self, queue_stub, tmp_path, monkeypatch
+    ):
+        names = _write_agent(tmp_path, monkeypatch, 4)
+        runtime, handle = await _start(tmp_path, StartPriority.FOREGROUND)
+        try:
+            assert handle.mcp_session_report().left_to_turn == names
+            turn = asyncio.ensure_future(_answer(handle))
+            try:
+                await async_wait_until(lambda: handle.mcp_session_report().moved is not None)
+                assert not turn.done()
+                await runtime._send_and_await("_test/release", {}, timeout=FALLBACK_TIMEOUT_SECS)
+                assert await finished(turn, "held first prompt") == "pong"
+            finally:
+                turn.cancel()
+            assert handle.mcp_session_report().unreported(names) == ()
+        finally:
+            await runtime.kill()
+        methods = json.loads(queue_stub.read_text(encoding="utf-8"))["methods"]
+        assert methods.index("_test/release") < methods.index("session/prompt")
+
+    @pytest.mark.asyncio
+    async def test_a_turn_that_was_told_is_sent_while_they_still_connect(
+        self, queue_stub, tmp_path, monkeypatch
+    ):
+        names = _write_agent(tmp_path, monkeypatch, 4)
+        runtime, handle = await _start(tmp_path, StartPriority.FOREGROUND)
+        try:
+            # What the turn's build does once its block names them all: it
+            # records the block's mark, and the prompt carries the block.
+            assert session_mcp_states(handle)["connecting"] == names
+            mark = "<<<BEGIN_MCP_SERVER_STATES_0a1b2c3d>>>"
+            handle.mcp_session_report().note_turn_told(mark, names)
+
+            assert await finished(_answer(handle, f"{mark} ping"), "told first prompt") == "pong"
+            assert handle.mcp_session_report().unreported(names) == names
+        finally:
+            await runtime.kill()
+        assert "_test/release" not in json.loads(queue_stub.read_text(encoding="utf-8"))["methods"]
+
+    @pytest.mark.asyncio
+    async def test_a_start_nobody_waited_on_has_waited_already(
+        self, queue_stub, tmp_path, monkeypatch
+    ):
+        """Its own wait ran at the start (the fixture's cap is spent), so no turn holds."""
+        names = _write_agent(tmp_path, monkeypatch, 4)
+        runtime, handle = await _start(tmp_path)
+        try:
+            assert handle.mcp_session_report().left_to_turn == ()
+            assert await finished(_answer(handle), "first prompt") == "pong"
+            assert handle.mcp_session_report().unreported(names) == names
+        finally:
+            await runtime.kill()
 
 
 _HUNG = "desktop-tool"

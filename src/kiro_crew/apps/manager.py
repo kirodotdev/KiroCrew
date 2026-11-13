@@ -167,6 +167,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         STAGED_GRANT_FAMILIES,
         AppResult,
         InstalledApp,
+        InstalledRecordShapeError,
         SessionControlWidening,
         _approved_grants_after_manifest_change,
         _approved_grants_path,

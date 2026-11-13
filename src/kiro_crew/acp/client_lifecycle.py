@@ -19,6 +19,9 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
 ``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
+``_mimocode_config_mcp_servers``, ``_mimocode_denies_in_force``,
+``_mimocode_denies_unenforced``, ``_mimocode_disabled_servers``, ``_mimocode_governed_stop``,
+``_mimocode_native_mounts``,
 ``_oauth_emitted_servers``,
 ``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
 ``_opencode_native_mounts``, ``_pending_oauth_requests``,
@@ -749,6 +752,12 @@ def _reset_state(self: AcpClient) -> None:
     self._opencode_denies_in_force = None
     self._opencode_denies_unenforced = frozenset()
     self._opencode_native_mounts = frozenset()
+    self._mimocode_denies_in_force = None
+    self._mimocode_denies_unenforced = frozenset()
+    self._mimocode_native_mounts = frozenset()
+    self._mimocode_disabled_servers = frozenset()
+    self._mimocode_config_mcp_servers = ()
+    self._mimocode_governed_stop = None
     # Save PID state before clearing it. A root is confirmed exited only
     # when its own Process reports a reaped return code; a missing or
     # unreadable PID is not enough to reclaim its working directory.
@@ -812,8 +821,12 @@ def _reset_state(self: AcpClient) -> None:
     # A retired session's report must not be read as the next one's. This
     # view exists to be evidence, and stale evidence is worse than none:
     # the replacement process re-initializes its servers from scratch and
-    # will report again.
+    # will report again. Its reader follows the new one.
+    # ``getattr``: a client built without ``__init__`` (tests) has none to retire.
+    retired = getattr(self, "_mcp_report", None)
     self._mcp_report = McpSessionReport()
+    if retired is not None:
+        retired.hand_over(self._mcp_report)
     #: Index into ``_mcp_notifications`` below which frames belong to a PRIOR
     #: session attempt and must not reach the report. See
     #: ``_begin_session_report``.

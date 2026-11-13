@@ -251,6 +251,10 @@ class _MirroredSessionMcp(NamedTuple):
     compares THIS, never a later read of the file, against its saved intent."""
     crew_bridged: list[str] = []
     """The Connection bridge snapshots the array wrote, for the handle's shutdown."""
+    zero_tools: bool = False
+    """Whether the spec declares ``"tools": []``, from the same parse as the array.
+    The handle refuses every permission request of such a session
+    (``AcpSessionHandle._deny_zero_tools``)."""
 
 
 async def _session_work_dir(self: AcpRuntime, cwd: str | Path | None = None) -> str | Path:
@@ -752,6 +756,7 @@ async def _mirrored_session_mcp(
         ref_spec=ref_spec,
         agent_spec=projection.agent_spec,
         crew_bridged=crew_bridged,
+        zero_tools=projection.zero_tools,
     )
 
 
@@ -1164,6 +1169,8 @@ def _guard_unresolved_mcp_refs(
         # So it waits only for the spec servers one of the two delivered: one
         # Crew held back from both would never report, and every run would wait
         # out the bound. Other hosts declare nothing.
+        if self._expect_mcp_reports:
+            handle.mcp_session_report().record_switched_off(spec)
         if self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KIRO:
             handle.mcp_session_report().record_declared(spec, mcp_json)
         elif self._expect_mcp_reports and self.acp_backend == ACP_BACKEND_KAS:

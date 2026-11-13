@@ -31,6 +31,7 @@ from kiro_crew.dashboard.session_control_parts.caller_access import (
     prewarm_enabled_check,
 )
 from kiro_crew.dashboard.session_control_parts.delivery_containment import (
+    SESSION_SEND_QUEUED_META,
     containment_meta,
     containment_snapshot,
     newly_held_constraints,
@@ -528,7 +529,7 @@ async def send_to_target(
                 slot,
                 prompt,
                 session_deliver.peer(steer=False),
-                queue_meta=send_origin_meta(state, caller_key),
+                queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
             logger.info(
@@ -722,8 +723,9 @@ async def send_to_target(
                 # Only the QUEUE arm keeps it (the run arm has no entry): a
                 # delivery that waits is the one a later drain can drop, and this
                 # stamp is what lets that drop be reported back to us instead of
-                # ending at the target's own transcript.
-                queue_meta=send_origin_meta(state, caller_key),
+                # ending at the target's own transcript. The marker is what
+                # `session_queue` reads as "yours"; no steer requeue writes it.
+                queue_meta={**send_origin_meta(state, caller_key), SESSION_SEND_QUEUED_META: True},
                 relay_meta=relay_meta,
             )
             == session_deliver.DELIVERED_TURN

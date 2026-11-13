@@ -1171,21 +1171,18 @@ def _fold_slot_cold(
     *,
     slot: str,
     known: bool,
+    primed: "tuple[ProjectionRegistry, _SlotStream, _PrefixSeen | None] | None" = None,
 ) -> "tuple[Checkpoint, int]":
-    """The cold branch of :func:`_fold_slot_warm_locked`: every unit from its first record."""
+    """The cold branch of :func:`_fold_slot_warm_locked`; *primed* is a shared walk's."""
     _note_slot_fold_origin("cold")
-    fold = _SlotFold(_FOLDS[name], slot)
-    saver = _save_during_fold(name, units, marks, fold, slot=slot) if known else None
-    cold = _SlotStream(units, save=saver)
-    registry = ProjectionRegistry(seq_of=_ordinal_seq)
-    registry.register(fold)
-    before = _digest_to_carry(units, marks)
-    try:
-        registry.prime(slot, cold)
-    finally:
-        # The registered fold outlives the pass inside the memo, and a warm step later
-        # replaces the cell with a copy, so a kept reference would pin an uncharged state.
-        fold.latest = None
+    if primed is None:
+        registry, folds = _slot_registry((name,), slot)
+        saver = _save_during_fold(name, units, marks, folds[name], slot=slot) if known else None
+        cold = _SlotStream(units, save=saver)
+        before = _digest_to_carry(units, marks)
+        _walk(folds, lambda: registry.prime(slot, cold))
+    else:
+        registry, cold, before = primed
     fresh = _SlotMemo(
         registry=registry,
         store=slot,
@@ -1310,7 +1307,12 @@ def _identity_marks(marks: "Sequence[_UnitMark]") -> "list[list[Any]]":
 
 
 def _resume_slot_fold(
-    name: str, units: "tuple[str, ...]", marks: "tuple[_UnitMark, ...]", *, slot: str
+    name: str,
+    units: "tuple[str, ...]",
+    marks: "tuple[_UnitMark, ...]",
+    *,
+    slot: str,
+    primed: "tuple[_Admitted, ProjectionRegistry, _SlotStream] | None" = None,
 ) -> "_SlotMemo | None":
     """A warm cell for *slot*'s *name*, resumed from the DISK savepoint, or ``None``.
 
@@ -1326,6 +1328,33 @@ def _resume_slot_fold(
 
     ``None`` for no savepoint and for every refusal, which is the cold fold.
     """
+    if primed is not None:
+        return _finish_slot_resume(name, units, marks, slot, *primed, None)
+    admitted = _admit_slot_resume(name, units, marks, slot=slot)
+    if admitted is None:
+        return None
+    registry, folds = _slot_registry((name,), slot)
+
+    def prime() -> None:
+        _walk(folds, lambda: _prime_resumed(registry, slot, {name: admitted}, admitted.tail))
+
+    return _finish_slot_resume(name, units, marks, slot, admitted, registry, admitted.tail, prime)
+
+
+class _Admitted(NamedTuple):
+    """A slot savepoint admitted for a resume, with what the pass after it needs."""
+
+    handle: CrewLog
+    saved: Any
+    base: int
+    before: "_PrefixSeen | None"
+    tail: _SlotStream
+
+
+def _admit_slot_resume(
+    name: str, units: "tuple[str, ...]", marks: "tuple[_UnitMark, ...]", *, slot: str
+) -> "_Admitted | None":
+    """The admission half of :func:`_resume_slot_fold`: no walk, ``None`` for no savepoint."""
     from kiro_crew.crew_log import checkpoint as savepoints
 
     handle = open_session_log(units[-1])
@@ -1361,8 +1390,6 @@ def _resume_slot_fold(
     # :func:`prefix_admit` refuses on the next read, so every other restart pays a cold
     # fold.
     before = _digest_to_carry(units, marks)
-    registry = ProjectionRegistry(seq_of=_ordinal_seq)
-    registry.register(_SlotFold(_FOLDS[name], slot))
     # ``resume``: the byte position the savepoint's writer stored for the record at its
     # seq, so the tail walk opens the file there instead of decoding every record below
     # it. The store checks it against the live file before seeking and walks from the
@@ -1375,16 +1402,61 @@ def _resume_slot_fold(
     # too, since it sits at the cell's watermark.
     since = saved.reached if saved.resume is not None else saved.reached - 1
     tail = _SlotStream(units[-1:], base=base, since=since, resume=saved.resume)
-    above = (event for event in tail if event.ordinal > saved.watermark)
+    return _Admitted(handle, saved, base, before, tail)
+
+
+def _prime_resumed(
+    registry: ProjectionRegistry, slot: str, admitted: "dict[str, _Admitted]", tail: _SlotStream
+) -> None:
+    """Fold *tail* onto every admitted savepoint's state; each fold drops what it holds."""
+    floor = min(held.saved.watermark for held in admitted.values())
+    above = (event for event in tail if event.ordinal > floor)
+    held = {
+        n: Checkpoint(name=n, last_seq=a.saved.watermark, state=a.saved.state)
+        for n, a in admitted.items()
+    }
+    registry.prime_checkpointed(slot, _HeldCheckpoints(held), {}, lambda _floor: above)
+
+
+def _slot_registry(
+    names: "Sequence[str]", slot: str, held: "dict[str, Checkpoint] | None" = None
+) -> "tuple[ProjectionRegistry, dict[str, _SlotFold]]":
+    """A kernel registry of *slot*'s folds *names*, holding *held* if given, and the folds."""
+    registry = ProjectionRegistry(seq_of=_ordinal_seq)
+    folds = {name: _SlotFold(_FOLDS[name], slot) for name in names}
+    for fold in folds.values():
+        registry.register(fold)
+    if held:
+        registry.prime_checkpointed(slot, _HeldCheckpoints(held), {}, lambda _floor: ())
+    return registry, folds
+
+
+def _walk(folds: "dict[str, _SlotFold]", prime: Callable[[], Any]) -> None:
+    """Run *prime*, then drop each fold's ``latest``, which would pin an uncharged state."""
     try:
-        registry.prime_checkpointed(
-            slot,
-            _HeldCheckpoints(
-                {name: Checkpoint(name=name, last_seq=saved.watermark, state=saved.state)}
-            ),
-            {},
-            lambda _floor: above,
-        )
+        prime()
+    finally:
+        for fold in folds.values():
+            fold.latest = None
+
+
+def _finish_slot_resume(
+    name: str,
+    units: "tuple[str, ...]",
+    marks: "tuple[_UnitMark, ...]",
+    slot: str,
+    admitted: _Admitted,
+    registry: ProjectionRegistry,
+    tail: _SlotStream,
+    prime: "Callable[[], None] | None",
+) -> "_SlotMemo | None":
+    """:func:`_resume_slot_fold` from the tail fold on: *prime* folds it, ``None`` once folded."""
+    from kiro_crew.crew_log import checkpoint as savepoints
+
+    handle, saved, base, before, _tail = admitted
+    try:
+        if prime is not None:
+            prime()
         # RENDERED here, and the value thrown away. It is the admission condition the
         # shape checks cannot be: they read a state's top level, so a value malformed
         # BELOW it -- an event row holding a number where a mapping belongs -- is

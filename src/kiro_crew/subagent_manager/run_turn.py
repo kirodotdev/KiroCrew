@@ -572,8 +572,8 @@ async def _run_inner_impl(
         from kiro_crew.agent_sdk.spec_hooks import session_agent
 
         logger.warning(
-            "Subagent %s: agent %s sets %d spec key(s) this backend does not receive, "
-            "so they have no effect in this run",
+            "Subagent %s: agent %s sets %d spec key(s) this backend does not apply "
+            "as written in this run",
             info.id,
             session_agent(client, agent),
             len(_spec.lost),

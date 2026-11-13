@@ -419,9 +419,10 @@ class TestAcpClientZeroTools:
 
     @pytest.mark.asyncio
     async def test_a_backend_that_does_not_honour_the_ban_is_not_refused(self):
-        """codex's sessions run on ``AcpRuntime``, which carries no zero-tool refusal,
-        so the refusal is not applied there and a zero-tool spec does not force the
-        session to judge requests."""
+        """codex's sessions run on ``AcpRuntime``, whose handle refuses on its own
+        (``AcpSessionHandle._deny_zero_tools``, pinned in ``test_codex_zero_tools.py``),
+        so the client's refusal is not applied here and a zero-tool spec does not force
+        this client to judge requests."""
         client = AcpClient(acp_backend=ACP_BACKEND_CODEX)
         client._spec_zero_tools = True
         event = client._build_permission_event(self._permission_request())

@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test'
 
 /**
  * /capabilities — Customize page (formerly Agent Capabilities).
- * SidePanelLayout with 6 tabs: Agents, Connections,
- * Skills, Steering, Hooks, Prompts. Default tab is "crews" (KiroCrewAgentsPage).
+ * SidePanelLayout with 5 tabs: Agents, Skills, Steering, Hooks, Prompts
+ * (Connections is a Settings tab, MCP Servers its own rail page). Default tab is "crews" (KiroCrewAgentsPage).
  *
  * Covers: page load + heading, tab navigation with content change assertion,
  * the crew roster read + a create/delete round-trip mutation through the
@@ -28,13 +28,14 @@ test.describe('Capabilities Page — /capabilities', () => {
     await expect(page.locator('#main-content').getByText('Always-on AI agents', { exact: false })).toBeVisible({ timeout: 5000 })
   })
 
-  test('shows all 6 tab buttons in the side nav', async ({ page }) => {
+  test('shows all 5 tab buttons in the side nav, and no Connections tab', async ({ page }) => {
     // Tab buttons inside the nav panel — look inside #main-content nav
     const nav = page.locator('#main-content nav')
-    const tabs = ['Bots', 'Connections', 'Skills', 'Steering', 'Hooks', 'Prompts']
+    const tabs = ['Bots', 'Skills', 'Steering', 'Hooks', 'Prompts']
     for (const label of tabs) {
       await expect(nav.getByRole('button', { name: label, exact: true })).toBeVisible({ timeout: 5000 })
     }
+    await expect(nav.getByRole('button', { name: 'Connections', exact: true })).toHaveCount(0)
   })
 
   test('crews tab renders the crew roster as cards', async ({ page }) => {

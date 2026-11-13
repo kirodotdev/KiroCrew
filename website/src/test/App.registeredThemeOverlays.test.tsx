@@ -14,6 +14,7 @@ const themeState = {
   importOnboarded: true,
   privacyAcked: true,
   themeBootReady: true,
+  themeBootRead: true,
   themes: [],
   allThemes: [{ value: 'registered-overlay-app', label: 'Registered' }],
   preference: 'light' as const,

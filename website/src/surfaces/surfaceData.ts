@@ -96,7 +96,7 @@ export const BUILTIN_SURFACE_NAV = {
 export const CAPABILITY_SUB_ITEM_NAV: readonly { tab: string; labelKey: string; label: string }[] = [
   { tab: 'crews', labelKey: 'pages.capabilitiesPage.crews_label', label: surfaceMachineValue('Crews') },
   { tab: 'skills', labelKey: 'pages.capabilitiesPage.skills_label', label: surfaceMachineValue('Skills') },
-  { tab: 'mcp', labelKey: 'pages.capabilitiesPage.connections_label', label: surfaceMachineValue('Connections') },
+  { tab: 'mcp-servers', labelKey: 'nav.mcp_servers', label: surfaceMachineValue('MCP Servers') },
   { tab: 'knowledge', labelKey: 'pages.capabilitiesPage.knowledge_label', label: surfaceMachineValue('Knowledge') },
   { tab: 'prompts', labelKey: 'pages.capabilitiesPage.prompts_label', label: surfaceMachineValue('Prompts') },
   { tab: 'steering', labelKey: 'pages.capabilitiesPage.steering_label', label: surfaceMachineValue('Steering files') },

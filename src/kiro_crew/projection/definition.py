@@ -21,10 +21,11 @@ modified original.
 ONE OPTIONAL METHOD steps outside that rule, and only where nobody can watch:
 ``apply_owned(state, event) -> state`` folds *event* into a *state* the caller owns
 outright, so it may edit *state* in place and return it, and it must not edit the
-event. The registry calls it only on a COLD pass --
-:meth:`~kiro_crew.projection.registry.ProjectionRegistry.prime`, and the tail of
-``prime_checkpointed`` when every cell is still at seq 0 -- on a state it copied once
-at the start and that no reader can see until the pass ends. It must reach the same
+event. The registry calls it only where no reader can see the state until the pass
+ends: :meth:`~kiro_crew.projection.registry.ProjectionRegistry.prime` and the tail of
+``prime_checkpointed``, on a state it copied once at the start -- or, on a resumed
+tail, on the copy ``apply`` returned for the first entry that moved the restored
+state. It must reach the same
 value ``apply`` reaches over the same events. A definition without it is folded
 through ``apply``, one copy per changed event.
 

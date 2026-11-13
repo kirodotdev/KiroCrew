@@ -848,6 +848,19 @@ def register_memory_parser(sub: _Commands) -> None:
     mem_import.add_argument(
         "--store", default=None, help="Store to import into (default: the default store)"
     )
+    mem_dream = mem_sub.add_parser(
+        "dream",
+        help="Ask for a Dreaming run, or list what it proposed (memory.dream propose)",
+        description="Dreaming looks over stored lessons and facts while no chat turn "
+        "runs and writes an approval list. Nothing in the list is applied.",
+    )
+    dream_sub = mem_dream.add_subparsers(dest="dream_action", required=True)
+    dream_sub.add_parser("run", help="Ask the gateway for a run now (it still waits for idle)")
+    dream_list = dream_sub.add_parser("list", help="Print the approval list (read-only)")
+    dream_list.add_argument(
+        "--store", default=None, help="Store to read (default: the default store)"
+    )
+    dream_list.add_argument("--json", action="store_true", help="Print JSON")
 
 
 def register_agent_parser(sub: _Commands) -> None:
@@ -948,7 +961,7 @@ def register_workspace_parser(sub: _Commands) -> None:
         "--dir",
         default=None,
         help=(
-            "Workspace directory NAME, relative to the KiroCrew data home "  # brand-ok: help text kept as it was
+            "Workspace directory NAME, relative to the Kiro Crew data home "
             "(default: workspace-<name>). Any path resolving outside the data "
             "home is rejected."
         ),
@@ -959,7 +972,7 @@ def register_workspace_parser(sub: _Commands) -> None:
     ws_update.add_argument(
         "--dir",
         help=(
-            "New workspace directory NAME, relative to the KiroCrew data home. "  # brand-ok: help text kept as it was
+            "New workspace directory NAME, relative to the Kiro Crew data home. "
             "Any path resolving outside the data home is rejected."
         ),
     )

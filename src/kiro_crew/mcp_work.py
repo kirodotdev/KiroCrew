@@ -123,6 +123,8 @@ _REPORT_PATH = "/api/work-ledger/report"
 _READ_PATH = "/api/work-ledger"
 _RECORD_PATH = "/api/work-ledger/record"
 _REBUILD_PATH = "/api/work-ledger/rebuild"
+#: A code channel's conductor's ``accept_eval``, evaluated by the gateway.
+_ACCEPT_EVAL_PATH = "/api/work-ledger/accept-eval"
 
 #: Fields ``work_ledger_record`` forwards. The action selects which of them it
 #: REQUIRES; a field an action has no use for is generally IGNORED rather than
@@ -1001,6 +1003,28 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "Error: item_id picks one item of your own ledger; leave it out when "
                 "you pass a document as items [invalid_value, field=item_id]"
             )
+        if from_ledger and resp.get("published_fields_only"):
+            # A code channel's conductor reads published fields only (a derived
+            # state, no status and no bars), so its own read has nothing to
+            # evaluate. The gateway evaluates the stored bars and answers verdicts.
+            # It runs each done item's checks in turn (up to two subprocesses, each
+            # bounded by the evaluator's own timeout), so the read waits for them all.
+            # shortcut: capped at an hour; a board that needs longer is evaluated by
+            # item_id, one item per call.
+            rows = resp.get("items") or []
+            done = sum(1 for row in rows if isinstance(row, dict) and row.get("state") == "done")
+            if args.get("item_id") is not None:
+                done = 1
+            per_item = 2 * _skill_script("accept_eval").TIMEOUT_SECS
+            wait = min(3600, 30 + per_item * max(done, 1))
+            if args.get("item_id") is not None:
+                one = urlencode({"item_id": args["item_id"]})
+                resp = _get(f"{_ACCEPT_EVAL_PATH}?{one}", session_key=caller_key, timeout=wait)
+            else:
+                resp = _get(_ACCEPT_EVAL_PATH, session_key=caller_key, timeout=wait)
+            if resp.get("error"):
+                return _refusal("could not evaluate your work ledger", resp)
+            return _render(resp)
         return _accept_eval(args, resp if from_ledger else None)
 
     if name == "work_brief":
@@ -1096,7 +1120,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             line = (
                 f"Recorded {action}. item={item.get('item_id') or '(unknown)'} "
                 f"state={item.get('state') or '(unset)'} "
-                f"verdict={item.get('verdict') or '(none)'}"
+                # A code channel's projection names the verdict ``ci``.
+                f"verdict={item.get('verdict') or item.get('ci') or '(none)'}"
             )
             if action == "bind":
                 from kiro_crew.conductor_patrol import reply_line

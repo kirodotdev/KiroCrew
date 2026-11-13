@@ -80,6 +80,7 @@ citation to follow.
 #   ``projection_session`` -- folding one session's log on the projection kernel, with its savepoint
 #   ``projection_slot_memo`` -- a slot's folds on the projection kernel, kept warm
 #   ``projection_readers`` -- reading a slot's and a tree's folds
+#   ``projection_slot_share`` -- one walk of a slot's units for its queued cold or stale cells
 #   ``projection_session_memo`` -- a session's folds, kept warm, and the session read
 
 from __future__ import annotations
@@ -117,6 +118,7 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_unit_mark_cache",
     "kiro_crew.crew_log.projection_slot_memo",
     "kiro_crew.crew_log.projection_readers",
+    "kiro_crew.crew_log.projection_slot_share",
     "kiro_crew.crew_log.projection_session_memo",
 )
 for _owner in _OWNERS:
@@ -428,6 +430,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _acquire_fold_lock,
         _acquire_unless_cold,
         _admit_backfill,
+        _admit_slot_resume,
+        _Admitted,
         _cell_weight,
         _cold_keys,
         _continuable,
@@ -435,6 +439,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cut_verdict,
         _digest_to_carry,
         _extended,
+        _finish_slot_resume,
         _fold_slot_cold,
         _fold_slot_warm_locked,
         _folded_marks,
@@ -451,6 +456,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _persist_slot_fold,
         _prefix_holds,
         _PrefixSeen,
+        _prime_resumed,
         _release_fold_lock,
         _remember_slot_fold,
         _resume_from,
@@ -464,6 +470,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _slot_memo_bytes,
         _slot_memo_guard,
         _slot_memos,
+        _slot_registry,
         _slot_revision,
         _slot_witness,
         _SlotFold,
@@ -474,6 +481,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _unit_prefix,
         _UnitMark,
         _vouched,
+        _walk,
         any_cold_fold_running,
         cold_fold_running,
         fold_slot_warm,
@@ -481,6 +489,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         forget_slot_folds,
         seal_slot_fold,
         slot_fold_over_ceiling,
+    )
+    from kiro_crew.crew_log.projection_slot_share import (  # noqa: F401
+        _prime_group,
+        _prime_joined,
+        _release_held,
+        _shared_start,
+        prime_slot_projections,
     )
     from kiro_crew.crew_log.projection_subagents import (  # noqa: F401
         _SUBAGENT_OUTCOMES,

@@ -247,8 +247,8 @@ async def connect(
             # terminated and the local forward freed before we spawn a
             # replacement. Otherwise the old child orphans (dropped from
             # _tunnels below, never killed) and keeps the port — every
-            # replacement then hits ExitOnForwardFailure while _port_reachable
-            # is still satisfied by the orphan -> tight respawn loop.
+            # replacement then loses its bind while _port_reachable is still
+            # satisfied by the orphan -> tight respawn loop.
             with contextlib.suppress(Exception):
                 await existing.stop()
 
@@ -310,7 +310,9 @@ async def connect(
             if not await asyncio.to_thread(cloud_ssm.session_manager_plugin_installed):
                 return self._error_status(
                     inst,
-                    await asyncio.to_thread(cloud_ssm.session_manager_plugin_unavailable_message),
+                    await asyncio.to_thread(
+                        cloud_ssm.session_manager_plugin_unavailable_message, "connect again"
+                    ),
                 )
 
         # Reclaim our own forwarder if a prior gateway hard-kill leaked it
@@ -445,7 +447,7 @@ async def connect(
         # The probe above is advisory — there is an inherent TOCTOU window
         # between probing and ssh actually binding — so re-check immediately
         # before spawning and fail with an actionable message rather than
-        # letting the child exit on ExitOnForwardFailure.
+        # letting the child fail its bind.
         if not await asyncio.to_thread(_is_port_free, local_port):
             return self._error_status(
                 inst,

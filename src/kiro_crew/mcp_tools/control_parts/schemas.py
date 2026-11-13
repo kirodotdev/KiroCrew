@@ -199,6 +199,21 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "mcp_server_wait",
+            # Short on purpose: it rides in every request of the agents that list
+            # it as a job tool (``agent_sdk.tool_search.JOB_TOOLS``). The turn's
+            # own ``[MCP SERVERS]`` block says when and how to use it.
+            "description": (
+                "Wait for one of this session's MCP servers that is still starting. "
+                "Returns when it is connected, or says why it will not be. Call once."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"server": {"type": "string"}},
+                "required": ["server"],
+            },
+        },
+        {
             "name": "route_crew",
             "description": (
                 "Rank the crews whose triggers match a task, best first, and return each "

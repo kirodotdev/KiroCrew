@@ -179,6 +179,7 @@ def gate_exporter(
     *,
     redact: "Redactor | None" = None,
     named_by: "Callable[[Any], str] | None" = None,
+    refused: Any = None,
 ) -> None:
     """Hold every ``export`` of *exporter* to the policy *ceiling()* returns now.
 
@@ -191,6 +192,10 @@ def gate_exporter(
     it returns the endpoint the policy names now, and an export is refused while
     that is not *endpoint*, so a policy that moves or drops its collector stops
     the old reader before the next rebuild.
+
+    *refused* is the value a refused call returns, for an exporter of another
+    signal (a span exporter's ``SpanExportResult.FAILURE``); ``None`` is the
+    metric exporter's ``MetricExportResult.FAILURE``.
     """
     hosts = hosts_of(endpoint)
     inner = exporter.export
@@ -215,6 +220,8 @@ def gate_exporter(
                 host,
                 "resumed" if permitted else "stopped",
             )
+        if not permitted and refused is not None:
+            return refused
         if not permitted:
             from opentelemetry.sdk.metrics.export import MetricExportResult
 

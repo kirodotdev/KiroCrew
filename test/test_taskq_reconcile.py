@@ -471,6 +471,64 @@ def test_import_legacy_subagent_folders_and_taskrunner_paused_runs(
         s.close()
 
 
+def test_one_unreadable_max_turns_does_not_cost_the_other_folders_their_rows(
+    tmp_path: Path, clock: Clock
+) -> None:
+    sub = tmp_path / "home" / "subagents"
+    _write_json(sub / "aaa11111" / "state.json", {"id": "aaa11111", "task": "a", "max_turns": 5})
+    _write_json(
+        sub / "bbb22222" / "state.json", {"id": "bbb22222", "task": "b", "max_turns": "lots"}
+    )
+    _write_json(sub / "ccc33333" / "state.json", {"id": "ccc33333", "task": "c"})
+    s = TaskStore(tmp_path / "t.db", clock=clock, network_fs=False).open()
+    try:
+        report = migrate.import_legacy(
+            s.insert_if_absent,
+            subagents_dir=sub,
+            taskrunner_runs_path=tmp_path / "nope.json",
+            now=clock.t,
+        )
+        assert report.subagents_imported == 3, report
+        bad = s.get("bbb22222")
+        assert bad is not None and bad.params["max_turns"] == 0
+        assert s.get("aaa11111").params["max_turns"] == 5  # type: ignore[union-attr]
+    finally:
+        s.close()
+
+
+def test_an_unlimited_max_turns_imports_as_the_largest_cap_not_the_default(
+    tmp_path: Path, clock: Clock
+) -> None:
+    from types import SimpleNamespace
+
+    from kiro_crew.config.sections_limits import SUBAGENT_MAX_TURNS_CEILING
+    from kiro_crew.subagent_manager.run_lifecycle import _effective_turn_limit_impl
+
+    sub = tmp_path / "home" / "subagents"
+    ids = ("aaa11111", "bbb22222", "ccc33333")
+    for agent_id, raw in zip(ids, ("unlimited", " Infinite ", float("inf"))):
+        _write_json(sub / agent_id / "state.json", {"id": agent_id, "task": "t", "max_turns": raw})
+    s = TaskStore(tmp_path / "t.db", clock=clock, network_fs=False).open()
+    try:
+        migrate.import_legacy(
+            s.insert_if_absent,
+            subagents_dir=sub,
+            taskrunner_runs_path=tmp_path / "nope.json",
+            now=clock.t,
+        )
+        # 0 would mean "not set" and fall back to a configured default far lower
+        # than what the run asked for; the runner must see the largest cap.
+        coordinator = SimpleNamespace(_manager=SimpleNamespace(_default_turn_limit=30))
+        for agent_id in ids:
+            row = s.get(agent_id)
+            assert row is not None
+            info = SimpleNamespace(max_turns=row.params["max_turns"])
+            limit = _effective_turn_limit_impl(coordinator, info)  # type: ignore[arg-type]
+            assert limit == SUBAGENT_MAX_TURNS_CEILING, (agent_id, limit)
+    finally:
+        s.close()
+
+
 def test_import_tolerates_missing_sources(tmp_path: Path, clock: Clock) -> None:
     s = TaskStore(tmp_path / "t.db", clock=clock, network_fs=False).open()
     try:

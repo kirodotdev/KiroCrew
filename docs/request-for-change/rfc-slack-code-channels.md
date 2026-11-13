@@ -3,10 +3,10 @@ title: Slack Code — agent sessions and code channels for Kiro Crew
 status: in-progress
 author: kseam
 created: 2026-10-16
-last-audited: 2026-10-16
-audited-at: c1302956a1
+last-audited: 2026-11-12
+audited-at: 6ded84fc02
 doc-pr:
-implementation-prs: []
+implementation-prs: [21425, 21410, 22001]
 tracking-issues: [15175]
 supersedes: []
 superseded-by: []
@@ -19,9 +19,20 @@ superseded-by: []
   Agent sessions switch and its runtime, first opened as
   [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) is in the pull
   request that carries this document. Phase 2 (code channels: their switch, their
-  defaults and their runtime) stacks on it, starting with
-  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410). Every switch
+  defaults and their runtime) shipped in
+  [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410), with helper-agent
+  dispatch and restart resume in
+  [#22001](https://github.com/kirodotdev/KiroCrew/pull/22001). Every switch
   defaults off, so no default changes.
+- Amended 2026-11-12: Stop in a code channel also stops the channel's helper
+  agents (§3, "Stop"). The owner left this call to the Slack Code team lead, who
+  decided it; it takes effect when the owner merges this amendment. Nothing is
+  built yet: on main `6ded84fc02`, `_stop_bound` in
+  `slack/code_channels/routing.py` stops only the channel's own session; when that
+  session is idle, `!stop` answers "Nothing running." and Slack's Stop button says
+  nothing, whatever its helper agents are doing. The code follows in its own pull
+  request, after
+  [#21993](https://github.com/kirodotdev/KiroCrew/pull/21993).
 - Author: kseam
 - Created: 2026-10-16
 - Prior art: issue [#15175](https://github.com/kirodotdev/KiroCrew/issues/15175)
@@ -361,6 +372,77 @@ crewmates' private copies.
   reply on the origin message.
 * **Status.** The channel's session status follows the same lifecycle as an agent
   session (§2), with no `thread_ts`.
+* **Restart resume.** A code channel's binding survives a gateway restart, so its
+  next message reaches the same session; a turn that was running does not. Once
+  per gateway start, after Slack connects, the gateway continues each interrupted
+  turn of a code channel's own session and of that session's own workers, and
+  nothing else. This is the owner's ask ("Yes, add the Resume button after
+  restarts, Auto-resume without asking").
+  * **Whose work.** Only a channel admitted right now (bound, not archived,
+    wrapped up, stopped or fenced, in an admitted workspace, admitted by the
+    per-channel policy ceiling `allowed_channel_ids`, let in by channels
+    governance), its session by strict identity (binding, Slack link and slot
+    agree), and that session's own workers: those the store recorded as its
+    workers at birth or the crew log lists under it, whose live creator still
+    names it and which are linked to no channel. "Not archived" is asked of
+    Slack itself (`conversations.info`), since an archive made while the gateway
+    was offline sent no event; a confirmed archive is recorded as the event
+    would have, and an answer that cannot be had runs nothing by itself (the
+    work is held for the Resume button, which asks Slack again). Identity and
+    admission are re-checked under the slot lock right before each continuation.
+  * **At most once per turn.** The interrupted turn is recorded in the
+    write-protected code-channel store before it is continued, and a recorded
+    turn is never continued automatically again, so a turn that takes the
+    gateway down cannot loop. A turn whose identity cannot be proven, or whose
+    record cannot be saved, is not continued automatically.
+  * **Which turn.** A turn's identity comes only from what the dispatcher
+    produced, never from how a transcript row looks: in the running process the
+    session's turn generation, and across a restart the turn marker written at
+    admission, which names the row the dispatcher started the turn from. A steer,
+    a message queued behind a running turn, a replayed or restored row, or a row
+    of an unknown kind opens no turn. No identity is read from a transcript row
+    or the metadata line, both of which the session's own agent can write: at
+    every code-channel turn's admission the gateway records the opener it
+    started the turn from (its own copy) in the store, and removes it when the
+    turn ends; each resume made here records the recovery row it dispatched.
+    The restart names the cut turn from those records only, and a session with
+    no recorded opener, or whose cut turn is that resume's own run, is held for
+    the owner's Resume. A turn that had already failed before the
+    restart is not resumed automatically, because the restart did not interrupt
+    it (the dashboard's Resume still offers it).
+  * **One notice.** The channel gets one top-level notice: "I resumed where I
+    left off" with an owner-only Stop for what was resumed, or the reason the
+    work is paused with an owner-only Resume. Stop reaches only the sessions that
+    notice resumed, at the dispatch that resumed them: a turn dispatched after it
+    is not stopped. Resume re-runs every identity and
+    admission check, and is given back when nothing could run. In a Trust channel
+    the notice says the resumed work acts without asking first.
+  * **Switch.** Restart resume is part of code channels and runs only while they
+    are on; it has no switch of its own.
+* **Stop** (amended 2026-11-12). Slack's Stop and `!stop` in a code channel stop
+  the channel's own session and its helper agents. Stop is the person's brake: a
+  Stop that leaves agents editing code is wrong.
+  * **What it stops.** The running turn of the channel's session, the running
+    turn of every helper agent that the gateway's own records tie to that session
+    (the code-channel store records each helper agent the session starts, when it
+    starts it), and the sub-agents those turns started. It never undoes anything an
+    agent wrote: files, commits, pushes, messages and work-ledger entries stay as
+    they are.
+  * **Who may press it.** Unchanged: only Kiro Crew's owner, in a channel whose
+    origin conversation still admits the bot, from an admitted workspace. Anyone
+    else is refused and audited, and nothing is stopped.
+  * **What the channel says.** How many it stopped (none, when nothing was
+    running), and that nothing starts again until someone sends a message here.
+  * **What happens next.** Nothing starts again on its own. The channel's session
+    starts no turn by itself (no patrol or timer wake, no wake from a helper
+    agent's report, no scheduled job) until a person sends it a message, in Slack
+    or in the dashboard. A stopped helper agent stays stopped, and work queued for
+    it before the Stop waits, until a person sends it a message or the channel's
+    session, working on a person's message, starts it again; a message to one
+    helper agent releases only that one. Whether a message is a person's is read
+    from the gateway's own record of who sent it, never from its text. Restart
+    resume does not resume a turn a Stop ended, including one still ending when
+    the gateway restarted.
 
 ### 4. Approval modes in code channels
 

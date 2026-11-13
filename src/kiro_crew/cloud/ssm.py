@@ -444,11 +444,18 @@ def _plugin_ownership_remedy(candidate: str, reason: str) -> str:
     return ""
 
 
-def session_manager_plugin_install_hint(rerun: str = "kirocrew cloud connect") -> str:
-    """Human-readable install hint for the local SSM plugin prerequisite."""
+_CLI_CONNECT_RETRY = "rerun `kirocrew cloud connect`"
+
+
+def session_manager_plugin_install_hint(retry: str = _CLI_CONNECT_RETRY) -> str:
+    """Human-readable install hint for the local SSM plugin prerequisite.
+
+    *retry* is the step after the install, in the words of the surface that
+    shows the hint: a CLI command, or the dashboard's Connect button.
+    """
     return (
         "session-manager-plugin is not installed locally. Install the AWS "
-        f"Session Manager plugin, then rerun `{rerun}`: "
+        f"Session Manager plugin, then {retry}: "
         f"{_SESSION_MANAGER_PLUGIN_DOC_URL}"
     )
 
@@ -473,17 +480,18 @@ REFUSAL_NEXT_STEP = {
 }
 
 
-def session_manager_plugin_unavailable_message() -> str:
+def session_manager_plugin_unavailable_message(retry: str = _CLI_CONNECT_RETRY) -> str:
     """Why the plugin cannot be used: the refusal when one was found, else the install hint.
 
     A plugin that is installed but refused by the provenance check is not "not
     installed", and the install hint would hide the reason. The message then
     names the file, the check's reason and, when one is known, the command that
-    clears it. Changes nothing about what is accepted.
+    clears it. Changes nothing about what is accepted. *retry* goes to the
+    install hint.
     """
     refusal = session_manager_plugin_refusal()
     if refusal is None:
-        return session_manager_plugin_install_hint()
+        return session_manager_plugin_install_hint(retry)
     message = (
         f"session-manager-plugin is installed at {refusal.path} but was refused: "
         f"{refusal.reason}."
@@ -525,9 +533,8 @@ def session_manager_plugin_install_command() -> str:
     AWS's public distribution bucket at the pinned release, the same artifacts
     :func:`install_session_manager_plugin` uses, and each line checks the
     package's sha256 before its ``sudo`` step. Returns "" when the
-    platform has no one-liner (callers should fall back to the doc URL); in
-    practice the cloud surfaces are POSIX-only, so Darwin and Linux are the
-    reachable cases.
+    platform has no one-liner (Windows, or Linux with neither ``dpkg`` nor
+    ``dnf``/``yum``); callers then fall back to the doc URL.
     """
     system = platform.system()
     arch = _normalized_arch()
@@ -566,6 +573,28 @@ def session_manager_plugin_install_command() -> str:
     return ""
 
 
+def session_manager_plugin_can_install() -> bool:
+    """True when :func:`install_session_manager_plugin` has an install plan for this host."""
+    return _session_manager_plugin_install_plan(Path()) is not None
+
+
+def session_manager_plugin_next_step(rerun: str) -> list[str]:
+    """The lines that tell the user how to get a usable plugin by hand, then what to rerun."""
+    refusal = session_manager_plugin_refusal()
+    if refusal is not None and refusal.remedy_command:
+        # A reinstall rewrites the same refused file; only its fix command clears it.
+        return [f"Run this command, then rerun `{rerun}`:", f"  {refusal.remedy_command}"]
+    command = session_manager_plugin_install_command()
+    if not command:
+        return [
+            f"Install it from AWS's page, then rerun `{rerun}`: {_SESSION_MANAGER_PLUGIN_DOC_URL}"
+        ]
+    return [
+        f"Install it with this command, then rerun `{rerun}`:",
+        f"  {command}",
+    ]
+
+
 def install_session_manager_plugin() -> PluginInstallResult:
     """Install the local AWS Session Manager plugin for SSM port-forwarding."""
     if session_manager_plugin_installed():
@@ -596,6 +625,14 @@ def install_session_manager_plugin() -> PluginInstallResult:
 
         for argv in commands:
             rc, _out, err = _run_install_command(argv)
+            if rc != 0 and _sudo_cannot_prompt():
+                return PluginInstallResult(
+                    ok=False,
+                    message=(
+                        "Installing it needs your admin password, and with no terminal "
+                        "sudo cannot ask for it."
+                    ),
+                )
             if rc != 0:
                 return PluginInstallResult(ok=False, message=_install_error(argv, err))
 
@@ -1196,13 +1233,16 @@ def _verified_install_one_liner(url_arch: str, filename: str, check: str, instal
     predictable /tmp path: on a shared host a local user could preplant or swap
     that file and have the root install step run their package. *install* names
     the file ``"$p"`` and runs only when *check* (``sha256sum -c`` or
-    ``shasum -a 256 -c``) accepts it. The dir is removed either way.
+    ``shasum -a 256 -c``) accepts it. The dir is removed either way, and the
+    line exits with the status of the step that ended it, so a failed ``sudo``
+    reads as a failure. The subshell keeps that ``exit`` from closing the
+    user's own shell.
     """
     url, sha256 = _plugin_artifact(url_arch, filename)
     return (
-        f'd="$(mktemp -d)"; p="$d/{filename}"; '
+        f'(d="$(mktemp -d)"; p="$d/{filename}"; '
         f'curl -fsSL -o "$p" "{url}" && echo "{sha256}  $p" | {check} && {install}; '
-        'rm -rf "$d"'
+        's=$?; rm -rf "$d"; exit "$s")'
     )
 
 
@@ -1227,6 +1267,33 @@ def _download_file(url: str, dest: Path, sha256: str) -> None:
         raise ValueError(
             f"checksum mismatch for {url} (sha256 {got}, pinned {sha256}); refusing to install it"
         )
+
+
+def _sudo_cannot_prompt() -> bool:
+    """True when ``sudo`` needs a password and has no terminal to ask for it on.
+
+    sudo asks on the controlling terminal, not on stdin, so a piped or closed
+    stdin inside a terminal still gets its prompt. With no terminal,
+    ``sudo -n true`` says whether it runs without asking (root, NOPASSWD, a
+    cached ticket). A host with no ``sudo`` is left to the install step, which
+    names the missing binary.
+    """
+    try:
+        with open("/dev/tty", "rb"):
+            return False
+    except OSError:
+        pass
+    try:
+        probe = subprocess.run(  # noqa: S603 — fixed argv
+            ["sudo", "-n", "true"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    return probe.returncode != 0
 
 
 def _run_install_command(argv: list[str]) -> tuple[int, str, str]:

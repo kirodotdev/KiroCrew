@@ -544,6 +544,26 @@ async def test_route_record_and_get_roundtrip(_open_route):
 
 
 @pytest.mark.asyncio
+async def test_route_get_sends_the_event_tail_once(_open_route):
+    routes = _open_route
+    _unit(slot=sl.ledger_key("chat-r-1"))
+    for n in range(sl._MAX_EVENT_TAIL + 5):
+        req = _mk_request(
+            "POST",
+            "/api/session-ledger/record",
+            body={"event": f"step {n}", "event_kind": "progress"},
+        )
+        assert (await routes.api_session_ledger_record(req)).status == 200
+    assert_drained()
+    resp = await routes.api_session_ledger_get(_mk_request("GET", "/api/session-ledger"))
+    data = json.loads(resp.text)
+    assert "events" not in data["state"]
+    assert [event["text"] for event in data["events"]] == [
+        f"step {n}" for n in range(5, sl._MAX_EVENT_TAIL + 5)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_route_phase_without_event_is_400(_open_route):
     routes = _open_route
     _unit(slot=sl.ledger_key("chat-r-1"))
