@@ -31,12 +31,11 @@ Public entry points:
 Import submodules directly (``from kiro_crew.testing.fixtures import ...``,
 ``from kiro_crew.testing.harness import ...``); no top-level re-exports,
 so the package namespace stays pytest-free for non-pytest consumers.
-"""
 
-# Bind submodules onto the package namespace so ``unittest.mock.patch``
-# can traverse paths like ``kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS``
-# (patch walks dotted paths via getattr; without these binds the lookup
-# fails even though the modules are in sys.modules). Both submodules are
-# pytest-free at import time, so this doesn't pull pytest into consumers
-# that only need the runtime helpers.
-from kiro_crew.testing import fake_channel_wire, fixtures, harness  # noqa: E402,F401
+This package imports none of its submodules. The harness alone pulls in about
+350 ``kiro_crew`` modules (config, security, sandbox, aiohttp), which a consumer
+that wants only ``clock``, ``ids`` or ``wait`` must not pay for. A dotted
+``unittest.mock.patch("kiro_crew.testing.harness.TERMINATE_GRACE_SECONDS")``
+still works: it resolves its target with ``pkgutil.resolve_name``, which imports
+the submodule.
+"""

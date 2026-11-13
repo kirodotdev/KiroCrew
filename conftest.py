@@ -1045,8 +1045,8 @@ def _publish_runner_timeout(seconds: float | None) -> None:
     sees it. The module is imported here once its package is loaded, which is cheap
     (only ``wait`` itself and ``kiro_crew.loop_lock``) and lets a test that imports
     ``wait`` inside its body see its own timeout. The package itself is never
-    imported here: its ``__init__`` loads the gateway harness, which must not happen
-    under one test's pinned home. A test in a suite that never loaded
+    imported here, so a suite that does not use the helpers loads none of them.
+    A test in a suite that never loaded
     ``kiro_crew.testing`` waits on the module's fallback instead.
 
     The module captures the clocks it waits with when it is first imported, so a test
