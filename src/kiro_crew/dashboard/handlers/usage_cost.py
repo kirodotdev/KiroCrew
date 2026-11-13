@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import math
 import time
-from typing import Any
+from typing import Any, Iterator
 
 from kiro_crew.dashboard.handlers.usage_spend import _finite_number
 from kiro_crew.dashboard.handlers.usage_store import (
@@ -64,9 +64,10 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
     """Aggregate per-turn spend from the token row store into a cost view.
 
     Answers "what did the last *days* cost, compared with the *days* before it,
-    and what drove the difference". ``credits`` is the only billing dimension the
-    acp provider populates -- input/output/cache/cost come back hard zero -- so
-    it is the unit here, with ``context_used`` as the second real signal.
+    and what drove the difference". ``credits`` is the billing dimension the
+    Kiro harnesses populate, with ``context_used`` as the second real signal; a
+    window whose turns carry no credits but a dollar ``cost`` (a dollar-billed
+    harness) is aggregated from ``cost`` instead, and ``unit`` names which.
 
     Three deliberate shapes:
 
@@ -124,102 +125,137 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
     prev_category: dict[str, float] = {}
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
 
-    for shard_path in shard_paths:
-        try:
-            with shard_path.open("rb") as fh:
-                for line in bounded_records(fh, shard_path, label="usage"):
-                    try:
-                        obj = json.loads(line)
-                    except (ValueError, RecursionError):  # past the nesting limit
-                        continue
-                    if not isinstance(obj, dict) or obj.get("_type") != "tokens":
-                        continue
-                    ts_raw = str(obj.get("ts") or "")
-                    ts_epoch = _parse_row_ts(ts_raw)
-                    if ts_epoch is None or ts_epoch < prior_cutoff or ts_epoch >= upper:
-                        continue
+    def _window_rows() -> Iterator[tuple[dict[str, Any], str, float]]:
+        """Each token row stamped inside the window or the one before it."""
+        for shard_path in shard_paths:
+            try:
+                with shard_path.open("rb") as fh:
+                    for line in bounded_records(fh, shard_path, label="usage"):
+                        try:
+                            obj = json.loads(line)
+                        except (ValueError, RecursionError):  # past the nesting limit
+                            continue
+                        if not isinstance(obj, dict) or obj.get("_type") != "tokens":
+                            continue
+                        ts_raw = str(obj.get("ts") or "")
+                        ts_epoch = _parse_row_ts(ts_raw)
+                        if ts_epoch is None or ts_epoch < prior_cutoff or ts_epoch >= upper:
+                            continue
+                        yield obj, ts_raw, ts_epoch
+            except (OSError, UnicodeDecodeError):
+                continue
 
-                    raw_credits = obj.get("credits")
-                    # Shards written before the persist-side guard can already
-                    # hold `NaN` / `Infinity` — `json.loads` accepts those bare
-                    # tokens even though they are not valid JSON. Letting one
-                    # through would poison every total it touches and make
-                    # `web.json_response` emit a body no browser can parse, so
-                    # the row is dropped rather than counted as free. A string
-                    # or an int wider than a double is dropped the same way; a
-                    # row with no credits is a turn that billed none.
-                    credits = 0.0 if not raw_credits else _finite_number(raw_credits)
-                    if credits is None:
-                        continue
-                    model = str(obj.get("model") or "unknown")
-                    slot = str(obj.get("slot") or "")
+    def _billed(obj: dict[str, Any], key: str) -> bool:
+        value = _finite_number(obj.get(key))
+        return value is not None and value > 0
 
-                    # Dropped here, before ANY accumulator sees it, so every
-                    # figure on the page is computed over one population. A
-                    # subagent is a fragment of another session's turn rather
-                    # than a session, and it carries no field pointing back at
-                    # the session that spawned it, so it can be neither listed
-                    # nor attributed. Filtering at the grouping step instead
-                    # would leave it in the totals and force a reconciling
-                    # footnote for money with no row.
-                    if slot and not is_session_slot(slot):
-                        continue
-
-                    if ts_epoch < cutoff:
-                        prev_tot["credits"] += credits
-                        prev_tot["turns"] = int(prev_tot["turns"]) + 1
-                        prev_model[model] = prev_model.get(model, 0.0) + credits
-                        ch = telemetry_channel_of(slot or None)
-                        prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
-                        cat = session_category(slot)
-                        prev_category[cat] = prev_category.get(cat, 0.0) + credits
-                        continue
-
-                    cur_tot["credits"] += credits
-                    cur_tot["turns"] = int(cur_tot["turns"]) + 1
-                    if credits > float(priciest["credits"]):
-                        priciest = {"credits": credits, "slot": slot, "ts": ts_raw}
-
-                    for bucket, name in (
-                        (by_model, model),
-                        (by_channel, telemetry_channel_of(slot or None)),
-                        (by_category, session_category(slot)),
-                    ):
-                        e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
-                        e["credits"] = float(e["credits"]) + credits
-                        e["turns"] = int(e["turns"]) + 1
-
-                    used = _coerce_int(obj.get("context_used"))
-                    if used > 0 and credits > 0:
-                        bands.setdefault(min(used // 200_000, 5), []).append(credits)
-
-                    if slot:
-                        c = convos.setdefault(
-                            slot,
-                            {
-                                "slot": slot,
-                                "credits": 0.0,
-                                "turns": 0,
-                                "peak_pct": 0.0,
-                                "first_ts": ts_epoch,
-                                "last_ts": ts_epoch,
-                                "_occ": [],
-                                "transcript": "",
-                            },
-                        )
-                        if obj.get("transcript"):
-                            c["transcript"] = str(obj["transcript"])
-                        c["credits"] = float(c["credits"]) + credits
-                        c["turns"] = int(c["turns"]) + 1
-                        c["first_ts"] = min(float(c["first_ts"]), ts_epoch)
-                        c["last_ts"] = max(float(c["last_ts"]), ts_epoch)
-                        window = _coerce_int(obj.get("context_window"))
-                        if used > 0 and window > 0:
-                            pct = used / window * 100.0
-                            c["peak_pct"] = max(float(c["peak_pct"]), pct)
-                            c["_occ"].append((ts_epoch, pct))
-        except (OSError, UnicodeDecodeError):
+    # The unit is read off the rows rather than the configured harness: a
+    # dollar-billed harness records `cost` and leaves `credits` empty, and the
+    # store may hold turns from a harness other than the current default. Any
+    # credit-bearing row keeps the view in credits, so a Kiro install stops at
+    # its first billed row; only a window with no credits at all and some
+    # dollar cost is shown in dollars.
+    # shortcut: a store mixing credit and dollar rows shows credits only; split
+    # the view per unit when a crew runs both harnesses side by side.
+    # Decided on the rows the headline sums: this window's session turns. The
+    # window before it may predate a harness switch, so a credit row there must
+    # not hold a window of dollar turns at zero; its amounts are then read as
+    # dollars too, and a prior window that billed none reads as no prior spend.
+    field, unit = "credits", "credits"
+    saw_cost = False
+    for obj, _ts_raw, ts_epoch in _window_rows():
+        row_slot = str(obj.get("slot") or "")
+        if ts_epoch < cutoff or (row_slot and not is_session_slot(row_slot)):
             continue
+        if _billed(obj, "credits"):
+            break
+        saw_cost = saw_cost or _billed(obj, "cost")
+    else:
+        if saw_cost:
+            field, unit = "cost", "usd"
+    # Dollars keep their cents; credits read to one decimal as before.
+    places = 4 if unit == "usd" else 1
+
+    for obj, ts_raw, ts_epoch in _window_rows():
+        raw_credits = obj.get(field)
+        # Shards written before the persist-side guard can already
+        # hold `NaN` / `Infinity` — `json.loads` accepts those bare
+        # tokens even though they are not valid JSON. Letting one
+        # through would poison every total it touches and make
+        # `web.json_response` emit a body no browser can parse, so
+        # the row is dropped rather than counted as free. A string
+        # or an int wider than a double is dropped the same way; a
+        # row with no credits is a turn that billed none.
+        credits = 0.0 if not raw_credits else _finite_number(raw_credits)
+        if credits is None:
+            continue
+        model = str(obj.get("model") or "unknown")
+        slot = str(obj.get("slot") or "")
+
+        # Dropped here, before ANY accumulator sees it, so every
+        # figure on the page is computed over one population. A
+        # subagent is a fragment of another session's turn rather
+        # than a session, and it carries no field pointing back at
+        # the session that spawned it, so it can be neither listed
+        # nor attributed. Filtering at the grouping step instead
+        # would leave it in the totals and force a reconciling
+        # footnote for money with no row.
+        if slot and not is_session_slot(slot):
+            continue
+
+        if ts_epoch < cutoff:
+            prev_tot["credits"] += credits
+            prev_tot["turns"] = int(prev_tot["turns"]) + 1
+            prev_model[model] = prev_model.get(model, 0.0) + credits
+            ch = telemetry_channel_of(slot or None)
+            prev_channel[ch] = prev_channel.get(ch, 0.0) + credits
+            cat = session_category(slot)
+            prev_category[cat] = prev_category.get(cat, 0.0) + credits
+            continue
+
+        cur_tot["credits"] += credits
+        cur_tot["turns"] = int(cur_tot["turns"]) + 1
+        if credits > float(priciest["credits"]):
+            priciest = {"credits": credits, "slot": slot, "ts": ts_raw}
+
+        for bucket, name in (
+            (by_model, model),
+            (by_channel, telemetry_channel_of(slot or None)),
+            (by_category, session_category(slot)),
+        ):
+            e = bucket.setdefault(name, {"name": name, "credits": 0.0, "turns": 0})
+            e["credits"] = float(e["credits"]) + credits
+            e["turns"] = int(e["turns"]) + 1
+
+        used = _coerce_int(obj.get("context_used"))
+        if used > 0 and credits > 0:
+            bands.setdefault(min(used // 200_000, 5), []).append(credits)
+
+        if slot:
+            c = convos.setdefault(
+                slot,
+                {
+                    "slot": slot,
+                    "credits": 0.0,
+                    "turns": 0,
+                    "peak_pct": 0.0,
+                    "first_ts": ts_epoch,
+                    "last_ts": ts_epoch,
+                    "_occ": [],
+                    "transcript": "",
+                },
+            )
+            if obj.get("transcript"):
+                c["transcript"] = str(obj["transcript"])
+            c["credits"] = float(c["credits"]) + credits
+            c["turns"] = int(c["turns"]) + 1
+            c["first_ts"] = min(float(c["first_ts"]), ts_epoch)
+            c["last_ts"] = max(float(c["last_ts"]), ts_epoch)
+            window = _coerce_int(obj.get("context_window"))
+            if used > 0 and window > 0:
+                pct = used / window * 100.0
+                c["peak_pct"] = max(float(c["peak_pct"]), pct)
+                c["_occ"].append((ts_epoch, pct))
 
     def _store(result: dict[str, Any]) -> dict[str, Any]:
         global _COST_CACHE, _COST_CACHE_KEY, _COST_CACHE_TS
@@ -229,7 +265,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
 
     def _per_turn(e: dict[str, Any]) -> float:
         t = int(e["turns"])
-        return round(float(e["credits"]) / t, 1) if t else 0.0
+        return round(float(e["credits"]) / t, places) if t else 0.0
 
     total = float(cur_tot["credits"])
 
@@ -240,7 +276,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
         for e in sorted(bucket.values(), key=lambda x: -float(x["credits"])):
             row = {
                 "name": e["name"],
-                "credits": round(float(e["credits"]), 1),
+                "credits": round(float(e["credits"]), places),
                 "turns": int(e["turns"]),
                 "per_turn": _per_turn(e),
                 "share_pct": round(float(e["credits"]) / total * 100, 1) if total else 0.0,
@@ -263,7 +299,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
             {
                 "label": f"{lo // 1000}k–{(lo + 200_000) // 1000}k" if idx < 5 else "1M+",
                 "turns": len(vals),
-                "mean_credits": round(sum(vals) / len(vals), 1),
+                "mean_credits": round(sum(vals) / len(vals), places),
             }
         )
 
@@ -313,7 +349,7 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
                 # still says whether it was a subagent, a cron or the heartbeat
                 # instead of becoming an anonymous lump.
                 "channel": telemetry_channel_of(c["slot"]),
-                "credits": round(float(c["credits"]), 1),
+                "credits": round(float(c["credits"]), places),
                 "turns": int(c["turns"]),
                 "peak_pct": round(float(c["peak_pct"]), 1),
                 "span_days": round((float(c["last_ts"]) - float(c["first_ts"])) / 86400, 1),
@@ -330,17 +366,21 @@ def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) 
     return _store(
         {
             "window_days": days,
-            "credits": round(total, 1),
+            # What every amount below is counted in: "credits", or "usd" when
+            # the window's turns were billed in dollars. The keys keep their
+            # `credits` names either way.
+            "unit": unit,
+            "credits": round(total, places),
             "turns": int(cur_tot["turns"]),
             "per_turn": _per_turn(cur_tot),
-            "prior_credits": round(prev_credits, 1),
+            "prior_credits": round(prev_credits, places),
             "prior_turns": int(prev_tot["turns"]),
             "prior_per_turn": _per_turn(prev_tot),
             "delta_pct": (
                 round((total - prev_credits) / prev_credits * 100, 0) if prev_credits > 0 else None
             ),
             "priciest": {
-                "credits": round(float(priciest["credits"]), 1),
+                "credits": round(float(priciest["credits"]), places),
                 "slot": priciest["slot"],
                 "ts": priciest["ts"],
             },

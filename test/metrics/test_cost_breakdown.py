@@ -391,3 +391,65 @@ class TestDegenerateInputs:
         monkeypatch.setattr(usage_mod, "_COST_CACHE", None)
         monkeypatch.setattr(usage_mod, "_COST_CACHE_KEY", None)
         assert usage_mod.cost_breakdown(7)["credits"] == 2.0
+
+
+def _dollar_row(*, slot, cost, model="claude-x", age_days=0.0):
+    """A turn as a dollar-billed harness records it: `cost` set, `credits` zero."""
+    row = _row(slot=slot, model=model, credits=0.0, age_days=age_days)
+    row["cost"] = cost
+    return row
+
+
+class TestSpendUnit:
+    def test_a_dollar_billed_window_is_summed_from_cost(self, store):
+        """A dollar-billed harness leaves `credits` at zero on every turn, so a
+        credits-only sum reported "no spend" for a window that cost real money.
+        """
+        store([
+            _dollar_row(slot="chat-1-1700000000", cost=0.0425),
+            _dollar_row(slot="chat-1-1700000000", cost=0.0175),
+            _dollar_row(slot="chat-2-1700000000", cost=0.30, age_days=10),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert out.get("credits") == pytest.approx(0.06)
+        assert out.get("prior_credits") == pytest.approx(0.30)
+        assert out.get("per_turn") == pytest.approx(0.03)
+        assert [r.get("credits") for r in out.get("by_model", [])] == [pytest.approx(0.06)]
+        assert out.get("conversations", [{}])[0].get("credits") == pytest.approx(0.06)
+
+    def test_any_credit_row_keeps_the_window_in_credits(self, store):
+        store([
+            _row(slot="chat-1-1700000000", credits=12.5),
+            _dollar_row(slot="chat-2-1700000000", cost=0.5),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "credits"
+        assert out.get("credits") == 12.5
+
+    def test_a_window_with_no_spend_at_all_stays_in_credits(self, store):
+        store([_row(slot="chat-1-1700000000", credits=0.0)])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "credits"
+        assert out.get("credits") == 0.0
+
+    def test_credits_before_a_harness_switch_do_not_hold_the_window_at_zero(self, store):
+        """The window before may predate a switch to a dollar-billed harness."""
+        store([
+            _row(slot="chat-1-1700000000", credits=40.0, age_days=10),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert out.get("credits") == pytest.approx(0.25)
+        assert out.get("prior_credits") == 0.0
+
+    def test_a_subagent_credit_row_does_not_decide_the_unit(self, store):
+        """A subagent row is left out of every figure, so it cannot pick the unit."""
+        store([
+            _row(slot="subagent:abc", credits=5.0),
+            _dollar_row(slot="chat-2-1700000000", cost=0.25),
+        ])
+        out = usage_mod.cost_breakdown(7)
+        assert out.get("unit") == "usd"
+        assert out.get("credits") == pytest.approx(0.25)

@@ -140,6 +140,12 @@ export type CostConvo = {
 
 export type Cost = {
   window_days: number
+  /**
+   * What every amount in this block is counted in. `usd` when the window's turns
+   * were billed in dollars; absent from an older gateway, which means credits.
+   * The amount keys keep their `credits` names either way.
+   */
+  unit?: 'credits' | 'usd'
   credits: number
   turns: number
   per_turn: number
