@@ -378,7 +378,7 @@ export default function FargateCrewView({
       {phase === 'stopped' && task && (
         <div className="text-[12px] text-center text-text" data-testid="deploy-task-stopped">
           {task.stopped_at != null && (
-            <div>{t('pages.membersPage.deploy_task_stopped_when', { age: deployAge(task.stopped_at) })}</div>
+            <div>{t('pages.membersPage.deploy_task_stopped_when', { age: deployAge(task.stopped_at, undefined, 'short') })}</div>
           )}
           {task.stopped_reason && (
             <div className="font-mono text-[11px] text-muted break-words" data-testid="deploy-task-stopped-reason">
