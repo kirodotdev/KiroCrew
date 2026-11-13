@@ -1126,9 +1126,16 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "system libraries and break the OS."
         ),
     ),
+    # The ``pipe-to-shell`` rows end the shell's name on a word boundary: the pipe
+    # target must BE ``sh`` / ``bash``, not a command that merely starts with those
+    # letters.  Without it ``curl -o f URL && cat f | sha256sum`` (a download and
+    # its checksum, which is the inspection the rule exists to protect) reads as
+    # ``| sh``; so do ``shasum``, ``shuf`` and ``shellcheck``.  Arguments, ``;``,
+    # ``)`` and end of input after the name are all boundaries, so every genuine
+    # ``| sh -s -- --yes`` form still matches.
     DeniedCommandRule(
         id="pipe-to-shell-curl-bash",
-        pattern="curl .* \\| bash",
+        pattern="curl .* \\| bash\\b",
         category="pipe-to-shell",
         description=(
             "Blocks piping a curl download directly into bash, which executes arbitrary remote "
@@ -1137,7 +1144,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     ),
     DeniedCommandRule(
         id="pipe-to-shell-curl-sh",
-        pattern="curl .* \\| sh",
+        pattern="curl .* \\| sh\\b",
         category="pipe-to-shell",
         description=(
             "Blocks piping a curl download directly into sh, which executes arbitrary remote "
@@ -1374,9 +1381,10 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             "with the file-editing tool and passed by path."
         ),
     ),
+    # Word boundary after the shell's name: see the ``pipe-to-shell-curl-*`` rows.
     DeniedCommandRule(
         id="pipe-to-shell-wget-bash",
-        pattern="wget .* \\| bash",
+        pattern="wget .* \\| bash\\b",
         category="pipe-to-shell",
         description=(
             "Blocks piping a wget download directly into bash, which executes arbitrary remote "

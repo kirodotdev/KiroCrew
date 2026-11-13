@@ -481,13 +481,13 @@
   },
   {
     "id": "pipe-to-shell-curl-bash",
-    "pattern": "curl .* \\| bash",
+    "pattern": "curl .* \\| bash\\b",
     "category": "pipe-to-shell",
     "description": "Blocks piping a curl download directly into bash, which executes arbitrary remote code with no chance to inspect the script first."
   },
   {
     "id": "pipe-to-shell-curl-sh",
-    "pattern": "curl .* \\| sh",
+    "pattern": "curl .* \\| sh\\b",
     "category": "pipe-to-shell",
     "description": "Blocks piping a curl download directly into sh, which executes arbitrary remote code with no chance to inspect the script first."
   },
@@ -637,7 +637,7 @@
   },
   {
     "id": "pipe-to-shell-wget-bash",
-    "pattern": "wget .* \\| bash",
+    "pattern": "wget .* \\| bash\\b",
     "category": "pipe-to-shell",
     "description": "Blocks piping a wget download directly into bash, which executes arbitrary remote code with no chance to inspect the script first."
   },
