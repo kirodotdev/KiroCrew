@@ -390,6 +390,30 @@ To find out which one you have:
 A server that is genuinely broken reads **Error** with the reason next to it, not
 **Not verified**.
 
+### Atlassian says "Access denied: Your organization admin"
+
+These messages come from Atlassian, not Kiro Crew: the organization's admin has
+limited Atlassian's MCP server and this install is not allowed yet. The wording
+below is quoted from Atlassian's docs; the fixes are made in Atlassian
+Administration under **Connectors → Atlassian MCP server**.
+
+- **"Access denied: Your organization admin must authorize access from
+  [redirect URI] to cloudId: [cloudId]."** The redirect address this install
+  signs in with is not on the organization's Domains list. The admin adds it
+  with **Add domain**. The Atlassian card shows the address under the warning
+  triangle beside **Connect**.
+- **"Access denied: Your organization admin has not authorized the [permission
+  name] permission."** The Read, Write or Search permission that call needs is
+  blocked for that app. The admin allows it on the **Permissions** tab; Atlassian
+  says the change applies at once, with no reconnect.
+
+The full list to hand the admin, including the IP allowlist and what the sign-in
+asks for, is the
+[Atlassian organization admin checklist](connections.md#atlassian-organization-admin-checklist).
+When the card instead says Atlassian refused the sign-in because it was either
+declined or not allowed by the organization's admin, start with the same
+checklist: Atlassian's `access_denied` answer means either.
+
 ### Dashboard not loading
 
 ```bash

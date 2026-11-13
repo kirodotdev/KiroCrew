@@ -1493,7 +1493,8 @@ or the entry's `dcr_client_name`) once per card in the vault entry
 (`none` first), and registers again when the redirect or issuer differs, the
 secret has expired, or after `invalid_client` (the card then asks to reconnect).
 Every authorize, token and refresh call sends `resource`; `offline_access` is
-asked for when listed; the callback's `iss` is checked. All DCR card sign-ins share
+asked for when listed; the callback's `iss` is checked (one that does not parse
+is a mismatch). All DCR card sign-ins share
 the loopback port `registry.DCR_CALLBACK_PORT` (48100, which no pre-registered
 entry may use) and `state` picks the pending sign-in. A gateway with a public
 HTTPS `dashboard.url` (never the request's `Host`) registers
@@ -1504,6 +1505,31 @@ a pending sign-in (constant-time) is the only admission, each `state` answers
 once and is gone after `SIGN_IN_TTL_SECS` (600 s), and the answer is a fixed
 HTML page with `Cache-Control: no-store` and `Referrer-Policy: no-referrer` that
 echoes no input. Each hit is SEL-audited (`connections_crew_oauth_callback`).
+A callback that carries an `error`, or no `code`, is a refusal, even beside a
+code: `crew_oauth.callback_refusal` maps the `error` value onto the closed RFC
+6749 §4.1.2.1 set (`callback_access_denied`, `callback_invalid_request`,
+`callback_unauthorized_client`, `callback_unsupported_response_type`,
+`callback_invalid_scope`, `callback_server_error`,
+`callback_temporarily_unavailable`), and any other value or none onto
+`callback_refused`. The mint row's reason is that code (`crew_oauth_<code>`),
+and nothing the vendor wrote (`error`, `error_description`, `error_uri`) reaches
+the row, the audit, a log line or the page. `access_denied` covers both a user
+who declined and an organization policy that blocks the client, so the card's
+copy names both. Every listener (the shared loopback, a pre-registered card's
+own port, the public route) answers through the same `SignIn._callback`.
+
+A registry entry with an `org_admin_guide` (a `<file>.md#<anchor>` docs
+section, DCR entries only; Atlassian today) gets `signInRedirect` on its
+`/api/connections/status` row, so a user can hand the address to an org admin
+who allowlists redirects: `{"exact": crew_oauth_dcr.redirect_uri()}` when
+Crew's sign-in serves the card (`crew_oauth.owns`, the check Connect makes, and
+the same call `prepare` registers with), else `{"anyPort": ["http://127.0.0.1",
+"http://localhost"]}` (`registry.REDIRECT_HOSTS`), because then Kiro CLI or the
+KAS engine runs the sign-in on a loopback listener of its own and Crew does not
+choose its port. The card shows it under the prerequisite in
+the triangle beside Connect, as selectable text, and a refused sign-in whose
+code an admin's policy can cause (`access_denied`, `unauthorized_client`,
+`invalid_scope`) links the guide.
 Moving between the loopback and the public redirect re-registers, by the
 redirect rule above. After a sign-in, KAS's own
 grant for that URL (deleted by name) and kiro-cli's files go when the census
