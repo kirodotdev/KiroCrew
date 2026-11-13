@@ -38,7 +38,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavOpen, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
-    appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
+    appsExpanded, toggleAppsExpanded, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry,
     setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
@@ -368,7 +368,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               {isMobile && (
                 <NavItem
                   path="#"
-                  label={slotOwners['quick-search'] ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
+                  label={quickSearchLauncher ? i18nT('app.open_command_bar') : i18nT('app.search_sessions_files_and_commands')}
                   icon={<SearchIcon size={20} />}
                   active={false}
                   collapsed={effectiveCollapsed}

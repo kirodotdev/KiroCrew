@@ -3255,6 +3255,8 @@ live in `dashboard/server_runtime/config_watch.py::_register_config_watch` — `
 `agent.model`, `agent.role_models.background`, `agent.log_level`
 (→ `handlers/updates_streams.py::apply_log_level_from_config`),
 `dashboard.dynamic_dashboard_cards` (→ `DashboardState.set_dynamic_cards_enabled`),
+`dashboard.command_bar_enabled` (→ a `config` refresh frame, since the shell reads it from
+the shared config query, which never goes stale on its own),
 `dashboard.terminal.enabled` (→ `handlers/terminal_lifecycle.py::apply_terminal_enabled`, run
 off the cycle like the provider switch below, since ending a shell can outlast the bound), and
 `agent.model_context_tokens` (→ `model_registry.apply_operator_windows`, process state of
@@ -3681,6 +3683,7 @@ class DashboardConfig:
     translucent_panels: str = ""   # the Translucent panels (Liquid Glass) switch: "on" | "off"; empty = never chosen on this workspace (the browser's own stored choice holds). See "Dashboard theme persistence" below.
     language: str = ""             # dashboard UI language, BCP-47 (e.g. "en", "zh-CN"); empty = auto-detect from the browser. See "Dashboard UI language" below.
     show_unread_dot: bool = True   # the per-row unread dot on sidebar session cards (Settings → Display → Sidebar); only a literal false hides it. Folder and aggregate unread counts are unaffected. PATCH-able via /api/config/kirocrew
+    command_bar_enabled: bool = True  # what the quick-search shortcut opens (Settings → Display → View): the Command Bar launcher, or with a literal false the search palette. Replaced the former `command-bar` app's enabled state; the boot cleanup carries a record's opt-out here (apps/builtin_fold.py). PATCH-able via /api/config/kirocrew
     folder_sort: str = "custom"    # sidebar folder order: "custom" (stored positions) | "name" (natural, 01. < 02. < 10.) | "created" (newest first). A view preference; never rewrites a folder's stored order. See "Sidebar folder order" below.
     session_sort: str = "date-desc" # sidebar session order: "date-desc" / "date-asc" (last activity), "created-desc" / "created-asc" (creation time), "name-asc" / "name-desc" (title), "manual" (the person's own drag order). A view preference; pinned rows keep their own order. See "Sidebar session order" below.
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed

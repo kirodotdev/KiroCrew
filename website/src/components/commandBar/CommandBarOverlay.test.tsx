@@ -430,13 +430,14 @@ describe('CommandBarOverlay rows', () => {
   })
 
   it('makes the recovery hint an actionable row, not just a statement', async () => {
-    // Stating the way back without offering it leaves the user to close, navigate to
-    // the App Store, find the app and disable it by hand.
+    // Stating the way back without offering it leaves the user to close, open
+    // Settings, find the Command Bar switch and turn it off by hand. The row opens
+    // that switch, highlighted.
     const onClose = mount()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'zzzznomatch' } })
-    const hint = await screen.findByText(/turn full search back on/)
+    const hint = await screen.findByText(/Open Settings to make the shortcut search them/)
     fireEvent.mouseDown(hint.closest('[role="option"]') as HTMLElement)
-    expect(navigate).toHaveBeenCalledWith('/apps/detail/command-bar')
+    expect(navigate).toHaveBeenCalledWith('/settings/display/view?highlight=display.use-command-bar')
     expect(onClose).toHaveBeenCalled()
   })
 
@@ -451,10 +452,10 @@ describe('CommandBarOverlay rows', () => {
         screen.getAllByRole('option').some(o => o.textContent?.includes('Toggle Theme')),
       ).toBe(true),
     )
-    expect(screen.queryByText(/turn full search back on/)).toBeNull()
+    expect(screen.queryByText(/Open Settings to make the shortcut search them/)).toBeNull()
     // With nothing matched, the dead end is real and the row appears.
     fireEvent.change(input, { target: { value: 'zzzznomatch' } })
-    expect(await screen.findByText(/turn full search back on/)).toBeTruthy()
+    expect(await screen.findByText(/Open Settings to make the shortcut search them/)).toBeTruthy()
   })
 
   it('Escape dismisses from a focusable sibling, not only from the input', async () => {

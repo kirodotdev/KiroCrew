@@ -4543,7 +4543,7 @@ entry and another navigation entry of the same name (a Customize tab) stay
 ambiguous. With `location_id`, a visible
 control carrying that id is the match before any name is compared, whatever
 its label reads in the page's current state (the top bar's Search reads "Open
-command bar" while an app owns the slot): `data-ui-location` on the control,
+command bar" while the Command Bar is on): `data-ui-location` on the control,
 or on a wrapper holding exactly one, or `data-guide-target` (`guide/trustRoot.ts`)
 for a row a shared primitive builds from its props, such as a Settings
 sub-page row (`SettingsSubNav` `guideTargetPrefix`, `settings.sub.<tab>.<key>`),

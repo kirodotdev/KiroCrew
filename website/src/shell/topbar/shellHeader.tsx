@@ -160,7 +160,7 @@ function NotificationsBellButton() {
 export function ShellHeader({ shell }: { shell: AppShell }) {
   const {
     connected, gatewayConnecting, updateAvailable, authRequired, gatewayStatusMsg, focusModeChord, focusModeExitMsgVisible, focusChromeInert, dispatch, colorTheme, resolvedMode, branding, avatar, isMobile, focusMode,
-    toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, slotOwners, commandPalette,
+    toggleFocusMode, focusActive, topPeek, topPeekSurface, topChromeShown, quickSearchLauncher, commandPalette,
     setKiroUsageOpen, kiroUsageState, usageSegmentHidden, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef, setReportProblemOpen,
     requestFeature, toggleNav, mobileSingle, membersRoute, membersBarPending, mobileNavOpen, topbarSearch,
@@ -360,13 +360,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             onClick={commandPalette.openPalette}
             {...uiLocation('shell.search')}
             className="glass-shadow glass-hover h-7 flex-1 min-w-0 px-3 text-muted hover:text-text transition-colors flex items-center justify-center gap-2 cursor-pointer"
-            /* The trigger has to describe the surface it actually opens. While an app
-               owns the quick-search slot the gesture opens a launcher -- typing runs
+            /* The trigger has to describe the surface it actually opens. While the
+               Command Bar is on the gesture opens a launcher -- typing runs
                commands and does not search the corpora this label promises -- so
                naming "search for anything" there is the most visible mispromise in
                the product. */
             aria-label={
-              slotOwners['quick-search']
+              quickSearchLauncher
                 ? i18nT('app.open_command_bar')
                 : i18nT('app.search_sessions_files_and_commands')
             }
@@ -376,13 +376,13 @@ export function ShellHeader({ shell }: { shell: AppShell }) {
             // the diff's own fix applied to two of three attributes. The owned branch
             // drops "(K)" because the chord is already printed in the visible label.
             title={
-              slotOwners['quick-search']
+              quickSearchLauncher
                 ? i18nT('app.open_command_bar')
                 : i18nT('app.search_everywhere_k')
             }
           >
             <span className="text-[13px] truncate min-w-0">
-              {slotOwners['quick-search']
+              {quickSearchLauncher
                 ? i18nT('app.k_run_a_command')
                 : i18nT('app.k_search_for_anything')}
             </span>

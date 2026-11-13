@@ -5337,12 +5337,6 @@
       "group_commands": "命令",
       "group_settings": "设置",
       "leave_scope": "返回全部命令",
-      "manifest": {
-        "use_case_1": "无需离开键盘，即可跳转到应用、设置、需要处理的会话，或发起新的代理请求。",
-        "configuration_1": "默认已启用：在任意位置按 Cmd+K 或 Ctrl+K，输入命令；使用“会话”范围可查找最近或匹配的对话。",
-        "display_name": "命令栏",
-        "description": "接管快捷搜索（Cmd+K / Ctrl+K）界面，改成启动器：输入命令，而不是搜索词。第一页只有应用命令、去处和系统设置，且不发任何请求，所以打字没有成本。会话和保存的产物变成需要进入的条目；启用期间无法搜索知识库、技能和提示词——想要回来就把它关掉。"
-      },
       "no_matches": "没有匹配项",
       "no_sessions": "没有匹配会话",
       "placeholder": "输入命令…",
@@ -5352,7 +5346,7 @@
       "title": "命令栏",
       "action_failed": "无法完成\"{{action}}\"。按 Enter 重试。",
       "working": "处理中…",
-      "other_search_hint": "这里搜不到知识库、技能和提示词 — 在应用中打开 Command Bar 即可恢复完整搜索",
+      "other_search_hint": "这里搜不到知识库、技能和提示词。打开设置，让快捷键改为搜索它们",
       "cmd_toggle_theme": "切换主题",
       "retry": "重试",
       "kind": {
@@ -19055,7 +19049,10 @@
         "remote_editor_host_save_failed": "无法保存 SSH 主机。请使用 dev-box 或 dev.example.com 这样的主机名，不带端口或路径。",
         "remote_editor_host_save_error": "无法保存 SSH 主机。",
         "show_topbar_search": "在顶栏显示搜索",
-        "show_topbar_search_desc": "在顶栏中间显示搜索框。关闭后，它的空间留给两侧的控件，窗口较窄时 CPU、MEM 和 DSK 读数也能留在顶栏上。搜索快捷键仍然可以打开搜索。快捷键关闭时，搜索框会一直显示。"
+        "show_topbar_search_desc": "在顶栏中间显示搜索框。关闭后，它的空间留给两侧的控件，窗口较窄时 CPU、MEM 和 DSK 读数也能留在顶栏上。搜索快捷键仍然可以打开搜索。快捷键关闭时，搜索框会一直显示。",
+        "command_bar": "使用命令栏",
+        "command_bar_desc": "Cmd+K 或 Ctrl+K 会打开命令栏：输入命令即可跳转到应用、设置或会话。关闭后，这个快捷键打开搜索面板，它还能搜索知识库、技能和提示词。",
+        "command_bar_save_failed": "无法保存命令栏设置。"
       },
       "importPanel": {
         "agent_data": "代理数据",

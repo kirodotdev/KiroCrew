@@ -136,7 +136,7 @@ class TestValidation:
         """
         src = _make_app_source(tmp_path)
         raw = json.loads((src / APP_MANIFEST_FILENAME).read_text())
-        raw["ui"] = {"overlays": [{"id": "command-bar", "replaces": "quick-search"}]}
+        raw["ui"] = {"overlays": [{"id": "launcher", "replaces": "quick-search"}]}
         (src / APP_MANIFEST_FILENAME).write_text(json.dumps(raw))
         errors = _validate_source_path(src)
         assert any("ui.overlays is not available to installed apps" in e for e in errors)

@@ -466,7 +466,7 @@ sidebar placement. Declaring one lets an enabled app take over a host surface:
 {
   "ui": {
     "overlays": [
-      { "id": "command-bar", "replaces": "quick-search" }
+      { "id": "my-launcher", "replaces": "quick-search" }
     ]
   }
 }

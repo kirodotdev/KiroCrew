@@ -36,4 +36,16 @@ _MIGRATED_BUILTINS: list[str] = [
     # module was not, and an install can carry either.
     "auto-triage-pipeline",
     "auto_triage_pipeline",
+    # The Command Bar is the dashboard's own quick-search launcher, in
+    # ``website/src/components/commandBar/``. Its app record carried the one
+    # thing the feature kept per install, whether it was on, so that moves to the
+    # setting named in _FOLDED_BUILTIN_SWITCHES before the record is removed.
+    "command-bar",
 ]
+
+# A migrated built-in whose enabled state was its feature's switch, mapped to the
+# ``dashboard`` config key that is the switch now. The boot cleanup writes a
+# record's opt-out there before removing the record (``apps/builtin_fold.py``).
+_FOLDED_BUILTIN_SWITCHES: dict[str, str] = {
+    "command-bar": "command_bar_enabled",
+}

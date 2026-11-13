@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from kiro_crew.apps import protected_app_state
+from kiro_crew.apps.builtin_fold import carry_folded_switch
 from kiro_crew.apps.discovery import discover_builtin_apps
 from kiro_crew.apps.manager_activation import _app_activation_denied
 from kiro_crew.apps.manager_records import (
@@ -90,11 +92,6 @@ logger = logging.getLogger("kiro_crew.apps.manager")
 _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
     {
         "projects",  # Task Runner
-        # Command Bar replaces the quick-search (Cmd+K) surface rather than adding
-        # a sidebar entry, so shipping it off leaves the gesture on the legacy
-        # palette and the launcher unseen. Disabling the app is what restores the
-        # old surface, which is the opt-out this exemption trades for.
-        "command-bar",
     }
 )
 
@@ -114,14 +111,12 @@ _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
 #
 # So a name belongs here only when both hold: a fresh install enables it (it is
 # in the set above), and existing installs were never in a position to choose.
-# ``command-bar`` qualifies because it was default-OFF at first registration for
-# those installs AND, replacing the quick-search surface rather than adding a
-# sidebar entry, it appears on no store or launcher surface they could have found
-# it on. An app already default-on when they installed it never qualifies.
+# An app already default-on when they installed it never qualifies.
 #
-# Entries are permanent, not cleaned up after a release: the marker is per
-# install, so a user restoring an old data home still gets the promotion once.
-_DEFAULT_ON_BACKFILL: frozenset[str] = frozenset({"command-bar"})
+# Empty since the one app it promoted, ``command-bar``, became a core setting: a
+# record of it still owed the promotion is read as on when that setting is carried
+# over (``apps/builtin_fold.py``), so dropping it here loses nobody's launcher.
+_DEFAULT_ON_BACKFILL: frozenset[str] = frozenset()
 
 
 @holds_app_record_locks
@@ -1024,6 +1019,22 @@ def migrated_builtin_cleanup_applies(name: str) -> bool:
     )
 
 
+def folded_switch_state(name: str, meta: InstalledApp) -> bool:
+    """The state a folded app's feature had for this user on the build that shipped it.
+
+    A record still owed its default-on promotion reads ``enabled: false``, but
+    ``backfill_default_on_builtins`` turned it on at that build's next start unless
+    the ``apps`` governance allowlist denied the app, so it reads as on here too.
+    The owner's own disable outranked that promotion on that build (the protected
+    store's disable is what every record read applies), so it reads as off.
+    """
+    if meta.enabled:
+        return True
+    if meta.defaultOnBackfilled or protected_app_state.owner_disabled(name):
+        return False
+    return _app_activation_denied(name) is None
+
+
 def cleanup_migrated_builtin(name: str) -> AppResult:
     """Remove orphaned builtin metadata after its functionality was folded into core.
 
@@ -1055,6 +1066,20 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
             ok=True,
             name=name,
             message="already migrated — standalone version is in place",
+        )
+
+    # The record is the only copy of a folded app's on/off state, so that state
+    # is written to its core setting first, and a failed write keeps the record
+    # for the next start to try again.
+    try:
+        carry_folded_switch(name, folded_switch_state(name, meta))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("cleanup_migrated_builtin: kept %s, its setting was not saved: %s", name, exc)
+        return AppResult(
+            ok=False,
+            name=name,
+            error=f"failed to save the setting that replaces this app: {exc}",
+            error_code="io_error",
         )
 
     # Perform cleanup — remove metadata files, preserve data/

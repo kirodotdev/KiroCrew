@@ -16,7 +16,7 @@ export const UI_CONDITIONS = {
   no_active_session: 'no session is open in the chat pane',
   no_schedules: 'no scheduled job exists yet',
   has_schedules: 'at least one scheduled job exists',
-  search_bar_unclaimed: 'no enabled app has claimed the top-bar search (an app that does turns it into its own launcher)',
+  search_bar_unclaimed: 'the Command Bar is off (Settings → Display → View); while it is on, the top-bar search opens the Command Bar launcher instead',
   session_open: 'a session is open in the chat pane',
   no_response_running: 'the open session is not answering right now (the control is disabled while a response runs)',
   empty_session: 'the open session has no messages yet',

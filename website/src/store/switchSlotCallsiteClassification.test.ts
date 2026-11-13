@@ -37,8 +37,8 @@ type Counts = { gesture: number; announced: number; keepTarget: number; plain: n
 const PINNED: Record<string, Counts> = {
   'src/shell/appShell.tsx': { gesture: 0, announced: 2, keepTarget: 0, plain: 0, reason: 'popout nav-intent suppliers announce; a forwarded intent or native deep link is not a gesture in this window, so neither marks one' },
   'src/apps/auto-improvement/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
-  'src/apps/command-bar/CommandBarOverlayRootRows.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },
-  'src/apps/command-bar/useCommandBarOverlayActivation.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'create path keeps target on the create/fetch race' },
+  'src/components/commandBar/CommandBarOverlayRootRows.tsx': { gesture: 2, announced: 2, keepTarget: 0, plain: 0, reason: 'attention row and recent row announce' },
+  'src/components/commandBar/useCommandBarOverlayActivation.ts': { gesture: 0, announced: 0, keepTarget: 1, plain: 0, reason: 'create path keeps target on the create/fetch race' },
   'src/apps/issue-radar/lib/agentSession.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 2, reason: 'awaited unwrap() flows with their own catch/recovery' },
   'src/apps/issue-radar/views/CrewPageView.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'awaited unwrap() with page-level error handling' },
   'src/apps/papyrus/CoAuthorPanel.tsx': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'panel binds to a slot supplied programmatically' },

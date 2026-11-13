@@ -1,7 +1,7 @@
 /**
  * The Command Bar's facade and the owners beside it.
  *
- * `CommandBarOverlay.tsx` stays the overlay's one import path (the `overlayRegistry`
+ * `CommandBarOverlay.tsx` stays the overlay's one import path (the `QuickSearchSurface`
  * lazy entry and every spec that mounts it import its default export), and calls each
  * owner hook at the point its code sits in the component's hook order. These pins keep
  * that shape honest:

@@ -635,6 +635,19 @@ export function useAppShell() {
   // quick-search gesture to the wrong surface. Only the newest generation may write.
   const appNavGenRef = useRef(0)
   const [slotOwners, setSlotOwners] = useState<SlotOwners>({})
+  // The quick-search launcher switch (`dashboard.command_bar_enabled`, Settings ->
+  // Display -> View), on unless the stored value is a literal `false`. Until the
+  // config has loaded, or when it cannot be read, the gesture opens the palette.
+  // `select` keeps the shell from re-rendering on every other config change.
+  const { data: commandBarSetting } = useQuery({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+    select: (cfg: { dashboard?: { command_bar_enabled?: boolean } }) => cfg.dashboard?.command_bar_enabled !== false,
+  })
+  const commandBarOn = commandBarSetting === true
+  // Whether the gesture opens a launcher rather than a search, for the labels on
+  // the controls that open it.
+  const quickSearchLauncher = commandBarOn || Boolean(slotOwners['quick-search'])
   const queryClient = useQueryClient()
   const refreshAppNav = useCallback((attempt = 0, joinPending = false) => {
     // Cancel any pending retry up-front so external triggers (the reconnect
@@ -1085,7 +1098,7 @@ export function useAppShell() {
     shellEntered, setShellEntered, mobileNavMounted, mobileNavX, mobileNavPanelRef, mobileNavScrimRef, shellRef,
     mobileNavScrim, closeMobileNavDrawer, setMembersBar, advertisedNavItems, sortedAppGroup, activeAppDragId,
     appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT, appsExpanded,
-    toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
+    toggleAppsExpanded, slotOwners, commandBarOn, quickSearchLauncher, appBadges, discoverBadges, railAppBadges, railAppRunStates, shortcutsOpen,
     setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, kiroUsageOpen, setKiroUsageOpen,
     kiroUsageState, usageSegmentHidden, kiroAccountEntry, metrics, capsuleCollapsed, setCapsuleCollapsed,
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,

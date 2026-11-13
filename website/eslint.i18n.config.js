@@ -1144,7 +1144,7 @@ export default [
               // above give -- and the name is deliberately long and specific rather
               // than a generic `warnSkip`, so a future helper elsewhere cannot
               // inherit this by accident. TWO definitions exist today:
-              // `src/apps/command-bar/contributedCommands.ts`, which renders nothing,
+              // `src/components/commandBar/contributedCommands.ts`, which renders nothing,
               // and `src/apps/fileMenuContributions.tsx`, the same shim for a refused
               // `contributes.fileMenuItems` row. The second REUSES this name rather
               // than adding a second global exemption for a differently-named shim:
@@ -1586,7 +1586,7 @@ export default [
   // third suppression channel this config does not count, which is exactly what
   // centralizing suppression here exists to prevent.
   {
-    files: ['src/apps/command-bar/sessionFolder.ts'],
+    files: ['src/components/commandBar/sessionFolder.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },

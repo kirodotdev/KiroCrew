@@ -99,6 +99,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         builtin_owns_installed,
         cleanup_migrated_builtin,
         detect_orphaned_builtins,
+        folded_switch_state,
         invalidate_orphan_cache,
         migrated_builtin_cleanup_applies,
         register_builtin_apps,
@@ -317,6 +318,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.apps.admission import (  # noqa: F401
         app_admission_denied,
+    )
+    from kiro_crew.apps.builtin_fold import (  # noqa: F401
+        carry_folded_switch,
     )
     from kiro_crew.apps.composer_action_grants import (  # noqa: F401
         composer_action_grant_row,
