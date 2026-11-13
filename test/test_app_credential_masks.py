@@ -34,9 +34,16 @@ _MODES = ("standard", "cc", "strict")
 _PREFIXES = (".kiro/crew", ".kirocrew")
 
 
+#: The real shipped-manifest reader, for the one test that pins what the built-ins declare.
+_SHIPPED_MANIFESTS = credential_masks._builtin_manifests
+
+
 @pytest.fixture(autouse=True)
-def _fresh_cache():
+def _fresh_cache(_floor_monkeypatch):
     credential_masks.clear_cache()
+    # Every other case reads only the manifests it writes, not what the built-ins ship.
+    # The floor's own patcher, so a test's ``monkeypatch.undo()`` cannot lift it.
+    _floor_monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
     yield
     credential_masks.clear_cache()
 
@@ -157,9 +164,10 @@ class TestManifest:
 
 
 class TestWhereDeclarationsAreRead:
-    def test_no_shipped_built_in_declares_a_mask(self):
-        """Every current user's sandbox is unchanged: the seam starts empty."""
-        assert credential_masks.declared_masks(installed=False) == {}
+    def test_the_shipped_built_ins_declare_exactly_the_notes_state_directory(self, monkeypatch):
+        """Notes keeps its token, registry and settings in a masked directory of its own."""
+        monkeypatch.setattr(credential_masks, "_builtin_manifests", _SHIPPED_MANIFESTS)
+        assert credential_masks.declared_masks(installed=False) == {"md-notebook": ("state/",)}
 
     def test_an_installed_app_declares_leaves_under_its_own_data_dir(self, home):
         _install(home, "demo", ["secrets.json", "keys/a.pem"])

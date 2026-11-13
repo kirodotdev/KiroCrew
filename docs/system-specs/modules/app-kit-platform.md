@@ -8083,7 +8083,10 @@ an entry at or beneath a directory entry is refused (`_overlap_error`; at runtim
 `valid_entries` drops the covered one and keeps the directory). Before each Linux spawn
 `sandbox_staging._materialize_declared_mask_dirs` creates every absent declared directory
 (0700) at its `data/` spelling, inside an `apps/<name>/data` that is already a real
-directory (install and update create it with `app_data_dir`). It never creates
+directory (install and update create it with `app_data_dir`), and at the move-aside
+spelling inside an `apps/.<name>-data-tmp` that exists: an agent started while the
+lifecycle holds the tree there gets its mask on the directory in that tree, and the mount
+stays on the directory when the tree moves back. It never creates
 `apps/<name>` or `data/` itself: the lifecycle moves `data/` aside and back by rename, and a
 `data/` made while it is away would turn the move back into a move into it (a keep-data
 uninstall restores with `shutil.move` once the app tree is gone). A link at any component

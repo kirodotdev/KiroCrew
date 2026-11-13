@@ -44,6 +44,8 @@ def home(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")
     monkeypatch.setattr(credential_masks, "config_dir", lambda: home)
+    # Only the manifests each case writes, not what the built-ins ship.
+    monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
     credential_masks.clear_cache()
     sandbox.reset_backend()
     yield home
@@ -107,6 +109,15 @@ class TestThePlanMasksTheDirectory:
         state = home / "apps" / "demo" / "data" / "state"
         assert f'(deny file-read* (subpath "{state}"))' in profile
 
+    def test_macos_denies_both_spellings_while_the_data_dir_is_moved_aside(self, home):
+        """A sandbox started mid-uninstall keeps the deny at ``data/`` for when it returns."""
+        data = _install(home, ["state/"])
+        aside = home / "apps" / ".demo-data-tmp"
+        data.rename(aside)
+        profile = sandbox._build_seatbelt_profile("standard")
+        for state in (data / "state", aside / "state"):
+            assert f'(deny file-read* (subpath "{state}"))' in profile, state
+
 
 @_POSIX_ONLY
 class TestSpawnPrep:
@@ -119,6 +130,18 @@ class TestSpawnPrep:
         assert oct((data / "state").stat().st_mode & 0o777) == oct(0o700)
         # Nothing is made at the move-aside spelling.
         assert not (home / "apps" / ".demo-data-tmp").exists()
+
+    def test_an_absent_directory_is_created_in_a_moved_aside_data_dir(self, home):
+        """An install or update holds ``data/`` at ``apps/.<app>-data-tmp/``; a sandbox
+        started then masks the declared directory there, and only there."""
+        data = _install(home, ["state/"])
+        aside = home / "apps" / ".demo-data-tmp"
+        data.rename(aside)
+        established: list[str] = []
+        created = sandbox._materialize_declared_mask_dirs(established)
+        assert created == [str(aside / "state")] and established == created
+        assert oct((aside / "state").stat().st_mode & 0o777) == oct(0o700)
+        assert not data.exists(), "the live data/ is the lifecycle's to move back"
 
     def test_without_a_data_dir_nothing_is_created(self, home):
         """``data/`` is the gateway's to create: the lifecycle moves it aside and back."""

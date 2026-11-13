@@ -1631,7 +1631,8 @@ read per spawn, which a static list cannot follow. A declared leaf is HIDDEN in 
 spawn plan, so `test_sandbox_governance_mask.py`'s pin that every tool-gate crew entry has
 a sandbox disposition holds for it. A directory entry (`"state/"`, seam level 7) is masked
 whole instead: a non-directory at its name refuses the spawn, the Linux spawn prep creates
-it when absent inside the app's existing `data/` (`sandbox_staging._materialize_declared_mask_dirs`)
+it when absent inside the app's existing `data/`, or inside the lifecycle's moved-aside
+`apps/.<name>-data-tmp/` while that holds the tree (`sandbox_staging._materialize_declared_mask_dirs`)
 so its mask is in place before the backend first writes into it, and its backend gets it back
 while it is absent or a real directory. The
 installed app tree is sandbox-writable, so an agent that rewrites an `app.json` drops

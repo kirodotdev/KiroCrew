@@ -718,6 +718,12 @@ def live_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     monkeypatch.setattr(sandbox, "_ssh_supports_accept_new", lambda: False)
     monkeypatch.setattr(sandbox, "_runtime_dir_is_durable", lambda _root: False)
+    # The tier lists below are the policy's own; a built-in's ``credentialMasks`` would add
+    # to them, so this host reads no shipped declaration.
+    from kiro_crew.apps import credential_masks
+
+    monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
+    credential_masks.clear_cache()
     return home
 
 

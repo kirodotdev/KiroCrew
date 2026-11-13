@@ -957,7 +957,7 @@ def test_pat_stays_under_crew_home_ignoring_md_notebook_home(monkeypatch, tmp_pa
     pat = server_mod._pat_file()
     # The PAT is under the crew data home, NOT the stray MD_NOTEBOOK_HOME.
     assert str(stray) not in str(pat), pat
-    assert pat == crew / "md-notebook-staging" / "pat", pat
+    assert pat == crew / "apps" / "md-notebook" / "data" / "state" / "pat", pat
     assert str(crew) in str(pat), pat
     # settings.json carries `autoSync` (authorizes unattended push), so like the
     # PAT it MUST stay under the crew data home behind the sensitive-path floor —

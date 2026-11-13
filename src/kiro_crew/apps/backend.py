@@ -1195,8 +1195,9 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # control available. What still bounds a forged cache there is provenance rather than
     # permissions: with ``require_policy_signature`` set in the admission policy, a document
     # nobody trusted is refused however it got onto disk.
-    # The app's OWN hidden state leaves (e.g. md-notebook's vault registry, PAT, and
-    # sync settings) are unmasked for exactly this spawn: the mask fences agent
+    # The app's OWN hidden state leaves core names in ``_APP_BACKEND_OWNED_LEAVES`` (none
+    # today: Notes declares its state in its manifest) are unmasked for exactly this
+    # spawn: the mask fences agent
     # subprocesses, but this backend is each leaf's only legitimate reader/writer, and
     # leaving the mask on breaks the app outright. Unlike the governance cache
     # these are the app's own read-write state, so the blanket "visible" meaning is the
@@ -1220,10 +1221,11 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # for this spawn only, on the same provenance.
     _visible = _visible + app_declared_readonly_targets(app_name, builtin=_admitted_builtin)
     if _shipped_md_notebook:
-        # Move legacy Notes state into the state directory before the backend reads it.
-        # Spawn prep runs the same move on sandboxed hosts; this call covers a host with no
-        # sandbox wrap (Windows). Marker-gated, so a second call is one stat. Until it is
-        # sealed the backend does not start, so no backend write can race the move.
+        # Move the Notes state into the app's data directory before the backend reads it.
+        # Spawn prep runs only the first move; this call runs both, the second only while
+        # no sandbox of an earlier build is alive. Marker-gated, so a second call is a stat
+        # and one directory sync. Until it is sealed, and the seal synced, the backend does
+        # not start, so no backend write can race the move.
         if not _md_notebook_state.sealed_default_legacy_state():
             logger.error(
                 "App %s: not starting until its one-time state move finishes (see the "
