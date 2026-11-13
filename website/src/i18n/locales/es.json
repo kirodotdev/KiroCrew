@@ -17134,7 +17134,20 @@
       "footprint_owner_only": "Solo el propietario de la crew puede ver las cifras de memoria.",
       "review_what_approve_does": "Aprobar: una sola copia lo ejecuta para todos los chats, fuera de su sandbox. Omitir: sigue ejecutándose dentro de cada chat.",
       "share_risk": "Fuera del sandbox, un servidor compartido puede leer y cambiar tus archivos, como un programa que inicias tú.",
-      "review_when_safe": "Aprueba un servidor si lo agregaste tú y el comando que se muestra es el que esperas."
+      "review_when_safe": "Aprueba un servidor si lo agregaste tú y el comando que se muestra es el que esperas.",
+      "cwd_question_title": "¿{{name}} trabaja con los archivos del proyecto en el que estás?",
+      "cwd_question_help": "Algunos servidores actúan sobre la carpeta donde corre el chat, por ejemplo un servidor de git, de archivos o de búsqueda de código. A otros les da igual, por ejemplo un servidor de Jira o de Slack.",
+      "cwd_question_why": "Un servidor compartido corre en una carpeta fija fuera de tu proyecto, compartida por todos los chats. Un servidor que trabaja con archivos del proyecto actuaría sobre el proyecto equivocado.",
+      "cwd_question_yes": "Sí, trabaja con la carpeta del proyecto",
+      "cwd_question_yes_hint": "Uno por chat, sin compartir.",
+      "cwd_question_no": "No, le da igual la carpeta",
+      "cwd_question_no_hint": "Una sola copia para todos los chats.",
+      "cwd_question_unsure": "No estoy seguro",
+      "cwd_question_unsure_hint": "Se toma como Sí. Es la opción segura.",
+      "cwd_kept_per_chat": "{{name}} sigue corriendo dentro de cada chat.",
+      "cwd_unanswered_hint": "Este servidor está compartido. ¿Trabaja con los archivos de tu proyecto?",
+      "cwd_unanswered_answer": "Responder",
+      "stub_error_cwd_unanswered": "Antes de compartir {{name}}, responde si trabaja con los archivos de tu proyecto."
     },
     "migrationPage": {
       "app_migration": "Migración de la app",

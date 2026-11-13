@@ -17134,7 +17134,20 @@
       "footprint_owner_only": "Seul le propriétaire de la crew voit les chiffres de mémoire.",
       "review_what_approve_does": "Approuver : une seule copie l’exécute pour tous les chats, hors de leur bac à sable. Ignorer : il continue de tourner dans chaque chat.",
       "share_risk": "Hors du bac à sable, un serveur partagé peut lire et modifier tes fichiers, comme un programme que tu lances toi-même.",
-      "review_when_safe": "Approuve un serveur si tu l’as ajouté toi-même et si la commande affichée est celle que tu attends."
+      "review_when_safe": "Approuve un serveur si tu l’as ajouté toi-même et si la commande affichée est celle que tu attends.",
+      "cwd_question_title": "{{name}} travaille-t-il sur les fichiers du projet où tu es ?",
+      "cwd_question_help": "Certains serveurs agissent sur le dossier où tourne le chat, par exemple un serveur git, de fichiers ou de recherche de code. D'autres s'en moquent, par exemple un serveur Jira ou Slack.",
+      "cwd_question_why": "Un serveur partagé tourne dans un dossier fixe hors de ton projet, partagé par tous les chats. Un serveur qui travaille sur les fichiers du projet agirait sur le mauvais projet.",
+      "cwd_question_yes": "Oui, il travaille sur le dossier du projet",
+      "cwd_question_yes_hint": "Un par chat, non partagé.",
+      "cwd_question_no": "Non, le dossier lui est égal",
+      "cwd_question_no_hint": "Une seule copie pour tous les chats.",
+      "cwd_question_unsure": "Je ne sais pas",
+      "cwd_question_unsure_hint": "Compté comme Oui. C'est le choix sûr.",
+      "cwd_kept_per_chat": "{{name}} continue de tourner dans chaque chat.",
+      "cwd_unanswered_hint": "Ce serveur est partagé. Travaille-t-il sur les fichiers de ton projet ?",
+      "cwd_unanswered_answer": "Répondre",
+      "stub_error_cwd_unanswered": "Avant de partager {{name}}, indique s'il travaille sur les fichiers de ton projet."
     },
     "migrationPage": {
       "app_migration": "Migration de l'app",

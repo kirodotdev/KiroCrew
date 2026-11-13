@@ -39,6 +39,39 @@ engine (`mcp_gateway/shareability.py::assess`) is pure — no IO, no config, no 
 
 The bulk stub action consults whichever of the two the global sharing switch makes true of a click, and it does so **server-side, inside the lock hold that performs the write** (`resolve_eligibility` on `POST /api/mcp-gateway/servers/stub`). The client sends candidate names and reads `stubbed` / `skipped` back. This is a placement decision, not a detail: a client can only answer for the moment it read its rows, while sharing is a separate switch another dashboard or the CLI can flip and the verdicts themselves move as measurements land. Deciding in the browser therefore leaves a window between the decision and the write, and each guard against that window — re-read the switch, bypass the query cache, compare-and-set the expected state — closes one instance while leaving the shape that produces them. Resolving inside the hold means one config state decides both, and the eligibility rule has exactly one implementation.
 
+## The working-folder question gates routing
+
+A routed server's backend runs in one fixed folder outside the session sandbox
+(`daemon/launch.py::_backend_work_dir` ignores the session's work dir on purpose:
+an in-sandbox caller must not steer an unsandboxed interpreter's cwd). A server that
+works on the project's files would therefore act on the wrong project once routed.
+No detector decides which servers do: the operator answers per server in MCP
+Management, and the answer is stored in `mcp_gateway.cwd_use` (`uses_cwd`,
+`not_used`, or absent for unanswered).
+
+- `POST /api/mcp-gateway/servers/stub` with `stub: true` refuses
+  (`409 cwd_unconfirmed`, or a `cwd_unconfirmed` skip under
+  `resolve_eligibility`) any server that is not one of Kiro Crew's own
+  (`mcp_cleanup.KIROCREW_BIN_MCP_SERVERS`, whose launch the rewriter re-derives
+  from the install) and is not answered `not_used`. That route is the only writer
+  of launch approvals, and the rewriter wraps a server only for an approved
+  launch, so an unanswered server never gets a live stub on any harness: kiro-cli
+  and KAS read the same overlay.
+- `_resolve_stub_servers` drops a server answered `uses_cwd`, so answering it
+  unroutes it at the next start.
+- A server routed before the question existed keeps its approval and keeps
+  running routed until answered. Its row asks once, and re-approving its launch
+  needs the answer.
+- The answer is keyed by server name. A renamed server is unanswered. A changed
+  launch is refused by the launch approval and runs in the session until it is
+  approved again; the stored answer carries over to that approval.
+- Third-party servers that advertise `kirocrew.caller-identity`, and stdio remote
+  proxies, are asked like any other: the extension says nothing about the folder,
+  and a proxy cannot be told apart from a local server by its command alone.
+
+The answer only gates routing today. Whether `work_dir` joins the pool signature
+for `uses_cwd` servers is a separate decision.
+
 ## Session-bound by construction, which is not the same as "ours"
 
 The `disqualified` reason `session_bound_by_construction` names a server that resolves the calling session from its own PROCESS — an env var, a pid walk — so one backend can only ever serve one session correctly. It is decided by which servers actually consume the injected caller block, not by matching a name against Kiro Crew's managed set, since keying it on authorship would disqualify a managed server that does consume the block. All nine managed servers (`kirocrew-core`, `kirocrew-cron`, `kirocrew-computer`, `kirocrew-dashboard`, `kirocrew-work`, `kirocrew-crew-log`, `kirocrew-debug`, `kirocrew-panel`, `kirocrew-guide`) advertise and consume the block, and all nine are in `_MANAGED_SERVERS_CALLER_AWARE`. Advertising is necessary but not sufficient for the shareable classification, and `kirocrew-computer` is the case that shows why: a caller the gateway cannot name proceeds under `unresolved:<pid>`, each CONNECTION gets its own namespace only from the per-connection nonce, an ADOPTED pre-nonce daemon injects none, and this classification is what `seed.py` turns into a config write. It qualifies because that separation is negotiated at the handshake rather than assumed — `gatewayd` advertises `tenant_nonce`, and a stub that asked to pool this server against a daemon that does not advertise it execs a per-session backend instead (`stub.must_degrade_nonce_blind`). A server that cannot make the guarantee would be named in `_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD` in `mcp_discovery_managed.py` and stay session-bound; that set is empty. The classification stays per-server because a new managed server starts unadopted.

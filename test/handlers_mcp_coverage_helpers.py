@@ -24,6 +24,23 @@ from kiro_crew.dashboard.handlers import mcp as mcp_mod
 # ── harness ─────────────────────────────────────────────────────────────
 
 
+def _with_cwd_answer(body: Any) -> Any:
+    """*body* answering "does not use the folder" when it routes one server.
+
+    Routing a server needs that answer (``mcp_gateway.cwd_use``); the tests built
+    on this double are about everything else the toggle checks, so they send it.
+    A body that states ``cwd_use`` itself is left as it is.
+    """
+    if (
+        isinstance(body, dict)
+        and body.get("stub") is True
+        and isinstance(body.get("name"), str)
+        and "cwd_use" not in body
+    ):
+        return {**body, "cwd_use": "not_used"}
+    return body
+
+
 def _request(
     body: Any = None,
     *,
@@ -53,6 +70,7 @@ def _request(
                 launch_approval.hash_command(body["name"], []), env_hash
             )
             body = {**body, "expected_launch": expected}
+        body = _with_cwd_answer(body)
         raw = json.dumps(body).encode() if body is not None else b""
         # Kept alive: ``api_mcp_server_detail`` reads uncapped
         # (``max_bytes=None``) and consumes ``request.json()``.

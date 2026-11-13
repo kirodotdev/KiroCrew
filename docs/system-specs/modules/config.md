@@ -1960,7 +1960,9 @@ a present value the reader cannot use takes the reader's value:
   as off and the roster as empty, and with `enabled: true` an omitted
   `poolable_servers` as an empty roster. `_resolve_stub_base` layers
   `MANAGED_STUB_FOLLOWERS` on top of that roster whenever `kirocrew-core` is
-  stubbed; `_resolve_stub_servers` applies `stub_overrides` to that base. Neither
+  stubbed; `_resolve_stub_servers` applies `stub_overrides` to that base, then
+  drops every server `mcp_gateway.cwd_use` answers `uses_cwd` (read by
+  `_resolve_cwd_use`). Neither
   the base nor the followers are ever written back to `stub_servers`.
 
 This list describes the build stage. Values that the read stage's schema

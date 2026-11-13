@@ -16268,7 +16268,20 @@
       "footprint_owner_only": "메모리 수치는 크루 소유자만 볼 수 있습니다.",
       "review_what_approve_does": "승인: 복사본 하나가 모든 채팅을 위해 이것을, 각 채팅의 샌드박스 밖에서 실행합니다. 건너뛰기: 각 채팅 안에서 계속 실행됩니다.",
       "share_risk": "샌드박스 밖에서는 공유 서버가 직접 실행한 프로그램처럼 파일을 읽고 변경할 수 있습니다.",
-      "review_when_safe": "직접 추가한 서버이고 표시된 명령이 예상한 것과 같다면 승인하세요."
+      "review_when_safe": "직접 추가한 서버이고 표시된 명령이 예상한 것과 같다면 승인하세요.",
+      "cwd_question_title": "{{name}}이(가) 지금 있는 프로젝트의 파일을 다루나요?",
+      "cwd_question_help": "어떤 서버는 채팅이 실행되는 폴더를 다룹니다. 예를 들어 git, 파일, 코드 검색 서버입니다. 어떤 서버는 폴더와 상관없습니다. 예를 들어 Jira나 Slack 서버입니다.",
+      "cwd_question_why": "공유된 서버는 프로젝트 밖의 고정된 폴더 하나에서 실행되고 모든 채팅이 함께 씁니다. 프로젝트 파일을 다루는 서버는 엉뚱한 프로젝트를 다루게 됩니다.",
+      "cwd_question_yes": "네, 프로젝트 폴더를 다룹니다",
+      "cwd_question_yes_hint": "채팅마다 따로 두고 공유하지 않습니다.",
+      "cwd_question_no": "아니요, 폴더와 상관없습니다",
+      "cwd_question_no_hint": "모든 채팅이 하나를 함께 씁니다.",
+      "cwd_question_unsure": "잘 모르겠음",
+      "cwd_question_unsure_hint": "\"네\"로 처리합니다. 안전한 선택입니다.",
+      "cwd_kept_per_chat": "{{name}}은(는) 계속 채팅마다 따로 실행됩니다.",
+      "cwd_unanswered_hint": "이 서버는 공유 중입니다. 프로젝트의 파일을 다루나요?",
+      "cwd_unanswered_answer": "답하기",
+      "stub_error_cwd_unanswered": "{{name}}을(를) 공유하기 전에 프로젝트의 파일을 다루는지 답해 주세요."
     },
     "migrationPage": {
       "app_migration": "앱 마이그레이션",

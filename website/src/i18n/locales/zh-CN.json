@@ -16268,7 +16268,20 @@
       "footprint_owner_only": "只有 crew 所有者可以查看内存数据。",
       "review_what_approve_does": "批准：为所有聊天只运行一份，在每个聊天的沙盒之外运行。跳过：它继续在每个聊天里各自运行。",
       "share_risk": "在沙盒之外，共享服务器可以像你自己启动的程序一样读取和修改你的文件。",
-      "review_when_safe": "如果服务器是你自己添加的，且显示的命令符合预期，再批准它。"
+      "review_when_safe": "如果服务器是你自己添加的，且显示的命令符合预期，再批准它。",
+      "cwd_question_title": "{{name}} 会处理你所在项目的文件吗？",
+      "cwd_question_help": "有些服务器会处理聊天所在的文件夹，比如 git、文件或代码搜索服务器。有些则不在乎，比如 Jira 或 Slack 服务器。",
+      "cwd_question_why": "共享的服务器在项目之外的一个固定文件夹里运行，所有聊天共用。会处理项目文件的服务器会处理错项目。",
+      "cwd_question_yes": "会，它处理项目文件夹",
+      "cwd_question_yes_hint": "每个聊天各用一份，不共享。",
+      "cwd_question_no": "不会，它不在乎哪个文件夹",
+      "cwd_question_no_hint": "所有聊天共用一份。",
+      "cwd_question_unsure": "不确定",
+      "cwd_question_unsure_hint": "按“会”处理，这样最安全。",
+      "cwd_kept_per_chat": "{{name}} 继续在每个聊天里各自运行。",
+      "cwd_unanswered_hint": "这个服务器已在共享。它会处理你项目的文件吗？",
+      "cwd_unanswered_answer": "回答",
+      "stub_error_cwd_unanswered": "共享前，请先回答 {{name}} 是否会处理你项目的文件。"
     },
     "migrationPage": {
       "app_migration": "应用迁移",
