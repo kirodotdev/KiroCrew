@@ -204,6 +204,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew._sqlite_compat import sqlite3  # noqa: F401
     from kiro_crew.artifacts import get_default_store  # noqa: F401
     from kiro_crew.config import live  # noqa: F401
+    from kiro_crew.config.fields import _coerce_bool  # noqa: F401
     from kiro_crew.config.loader import KiroCrewConfig  # noqa: F401
     from kiro_crew.config.loader import coerce_config_field  # noqa: F401
     from kiro_crew.config.loader import config_dir  # noqa: F401
