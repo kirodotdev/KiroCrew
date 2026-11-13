@@ -746,6 +746,20 @@ class TestMalformedConfigNeverClobbered:
         finally:
             await client.close()
 
+    async def test_add_on_a_commented_store_is_the_coded_409_not_malformed(self, sandbox, fake_sel):
+        """A JSONC store is valid: the add answers the same coded 409 the other
+        writers do, never the 500 that tells the user to remove the file."""
+        text = '{\n  // my servers\n  "mcpServers": {"keep": {"command": "node"}}\n}\n'
+        sandbox.kirocrew_json.write_text(text, encoding="utf-8")
+        client = await _client()
+        try:
+            resp = await client.post("/api/mcp/custom", json={"servers": {"weather": dict(_STDIO)}})
+            body = await resp.json()
+            assert (resp.status, body.get("code")) == (409, "mcp_config_has_comments"), body
+            assert sandbox.kirocrew_json.read_text(encoding="utf-8") == text
+        finally:
+            await client.close()
+
     async def test_add_refuses_non_object_mcpservers(self, sandbox, fake_sel):
         sandbox.kirocrew_json.write_text(json.dumps({"mcpServers": ["broken"]}))
         client = await _client()
