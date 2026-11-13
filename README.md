@@ -556,7 +556,6 @@ make this tool possible:
 <a href="https://github.com/ConstantineWang" title="Jiacheng Wang"><img src="https://github.com/ConstantineWang.png?size=64" width="64" height="64" alt="Jiacheng Wang" /></a>
 <a href="https://github.com/constevalsimon" title="constevalsimon"><img src="https://github.com/constevalsimon.png?size=64" width="64" height="64" alt="constevalsimon" /></a>
 <a href="https://github.com/coozgan" title="Joshyfruit"><img src="https://github.com/coozgan.png?size=64" width="64" height="64" alt="Joshyfruit" /></a>
-<a href="https://github.com/Copilot" title="{&quot;message&quot;:&quot;Not Found&quot;,&quot;documentation_url&quot;:&quot;https://docs.github.com/rest&quot;,&quot;status&quot;:&quot;404&quot;}Copilot"><img src="https://github.com/Copilot.png?size=64" width="64" height="64" alt="{&quot;message&quot;:&quot;Not Found&quot;,&quot;documentation_url&quot;:&quot;https://docs.github.com/rest&quot;,&quot;status&quot;:&quot;404&quot;}Copilot" /></a>
 <a href="https://github.com/cplieger" title="Christopher Plieger"><img src="https://github.com/cplieger.png?size=64" width="64" height="64" alt="Christopher Plieger" /></a>
 <a href="https://github.com/craigdneo" title="Craig Dahlinger"><img src="https://github.com/craigdneo.png?size=64" width="64" height="64" alt="Craig Dahlinger" /></a>
 <a href="https://github.com/cremich" title="Christian Bonzelet"><img src="https://github.com/cremich.png?size=64" width="64" height="64" alt="Christian Bonzelet" /></a>
