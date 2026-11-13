@@ -976,6 +976,11 @@ class KasHarness(MembershipHarness):
         every TLS call. kiro-cli sets the same default when it spawns KAS
         (``apply_node_system_ca_env`` in its ``launch.rs``), so the relay needs
         nothing from Crew.
+
+        Both routes get ``KIRO_DISABLE_SESSION_TITLE_LLM=true`` unless the
+        inherited env already sets it (``false`` included): it stops the engine's
+        own title request at a session's first prompt, a title Crew never reads
+        (acp-client.md, "No engine session titles on KAS").
         """
         from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
 
@@ -989,6 +994,7 @@ class KasHarness(MembershipHarness):
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_child_env_defaults(env)
+        env.setdefault("KIRO_DISABLE_SESSION_TITLE_LLM", "true")
 
     @property
     def verifies_agent_activation(self) -> bool:
