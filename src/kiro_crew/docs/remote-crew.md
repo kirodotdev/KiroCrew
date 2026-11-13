@@ -414,6 +414,7 @@ reports the first broken link, which is usually the whole answer.
 | What you see | What it means |
 |---|---|
 | `ssh_unreachable` / `ssm_unreachable` | The hub cannot reach the machine at all. Check the host alias and your key, or that the SSM agent is online. |
+| `ssh_client_missing` | The machine running Kiro Crew has no usable `ssh`, so nothing reached the remote host. Install the OpenSSH client (on Windows, the optional OpenSSH Client feature) or put `ssh` on the gateway's PATH, then reconnect. |
 | `ssm_target_missing` | SSM lists no managed node with this crew's `ssm_target`. If the instance was terminated or replaced (an Auto Scaling instance refresh gives it a new id), edit the crew and set `ssm_target` to the new id. Otherwise check the AWS profile and region, and that the instance has registered with SSM (agent running, instance profile granting `AmazonSSMManagedInstanceCore`). |
 | `ssm_access_denied` | Your AWS profile was refused `ssm:SendCommand` on the instance. Add the three SSM permissions under [SSH or SSM](#ssh-or-ssm-which-transport) to the profile's IAM policy. |
 | `ssm_user_unknown` | The **Remote user** does not exist on the instance (Ubuntu images use `ubuntu`, not `ec2-user`). Set **Remote user** in **Edit settings**. |
