@@ -19,6 +19,9 @@
     {"fn": "span_id", "kind": "subagent", "parts": ["3f9a1c2e4b5d6e7f8091a2b3c4d5e6f7", "f451c35f3109f976", 2], "expected": "6b01531db45b7903"},
     {"fn": "trace_id", "kind": "cron", "parts": ["job1", "run1", 1], "expected": "15eb38fba19967c709e224f17112707c"},
     {"fn": "span_id", "kind": "cron", "parts": ["job1", "run1", 1], "expected": "759ae658f4abfd07"},
-    {"fn": "span_id", "kind": "cron.outcome", "parts": ["job1", "run1", 1, ""], "expected": "c51bef712c8874e9"}
+    {"fn": "span_id", "kind": "cron.outcome", "parts": ["job1", "run1", 1, ""], "expected": "c51bef712c8874e9"},
+    {"fn": "trace_id", "kind": "session", "parts": ["dashboard:chat-1", "1763049600000000"], "expected": "a963ab48cf457bf77174981e18820f43"},
+    {"fn": "span_id", "kind": "session.open", "parts": ["dashboard:chat-1", "1763049600000000", 0], "expected": "55e430b2ff99197d"},
+    {"fn": "span_id", "kind": "session.compaction", "parts": ["dashboard:chat-1", "1763049600000000", 1], "expected": "db0e923748efed75"}
   ]
 }

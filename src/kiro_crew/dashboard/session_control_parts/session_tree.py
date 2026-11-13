@@ -979,6 +979,10 @@ async def adopt_target(
         outcome="allowed",
         detail={"previous_parent": previous_parent or "none"},
     )
+    from kiro_crew.dashboard.trace_binding import slot_session_key
+    from kiro_crew.tracing import sessions as trace_sessions
+
+    trace_sessions.adopted(slot_session_key(state, slot.key), slot_session_key(state, caller_key))
     await _note_in_transcript(state, slot, note)
     # Slot keys only, and deliberately no title. A title is conversation content -- it
     # is generated from the session's own messages -- so returning one to an LLM caller

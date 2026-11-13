@@ -1034,6 +1034,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # of the chat's skill scope that is due starts now, beside the claim, and
         # not beside that build, when the session's MCP servers are starting too.
         read_beside_claim(state, selected_binding[1] or "")
+    # The parent a new session's lifecycle span names (tracing), noted before the
+    # claim; the eager spawn's prefetch notes the same before its own.
+    from kiro_crew.dashboard.trace_binding import note_slot_lineage
+
+    note_slot_lineage(state, slot, session_key, creator=_crew_log_lineage(slot)[0])
     # The crew log this slot was last writing to, read BEFORE allocation
     # publishes the successor's id over it. A slot outlives its ACP session, so
     # when the session below cold-starts under a NEW id the crew log gains a new

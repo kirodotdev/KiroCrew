@@ -96,6 +96,7 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from kiro_crew.metrics.harness import ATTR_HARNESS, HARNESS_UNKNOWN, HARNESS_VALUES, harness_of
+from kiro_crew.tracing import sessions as trace_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +369,9 @@ async def record_session_started(
         )
     except Exception:
         logger.debug("session started counter failed", exc_info=True)
+    # After the cancellable hop for the counter's reason: a rolled-back start never
+    # existed, so it gets no span either.
+    trace_sessions.opened(session_key, provider, started_at, harness=harness)
 
 
 def started_trigger_of(session_key: str) -> str | None:
@@ -648,6 +652,7 @@ async def record_session_ended(session_key: str, *, end_reason: str) -> None:
         _emit_duration(session_key, time.time() - started_at, end_reason, harness)
     except Exception:
         logger.debug("session end emit failed", exc_info=True)
+    trace_sessions.closed(session_key, end_reason, started_at)
     # Consumed OUTSIDE the table lock and OFF the loop. Removing the file even when
     # the duration could not be emitted is deliberate -- the session is over, so its
     # crumb must not survive for the next boot to read as a crash. The path names
@@ -705,6 +710,7 @@ async def record_sessions_ended(session_keys: Iterable[str], *, end_reason: str)
             _emit_duration(key, ended_at - started_at, end_reason, harness)
         except Exception:
             logger.debug("session end emit failed", exc_info=True)
+        trace_sessions.closed(key, end_reason, started_at)
     try:
         await _unlink_generations(consumed)
     except BaseException:

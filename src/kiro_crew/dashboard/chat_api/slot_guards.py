@@ -183,6 +183,8 @@ async def _reset_slot_session_or_warn(
     # cold-started from the slot's CURRENT (committed) bindings, so the
     # committed-success answer is truthful for it.
     prior_provider = state.sessions.get_provider(session_key)
+    from kiro_crew.tracing import sessions as trace_sessions
+
     if _test_interleave is not None:
         # Inside the caller's locks, after it committed its new setting, before
         # the old session goes -- the span a concurrent teardown must be able to
@@ -191,8 +193,15 @@ async def _reset_slot_session_or_warn(
         # switches reach the teardown through here, and a point per handler is how
         # one of them ends up without one.
         await _test_interleave("switch:post_commit")
+    # The traced session this reset tears down, read before the awaits a
+    # successor can register in, so the switch span names it. Under the key the
+    # registry folds onto, which is the key its open and close spans carry.
+    from kiro_crew.dashboard.trace_binding import registry_key
+
+    traced_key = registry_key(state.sessions, session_key)
+    torn_down = trace_sessions.current(traced_key)
     try:
-        return await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+        verdict = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
     except Exception:
         if (
             prior_provider is not None
@@ -209,7 +218,12 @@ async def _reset_slot_session_or_warn(
         logger.exception(
             "Slot %s %s switch: old session teardown incomplete", slot.key, switch_kind
         )
+        trace_sessions.switched(traced_key, switch_kind, generation=torn_down)
         return None
+    if verdict:
+        # The switch reached the session (it was reset onto the new value).
+        trace_sessions.switched(traced_key, switch_kind, generation=torn_down)
+    return verdict
 
 
 async def _record_explicit_agent_selection(

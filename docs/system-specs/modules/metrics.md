@@ -1879,9 +1879,10 @@ task-review tab titled through the transcript its row recorded), plus the
 
 Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
 tracing RFC under `docs/request-for-change/`. This section covers what is built:
-session turns, sub-agent runs, the surface roots of the engines that start turns and
-Ultra Mode rounds, recorded to a local sink, and exported over OTLP/HTTP when a
-collector is named. The workflow root kind is not built yet. Tests: `test/tracing/`.
+session turns, sub-agent runs, each live session's lifecycle, the surface roots of
+the engines that start turns and Ultra Mode rounds, recorded to a local sink, and
+exported over OTLP/HTTP when a collector is named. The workflow root kind is not
+built yet. Tests: `test/tracing/`.
 
 **Switch.** `telemetry.traces_enabled`, default `false`, independent of
 `telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
@@ -2120,6 +2121,31 @@ carries ids, closed-vocabulary values and counts only: `kirocrew.work.action`,
 and on a report `status`, `reason` and the `pr` number. Never the goal, a title,
 acceptance, decision, summary or artifact text.
 
+**Session lifecycle** (`tracing/sessions.py`). Each live session, one generation of
+a Crew session key in the registry, gets a short trace of its own, apart from its
+turn traces and with the same `session.id`, so an ACP recycle keeps one session in
+a backend's session view:
+
+| Span | Emitted by | Carries |
+|---|---|---|
+| `kirocrew.session.open` | `metrics/sessions.py::record_session_started`, every surface | the root, zero length; `kirocrew.acp_session_id`, `kirocrew.session.harness`; for a worker, fork or channel-linked slot `kirocrew.parent_session_key_hash`, `kirocrew.session.relation` (`worker`, `fork`, `linked`) and a link to the parent's open span when it is live in this process |
+| `kirocrew.session.close` / `.reset` | `record_session_ended` / `record_sessions_ended` | `kirocrew.session.end_reason` (`END_REASONS`); named `.reset` for `reset` |
+| `kirocrew.session.compaction` | `session_parts/turn_context.py::_compact_session`, the funnel of both automatic triggers | its real length, `kirocrew.session.compaction_outcome` (the coordinator's answer, else `other`); `failed` and `cancelled` are errors |
+| `kirocrew.session.switch` | `chat_api/slot_guards.py::_reset_slot_session_or_warn` once the reset lands, in the generation read before the reset under the key the registry folds onto (a successor registered during its teardown has its own trace), and a live model switch once its caller's rebind check passes (`chat_api/slot_model.py`, `session_control_parts/model_switch.py`), in the generation read before its RPCs | `kirocrew.session.switch_kind`: `agent`, `conductor` (the Crew Mode migration's agent switch), `model`, `workspace`, `reasoning_effort` |
+| `kirocrew.session.adopt` | `session_adopt` and `session_handoff` once their tree edge lands | the new parent's hash and a link to its open span |
+
+The dashboard notes the parent before either allocation can register a session
+(`trace_binding.py::note_slot_lineage`, called by the first turn's claim in
+`turn_admission.py` and by the eager spawn's prefetch in `eager_spawn.py`): a
+creator only when this process minted the lineage (`_crew_log_lineage`), then
+`forked_from`, then the slot key a channel session is linked to. Slot keys are mapped
+to registry keys (`slot_session_key`). The ACP session id is kept only within
+`MAX_ACP_SESSION_ID_LEN` (`validation.bounded_session_id`). Children parent to the
+open span by id. A compaction a backend
+runs inside a turn is a step of that turn, not this span. A session already live
+when tracing was switched on has no open span, so its children name a parent nobody
+wrote until its next open.
+
 **Deterministic ids** (`tracing/ids.py`, vectors in
 `test/fixtures/tracing/id_conformance.json`):
 `H(kind, p1..pn) = sha256("kirocrew.v1|" + ns + "|" + kind + "|" + esc(p1) + ... )`,
@@ -2141,6 +2167,7 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `ultra round N` | `ultra, conductor, goal key, round, cont`; trace `trace.ultra`, the same inputs |
 | `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
 | `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
+| session lifecycle | `session.<event>, session_key, generation, n`; trace `trace.session, session_key, generation`. The generation is the registry start time in microseconds, so a resume after a restart is a new trace; `n` is 0 for open, close and reset and counts compaction, switch and adopt from 1 in this process |
 
 **Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook

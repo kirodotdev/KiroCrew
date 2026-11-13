@@ -1087,9 +1087,11 @@ async def switch_slot_agent(
         # torn down mid-stream. The helper's None verdict marks the degraded
         # post-pop teardown; a bool verdict is the reset outcome the ladder
         # reads.
+        # The Crew Mode migration's switch moves a root onto a new conductor.
+        switch_kind = "conductor" if caller.crew_mode_migration else "agent"
         try:
             reset_verdict = await _reset_slot_session_or_warn(
-                state, slot, session_key, switch_kind="agent"
+                state, slot, session_key, switch_kind=switch_kind
             )
         except BaseException:
             # The identity probe proved the pop never happened: the old
@@ -1131,7 +1133,7 @@ async def switch_slot_agent(
                 # the first-attempt guard prevents.
                 try:
                     reset_verdict = await _reset_slot_session_or_warn(
-                        state, slot, session_key, switch_kind="agent"
+                        state, slot, session_key, switch_kind=switch_kind
                     )
                 except BaseException:
                     _rollback_switch()
