@@ -12,7 +12,10 @@ lifecycle points. An app that declares no hooks is a no-op.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
+import threading
+from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1073,18 +1076,50 @@ async def _stop_spawned_backends() -> None:
     module lock — off the loop like every other blocking step.
     """
     names = await asyncio.to_thread(spawned_backend_names)
-    if not names:
-        return
+    if names:
+        await _stop_backends(names, subprocess_executor())
 
+
+#: Every backend stop a shutdown sweep has handed to a worker and that has not
+#: returned yet, with its app name, whichever sweep started it. A stop drops the
+#: backend's tracking and pidfile records before it signals, so once it runs,
+#: only this table still knows the stop is unfinished: the exit sweep waits on it
+#: before the hard exit. Added on the loop, dropped from the worker thread that
+#: finishes the stop.
+_unfinished_stops: dict[concurrent.futures.Future[bool], str] = {}
+_unfinished_stops_lock = threading.Lock()
+
+
+def _submit_stop(executor: Executor, name: str) -> concurrent.futures.Future[bool]:
+    future = executor.submit(stop_app_backend, name)
+    with _unfinished_stops_lock:
+        _unfinished_stops[future] = name
+    future.add_done_callback(_forget_stop)
+    return future
+
+
+def _forget_stop(future: concurrent.futures.Future[bool]) -> None:
+    with _unfinished_stops_lock:
+        _unfinished_stops.pop(future, None)
+
+
+async def _stop_backends(names: list[str], executor: Executor) -> None:
+    """Stop each of *names* on *executor*, concurrently, under one budget."""
     # Each stop signals a process group and waits on it — blocking syscalls,
     # so offloaded to the subprocess executor. All stops start CONCURRENTLY
     # under ONE shared deadline: awaiting them serially would multiply the
     # per-app SIGTERM grace by the number of apps and blow the gateway's
     # cooperative shutdown budget, so the supervisor's force-exit would orphan
     # every backend the sweep had not reached yet.
-    loop = asyncio.get_running_loop()
-    stops = [loop.run_in_executor(subprocess_executor(), stop_app_backend, name) for name in names]
-    gathered = asyncio.gather(*stops, return_exceptions=True)
+    await _await_stops([(name, _submit_stop(executor, name)) for name in names])
+
+
+async def _await_stops(stops: list[tuple[str, concurrent.futures.Future[bool]]]) -> None:
+    """Await *stops* (``(app name, future)``) under one budget, then log each result."""
+    names = [name for name, _ in stops]
+    gathered = asyncio.gather(
+        *(asyncio.wrap_future(future) for _, future in stops), return_exceptions=True
+    )
     try:
         # The gather is SHIELDED so a deadline overrun (or a cancellation of
         # this coroutine) releases the caller WITHOUT cancelling the stops.
@@ -1115,3 +1150,41 @@ async def _stop_spawned_backends() -> None:
             )
         elif result:
             logger.info("Stopped app backend on gateway shutdown: %s", name)
+
+
+async def stop_spawned_backends_at_exit() -> None:
+    """Finish every backend stop before the process exits, under one budget.
+
+    The gateway's exit path calls this after the graceful shutdown, whether that
+    finished or ran out of time. :func:`on_gateway_shutdown` is a dashboard cleanup
+    hook, and the web server runs its cleanup hooks only after its in-flight
+    requests have drained. A request that outlives the graceful budget (an open
+    ``/api/logs`` stream waits up to 30s between entries) means the budget cuts the
+    shutdown before any cleanup hook runs. The hard exit that follows would then
+    leave every spawned backend, with its sandbox wrapper, running under PID 1 and
+    still holding its port.
+
+    A stop drops the tracking and pidfile records before it signals, then waits up
+    to 5s before its SIGKILL escalation, and the hard exit ends any stop still in
+    that wait, or still queued, leaving a backend nothing records. So this awaits
+    two kinds of stop together. A stop the cleanup hook started and that is
+    already running is awaited where it runs. One still queued is cancelled: it
+    has not dropped its records, so its backend is still tracked. Every backend
+    still tracked is then stopped on its own worker, rather than a slot in the
+    shared subprocess pool, so every SIGTERM goes out at once. With nothing
+    running and nothing tracked, it returns at once.
+    """
+    with _unfinished_stops_lock:
+        unfinished = list(_unfinished_stops.items())
+    # ``cancel`` succeeds only on a stop no worker has picked up yet.
+    stops = [(name, future) for future, name in unfinished if not future.cancel()]
+    names = await asyncio.to_thread(spawned_backend_names)
+    if not names:
+        if stops:
+            await _await_stops(stops)
+        return
+    pool = ThreadPoolExecutor(max_workers=len(names), thread_name_prefix="mc-exit-backend-stop")
+    try:
+        await _await_stops(stops + [(name, _submit_stop(pool, name)) for name in names])
+    finally:
+        pool.shutdown(wait=False)
