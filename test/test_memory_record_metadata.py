@@ -141,6 +141,7 @@ def test_store_opens_when_legacy_rows_have_no_id_or_key(tmp_path, caplog):
         "INSERT INTO semantic_memory (key, value_json, source, created_at, updated_at) "
         "VALUES (NULL, '1', 'user_explicit', '2026-01-01', '2026-01-01')"
     )
+    meta.invalidate_marker(tier.db)  # the skip warning is logged by a full pass
     tier.db.commit()
     tier.close()
 

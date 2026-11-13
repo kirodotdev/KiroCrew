@@ -243,6 +243,11 @@ def test_a_populated_up_to_date_store_opens_while_another_connection_holds_the_w
         )
     finally:
         first.close()
+    # The writes above left rows for the next start's reconcile to check and mark;
+    # this start does that, so the traced one finds nothing to write.
+    settle = VectorMemoryStore(db_path=db_path)
+    settle.init()
+    settle.close()
 
     statements: list[str] = []
     monkeypatch.setattr(vector_memory, "sqlite3", _TracingSqlite(statements))
