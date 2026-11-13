@@ -751,7 +751,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Let code channels start helper agents (Slack)",
     "labelKey": "pages.settings.slackPanel.slackCode.code_channel_dispatch",
     "labelSuffix": "Slack",
-    "description": "Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
+    "description": "On by default when you first turn on Code channels. Helpers work in the code channel's folder and ask you before changing files, unless that channel is set to approve automatically (Trust).",
     "tab": "channels",
     "type": "toggle",
     "occurrence": 1,

@@ -2449,11 +2449,15 @@ create, `depth_exceeded` on a ledger goal/create; the channel's own ledger opens
 `MAX_DEPTH - 1`. The same record keeps a worker creator-fenced
 (`_caller_is_ownership_fenced`) when its transcript `created_by` has been edited away.
 
-**Opt-in.** `slack.code_channel_dispatch` defaults off, matching the base RFC's "every switch
-defaults off": a fresh or upgraded install's code-channel conductor cannot hand off work until
-the owner turns on **Let code channels start helper agents** under Code channels on the Slack Code
-card (hot-applied). Turning Code channels on never saves it on. With the default off, any
-lost value reads off; the degradation clause covers the remaining case, an unreadable file that
+**On with a first enable.** `slack.code_channel_dispatch` reads off when unset. A Slack settings
+save that newly turns Code channels on also stages it on
+(`slack_code_settings.dispatch_follows_enable`): only when Code channels are not saved on and
+`config.json` stores no dispatch value, and only when `config.local.json` does not set the key and
+can be read. A stored value is kept, so an explicit off survives and an existing or upgraded install
+changes nothing; an off chosen in the enabling save is stored as an explicit off. The GET reports
+`code_channel_dispatch_on_enable` so the card turns the sub-toggle on with the switch before the save.
+The owner can still turn it off under Code channels on the Slack Code card (hot-applied). With an
+unset value reading off, any lost value reads off; the degradation clause covers the remaining case, an unreadable file that
 held an opt-out shadowing an opt-in in the other file (either file as a directory or a dangling
 symlink counts as unreadable, not absent, and is fingerprinted apart from a missing file). When
 `config.local.json` sets the key, or cannot be read, the card disables the toggle and says so,

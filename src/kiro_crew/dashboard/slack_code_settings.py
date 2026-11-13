@@ -40,9 +40,11 @@ from kiro_crew.slack import scope_probe
 # registering one there needs nothing here.
 #: The ``code_channel_defaults`` keys the PUT accepts.
 DEFAULT_KEYS: tuple[str, ...] = ("folder", "agent", "model", "reasoning_effort", "approval_mode")
-#: ``slack.code_channel_dispatch``: the opt-in sub-toggle under Code channels
-#: ("Let code channels start helper agents"). Off by default; hot-applied like the
-#: switches, through the live config watcher.
+#: ``slack.code_channel_dispatch``: the sub-toggle under Code channels ("Let code
+#: channels start helper agents"). Off when unset; a save that newly turns Code
+#: channels on also turns it on unless a value is already stored (see
+#: :func:`dispatch_follows_enable`). Hot-applied like the switches, through the
+#: live config watcher.
 DISPATCH_KEY = "code_channel_dispatch"
 #: The model picker's "pin nothing, inherit" spelling; stored as unset.
 _INHERIT_MODEL = "auto"
@@ -123,6 +125,36 @@ def _dispatch_overlay_pins() -> bool:
     """Whether ``config.local.json`` may set ``slack.code_channel_dispatch`` (an
     unreadable overlay counts: what it holds is unknown)."""
     return _dispatch_overlay_state() != "absent"
+
+
+def dispatch_follows_enable(stored: Mapping[str, Any]) -> bool:
+    """Whether a save that turns Code channels on in *stored* (the ``slack``
+    section of ``config.json``) also turns helper agents on.
+
+    Only for a first enable: Code channels not saved on, and no dispatch value
+    stored, so an explicit off (and any value an existing install saved) is
+    kept. ``config.local.json`` is checked by the caller: a value it sets wins,
+    and one it may set (unreadable) is unknown, so neither gets a base write.
+    """
+    return stored.get(slack_manifest.CODE_CHANNELS) is not True and DISPATCH_KEY not in stored
+
+
+def _dispatch_on_enable() -> bool:
+    """:func:`dispatch_follows_enable` on the files as they are now, for the
+    card; ``False`` (helpers stay as shown) when either file cannot be read."""
+    from kiro_crew.config.loader import config_path, read_config_for_update
+
+    if _dispatch_overlay_state() != "absent":
+        return False
+    try:
+        data = read_config_for_update(config_path())
+    except Exception:
+        return False
+    if not isinstance(data, dict):
+        return False
+    # A non-object ``slack`` section is rebuilt as ``{}`` by the save, as here.
+    slack = data.get("slack")
+    return dispatch_follows_enable(slack if isinstance(slack, dict) else {})
 
 
 def _folders(state: Any) -> list[dict[str, Any]]:
@@ -277,9 +309,12 @@ async def code_settings_view(cfg: Any, state: Any) -> dict[str, Any]:
         switches[f"{feature}_capability"] = _capability(feature)
     return {
         **switches,
-        # The code-channel dispatch sub-toggle: a plain opt-in under Code channels,
-        # with no manifest scope of its own, so it is not a registered switch.
+        # The code-channel dispatch sub-toggle under Code channels, with no
+        # manifest scope of its own, so it is not a registered switch.
         DISPATCH_KEY: getattr(getattr(cfg, "slack", None), DISPATCH_KEY, False) is True,
+        # Turning Code channels on now would also turn helper agents on (nothing
+        # stored, no overlay), so the card can show that before the save.
+        f"{DISPATCH_KEY}_on_enable": await asyncio.to_thread(_dispatch_on_enable),
         # ``config.local.json`` sets it: a save writes the base file, which the
         # overlay wins over, so the card disables the toggle and the PUT refuses.
         f"{DISPATCH_KEY}_overlay": await asyncio.to_thread(_dispatch_overlay_pins),
@@ -384,8 +419,9 @@ async def validate_code_settings(
         if val != (stored.get(key) is True):
             staged[key] = val
             applied.append(key)
-    # Saved only when the body names it: turning Code channels on never saves
-    # dispatch on (it is its own opt-in).
+    # A first enable of Code channels turns helper agents on with it; a value
+    # already stored (an explicit off included) is kept.
+    enabling = staged.get(slack_manifest.CODE_CHANNELS) is True and dispatch_follows_enable(stored)
     if DISPATCH_KEY in body:
         val = body.get(DISPATCH_KEY)
         if not isinstance(val, bool):
@@ -406,9 +442,15 @@ async def validate_code_settings(
                 f"(slack.{DISPATCH_KEY}) is unknown; fix the file and try again",
                 status=409,
             )
-        if val != (stored.get(DISPATCH_KEY) is True):
+        # On a first enable an off is stored too, so a later enable keeps it.
+        if val != (stored.get(DISPATCH_KEY) is True) or enabling:
             staged[DISPATCH_KEY] = val
             applied.append(DISPATCH_KEY)
+    elif enabling and await asyncio.to_thread(_dispatch_overlay_state) == "absent":
+        # Only with no overlay: one that sets the key wins over this write, and
+        # one that cannot be read may, so helpers are left as the files say.
+        staged[DISPATCH_KEY] = True
+        applied.append(DISPATCH_KEY)
 
     if "code_channel_defaults" not in body:
         return staged, applied

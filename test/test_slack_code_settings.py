@@ -193,16 +193,137 @@ class TestSwitches:
 
 
 class TestDispatchSubToggle:
-    """``slack.code_channel_dispatch``: its own opt-in under Code channels."""
+    """``slack.code_channel_dispatch``: the sub-toggle under Code channels."""
 
-    def test_reads_off_and_turning_code_channels_on_does_not_save_it_on(self, env: dict) -> None:
+    def test_newly_turning_code_channels_on_turns_helpers_on(self, env: dict) -> None:
         _, body = _call(env, "GET")
         assert body["code_channel_dispatch"] is False
-        status, _ = _call(env, "PUT", {"code_channels": True})
+        assert body["code_channel_dispatch_on_enable"] is True
+        status, res = _call(env, "PUT", {"code_channels": True})
         assert status == 200
+        assert _stored(env)["code_channel_dispatch"] is True
+        ok = [c for c in env["sel"].calls if c["outcome"] == "ok"]
+        assert "code_channel_dispatch" in ok[-1]["resources"].split(",")
+        _, body = _call(env, "GET")
+        assert body["code_channels"] is True and body["code_channel_dispatch"] is True
+        assert body["code_channel_dispatch_on_enable"] is False
+
+    @pytest.mark.parametrize("landed", [False, True])
+    def test_a_value_stored_after_the_snapshot_is_kept_on_enable(
+        self, env: dict, monkeypatch: pytest.MonkeyPatch, landed: bool
+    ) -> None:
+        """A ``kirocrew config set`` that lands between the save's read and its
+        locked write is kept: helpers are re-decided on the document written."""
+        real = loader.update_config_locked
+        raced: list[bool] = []
+
+        def _cli_set_first(path: Path, *a: Any, **kw: Any) -> Any:
+            if not raced:
+                raced.append(True)
+                data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+                data.setdefault("slack", {})["code_channel_dispatch"] = landed
+                path.write_text(json.dumps(data), encoding="utf-8")
+            return real(path, *a, **kw)
+
+        monkeypatch.setattr(loader, "update_config_locked", _cli_set_first)
+        assert _call(env, "PUT", {"code_channels": True})[0] == 200
+        assert raced
+        assert _stored(env)["code_channels"] is True
+        assert _stored(env)["code_channel_dispatch"] is landed
+        ok = [c for c in env["sel"].calls if c["outcome"] == "ok"]
+        assert "code_channel_dispatch" not in ok[-1]["resources"].split(",")
+
+    def test_a_failed_env_write_undoes_helpers_turned_on_by_the_enable(
+        self, env: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def _accept(key: str, token: str) -> None:
+            return None
+
+        async def _env_fails(updates: dict) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mod, "_validate_slack_token", _accept)
+        monkeypatch.setattr(mod, "_write_env_off_loop", _env_fails)
+
+        async def _put() -> int:
+            app = web.Application()
+            app["state"] = env["state"]
+            app.router.add_put("/api/slack/config", mod.api_slack_config_save)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.put(
+                    "/api/slack/config", json={"code_channels": True, "bot_token": "xoxb-test"}
+                )
+                return resp.status
+
+        assert asyncio.run(_put()) >= 400
+        stored = json.loads(env["cfg"].read_text(encoding="utf-8")) if env["cfg"].exists() else {}
+        assert "code_channel_dispatch" not in stored.get("slack", {})
+        assert stored.get("slack", {}).get("code_channels") is not True
+
+    def test_an_existing_install_keeps_its_stored_value(self, env: dict) -> None:
+        """Code channels already on with nothing stored: an upgrade flips nothing."""
+        env["cfg"].write_text(json.dumps({"slack": {"code_channels": True}}), encoding="utf-8")
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch"] is False
+        assert body["code_channel_dispatch_on_enable"] is False
+        assert _call(env, "PUT", {"code_channels": True, "show_thinking": True})[0] == 200
         assert "code_channel_dispatch" not in _stored(env)
         _, body = _call(env, "GET")
+        assert body["code_channel_dispatch"] is False
+
+    def test_an_explicit_off_is_kept_when_code_channels_are_turned_on(self, env: dict) -> None:
+        env["cfg"].write_text(
+            json.dumps({"slack": {"code_channels": False, "code_channel_dispatch": False}}),
+            encoding="utf-8",
+        )
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch_on_enable"] is False
+        assert _call(env, "PUT", {"code_channels": True})[0] == 200
+        assert _stored(env)["code_channel_dispatch"] is False
+        _, body = _call(env, "GET")
         assert body["code_channels"] is True and body["code_channel_dispatch"] is False
+
+    def test_an_off_saved_with_the_enabling_save_is_stored_as_explicit(self, env: dict) -> None:
+        """Turning helpers off in the same save is recorded, so a later enable keeps it."""
+        status, _ = _call(env, "PUT", {"code_channels": True, "code_channel_dispatch": False})
+        assert status == 200
+        assert _stored(env)["code_channel_dispatch"] is False
+        _call(env, "PUT", {"code_channels": False})
+        _call(env, "PUT", {"code_channels": True})
+        assert _stored(env)["code_channel_dispatch"] is False
+
+    @pytest.mark.parametrize(
+        "text", ["{ torn", "[]", '{"slack": {"code_channel_dispatch": "yes"}}']
+    )
+    def test_an_unreadable_or_malformed_config_reads_off(self, env: dict, text: str) -> None:
+        env["cfg"].write_text(text, encoding="utf-8")
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch"] is False
+        assert body["code_channel_dispatch_on_enable"] is False
+
+    def test_a_non_object_slack_section_is_a_first_enable_on_card_and_save(self, env: dict) -> None:
+        """The save rebuilds a non-object section as ``{}``; the card says the same."""
+        env["cfg"].write_text('{"slack": null}', encoding="utf-8")
+        _, body = _call(env, "GET")
+        assert body["code_channel_dispatch"] is False
+        assert body["code_channel_dispatch_on_enable"] is True
+        assert _call(env, "PUT", {"code_channels": True})[0] == 200
+        assert _stored(env)["code_channel_dispatch"] is True
+
+    def test_an_overlay_that_cannot_be_read_leaves_helpers_off_on_enable(self, env: dict) -> None:
+        """config.local.json may hold the value that wins: enabling Code channels
+        still saves, and does not write a base value it cannot vouch for."""
+        overlay = loader.config_local_path()
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        overlay.write_text("{ torn", encoding="utf-8")
+        try:
+            _, body = _call(env, "GET")
+            assert body["code_channel_dispatch_on_enable"] is False
+            assert _call(env, "PUT", {"code_channels": True})[0] == 200
+            assert _stored(env)["code_channels"] is True
+            assert "code_channel_dispatch" not in _stored(env)
+        finally:
+            overlay.unlink()
 
     @pytest.mark.parametrize("on", [True, False])
     def test_saves_hot_and_reads_back(self, env: dict, on: bool) -> None:
@@ -245,6 +366,8 @@ class TestDispatchSubToggle:
             assert "code_channel_dispatch" not in (base.get("slack") or {}), "nothing staged"
             # Other Slack Code fields still save.
             assert _call(env, "PUT", {"code_channels": True})[0] == 200
+            # The overlay wins, so enabling writes no base value under it.
+            assert "code_channel_dispatch" not in _stored(env)
             overlay.write_text("{ torn", encoding="utf-8")
             _, body = _call(env, "GET")
             assert body["code_channel_dispatch_overlay_state"] == "unreadable"
