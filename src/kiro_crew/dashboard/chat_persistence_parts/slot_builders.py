@@ -115,7 +115,9 @@ def _prefetch_rehydrate_inputs(
         # The transcript key is "dashboard:" + slot name; identity is a
         # property of the slot name.
         _member_restore_identity(history_key.removeprefix("dashboard:")),
-        _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta),
+        _restored_agent_name(
+            _metadata_codec.own_linked_session_key(meta, history_key) or history_key, meta
+        ),
         _has_validated_effort_marker(meta.get("reasoning_effort")),
     )
 
@@ -803,7 +805,7 @@ async def _rehydrate_slot_from_history_noted(
     # ``dashboard:`` session that does not exist.
     _claims = await asyncio.to_thread(
         _read_mcp_app_claims,
-        session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
+        session_key_for(slot_name, _metadata_codec.own_linked_session_key(meta, history_key)),
     )
     # Tab-close race: the close records its tombstone at once but persists
     # ``closed`` after its own awaits, so this metadata may still say open and a
@@ -976,7 +978,7 @@ def _prefetch_recent_session(
     slot_name = _recent_session_slot_name(key) or ""
     member_identity = _member_restore_identity(slot_name)
     agent = _restored_agent_name(
-        str(meta.get("linked_session_key") or slot_transcript_key(slot_name or key)),
+        _metadata_codec.own_linked_session_key(meta, key) or slot_transcript_key(slot_name or key),
         meta,
     )
     effort_marker = _has_validated_effort_marker(meta.get("reasoning_effort"))

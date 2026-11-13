@@ -537,14 +537,14 @@ def test_restored_aliases_rejoin_one_binding(tmp_path, monkeypatch):
         state,
         a,
         {"linked_session_key": KEY, "project": str(tmp_path / "p")},
-        codec.Restore(name="a"),
+        codec.Recent(name="a", history_key=KEY),
     )
     b = state.get_or_create_slot("b")
     codec.apply(
         state,
         b,
         {"linked_session_key": KEY, "project": str(tmp_path / "p")},
-        codec.Restore(name="b"),
+        codec.Recent(name="b", history_key=KEY),
     )
 
     assert a._binding is b._binding
@@ -563,7 +563,7 @@ def test_a_restored_tab_seeds_an_unseeded_live_alias(tmp_path, monkeypatch):
         state,
         restored,
         {"linked_session_key": KEY, "project": str(tmp_path / "disk")},
-        codec.Restore(name="r"),
+        codec.Recent(name="r", history_key=KEY),
     )
 
     assert restored._binding is fallback._binding
@@ -580,7 +580,7 @@ def test_a_restored_tab_gives_an_unseeded_live_alias_its_threshold(tmp_path, mon
         state,
         restored,
         {"linked_session_key": KEY, "autocompact_pct": 40.0},
-        codec.Restore(name="r"),
+        codec.Recent(name="r", history_key=KEY),
     )
 
     assert fallback.autocompact_pct == restored.autocompact_pct == 40.0
@@ -597,7 +597,7 @@ def test_a_restored_tab_keeps_a_live_aliases_threshold(tmp_path, monkeypatch):
         state,
         restored,
         {"linked_session_key": KEY, "autocompact_pct": 70.0},
-        codec.Restore(name="r"),
+        codec.Recent(name="r", history_key=KEY),
     )
 
     assert live.autocompact_pct == restored.autocompact_pct == 40.0
@@ -615,7 +615,7 @@ def test_a_restored_tab_keeps_a_live_aliases_clear(tmp_path, monkeypatch):
         state,
         restored,
         {"linked_session_key": KEY, "project": str(tmp_path / "old")},
-        codec.Restore(name="r"),
+        codec.Recent(name="r", history_key=KEY),
     )
 
     assert live.project == restored.project == ""
@@ -635,7 +635,7 @@ def test_seeding_a_running_alias_arms_its_reset(tmp_path, monkeypatch):
         state,
         restored,
         {"linked_session_key": KEY, "project": str(tmp_path / "disk")},
-        codec.Restore(name="r"),
+        codec.Recent(name="r", history_key=KEY),
     )
 
     assert fallback.project == str(tmp_path / "disk")
