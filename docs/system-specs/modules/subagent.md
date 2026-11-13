@@ -3179,6 +3179,15 @@ per-sub-agent completion note. Dashboard chat only.
   mixed-turn leak notice (`should_notice_mixed_turn_leak`): earlier calls may
   already have taken effect, so the outcome stays `completed`, nothing is
   re-issued, and a failed or stopped run is not flagged.
+- **An unverified model pin** — a completed run whose effective pin
+  (`requested_model`) is set, not `auto`, while `resolved_model` is still `""`
+  (`SubagentInfo.served_model_unverified`) gets one ``⚠ Agent `<id>` has its
+  served model unverified…`` line on the lone completion event and under its
+  digest entry, a `served_model_unverified` field on the `spawn_sub_agents`
+  record, the same line ahead of a `spawn_status` result, and
+  `served_model_unverified` on `GET /api/spawn/{id}` (`constants.UNVERIFIED_MODEL_NOTE`).
+  The dashboard's downgrade chip cannot fire there, since it needs a served id.
+  The pin is not refused at spawn: the backend's model list can be stale.
 - **Per-result turns kept** — each completion is still processed in its own turn
   (no raw buffering) to avoid a context-window blowup; the synthesis works over
   the already-condensed per-result turns.

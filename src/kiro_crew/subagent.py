@@ -51,6 +51,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resol
     TERMINAL_TOOL_STATUSES,
     classify_stop_reason,
     is_runtime_death,
+    is_unpinned_pick,
 )
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.executors import run_in_embed_pool
@@ -577,6 +578,7 @@ _PARTS_GLOBAL_BINDINGS = (
     is_internal_agent_spec,
     is_markdown_spec,
     is_registered_agent_name,
+    is_unpinned_pick,
     iter_agent_spec_files,
     list_agents,
     live,

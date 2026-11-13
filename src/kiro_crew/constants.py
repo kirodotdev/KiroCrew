@@ -1589,6 +1589,14 @@ LEAKED_TOOL_CALL_NOTE = (
     "treating this step as done."
 )
 
+#: Told beside a completed run pinned to a model whose served model never resolved.
+#: Notice-only: the backend's model list can be stale, so the pin is not refused.
+UNVERIFIED_MODEL_NOTE = (
+    "has its served model unverified: it asked for a specific model, but the "
+    "backend never reported which model served it, so that model may not have run. "
+    "Do not read its output as that model's work without checking."
+)
+
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in
