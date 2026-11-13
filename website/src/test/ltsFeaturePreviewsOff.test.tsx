@@ -203,6 +203,13 @@ describe('LTS: Feature Previews off', () => {
     lockLts()
     for (const entry of entries) expect(settingEntryOffered(entry, GOVERNANCE)).toBe(false)
   })
+
+  it('Settings search offers no Visual refresh card', () => {
+    const entry = SETTINGS_REGISTRY.find(e => e.id === 'developer.visual-refresh')
+    expect(entry).toBeDefined()
+    lockLts()
+    expect(entry && settingEntryOffered(entry, GOVERNANCE)).toBe(false)
+  })
 })
 
 describe('LTS: Debug tools hidden', () => {

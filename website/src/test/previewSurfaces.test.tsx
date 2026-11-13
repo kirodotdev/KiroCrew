@@ -49,6 +49,7 @@ import {
   PREVIEW_FLAG_PREFIX,
   PREVIEW_INSTANCE_SESSIONS,
   PREVIEW_REMOTE_CREW_CHAT,
+  PREVIEW_VISUAL_REFRESH,
   PREVIEW_WEBHOOKS,
   PREVIEW_DASHBOARD_STALE_FIELDS,
   PREVIEW_DASHBOARD_STALE_WAKE,
@@ -494,7 +495,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // an unexpected button lands in `ingress`, an extra or missing tip
     // changes `tips` -- while saying what each half protects.
     const INFO_TIP = 'More information'
-    const INFO_TIP_COUNT = 15 // one per Feature Previews row carrying a `hint`
+    const INFO_TIP_COUNT = 16 // one per Feature Previews row carrying a `hint`
     const partition = () => {
       const all = ingressButtons()
       return { tips: all.filter(n => n === INFO_TIP).length, ingress: all.filter(n => n !== INFO_TIP) }
@@ -539,7 +540,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // Awaited: the Decisions card is not drawn until the governance read
     // (`decisions_enabled`) lands, so the last switch arrives a tick late.
     await waitFor(() => {
-      expect(screen.getAllByRole('switch')).toHaveLength(17)
+      expect(screen.getAllByRole('switch')).toHaveLength(18)
     })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
@@ -556,7 +557,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // The Dynamic Dashboard is on for every reader, so it has no preview card.
     // Automatic cards is a server setting with its own card on the Developer tab.
     renderTab()
-    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(17) })
+    await waitFor(() => { expect(screen.getAllByRole('switch')).toHaveLength(18) })
     expect(screen.queryByRole('switch', { name: /^dynamic dashboard$/i })).toBeNull()
     expect(screen.queryByRole('switch', { name: /automatic cards for all sessions/i })).toBeNull()
   })
@@ -608,6 +609,18 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(vault.getAttribute('aria-checked')).toBe('false')
     await act(async () => { vault.click() })
     expect(localStorage.getItem(PREVIEW_SECRETS_VAULT)).toBe('1')
+  })
+
+  it('has a Visual refresh switch that starts off and writes only its own key', async () => {
+    expect(readPreviewFlag(PREVIEW_VISUAL_REFRESH)).toBe(false)
+    renderTab()
+    const toggle = () => screen.getByRole('switch', { name: /^visual refresh$/i })
+    expect(toggle().getAttribute('aria-checked')).toBe('false')
+    await act(async () => { toggle().click() })
+    expect(toggle().getAttribute('aria-checked')).toBe('true')
+    const written = Array.from({ length: localStorage.length }, (_, i) => localStorage.key(i) ?? '')
+      .filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))
+    expect(written).toEqual([PREVIEW_VISUAL_REFRESH])
   })
 
   it('reads the retired instance-sessions key as on, and clears it when turned off', async () => {

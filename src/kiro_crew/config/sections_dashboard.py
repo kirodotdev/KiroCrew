@@ -67,6 +67,7 @@ FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "secrets_vault",
     "session_environments",
     "session_harness",
+    "visual_refresh",
     "webhooks",
 )
 
