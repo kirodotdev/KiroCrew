@@ -109,3 +109,49 @@ def test_a_newer_steer_answers_an_outstanding_question():
     assert _is_outstanding(item, [asked, later]) is False
     earlier = {"ts": "2026-09-22T03:30:00+00:00", "kind": "steer", "status": None}
     assert _is_outstanding(item, [earlier, asked]) is True
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_after_the_commit_still_records_the_steer(monkeypatch):
+    """A shutdown cancellation landing between the event commit and the crew-log
+    append must not leave a steer event with no entry: the write is drained, so the
+    transaction finishes (records or undoes) before the cancellation is re-raised."""
+    import asyncio
+
+    from kiro_crew.testing.wait import until_parked
+
+    ids = await two_by_two()
+    recorded: list[dict] = []
+    monkeypatch.setattr(
+        routes.crew_log_emit, "on_work_recorded", lambda unit, data: recorded.append(data) or True
+    )
+
+    # Park the write AFTER apply_person_steer commits but BEFORE on_work_recorded:
+    # _board_header is awaited in that exact window.
+    gate = asyncio.Event()
+    real_board_header = routes._board_header
+
+    async def _gated_board_header(board_key, board):
+        await gate.wait()
+        return await real_board_header(board_key, board)
+
+    monkeypatch.setattr(routes, "_board_header", _gated_board_header)
+
+    task = asyncio.ensure_future(
+        worker_routes.record_person_steer_result(
+            object(), CONDUCTOR_A, ids["item_a"], "hold then go"
+        )
+    )
+    # Wait until the write is parked on the gate (the commit has happened).
+    await until_parked(gate)
+    task.cancel()
+    # The drain keeps the task alive; release the gate so it can finish.
+    gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The transaction completed under the drain: the steer event is present AND its
+    # crew-log entry was recorded -- never a committed event with no entry.
+    steers = [e for e in _events(CONDUCTOR_A, ids["item_a"]) if e.get("kind") == "steer"]
+    assert len(steers) == 1
+    assert any(e.get("action") == "steer" for e in recorded)
