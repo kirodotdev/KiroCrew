@@ -868,6 +868,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
         apps_builtin_adoption=_builtin_adoption_markers(section.get("apps_builtin_adoption")),
         apps_builtin_adoption_nav=_builtin_adoption_nav(section.get("apps_builtin_adoption_nav")),
         apps_ui_stream_timeout_secs=section.read("apps_ui_stream_timeout_secs", _safe_int, 5, 600),
+        apps_ui_protected_copy=section.read("apps_ui_protected_copy", _safe_bool),
         jail=_normalize_jail(section.get("jail")),
         dangerously_skip_permissions=_read_skip_permissions(agent_data),
         yolo_duration=section.read("yolo_duration", _normalize_yolo_duration),

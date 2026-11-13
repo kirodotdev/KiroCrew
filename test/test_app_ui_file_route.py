@@ -41,6 +41,9 @@ def ui_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for ext in sorted(app_routes._ALLOWED_EXTENSIONS):
         (ui / f"asset{ext}").write_bytes(f"bytes-for-{ext}".encode())
     (ui / "chunks" / "lazy.mjs").write_bytes(b"chunk-bytes")
+    # An app the gateway installed: the UI route serves its scripts from the copy
+    # taken of every installed app (``protected_app_ui``).
+    (root / APP / "installed.json").write_text('{"name": "demo-app"}', encoding="utf-8")
     monkeypatch.setattr(app_routes, "apps_dir", lambda: root)
     return ui
 
@@ -162,6 +165,64 @@ async def test_a_LINKED_ui_root_still_serves_under_the_dev_grant(
     status, body = await _get(f"/apps/{APP}/ui/index.mjs")
     assert status == 200
     assert body == b"dev-bytes"
+
+
+@pytest.mark.asyncio
+async def test_a_live_dev_script_is_opened_under_the_root_that_was_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The root judged for the dev exemption is the root opened, never a re-resolve."""
+    from kiro_crew.apps import protected_app_ui
+
+    monkeypatch.setattr(protected_app_ui, "enabled", lambda: True)
+    root = tmp_path / "apps"
+    (root / APP).mkdir(parents=True)
+    real = tmp_path / "source-ui"
+    real.mkdir()
+    (real / "index.mjs").write_bytes(b"dev-bytes")
+    make_dir_link(root / APP / "ui", real)
+    monkeypatch.setattr(app_routes, "apps_dir", lambda: root)
+    monkeypatch.setattr(dev_mode, "apps_dir", lambda: root)
+    dev_mode._write_dev_grants({APP: os.path.realpath(real)})
+    monkeypatch.setattr(dev_mode, "is_dev_mode", lambda name: name == APP)
+    swapped = root / APP / "inside"
+    swapped.mkdir()
+    (swapped / "index.mjs").write_bytes(b"swapped-in")
+    real_realpath = os.path.realpath
+    calls = {"n": 0}
+
+    def _swap_after_first(p, *a, **k):  # type: ignore[no-untyped-def]
+        out = real_realpath(p, *a, **k)
+        if str(p).endswith(f"{APP}/ui") or str(p).endswith(f"{APP}\\ui"):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                return str(swapped)
+        return out
+
+    monkeypatch.setattr(app_routes.os.path, "realpath", _swap_after_first)
+    status, body = await _get(f"/apps/{APP}/ui/index.mjs")
+    assert b"swapped-in" not in body
+    assert (status, body) == (200, b"dev-bytes")
+
+
+@pytest.mark.asyncio
+async def test_a_dev_grant_INSIDE_the_install_still_serves_scripts_from_the_copy(
+    ui_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dev-mode root inside the install is the sandbox-writable tree itself: the
+    toggle route grants it without the operator's host-side confirmation."""
+    from kiro_crew.apps import protected_app_ui
+
+    monkeypatch.setattr(protected_app_ui, "enabled", lambda: True)
+    status, _ = await _get(f"/apps/{APP}/ui/asset.mjs")  # the copy is taken
+    assert status == 200
+    monkeypatch.setattr(dev_mode, "apps_dir", app_routes.apps_dir)
+    dev_mode._write_dev_grants({APP: os.path.realpath(ui_root)})
+    monkeypatch.setattr(dev_mode, "is_dev_mode", lambda name: name == APP)
+    (ui_root / "asset.mjs").write_bytes(b"changed-on-disk")
+    status, body = await _get(f"/apps/{APP}/ui/asset.mjs")
+    assert status == 200
+    assert body == b"bytes-for-.mjs"
 
 
 @pytest.mark.asyncio

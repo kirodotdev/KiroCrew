@@ -272,10 +272,19 @@ def _kick_interrupted_update_sweep(state: DashboardState) -> None:
     A tracked background task (``manager.sweep_interrupted_updates``): it lists the
     apps directory and may delete whole retired trees, so it never runs before the
     bind. Nothing waits on it; each app is swept under its lifecycle lock.
-    """
-    from kiro_crew.apps.manager import sweep_interrupted_updates
 
-    task = asyncio.create_task(sweep_interrupted_updates())
+    Then, with every tree back in place, the apps an older build installed get the
+    copy of their UI scripts the UI route serves (``protected_app_ui``), once per
+    data home; a script read before this finishes takes the same copy itself.
+    """
+    from kiro_crew.apps import protected_app_ui
+    from kiro_crew.apps.manager import apps_dir, sweep_interrupted_updates
+
+    async def _sweep_then_capture() -> None:
+        await sweep_interrupted_updates()
+        await asyncio.to_thread(protected_app_ui.capture_existing, apps_dir())
+
+    task = asyncio.create_task(_sweep_then_capture())
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
 

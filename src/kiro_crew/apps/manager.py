@@ -315,6 +315,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         agent_readonly_dirs,
         credential_masks,
         protected_app_state,
+        protected_app_ui,
     )
     from kiro_crew.apps.admission import (  # noqa: F401
         app_admission_denied,
