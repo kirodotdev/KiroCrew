@@ -2252,7 +2252,7 @@ byte:
 
 | Sender | Transport and proof | On refusal |
 |---|---|---|
-| `kirocrew spawn list` / `spawn run`, `kirocrew artifact` (`cli_commands_gateway_api._gateway_send`) | `_owner_verified_secret_urlopen`, both arms | `Error: gateway ownership not verified: …`, exit 1 (`artifact` prints it on stderr) |
+| `kirocrew spawn list` / `spawn run`, `kirocrew artifact` (`cli_commands_gateway_api._gateway_send`) | `_owner_verified_secret_urlopen`, both arms | `Error: gateway ownership not verified: …` on stderr, exit 1 |
 | `kirocrew models` (`cli_models._fetch`, `_gateway_send`, operation `cli_models_list`) | `_owner_verified_secret_urlopen`, both arms | `Error: gateway ownership not verified: …` on stderr, exit 1 |
 | `spawn run`'s result poll (`_gateway_send`, operation `cli_spawn_poll`) | `_owner_verified_secret_urlopen`, both arms; every poll is audited | the same message on stderr, exit 1 |
 | `kirocrew doctor` adaptive-controller read (`doctor_checks.workload._gateway_adaptive_state`) | `_owner_verified_secret_urlopen`, both arms | one `not read` line naming the unproven peer |

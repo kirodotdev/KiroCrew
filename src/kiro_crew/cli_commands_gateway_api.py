@@ -193,14 +193,14 @@ def _spawn(args: argparse.Namespace) -> None:
             with _gateway_send(req, args.port, 5, "cli_spawn_list") as resp:
                 data = json.loads(resp.read())
         except _peer_refusal() as e:
-            print(f"Error: gateway ownership not verified: {e}")
+            print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
             sys.exit(1)
         except urllib.error.HTTPError as e:
             try:
                 body = json.loads(e.read())
-                print(f"Error: {body.get('error', e.reason)}")
+                print(f"Error: {body.get('error', e.reason)}", file=sys.stderr)
             except Exception:
-                print(f"Error: {e.code} {e.reason}")
+                print(f"Error: {e.code} {e.reason}", file=sys.stderr)
             sys.exit(1)
         except (urllib.error.URLError, OSError) as e:
             # A timeout means something took the request, so the gateway is up
@@ -213,10 +213,14 @@ def _spawn(args: argparse.Namespace) -> None:
             if deadline_expired(e):
                 print(
                     "Error: gateway on port %d is up but did not answer in time "
-                    "(busy); try again in a moment" % args.port
+                    "(busy); try again in a moment" % args.port,
+                    file=sys.stderr,
                 )
             else:
-                print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
+                print(
+                    "Error: gateway not running (cannot reach dashboard on port %d)" % args.port,
+                    file=sys.stderr,
+                )
             sys.exit(1)
         agents = data.get("agents", [])
         queued = [q for q in data.get("queued") or [] if isinstance(q, dict) and q.get("id")]
@@ -272,7 +276,7 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         if name is None:
             continue
         if not sanitize_string(name):
-            print(f"Error: --{flag} needs a value")
+            print(f"Error: --{flag} needs a value", file=sys.stderr)
             sys.exit(1)
         body[flag] = name
     data = json.dumps(body).encode()
@@ -288,14 +292,14 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         with _gateway_send(req, args.port, 5, "cli_spawn_run") as resp:
             result = json.loads(resp.read())
     except _peer_refusal() as e:
-        print(f"Error: gateway ownership not verified: {e}")
+        print(f"Error: gateway ownership not verified: {e}", file=sys.stderr)
         sys.exit(1)
     except urllib.error.HTTPError as e:
         try:
             body = json.loads(e.read())
-            print(f"Error: {body.get('error', e.reason)}")
+            print(f"Error: {body.get('error', e.reason)}", file=sys.stderr)
         except Exception:
-            print(f"Error: {e.code} {e.reason}")
+            print(f"Error: {e.code} {e.reason}", file=sys.stderr)
         sys.exit(1)
     except (urllib.error.URLError, OSError) as e:
         # A timeout means something took the request, so the gateway is up but
@@ -311,10 +315,14 @@ def _spawn_run(args: argparse.Namespace, base: str) -> None:
         if deadline_expired(e):
             print(
                 "Error: gateway on port %d is up but busy; the spawn may have "
-                "started -- check `kirocrew spawn list` before re-running" % args.port
+                "started -- check `kirocrew spawn list` before re-running" % args.port,
+                file=sys.stderr,
             )
         else:
-            print("Error: gateway not running (cannot reach dashboard on port %d)" % args.port)
+            print(
+                "Error: gateway not running (cannot reach dashboard on port %d)" % args.port,
+                file=sys.stderr,
+            )
         sys.exit(1)
 
     agent_id = result["id"]

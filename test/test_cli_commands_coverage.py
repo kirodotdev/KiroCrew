@@ -160,7 +160,7 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
         assert exc.value.code == 1
-        assert "bad spawn" in capsys.readouterr().out
+        assert "bad spawn" in capsys.readouterr().err
 
     def test_list_http_error_with_opaque_body_prints_status(
         self, capsys: pytest.CaptureFixture[str]
@@ -171,7 +171,7 @@ class TestSpawnCli:
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="list", port=1234))
-        assert "503" in capsys.readouterr().out
+        assert "503" in capsys.readouterr().err
 
     def test_list_unreachable_gateway_reports_port(
         self, capsys: pytest.CaptureFixture[str]
@@ -186,7 +186,7 @@ class TestSpawnCli:
         ):
             cc._spawn(_ns(spawn_action="list", port=4321))
         assert exc.value.code == 1
-        assert "4321" in capsys.readouterr().out
+        assert "4321" in capsys.readouterr().err
 
     def test_unknown_action_prints_usage(self, capsys: pytest.CaptureFixture[str]) -> None:
         cc._spawn(_ns(spawn_action="bogus", port=1))
@@ -290,7 +290,7 @@ class TestSpawnCli:
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="run", port=1, task="t", fire_and_forget=True))
-        assert "task too long" in capsys.readouterr().out
+        assert "task too long" in capsys.readouterr().err
 
     def test_run_unreachable_gateway_exits_1(self, capsys: pytest.CaptureFixture[str]) -> None:
         with (
@@ -299,7 +299,7 @@ class TestSpawnCli:
             pytest.raises(SystemExit),
         ):
             cc._spawn(_ns(spawn_action="run", port=9, task="t", fire_and_forget=True))
-        assert "gateway not running" in capsys.readouterr().out
+        assert "gateway not running" in capsys.readouterr().err
 
 
 # ── app subcommands ──
