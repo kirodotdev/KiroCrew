@@ -327,6 +327,11 @@ def format_permissions_summary(manifest: AppManifest) -> str:
     if perms.reachableByUserSessions:
         verbs = " and ".join(perms.reachableByUserSessions)
         lines.append(f"  Your chats: may {verbs} the sessions this app runs")
+    if perms.webhookSource:
+        lines.append(
+            f"  Webhooks:  takes inbound deliveries that can start work"
+            f" (webhook source {manifest.name!r})"
+        )
 
     if not lines:
         return "  No special permissions required"

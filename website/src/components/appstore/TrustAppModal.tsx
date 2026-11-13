@@ -20,7 +20,7 @@
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Code2, GitBranch, Loader2, MessagesSquare, RotateCcw, Server, ShieldAlert, Terminal } from 'lucide-react'
+import { Code2, GitBranch, Loader2, MessagesSquare, RotateCcw, Server, ShieldAlert, Terminal, Webhook } from 'lucide-react'
 
 import { api } from '../../api/client'
 import { isNotFoundError } from '../../api/apiError'
@@ -73,6 +73,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   reachableByUserSessions?: string[]
   /** The windows and shortcuts its manifest `desktop` block asks the desktop shell for. */
   desktop?: DesktopRequest
+  /** The app declares `permissions.webhookSource`: it takes inbound webhooks under its own name. */
+  webhookSource?: boolean
   /**
    * True when the manifest widens `sessionApproval` to the owner's member
    * threads (`permissions.memberThreads`). Shown only inside the session
@@ -821,6 +823,17 @@ export default function TrustAppModal({
           {/* Shown with the grants because the windows run the app's own code on the
               desktop, over every other program, while the app is on. */}
           <TrustAppDesktopBox request={app.desktop} />
+          {app.webhookSource && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-[color-mix(in_srgb,var(--card)_88%,transparent)] px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-text">
+                <Webhook size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.webhook_source_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.webhook_source_desc', { source: app.name })}
+              </p>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-2 text-muted">
             <GitBranch size={14} className="shrink-0" />
             <span className="shrink-0">

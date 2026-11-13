@@ -54,10 +54,6 @@ APP_NAMES = ("ops_mission_control", "ops-mission-control")
 #: seam. Each row is deleted together with the file, table or tool it names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # -- Governance vocabulary. The ``webhooks`` scope's source ids are the
-        #    core's: a policy names ``ops-mission-control`` to permit the app's signal
-        #    webhook, and an app may not choose which id it is governed under.
-        ("webhook_sources.py", "ops-mission-control"),
         # -- The sandbox's leaf tables. The app's credential store and autonomy
         #    ceiling are HIDDEN / READONLY crew-home leaves, and its rotation schedule
         #    and incident index are write-protected. These are the core's ceiling

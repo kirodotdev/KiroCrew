@@ -6753,7 +6753,9 @@
       "updating": "Updating…",
       "v": "v",
       "v_2": "· v",
-      "websocket_events": "WebSocket Events"
+      "websocket_events": "WebSocket Events",
+      "webhook_source_desc": "Accepts webhooks from outside on its own route, and a delivery can start work.",
+      "webhook_source_id": "Webhook source in your security policy"
     },
     "appPage": {
       "loading_app": "Loading app…"

@@ -7,7 +7,11 @@ Each source asks :func:`source_refusal` at its own entry, before its token or
 signature is checked:
 
 * :data:`SOURCE_AGENT` -- ``POST /api/hooks/agent`` (``kiro_crew.webhooks``);
-* :data:`SOURCE_OPS_MISSION_CONTROL` -- the Ops Mission Control app's signal webhook.
+* an app whose manifest declares ``permissions.webhookSource`` -- that app's own
+  inbound route, governed under the app's name (:func:`app_source_refusal`). The
+  app does not choose the id: it is always the name the app is installed under, so
+  a policy that names an app keeps naming it whether the app ships in the wheel or
+  from its own repository.
 
 With no policy the scope is ungoverned and every source keeps its own switch, so an
 ``oss`` build behaves as before. In an LTS build an unnamed scope is answered
@@ -28,8 +32,10 @@ WEBHOOKS_SCOPE = "webhooks"
 #: ``POST /api/hooks/agent``, the core agent-turn webhook.
 SOURCE_AGENT = "agent"
 
-#: The Ops Mission Control app's signal webhook (its app id).
-SOURCE_OPS_MISSION_CONTROL = "ops-mission-control"
+#: The core's own source ids. An app installed under one of these names is never
+#: governed as that source: a policy permitting the core webhook must not permit an
+#: app that happens to share its id.
+CORE_SOURCES = frozenset({SOURCE_AGENT})
 
 
 def source_refusal(source: str) -> str:
@@ -61,3 +67,41 @@ def source_refusal(source: str) -> str:
     if not follows_policy(decision):
         return f"webhooks {UNNAMED_REASON}"
     return ""
+
+
+def app_declares_webhook_source(app_name: str) -> bool:
+    """Whether *app_name*'s manifest declares ``permissions.webhookSource``.
+
+    Read from the installed record's ``app.json`` (a built-in's is rewritten from
+    the wheel at every start); before that copy exists, from the shipped package
+    while the wheel copy is live. A manifest that cannot be read declares nothing.
+    """
+    from kiro_crew.apps.execution import shipped_builtin_app_root
+    from kiro_crew.apps.manager import get_app_manifest
+    from kiro_crew.apps.manifest import AppManifest
+
+    manifest = get_app_manifest(app_name)
+    if manifest is None:
+        root = shipped_builtin_app_root(app_name)
+        if root is None:
+            return False
+        try:
+            manifest = AppManifest.from_json_file(root / "app.json")
+        except Exception:  # noqa: BLE001 - an unreadable manifest declares nothing
+            logger.debug("shipped manifest of %s unreadable", app_name, exc_info=True)
+            return False
+    return manifest.permissions.webhookSource is True
+
+
+def app_source_refusal(app_name: str) -> str:
+    """Why inbound webhooks to app *app_name* are refused; ``""`` when permitted.
+
+    The app's manifest must declare ``permissions.webhookSource``, its name must not
+    be a core source id, and then :func:`source_refusal` answers for the source
+    named *app_name*. Blocking, like :func:`source_refusal`.
+    """
+    if app_name in CORE_SOURCES:
+        return f"app {app_name!r} shares a core webhook source id"
+    if not app_declares_webhook_source(app_name):
+        return f"app {app_name!r} declares no webhook source"
+    return source_refusal(app_name)

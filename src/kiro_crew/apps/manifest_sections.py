@@ -607,6 +607,11 @@ class Permissions:
     #: which is the default. Shown at the trust prompt and held back on a widening
     #: update like a new API path.
     reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
+    #: Takes inbound webhook deliveries on its own routes, governed as the
+    #: ``webhooks`` source named by the app's name (``webhook_sources``) and asked
+    #: through ``ctx.webhook_source``. Reaches nothing new: it lets the policy
+    #: answer for the app, and it is shown at the trust prompt.
+    webhookSource: bool = False  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -646,6 +651,8 @@ class Permissions:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
             d["reachableByUserSessions"] = self.reachableByUserSessions
+        if self.webhookSource:
+            d["webhookSource"] = True
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -680,6 +687,7 @@ class Permissions:
             chatSlots=data.get("chatSlots") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
+            webhookSource=data.get("webhookSource") is True,  # noqa: N815
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 

@@ -65,7 +65,7 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { ChatSlotsBox, UserSessionReachBox, UserSessionReachStaged, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
+import { ChatSlotsBox, UserSessionReachBox, UserSessionReachStaged, WebhookSourceBox, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
@@ -1803,6 +1803,7 @@ export default function AppDetailPage() {
                 {app.manifest.permissions.workerAutoApprove && <WorkerAutoApproveBox staged={stagedWorkerAutoApprove} />}
                 {app.manifest.permissions.chatSlots === true && <ChatSlotsBox />}
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
+                {app.manifest.permissions.webhookSource === true && <WebhookSourceBox source={app.name} />}
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}
                   {app.manifest.permissions.cron && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.cron_yes')}</span>}

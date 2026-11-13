@@ -6810,8 +6810,8 @@ back as the route's JSON body, not the core tool's `Error:` line; the cut is the
 the app's `log_api_access` row (`agent_tool`, `denied`) where the core wrote a
 `rejected_blocked_tool` tool-invocation row. It was the last tool of the hand-written
 `apps` domain, so that domain's module and its `DOMAIN_MODULES` entry were deleted and
-`core_named_apps` no longer reads a tool table; adoption's E10 still refuses
-`ops-mission-control` on the core's `webhook_sources.SOURCE_OPS_MISSION_CONTROL`. The tool's title row
+`core_named_apps` no longer reads a tool table. The app's webhook source moved onto
+its manifest too (§42), so E10 no longer refuses `ops-mission-control`. The tool's title row
 stays. `src/kiro_crew/apps/builtins/ops_mission_control/tests/test_agent_api_tool.py`
 pins the declaration, the route and the gateway's own path to it.
 
@@ -6917,7 +6917,7 @@ pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 a
 manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
 an app's windows (§35), the exact `permissions.api` entry (§ Scoped frontend HTTP
-transport), and `ctx.chat_slots` (§41). Several seams share level 7, so an app that needs one
+transport), `ctx.chat_slots` (§41) and `ctx.webhook_source` (§42). Several seams share level 7, so an app that needs one
 feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -8521,6 +8521,70 @@ Writers: `apps/chat_slot_sdk.py`, `apps/context.py`, `apps/manifest_sections.py`
 `website/src/pages/AppDetailGrantBoxes.tsx`. Tests: `test/test_app_chat_slot_sdk.py`,
 `test/test_builtin_adoption_pins.py`, `test/test_builtin_adoption_apply.py`,
 `website/src/test/TrustAppModalChatSlots.test.tsx`.
+
+## 42. An app's inbound webhook is a `webhooks` source under its own name (seam level 7)
+
+An app that takes deliveries from outside on its own routes (a signed alert webhook)
+declares it in `app.json`: `"permissions": {"webhookSource": true}`. Owner ruling of
+2026-11-13 on #26967 (comment 6841699202, item 2): an app declares its webhook source in
+its manifest, and core routes and authenticates it as it did the hard-coded one. Only the
+literal `true` declares it (`Permissions.from_dict`); `to_dict`, the built-in snapshot and
+`signing_payload` carry it only when true, so an older signature still verifies.
+
+**The source id is the app's name.** The `webhooks` governance scope
+(`governance.md`) names sources; core keeps only its own (`webhook_sources.CORE_SOURCES`,
+today `agent`), and every app that declares the key is the source named by the name it is
+installed under. The app does not choose it, so a policy that names an app keeps naming it
+whether the app ships in the wheel or from its own repository, and an app named as a core
+source is refused (`app_source_refusal` answers "shares a core webhook source id") rather
+than governed as the core webhook.
+
+**The answer** is `webhook_sources.app_source_refusal(name)`: refuse a core id, then
+refuse an app whose manifest does not declare the key, then `source_refusal(name)`, the
+same policy question the core webhook asks (no policy leaves it to the app's own switch in
+an `oss` build; an LTS build refuses until a policy names it). The declaration is read on
+every call from the installed record's `app.json` (a built-in's is rewritten from the wheel
+at every start), or from the shipped package while the wheel copy is live and its record
+does not exist yet (`execution.shipped_builtin_app_root`), so a manifest that drops the key
+refuses the next delivery. Blocking: a handler calls it off the event loop.
+
+**The seam.** `AppContext.webhook_source` is a `WebhookSourceSDK`
+(`apps/webhook_source_sdk.py`) built only when the manifest declares the key, `None`
+otherwise. `source` is the app's name from the context, `refusal()` is `app_source_refusal`
+for it and `refusal_async()` runs that in a thread. An app with `None` refuses its webhook.
+It holds the name and nothing else.
+
+**What stays the app's, unchanged.** The route itself (`/api/apps/<name>/<path>`, on the
+authenticated gateway surface, so a delivery still carries the gateway token), the app's
+signature check over the raw body with its own secret, its body cap and spool, and its
+audit rows. The declaration reaches nothing new: an app's routes could
+already take a request; this lets the policy answer for it. It is therefore not a staged
+grant (an update that adds it is not held back), and it is shown where the owner decides:
+the trust prompt names the source id (`TrustAppModal`, "Takes inbound webhooks"), the
+detail page's permissions card shows it (`WebhookSourceBox`), and `kirocrew app install`
+prints it (`format_permissions_summary`).
+
+**Built-ins.** Ops Mission Control's wheel copy declares the key and asks
+`app_source_refusal("ops-mission-control")`, the id it was governed under before, so every
+existing policy still names it. No core constant names that id, so adoption's E10 does not
+refuse the app (`builtin_adoption_checks.core_named_apps` reads only the `SOURCE_*`
+constants, which are `CORE_SOURCES`).
+
+**Seam level.** 7, shared with §35's spanning windows, §39, §40 and §41 (driver decision of
+2026-11-13 on #26967), so an app feature-detects `ctx.webhook_source` rather than reading
+the level alone; an older host has no attribute and ignores the key.
+
+Writers: `webhook_sources.py`, `apps/webhook_source_sdk.py`, `apps/context.py`,
+`apps/manifest_sections.py`, `apps/permissions.py`, `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`, `platform/governance_parts/catalog.py`,
+`apps/builtins/ops_mission_control/app.json`,
+`apps/builtins/ops_mission_control/backend/providers/webhook.py`,
+`website/src/components/appstore/TrustAppModal.tsx`, `website/src/pages/AppDetailGrantBoxes.tsx`,
+`website/src/pages/AppDetailPage.tsx`, `website/src/components/appstore/trustGrants.ts`. Tests:
+`test/test_app_webhook_source.py`, `test/test_builtin_adoption_release.py`
+(`test_an_app_keyed_webhook_source_names_no_app_in_core`),
+`apps/builtins/ops_mission_control/tests/test_webhook_governance.py`,
+`website/src/test/TrustAppModalWebhookSource.test.tsx`.
 
 ## Windows stale-backend cleanup capacity
 

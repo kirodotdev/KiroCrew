@@ -1,15 +1,18 @@
 """The signal webhook asks the core governance gate for its own source id first.
 
 The ``webhooks`` scope (``kiro_crew.webhook_sources``) names the inbound sources a
-policy permits, and ``ops-mission-control`` is this app's. The webhook provider asks
-:func:`kiro_crew.webhook_sources.source_refusal` before its own switch, token or
-signature checks, so a policy that does not name the source refuses it, and an
-LTS build refuses it with no policy at all (RFC crew-lts-edition,
-appendix Red "Webhooks by source").
+policy permits. This app is one because its manifest declares
+``permissions.webhookSource``, and its id is its name, ``ops-mission-control``. The
+webhook provider asks :func:`kiro_crew.webhook_sources.app_source_refusal` before
+its own switch, token or signature checks, so a policy that does not name the
+source refuses it, and an LTS build refuses it with no policy at all (RFC
+crew-lts-edition, appendix Red "Webhooks by source").
 """
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -61,3 +64,9 @@ def test_the_webhook_asks_its_own_source(monkeypatch, edition) -> None:
     # Named: the app's own checks answer next.
     _install_policy(monkeypatch, "ops-mission-control")
     assert webhook.enqueue(b"{}", "sha256=x") == (False, "webhook source is not enabled")
+
+
+def test_the_manifest_declares_the_webhook_source_under_the_app_name() -> None:
+    manifest = json.loads((Path(__file__).parents[1] / "app.json").read_text(encoding="utf-8"))
+    assert manifest["permissions"]["webhookSource"] is True
+    assert manifest["name"] == webhook.APP_NAME

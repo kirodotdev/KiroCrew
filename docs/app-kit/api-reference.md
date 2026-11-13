@@ -1727,6 +1727,37 @@ disabled, uninstalled or loses trust, and the owner sees the permission at the t
 prompt. An update that adds it keeps running without it until the owner approves it on
 the app's page.
 
+### Webhook source (`ctx.webhook_source`)
+
+The security policy's answer for deliveries your app takes from outside on its own
+routes (a signed alert webhook). Present only when the manifest declares
+`permissions.webhookSource: true`; `None` otherwise and on a host without the seam
+(seam level 7, which other seams share), so feature-detect it and refuse the delivery
+without it:
+
+```python
+async def handle_webhook(request, ctx):
+    source = getattr(ctx, "webhook_source", None)
+    refusal = await source.refusal_async() if source is not None else "no webhook seam"
+    if refusal:
+        return web.json_response({"error": refusal, "code": "webhook_refused"}, status=401)
+    ...  # your own signature check, body cap and audit row, as before
+```
+
+| Member | Returns | Description |
+|--------|---------|-------------|
+| `source` | `str` | The source id a policy names to permit your webhook: your app's name. You do not choose it. |
+| `refusal()` | `str` | Why the policy refuses your webhook, `""` when it permits. Blocking: call it from a worker thread. |
+| `refusal_async()` | `str` | `refusal()` off the event loop. |
+
+The policy's `webhooks` scope lists the sources it permits (`{"webhooks": {"mode":
+"allow", "allow": ["<your app>"]}}`). With no policy the answer is `""` and your app's own
+switch decides; an LTS build refuses until a policy names your app. The answer is
+re-read on every call, so a manifest that drops the key refuses the next delivery, and an
+app named like a core source (`agent`) is always refused. The seam grants nothing else:
+the route, its gateway-token authentication, your signature check and your audit rows
+stay yours. The owner sees the declaration, with the source id, at the trust prompt.
+
 ### App token (`ctx.app_token()`)
 
 `await ctx.app_token()` returns an app token for your app, the same token
@@ -1787,8 +1818,9 @@ and level 7 adds the manifest's `agentReadOnlyDirs` (see
 [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk), the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
 [manifest-reference.md](manifest-reference.md#desktop-windows)), the exact
-`permissions.api` entry (`=/api/example`, see the path matcher above) and
-[`ctx.chat_slots`](#chat-slots-ctxchat_slots); each level
+`permissions.api` entry (`=/api/example`, see the path matcher above),
+[`ctx.chat_slots`](#chat-slots-ctxchat_slots) and
+[`ctx.webhook_source`](#webhook-source-ctxwebhook_source); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call

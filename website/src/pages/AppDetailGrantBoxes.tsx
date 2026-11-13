@@ -1,4 +1,4 @@
-import { MessagesSquare, ShieldAlert } from 'lucide-react'
+import { MessagesSquare, ShieldAlert, Webhook } from 'lucide-react'
 import { i18nT } from '../i18n/t'
 
 // The declared-grant boxes of the detail page's permissions card, and the
@@ -31,6 +31,24 @@ export function ChatSlotsBox() {
       </div>
       <div className="mt-1.5 text-[11px] text-muted">
         {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>chatSlots</code>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * `permissions.webhookSource`: the app takes inbound webhooks on its own route, and the
+ * security policy permits them under the app's own name.
+ */
+export function WebhookSourceBox({ source }: { source: string }) {
+  return (
+    <div className="rounded-md border border-border px-2.5 py-2" data-testid="webhook-source">
+      <div className="flex items-start gap-2 text-text">
+        <Webhook size={13} className="mt-[2px] shrink-0 text-muted" />
+        <span>{i18nT('pages.appDetailPage.webhook_source_desc')}</span>
+      </div>
+      <div className="mt-1.5 text-[11px] text-muted">
+        {i18nT('pages.appDetailPage.webhook_source_id')}: <code data-testid="webhook-source-id">{source}</code>
       </div>
     </div>
   )

@@ -2613,9 +2613,11 @@ read-your-writes should add it deliberately, with its own tests.
   blocks the tool, and a listed hook still meets the shell deny list and the
   sandbox; `hook_event_governance.hook_refusal`); inbound
   webhook sources in `webhook_sources.source_refusal` (the `webhooks` scope,
-  members `agent` for `POST /api/hooks/agent` and `ops-mission-control` for that
-  app's signal webhook; policy layer only, asked before the token or signature is
-  checked; with no policy each source keeps its own switch);
+  members `agent` for `POST /api/hooks/agent` and, through
+  `webhook_sources.app_source_refusal`, the name of each app whose manifest
+  declares `permissions.webhookSource` for that app's own route
+  (`app-kit-platform.md` section 41); policy layer only, asked before the token or
+  signature is checked; with no policy each source keeps its own switch);
   app activation in `apps.manager._app_activation_denied` (at `enable_app`).
 
 Plane A carries **no live ordinal clamp**. The computer-use governance model —

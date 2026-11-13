@@ -543,7 +543,7 @@ def _curated_links(entry: dict[str, Any]) -> list[dict[str, str]]:
 
 
 #: The permissions the trust prompt names before install, each a literal ``true``.
-_DISCLOSED_PERMISSIONS = ("sessionApproval", "workerAutoApprove", "chatSlots")
+_DISCLOSED_PERMISSIONS = ("sessionApproval", "workerAutoApprove", "chatSlots", "webhookSource")
 
 
 def _disclosed_permissions_manifest(entry: dict[str, Any]) -> dict[str, Any] | None:
