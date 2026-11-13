@@ -1434,7 +1434,8 @@ transition, so progress survives navigating away and a reload. The steps are
 and registration lands in this registry exactly as the CLI's does. A failed
 provision step is rolled back through `teardown` whether or not a stack was
 created. The engine's optional `resource_exists` (`ec2.find_stack` for the EC2
-lane) is read first, so a confirmed delete of a stack that never existed reads
+lane; for the Fargate lane its `startedBy` task lookup, the one teardown uses) is
+read first, so a confirmed delete of a stack that never existed reads
 "was never created, so it is not billing" instead of "was removed".
 
 **A restart does not resume a launch — it terminalizes it.** The worker is a
