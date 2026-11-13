@@ -131,7 +131,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _ProcessEntry32 _ProcessMemoryCounters _MemoryStatusEx _SidAndAttributes _TokenUser
         _IoCounters _JobObjectBasicLimitInformation _JobObjectExtendedLimitInformation
         _ThreadEntry32 _windows_last_error _open_process_query_handle _close_process_handle
-        _PROCESS_QUERY_LIMITED_INFORMATION _ACCESS_HONOURS_EFFECTIVE_IDS
+        _PROCESS_QUERY_LIMITED_INFORMATION _ACCESS_HONOURS_EFFECTIVE_IDS c_strlen_address
         """.split()),
     "kiro_crew.platform_compat_proctable": tuple("""
         _DARWIN_PROC_PIDVNODEPATHINFO _DARWIN_VNODE_INFO_SIZE _DARWIN_MAXPATHLEN

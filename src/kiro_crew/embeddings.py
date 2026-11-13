@@ -111,6 +111,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         gguf_declared_pooling,
     )
     from kiro_crew.embeddings_llama import (  # noqa: F401
+        _STOPPED,
         EmbeddingBackend,
         LlamaCppEmbedder,
         _caller_may_wait_for_load,
@@ -121,6 +122,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _InferJob,
         _install_bounded_decode,
         _install_metadata_kv_clear,
+        _person_waiting,
+        _Preemptible,
+        _retry_class,
         _runtime_has_blas,
         _trim_native_heap,
     )
@@ -233,6 +237,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LARGE_HOST_MIN_CORES,
         _LLM_LOAD_RETRY_SECS,
         _MAX_BULK_PACE_SLEEP,
+        _MAX_BULK_PREEMPTS,
         _MAX_EMBED_BATCH_TEXTS,
         _MAX_EMBED_CHARS,
         _MAX_PENDING_EMBEDS,
@@ -346,6 +351,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.embeddings_child import (  # noqa: F401
         ChildLlama,
         is_vendored_llama_class,
+    )
+    from kiro_crew.embeddings_preempt import (  # noqa: F401
+        PreemptFlag,
+        install_preempt_flag,
     )
     from kiro_crew.metrics.provider import (  # noqa: F401
         get_recorder,

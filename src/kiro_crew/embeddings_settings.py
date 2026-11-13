@@ -184,6 +184,11 @@ _INFER_STOP_TIMEOUT_SECS = 30.0
 # with no embed the model is unloaded; the next embed loads it again. 0 keeps it
 # resident forever. Overridable as memory.embedding_idle_evict_secs.
 _DEFAULT_IDLE_EVICT_SECS = 3600.0
+# How many times a person's embed may stop one background text inside the model
+# (``kiro_crew.embeddings_preempt``). A stopped text starts over, so without a
+# bound a steady stream of people's embeds could keep a long text from ever
+# finishing. After this many stops it runs to its end, as every text did before.
+_MAX_BULK_PREEMPTS = 3
 # Longest the evictor sleeps between checks, so a config change is seen promptly.
 _EVICT_POLL_MAX_SECS = 60.0
 # How long a caller that can wait (an interactive or normal embed, off the event
