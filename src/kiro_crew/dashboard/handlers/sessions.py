@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _ANSI_ESCAPE_RE,
         _BONUS_COLON_RE,
         _BONUS_DASH_RE,
+        _BONUS_USED_RE,
         _MAX_BONUS_CREDITS,
         _MAX_BONUS_DAYS_LEFT,
         _MAX_BONUS_GRANTS,

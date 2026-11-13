@@ -244,6 +244,8 @@ _SQLITE_AUDIT_READ_ID = "kiro_usage_api.sqlite_token"
 _MAX_CREDITS = 1_000_000.0
 _MAX_BONUS_GRANTS = 32
 _MAX_BONUS_NAME_CHARS = 100
+#: Longest ``days_left`` a nested grant reports, matching the text parser's bound.
+_MAX_BONUS_DAYS_LEFT = 3_650
 
 # Cap the RTS response body so an oversized or indefinitely-streamed response
 # cannot exhaust memory or tie up a shared subprocess worker. The usage JSON is
@@ -799,6 +801,54 @@ def _bounded(value: object) -> float | None:
     return f
 
 
+def _nested_bonuses(credit: dict) -> list[dict[str, object]]:
+    """The active bonus grants GetUsageLimits nests under the CREDIT entry (``bonuses``).
+
+    Each grant names itself in ``displayName``; ``bonusCode`` is a redemption code
+    and is never shown. A grant whose ``status`` is present and not ``ACTIVE`` is
+    over. ``days_left`` is the whole days until ``expiresAt`` (epoch seconds), as
+    kiro-cli's ``/usage`` shows it, and is omitted when the time is missing or out
+    of range.
+    """
+    grants = credit.get("bonuses")
+    if not isinstance(grants, list):
+        return []
+    out: list[dict[str, object]] = []
+    for g in grants:
+        if len(out) >= _MAX_BONUS_GRANTS:
+            break
+        if not isinstance(g, dict):
+            continue
+        status = g.get("status")
+        if status is not None and str(status).upper() != "ACTIVE":
+            continue
+        used = _bounded(g.get("currentUsageWithPrecision"))
+        if used is None:
+            used = _bounded(g.get("currentUsage"))
+        limit = _bounded(g.get("usageLimitWithPrecision"))
+        if limit is None:
+            limit = _bounded(g.get("usageLimit"))
+        name = g.get("displayName")
+        if used is None or limit is None or limit <= 0:
+            continue
+        if not isinstance(name, str) or not name or not name.isprintable():
+            continue
+        entry: dict[str, object] = {
+            "name": name[:_MAX_BONUS_NAME_CHARS],
+            "used": used,
+            "total": limit,
+        }
+        try:
+            seconds_left = float(g.get("expiresAt")) - time.time()  # type: ignore[arg-type]
+            days: int | None = math.floor(seconds_left / 86400)
+        except (TypeError, ValueError, OverflowError):
+            days = None
+        if days is not None and 0 <= days <= _MAX_BONUS_DAYS_LEFT:
+            entry["days_left"] = days
+        out.append(entry)
+    return out
+
+
 def _map_response(data: dict) -> dict | None:
     """Translate a GetUsageLimits response into KiroCrew's canonical usage dict.
 
@@ -923,8 +973,10 @@ def _map_response(data: dict) -> dict | None:
     # dashboard never branches on source. Retain every bounded grant; the legacy
     # scalar fields mirror the first one for older clients.
     _bonus_markers = ("FREE_TRIAL", "FREETRIAL", "TRIAL", "BONUS", "PROMO", "GIFT", "WELCOME")
-    bonus_credits: list[dict[str, object]] = []
+    bonus_credits: list[dict[str, object]] = _nested_bonuses(credit)
     for b in breakdowns:
+        if len(bonus_credits) >= _MAX_BONUS_GRANTS:
+            break
         if b is credit:
             continue
         rtype = str(b.get("resourceType") or "").upper()
