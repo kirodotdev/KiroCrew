@@ -279,6 +279,8 @@ async def test_a_helper_the_turn_itself_awaits_does_not_wait_for_that_turn(hando
         await handoff.turn_handed_off(slot)
 
     await finished(_turn_that_awaits_a_helper(), "a helper awaited inside its own turn")
+    # It never parked: no mark is left for a later helper to wait on.
+    assert slot._handoff_mark is None
 
 
 # ── the helpers a send starts ───────────────────────────────────────────────

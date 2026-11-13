@@ -285,6 +285,9 @@ async def test_a_tree_already_staged_is_not_built_again(monkeypatch) -> None:
     await orch._auto_apply_wheel_update("stable", "9.9.9")
 
     assert engine.call_count == 1
+    # The tree staged by the first call is still the one waiting for a restart.
+    note = update_restart_ready.current()
+    assert note is not None and note.version == "9.9.9"
 
 
 @pytest.mark.asyncio

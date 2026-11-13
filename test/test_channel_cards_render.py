@@ -205,12 +205,16 @@ _COUNTS = [
 class TestLimits:
     @pytest.mark.parametrize("name,cap,build,path", _CAPS, ids=[c[0] for c in _CAPS])
     def test_refuse_renders_at_the_cap_and_refuses_one_over(self, name, cap, build, path) -> None:
-        render(build(cap), Platform.SLACK)
+        out = render(build(cap), Platform.SLACK)
+        # At the cap the field is sent whole, not cut short.
+        assert "a" * cap in str(out.blocks), name
         _over("too_long", path, build(cap + 1))
 
     @pytest.mark.parametrize("name,cap,build,path", _COUNTS, ids=[c[0] for c in _COUNTS])
     def test_counts_render_at_the_cap_and_refuse_one_over(self, name, cap, build, path) -> None:
-        render(build(cap), Platform.SLACK)
+        out = render(build(cap), Platform.SLACK)
+        sent = out.blocks if path == "body" else out.blocks[0]["elements"]
+        assert len(sent) == cap, name
         _over("too_many", path, build(cap + 1))
 
     @pytest.mark.parametrize("name,cap,build,path", _COUNTS, ids=[c[0] for c in _COUNTS])
