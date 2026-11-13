@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
-from kiro_crew.apps.manager import TASK_RUNNER_APP, TASK_RUNNER_DISABLED_MESSAGE, app_disabled
 from kiro_crew.constants import DENY_CAUSE_SURFACE_POLICY
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -36,6 +35,7 @@ from kiro_crew.shared_crew.turn_gate import TurnRefused
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_planner import plan_to_yaml
 from kiro_crew.taskrunner import WorkflowInitializing
+from kiro_crew.taskrunner_switch import task_runner_off
 from kiro_crew.workflow_memory import capture_admission_execution
 
 if TYPE_CHECKING:
@@ -158,7 +158,7 @@ async def _require_taskrunner_owner(request: web.Request, operation: str) -> web
     the class ``is_owner_dashboard_request`` can rule on at all. The other two
     caller classes keep the control that already governs them -- an
     ``X-Internal-Secret`` loopback process (the ``task_run`` MCP tool) reaches
-    here with ``app`` ABSENT, and an app token (the Projects app declares
+    here with ``app`` ABSENT, and an app token (an app whose manifest declares
     ``/api/taskrunner``) is confined to its manifest's declared paths by
     ``_enforce_app_scope``.
     """
@@ -168,12 +168,14 @@ async def _require_taskrunner_owner(request: web.Request, operation: str) -> web
 
 
 async def _task_runner_disabled() -> web.Response | None:
-    """409 while Task Runner is off in Library: a run would have no page to watch or stop it."""
-    if not await asyncio.to_thread(app_disabled, TASK_RUNNER_APP):
+    """409 while Task Runner is turned off (``taskrunner.enabled``, or the ``apps`` policy).
+
+    The code stays ``app_disabled``, the answer every start gave while Task Runner was
+    an app, so a client reading it needs no change.
+    """
+    if (refusal := await asyncio.to_thread(task_runner_off)) is None:
         return None
-    return web.json_response(
-        {"error": TASK_RUNNER_DISABLED_MESSAGE, "code": "app_disabled"}, status=409
-    )
+    return web.json_response({"error": refusal, "code": "app_disabled"}, status=409)
 
 
 async def _gate_auto_approve(

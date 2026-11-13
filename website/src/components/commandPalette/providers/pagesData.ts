@@ -5,6 +5,7 @@
  * generator (`scripts/gen-ui-index.mjs`) reads the same entries, so the palette
  * and the agent's location index cannot list a different set of extra pages.
  */
+import { BUILTIN_SURFACE_NAV } from '../../../surfaces/surfaceData'
 import { PREVIEW_WEBHOOKS } from '../../../utils/previewFlags'
 
 /**
@@ -23,7 +24,7 @@ import { PREVIEW_WEBHOOKS } from '../../../utils/previewFlags'
  * preview-gated one has to carry and be filtered on its own flag — otherwise
  * hiding a surface from the rail would smuggle it back in through ⌘K.
  */
-export const EXTRA_PAGES: readonly { key: string; route: string; previewFlag?: string }[] = [
+export const EXTRA_PAGES: readonly { key: string; route: string; previewFlag?: string; configSwitch?: string }[] = [
   // The App Store surface is `hiddenFromNav` (it renders as the Apps-header
   // "Explore" accent link, not a rail row), so it must be listed here to
   // stay reachable from the palette.
@@ -42,7 +43,9 @@ export const EXTRA_PAGES: readonly { key: string; route: string; previewFlag?: s
   // which direction this one runs.
   { key: 'webhooks', route: '/webhooks', previewFlag: PREVIEW_WEBHOOKS },
   { key: 'logs', route: '/logs' },
-  { key: 'tasks', route: '/tasks' },
+  // `/tasks` redirects to Task Runner, so it carries Task Runner's switch and
+  // leaves Search Everywhere with it.
+  { key: 'tasks', route: '/tasks', configSwitch: BUILTIN_SURFACE_NAV.projects.configSwitch },
   { key: 'mc-agents', route: '/mc-agents' },
   { key: 'instances', route: '/instances' },
 ]

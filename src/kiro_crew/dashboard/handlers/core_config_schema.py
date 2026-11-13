@@ -153,6 +153,8 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # The remote-dispatch preview switch (Settings → Developer → Feature previews,
     # rfc-conductor-remote-dispatch.md). Read on every call, so no restart.
     "work_ledger.remote_dispatch": {"type": "bool"},
+    # Task Runner's switch (Settings > Display > View). Every start reads it, so no restart.
+    "taskrunner.enabled": {"type": "bool"},
     # Default model for new sessions. Membership can NOT be validated against a
     # fixed list: the real vocabulary is whatever the live kiro-cli advertises
     # (/api/models spawns it to find out), and it spans both canonical registry

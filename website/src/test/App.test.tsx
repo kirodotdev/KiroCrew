@@ -1164,8 +1164,9 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const toggle = await screen.findByTitle(/more app/i)
     // Hover -> the portaled label mounts (collapsed rows carry no inline text).
+    // Ten apps plus Task Runner's row, which the Apps group lists with them.
     fireEvent.mouseEnter(toggle)
-    expect(await screen.findByText('4 more')).toBeInTheDocument()
+    expect(await screen.findByText('5 more')).toBeInTheDocument()
     // Press it the way a mouse does: pointerdown -> focus -> click. Neither the
     // focus the press produces nor the surviving hover state may leave a label
     // on screen — and the dismissal must be immediate, with no fade-out: the
@@ -1174,7 +1175,7 @@ describe('App routing', () => {
     fireEvent.pointerDown(toggle)
     fireEvent.focus(toggle)
     act(() => { toggle.click() })
-    expect(screen.queryByText('4 more')).toBeNull()
+    expect(screen.queryByText('5 more')).toBeNull()
     expect(screen.queryByText('Show less')).toBeNull()
     // ...and the press still did its job: dismissing the label must not swallow
     // the toggle's own activation (the title flips once the list is expanded).

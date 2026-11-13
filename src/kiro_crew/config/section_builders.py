@@ -159,6 +159,8 @@ def _build_taskrunner_config(taskrunner_data: dict) -> TaskRunnerConfig:
     section = SectionReader(TaskRunnerConfig, taskrunner_data)
     argv = section.get("test_command")
     return TaskRunnerConfig(
+        # Only a literal false turns it off: Task Runner shipped on.
+        enabled=section.get("enabled") is not False,
         max_parallel_steps=section.get("max_parallel_steps"),
         workspace_dir=str(section.get("workspace_dir")),
         # All or nothing: dropping one bad element would run a different command.

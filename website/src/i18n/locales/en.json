@@ -3761,20 +3761,6 @@
         "warnings": "Warnings"
       }
     },
-    "projects": {
-      "manifest": {
-        "description": "Hand over a multi-step job and let it run to completion unattended. Describe the work in plain language, paste a written spec, or upload a YAML file, then either generate a plan first to review the steps or start it straight away. Each run gets its own page showing step-by-step progress, and you can pause, resume, retry, or stop it at any point.",
-        "display_name": "Task Runner",
-        "highlight_1": "Three ways in: describe the work in plain language, paste a spec, or upload YAML",
-        "highlight_2": "Generate a plan and review the steps before committing to a run",
-        "highlight_3": "Runs execute unattended, with step-by-step progress on the run's own page",
-        "highlight_4": "Pause, resume, retry, or stop a run at any point",
-        "highlight_5": "Keeps a history of past runs and their outcomes",
-        "page_label": "Task Runner",
-        "use_case_1": "Plan and run a dependency-aware multi-agent job from plain language, an existing specification, or deterministic YAML.",
-        "configuration_1": "Open Task Runner, choose Compose, From Spec, or From YAML, select an agent and optional absolute workspace, then review with Plan or start immediately with Run."
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "building",

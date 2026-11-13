@@ -1675,6 +1675,14 @@
       "hint": "Show the search box in the middle of the top bar. Off, the controls on either side get its space, so the CPU, MEM and DSK readings stay visible in narrower windows. The search shortcut still opens search. While keyboard shortcuts are off, the box stays shown."
     },
     {
+      "id": "display.show-task-runner",
+      "label": "Show Task Runner",
+      "tab": "display",
+      "route": "/settings/display/view?highlight=key%3Ataskrunner.enabled",
+      "description": "Off takes Task Runner off the left rail and out of Search Everywhere and stops new task runs. Nothing is deleted: your plans, past runs and runs already going are kept.",
+      "configKey": "taskrunner.enabled"
+    },
+    {
       "id": "display.show-tray-icon",
       "label": "Show tray icon",
       "tab": "display",

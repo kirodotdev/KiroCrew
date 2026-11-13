@@ -3582,6 +3582,7 @@ class SessionConfig:
 
 @dataclass
 class TaskRunnerConfig:
+    enabled: bool = True           # Task Runner's switch (Settings > Display > View): false hides its rail row and refuses every new start; only a literal false is off; read at each start (taskrunner.md, app-kit-platform.md "Folding a built-in into core")
     max_parallel_steps: int = 0    # 0 = auto; a positive value only lowers the host-safe cap
     workspace_dir: str = ""       # empty = per-run workspace; otherwise the validated absolute target directory
     test_command: list[str] = []  # argv run after each step, no shell; malformed = []; restart=True (taskrunner.md "Test verification")

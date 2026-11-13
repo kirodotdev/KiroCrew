@@ -294,7 +294,6 @@ test/test_build_desktop_rm_resilient.py
 test/test_builtin_app_lifecycle.py
 test/test_builtin_app_optional_enable.py
 test/test_builtin_discovery.py
-test/test_builtin_projects_manifest.py
 test/test_builtin_skill_sync_safety.py
 test/test_capability_agents_plugins.py
 test/test_capability_mcp_registry.py

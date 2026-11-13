@@ -5084,20 +5084,6 @@
         "warnings": "경고"
       }
     },
-    "projects": {
-      "manifest": {
-        "use_case_1": "자연어, 기존 사양 또는 결정론적 YAML에서 의존성을 인식하는 다중 에이전트 작업을 계획하고 실행합니다.",
-        "configuration_1": "Task Runner를 열고 Compose, From Spec 또는 From YAML을 선택하세요. 에이전트와 선택적으로 절대 경로의 작업 공간을 지정한 다음, Plan으로 검토하거나 Run으로 바로 시작하세요.",
-        "description": "여러 단계로 이루어진 작업을 넘기면 무인으로 끝까지 실행됩니다. 작업을 일상 언어로 설명하거나, 작성된 스펙을 붙여넣거나, YAML 파일을 업로드한 뒤, 계획을 먼저 생성해 단계를 검토하거나 바로 시작할 수 있습니다. 각 실행에는 단계별 진행 상황을 보여주는 전용 페이지가 있으며, 언제든지 일시 중지, 재개, 재시도, 중지할 수 있습니다.",
-        "display_name": "Task Runner",
-        "highlight_1": "세 가지 방법: 작업을 일상 언어로 설명하거나, 스펙을 붙여넣거나, YAML을 업로드합니다",
-        "highlight_2": "실행을 확정하기 전에 계획을 생성해 단계를 검토합니다",
-        "highlight_3": "실행은 무인으로 진행되며, 실행 전용 페이지에 단계별 진행 상황이 표시됩니다",
-        "highlight_4": "언제든지 실행을 일시 중지, 재개, 재시도, 중지할 수 있습니다",
-        "highlight_5": "지난 실행과 그 결과의 기록을 보관합니다",
-        "page_label": "Task Runner"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "구축 중",
@@ -19140,7 +19126,10 @@
         "show_topbar_search_desc": "상단 바 가운데에 검색란을 표시합니다. 끄면 그 자리를 양옆의 컨트롤이 쓰므로, 좁은 창에서도 CPU, MEM, DSK 수치가 계속 보입니다. 검색 단축키로는 여전히 검색을 열 수 있습니다. 단축키가 꺼져 있는 동안에는 검색란이 계속 표시됩니다.",
         "command_bar": "커맨드 바 사용",
         "command_bar_desc": "Cmd+K 또는 Ctrl+K를 누르면 커맨드 바가 열립니다. 명령을 입력해 앱, 설정, 세션으로 이동하세요. 끄면 이 단축키가 검색 팔레트를 열며, 지식, 스킬, 프롬프트도 검색합니다.",
-        "command_bar_save_failed": "커맨드 바 설정을 저장할 수 없습니다."
+        "command_bar_save_failed": "커맨드 바 설정을 저장할 수 없습니다.",
+        "task_runner": "Task Runner 표시",
+        "task_runner_hint": "끄면 Task Runner가 왼쪽 레일과 전체 검색에서 사라지고 새 작업 실행이 중지됩니다. 삭제되는 것은 없습니다. 계획, 지난 실행, 진행 중인 실행은 그대로 유지됩니다.",
+        "task_runner_save_failed": "Task Runner 설정을 저장하지 못했습니다. 다시 시도하세요."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

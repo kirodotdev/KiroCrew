@@ -259,6 +259,7 @@ export function buildUiIndex(inputs) {
     surfaceIds.add(s.navId)
     const requires = [...previewRequires(s.previewFlag, `surface '${s.navId}'`)]
     if (s.appOnly) requires.push({ kind: 'condition', id: 'app_enabled' })
+    if (s.configSwitch) requires.push({ kind: 'condition', id: 'page_switched_on' })
     addLocation({
       id: `page.${s.navId}`,
       kind: 'page',

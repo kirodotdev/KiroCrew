@@ -12,6 +12,7 @@
 export const UI_CONDITIONS = {
   has_open_sessions: 'at least one open session is listed',
   app_enabled: 'the app that provides this page is installed and enabled',
+  page_switched_on: 'the setting that turns this page on is on (it is on unless someone turned it off in Settings)',
   full_dashboard: 'the full dashboard is open, not an embedded chat or sessions view',
   no_active_session: 'no session is open in the chat pane',
   no_schedules: 'no scheduled job exists yet',

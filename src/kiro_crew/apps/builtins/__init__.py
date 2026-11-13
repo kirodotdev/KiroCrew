@@ -39,13 +39,25 @@ _MIGRATED_BUILTINS: list[str] = [
     # The Command Bar is the dashboard's own quick-search launcher, in
     # ``website/src/components/commandBar/``. Its app record carried the one
     # thing the feature kept per install, whether it was on, so that moves to the
-    # setting named in _FOLDED_BUILTIN_SWITCHES before the record is removed.
+    # setting named in _FOLDED_BUILTIN_SWITCHES before the record is retired.
     "command-bar",
+    # Task Runner is a core page (``website/src/pages/ProjectsPage.tsx`` over the
+    # host's ``/api/taskrunner``). Its app record carried the one thing the feature
+    # kept per install, whether it was on, so that moves to the setting named in
+    # _FOLDED_BUILTIN_SWITCHES before the record is retired.
+    "projects",
 ]
 
 # A migrated built-in whose enabled state was its feature's switch, mapped to the
-# ``dashboard`` config key that is the switch now. The boot cleanup writes a
-# record's opt-out there before removing the record (``apps/builtin_fold.py``).
+# dotted ``config.json`` path that is the switch now. The boot cleanup writes a
+# record's opt-out there before retiring the record (``apps/builtin_fold.py``).
 _FOLDED_BUILTIN_SWITCHES: dict[str, str] = {
-    "command-bar": "command_bar_enabled",
+    "command-bar": "dashboard.command_bar_enabled",
+    "projects": "taskrunner.enabled",
 }
+
+# The folded built-ins that reached existing installs as a default-on PROMOTION
+# (``manager_builtins._DEFAULT_ON_BACKFILL`` before they folded). A record of one
+# still owed that promotion reads ``enabled: false`` without its user having chosen
+# it; any other folded built-in's ``enabled: false`` is the user's own opt-out.
+_FOLDED_PROMOTED_BUILTINS: frozenset[str] = frozenset({"command-bar"})

@@ -168,6 +168,23 @@ export interface Surface {
    * Only the rail row is opt-in.
    */
   pinnable?: boolean
+  /**
+   * A dotted `config.json` path that turns this surface on and off. While it
+   * holds a literal `false` the surface has no rail row and no Search Everywhere
+   * result; its route stays registered, so a bookmark still opens the page.
+   * Consumers read it through `surfaceSwitchedOn` with the shared
+   * `['kirocrewConfig']` read, for the reason `previewFlag` is filtered where the
+   * rail lists are built: the value is server state, not something this module
+   * holds.
+   */
+  configSwitch?: string
+  /**
+   * The built-in app this surface was before it moved into core. The rail's Apps
+   * group lists installed apps in `GET /api/apps` order (by name), so until the
+   * user drags the group into an order of their own, the row stands where that
+   * app's row stood rather than moving to the top of the group.
+   */
+  formerApp?: string
 }
 
 const _builtins: Surface[] = []

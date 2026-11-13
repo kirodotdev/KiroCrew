@@ -10,6 +10,7 @@ import type { AppHostProps } from '../components/AppHost'
 import ErrorNotice from '../components/ErrorNotice'
 import InstalledAppSurface from '../components/InstalledAppSurface'
 import { Btn } from '../components/ui'
+import { SURFACE_FORMER_APPS } from '../surfaces/surfaceData'
 
 import { i18nT } from '../i18n/t'
 /** App metadata from /api/apps; null before load / when the app does not exist.
@@ -62,6 +63,13 @@ export default function AppPage() {
         // have no native surface and render via AppHost below, like installed apps.
         // A builtin skipped at boot has no routes behind that surface, so it stays
         // here and AppHost shows why it is unavailable.
+        // A built-in that became a core surface opens that surface.
+        const surfaceRoute = data?.origin === 'builtin' ? SURFACE_FORMER_APPS.get(name) : undefined
+        if (surfaceRoute) {
+          redirecting = true
+          navigate(surfaceRoute, { replace: true })
+          return
+        }
         if (data?.origin === 'builtin' && !data?.unavailable && !data?.manifest?.ui?.entry && data?.manifest?.ui?.pages?.[0]?.route) {
           redirecting = true
           navigate(data.manifest.ui.pages[0].route, { replace: true })
@@ -71,6 +79,14 @@ export default function AppPage() {
       })
       .catch((e: unknown) => {
         if (cancelled) return
+        // The old launch URL of a built-in that became a core surface (its record
+        // retired, nothing installed under the name) opens that surface.
+        const surfaceRoute = isNotFoundError(e) ? SURFACE_FORMER_APPS.get(name) : undefined
+        if (surfaceRoute) {
+          redirecting = true
+          navigate(surfaceRoute, { replace: true })
+          return
+        }
         setApp(null)
         // Only a 404 means the app is absent; anything else is a failure to say so.
         if (!isNotFoundError(e)) {

@@ -24,6 +24,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from taskrunner_switch_helpers import turn_task_runner_off
 
 import kiro_crew.messaging.commands as commands
 from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
@@ -888,18 +889,14 @@ class TestCron:
 
 class TestTaskRunner:
     @pytest.mark.asyncio
-    async def test_a_disabled_task_runner_app_refuses_the_start(self, tmp_path: Any) -> None:
+    async def test_task_runner_turned_off_refuses_the_start(self, tmp_path: Any) -> None:
         spec = tmp_path / "plan.yaml"
         spec.write_text("steps: []", encoding="utf-8")
         runner = MagicMock(running=False)
         runner.start_background = AsyncMock()
-        with patch(
-            "kiro_crew.apps.manager._read_installed",
-            return_value=SimpleNamespace(enabled=False),
-        ) as read:
-            out = await task_command_reply(f"task run {spec}", runner) or ""
-        assert "Task Runner is disabled" in out
-        read.assert_called_once_with("projects")
+        turn_task_runner_off()
+        out = await task_command_reply(f"task run {spec}", runner) or ""
+        assert "Task Runner is turned off" in out
         runner.start_background.assert_not_awaited()
 
     @pytest.mark.asyncio

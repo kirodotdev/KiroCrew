@@ -2872,6 +2872,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "display.show-task-runner",
+    "label": "Show Task Runner",
+    "labelKey": "pages.settings.displayPanel.task_runner",
+    "description": "Off takes Task Runner off the left rail and out of Search Everywhere and stops new task runs. Nothing is deleted: your plans, past runs and runs already going are kept.",
+    "tab": "display",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "view"
+    },
+    "configKey": "taskrunner.enabled"
+  },
+  {
     "id": "display.show-tray-icon",
     "label": "Show tray icon",
     "labelKey": "pages.settings.displayPanel.show_tray_icon",

@@ -203,6 +203,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, the dashboard also listens on a loopback port for AWS SSM port forwards.
     "dashboard.shared_crew.ssm": (False, True),
     "skills.approval_required": (True, False),
+    # On, an agent may start a Task Runner run (``task_run``); off, every start refuses.
+    "taskrunner.enabled": (False, True),
     "telemetry.beacon_enabled": (False, True),
     # Kiro's own Chromium holds none of the person's logins; ``auto`` and
     # ``user_chrome`` hand the agent the person's Chrome, signed in.

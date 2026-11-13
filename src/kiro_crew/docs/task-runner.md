@@ -19,6 +19,17 @@ they run. The page has no spec-path field; a spec path is accepted by
 `kirocrew run`, the `task_run` tool, the `task run` keyword below and
 `POST /api/taskrunner`.
 
+### Switching it off
+
+It is on unless you turn it off with the **Show Task Runner** switch in
+**Settings > Display > View**. Off, its row leaves the left rail and Search
+Everywhere, and the gateway refuses new starts from the page, the agent tool,
+the chat keyword and a saved plan workflow; `kirocrew run` on the host does not
+read the switch. Work already under way carries
+on, and the page still opens from a link or **Alt+P** / **Option+P**. It used to
+be an app you switched on and off in Library; if you had switched it off there, it
+stays off after the update.
+
 ### Via Slack
 
 ```

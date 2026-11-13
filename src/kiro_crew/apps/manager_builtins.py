@@ -89,11 +89,7 @@ logger = logging.getLogger("kiro_crew.apps.manager")
 # both the hardcoded list and the file-based manifests read it from here, so a
 # builtin cannot become default-on in one registration path while the other
 # path's test still forbids it.
-_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
-    {
-        "projects",  # Task Runner
-    }
-)
+_DEFAULT_ON_BUILTINS: frozenset[str] = frozenset()
 
 
 # Promotions still owed to installs that PREDATE them — a different question from
@@ -102,12 +98,11 @@ _DEFAULT_ON_BUILTINS: frozenset[str] = frozenset(
 # ``_DEFAULT_ON_BUILTINS`` answers "what does a FRESH install enable". This set
 # answers "which promotion has not yet reached installs that registered the app
 # while it was still default-off". Reading the first set for the second question
-# reverses deliberate opt-outs: ``projects`` (Task Runner) has shipped
-# ``defaultEnabled: true`` since it was aligned with the other builtins, long
-# before this allowlist existed, so it has been enabled and visible in the
-# sidebar on every existing install. A record showing ``enabled: false`` for it
-# is therefore a user who FOUND it and turned it off — the opposite of the
-# population a backfill exists to serve.
+# reverses deliberate opt-outs: an app that shipped ``defaultEnabled: true``
+# long before this allowlist existed has been enabled and visible in the sidebar
+# on every existing install, so a record showing ``enabled: false`` for it is a
+# user who FOUND it and turned it off, the opposite of the population a backfill
+# exists to serve.
 #
 # So a name belongs here only when both hold: a fresh install enables it (it is
 # in the set above), and existing installs were never in a position to choose.
@@ -994,6 +989,11 @@ def invalidate_orphan_cache() -> None:
 # Migration cleanup
 # ---------------------------------------------------------------------------
 
+#: Appended to ``installed.json`` and ``app.json`` when a migrated builtin's record
+#: is retired: the files stay beside ``data/`` as the record's backup, and nothing
+#: reads them as an installed app.
+RETIRED_RECORD_SUFFIX = ".retired"
+
 
 def migrated_builtin_cleanup_applies(name: str) -> bool:
     """Whether a safe builtin-owned record qualifies for migration teardown and removal.
@@ -1022,15 +1022,23 @@ def migrated_builtin_cleanup_applies(name: str) -> bool:
 def folded_switch_state(name: str, meta: InstalledApp) -> bool:
     """The state a folded app's feature had for this user on the build that shipped it.
 
-    A record still owed its default-on promotion reads ``enabled: false``, but
-    ``backfill_default_on_builtins`` turned it on at that build's next start unless
-    the ``apps`` governance allowlist denied the app, so it reads as on here too.
-    The owner's own disable outranked that promotion on that build (the protected
-    store's disable is what every record read applies), so it reads as off.
+    A record of a promoted app (``_FOLDED_PROMOTED_BUILTINS``) still owed its
+    default-on promotion reads ``enabled: false``, but ``backfill_default_on_builtins``
+    turned it on at that build's next start unless the ``apps`` governance allowlist
+    denied the app, so it reads as on here too. The owner's own disable outranked
+    that promotion on that build (the protected store's disable is what every record
+    read applies), so it reads as off. Any other folded app's ``enabled: false`` is
+    the user's own opt-out.
     """
+    from kiro_crew.apps.builtins import _FOLDED_PROMOTED_BUILTINS
+
     if meta.enabled:
         return True
-    if meta.defaultOnBackfilled or protected_app_state.owner_disabled(name):
+    if (
+        name not in _FOLDED_PROMOTED_BUILTINS
+        or meta.defaultOnBackfilled
+        or protected_app_state.owner_disabled(name)
+    ):
         return False
     return _app_activation_denied(name) is None
 
@@ -1042,7 +1050,8 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     the migration mechanism won't have migratedTo set. The presence of `name` in
     _MIGRATED_BUILTINS is the authoritative signal.
 
-    Preserves data/ directory. Removes installed.json and app.json only.
+    Preserves data/ directory. Retires installed.json and app.json only, by renaming
+    each to ``<file>.retired`` beside it, so the record stays on disk as a backup.
     Idempotent: returns ok=True if already cleaned up.
     """
     from kiro_crew.apps.builtins import _MIGRATED_BUILTINS
@@ -1082,16 +1091,16 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
             error_code="io_error",
         )
 
-    # Perform cleanup — remove metadata files, preserve data/
+    # Perform cleanup: move the metadata files aside, preserve data/. installed.json
+    # goes last, because its absence is what reads as "already cleaned up".
     dest = app_dir(name)
     installed_path = dest / INSTALLED_META_FILENAME
     manifest_path = dest / APP_MANIFEST_FILENAME
 
     try:
-        if manifest_path.is_file():
-            manifest_path.unlink()
-        if installed_path.is_file():
-            installed_path.unlink()
+        for path in (manifest_path, installed_path):
+            if path.is_file():
+                os.replace(path, path.with_name(path.name + RETIRED_RECORD_SUFFIX))
     except OSError as exc:
         logger.error("cleanup_migrated_builtin: failed to clean up %s: %s", name, exc)
         return AppResult(
@@ -1105,7 +1114,7 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
     refresh_app_config_keys()
     invalidate_orphan_cache()
 
-    logger.info("Cleaned up migrated builtin %s (data preserved)", name)
+    logger.info("Cleaned up migrated builtin %s (data and a record backup preserved)", name)
     return AppResult(
         ok=True,
         name=name,
