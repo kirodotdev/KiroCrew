@@ -3795,6 +3795,17 @@ attempt of the turn. An auth failure after text or billing, or from a backend
 outside that set, is charged like any other failed turn, so a login lapse
 overnight cannot abandon a span unread.
 
+The environment backoff lasts only until the host can run turns again. The
+first consolidation turn the provider answers after a process start, after the
+startup scan adds sessions, or after any environment failure, releases the
+environment backoff of every session the idle sweep tracks
+(`clear_consolidation_environment_backoff` in `history_marker.py`). A turn that
+raised returns no answer and releases nothing. A session with a billed attempt
+on its current span keeps its deadline. Each session is released once until it
+next consolidates (`consolidation_env_released`), and its failure count is
+kept, so a session that fails again on its own resumes widening up to the
+ceiling. No span field changes, so nothing is marked consolidated.
+
 ### Cross-Platform
 
 macOS (Apple Silicon and Intel), Linux (x86_64, arm64/Graviton), and Windows supported. All paths use `pathlib.Path`. GGUF model downloaded over sha256-pinned HTTPS from the Kiro Crew CDN. No runtime install step — native llama.cpp libraries are vendored per platform in `_vendor/llama_cpp_libs/` and selected in-process through the `_LIB_PATH_SEAM` module the loader registers in `sys.modules` (`LLAMA_CPP_LIB_PATH` remains the operator's override, never written by the loader) (the old Docker fallback is gone).

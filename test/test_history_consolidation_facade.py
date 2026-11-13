@@ -233,6 +233,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, key: 'str', token: 'str') -> 'None'",
     ),
     "_release_count": ("function", False, False, "(self, claim: '_CountClaim') -> 'None'"),
+    "_release_environment_backoff": ("function", False, False, "(self) -> 'None'"),
     "_renew_consolidation_lease": (
         "function",
         False,
