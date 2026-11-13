@@ -46,6 +46,7 @@ from kiro_crew.hooks import (
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.driver_quoted_markers import QuotedDirectiveFilter
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -1422,13 +1423,16 @@ async def _send_and_print(
     # ``o`` replies the backend could not take mid-turn. Sent as the next message
     # once this turn ends, so what the person typed still reaches the agent.
     undelivered: list[str] = []
+    # A quoted directive marker line is protocol: held to its newline, then dropped.
+    quoted = QuotedDirectiveFilter()
     try:
         # A call whose own silence timer ends the prompt is handed back to the
         # model inside this turn, on the same session (``acp.timed_out_continuation``).
         async for event in continue_timed_out_calls(provider.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
-                print(event.text, end="", flush=True)
+                print(quoted.feed(event.text), end="", flush=True)
             elif event.kind == EVENT_PERMISSION_REQUEST:
+                print(quoted.flush(), end="", flush=True)  # the held text goes above the prompt
                 # The backend holds the turn open until this is answered, so an
                 # unhandled request is not a missed prompt -- it is a turn that
                 # never ends.
@@ -1440,13 +1444,14 @@ async def _send_and_print(
                     undelivered_replies=undelivered,
                 )
             elif event.kind == EVENT_COMPLETE:
+                print(quoted.flush(), end="", flush=True)
                 # The text was printed as it streamed, so the error carries
                 # none: the timeout branch below must not print it twice.
                 unfinished = unfinished_turn_error(event, "")
                 if unfinished is not None:
                     raise unfinished
                 break
-        print()  # final newline
+        print(quoted.flush())  # a stream that ended without a complete event, and the newline
     except AcpTimeoutError as e:
         if e.partial_output:
             print(e.partial_output)
