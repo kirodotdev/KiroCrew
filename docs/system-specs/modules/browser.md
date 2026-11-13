@@ -1011,7 +1011,7 @@ the last navigate or snapshot.
 | `snapshot` | the accessibility walker, run in the page; refs are per snapshot |
 | `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
 | `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
-| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land |
+| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. `type {ref?, steps: [{text} | {key, modifiers?}]}` runs its steps in order in one op: `ref` is focused once, each text step runs the focused-field checks above and each key step `press_key`'s guards, and the first refusal ends it with the step's 0-based index as `step` and at the front of its `error`. A malformed list (not 1 to `STEPS_CAP` (50) steps, a step that is neither shape, a key step whose key `press_key` would refuse as unknown, `text` or a truthy `submit` beside `steps`) is refused `bad_steps` before anything runs; `TEXT_CAP` bounds the text of all steps together. A `\t` in `text` inserts a tab character, not the Tab key |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
 | `tabs` | lists and switches `relay.agent_targets()` only |

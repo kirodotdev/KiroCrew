@@ -126,6 +126,9 @@ WAIT_POLL_S = 0.1
 CONSOLE_CAP = 500
 SCROLL_DEFAULT_PX = 300
 TEXT_CAP = 20_000
+#: Most steps one ``type {steps}`` call runs: the whole list stays one op inside
+#: the short op budget (``budgets.OP_TIMEOUT_S``).
+STEPS_CAP = 50
 _URL_MAX = 4096
 
 _SleepFn = Callable[[float], Awaitable[None]]
@@ -831,7 +834,104 @@ async def _scroll(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "x": x, "y": y, "dx": dx, "dy": dy}
 
 
+async def _focus_ref(ctx: OpContext, ref: Any) -> dict[str, Any] | None:
+    """Focus *ref* before typing; the refusal, or ``None`` once it holds focus."""
+    if not _is_ref(ref):
+        return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    focused = await _page(ctx, "focus", ref)
+    if not isinstance(focused, dict) or not focused.get("ok"):
+        code = focused.get("code") if isinstance(focused, dict) else None
+        if code == "password_field":
+            return _password_refusal(ref)
+        if code == "asked_field":
+            return _asked_refusal(ref)
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    if not focused.get("focused"):
+        why = " (disabled)" if focused.get("disabled") else ""
+        why += " (readonly)" if focused.get("readOnly") else ""
+        if focused.get("activeTag"):
+            why += f"; focus stayed on <{focused['activeTag']}>"
+        return refusal(
+            "not_focusable",
+            f"ref {ref} did not take focus{why} -- refusing to type into another field",
+        )
+    return None
+
+
+def _steps_refusal(error: str, index: int | None = None) -> dict[str, Any]:
+    if index is None:
+        return refusal("bad_steps", error)
+    out = refusal("bad_steps", f"step {index} (counting from 0): {error}; nothing was typed")
+    out["step"] = index
+    return out
+
+
+def _ran_steps_refusal(result: dict[str, Any], index: int) -> dict[str, Any]:
+    """A step's own refusal, its index in front of its error and as ``step``."""
+    prefix = f"step {index} (counting from 0; the steps before it ran)"
+    error = result.get("error")
+    return {**result, "error": f"{prefix}: {error}" if error else prefix, "step": index}
+
+
+def _known_key(key: Any) -> bool:
+    """*key* is one ``press_key`` presses: ``Space``, a named key, or one character."""
+    return isinstance(key, str) and (key == "Space" or key in _NAMED_KEYS or len(key) == 1)
+
+
+def _step_shape_error(step: Any) -> str | None:
+    """Why one ``steps`` item is malformed, or ``None`` for ``{text}`` / ``{key, modifiers?}``."""
+    if not isinstance(step, dict):
+        return "each step is an object: {text} or {key, modifiers?}"
+    keys = set(step)
+    if keys == {"text"}:
+        return None if isinstance(step["text"], str) else "a text step needs a `text` string"
+    if "key" in keys and keys <= {"key", "modifiers"}:
+        if _known_key(step["key"]):
+            return None
+        return f"unknown key: {step['key']!r} (named keys or a single character)"
+    return "each step is exactly {text} or {key, modifiers?}"
+
+
+async def _type_steps(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """``type {ref?, steps}``: text and key steps in order, each with its own guards."""
+    steps = args.get("steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= STEPS_CAP:
+        return _steps_refusal(f"`steps` is a list of 1 to {STEPS_CAP} steps")
+    if args.get("text") is not None or args.get("submit"):
+        return _steps_refusal(
+            "with `steps`, put the text and the Enter key in the steps, "
+            "not in `text` or `submit`"
+        )
+    for index, step in enumerate(steps):
+        error = _step_shape_error(step)
+        if error is not None:
+            return _steps_refusal(error, index)
+    chars = sum(len(step["text"]) for step in steps if "text" in step)
+    if chars > TEXT_CAP:
+        return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
+    ref = args.get("ref")
+    if ref is not None:
+        refused = await _focus_ref(ctx, ref)
+        if refused is not None:
+            return refused
+    for index, step in enumerate(steps):
+        try:
+            if "text" in step:
+                result = await _type(ctx, {"text": step["text"]})
+            else:
+                result = await _press_key(
+                    ctx, {"key": step["key"], "modifiers": step.get("modifiers")}
+                )
+        except _PageRefused as exc:
+            return _ran_steps_refusal(exc.result, index)
+        if not result.get("ok"):
+            return _ran_steps_refusal(result, index)
+    return {"ok": True, "ref": ref, "steps": len(steps), "chars": chars}
+
+
 async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    if args.get("steps") is not None:
+        return await _type_steps(ctx, args)
     text = args.get("text")
     if not isinstance(text, str):
         return refusal("bad_text", "type needs a `text` string")
@@ -839,25 +939,9 @@ async def _type(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
         return refusal("bad_text", f"text longer than {TEXT_CAP} characters")
     ref = args.get("ref")
     if ref is not None:
-        if not _is_ref(ref):
-            return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
-        focused = await _page(ctx, "focus", ref)
-        if not isinstance(focused, dict) or not focused.get("ok"):
-            code = focused.get("code") if isinstance(focused, dict) else None
-            if code == "password_field":
-                return _password_refusal(ref)
-            if code == "asked_field":
-                return _asked_refusal(ref)
-            return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
-        if not focused.get("focused"):
-            why = " (disabled)" if focused.get("disabled") else ""
-            why += " (readonly)" if focused.get("readOnly") else ""
-            if focused.get("activeTag"):
-                why += f"; focus stayed on <{focused['activeTag']}>"
-            return refusal(
-                "not_focusable",
-                f"ref {ref} did not take focus{why} -- refusing to type into another field",
-            )
+        refused = await _focus_ref(ctx, ref)
+        if refused is not None:
+            return refused
     # Whatever holds focus now is where the text lands: never a password box.
     active = await _page(ctx, "activeField")
     if not isinstance(active, dict) or not active.get("focused"):
@@ -909,10 +993,10 @@ async def _press_key(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     key = args.get("key")
     if not isinstance(key, str) or not key:
         return refusal("bad_key", "press_key needs a `key`")
+    if not _known_key(key):
+        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     if key == "Space":
         key = " "
-    if key not in _NAMED_KEYS and len(key) != 1:
-        return refusal("bad_key", f"unknown key: {key!r} (named keys or a single character)")
     modifiers = _modifier_mask(args.get("modifiers"))
     if len(key) == 1 or modifiers:
         # A printable key is a character typed into whatever holds focus: the same

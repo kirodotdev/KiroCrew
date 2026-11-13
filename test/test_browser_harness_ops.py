@@ -535,6 +535,76 @@ def test_type_refuses_when_focus_did_not_land_or_nothing_is_focused(fake: FakeBr
     assert "type_text" not in fake.helper_names()
 
 
+def _inputs(fake: FakeBrowser) -> list[tuple[str, dict[str, Any]]]:
+    return [(h, kw) for h, kw in fake.calls if h in ("type_text", "press_key")]
+
+
+def test_type_steps_run_text_and_keys_in_order_and_stop_at_the_first_refusal(
+    fake: FakeBrowser,
+) -> None:
+    steps = [{"text": "Users"}, {"key": "Tab"}, {"text": "2,500"}]
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "input"}
+    out = run(ops.run_op("type", {"steps": steps}, fake.ctx()))
+    assert out == {"ok": True, "ref": None, "steps": 3, "chars": 10}
+    assert _inputs(fake) == [
+        ("type_text", {"text": "Users"}),
+        ("press_key", {"key": "Tab", "modifiers": 0}),
+        ("type_text", {"text": "2,500"}),
+    ]
+
+    # The Tab lands on a password field: the text step aimed at it is refused.
+    fake.calls.clear()
+    fake.page["activeField"] = lambda: {
+        "focused": True,
+        "password": any(h == "press_key" for h, _ in fake.calls),
+        "tag": "input",
+    }
+    out = run(ops.run_op("type", {"steps": steps}, fake.ctx()))
+    assert out["code"] == "password_field" and out["step"] == 2
+    assert out["error"].startswith("step 2 (counting from 0; the steps before it ran): ")
+    assert _inputs(fake) == [
+        ("type_text", {"text": "Users"}),
+        ("press_key", {"key": "Tab", "modifiers": 0}),
+    ]
+    assert "2,500" not in json.dumps(fake.calls)
+
+
+def test_type_steps_are_all_checked_before_anything_runs(fake: FakeBrowser) -> None:
+    fake.page["activeField"] = {"focused": True, "password": False, "tag": "input"}
+    out = run(ops.run_op("type", {"steps": [{"text": "a"}, {"oops": 1}]}, fake.ctx()))
+    assert out["code"] == "bad_steps" and out["step"] == 1
+    assert out["error"].startswith("step 1 (counting from 0): ")
+    for bad in (
+        {"text": "x", "steps": [{"text": "a"}]},
+        {"steps": [{"text": "a"}, {"key": "tab"}]},
+        {"submit": True, "steps": [{"text": "a"}]},
+        {"steps": []},
+        {"steps": [{"key": "Tab"}] * (ops.STEPS_CAP + 1)},
+        {"steps": [{"text": 1}]},
+        {"steps": [{"text": "a", "key": "Tab"}]},
+    ):
+        assert run(ops.run_op("type", bad, fake.ctx()))["code"] == "bad_steps", bad
+    over = [{"text": "x" * ops.TEXT_CAP}, {"text": "y"}]
+    assert run(ops.run_op("type", {"steps": over}, fake.ctx()))["code"] == "bad_text"
+    out = run(ops.run_op("type", {"steps": [{"text": "a"}, {"key": "Bogus"}]}, fake.ctx()))
+    assert out["code"] == "bad_steps" and out["step"] == 1 and "Bogus" in out["error"]
+    assert _inputs(fake) == []
+    steps = {"submit": False, "steps": [{"text": "a"}]}
+    assert run(ops.run_op("type", steps, fake.ctx()))["ok"] is True
+
+
+def test_type_steps_stop_when_a_key_step_lands_on_a_refused_page(fake: FakeBrowser) -> None:
+    from kiro_crew.browser_harness.url_gate import url_allowed
+
+    tab = {"url": "https://example.com/"}
+    fake.helpers["current_tab"] = lambda: dict(tab)
+    fake.helpers["press_key"] = lambda **_kw: tab.update(url="http://169.254.169.254/latest")
+    ctx = _gated_ctx(fake, lambda url: url_allowed(url, frozenset(), 6776))
+    out = run(ops.run_op("type", {"steps": [{"key": "Enter"}, {"text": "x"}]}, ctx))
+    assert out["code"] == "redirect_refused" and out["step"] == 1
+    assert "type_text" not in fake.helper_names()
+
+
 def test_press_key_named_single_and_modifiers(fake: FakeBrowser) -> None:
     assert run(ops.run_op("press_key", {"key": "Enter"}, fake.ctx()))["ok"] is True
     assert fake.calls[-1] == ("press_key", {"key": "Enter", "modifiers": 0})
