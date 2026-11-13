@@ -10625,7 +10625,7 @@
         "dashboard_stale_wake_desc": "When a field a bot writes on its Dashboard page goes out of date, {{productName}} starts one short turn in that bot's chat asking it to write the field again, even with no check-in on. At most one such turn per bot every 30 minutes, and each one uses credits.",
         "dashboard_stale_wake_desc_summary": "Asks a bot to update its out-of-date fields.",
         "bridge_approvals": "Send pending approvals to chat apps",
-        "bridge_approvals_desc": "When a tool approval opens, {{productName}} sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard.",
+        "bridge_approvals_desc": "When a tool approval opens or an agent asks you a question, {{productName}} sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it. On Slack, answer with the note's buttons. On Telegram or Discord, reply to an approval note to approve or deny it. Answer anything else in the dashboard.",
         "bridge_approvals_desc_summary": "Tells a connected chat app when a tool needs approval.",
         "chat_runtime_sharing": "Share one background program across chats",
         "chat_runtime_sharing_desc": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
