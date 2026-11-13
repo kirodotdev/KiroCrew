@@ -355,6 +355,9 @@ async def _write_denied_state(mutate, *, resolving_pending: bool = False) -> dic
     def _read_modify_write() -> dict:
         from kiro_crew.config import loosening_provenance
 
+        if not resolving_pending:
+            # Before the read: a stale endorsed copy must not be published over an Apply.
+            loosening_provenance.refuse_save_if_pending(loosening_provenance.LEAF_DENIED_COMMANDS)
         denied = _read_denied_strict()
         mutate(denied)
         payload = text_bytes(json.dumps(denied, indent=2) + "\n")

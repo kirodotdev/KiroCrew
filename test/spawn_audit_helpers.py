@@ -594,6 +594,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # worktree step's git calls run inside ``crewmate_worktree``'s own runner.
         "cli_commands_agent.py::_remove_deleted_agent_leftovers",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``) driving the shared ``resolve_pending`` writer
+        # from the loop-less ``kirocrew config pending apply|discard``; the matched call
+        # starts no child. The inputs are an operator-typed file name and version.
+        "cli_config_pending.py::_resolve",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
         # ``run`` on base ``asyncio``) driving ``KasLoginService``'s device-code
         # sign-in and sign-out coroutines from the loop-less ``kirocrew kas
         # login`` / ``kas logout`` verbs. No child process is created: the
