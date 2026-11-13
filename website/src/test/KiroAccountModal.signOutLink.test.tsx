@@ -254,6 +254,29 @@ describe('KiroAccountModal with no usable Kiro sign-in', () => {
     expect(screen.getByTestId('loc').textContent).toBe(KIRO_SIGN_IN_PATH)
   })
 
+  it('shows a refused kiro-cli credential on KAS as an error with the agent hand-off (#35483)', async () => {
+    // Crew holds no sign-in, so the agents run on kiro-cli's login, and the
+    // usage API refused that credential: a read failed, so it is not the
+    // passive "no sign-in" notice.
+    crewSignIn(false)
+    renderModal('signin-rejected')
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    await within(dialog).findByRole('button', SIGN_IN_LINK, QUERY_CHAIN)
+    // The notice waits on Crew's sign-in read, which lands after the link's config read.
+    const alert = await within(dialog).findByRole('alert', {}, QUERY_CHAIN)
+    expect(alert).toHaveTextContent('Your Kiro sign-in is no longer valid, so your account and credits can’t be shown. Sign in again to see them.')
+    expect(within(dialog).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
+    expect(within(dialog).queryByText(/No active Kiro sign-in/)).toBeNull()
+  })
+
+  it('keeps the lapsed notice for a stored KAS sign-in when a credential was refused', async () => {
+    crewSignIn(true)
+    renderModal('signin-rejected')
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    await within(dialog).findByText(/Your Kiro sign-in is no longer valid/, {}, QUERY_CHAIN)
+    expect(within(dialog).queryByRole('button', { name: /Ask the agent/i })).toBeNull()
+  })
+
   it('says the KAS sign-in could not be checked when its read fails, not that there is none', async () => {
     signInMock.mockRejectedValue(new Error('token store unreadable'))
     renderModal('signin-required')
@@ -285,5 +308,19 @@ describe('KiroAccountModal with no usable Kiro sign-in', () => {
     await waitFor(() => expect(screen.getByTestId('harness').textContent).toBe(backend), QUERY_CHAIN)
     expect(within(dialog).getByRole('alert')).toHaveTextContent('Sign in to Kiro again — for example by running kiro-cli login')
     expect(within(dialog).queryByRole('button', SIGN_IN_LINK)).toBeNull()
+  })
+
+  it('keeps the kiro-cli sentence for a refused credential on the kiro harness', async () => {
+    configMock.mockResolvedValue({ agent: { acp_backend: 'kiro' } } as never)
+    renderWithProviders(
+      <>
+        <KiroAccountModal open onClose={vi.fn()} usage="signin-rejected" />
+        <HarnessProbe />
+      </>,
+    )
+    const dialog = await screen.findByRole('dialog', { name: 'Kiro Account' })
+    await waitFor(() => expect(screen.getByTestId('harness').textContent).toBe('kiro'), QUERY_CHAIN)
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Sign in to Kiro again — for example by running kiro-cli login')
+    expect(within(dialog).getByRole('button', { name: /Ask the agent/i })).toBeInTheDocument()
   })
 })
