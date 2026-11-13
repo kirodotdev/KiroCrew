@@ -10949,6 +10949,10 @@
       "config_unavailable_detail": "페이지를 새로고침해 다시 시도하거나 에이전트에게 확인을 요청하세요.",
       "load_failed": "대시보드 일부를 불러오지 못했습니다. 페이지를 새로고침해 다시 시도하세요."
     },
+    "kiroSignInPrompt": {
+      "title": "채팅을 시작하려면 Kiro에 로그인하세요",
+      "intro": "채팅은 내 Kiro 계정으로 실행됩니다. 로그인 방법을 선택하세요."
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>부하 상태:</0> <1>에이전트 {{configured}}개 중 {{cap}}개 동시 실행</1>",
       "exec_reduced_queued": "<0>부하 상태:</0> <1>에이전트 {{configured}}개 중 {{cap}}개 동시 실행 · {{queued}}개 대기 중</1>",

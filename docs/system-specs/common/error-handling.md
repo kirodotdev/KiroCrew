@@ -378,6 +378,17 @@ the frame's "Please try again" still gives it the retryable verdict and the
 `http_5xx` classifier kind, which match the engine's own `SERVER_ERROR`, bounded by
 the ladder.
 
+The engine's **refused credential** is a sign-in error. KAS words its
+`AccessDeniedError` as the fixed sentence "Access denied. Please check your
+authentication. (Request ID: …)", with no 401/403 and no expiry wording, and it
+names no place to sign in. `_RE_SESSION_EXPIRED` carries that exact sentence, so
+the turn takes the session-expiry arm: the harness's signed-out message (the Kiro
+sign-in card and, on a terminal, `kirocrew kas login` for KAS; `kiro-cli login`
+for the Kiro CLI harness), terminal, tagged `sign_in_needed` (and `auth_required`
+where the card is the fix), with the request id after the message. Bare
+"access denied" text and a name such as `AccessDeniedError` in prose match
+nothing.
+
 Retry hints are the other wording-only signal, and they are **provider-scoped**:
 `_RE_5XX_HINT` carries one alternative per backend spelling ("please try again"
 for Kiro/Bedrock, "try your request again" for the claude-agent-acp seam's

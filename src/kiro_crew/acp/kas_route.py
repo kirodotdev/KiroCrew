@@ -54,6 +54,7 @@ __all__ = [
     "REASON_KIRO_CLI_SIGNED_OUT",
     "REASON_NO_KIRO_CLI",
     "KasRoute",
+    "bundle_route_lacks_sign_in",
     "crew_sign_in_starts_spawn",
     "kiro_cli_signed_out",
     "last_spawn_route",
@@ -331,6 +332,29 @@ def crew_sign_in_starts_spawn(
             return True
         return resolve_kas_route(environ=environ, home=home).bundle
     except Exception:  # noqa: BLE001 - no usable Crew sign-in keeps kiro-cli's in play
+        return False
+
+
+def bundle_route_lacks_sign_in(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+) -> bool:
+    """Whether the next KAS spawn takes the bundle route with no usable Crew sign-in.
+
+    That chat cannot start: the bundle runs no kiro-cli, so Kiro Crew's own
+    sign-in is the only one it takes. False whenever that cannot be worked out
+    (an unreadable store, a failed route check), so a guess never asks anyone to
+    sign in. Blocking (vault, kiro-cli store and config reads); never raises.
+    """
+    try:
+        try:
+            if sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT:
+                return False
+        except sign_in.SignInError:
+            pass  # no usable sign-in: the route decides
+        return resolve_kas_route(environ=environ, home=home).bundle
+    except Exception:  # noqa: BLE001 - unknown answers False, never a prompt
         return False
 
 

@@ -205,6 +205,13 @@ export interface KasBundleStatus {
     reason: string
     summary: string
   } | null
+  /**
+   * True when a new chat would fail for lack of Kiro Crew's own sign-in: KAS
+   * is the main harness and its next spawn takes the bundle route with no
+   * usable sign-in. The gateway decides; false for a non-owner, when unknown,
+   * and from an older gateway that sends no such key.
+   */
+  chat_needs_sign_in?: boolean
 }
 
 export interface KasLoginStatus {

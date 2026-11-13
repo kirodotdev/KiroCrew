@@ -89,6 +89,15 @@ kiro-cli login
 On the first dashboard launch, the Set up Kiro page walks through installing the
 CLI and completing sign-in.
 
+**Where to sign in on the Kiro Agent (KAS) harness.** Where kiro-cli cannot run
+(not installed, or not signed in), KAS chats run on Kiro Crew's own engine and use
+Kiro Crew's own Kiro sign-in. Sign in from the dashboard at
+**Settings → Agent Harness → Kiro Agent → Kiro sign-in** (a chat that needs it
+offers the same sign-in above the message box), or in a terminal on the gateway host with
+`kirocrew kas login`. A chat error saying "Not signed in to Kiro" or "Access
+denied. Please check your authentication." is fixed there; then send the message
+again.
+
 Already a kiro-cli user? [Coming from kiro-cli](coming-from-kiro-cli.md) covers
 what carries over (agents, MCP servers, steering, your login), why a Crew chat
 behaves differently from `kiro-cli chat`, and how to get CLI-style behaviour.

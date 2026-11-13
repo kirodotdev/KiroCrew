@@ -551,6 +551,12 @@ engine instead ([aws-control.md](aws-control.md)).
   own "not signed in … Please sign in and retry" (`ModelRegistryUnauthenticatedError`
   / `TokenExpiredError`), which `acp/transport_errors.py`'s auth-failure vocabulary now
   recognizes so the dashboard renders the sign-in prompt rather than a raw error.
+  A credential the Kiro service refuses reaches Crew as KAS's fixed
+  `AccessDeniedError` text, "Access denied. Please check your authentication.
+  (Request ID: …)", with no status code or expiry wording; `_RE_SESSION_EXPIRED`
+  carries that exact sentence, so it gets the same signed-out message (which names
+  where to sign in), the `sign_in_needed` / `auth_required` tags and the request id
+  after the message (`test/test_kas_access_denied_sign_in.py`).
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
@@ -646,6 +652,24 @@ engine instead ([aws-control.md](aws-control.md)).
   offers agents other than Kiro CLI, so a user who set up with one of those can
   switch agents later. `KasLoginGate` itself is still not mounted at the app
   root; the full-screen form stays available for that.
+- **One sign-in flow, many places.** The flow's state and actions (status read,
+  begin loopback or device code, poll, the loopback-to-device fallback, cancel and
+  its settle, the landed result) live in `website/src/hooks/useKasLogin.ts`
+  (`useKasLoginFlow`, plus `useKasLoginStatus` and `KAS_LOGIN_STATUS_KEY`, the one
+  `['kas-login']` cache entry every surface reads). `KasLoginGate.tsx` only renders
+  it, in gate chrome (`KasLoginGate`, onboarding's organisation-only door) or card
+  chrome (`KasLoginEmbedded`), and every surface drops in that component: the
+  Settings card, and the chat's `KiroSignInPrompt`. `KasLoginFlowSlots.intro`
+  replaces the card's intro line where a surface asks for its own reason.
+- **The chat asks before a message fails.** `KiroSignInPrompt`, above the
+  composer (`ComposerDockView`), renders `KasLoginEmbedded` while
+  `GET /api/kas-bundle` says `chat_needs_sign_in` (the install reply carries it
+  too, because the dashboard stores both in one cache entry). The gateway decides it
+  (`dashboard/handlers/kas_bundle._chat_needs_sign_in`): true only for the owner,
+  with KAS as `agent.acp_backend`, when `acp/kas_route.bundle_route_lacks_sign_in`
+  finds the next spawn on the bundle route and no usable Crew sign-in; false when
+  any of that cannot be worked out. A relay that kiro-cli's own login starts never
+  gets the prompt. It leaves as soon as the shared status reads authenticated.
 - An unfinished sign-in is said in plain words. The loopback wait screen opens the
   portal tab with `noopener`, so the page cannot tell a closed or blocked tab from
   a slow one; after 30 s it says the sign-in has not finished and offers Start

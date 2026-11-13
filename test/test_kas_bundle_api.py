@@ -77,7 +77,47 @@ async def test_status_reports_the_pin_and_nothing_installed(cfg, monkeypatch):
         "progress": {"done": 0, "total": 0},
         "error": "",
         "route": None,
+        "chat_needs_sign_in": False,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("backend", "owner", "lacks", "expected"),
+    [
+        ("kas", True, True, True),
+        ("kas", True, False, False),
+        ("kas", False, True, False),
+        ("claude", True, True, False),
+    ],
+    ids=["kas-owner-signed-out", "kas-owner-signed-in", "non-owner", "other-harness"],
+)
+async def test_status_says_when_a_new_chat_needs_crews_sign_in(
+    cfg, monkeypatch, backend, owner, lacks, expected
+):
+    """Only the gateway decides, and only for the owner, who can sign in."""
+    cfg.acp_backend = backend
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "bundle_route_lacks_sign_in", lambda: lacks)
+    body = _body(await handler.api_kas_bundle_status(_FakeRequest(owner=owner)))
+    assert body["chat_needs_sign_in"] is expected
+
+
+@pytest.mark.asyncio
+async def test_the_install_reply_carries_the_sign_in_need_too(cfg, monkeypatch):
+    """The dashboard stores this reply in the status's cache entry, so a reply
+    without the field would hide the chat's sign-in while one is in progress."""
+    cfg.acp_backend = "kas"
+    release = threading.Event()
+    monkeypatch.setattr(kas_bundle, "install_pinned", lambda *a, **k: release.wait(5))
+    monkeypatch.setattr(kas_bundle, "installed_bundle", lambda **k: None)
+    monkeypatch.setattr(kas_bundle, "bundle_route_lacks_sign_in", lambda: True)
+    app = {"state": _FakeState()}
+    resp = await handler.api_kas_bundle_install(_FakeRequest(app))
+    release.set()
+    await app[handler._STATE_KEY]["task"]
+    assert resp.status == 202
+    assert _body(resp)["chat_needs_sign_in"] is True
 
 
 @pytest.mark.asyncio

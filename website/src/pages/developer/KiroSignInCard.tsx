@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
 import { KasLoginEmbedded } from '../../components/KasLoginGate'
+import { KAS_LOGIN_STATUS_KEY, useKasLoginStatus } from '../../hooks/useKasLogin'
 import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { clearCachedModels } from '../../providers/adapters/acp'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -11,10 +12,6 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { signInLapsed } from './kiroSignInState'
-
-// Same cache key the embedded flow reads status under (KasLoginGate.QUERY_KEY):
-// a sign-out here must invalidate the flow's query, not a private copy of it.
-const STATUS_QUERY_KEY = ['kas-login'] as const
 
 function SignedInSummary({
   status,
@@ -32,7 +29,7 @@ function SignedInSummary({
     mutationFn: () => api.kasLoginLogout(status.identity ?? ''),
     onSuccess: () => {
       onSignedOut()
-      void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
+      void queryClient.invalidateQueries({ queryKey: KAS_LOGIN_STATUS_KEY })
       // The signed-out account's model list goes with it: the gateway forgot its
       // catalog on this sign-out, and `['available-models']` would otherwise stay
       // fresh (global `staleTime: Infinity`) until a session spawns.
@@ -182,11 +179,7 @@ export function KiroSignInCard({
   const [signedOutNote, setSignedOutNote] = useState(false)
   // Observe the flow's status (same cache key, no extra fetch: the flow owns the
   // polling) so the note clears when a credential is stored again.
-  const { data: observed, isError: statusFailed } = useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    queryFn: api.kasLoginStatus,
-    enabled: false,
-  })
+  const { data: observed, isError: statusFailed } = useKasLoginStatus({ enabled: false })
   const authenticated = observed?.authenticated === true
   useEffect(() => {
     if (authenticated) setSignedOutNote(false)

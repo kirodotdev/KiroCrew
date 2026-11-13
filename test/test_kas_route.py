@@ -327,6 +327,45 @@ class TestCrewSignInStartsSpawn:
         assert kas_route.crew_sign_in_starts_spawn(environ={}, home=tmp_path) is False
 
 
+class TestBundleRouteLacksSignIn:
+    """The gateway's answer to "would a new chat fail for lack of Crew's sign-in"."""
+
+    @staticmethod
+    def _signed_out(**kwargs):
+        raise lts_sign_in.SignInError(
+            "signed out", lts_sign_in.CAUSE_SIGN_IN_UNUSABLE, lts_sign_in.Source.VAULT
+        )
+
+    def test_a_usable_crew_sign_in_never_asks(self, tmp_path, monkeypatch):
+        selection = lts_sign_in.Selection(lts_sign_in.Source.VAULT, "arn")
+        monkeypatch.setattr(lts_sign_in, "resolve", lambda **k: selection)
+        monkeypatch.setattr(
+            kas_route, "resolve_kas_route", lambda **k: pytest.fail("route read while signed in")
+        )
+        assert kas_route.bundle_route_lacks_sign_in(environ={}, home=tmp_path) is False
+
+    @pytest.mark.parametrize(
+        ("route", "expected"),
+        [
+            (kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI), True),
+            (kas_route.RELAY, False),
+        ],
+        ids=["bundle", "relay"],
+    )
+    def test_signed_out_it_follows_the_route(self, tmp_path, monkeypatch, route, expected):
+        """On the relay kiro-cli's own sign-in can still start the chat."""
+        monkeypatch.setattr(lts_sign_in, "resolve", self._signed_out)
+        monkeypatch.setattr(kas_route, "resolve_kas_route", lambda **k: route)
+        assert kas_route.bundle_route_lacks_sign_in(environ={}, home=tmp_path) is expected
+
+    def test_an_unreadable_store_answers_false(self, tmp_path, monkeypatch):
+        def _broken(**kwargs):
+            raise OSError("store unreadable")
+
+        monkeypatch.setattr(lts_sign_in, "resolve", _broken)
+        assert kas_route.bundle_route_lacks_sign_in(environ={}, home=tmp_path) is False
+
+
 class TestRouteText:
     def test_the_automatic_route_says_why(self):
         route = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_KIRO_CLI_SIGNED_OUT)

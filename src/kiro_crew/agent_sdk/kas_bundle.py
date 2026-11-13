@@ -261,6 +261,17 @@ def kas_route() -> Any:
     return resolve_kas_route()
 
 
+def bundle_route_lacks_sign_in() -> bool:
+    """Whether the next KAS spawn takes the bundle route with no usable Crew sign-in.
+
+    ``acp.kas_route.bundle_route_lacks_sign_in``, for the dashboard. Blocking;
+    never raises, and False when it cannot be worked out.
+    """
+    from kiro_crew.acp.kas_route import bundle_route_lacks_sign_in as lacks
+
+    return lacks()
+
+
 def crew_sign_in_starts_spawn() -> bool:
     """Whether the next KAS spawn starts on Kiro Crew's usable sign-in alone.
 

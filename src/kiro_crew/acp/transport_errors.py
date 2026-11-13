@@ -685,12 +685,15 @@ _RE_5XX_HINT = re.compile(r"(please try again|try your request again)", re.IGNOR
 _RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.IGNORECASE)
 # Session expiry, by wording. Complements the status match for backends that
 # describe the expiry in prose without a machine-readable code. Deliberately
-# excludes Bedrock's named exceptions, which _RE_AUTH already owns.
+# excludes Bedrock's named exceptions, which _RE_AUTH already owns. The last
+# alternative is KAS's fixed text for a refused credential (its AccessDeniedError):
+# it names no status, so without it the turn showed only that sentence.
 _RE_SESSION_EXPIRED = re.compile(
     r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
     r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
     r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
-    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
+    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required"
+    r"|access\s+denied\.\s+please\s+check\s+your\s+authentication)\b",
     re.IGNORECASE,
 )
 # Credential REJECTED rather than expired. Switching the active Kiro account

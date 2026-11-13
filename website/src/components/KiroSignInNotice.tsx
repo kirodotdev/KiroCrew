@@ -15,12 +15,7 @@ import { Btn } from './ui'
 import { settingsPath } from './settingsPath'
 import { AGENT_HARNESS_SETTINGS_TAB, KIRO_SIGN_IN_PATH } from '../pages/developer/kiroSignInLink'
 import { signInLapsed } from '../pages/developer/kiroSignInState'
-
-// Same cache key the sign-in flow and card read status under
-// (KasLoginGate.QUERY_KEY): a sign-in, sign-out or switch landing there
-// re-reads this one entry, so the notice clears the moment a new sign-in lands
-// instead of waiting for its own next poll.
-const STATUS_QUERY_KEY = ['kas-login'] as const
+import { useKasLoginStatus } from '../hooks/useKasLogin'
 
 /**
  * How often the notice re-reads the stored sign-in while KAS is the backend.
@@ -116,12 +111,9 @@ export default function KiroSignInNotice() {
       window.removeEventListener('mc-auth-cleared', onCleared)
     }
   }, [])
-  const statusQuery = useQuery({
-    queryKey: STATUS_QUERY_KEY,
-    queryFn: api.kasLoginStatus,
-    enabled: kas,
-    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
-  })
+  // The shared sign-in entry: a sign-in, sign-out or switch landing anywhere
+  // re-reads it, so the notice clears the moment a new sign-in lands.
+  const statusQuery = useKasLoginStatus({ enabled: kas, poll: KIRO_SIGN_IN_NOTICE_POLL_MS })
   // A status read that failed because the gateway was down (a restart): the
   // offline state says so, and nothing about the sign-in is known to be wrong.
   const outageFailure = useOutageFailure(

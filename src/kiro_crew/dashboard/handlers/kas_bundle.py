@@ -91,8 +91,41 @@ def _status_payload(app: web.Application) -> dict[str, Any]:
     }
 
 
+def _chat_needs_sign_in() -> bool:
+    """Whether a new chat would fail for lack of Kiro Crew's own sign-in.
+
+    True only with KAS as the main harness and the next spawn on the bundle
+    route with no usable Crew sign-in. The gateway decides, so the dashboard
+    never guesses the route. Blocking; False when it cannot be worked out.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        kas = KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
+    except Exception:  # noqa: BLE001 - unreadable config: no prompt
+        return False
+    return kas and kas_bundle.bundle_route_lacks_sign_in()
+
+
+async def _reply_payload(request: web.Request) -> dict[str, Any]:
+    """The status both routes answer with, so every reply carries every field.
+
+    The dashboard stores either reply in one cache entry: an install reply that
+    left ``chat_needs_sign_in`` out would hide the chat's sign-in mid-flow.
+    """
+    payload = await asyncio.to_thread(_status_payload, request.app)
+    # Owner only: signing in is an owner action (``kas_login._require_owner``),
+    # so a prompt to sign in is no use to anyone else.
+    payload["chat_needs_sign_in"] = is_owner_dashboard_request(request) and (
+        await asyncio.to_thread(_chat_needs_sign_in)
+    )
+    return payload
+
+
 async def api_kas_bundle_status(request: web.Request) -> web.Response:
-    return web.json_response(await asyncio.to_thread(_status_payload, request.app))
+    return web.json_response(await _reply_payload(request))
 
 
 async def _audit(request: web.Request, outcome: str, error: str = "") -> None:
@@ -165,5 +198,4 @@ async def api_kas_bundle_install(request: web.Request) -> web.Response:
         state.update(error="", done=0, total=0)
         state["task"] = asyncio.create_task(_install_task(state))
         await _audit(request, "started")
-    payload = await asyncio.to_thread(_status_payload, request.app)
-    return web.json_response(payload, status=202)
+    return web.json_response(await _reply_payload(request), status=202)

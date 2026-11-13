@@ -4924,6 +4924,10 @@
       "config_unavailable_detail": "Reload the page to try again, or ask the agent to look into it.",
       "load_failed": "Part of the dashboard could not load. Reload the page to try again."
     },
+    "kiroSignInPrompt": {
+      "title": "Sign in to Kiro to start chatting",
+      "intro": "Your chats run on your Kiro account. Choose how to sign in."
+    },
     "crew": {
       "crewEditorNextDialog": {
         "model_frame": "Which model this bot uses. Leave it inherited to follow the agent template, or pin a specific model for this bot."

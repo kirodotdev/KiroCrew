@@ -11459,6 +11459,10 @@
       "config_unavailable_detail": "Recharge la page pour réessayer, ou demande à l’agent d’examiner le problème.",
       "load_failed": "Une partie du tableau de bord n’a pas pu se charger. Recharge la page pour réessayer."
     },
+    "kiroSignInPrompt": {
+      "title": "Connecte-toi à Kiro pour commencer à discuter",
+      "intro": "Tes discussions utilisent ton compte Kiro. Choisis comment te connecter."
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Sous charge :</0> <1>{{cap}} agents sur {{configured}} à la fois</1>",
       "exec_reduced_queued": "<0>Sous charge :</0> <1>{{cap}} agents sur {{configured}} à la fois · {{queued}} en file d’attente</1>",
