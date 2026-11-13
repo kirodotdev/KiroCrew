@@ -259,6 +259,12 @@ _EXEC_ENV_VARS = frozenset(
         "ENV",
         "SHELL",
         "IFS",
+        # Where `~/` points. `HOME=/writable; ~/bin/tool` runs the file under
+        # `/writable` while the check vouched for the gateway user's copy, and as
+        # a prefix it re-points every config a tool reads from its home
+        # (`HOME=/writable git log` reads a planted `.gitconfig`, which names
+        # programs for git to run).
+        "HOME",
         # A TOOL that runs a helper command named by its environment. The base
         # program is genuinely the trusted system one, so resolving its name
         # answers nothing about what executes: `GIT_SSH_COMMAND=/writable/evil
