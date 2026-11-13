@@ -13175,6 +13175,16 @@
         "state_finished": "Abgeschlossen",
         "state_queued": "In der Warteschlange"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{ready}} von {{total}} MCP-Servern bereit",
+        "still_connecting": "MCP-Server verbinden sich noch. Die Tools jedes Servers erscheinen, sobald er verbunden ist.",
+        "state_connecting": "Verbindet",
+        "state_disabled": "Ausgeschaltet",
+        "state_registry_dropped": "Durch Richtlinie ausgelassen",
+        "not_counted": "Nicht mitgezählt: {{n}}",
+        "untracked": "Einige Server werden nicht erfasst",
+        "list_label": "MCP-Server dieser Sitzung"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "Alle Aufgaben abgeschlossen",
         "aria_collapse_task_list": "{{done}} von {{total}} Aufgaben abgeschlossen. Aufgabenliste einklappen",

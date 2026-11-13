@@ -13791,6 +13791,16 @@
         "state_finished": "Завершено",
         "state_queued": "В очереди"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "Готово MCP-серверов: {{ready}} из {{total}}",
+        "still_connecting": "MCP-серверы ещё подключаются. Инструменты каждого появляются после его подключения.",
+        "state_connecting": "Подключается",
+        "state_disabled": "Отключён",
+        "state_registry_dropped": "Исключён политикой",
+        "not_counted": "Не учитываются: {{n}}",
+        "untracked": "Некоторые серверы не отслеживаются",
+        "list_label": "MCP-серверы этого сеанса"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "Все задачи выполнены",
         "aria_collapse_task_list": "Выполнено задач: {{done}} из {{total}}. Свернуть список задач",

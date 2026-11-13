@@ -13483,6 +13483,16 @@
         "state_finished": "Terminé",
         "state_queued": "En file d’attente"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{ready}} sur {{total}} serveurs MCP prêts",
+        "still_connecting": "Les serveurs MCP sont encore en cours de connexion. Les outils de chacun apparaissent dès qu'il est connecté.",
+        "state_connecting": "Connexion en cours",
+        "state_disabled": "Désactivé",
+        "state_registry_dropped": "Écarté par la politique",
+        "not_counted": "Hors décompte : {{n}}",
+        "untracked": "Certains serveurs ne sont pas suivis",
+        "list_label": "Serveurs MCP de cette session"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "Toutes les tâches sont terminées",
         "aria_collapse_task_list": "{{done}} sur {{total}} tâches terminées. Réduire la liste des tâches",

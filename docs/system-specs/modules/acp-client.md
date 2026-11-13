@@ -2693,7 +2693,9 @@ session, in the chat's MCP panel and for every other reader.
   session starts again: a later value of a list that fits does not bring back
   the report that was left out.
 - **Readers.** A turn's `[MCP SERVERS]` block and `mcp_server_wait`;
-  `payload()` does not carry it (no dashboard reads it yet). Names only: a
+  `payload()` carries it as `states`, with `states_omitted` (`left_out`), for the
+  chat's loading display. Not zero means the report is partial; it totals what
+  each list left out, so it is not a number of servers. Names only: a
   failure reason stays in `failures`.
 - **A change is announced, not polled for.** `fold_frame` calls the report's
   `on_change` when the fold changed it, and `forget_reported` when it dropped

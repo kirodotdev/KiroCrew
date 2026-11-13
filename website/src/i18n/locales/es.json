@@ -13483,6 +13483,16 @@
         "state_finished": "Finalizado",
         "state_queued": "En cola"
       },
+      "mcpLoadingBar": {
+        "ready_of_total": "{{ready}} de {{total}} servidores MCP listos",
+        "still_connecting": "Los servidores MCP aún se están conectando. Las herramientas de cada uno aparecen cuando se conecta.",
+        "state_connecting": "Conectando",
+        "state_disabled": "Desactivado",
+        "state_registry_dropped": "Excluido por la política",
+        "not_counted": "No incluidos en el recuento: {{n}}",
+        "untracked": "Algunos servidores no tienen seguimiento",
+        "list_label": "Servidores MCP de esta sesión"
+      },
       "taskProgressBar": {
         "all_tasks_complete": "Todas las tareas completadas",
         "aria_collapse_task_list": "{{done}} de {{total}} tareas completadas. Contraer la lista de tareas",

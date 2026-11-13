@@ -69,6 +69,7 @@ export type {
   TodoTask,
   TodoList,
   McpSessionReport,
+  McpSessionStates,
   CodeChannelInfo,
   WorkAggregate,
   SessionLink,

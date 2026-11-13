@@ -34,6 +34,7 @@ import ChatDropOverlay from './ChatDropOverlay'
 import PaneDim from './PaneDim'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
+import McpLoadingBar from '../pages/chat/McpLoadingBar'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
 import ChatFooter, { transcriptActivityKey, turnSentHere } from '../pages/chat/ChatFooter'
 import { useChatProjectDir, useEnvironmentStartLabel, useSlotRunsHere } from './sessionEnvironmentHooks'
@@ -1065,6 +1066,10 @@ export default function ChatPane({
         <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} unreadCount={unreadCount} />
 
         <div className="dock-inert" data-testid="composer-status-stack">
+        {/* Never in a Bot's chat: that surface draws messages only
+            (docs/decisions/2026-10-09-crewmate-chat-draws-messages-only.md),
+            and the Bot says in its own words when a server it needs is not up. */}
+        {!crewmate && <McpLoadingBar slot={slotKey} />}
         {!crewmate && <SubagentProgressBar slot={slotKey} />}
 
         {!crewmate && <SubagentDeliveryProgress count={systemDeliveryCount} />}
