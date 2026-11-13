@@ -4,6 +4,7 @@ import { configureStore } from '@reduxjs/toolkit'
 import dashboardReducer, { sseDisconnected, sseStatus } from '../../store/dashboardSlice'
 import { useBundleReload } from './bundleReload'
 import type { StatusData } from '../../types'
+import { noteSignInCommand, signInCommand } from '../../api/signInCommand'
 
 function frame(over: Partial<StatusData> & Record<string, unknown> = {}): StatusData {
   return {
@@ -47,6 +48,20 @@ describe('useBundleReload status frames', () => {
     expect(statusDispatches()).toBe(3)
     expect(store.getState().dashboard.status?.sessions).toBe(4)
     expect(store.getState().dashboard.updateProgress).toEqual({ step: 'downloading', detail: '' })
+  })
+
+  it("keeps a container gateway's sign-in command current, skipped frames included", () => {
+    const { bundle } = setup()
+    try {
+      bundle.onDashboardStatus(frame({ sign_in_command: 'docker exec kirocrew kirocrew token' }))
+      expect(signInCommand()).toBe('docker exec kirocrew kirocrew token')
+      // A frame that changes only counters is not stored, and still feeds it.
+      noteSignInCommand(undefined)
+      bundle.onDashboardStatus(frame({ sign_in_command: 'docker exec kirocrew kirocrew token', uptime: '2m' }))
+      expect(signInCommand()).toBe('docker exec kirocrew kirocrew token')
+    } finally {
+      noteSignInCommand(undefined)
+    }
   })
 
   it('leaves the connection flag to the socket helpers', () => {

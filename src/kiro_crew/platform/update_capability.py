@@ -549,6 +549,16 @@ def bundled_by_desktop_app(dist: str | None = None) -> bool:
     return (baked_distribution() if dist is None else dist) in _ELECTRON_DISTRIBUTIONS
 
 
+def runs_in_container() -> bool:
+    """Is this gateway the one a container image ships?
+
+    The baked stamp again, like :func:`bundled_by_desktop_app`, and for the same
+    reason: ``managed_by`` reads ``command`` on a container too once a policy
+    provider owns updates, and is empty before the first check. No I/O.
+    """
+    return baked_distribution() in _CONTAINER_DISTRIBUTIONS
+
+
 def _installer_runs_here() -> bool:
     """The managed venv is cli.sh's, a POSIX install; the seam tests pin this."""
     return sys.platform != "win32"
@@ -743,4 +753,5 @@ __all__ = [
     "derive_capability",
     "is_git_worktree",
     "running_from_checkout",
+    "runs_in_container",
 ]

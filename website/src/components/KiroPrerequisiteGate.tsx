@@ -40,6 +40,7 @@ import {
 
 import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
+import { signInSentence } from '../api/signInCommand'
 const QUERY_KEY = ['kiro-prerequisite'] as const
 
 export function kiroPrerequisiteRefetchInterval(
@@ -139,11 +140,18 @@ function OwnerSetupRequired({
             ? i18nT('components.kiroPrerequisiteGate.sign_in_again_to_continue')
             : i18nT('components.kiroPrerequisiteGate.the_gateway_owner_needs_to_finish_setup')}
         </h1>
-        <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {authRequired
-            ? i18nT('api.client.stale_owner_session_sign_in_again')
-            : i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
-        </p>
+        {authRequired ? (
+          <ErrorNotice
+            className="mt-3 max-w-lg text-left"
+            message={signInSentence(i18nT('api.client.stale_owner_session_sign_in_again'))}
+            testId="kiro-gate-stale-owner-sign-in"
+            noHandoffReason="this gate stands between the user and the chat the hand-off would open, and the dashboard sign-in that chat needs is the credential the gateway refused"
+          />
+        ) : (
+          <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
+            {i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
+          </p>
+        )}
         {/* "Check again" re-probes readiness, which cannot change for this
             viewer until they sign back in — a retry that cannot succeed is a
             false affordance, so the re-auth state carries no button and the

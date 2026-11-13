@@ -44,6 +44,7 @@ vi.mock('../providers/adapters/acp', () => ({ clearCachedModels: vi.fn() }))
 
 import { api, ApiError } from '../api/client'
 import { probe, status } from './KiroPrerequisiteGateTestUtils'
+import { noteSignInCommand } from '../api/signInCommand'
 
 // The Pod remedy block is real nested YAML. Matched on the code element's exact
 // text: RTL's default matcher collapses whitespace, which would hide a lost
@@ -448,6 +449,28 @@ describe('KiroPrerequisiteGate', () => {
       expect(screen.getByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
     } finally {
+      banner.remove()
+    }
+  })
+
+  it("names a container gateway's own sign-in command in the re-auth body", async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      platform: 'gateway',
+      setup_allowed: false,
+    }))
+    const banner = document.createElement('div')
+    banner.id = 'mc-session-expired'
+    document.body.prepend(banner)
+    // What the banner names too, so the two surfaces still give one instruction.
+    noteSignInCommand('docker exec kirocrew kirocrew token')
+    try {
+      renderWithProviders(
+        <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      )
+      expect(await screen.findByText(/predates the configured owner/))
+        .toHaveTextContent('Run docker exec kirocrew kirocrew token in a terminal')
+    } finally {
+      noteSignInCommand(undefined)
       banner.remove()
     }
   })

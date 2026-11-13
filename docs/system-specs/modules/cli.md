@@ -3400,6 +3400,12 @@ because the provider is resolved before the desktop deferral. On such a bundle
 gateway's loop runs; on a bundle with no provider it reports `notify`, the app's
 own updater owning the update.
 
+The same stamp answers "is this the gateway a container image ships"
+(`runs_in_container`), and the status snapshot carries it as `sign_in_command`:
+`docker exec kirocrew kirocrew token` on a container, empty elsewhere. The
+dashboard names it in its sign-in sentences in place of `kirocrew token`, which
+a container's host does not have ([dashboard-token-auth](dashboard-token-auth.md)).
+
 `update_policy_file` is the path of the security policy file to edit, so About's
 "managed by policy" notice can show where it is. It is set only when
 `update_managed_by` is `command` and the composed ceiling's top tier is the home
