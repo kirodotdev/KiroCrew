@@ -382,7 +382,12 @@ async def _consume_pending_reset(
                     # Again here: a cold start already in flight when the project was
                     # cleared stores the old directory as it registers.
                     state.sessions.retract_cwd(pending_key)
-                reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
+                # Shielded: the eager-spawn task awaiting this is cancelled by the
+                # next slot signal, and a cancel after the pop would leak the
+                # process holding the session lock. Cancelled, the flag stays armed.
+                reset_ok = await asyncio.shield(
+                    state.sessions.reset(pending_key, skip_if_busy=True)
+                )
             except Exception:
                 # A teardown that raised leaves the session in a state this
                 # slot cannot vouch for — neither is its withhold verdict, so
