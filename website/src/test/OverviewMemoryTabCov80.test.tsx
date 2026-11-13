@@ -59,6 +59,7 @@ vi.mock('../pages/overview/MemoryRecordsEditor', () => ({ default: () => <div da
 vi.mock('../pages/overview/MemoryFailuresCard', () => ({
   default: ({ onLessonSaved }: { onLessonSaved?: () => unknown }) => <button type="button" aria-label="save a failure lesson" data-testid="failures-card" onClick={() => void onLessonSaved?.()} />,
 }))
+vi.mock('../pages/settings/MemoryProviderPicker', () => ({ default: () => <div data-testid="memory-provider-picker" /> }))
 
 const MemoryTab = (await import('../pages/overview/MemoryTab')).default
 

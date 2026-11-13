@@ -287,6 +287,20 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
         _CONTROL_FIELDS_CAP_PENDING,
     ),
     # memory.py tranche.
+    # Memory provider routes: a mode and an id, a copy's two ids, a provider id, or
+    # one item whose text the contract caps at 8,000 characters, so the shared
+    # 64 KB ceiling is far above any legitimate body.
+    "handlers/memory_provider.py::api_memory_provider_put": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_provider.py::api_memory_provider_copy": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_provider.py::api_memory_provider_conformance": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
+    "handlers/memory_provider.py::api_memory_provider_item": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    "handlers/memory_provider.py::api_memory_provider_items_create": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     "handlers/memory.py::api_memory_preferences": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/memory.py::api_memory_projects": ("None", _UNBOUNDED_USER_CONTENT),
     "handlers/memory.py::api_memory_history": ("None", _UNBOUNDED_USER_CONTENT),

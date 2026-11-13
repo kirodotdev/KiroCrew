@@ -494,6 +494,11 @@ class TestLeafOnlyPopulationIsRecorded:
     #: read-only so an agent cannot turn a folder's hooks on for itself; a file at
     #: the data-home root, so leaf-only is the only hold, as for
     #: ``ssh_auth_sock_consent.json``.
+    #: One more root-level file, three entries per tier:
+    #: ``memory_provider_consent.json`` -- the owner's consent to send memory to a
+    #: provider app that keeps it off this machine, sealed read-only so an agent
+    #: cannot consent to its own egress; a file at the data-home root, so leaf-only
+    #: is the only hold, as for ``decisions_consent.json``.
     #:
     #: Four app-declared directories, a dozen entries per tier (the data and the
     #: lifecycle's move-aside spelling, at each data-home spelling):
@@ -506,7 +511,7 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   inode stays the same on a republish. The parent is the app's data
     #:   directory, which agents read and write, so an enclosing mask would hide the
     #:   app's data and leaf-only is the only hold, as for ``host-exec-grants``.
-    EXPECTED: dict[str, int] = {"standard": 348, "cc": 355, "strict": 356}
+    EXPECTED: dict[str, int] = {"standard": 351, "cc": 358, "strict": 359}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

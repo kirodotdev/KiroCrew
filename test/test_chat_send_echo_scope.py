@@ -100,7 +100,9 @@ async def test_user_echo_reaches_only_authorized_ws_clients(
 
     manifest = SimpleNamespace(
         permissions=SimpleNamespace(
-            api=["/api/stream"], events=["slots:user"] if can_read_user_slots else []
+            api=["/api/stream"],
+            events=["slots:user"] if can_read_user_slots else [],
+            memoryAdmin=False,
         )
     )
     monkeypatch.setattr("kiro_crew.apps.manager.get_app_manifest", lambda _name: manifest)

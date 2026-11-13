@@ -4256,6 +4256,110 @@ learned-rule operations address the exact prepared SQLite service. V1 retains
 workspace Markdown, JSONL fallback and separate FTS; its startup context is the
 bounded admission described above, with earlier activity behind `memory_recall`.
 
+## Memory providers (`memory_provider/`)
+
+Crew's memory has one seam with two implementations: Crew's own memory (everything
+above) and a provider an installed App Kit app serves. `memory.provider` picks one of
+three modes:
+
+| Mode | Reads | Writes | Crew's own memory |
+|---|---|---|---|
+| `builtin` (default) | Crew | Crew | in use, byte for byte as without the seam |
+| `replace` | the provider | the provider | on disk, untouched; comes back on a switch back |
+| `augment` | Crew, then the provider's read-only block and recall hits | Crew | in use |
+
+**One selection point.** `resolver.route_for(store_id, session_key=...)` is the only
+place a provider is chosen; no caller branches on a provider id. A caller asks
+`route.builtin_answers` (run today's code), `route.replaces` or `route.augments`. With
+mode `builtin` and no id, `route_for` answers the shared `BUILTIN_ROUTE` without
+reading anything but the loaded config, so an install that never chose a provider
+takes exactly the path it took before.
+
+**Frozen per session.** The first `route_for` for a session writes
+`memory_provider_snapshot` (mode, id, app version, API version) into its metadata
+record, and that session keeps it: a switch applies to new chats and never mixes two
+providers in one conversation. A session created before `memory.provider.switched_at`
+freezes to `builtin`. Child work asks with its parent's key and inherits it.
+`memory.provider.id` is kept when the owner switches back to `builtin`, so frozen chats
+stay on their provider.
+
+**No silent fallback.** A provider whose app is disabled or missing, whose backend the
+health watch does not report healthy, that policy denies (`capabilities.memory_provider`),
+that sends memory off the machine without the owner's consent, that cannot isolate a
+Bot's store (`multi_store: false` for a store other than `default`), or that is asked
+for in a Shared Crew, gives a route with `unavailable` set. Prompts then carry
+`[Memory unavailable] <name> did not answer (...)`, recall carries a notice, and
+`learn_add` answers `refused` / `provider_unavailable`. Crew's own memory never stands
+in. A resolver fault for a configured provider reads the same way
+(`chokepoints.session_route`).
+
+**Contract.** `contract.py`: `ProviderScope` (built by Crew from the execution record:
+`store_id`, `member_id`, `memory_mode` persistent or incognito, `session_id`, `project`,
+`principal`), `MemoryItem` (kinds `preference`, `fact`, `episode`, `summary`, `rule`,
+`finding`, `index`, `note`), `WriteResult` (the lesson vocabulary: `inserted`,
+`enriched`, `unchanged`, `deduped`, `refused`; `delete` answers `deleted` or
+`unchanged`), `Capabilities`, and the errors `ProviderUnavailable`, `ProviderRefused`,
+`ProviderReadOnly`, `ProviderNotSupported`, `ProviderConflict`,
+`ProviderInvalidResponse`. Every answer is validated; text over 8,000 characters is cut
+and marked, an answer over 200 items or 512 KB is invalid. Deadlines: `context`
+`memory.provider.timeout_secs` (default 3, 0.5 to 10), `search`/`get`/`list` 5 s,
+`put`/`delete` 10 s, `ingest` 60 s.
+
+**What stays Crew's.** Identity and routing (the provider gets `store_id` and
+`member_id` and never picks them), memory modes (`temporary` never reaches a provider:
+`scope_for` returns `None`; `incognito` never reaches `put`/`delete`/`ingest`),
+governance, the write switches, route auth, budgets and block framing, content screens
+(the volatile-fact refusal and injection scan run before `put`; every item's text and the
+provider's display name go through `markers._scrub_turn_lesson` and the fence
+neutralizer before a block), the sandbox, egress consent, harness memory (a switch never
+enables it), and manual member documents (persona, rules, briefing, guides).
+
+**Each path in `replace` mode.**
+
+| Path | Replace |
+|---|---|
+| Member essentials | Crew (Bot configuration) |
+| Preferences, facts, activity index, `[Memory activity]` | provider `context`, rendered by `render.session_parts` into the same budgets |
+| `[Learned corrections]` / `[Learned experience]` | `rule` / `finding` items, the rule and findings allowances |
+| `[Memory tools]` | Crew, naming the provider |
+| Per-message lessons | provider `search(kinds={rule})`, max 3, 2,000 characters |
+| Post-compaction lessons | the session's cached rules block, no new call |
+| Early reads (`prefetch_session_memory`, `embed_startup_query`) | skipped; the build asks the provider itself |
+| `memory_recall` | provider `search`; the recall decision point's keep hook still narrows episodes |
+| `learn_add` / `learn_list` / `learn_remove` / `learn_update` | `put` / `list` / `delete` / `put(item_id)` (`lesson_routes.py`), same names and answers |
+| Consolidation | triggers, lease, snapshot, retry gate and marker stay Crew's; publication goes to `consolidation.publish`: `ingest: raw` gets the span, `ingest: items` gets Crew's own extraction (without Crew's stored memory in the prompt) through `put`, `ingest: none` takes nothing |
+| Dashboard editors, records, bulk, promote, retired restore, seed | 409 `memory_provider_active` (Crew's memory stays readable) |
+| Change-card history line, built-in app episode import | skipped with a log line (`resolver.note_skip`) |
+| Task-runner lessons, onboarding import | provider `put` |
+| CLI `learn` | through the gateway's `/api/lessons`; gateway down is exit 2. `memory migrate`/`carve`/`dream`/`import`/`forget` refuse |
+| Embedding repair, Dreaming, migration and backfill, V1 history prune | paused (`builtin_background_allowed`) |
+| Backups, snapshot, portability | Crew's own data only; the UI says the provider backs up its own |
+
+`augment` changes two rows: session start adds `[Memory from <name> (read-only)]` after
+Crew's blocks, at most a quarter of the discretionary pool, and `memory_recall` appends
+the provider's hits after Crew's. Every writer stays Crew's.
+
+`test_memory_provider_writer_coverage.py` names every chokepoint and secondary writer by
+module and function and fails when one stops reaching the resolver.
+
+**Crew's own memory through the contract.** `builtin.BuiltinMemoryProvider` maps the
+contract onto today's functions (lessons via `write_lesson` / `delete_lesson`, facts via
+`set_semantic` / `delete_semantic`, episodes via `write_episodic` / `delete_episodic`),
+with ids `lesson:<key>`, `fact:<key>`, `episode:<id>`. The prompt builders and the
+recall route do not use it; the host item routes, the copy job and the conformance kit
+do.
+
+**Copy, export, import.** `copy_job.py` copies with `list` then `put` keyed
+`crew-copy:<from>:<item id>`, so a rerun writes nothing twice, and deletes nothing.
+Export is JSONL `kirocrew-memory/1` (a header line, then one wire item per line); import
+writes each line with key `crew-import:<sha256 of the line>`. Copying into Crew's own
+memory is refused while a provider replaces it.
+
+**Conformance kit.** `conformance.run(provider, write=...)` checks describe, health,
+context, search, list and get, and with `write` put, idempotent put and delete (a
+read-only provider must refuse `put`). `python -m kiro_crew.memory_provider.conformance
+--app <app>[/<provider>]` runs the read-only checks through the gateway.
+
 ## Skills (`skills.py`)
 
 Markdown files at `~/.kiro/crew/skills/{name}/SKILL.md` with optional YAML frontmatter (`name`, `description`, `always`).

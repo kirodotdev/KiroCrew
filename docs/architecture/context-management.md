@@ -36,6 +36,18 @@ separately sourced strings and returns them joined.
 the middle — the part wrapped in `[SESSION CONTEXT …]`, and the only part injected
 once rather than per turn.
 
+**When a memory provider answers.** `build_session_context` asks
+`memory_provider.chokepoints.session_route` once. On the default config that is the
+builtin route and every block below is built as written. In `replace` mode the memory
+and lessons family comes from the provider's `context` items instead, rendered by
+`memory_provider/render.py` into the same frames and budgets (preferences and facts,
+the activity index, the background activity block, `[Learned corrections]`,
+`[Learned experience]`, `[Memory tools]` naming the provider), with every item scrubbed
+like recalled text; a provider that cannot answer leaves `[Memory unavailable] ...` and
+Crew's stores are not read. In `augment` mode one `[Memory from <name> (read-only)]`
+background block follows Crew's own, at most a quarter of the pool. A read-blocked
+(temporary) build asks nothing.
+
 ### Block order
 
 Each block is a bracket marker that is also a contract with the model.

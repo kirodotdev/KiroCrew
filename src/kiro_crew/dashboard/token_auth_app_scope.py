@@ -77,7 +77,13 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
             manifest = get_app_manifest(app_name)
             if manifest is None:
                 return None
-            return [p for p in manifest.permissions.api if p]
+            declared = [p for p in manifest.permissions.api if p]
+            # ``permissions.memoryAdmin`` is the one grant to the memory provider
+            # routes, staged like any API entry so an update that adds it waits for
+            # the owner. The handlers check the flag again and audit every call.
+            if manifest.permissions.memoryAdmin:
+                declared.append("/api/memory/provider")
+            return declared
 
         # An update's added entries stay out until the owner approves them.
         allow = tuple(staged_app_grants(app_name, "api", _declared))

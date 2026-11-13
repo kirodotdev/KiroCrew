@@ -54,6 +54,85 @@ EMBEDDING_PROVIDERS = ("llama_cpp", OLLAMA_HTTP_PROVIDER)
 OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
 
 
+#: ``memory.provider.mode`` values; :mod:`kiro_crew.memory_provider.resolver` says what each does.
+MEMORY_PROVIDER_MODES = ("builtin", "replace", "augment")
+#: ``memory_stores.<name>.provider_mode`` values.
+STORE_PROVIDER_MODES = ("inherit", "builtin")
+MEMORY_PROVIDER_TIMEOUT_DEFAULT_SECS = 3.0
+MEMORY_PROVIDER_TIMEOUT_MAX_SECS = 10.0
+
+
+@dataclass
+class MemoryProviderConfig:
+    """Which memory provider answers. Written only by ``PUT /api/memory/provider``."""
+
+    mode: str = field(
+        default="builtin",
+        metadata=_meta(
+            "Memory Provider Mode",
+            "'builtin' uses Crew's own memory. 'replace' hands all learned memory to "
+            "the provider named by memory.provider.id; Crew's own memory stays on disk "
+            "untouched and comes back when switched back. 'augment' keeps Crew's own "
+            "memory and adds the provider as a read-only source. Changed only from "
+            "Settings > Memory > Memory provider, and applies to new chats.",
+            enum=list(MEMORY_PROVIDER_MODES),
+        ),
+    )
+    id: str = field(
+        default="",
+        metadata=_meta(
+            "Memory Provider",
+            "The provider in use, as 'app:<app id>/<provider id>'. Kept after a switch "
+            "back to 'builtin' so chats that started on the provider stay on it.",
+        ),
+    )
+    timeout_secs: float = field(
+        default=MEMORY_PROVIDER_TIMEOUT_DEFAULT_SECS,
+        metadata=_meta(
+            "Memory Provider Timeout",
+            "Seconds a chat's first message waits for the provider's memory before "
+            "the chat starts with a 'memory unavailable' notice (0.5 to 10).",
+        ),
+    )
+    switched_at: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Memory Provider Switched At",
+            "When the mode or provider last changed (epoch seconds). Chats created "
+            "before it keep the provider they started with.",
+        ),
+    )
+    stop_learning_ack: bool = field(
+        default=False,
+        metadata=_meta(
+            "Memory Provider Learning Stop Acknowledged",
+            "The owner accepted that automatic learning stops in 'replace' mode "
+            "because the provider takes no consolidation input.",
+        ),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> MemoryProviderConfig:
+        """Normalize: anything unreadable is the built-in default."""
+        if not isinstance(section, dict):
+            return cls()
+        mode = section.get("mode")
+        provider_id = section.get("id")
+        timeout = section.get("timeout_secs")
+        switched = section.get("switched_at")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            timeout = MEMORY_PROVIDER_TIMEOUT_DEFAULT_SECS
+        if isinstance(switched, bool) or not isinstance(switched, (int, float)):
+            switched = 0.0
+        return cls(
+            mode=mode if mode in MEMORY_PROVIDER_MODES else "builtin",
+            id=provider_id.strip() if isinstance(provider_id, str) else "",
+            timeout_secs=min(MEMORY_PROVIDER_TIMEOUT_MAX_SECS, max(0.5, float(timeout))),
+            switched_at=max(0.0, float(switched)),
+            stop_learning_ack=section.get("stop_learning_ack") is True,
+        )
+
+
 @dataclass
 class MemoryConfig:
     embedding_provider: str = field(
@@ -582,6 +661,14 @@ class MemoryConfig:
         default=False,
         metadata=_meta("Migrated", "Whether memory has been migrated to vector store."),
     )
+    provider: MemoryProviderConfig = field(
+        default_factory=MemoryProviderConfig,
+        metadata=_meta(
+            "Memory Provider",
+            "Which memory answers: Crew's own (default) or a provider an installed app "
+            "serves. See memory.provider.mode.",
+        ),
+    )
 
 
 #: Default artifact kinds eligible for Knowledge Library auto-ingest. These are
@@ -937,6 +1024,15 @@ class MemoryStoreConfig:
             "Override embedding backend for this store. Empty inherits from top-level memory "
             "(embeddings are always-on; per-store disable is not supported).",
             enum=["", "llama_cpp"],
+        ),
+    )
+    provider_mode: str = field(
+        default="inherit",
+        metadata=_meta(
+            "Memory Provider Mode",
+            "'inherit' follows memory.provider; 'builtin' keeps this store on Crew's "
+            "own memory whatever memory.provider says.",
+            enum=list(STORE_PROVIDER_MODES),
         ),
     )
 

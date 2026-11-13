@@ -12,6 +12,69 @@ import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup 
 import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
 
+/** One provider's capabilities, as `GET /api/memory/provider` reports them. */
+export interface MemoryProviderCapabilities {
+  read_only: boolean
+  supports_search: boolean
+  supports_vectors: boolean
+  supports_lessons: boolean
+  supports_list: boolean
+  supports_delete: boolean
+  ingest: 'none' | 'raw' | 'items'
+  multi_store: boolean
+  egress: 'local' | 'remote'
+  kinds: string[]
+}
+
+/** One installed provider an app declares. */
+export interface MemoryProviderRow {
+  id: string
+  app: string
+  app_version: string
+  display_name: string
+  description: string
+  settings_page: string
+  enabled: boolean
+  capabilities?: MemoryProviderCapabilities
+  replace_gaps?: string[]
+  egress_consented?: boolean
+  /** The provider did not answer `describe`: a failed call, not an eligibility refusal. */
+  describe_failed?: boolean
+  blocked_reason?: string
+  latency?: { calls: number; ops: Record<string, { p50_ms: number; p95_ms: number; count: number }> }
+}
+
+export interface MemoryProviderOverview {
+  mode: 'builtin' | 'replace' | 'augment'
+  id: string
+  switched_at: number
+  stop_learning_ack: boolean
+  builtin: { id: string; display_name: string }
+  providers: MemoryProviderRow[]
+  shared_crew: boolean
+  policy_allows: boolean
+  active: { mode: string; id: string; unavailable: string; health?: { ok: boolean; detail: string } }
+}
+
+export interface MemoryProviderSwitch {
+  mode: 'builtin' | 'replace' | 'augment'
+  id?: string
+  egress_consent?: boolean
+  stop_learning_ack?: boolean
+  pin_member_stores_builtin?: boolean
+}
+
+export interface MemoryProviderCopyJob {
+  id: string
+  from: string
+  to: string
+  state: 'running' | 'done' | 'failed' | 'cancelled'
+  listed: number
+  outcomes: Record<string, number>
+  skipped_kinds: Record<string, number>
+  error: string
+}
+
 /**
  * The optional `store=` parameter on memory content routes.
  * Embedding configuration is installation-wide; legacy Markdown migration
@@ -213,6 +276,17 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
     memoryGraph: () => fetch('/api/memory/graph').then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
+    /** Which memory answers, every installed provider, and the active one's health. */
+    memoryProvider: (probe = false) =>
+      fetch('/api/memory/provider' + (probe ? '?probe=1' : '')).then(j) as Promise<MemoryProviderOverview>,
+    /** Switch. The owner's own dashboard session only; refusals carry a `code`. */
+    switchMemoryProvider: (body: MemoryProviderSwitch) =>
+      put('/api/memory/provider', body).then(j) as Promise<{ ok: boolean; mode: string; id?: string }>,
+    /** Copy one provider's memory into another; answers the started job. */
+    copyMemoryProvider: (body: { from: string; to: string; dry_run?: boolean; store?: string }) =>
+      post('/api/memory/provider/copy', body).then(j) as Promise<MemoryProviderCopyJob>,
+    memoryProviderCopyJob: (id: string) =>
+      fetch('/api/memory/provider/copy/' + encodeURIComponent(id)).then(j) as Promise<MemoryProviderCopyJob>,
   }
 
   const lessons = {

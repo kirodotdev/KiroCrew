@@ -413,6 +413,20 @@ def decisions_consent_path() -> Path:
     return config_dir() / "decisions_consent.json"
 
 
+def memory_provider_consent_path() -> Path:
+    """Return path to memory_provider_consent.json — consent to send memory off this machine.
+
+    Same KEYSTONE class as :func:`decisions_consent_path`: a memory provider whose app
+    states ``egress: "remote"`` sends preferences, lessons and transcripts to a
+    service elsewhere, which is an egress authorization, not a preference. Each grant
+    is bound to one provider id and the app version the owner agreed to, so a new
+    version asks again. READONLY in the sandbox so an agent cannot grant itself the
+    egress; the only writer is the owner's ``PUT /api/memory/provider``. Every read
+    fails soft to NOT CONSENTED. Respects ``KIROCREW_HOME``.
+    """
+    return config_dir() / "memory_provider_consent.json"
+
+
 def credential_redaction_path() -> Path:
     """Return path to credential_redaction.json -- the credential-redaction switch.
 

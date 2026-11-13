@@ -320,6 +320,22 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "through the shared credential + exfiltration-URL chain before serialization.",
     ),
     (
+        "Memory provider item and export responses",
+        "dashboard/handlers/memory_provider.py",
+        "Item text an app's memory provider returns, served to the owner or a "
+        "memoryAdmin app by the provider browse routes and the JSONL export. Each "
+        "item's text and each export line pass through the shared credential + "
+        "exfiltration-URL chain before serialization.",
+    ),
+    (
+        "Memory provider lesson responses",
+        "memory_provider/lesson_routes.py",
+        "Lesson rules, categories and supersession results a memory provider "
+        "returns, served by the lesson routes while a provider replaces Crew "
+        "memory. Each field passes through the shared credential + "
+        "exfiltration-URL chain before serialization.",
+    ),
+    (
         "Bedrock Knowledge Base retrieval queries",
         "knowledge/connectors/bedrock_kb.py",
         "The user's knowledge-search query text as sent to the AWS Bedrock "

@@ -632,3 +632,7 @@ export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fm
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'
+// Ask the owner to change which memory Crew uses (level 8): opens the host's own
+// confirmation sheet; only the owner's press there switches.
+export { requestMemoryProviderChange } from './memoryProviderChange'
+export type { MemoryProviderChangeTarget, MemoryProviderChangeOutcome } from './memoryProviderChange'

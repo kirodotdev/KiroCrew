@@ -2786,7 +2786,14 @@
         "inject_lessons_per_turn": false,
         "inject_activity": true,
         "startup_recall_timeout_secs": 1.0,
-        "migrated": false
+        "migrated": false,
+        "provider": {
+          "mode": "builtin",
+          "id": "",
+          "timeout_secs": 3.0,
+          "switched_at": 0.0,
+          "stop_learning_ack": false
+        }
       }
     },
     {
@@ -3568,6 +3575,100 @@
       "tags": [],
       "label": "Migrated",
       "help": "Whether memory has been migrated to vector store.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "memory.provider",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider",
+      "help": "Which memory answers: Crew's own (default) or a provider an installed app serves. See memory.provider.mode.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "mode": "builtin",
+        "id": "",
+        "timeout_secs": 3.0,
+        "switched_at": 0.0,
+        "stop_learning_ack": false
+      }
+    },
+    {
+      "path": "memory.provider.mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider Mode",
+      "help": "'builtin' uses Crew's own memory. 'replace' hands all learned memory to the provider named by memory.provider.id; Crew's own memory stays on disk untouched and comes back when switched back. 'augment' keeps Crew's own memory and adds the provider as a read-only source. Changed only from Settings > Memory > Memory provider, and applies to new chats.",
+      "hasChildren": false,
+      "enumValues": [
+        "builtin",
+        "replace",
+        "augment"
+      ],
+      "defaultValue": "builtin"
+    },
+    {
+      "path": "memory.provider.id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider",
+      "help": "The provider in use, as 'app:<app id>/<provider id>'. Kept after a switch back to 'builtin' so chats that started on the provider stay on it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "memory.provider.timeout_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider Timeout",
+      "help": "Seconds a chat's first message waits for the provider's memory before the chat starts with a 'memory unavailable' notice (0.5 to 10).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3.0
+    },
+    {
+      "path": "memory.provider.switched_at",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider Switched At",
+      "help": "When the mode or provider last changed (epoch seconds). Chats created before it keep the provider they started with.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
+      "path": "memory.provider.stop_learning_ack",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider Learning Stop Acknowledged",
+      "help": "The owner accepted that automatic learning stops in 'replace' mode because the provider takes no consolidation input.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
@@ -12763,6 +12864,23 @@
         "llama_cpp"
       ],
       "defaultValue": ""
+    },
+    {
+      "path": "memory_stores.*.provider_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Provider Mode",
+      "help": "'inherit' follows memory.provider; 'builtin' keeps this store on Crew's own memory whatever memory.provider says.",
+      "hasChildren": false,
+      "enumValues": [
+        "inherit",
+        "builtin"
+      ],
+      "defaultValue": "inherit"
     },
     {
       "path": "default_memory_store",

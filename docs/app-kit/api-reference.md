@@ -1913,6 +1913,67 @@ Apps declare their agents, skills and `mcpServers` in `app.json`, and
 |--------|---------|-------------|
 | `memorySearch(query, topK?)` | `MemoryResult[]` | Semantic memory search |
 
+### Memory provider routes
+
+With `permissions.memoryAdmin` an app token reaches these, for whichever provider is
+active (Crew's own memory included). `?store=<name>` names a configured store;
+`?provider=builtin` reads Crew's own memory while another provider replaces it.
+
+| Route | What it does |
+|---|---|
+| `GET /api/memory/provider` | mode, active id, every installed provider with capabilities, consent, latency (`?probe=1` adds health) |
+| `GET /api/memory/provider/items` | list (`?cursor=`, `?kinds=`, `?status=`) or search (`?q=`) |
+| `GET/PATCH/DELETE /api/memory/provider/items/{id}` | read, replace (`{"item": {...}}`), delete one item |
+| `POST /api/memory/provider/items` | add one item |
+| `POST /api/memory/provider/copy` | copy `{"from", "to", "dry_run"}`; poll `GET /api/memory/provider/copy/{job}` |
+| `GET /api/memory/provider/export`, `POST /api/memory/provider/import` | JSONL `kirocrew-memory/1` |
+
+`PUT /api/memory/provider` (the switch) refuses every app token. Ask the owner instead
+with the App SDK:
+
+```ts
+import { requestMemoryProviderChange } from '@kirocrew/app-sdk'
+const outcome = await requestMemoryProviderChange({ mode: 'replace', id: 'app:my-app/bridge' })
+// 'switched' | 'cancelled' | 'unavailable'
+```
+
+It opens the host's own confirmation sheet; only the owner's press switches. Needs App
+Kit level 8 (`APP_SDK_LEVEL >= 8`).
+
+### Memory provider contract
+
+The gateway posts JSON to `POST /api/<route>/v1/<op>` on loopback, signed exactly like a
+proxied request (verify `X-KiroCrew-Proxy-V2` with its nonce, as for any proxied
+call). It answers `{"ok": true, "result": ...}` or
+`{"ok": false, "error": {"code", "message", "retry_after_secs"}}` with a code of
+`unavailable`, `refused`, `read_only`, `not_supported`, `conflict` or `invalid`.
+The `/apps/<name>/api/...` proxy refuses every path under a declared provider route
+with 403 `memory_provider_route`, so a signed call there always comes from the
+gateway and its `scope` is the store Crew resolved for the caller.
+
+| Op | Body | Result |
+|---|---|---|
+| `describe` | `{}` | `{"api_version": 1, "read_only", "supports_search", "supports_vectors", "supports_lessons", "supports_list", "supports_delete", "ingest": "none"\|"raw"\|"items", "multi_store", "egress": "local"\|"remote", "kinds", "max_page"}` |
+| `health` | `{}` | `{"ok", "detail"}` |
+| `context` | `{"scope", "query", "budget_chars"}` | `{"items": [...]}` |
+| `search` | `{"scope", "query", "limit", "kinds"?}` | `{"items": [...]}` |
+| `get` | `{"scope", "id"}` | `{"item": {...} or null}` |
+| `list` | `{"scope", "cursor", "kinds"?, "status"?}` | `{"items": [...], "cursor"}` |
+| `put` | `{"scope", "item", "idempotency_key", "id"?}` | `{"outcome": "inserted"\|"enriched"\|"unchanged"\|"deduped"\|"refused", "id", "reason", "superseded", "winner"}` |
+| `delete` | `{"scope", "id"}` | `{"outcome": "deleted"\|"unchanged", "id"}` |
+| `ingest` | `{"scope", "receipt_id", "messages", "span"}` | `{"accepted", "items"}` |
+
+`scope` is `{"store_id", "member_id", "memory_mode", "session_id", "project",
+"principal"}`, built by Crew: keep items per `store_id` (or state `multi_store: false`,
+which limits the provider to the global store). An item is `{"id", "kind", "text",
+"title", "scopes", "source", "created_at", "updated_at", "status", "score", "meta"}`
+with `kind` one of `preference`, `fact`, `episode`, `summary`, `rule`, `finding`,
+`index`, `note`. An answer is capped at 200 items and 512 KB; text over 8,000
+characters is cut. A provider that keeps memory off the machine states
+`egress: "remote"`, and the owner is asked once per app version. Check yours with
+`python -m kiro_crew.memory_provider.conformance --app <app id>`; a complete stdlib
+example is `test/fixtures/memory_provider_app/backend/server.py`.
+
 ### Context Injection
 
 Silent background context for LLM — content appears in the next user-initiated turn without triggering a response or showing a visible message.

@@ -532,6 +532,10 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # Recorded consent to send memory to a provider app that keeps it elsewhere.
+    # Same class as ``decisions_consent.json`` above: a writable grant lets an
+    # auto-approved agent consent, for itself, to its memory leaving the machine.
+    "memory_provider_consent.json",
     # The update armed for the next start (``update_next_start``). The boot-time
     # apply installs on the strength of this record alone, so a writable copy lets
     # a sandboxed shell skip the step-up, the self-protection deny floor and the
@@ -992,6 +996,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "decisions_consent.json",
+    "memory_provider_consent.json",
     "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     "project_hooks_consent.json",

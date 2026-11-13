@@ -207,6 +207,39 @@ async def api_memory_recall(request: web.Request) -> web.Response:
     query = request.query.get("q", "").strip()
     if not query or len(query) > MAX_RECALL_QUERY:
         return _error("A query of 1–2000 characters is required.", "invalid_memory_query")
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+    from kiro_crew.memory_provider import recall as _provider_recall
+
+    session = request.headers.get("X-Session-Key", "")
+    memory_route = await asyncio.to_thread(_memory_provider.session_route, name, session or None)
+    if memory_route.replaces:
+        # Every candidate comes from the provider; Crew's stores are not opened.
+        project = requesting_slot_project(state, session)
+        provider_pending: list = []
+        result = await _provider_recall.replace_result(
+            memory_route,
+            name,
+            query,
+            session,
+            str(project) if project else None,
+            _memory_recall_keep(state, session, query, provider_pending, name),
+        )
+        payload = bound_recall_payload(
+            _redact_memory_field({"store": name, **result}),
+            context_cap=_RECALL_CONTEXT_CAP,
+            ensure_ascii=False,
+        )
+        if provider_pending:
+            from kiro_crew.decisions.points.memory_recall import commit_receipt
+
+            await asyncio.to_thread(commit_receipt, session, provider_pending, payload=payload)
+        record_memory_recalled("tool", hit=recall_payload_hit(payload))
+        return web.json_response(
+            payload,
+            dumps=lambda body: recall_json(
+                body, ensure_ascii=False, context_cap=_RECALL_CONTEXT_CAP
+            ),
+        )
     enter_work_phase("store_open")
     try:
         vector_unavailable = False
@@ -261,6 +294,11 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         )
         if vector_unavailable:
             result["vector_status"] = "unavailable"
+        if memory_route.augments:
+            # A read-only provider's hits follow Crew's own, under the same cap.
+            result = await _provider_recall.augment_result(
+                result, memory_route, name, query, session, str(project) if project else None
+            )
         if markdown is not None and markdown._memory_version == 1:
             enter_work_phase("notebook")
             rows = []
@@ -393,6 +431,11 @@ async def api_memory_seed(request: web.Request) -> web.Response:
             )
         selections.append((kind, identity))
     target, refusal = await _admin_store(request, "memory.seed", body)
+    if refusal is not None:
+        return refusal
+    from kiro_crew.dashboard.handlers.memory_provider import provider_active_refusal
+
+    refusal = await provider_active_refusal(target or "")
     if refusal is not None:
         return refusal
     if not isinstance(body.get("source_store"), str) or not body["source_store"].strip():

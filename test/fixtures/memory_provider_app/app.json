@@ -1,0 +1,31 @@
+{
+  "name": "memory-fixture",
+  "version": "1.0.0",
+  "displayName": "Memory Fixture",
+  "description": "A test memory provider: stores memory items in one JSON file and serves the memory provider contract.",
+  "author": "kiro-crew-tests",
+  "defaultEnabled": false,
+  "backend": {
+    "entryPoint": "backend/server.py",
+    "healthCheck": "/health"
+  },
+  "contributes": {
+    "memoryProviders": [
+      {
+        "id": "fixture",
+        "displayName": "Fixture memory",
+        "route": "/memory-provider",
+        "description": "Keeps memory in a JSON file in this app's data folder."
+      },
+      {
+        "id": "readonly",
+        "displayName": "Fixture memory (read-only)",
+        "route": "/memory-provider-ro",
+        "description": "The same items, read-only."
+      }
+    ]
+  },
+  "permissions": {
+    "memoryAdmin": true
+  }
+}

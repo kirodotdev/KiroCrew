@@ -81,5 +81,22 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/memory/recall", handlers.api_memory_recall)
     app.router.add_post("/api/memory/seed", handlers.api_memory_seed)
 
+    # Memory providers (handlers/memory_provider.py). Literal sub-paths first.
+    app.router.add_get("/api/memory/provider/items", handlers.api_memory_provider_items)
+    app.router.add_post("/api/memory/provider/items", handlers.api_memory_provider_items_create)
+    app.router.add_get("/api/memory/provider/items/{id:.+}", handlers.api_memory_provider_item)
+    app.router.add_patch("/api/memory/provider/items/{id:.+}", handlers.api_memory_provider_item)
+    app.router.add_delete("/api/memory/provider/items/{id:.+}", handlers.api_memory_provider_item)
+    app.router.add_post("/api/memory/provider/copy", handlers.api_memory_provider_copy)
+    app.router.add_get("/api/memory/provider/copy/{job}", handlers.api_memory_provider_copy_job)
+    app.router.add_delete("/api/memory/provider/copy/{job}", handlers.api_memory_provider_copy_job)
+    app.router.add_get("/api/memory/provider/export", handlers.api_memory_provider_export)
+    app.router.add_post("/api/memory/provider/import", handlers.api_memory_provider_import)
+    app.router.add_post(
+        "/api/memory/provider/conformance", handlers.api_memory_provider_conformance
+    )
+    app.router.add_get("/api/memory/provider", handlers.api_memory_provider_get)
+    app.router.add_put("/api/memory/provider", handlers.api_memory_provider_put)
+
     # Crons, lessons, spawn, taskrunner, send-message, notifications
     # are registered via _register_mcp_routes() above.

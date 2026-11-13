@@ -136,6 +136,17 @@ from kiro_crew.apps.manifest_contributes import (  # noqa: F401
     _normalize_status_path,
     _strict_int,
 )
+from kiro_crew.apps.manifest_memory_providers import (  # noqa: F401
+    _MEMORY_PROVIDER_KEYS,
+    MAX_MEMORY_PROVIDERS_PER_APP,
+    MEMORY_PROVIDER_DESCRIPTION_MAX,
+    MEMORY_PROVIDER_ID_RE,
+    MEMORY_PROVIDER_NAME_MAX,
+    MEMORY_PROVIDER_PAGE_RE,
+    MEMORY_PROVIDER_ROUTE_RE,
+    MemoryProviderDecl,
+    MemoryProvidersConfig,
+)
 from kiro_crew.apps.manifest_names import (  # noqa: F401
     APP_NAME_MAX_LENGTH,
     KEBAB_RE,
@@ -808,6 +819,7 @@ class AppManifest:
         from kiro_crew.apps.app_frame import process_backed
 
         errors.extend(self.agentTools.validate(self.name, process_backed(self)))
+        errors.extend(self.contributes.memoryProviders.validate(process_backed(self)))
 
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an

@@ -524,6 +524,71 @@ async def _consolidate(
             return store_name, bool(store_name and memory_store_version(store_name) == 2)
 
         store_name, member_memory = await asyncio.to_thread(_resolve_memory_identity)
+
+        # A pending model result cannot authorize writes from a deleted or edited
+        # transcript, or outrank a newer user turn; both write paths ask this at
+        # their write boundary (Crew's own stores below, a provider's above).
+        async def _transcript_moved() -> _ConsolidationRefusedSentinel | None:
+            try:
+                (
+                    latest,
+                    latest_total,
+                    latest_generation,
+                    latest_sub_offset,
+                ) = await asyncio.to_thread(
+                    self._log.snapshot_for_consolidation, key, withhold_restricted=True
+                )
+            except TranscriptWithheld:
+                self._logger.info(
+                    "Discarding consolidation result for %s: the transcript became restricted "
+                    "during extraction",
+                    key,
+                )
+                return _CONSOLIDATION_REFUSED
+            if (
+                latest_generation != generation_at_snapshot
+                or latest_total < total
+                or latest[: len(unconsolidated)] != unconsolidated
+                or any(row.get("role") == "user" for row in latest[len(unconsolidated) :])
+                # A sub-slice this run read started at ``sub_offset_at_snapshot``.
+                # If the durable sub-offset moved while the model was thinking
+                # (another process extracted an earlier slice of the same head),
+                # this result describes a slice other than the one now at the
+                # offset, so it must not advance anything. The generation check
+                # above misses this: a sub-offset advance does not bump the
+                # generation.
+                or (is_sub_slice and latest_sub_offset != sub_offset_at_snapshot)
+            ):
+                self._logger.info(
+                    "Discarding consolidation result for %s: conversation changed during extraction",
+                    key,
+                )
+                return _CONSOLIDATION_STALE
+            return None
+
+        # A provider that replaces Crew's memory takes the span here, before any
+        # of Crew's own stores is opened (``memory_provider/consolidation.py``).
+        from kiro_crew.memory_provider.chokepoints import session_route
+
+        memory_route = await asyncio.to_thread(session_route, store_name, key)
+        if memory_route.replaces:
+            from kiro_crew.memory_provider import consolidation as _provider_pass
+
+            assert lease is not None
+            return await _provider_pass.publish(
+                self,
+                key,
+                memory_route,
+                store_name=store_name,
+                execution=execution,
+                chunk=chunk,
+                attempted=attempted,
+                lease=lease,
+                include_history=include_history,
+                commit_state=commit_state,
+                transcript_moved=_transcript_moved,
+                refused=_CONSOLIDATION_REFUSED,
+            )
         # V2 anchors are owner-managed essentials. Extract proposed facts
         # through the revision-aware structured path; never let a legacy
         # whole-file rewrite remove their rules or age out project guides.
@@ -968,41 +1033,9 @@ async def _consolidate(
         # Same gate at the write boundary: a line tightened while the model
         # was thinking makes this result one derived from a restricted
         # transcript, so it is discarded -- nothing reaches history or memory.
-        try:
-            (
-                latest,
-                latest_total,
-                latest_generation,
-                latest_sub_offset,
-            ) = await asyncio.to_thread(
-                self._log.snapshot_for_consolidation, key, withhold_restricted=True
-            )
-        except TranscriptWithheld:
-            self._logger.info(
-                "Discarding consolidation result for %s: the transcript became restricted "
-                "during extraction",
-                key,
-            )
-            return _CONSOLIDATION_REFUSED
-        if (
-            latest_generation != generation_at_snapshot
-            or latest_total < total
-            or latest[: len(unconsolidated)] != unconsolidated
-            or any(row.get("role") == "user" for row in latest[len(unconsolidated) :])
-            # A sub-slice this run read started at ``sub_offset_at_snapshot``.
-            # If the durable sub-offset moved while the model was thinking
-            # (another process extracted an earlier slice of the same head),
-            # this result describes a slice other than the one now at the
-            # offset, so it must not advance anything. The generation check
-            # above misses this: a sub-offset advance does not bump the
-            # generation.
-            or (is_sub_slice and latest_sub_offset != sub_offset_at_snapshot)
-        ):
-            self._logger.info(
-                "Discarding consolidation result for %s: conversation changed during extraction",
-                key,
-            )
-            return _CONSOLIDATION_STALE
+        moved = await _transcript_moved()
+        if moved is not None:
+            return moved
 
         # The lesson origin gate, once on the shared result before it branches to
         # the V1 and V2 write paths, over the rows the model read.

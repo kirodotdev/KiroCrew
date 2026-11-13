@@ -1124,6 +1124,11 @@ def build_config(
                 embedding_provider=store.get("embedding_provider"),
                 owner_member=store.get("owner_member"),
                 memory_version=store.get("memory_version"),
+                provider_mode=(
+                    mode
+                    if (mode := entry.get("provider_mode")) in ("inherit", "builtin")
+                    else "inherit"
+                ),
             )
     if not memory_stores:
         memory_stores[DEFAULT_MEMORY_STORE] = MemoryStoreConfig()

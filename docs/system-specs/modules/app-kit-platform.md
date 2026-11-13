@@ -8098,6 +8098,47 @@ Writers: `apps/backend_sdk/__init__.py`, `apps/backend_sdk/paths.py`,
 Pinned by `test/test_app_backend_sdk.py` and `test/test_builtin_adoption_pins.py`.
 App authors: `docs/app-kit/api-reference.md` § Backend SDK.
 
+## 41. An app can serve Crew's memory, and can manage it with the owner's consent (seam level 8)
+
+An app declares memory providers in `contributes.memoryProviders`
+(`apps/manifest_memory_providers.py`, at most four): an `id`
+(`^[a-z][a-z0-9-]{0,31}$`), a `displayName` (60 characters), a `route` below the app's
+own API, an optional `description` (200) and `settingsPage`. The provider's id is
+`app:<app id>/<provider id>`. A provider needs a process backend; a malformed block
+refuses the install, and the reader skips every provider of a block with an error.
+
+**The gateway is the only caller.** `memory_provider/app_client.py` posts
+`/api/<route>/v1/<op>` to the backend on loopback with the same v1 and replay-proof v2
+proxy signature the app proxy sends, so a backend verifies it exactly as it verifies a
+proxied request. The health watch gates it: `get_app_backend_port` answers only for a
+healthy backend, and an unhealthy one is unavailable without a call. No app code runs in
+the gateway, the CLI, the recall pool or the consolidation child for it; those reach a
+provider through the gateway's routes or not at all. The contract, the modes and every
+memory path are in memory-skills-hooks.md, "Memory providers".
+
+**Choosing a provider is the owner's.** `PUT /api/memory/provider` refuses every app
+token and every internal-secret caller; only the owner's own dashboard session switches.
+An app asks with the App SDK's `requestMemoryProviderChange(target)`, which opens the
+host-rendered `MemoryProviderSheet`; the owner's press performs the switch and the
+promise answers `switched`, `cancelled` or `unavailable` (no sheet host mounted).
+
+**`permissions.memoryAdmin`.** Grants an app token the `/api/memory/provider` routes
+(browse, search, edit, delete, copy, export, import) and nothing else: it joins the
+app's API allowlist as the one prefix `/api/memory/provider` (`token_auth_app_scope`),
+staged like any API entry so an update that adds it waits for the owner, and the
+handlers check the flag again and write an audit record naming the app for every call.
+The existing store-scoped memory routes stay closed to app tokens, and the advisory
+`permissions.memory` field is unchanged.
+
+**Consent for egress.** A provider that states `egress: "remote"` answers only after the
+owner agreed at the switch; the grant is in the keystone `memory_provider_consent.json`
+(READONLY in every sandbox mode) and is bound to the app version, so an update asks
+again.
+
+`APP_SDK_LEVEL` is 8 on both sides (`apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`, pinned by `test_app_sdk_level_mirror.py`).
+`test/fixtures/memory_provider_app/` is a complete stdlib provider used by the tests.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.
