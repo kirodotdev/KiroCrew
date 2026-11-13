@@ -24,7 +24,7 @@ from kiro_crew.acp import client as client_mod
 from kiro_crew.acp.client import AcpClient, AcpToolGateUnroutable
 from kiro_crew.acp.harness import mimocode as mimocode_mod
 from kiro_crew.acp.harness import process_adapter_for
-from kiro_crew.acp.harness.base import ProcessAdapter
+from kiro_crew.acp.harness.base import HarnessReadBack, ProcessAdapter
 from kiro_crew.acp.harness_tool_names import (
     HARNESS_PARAM_ALIASES,
     HARNESS_UNASKED_TOOL_IDS,
@@ -129,15 +129,9 @@ def test_the_backend_s_session_rows_and_handshake_dialect(tmp_path) -> None:
     assert projection.per_tool_deny is PerToolDeny.SETTINGS_FILE
 
 
-#: Client ``_mimocode_*`` fields: per-spawn read-back records.
-_MIMOCODE_CLIENT_FIELDS = (
-    "_mimocode_denies_in_force",
-    "_mimocode_denies_unenforced",
-    "_mimocode_native_mounts",
-    "_mimocode_disabled_servers",
-    "_mimocode_config_mcp_servers",
-    "_mimocode_governed_stop",
-)
+#: Client ``_mimocode_*`` fields: per-spawn records. The config read-back is the
+#: adapter's own (``HarnessReadBack``), not a client field.
+_MIMOCODE_CLIENT_FIELDS = ("_mimocode_governed_stop",)
 
 
 def test_the_client_carries_exactly_the_mimocode_fields_reset_is_held_to(tmp_path) -> None:
@@ -164,6 +158,17 @@ def test_reset_state_returns_each_mimocode_field_to_its_fresh_value(tmp_path, fi
     assert getattr(client, field) != fresh
     client._reset_state()
     assert getattr(client, field) == fresh
+
+
+def test_reset_state_drops_the_adapter_and_its_read_back(tmp_path) -> None:
+    """A new process inherits no read-back from the last launch."""
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+    client._harness_read_back().native_mounts = frozenset({"stale"})
+    client._harness_read_back().denies_in_force = frozenset({"stale"})
+    client._reset_state()
+    assert client._process_adapter is None
+    assert client._harness_read_back() == HarnessReadBack()
 
 
 @pytest.mark.parametrize("module", [mimocode_mod, mimocode_mirror_mod])
@@ -436,6 +441,7 @@ def _readback(monkeypatch, tmp_path, stdout: str, **env: str):
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+    client._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
     seed = mimocode_mod._mimocode_routing_config(ACP_BACKEND_MIMOCODE)
     verdict = mimocode_mod._verify_mimocode_routing(
         client, ACP_BACKEND_MIMOCODE, ["/opt/bin/mimo", "debug", "config"], seed
@@ -498,17 +504,16 @@ def test_a_relocated_credential_home_refuses_before_any_child(monkeypatch, tmp_p
 
 
 def test_the_read_back_records_mimos_own_session_fields(monkeypatch, tmp_path) -> None:
-    """Rewritten MCP names and native mounts go to mimocode's fields."""
+    """Rewritten MCP names and native mounts go to the MiMo Code adapter's read-back."""
     verdict, _env, client = _readback(
         monkeypatch,
         tmp_path,
         '{"permission": {"*": "ask"}, "mcp": {"docs.server": {}, "plain": {}}}',
     )
     assert verdict == ("", "")
-    assert client._mimocode_config_mcp_servers == ("docs.server",)
-    assert client._mimocode_native_mounts == frozenset({"docs.server", "plain"})
-    assert client._opencode_config_mcp_servers == ()
-    assert client._opencode_native_mounts == frozenset()
+    assert isinstance(client._process_adapter, mimocode_mod.MimoCodeLaunch)
+    assert client._harness_read_back().config_mcp_servers == ("docs.server",)
+    assert client._harness_read_back().native_mounts == frozenset({"docs.server", "plain"})
     assert client._harness_mcp_server_names() == ("docs.server",)
     # The recorded name splits the harness's rewritten title back.
     qualified = qualified_harness_tool_id(
@@ -995,21 +1000,22 @@ def test_each_harness_tool_id_is_met_first_by_its_kiro_name(kiro: str, tool_id: 
 
 def test_a_native_mount_of_a_withheld_server_refuses(tmp_path) -> None:
     mimocode = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
-    mimocode._mimocode_native_mounts = frozenset({"docs"})
+    mimocode._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
+    mimocode._harness_read_back().native_mounts = frozenset({"docs"})
     mimocode._session_mcp_unhonoured = frozenset({"docs"})
     with pytest.raises(AcpToolGateUnroutable, match="from its own config"):
         mimocode_mod.refuse_native_mount_of_unhonoured(mimocode)
 
 
-def test_the_deny_settlement_writes_mimos_own_field(monkeypatch, tmp_path) -> None:
+def test_the_deny_settlement_writes_the_adapters_read_back(monkeypatch, tmp_path) -> None:
     _isolate_mimocode_env(monkeypatch)
     mimocode = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_MIMOCODE)
+    mimocode._process_adapter = process_adapter_for(ACP_BACKEND_MIMOCODE)
     mimocode._session_harness_deny_rules = ("srv_a", "srv_b")
-    mimocode._mimocode_denies_unenforced = frozenset({"srv_b"})
+    mimocode._harness_read_back().denies_unenforced = frozenset({"srv_b"})
     seed = mimocode_mod._mimocode_routing_config(ACP_BACKEND_MIMOCODE, ("srv_a", "srv_b"))
     assert mimocode_mod.settle_mimocode_denies(mimocode, seed) == frozenset({"srv_b"})
-    assert mimocode._mimocode_denies_in_force == frozenset({"srv_a"})
-    assert mimocode._opencode_denies_in_force is None
+    assert mimocode._harness_read_back().denies_in_force == frozenset({"srv_a"})
 
 
 def test_the_projection_names_mimocode_in_its_warnings(monkeypatch, caplog) -> None:

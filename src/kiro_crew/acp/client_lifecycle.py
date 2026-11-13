@@ -19,14 +19,11 @@ Instance fields written: ``_background_launches``, ``_between_turn_credits``, ``
 ``_liveness_oracle``, ``_loaded_capability_template``, ``_mcp_json_names``,
 ``_mcp_ref_spec``,
 ``_mcp_report``, ``_mcp_report_frame_floor``, ``_member_stub_allowlist``,
-``_mimocode_config_mcp_servers``, ``_mimocode_denies_in_force``,
-``_mimocode_denies_unenforced``, ``_mimocode_disabled_servers``, ``_mimocode_governed_stop``,
-``_mimocode_native_mounts``,
-``_oauth_emitted_servers``,
-``_opencode_denies_in_force``, ``_opencode_denies_unenforced``,
-``_opencode_native_mounts``, ``_pending_oauth_requests``,
+``_mimocode_governed_stop``,
+``_oauth_emitted_servers``, ``_pending_oauth_requests``,
 ``_permission_surface_share_validated``, ``_pi_mcp_handoff``, ``_pi_mcp_server_names``,
-``_pid``, ``_process``, ``_process_instance``, ``_process_tree_confirmed_dead``,
+``_pid``, ``_process``, ``_process_adapter``, ``_process_instance``,
+``_process_tree_confirmed_dead``,
 ``_prompt_or_tool_seen``, ``_resume_session_id``, ``_resumed``, ``_sandbox_cleanup``,
 ``_session_agent_spec``, ``_session_harness_deny_rules``, ``_session_id``,
 ``_session_key``, ``_session_mcp_cache``, ``_session_mcp_snapshot``,
@@ -749,14 +746,8 @@ def _reset_state(self: AcpClient) -> None:
     self._claude_worker_builtin_tools = None
     self._session_mcp_unhonoured = frozenset()
     self._session_harness_deny_rules = ()
-    self._opencode_denies_in_force = None
-    self._opencode_denies_unenforced = frozenset()
-    self._opencode_native_mounts = frozenset()
-    self._mimocode_denies_in_force = None
-    self._mimocode_denies_unenforced = frozenset()
-    self._mimocode_native_mounts = frozenset()
-    self._mimocode_disabled_servers = frozenset()
-    self._mimocode_config_mcp_servers = ()
+    # The adapter carries its launch's read-back, so dropping it drops that too.
+    self._process_adapter = None
     self._mimocode_governed_stop = None
     # Save PID state before clearing it. A root is confirmed exited only
     # when its own Process reports a reaped return code; a missing or
