@@ -1029,6 +1029,50 @@ def test_pathological_limits_terminate(limit: int) -> None:
     assert parts
 
 
+_LONG_CODE = (
+    "Here is the log:\n```\n"
+    + "".join(f"line {i:04d} = compute(value_{i})\n" for i in range(250))
+    + "```\nDone."
+)
+
+
+def test_a_cut_inside_a_code_block_closes_it_and_reopens_it_in_the_next_post() -> None:
+    """Each post shows the code as code: no post leaves a block open or starts mid-block."""
+    parts = slack_format.split_message(_LONG_CODE, limit=SLACK_MSG_LIMIT)
+    assert len(parts) == 2
+    assert all(len(part) <= SLACK_MSG_LIMIT for part in parts)
+    assert parts[0].endswith("\n```" + CONTINUATION)
+    assert parts[1].startswith("```\nline 0")
+    assert [part.count("```") for part in parts] == [2, 2]
+    rendered = render_for_slack(_LONG_CODE, redactor=_fake_redactor)
+    assert [part.count("```") for part in rendered] == [2, 2]
+
+
+def test_a_cut_after_a_closed_code_block_adds_no_fence() -> None:
+    text = "```\nshort\n```\n" + "prose line\n" * 600
+    parts = slack_format.split_message(text, limit=SLACK_MSG_LIMIT)
+    assert parts[0].count("```") == 2
+    assert all("```" not in part for part in parts[1:])
+
+
+@pytest.mark.parametrize("width", range(3860, 3900, 3))
+def test_a_line_too_long_for_one_post_after_its_reopened_block_is_cut_inside_it(
+    width: int,
+) -> None:
+    """No post is a bare reopened opener; every post but the last has its block shut."""
+    text = (
+        "```json\n"
+        + "".join(f"short line {i:03d}\n" for i in range(130))
+        + "x" * width
+        + "\n```\nafter the block\n"
+        + "prose line\n" * 400
+    )
+    parts = slack_format.split_message(text, limit=SLACK_MSG_LIMIT)
+    assert all(len(part) <= SLACK_MSG_LIMIT for part in parts)
+    assert all(part.count("```") % 2 == 0 for part in parts)
+    assert all(part.strip() not in {"```json" + CONTINUATION.strip(), "```json"} for part in parts)
+
+
 class TestEmphasisDelimiterRedaction:
     """Emphasis delimiters must not smuggle a credential past redaction.
 
