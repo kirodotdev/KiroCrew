@@ -46,6 +46,7 @@ from kiro_crew.acp.types import (
     METHOD_SET_MODE,
     JsonRpcRequest,
 )
+from kiro_crew.constants import REQUEST_TIMEOUT_SECS
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime
@@ -54,7 +55,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("kiro_crew.acp.runtime")
 
 
-_REQUEST_TIMEOUT = 30.0
+_REQUEST_TIMEOUT = REQUEST_TIMEOUT_SECS
 
 
 class _PendingRequests(dict):

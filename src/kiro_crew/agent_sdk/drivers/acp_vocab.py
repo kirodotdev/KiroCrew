@@ -33,7 +33,11 @@ from kiro_crew.acp.engine_fallback import (
     walk_outcome,
 )
 from kiro_crew.acp.liveness import InFlightToolTracker
-from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
+from kiro_crew.acp.session_handle import (
+    NATIVE_CHILD_NOT_RESUMABLE,
+    AcpRequestTimeout,
+    AcpScopeAdmissionTimeout,
+)
 from kiro_crew.acp.timed_out_continuation import continue_timed_out_calls, timed_out_continuation
 from kiro_crew.acp.types import (
     EVENT_MODEL_FALLBACK,
@@ -84,6 +88,7 @@ __all__ = [
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
     "AcpRequestTimeout",
+    "AcpScopeAdmissionTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",
     "StructuredStatus",

@@ -92,7 +92,7 @@ async def test_a_failed_init_leaves_no_child_processes(tmp_path, monkeypatch, ca
     child_pid: list[int] = []
     start_ids: dict[int, str | None] = {}
 
-    async def _failing_handshake(_caps):
+    async def _failing_handshake(_caps, *_budget, **_admission):
         # Wait for the tree to exist, then fail the way a stalled kiro-cli does.
         await async_wait_until(pid_file.exists, describe=lambda: f"{pid_file} was never written")
         pid = int(pid_file.read_text())
@@ -153,7 +153,7 @@ async def test_a_cancel_during_the_failed_start_scan_still_reaps_the_tree(tmp_pa
     child_pid: list[int] = []
     start_ids: dict[int, str | None] = {}
 
-    async def _failing_handshake(_caps):
+    async def _failing_handshake(_caps, *_budget, **_admission):
         await async_wait_until(pid_file.exists, describe=lambda: f"{pid_file} was never written")
         pid = int(pid_file.read_text())
         child_pid.append(pid)

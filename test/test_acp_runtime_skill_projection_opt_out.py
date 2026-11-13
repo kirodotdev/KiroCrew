@@ -40,7 +40,7 @@ async def _spawn_until_handshake(
     async def _plan() -> SpawnPlan:
         return SpawnPlan(argv=[sys.executable, "-c", _STAND_IN, "--agent", "kirocrew"])
 
-    async def _failing_handshake(_caps: Any) -> None:
+    async def _failing_handshake(_caps: Any, *_budget: Any, **_admission: Any) -> None:
         raise AcpRuntimeError("initialize timed out")
 
     monkeypatch.setattr(rt, "_resolve_spawn_plan", _plan)

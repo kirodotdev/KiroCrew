@@ -153,6 +153,46 @@ class AcpRuntimeOverloaded(AcpRequestTimeout):
     transient = False
 
 
+class AcpScopeAdmissionTimeout(AcpRuntimeError):
+    """The user systemd manager did not admit the agent's scope within its bound.
+
+    ``systemd-run --user --scope`` waits for the manager to move its own pid into
+    the new scope before it execs the agent, so while the pid is outside the scope
+    no agent exists and nothing was written to its stdin. ``pid`` is the spawned
+    process, ``scope_unit`` the unit it asked for and ``waited_s`` the time spent.
+
+    ``transient = False``: the cause is a manager that is behind, and each retry
+    asks it for one more transient unit, so a retry adds to the queue it waits in.
+    """
+
+    transient = False
+
+    def __init__(self, message: str, *, pid: int | None, scope_unit: str, waited_s: float) -> None:
+        super().__init__(message)
+        self.pid = pid
+        self.scope_unit = scope_unit
+        self.waited_s = waited_s
+
+
+class AcpScopeAdmissionDied(AcpRuntimeDead):
+    """The scoped spawn exited during the scope admission wait.
+
+    No read found the process in its scope, and nothing was written to its stdin.
+    The wait reads every 50 ms, so the exit can be systemd-run's own (for example
+    ``Failed to start transient scope unit``) or that of the layer it exec'd
+    between two reads, and the stderr tail in the message names which. An
+    ``AcpRuntimeDead`` so every caller that respawns on a death keeps doing so.
+    ``pid``, ``scope_unit`` and ``returncode`` (the label ``_returncode_label``
+    gives) are the fields the message carries.
+    """
+
+    def __init__(self, message: str, *, pid: int | None, scope_unit: str, returncode: str) -> None:
+        super().__init__(message)
+        self.pid = pid
+        self.scope_unit = scope_unit
+        self.returncode = returncode
+
+
 class AcpRuntimeProtocol(Protocol):
     """Minimal interface that AcpSessionHandle needs from AcpRuntime."""
 
@@ -355,3 +395,5 @@ AcpModeNotFound.__module__ = "kiro_crew.acp.session_handle"
 AcpAgentUnavailable.__module__ = "kiro_crew.acp.session_handle"
 AcpRequestTimeout.__module__ = "kiro_crew.acp.session_handle"
 AcpRuntimeOverloaded.__module__ = "kiro_crew.acp.session_handle"
+AcpScopeAdmissionTimeout.__module__ = "kiro_crew.acp.session_handle"
+AcpScopeAdmissionDied.__module__ = "kiro_crew.acp.session_handle"
