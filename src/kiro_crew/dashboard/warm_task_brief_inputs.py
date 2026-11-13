@@ -1,12 +1,10 @@
-"""What a warm task brief reads besides what waits on the owner (that list is
-``member_waiting.waiting_items``, the "Waiting on you" list): what changed while
-they were away, a bounded live read of the pull requests the asks name, the turns since their last message, and the open work items.
+"""What the warm welcome reads besides what waits on the owner (that list is
+``member_waiting.waiting_items``, the "Waiting on you" list): a bounded live read
+of the pull requests the work items hold, the open work items, the ledger digest
+and the owner's language.
 
-Every section has its own budget and drops whole entries, so the model always
-sees the ask and the changes first and never a cut JSON document (the old
-40,000-character slice of the whole payload cut the transcript off). Each fact
-carries its source and the time it was read, so the brief can say "not checked
-since HH:MM" instead of repeating a stale claim as current.
+Each live read carries the time it was made, so the welcome says "not read since
+HH:MM" instead of repeating a stale state as current.
 """
 
 from __future__ import annotations
@@ -27,15 +25,9 @@ from kiro_crew.session_summary import TranscriptTurn
 
 logger = logging.getLogger(__name__)
 
-# Per-section budgets, in characters of each entry's compact JSON. A section
+# The open-items list's budget, in characters of each entry's compact JSON: it
 # keeps whole entries, most important first, until the next would not fit.
-CHANGES_CHARS = 5_000
-LIVE_PRS_CHARS = 3_000
-TRANSCRIPT_CHARS = 16_000
 OPEN_ITEMS_CHARS = 9_000
-# One entry larger than its whole section keeps both ends of its text with a
-# visible omission marker: the text field is cut, never the JSON around it.
-_ENTRY_TEXT_CHARS = 4_000
 _ITEM_TEXT_CHARS = 400
 # The live read: at most this many pull requests, each answer reused for 15
 # minutes (the repo's GitHub polling rule).
@@ -58,13 +50,6 @@ _PR_URL_RE = re.compile(
     r"https://github\.com/([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})/pull/(\d{1,9})" + _PR_END,
     re.ASCII | re.M,
 )
-# ``owner/repo#N``: a number with its repository.
-_PR_REPO_HASH_RE = re.compile(
-    r"(?<![A-Za-z0-9_./-])([A-Za-z0-9-]{1,39})/([A-Za-z0-9._-]{1,100})#(\d{1,9})" + _PR_END,
-    re.ASCII | re.M,
-)
-# A bare ``#N`` or ``PR#N``; never an HTML entity (``&#38;``) or part of a path.
-_PR_HASH_RE = re.compile(r"(?<![A-Za-z0-9_&/])(?:PR)?#(\d{1,9})" + _PR_END, re.ASCII | re.I | re.M)
 _REPO_RE = re.compile(r"^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$")
 
 
@@ -94,7 +79,12 @@ def clock(epoch: float | None) -> str:
         zone = get_local_tz()[1]
     except Exception:
         zone = timezone.utc
-    when = datetime.fromtimestamp(epoch, zone)
+    try:
+        when = datetime.fromtimestamp(epoch, zone)
+    except (OverflowError, ValueError, OSError):
+        # A stamp out of the platform's range (an agent-written year 1, say) has
+        # no clock reading: "" is "no time", never a raised error.
+        return ""
     # Another day gets its date, so "since 14:05" never reads as today.
     same_day = when.date() == datetime.now(zone).date()
     return when.strftime("%H:%M" if same_day else "%Y-%m-%d %H:%M")
@@ -122,19 +112,6 @@ def fit(entries: Iterable[dict[str, Any]], budget: int) -> list[dict[str, Any]]:
         kept.append(entry)
         used += size
     return kept
-
-
-def waiting_entries(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The "Waiting on you" items for the prompt, with ``asked_at`` as HH:MM."""
-    return [
-        {
-            "kind": item.get("kind"),
-            "text": item.get("text"),
-            "options": list(item.get("options") or []),
-            "asked_at": clock(row_epoch(item.get("asked_at"))),
-        }
-        for item in items
-    ]
 
 
 def row_epoch(raw: object) -> float | None:
@@ -214,14 +191,6 @@ def open_item_entries(
     return fit((_item_entry(item, anchor) for item in sorted(chosen, key=rank)), OPEN_ITEMS_CHARS)
 
 
-# Who wrote each work-item stamp, for "Since you left" lines.
-_CHANGE_SOURCES = {
-    "last_report_at": "worker report",
-    "decided_at": "conductor decision",
-    "closed_at": "work ledger",
-}
-
-
 # Fields a ledger READ derives from the clock or from other fields. They are
 # never part of a stored record, but a record passed through a read could
 # carry them, and idle time alone must not count as a change.
@@ -252,12 +221,15 @@ def ledger_digest(
     conductor: object,
     items: Sequence[object],
     session_state: Mapping[str, Any],
+    event_heads: Mapping[str, str] | None = None,
 ) -> str:
     """A digest of everything the work ledger and session ledger have stored.
 
     The whole conductor record, every item record and the session ledger are
     hashed as stored, minus only ``_DIGEST_EXCLUDED``, so any write changes it
     (a new stored field counts by default) and time passing alone does not.
+    *event_heads* is each open item's newest event id: a write that appends an
+    event and moves no item field (a person's steer) changes it too.
     """
     import hashlib
 
@@ -269,6 +241,7 @@ def ledger_digest(
         "conductor": _stored(conductor) if conductor is not None else None,
         "items": stored_items,
         "session": _stored(session_state),
+        "events": dict(event_heads or {}),
     }
     blob = json.dumps(
         source, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
@@ -276,91 +249,7 @@ def ledger_digest(
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
-def change_entries(
-    items: Sequence[Mapping[str, Any]],
-    anchor: float | None,
-    session_state: Mapping[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    """What changed since *anchor*: item reports, decisions and closes, and
-    session-ledger events. Newest first. A PR's live state is not a change:
-    the read cannot tell when it merged, so it stays in ``live_prs``."""
-    rows: list[tuple[float, dict[str, Any]]] = []
-    for item in items:
-        if not changed_since(item, anchor):
-            continue
-        stamps = {
-            key: stamp
-            for key in ("last_report_at", "decided_at", "closed_at")
-            if (stamp := parse_epoch(item.get(key))) is not None
-        }
-        newest = max(stamps, key=lambda key: stamps[key])
-        epoch = stamps[newest]
-        source = _CHANGE_SOURCES[newest]
-        entry = {
-            "item": item.get("title"),
-            "state": item.get("state"),
-            "status": item.get("status"),
-            "source": source,
-            "at": clock(epoch),
-        }
-        rows.append((epoch, {k: v for k, v in entry.items() if v}))
-    events = (session_state or {}).get("events")
-    for event in events if isinstance(events, list) else []:
-        stamp = parse_epoch(event.get("ts")) if isinstance(event, Mapping) else None
-        if anchor is None or stamp is None or stamp <= anchor:
-            continue
-        rows.append(
-            (
-                stamp,
-                {
-                    "event": _ends(str(event.get("text") or ""), _ITEM_TEXT_CHARS),
-                    "kind": event.get("kind"),
-                    "source": "session ledger",
-                    "at": clock(stamp),
-                },
-            )
-        )
-    rows.sort(key=lambda pair: -pair[0])
-    return fit((entry for _, entry in rows), CHANGES_CHARS)
-
-
 # ---------------------------------------------------------------- transcript
-
-
-def turns_since_owner(turns: Sequence[TranscriptTurn]) -> list[dict[str, Any]]:
-    """The owner's last genuine message and every turn after it, whole.
-
-    Over budget, the oldest turns drop first; the owner's message is kept as
-    long as anything is.
-    """
-    start = 0
-    for index in range(len(turns) - 1, -1, -1):
-        turn = turns[index]
-        if turn.role == "user" and not turn.injected:
-            start = index
-            break
-    entries = [
-        {
-            "role": "automation" if turn.injected else turn.role,
-            "at": clock(row_epoch(turn.ts)),
-            "text": _ends(turn.text, _ENTRY_TEXT_CHARS),
-        }
-        for turn in turns[start:]
-        if turn.text.strip("\u200b \t\r\n")
-    ]
-    if not entries:
-        return []
-    head, rest = entries[0], entries[1:]
-    budget = TRANSCRIPT_CHARS - _size(head)
-    kept: list[dict[str, Any]] = []
-    for entry in reversed(rest):
-        size = _size(entry)
-        if size > budget:
-            break
-        kept.append(entry)
-        budget -= size
-    kept.reverse()
-    return ([head] if budget >= 0 else []) + kept
 
 
 def assistant_spoke_since(turns: Sequence[TranscriptTurn], anchor: float | None) -> bool:
@@ -400,7 +289,8 @@ class PrRef:
 
 def ledger_ref(item: Mapping[str, Any]) -> PrRef | None:
     """The pull request a work item holds in ledger data: its ``pr`` (or its
-    acceptance's ``pr``) in its acceptance's ``repo``. ``None`` without both."""
+    acceptance's ``pr``) in its acceptance's ``repo``. ``None`` without both. The
+    welcome and the Ultra Mode Board (``pr_facts``) both call this."""
     acceptance = item.get("acceptance")
     if not isinstance(acceptance, Mapping):
         return None
@@ -435,29 +325,6 @@ def pr_refs(
         if len(refs) >= limit:
             break
     return refs
-
-
-def text_values(value: object) -> list[str]:
-    """Every string in a JSON-like *value*, keys and values, in order."""
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, Mapping):
-        return [t for k, v in value.items() for t in (*text_values(k), *text_values(v))]
-    if isinstance(value, (list, tuple)):
-        return [t for v in value for t in text_values(v)]
-    return []
-
-
-def pr_numbers(text: str) -> set[int]:
-    """Every pull-request number *text* names: as a PR URL, ``owner/repo#N``,
-    or a bare ``#N`` or ``PR#N``."""
-    numbers = {
-        int(m.group(3))
-        for pattern in (_PR_URL_RE, _PR_REPO_HASH_RE)
-        for m in pattern.finditer(text)
-    }
-    numbers.update(int(m.group(1)) for m in _PR_HASH_RE.finditer(text))
-    return numbers
 
 
 def facts_of(response: object) -> dict[str, Any] | None:
@@ -510,11 +377,16 @@ _live_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 async def read_live_prs(
-    refs: Sequence[PrRef], now: float | None = None, budget: float = LIVE_READ_TOTAL_SECS
+    refs: Sequence[PrRef],
+    now: float | None = None,
+    budget: float = LIVE_READ_TOTAL_SECS,
+    unit: str = "",
 ) -> list[dict[str, Any]]:
     """One entry per ref: its live state and read time, or ``checked: false``
     with the time of the last good read. The GitHub read gets *budget*
-    seconds; past it every PR it was reading is not checked. Never raises."""
+    seconds; past it every PR it was reading is not checked. With *unit* (the
+    thread's crew log unit), each good read is also recorded there
+    (:func:`_observe`). Never raises."""
     now = time.time() if now is None else now
     stale = [
         ref.url
@@ -555,14 +427,80 @@ async def read_live_prs(
             entry["read_at"] = clock(cached[0])
             entry["_read_epoch"] = cached[0]
         entries.append({k: v for k, v in entry.items() if v is not None})
+    if unit:
+        await _observe(unit, entries)
     return entries
 
 
-def public_live(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """*entries* without the private read epoch, within the section budget."""
-    return fit(
-        ({k: v for k, v in e.items() if not k.startswith("_")} for e in entries), LIVE_PRS_CHARS
-    )
+# (unit, url, read epoch) whose append committed, so a cached read is written once
+# per unit. A read is marked only once its append commits: one the writer refused or
+# dropped is written again by the next read that sees it.
+_observed: dict[tuple[str, str, float], None] = {}
+# Queued and not yet settled, so a concurrent read does not queue it twice.
+_observing: set[tuple[str, str, float]] = set()
+
+
+async def _observe(unit: str, entries: Sequence[Mapping[str, Any]]) -> None:
+    """Record each good read in *entries* as ``object/observed`` (producer
+    ``warm_brief``) in crew log *unit*, once per read, so the ``objects`` slot fold
+    serves it to the Board with its read time. No extra GitHub call. Never raises."""
+    import hashlib
+
+    fresh: list[tuple[str, dict[str, Any], float]] = []
+    for entry in entries:
+        epoch, url = entry.get("_read_epoch"), entry.get("url")
+        if entry.get("checked") is not True or not isinstance(epoch, float) or not url:
+            continue
+        key = (unit, str(url), epoch)
+        if key in _observed or key in _observing:
+            continue
+        _observing.add(key)
+        facts = {k: entry[k] for k in ("state", "review", "mergeable", "checks") if k in entry}
+        fresh.append((str(url), facts, epoch))
+    if not fresh:
+        return
+
+    def settled(key: tuple[str, str, float]) -> Callable[[bool], None]:
+        # Runs on the writer's thread; each step is one atomic container operation.
+        def done(wrote: bool) -> None:
+            if wrote:
+                _observed[key] = None
+                while len(_observed) > _MAX_LIVE_CACHE * 4:
+                    _observed.pop(next(iter(_observed)), None)
+            _observing.discard(key)
+
+        return done
+
+    def write() -> None:
+        from kiro_crew.crew_log import emit as crew_log_emit
+        from kiro_crew.crew_log.entry_types import OBJECT_PRODUCER_WARM_BRIEF
+
+        for url, facts, epoch in fresh:
+            done = settled((unit, url, epoch))
+            try:
+                blob = json.dumps(facts, sort_keys=True, default=str).encode("utf-8")
+                crew_log_emit.on_object_observed(
+                    unit,
+                    producer=OBJECT_PRODUCER_WARM_BRIEF,
+                    kind="github_pull_request",
+                    target=url,
+                    fingerprint=hashlib.sha256(blob).hexdigest()[:16],
+                    facts=facts,
+                    observed_at=epoch,
+                    on_settled=done,
+                )
+            except Exception:
+                done(False)
+                raise
+
+    try:
+        await asyncio.to_thread(write)
+    except Exception:
+        logger.debug("warm task brief could not record its PR reads", exc_info=True)
+        # A read the loop never reached was not queued: free it for the next read.
+        for url, _facts, epoch in fresh:
+            if (unit, url, epoch) not in _observed:
+                _observing.discard((unit, url, epoch))
 
 
 def language_of(text: str) -> str:

@@ -91,26 +91,6 @@ def _snap(**fields) -> warm_task_brief.TaskSnapshot:
 # ---------------------------------------------------------------- RC1
 
 
-def test_rc1_a_huge_board_never_cuts_the_payload_or_loses_the_transcript():
-    away = time.time() - 3600
-    items = tuple(_item(n) for n in range(170)) + (
-        _item(500, state="open", status="question", title="Pick a layout"),
-    )
-    turns = (
-        _turn(1, "user", "Ship wave 2", 7200),
-        _turn(2, "assistant", "Done; the newest line is here.", 60),
-    )
-    snapshot = _snap(work_items=items, turns=turns, last_user_at=away)
-    prompt = warm_task_brief._build_prompt(snapshot, anchor=away)
-    payload = _payload_of(prompt)  # whole, valid JSON: nothing was sliced
-    assert payload["transcript_since_owner"][-1]["text"] == "Done; the newest line is here."
-    # Terminal items that did not change while the owner was away stay out.
-    assert [entry["title"] for entry in payload["open_items"]] == ["Pick a layout"]
-    order = list(payload)
-    assert order.index("waiting_on_you") < order.index("transcript_since_owner")
-    assert order.index("changes_since_away") < order.index("open_items")
-
-
 def test_rc1_each_section_keeps_whole_entries_within_its_budget():
     entries = [{"text": "x" * 900} for _ in range(20)]
     kept = inputs.fit(entries, 5_000)
@@ -121,103 +101,13 @@ def test_rc1_each_section_keeps_whole_entries_within_its_budget():
     assert 0 < len(open_items) < 100 and size <= inputs.OPEN_ITEMS_CHARS + 2 * len(open_items)
 
 
-def test_rc1_questions_and_changes_rank_first_and_changed_closes_are_kept():
-    away = time.time() - 3600
-    items = (
-        _item(1, state="open", status="progress"),
-        _item(2, state="accepted", status="done", closed_at=_iso(time.time() - 60)),
-        _item(3, state="open", status="blocked", reason="needs_human"),
-        _item(4, state="accepted"),
-    )
-    entries = inputs.open_item_entries(items, away, warm_task_brief.work_item_is_terminal)
-    assert [entry["title"] for entry in entries] == ["Item 3", "Item 2", "Item 1"]
-    assert entries[1]["changed_since_away"] is True
-    changes = inputs.change_entries(items, away)
-    assert changes == [
-        {"item": "Item 2", "state": "accepted", "status": "done", "source": "work ledger"}
-        | {"at": inputs.clock(inputs.parse_epoch(items[1]["closed_at"]))}
-    ]
-
-
 # ---------------------------------------------------------------- RC2
-
-
-def test_rc2_the_transcript_slice_starts_at_the_owners_last_message_whole():
-    long_reply = "head " + "middle " * 300 + "tail [OPTIONS: A | B]"
-    turns = (
-        _turn(1, "user", "The 10-10 goal", 9000),
-        _turn(2, "assistant", "Old reply", 8000),
-        _turn(3, "user", "Now do wave 2", 7200),
-        _turn(4, "user", "[work-ledger wake] x", 3000, injected=True),
-        _turn(5, "assistant", long_reply, 60),
-        _turn(6, "assistant", "\u200b", 30),
-    )
-    entries = inputs.turns_since_owner(turns)
-    assert [entry["role"] for entry in entries] == ["user", "automation", "assistant"]
-    assert entries[0]["text"] == "Now do wave 2"
-    assert entries[-1]["text"] == long_reply
-
-
-def test_rc2_over_budget_the_oldest_turns_drop_and_the_owner_message_stays():
-    turns = (_turn(1, "user", "Go", 9000),) + tuple(
-        _turn(n, "assistant", f"{n} " + "x" * 3000, 9000 - n) for n in range(2, 12)
-    )
-    entries = inputs.turns_since_owner(turns)
-    assert entries[0]["text"] == "Go"
-    assert entries[-1]["text"].startswith("11 ")
-    assert len(entries) < len(turns)
 
 
 # ---------------------------------------------------------------- RC3
 
 
-@pytest.mark.asyncio
-async def test_rc3_fixed_lines_follow_the_owners_recent_messages(monkeypatch):
-    state = _State()
-    slot = _foreground_slot(state)
-    turns = (
-        _turn(1, "user", "Fix the failing test", 9000),
-        _turn(2, "user", "现在进展如何？", 7200),
-        _turn(3, "assistant", "还在跑。", 60),
-    )
-    base = _snap(turns=turns)
-
-    async def fail(*args, **kwargs):
-        raise RuntimeError("provider failed")
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], fail)
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    assert slot.rows[-1]["content"] == warm_task_brief._FAILURE_TEXT["zh"]
-    prompt = warm_task_brief._build_prompt(base)
-    assert _payload_of(prompt)["owner_recent_messages"][-1] == "现在进展如何？"
-    assert 'language of "owner_recent_messages"' in prompt
-
-
 # ---------------------------------------------------------------- RC6
-
-
-@pytest.mark.asyncio
-async def test_rc6_a_crewmate_thread_that_owns_a_ledger_gets_the_conductor_prompt(monkeypatch):
-    state = _State()
-    slot = _foreground_slot(state)
-    assert slot.mode == "member"
-    prompts: list[str] = []
-
-    async def run_model(sessions, prompt, **kwargs):
-        prompts.append(prompt)
-        return '{"headline":"Here is where we are."}'
-
-    base = _snapshot()  # carries a conductor goal
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    assert prompts[0].startswith("You are the conductor in this chat.")
-
-    plain = _snap(conductor=None, work_items=())
-    prompts.clear()
-    _arm_model(monkeypatch, slot, [plain, _claimed(plain), _claimed(plain)], run_model)
-    slot.rows.clear()
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    assert prompts[0].startswith("You are the crewmate in this chat.")
 
 
 # ---------------------------------------------------------------- quiet, RC8
@@ -254,11 +144,6 @@ async def test_a_plain_chat_is_never_briefed_even_with_pending_choices(monkeypat
     state, slot, log = _thread(monkeypatch, user_ago=2 * 3600)
     slot.mode = "chat"
     log.rows.append({"role": "assistant", "content": _ASK, "ts": _iso(time.time() - 60)})
-    monkeypatch.setattr(
-        warm_task_brief.KiroCrewConfig,
-        "load",
-        lambda: SimpleNamespace(agent=SimpleNamespace(resolve_model=lambda role: "background")),
-    )
     await _focus(state, 1, slot.key)
     assert [row for row in slot.rows if (row.get("meta") or {}).get("kind")] == []
     assert log.reads == 0
@@ -281,18 +166,10 @@ async def test_session_ledger_progress_while_away_is_not_a_quiet_return(monkeypa
             "events": [{"ts": recent, "kind": "progress", "text": "Rebased onto main"}],
         },
     )
-    prompts: list[str] = []
-
-    async def run_model(sessions, prompt, **kwargs):
-        prompts.append(prompt)
-        return '{"headline":"Rebased onto main."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    assert len(prompts) == 1
-    changes = _payload_of(prompts[0])["changes_since_away"]
-    assert changes[0]["event"] == "Rebased onto main"
-    assert changes[0]["source"] == "session ledger"
+    # Not the quiet line: the full welcome, which starts with the goal.
+    assert slot.rows[-1]["content"].startswith("**Goal**")
 
 
 @pytest.mark.asyncio
@@ -305,16 +182,9 @@ async def test_a_question_reported_while_the_claim_settles_is_not_missed(monkeyp
         _claimed(quiet),
         work_items=(_item(4, state="open", status="question", title="Pick a layout"),),
     )
-    prompts: list[str] = []
-
-    async def run_model(sessions, prompt, **kwargs):
-        prompts.append(prompt)
-        return '{"headline":"Pick a layout."}'
-
-    _arm_model(monkeypatch, slot, [quiet, asked, asked], run_model)
+    _arm_model(monkeypatch, slot, [quiet, asked, asked])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    assert len(prompts) == 1
-    assert _payload_of(prompts[0])["open_items"][0]["title"] == "Pick a layout"
+    assert "Pick a layout" in slot.rows[-1]["content"]
     # The claim and the posted row keep the first snapshot's fingerprint.
     assert slot.rows[-1]["meta"]["fingerprint"] == quiet.fingerprint
 
@@ -338,22 +208,6 @@ def test_the_quiet_line_claims_only_nothing_new_and_dates_an_older_time(monkeypa
     assert all("waiting" not in text for text in warm_task_brief._QUIET_TEXT.values())
     assert inputs.clock(noon.timestamp() - 3600) == "11:00"
     assert inputs.clock(noon.timestamp() - 26 * 3600) == "2026-10-30 10:00"
-
-
-@pytest.mark.parametrize(
-    ("newest", "source"),
-    [
-        ("last_report_at", "worker report"),
-        ("decided_at", "conductor decision"),
-        ("closed_at", "work ledger"),
-    ],
-)
-def test_each_change_names_who_wrote_its_newest_stamp(newest, source):
-    away = time.time() - 3600
-    item = _item(1, state="open", status="progress", last_report_at=_iso(away - 600))
-    item[newest] = _iso(time.time() - 60)
-    (entry,) = inputs.change_entries([item], away)
-    assert entry["source"] == source
 
 
 def test_each_epoch_helper_has_one_definition():
@@ -493,19 +347,12 @@ async def test_the_quiet_line_shows_only_when_nothing_waits(monkeypatch, waiting
         ledger_digest="d1",
         previous_digest="d1",
     )
-    calls: list[str] = []
-
-    async def run_model(sessions, prompt, **kwargs):
-        calls.append(prompt)
-        return '{"headline":"A card waits on you."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
+    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
-    quiet = slot.rows[-1]["content"].startswith("Nothing new since")
-    assert quiet is (not waiting)
-    assert len(calls) == (1 if waiting else 0)
+    content = slot.rows[-1]["content"]
+    assert content.startswith("Nothing new since") is (not waiting)
     if waiting:
-        assert _payload_of(calls[0])["waiting_on_you"][0]["text"] == "Set the milestones"
+        assert "- Set the milestones (change card)" in content
 
 
 # ---------------------------------------------- the ledger digest (quiet line)
@@ -668,30 +515,6 @@ async def test_an_unchanged_state_posts_after_one_call(monkeypatch):
     assert len(prompts) == 1 and len(posted) == 1
 
 
-@pytest.mark.asyncio
-async def test_a_card_pressed_mid_write_drops_the_result_and_redoes_it_once(monkeypatch):
-    # The card is answered while the first call runs; the redo sees no card.
-    prompts, posted = await _write_run(monkeypatch, [{"waiting": ()}, {"waiting": ()}])
-    assert len(prompts) == 2 and len(posted) == 1
-    assert _payload_of(prompts[1])["waiting_on_you"] == []
-
-
-@pytest.mark.asyncio
-async def test_a_ledger_write_mid_write_drops_the_result_and_redoes_it_once(monkeypatch):
-    prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
-    )
-    assert len(prompts) == 2 and len(posted) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_second_change_posts_nothing_this_visit(monkeypatch):
-    prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d2"}]
-    )
-    assert len(prompts) == 2 and posted == []
-
-
 # ---------------------------------------------------------------- RC4, RC5: live reads and buttons
 
 
@@ -771,35 +594,6 @@ async def test_rc4_live_read_past_its_limit_marks_unread_prs_not_checked(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_rc4_one_live_read_limit_covers_every_attempt(monkeypatch):
-    budgets: list[float] = []
-    # A synthetic clock scoped to the brief module: each read takes 3 s and
-    # each model call 20 s; only the reads may spend the limit.
-    now = [0.0]
-    clock = SimpleNamespace(time=time.time, monotonic=lambda: now[0])
-    monkeypatch.setattr(warm_task_brief, "time", clock)
-
-    async def read(refs, now_arg=None, budget=inputs.LIVE_READ_TOTAL_SECS):
-        budgets.append(budget)
-        now[0] += 3.0
-        return []
-
-    real_generate = warm_task_brief._generate
-
-    async def generate(*args, **kwargs):
-        now[0] += 20.0
-        return await real_generate(*args, **kwargs)
-
-    monkeypatch.setattr(inputs, "read_live_prs", read)
-    monkeypatch.setattr(warm_task_brief, "_generate", generate)
-    prompts, posted = await _write_run(
-        monkeypatch, [{"ledger_digest": "d1"}, {"ledger_digest": "d1"}]
-    )
-    assert len(prompts) == 2 and len(posted) == 1
-    assert budgets == [inputs.LIVE_READ_TOTAL_SECS, inputs.LIVE_READ_TOTAL_SECS - 3.0]
-
-
-@pytest.mark.asyncio
 async def test_rc4_only_ledger_prs_and_full_urls_are_read(monkeypatch, _no_github):
     state = _State()
     slot = _foreground_slot(state)
@@ -821,36 +615,9 @@ async def test_rc4_only_ledger_prs_and_full_urls_are_read(monkeypatch, _no_githu
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)])
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     read = [url.rsplit("/", 1)[1] for url in _no_github[0]]
-    # The ask's ledger PR, the full URL, then the other open item's ledger PR
-    # (M3: read before the brief may name it); the bare #111 and #444 never are.
-    assert read == ["222", "333", "1"]
-
-
-@pytest.mark.asyncio
-async def test_rc4_a_pr_number_the_input_never_named_drops_the_model_fields(monkeypatch):
-    state = _State()
-    slot = _foreground_slot(state)
-    base = _snap(
-        waiting=(
-            {
-                "kind": "options",
-                "text": "Merge #26100?",
-                "options": ["Merge it", "Hold"],
-                "asked_at": "",
-            },
-        )
-    )
-
-    async def run_model(*args, **kwargs):
-        return '{"headline":"Merge #18901 now.","body":"#26100 is fine."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    row = slot.rows[-1]
-    # The headline names an invented pull request: only the gateway's own
-    # cards and the failure line post.
-    assert row["meta"]["brief"]["headline"] == warm_task_brief._FAILURE_TEXT["en"]
-    assert "18901" not in row["content"]
+    # The ask's ledger PR, then the other open item's ledger PR (M3: read before
+    # the welcome shows its state); a URL in text and a bare #111 or #444 never are.
+    assert read == ["222", "1"]
 
 
 def test_rc4_the_providers_own_response_type_is_read_not_dropped():
@@ -946,6 +713,17 @@ def test_rc4_the_item_payload_keeps_the_repo_its_own_pr_is_read_in():
     assert [ref.number for ref in warm_task_brief._live_refs(snapshot)] == [222]
 
 
+def test_pr_urls_in_ask_text_never_crowd_out_an_items_own_pr():
+    urls = " ".join(f"https://github.com/o/r/pull/{n}" for n in range(1, 7))
+    ask = {"item_id": "it_1", "state": "open", "status": "question", "summary": urls}
+    running = {"item_id": "it_2", "state": "open", "status": "progress",
+               "acceptance": {"kind": "pr_checks", "repo": "o/r", "pr": 99}}  # fmt: skip
+    waiting = ({"kind": "card", "text": urls, "options": []},)
+    snapshot = _snap(work_items=(ask, running), waiting=waiting)
+    # Only a ledger PR is read: the welcome shows PR state on its item's line only.
+    assert warm_task_brief._live_refs(snapshot) == [inputs.PrRef("o/r", 99)]
+
+
 @pytest.mark.asyncio
 async def test_rc4_a_hex_colour_in_the_widget_is_not_an_invented_pr(monkeypatch):
     state = _State()
@@ -985,21 +763,6 @@ async def test_rc4_an_unfinished_check_read_reaches_the_model_as_not_read(monkey
     )
     entry = (await inputs.read_live_prs([inputs.PrRef("kirodotdev/KiroCrew", 26100)]))[0]
     assert entry["checked"] is True and entry["checks"] == inputs.CHECKS_NOT_READ
-    assert inputs.public_live([entry])[0]["checks"] == inputs.CHECKS_NOT_READ
-
-
-def test_rc4_pr_numbers_use_ascii_boundaries_and_read_qualified_forms():
-    # A CJK letter beside the number is a boundary, so an invented #N is seen.
-    assert inputs.pr_numbers("#18901已合并") == {18901}
-    assert inputs.pr_numbers("见#7。") == {7}
-    # A repository-qualified or PR-prefixed number names that number.
-    assert inputs.pr_numbers("kirodotdev/KiroCrew#26100") == {26100}
-    assert inputs.pr_numbers("PR#26101 and pr#5") == {26101, 5}
-    # Neither an HTML entity, a colour, a path nor a longer number.
-    assert inputs.pr_numbers("&#38; a/b/#9 #1234567890") == set()
-    # The live read takes only a full URL from text, never a written repo#N.
-    assert inputs.pr_refs(["see alpha/svc#7"]) == []
-    assert inputs.pr_refs(["https://github.com/alpha/svc/pull/7"]) == [inputs.PrRef("alpha/svc", 7)]
 
 
 @pytest.mark.asyncio
@@ -1034,71 +797,3 @@ async def test_rc4_a_pr_after_a_line_break_in_the_transcript_counts_as_named(mon
     _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
     await warm_task_brief._prepare_warm_task_brief(state, slot)
     assert slot.rows[-1]["meta"]["kind"] == "warm_task_brief_result"
-
-
-@pytest.mark.asyncio
-async def test_rc4_a_pr_from_the_original_request_passes_the_check(monkeypatch):
-    # "asked" falls back to the original request, which may sit outside the payload.
-    state = _State()
-    slot = _foreground_slot(state)
-    base = _snap(original_request="Fix #7 please")
-
-    async def run_model(*args, **kwargs):
-        return '{"headline":"On track."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    row = slot.rows[-1]
-    assert row["meta"]["kind"] == "warm_task_brief_result"
-    assert "#7" in row["meta"]["brief"]["asked"]
-
-
-def test_rc4_a_live_merged_pr_is_not_a_change_since_away():
-    # The read cannot tell when it merged, so it is stated only in live_prs.
-    entry = {
-        "pr": "#26100",
-        "repo": "kirodotdev/KiroCrew",
-        "url": "https://github.com/kirodotdev/KiroCrew/pull/26100",
-        "checked": True,
-        "state": "merged",
-        "source": "GitHub",
-        "read_at": "09:30",
-        "_read_epoch": time.time(),
-    }
-    payload = warm_task_brief._payload(_snapshot(), time.time() - 3600, (entry,))
-    assert all("pr" not in change for change in payload["changes_since_away"])
-    # A checked read is a checked fact, not a "not checked" live entry.
-    assert payload["checked_facts"][0]["values"] == {"state": "merged"}
-    assert "live_prs" not in payload
-
-
-def test_rc4_a_hex_colour_or_a_capped_number_names_no_pr():
-    # A colour is not a PR, wherever the model writes it.
-    assert inputs.pr_numbers("Set the button to #007bff and #fff.") == set()
-    # A number a field cap cut short, ending in an ellipsis, names nothing.
-    assert inputs.pr_numbers("Fix #26100 and #2610…") == {26100}
-    assert inputs.pr_numbers("line one\nasked about #2610…\nnext") == set()
-    # A number followed by a mid-line ellipsis the model wrote still counts.
-    assert inputs.pr_numbers("#26100… then more") == {26100}
-    # A CJK letter next to the number is still a boundary.
-    assert inputs.pr_numbers("#18901已合并") == {18901}
-
-
-@pytest.mark.asyncio
-async def test_rc4_a_capped_asked_fallback_does_not_fail_the_result(monkeypatch):
-    state = _State()
-    slot = _foreground_slot(state)
-    request = "x" * (warm_task_brief._MAX_ASKED_CHARS - 6) + " #26100 and more"
-    base = _snap(original_request=request)
-
-    async def run_model(*args, **kwargs):
-        return '{"headline":"On track."}'
-
-    _arm_model(monkeypatch, slot, [base, _claimed(base), _claimed(base)], run_model)
-    monkeypatch.setattr(warm_task_brief, "_payload", lambda *a, **k: {"goal": "ship"})
-    await warm_task_brief._prepare_warm_task_brief(state, slot)
-    row = slot.rows[-1]
-    # The cap cut the number: what is left names no PR the input lacks.
-    assert row["meta"]["brief"]["asked"].endswith("#261…")
-    assert row["meta"]["kind"] == "warm_task_brief_result"

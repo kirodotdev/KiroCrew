@@ -821,6 +821,39 @@ async def test_a_reported_wake_at_rides_the_record_and_the_next_report_clears_it
     assert item is not None and item.wake_at is None
 
 
+@pytest.mark.asyncio
+async def test_an_ask_record_rides_the_record_and_decide_clears_it_there(monkeypatch):
+    """The ask record the route commits is the one a rebuild restores, and a later
+    decide clears it in the fold as it does in the cache."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    status, body = await _record(
+        CONDUCTOR,
+        {
+            "action": "ask",
+            "item_id": item_id,
+            "what": "Merge it?",
+            "why": "Only you merge.",
+            "options": [{"label": "Merge", "outcome": "ships"}, {"label": "Hold"}],
+            "pick": "Merge",
+            "pick_why": "green",
+        },
+    )
+    assert status == 200, body
+    committed = wl.read_work_item(CONDUCTOR, item_id)
+    assert committed is not None and committed.ask is not None
+    wl.rebuild_from_projection(CONDUCTOR)
+    rebuilt = wl.read_work_item(CONDUCTOR, item_id)
+    assert rebuilt is not None and rebuilt.ask == committed.ask
+    status, body = await _record(
+        CONDUCTOR, {"action": "decide", "item_id": item_id, "decision": "merge"}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.ask is None
+
+
 # -- the record is refused before the commit, and answered for after it -------
 
 

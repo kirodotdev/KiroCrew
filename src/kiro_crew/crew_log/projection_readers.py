@@ -14,6 +14,7 @@ from kiro_crew.crew_log.entry_types import (
     CUSTOM_FOLD_NAME,
     DASHBOARD_FOLD_NAME,
     GOAL_FOLD_NAME,
+    OBJECTS_FOLD_NAME,
     PANEL_FOLD_NAME,
     WAITING_FOLD_NAME,
 )
@@ -473,10 +474,10 @@ def _slot_units_for_fold(slot: str, name: str) -> "tuple[str, ...]":
         # wrote and the write path accepted -- silently, because both are well-formed.
         # The custom fold keeps the latest record per TYPE and is the same case.
         return units_in_succession(slot)
-    if name in (GOAL_FOLD_NAME, WAITING_FOLD_NAME):
+    if name in (GOAL_FOLD_NAME, WAITING_FOLD_NAME, OBJECTS_FOLD_NAME):
         # The same reason again: each keeps the NEWEST snapshot whole, so a retired
         # session sorted last by its header clock would bring back an old goal or a
-        # question already answered.
+        # question already answered. ``objects`` keeps the newest read per subject.
         return units_in_succession(slot)
     return session_units_for_slot(slot)
 

@@ -46,7 +46,7 @@ class TestActionableEvents:
         """It advances the revision instead, so chatter stays free."""
         assert not lw.is_actionable_event("report", "progress")
 
-    @pytest.mark.parametrize("kind", ["create", "bind", "decision", "verdict", "close"])
+    @pytest.mark.parametrize("kind", ["create", "bind", "decision", "verdict", "close", "ask"])
     def test_the_conductors_own_writes_never_wake_it(self, kind):
         """A gate woken by its owner's writes never sleeps.
 
@@ -69,6 +69,7 @@ class TestActionableEvents:
             "steer",
             "retire",
             "destroy",
+            "ask",
         }
         assert not lw.is_actionable_event("steer", "done")
         # ``retire`` is written during the conductor's own read, which shows it.

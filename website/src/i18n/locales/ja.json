@@ -5819,6 +5819,9 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "{{time}} に取得"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} が一度 root として起動された可能性があります（たとえば sudo で）。root での実行をやめてから、ファイルを自分のアカウントに戻してください。",
       "check_failed": "{{productName}} のファイルの所有者を確認できませんでした。",

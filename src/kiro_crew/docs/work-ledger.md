@@ -55,7 +55,11 @@ An item is the unit of dispatch. It holds:
 
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
-ledger back with `work_ledger_read`. A patrol cycle reads it with `compact=true`
+ledger back with `work_ledger_read`. When it relays an item's question to the
+person, it records what the item needs, why, each option with what it leads to,
+and its pick with `work_ask_record`, a deferred tool it loads first; the
+person's welcome shows that record, and `decide` or `close` clears it. A patrol
+cycle reads it with `compact=true`
 (status columns and derived flags only); `item_id`, `state`, `since` and
 `events` narrow a full read. A reply over the tool-result limit comes back as
 valid JSON marked `truncated`: event tails go first, then oversized acceptances

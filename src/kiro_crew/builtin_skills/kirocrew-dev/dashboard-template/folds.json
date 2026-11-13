@@ -1159,6 +1159,29 @@
       ]
     },
     {
+      "name": "objects",
+      "mode": "slot",
+      "advertised": true,
+      "package_only": false,
+      "affects": [
+        "object/observed"
+      ],
+      "answers": "What gateway code last read about each object outside the session, such as a pull request: per producer, its facts and when they were read",
+      "fields": [
+        {
+          "name": "latest",
+          "type": "object",
+          "optional": false
+        },
+        {
+          "name": "omitted",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
       "name": "workers",
       "mode": "slot",
       "advertised": true,

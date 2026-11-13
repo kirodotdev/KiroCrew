@@ -6159,6 +6159,9 @@
     "viewPr": "Pull request"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "letto alle {{time}}"
+    },
     "dataHomeOwnerNotice": {
       "cause": "Probabilmente {{productName}} è stato avviato una volta come root, per esempio con sudo. Smetti di eseguirlo come root, poi restituisci i file al tuo account.",
       "check_failed": "Impossibile controllare a chi appartengono i file di {{productName}}.",

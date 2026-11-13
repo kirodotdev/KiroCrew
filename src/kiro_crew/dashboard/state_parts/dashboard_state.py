@@ -662,9 +662,6 @@ class DashboardState:
         self._warm_task_brief_last_seen: dict[str, float] = {}
         self._warm_task_brief_not_before: dict[str, float] = {}
         self._warm_task_brief_tasks: dict[str, asyncio.Task[Any]] = {}
-        self._warm_task_brief_model_active: set[str] = set()
-        # Threads whose in-flight model call was dropped by a real cancel.
-        self._warm_task_brief_abandoned: set[str] = set()
         # Threads whose brief has posted its opener: leaving keeps the brief.
         self._warm_task_brief_opened: set[str] = set()
         # Truncating-save claims, keyed by slot map key (see

@@ -5989,6 +5989,9 @@
     "viewPr": "Pull Request"
   },
   "components": {
+    "crewPrFacts": {
+      "read": "gelesen {{time}}"
+    },
     "dataHomeOwnerNotice": {
       "cause": "{{productName}} wurde wahrscheinlich einmal als root gestartet, zum Beispiel mit sudo. Starte es nicht mehr als root und gib die Dateien danach deinem eigenen Konto zurück.",
       "check_failed": "Konnte nicht prüfen, wem die {{productName}}-Dateien gehören.",

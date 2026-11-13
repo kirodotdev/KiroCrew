@@ -447,6 +447,15 @@ Each cycle:
    turns and does not extend, and the goal popover shows it waiting on the user.
    A worker's new report releases it; your own writes (decide, goal, close) do
    not, so answer the user's question or re-dispatch to move it.
+
+   **Whenever you relay an item's question to the person, load and call
+   `work_ask_record` in that turn** (`item_id`, `what`, `why`,
+   `options=[{label, outcome}]`, `pick`, `pick_why`). It is deferred, so load it
+   first. `what` is what you need from them, `why` why only they can do it, each
+   option says what choosing it leads to, and `pick` is the label you recommend,
+   with its reason. Use the same labels as your `[OPTIONS:]` row. The person's
+   welcome shows this record as written; with none it says the reason was not
+   written yet. `decide` and `close` clear it.
 3. **Verify every `done` with the evaluator — never by reading the child's
    transcript and judging, and never by believing the claim.** Call the
    `accept_eval` tool with NO arguments, or with `item_id=<id>` for the one item

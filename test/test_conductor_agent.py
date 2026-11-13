@@ -720,6 +720,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
+            "@kirocrew-work/work_ask_record",
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",
@@ -762,6 +763,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
         ]
         work_resources = [
             "kirocrew-work/accept_eval",
+            "kirocrew-work/work_ask_record",
             "kirocrew-work/work_brief",
             "kirocrew-work/work_ledger_read",
             "kirocrew-work/work_ledger_rebuild",
@@ -914,6 +916,7 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             "@kirocrew-work/work_ledger_read",
             "@kirocrew-work/work_ledger_record",
             "@kirocrew-work/work_ledger_rebuild",
+            "@kirocrew-work/work_ask_record",
             "@kirocrew-work/work_brief",
             "@kirocrew-work/work_report",
             "@kirocrew-work/accept_eval",

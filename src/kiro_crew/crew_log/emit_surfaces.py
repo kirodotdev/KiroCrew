@@ -68,6 +68,7 @@ def on_object_observed(
     fingerprint: str,
     facts: "Mapping[str, Any]",
     observed_at: float,
+    on_settled: "Callable[[bool], None] | None" = None,
 ) -> None:
     """Record the state of an object outside the session, as *producer* observed it.
 
@@ -98,6 +99,9 @@ def on_object_observed(
     whole or silently trimmed. Recording nothing was rejected: the change
     happened, and a reader that finds no entry cannot tell "unchanged" from
     "did not fit".
+
+    *on_settled* gets True only once the append commits (``_write``'s own hook),
+    False when nothing was queued or the writer dropped it.
     """
     from kiro_crew.crew_log.entry_types import OBJECT_PRODUCERS
 
@@ -108,6 +112,8 @@ def on_object_observed(
     # Off is free: the fit loop below serializes the snapshot and reaches the
     # storage package, work no disabled launch should do on the event loop.
     if not session_id or not enabled():
+        if on_settled is not None:
+            on_settled(False)
         return
     snapshot: dict[str, Any] = dict(facts)
     data: dict[str, Any] = {
@@ -127,7 +133,7 @@ def on_object_observed(
         del snapshot[largest]
         omitted.append(largest)
         data["facts_omitted"] = omitted
-    _write(session_id, "object/observed", data, src=_SRC_GATEWAY)
+    _write(session_id, "object/observed", data, src=_SRC_GATEWAY, on_settled=on_settled)
 
 
 def on_radar_recorded(session_id: str, data: dict[str, Any]) -> None:

@@ -455,7 +455,9 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
 #: still an installed spec.
 #:
 #: ``work_ledger_rebuild`` is the goal conductor's recovery step and no other
-#: conductor's procedure names it. ``work_brief`` is a worker-half verb
+#: conductor's procedure names it. ``work_ask_record`` writes only the ask record
+#: on the conductor's own item, the goal-conductor skill's step when it relays a
+#: question to the person. ``work_brief`` is a worker-half verb
 #: granted: it only READS the caller's own bound item (or answers ``not_bound``),
 #: which is the same rule the two conductor verbs rest on. It is also a
 #: second-level conductor's mandated FIRST call, in a child session nobody opened —
@@ -480,6 +482,7 @@ _CONDUCTOR_BASE_WORK_GRANTS: tuple[str, ...] = (
 #: ``not_bound``. The pipeline and security conductors keep it gated.
 _LEDGER_CONDUCTOR_WORK_GRANTS: tuple[str, ...] = _CONDUCTOR_BASE_WORK_GRANTS + (
     "@kirocrew-work/work_ledger_rebuild",
+    "@kirocrew-work/work_ask_record",
     "@kirocrew-work/work_brief",
     "@kirocrew-work/work_report",
     "@kirocrew-work/accept_eval",

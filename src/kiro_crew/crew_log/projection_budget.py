@@ -64,6 +64,10 @@ _SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
     "goal": 1_700,
     # a waiting row: kind, text, stamp and its options, each at CREWMATE_TEXT_LIMIT
     "waiting": 11_000,
+    # one subject: its target at OBJECTS_TEXT_LIMIT and each of the three producers'
+    # facts at OBJECTS_FACTS_BYTES with kind at OBJECTS_KIND_LIMIT and stamp, the
+    # text in 4-byte characters (9,144 measured)
+    "objects": 9_200,
     # one custom record: its data at CUSTOM_RECORD_BYTES, plus the type name, the
     # stamp, the seq, and the writer, member and ownership cells at their clamps
     "custom": 8_900,

@@ -310,11 +310,11 @@ slot (`session-work-ledger.md`).
 
 | Type | `data` | Emitter |
 |---|---|---|
-| `object/observed` | `{producer: probe, kind, target, fingerprint, facts, facts_omitted?, observed_at}` — the state of an object outside the session, as one named producer observed it | yes |
+| `object/observed` | `{producer: probe \| warm_brief, kind, target, fingerprint, facts, facts_omitted?, observed_at}` — the state of an object outside the session, as one named producer observed it | yes |
 
 One entry per CHANGE of the producer's fingerprint for one subject, never one per
 poll, appended into the log of the session the producer works for. `producer` is a
-CLOSED vocabulary (`probe`, the structured monitor's provider probe) and the emitter
+CLOSED vocabulary (`probe`, the structured monitor's provider probe; `warm_brief`, the warm welcome's pull-request read) and the emitter
 refuses a value outside it rather than coercing it: the value is what lets a reader
 tell a measured record from a sentence an agent typed, and a coerced producer would
 attribute the record to a mechanism that did not make it. `facts` is the probe's
@@ -324,6 +324,8 @@ line is recorded short by a NAMED member in `facts_omitted` rather than dropped 
 trimmed silently. No `turn`: a probe runs without a model turn, so the observation
 belongs to no turn. The monitor's state document still holds no history of the
 subject -- this entry is that history (`monitor-architecture.md`).
+
+The `objects` slot fold (`crew_log/projection_objects.py`) keeps the newest record per subject (`target`) and producer, `{latest: {target: {producer: {kind, facts, observed_at}}}, omitted}`, at most 64 subjects with the least recently observed evicted first, and facts over 2,048 bytes dropped whole. The Ultra Mode Board (`/api/crew-board`, owner-gated) reads it as `pr_facts`, so a pull request's state shows with its read time and no network read on page load.
 
 ### Cards and guides
 

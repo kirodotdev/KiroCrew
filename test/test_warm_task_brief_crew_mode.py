@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 from test_warm_task_brief import _FULL_BRIEF, _brief_kinds, _focus, _seen, _thread
+from warm_brief_render_seam import route_render
 
 from kiro_crew import crew_mode
 from kiro_crew.dashboard import slot_retention, warm_task_brief
@@ -87,39 +88,31 @@ def test_a_crewmate_thread_stays_a_brief_thread(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_crew_mode_return_after_45_minutes_briefs_once(monkeypatch):
-    prompts: list[str] = []
+async def test_crew_mode_return_after_45_minutes_welcomes_once(monkeypatch):
+    renders: list[int] = []
 
-    async def run_model(sessions, prompt, **kwargs):
-        prompts.append(prompt)
-        return '{"headline":"One item is done, one waits on you.","needs_you":["Pick a layout"]}'
+    async def counted(*args, **kwargs):
+        renders.append(1)
 
     state, slot, _ = _crew_mode_chat(monkeypatch, user_ago=2 * 3600)
-    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
+    route_render(monkeypatch, counted)
     await _hide_for(state, 1, slot.key, 45 * 60)
     await _focus(state, 1, slot.key)
     assert _brief_kinds(slot) == _FULL_BRIEF
-    # One background call per qualifying return, the crewmate's cost.
-    assert len(prompts) == 1
-    assert "You are the conductor in this chat." in prompts[0]
-    assert "which wait on the owner" in prompts[0]
-    assert "Ship the welcome in Crew Mode" in prompts[0]
-    assert "Which layout?" in prompts[0]
-    result = slot.rows[-1]
-    # RC7: a board with no recorded goal counts every item it ever had, so the
-    # brief shows no count rather than one that reads like today's progress.
-    assert "progress" not in result["meta"]["brief"]
-    assert '"goal_progress": null' in prompts[0]
-    # The gateway lists what waits on the owner from the ledger, not the model.
-    assert result["meta"]["brief"]["waiting"] == [
-        {"title": "Add the panel", "ask": "Which layout?"}
-    ]
-    assert result["meta"]["brief"]["waiting_total"] == 1
+    assert len(renders) == 1
+    content = slot.rows[-1]["content"]
+    # The goal, then what needs the owner, from the ledger: the item waits, and
+    # with no ask record the welcome says the reason was not written yet.
+    assert content.startswith("**Goal**: Ship the welcome in Crew Mode")
+    assert "- Add the panel (waiting on you" in content
+    assert "The reason and options were not written yet." in content
+    assert "Fix the login bug" not in content  # closed before the owner left
+    assert "brief" not in slot.rows[-1]["meta"]
 
-    # Leave and come back again with nothing changed: the claim holds, no spend.
+    # Leave and come back again with nothing changed: the claim holds.
     await _hide_for(state, 1, slot.key, 45 * 60)
     await _focus(state, 1, slot.key)
-    assert len(prompts) == 1
+    assert len(renders) == 1
 
 
 @pytest.mark.asyncio
@@ -171,24 +164,6 @@ def test_an_ordinary_chat_on_a_normal_agent_never_starts_a_brief(monkeypatch):
     _seen(state, slot.key, 45 * 60)
     warm_task_brief.handle_focus_frame(state, 1, slot.key)
     assert state._warm_task_brief_tasks == {}
-
-
-@pytest.mark.asyncio
-async def test_crewmate_return_keeps_the_crewmate_voice(monkeypatch):
-    prompts: list[str] = []
-
-    async def run_model(sessions, prompt, **kwargs):
-        prompts.append(prompt)
-        return '{"headline":"Still fixing the test."}'
-
-    state, slot, _ = _thread(monkeypatch, user_ago=2 * 3600)
-    monkeypatch.setattr(warm_task_brief, "run_bg_oneliner", run_model)
-    _seen(state, slot.key, 45 * 60)
-    await _focus(state, 1, slot.key)
-    assert _brief_kinds(slot) == _FULL_BRIEF
-    assert len(prompts) == 1
-    assert "You are the crewmate in this chat." in prompts[0]
-    assert "which wait on the owner" not in prompts[0]
 
 
 async def _switch_for(state, conn: int, slot_key: str, other: str, away: float) -> None:

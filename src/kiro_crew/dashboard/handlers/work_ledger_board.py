@@ -388,6 +388,126 @@ def awaits_person(
     )
 
 
+def item_awaits_person(slot_key: str, item: Mapping[str, Any], *, running: bool = False) -> bool:
+    """:func:`awaits_person` for one work-item payload on *slot_key*'s ledger, over
+    its own event tail: the warm welcome's reader, so it and this board agree. A
+    tail that cannot be read leaves the item's stamps to decide; a closed item
+    waits on nobody, as on the board. *running* is :func:`item_running`, read on
+    the loop beforehand; a remote item reads its stored record here. FILE I/O."""
+    if work_item_is_terminal(item.get("state")):
+        return False
+    try:
+        tail = _tail_events(slot_key, str(item.get("item_id")), _MAX_EVENT_TAIL)
+    except Exception:
+        logger.debug("no event tail for a warm welcome item", exc_info=True)
+        tail = []
+    stored = work_ledger.WorkItem.from_dict(dict(item))
+    remote = work_ledger.remote_liveness(slot_key, stored)
+    running = remote[0] if remote is not None else running
+    return awaits_person(stored, [event.to_dict() for event in tail], running=running)
+
+
+def ask_is_current(events: list[dict[str, Any]]) -> bool:
+    """Whether the item's ``ask`` record explains the question waiting now, by the
+    ledger's own event order (*events*, oldest first): no ``report`` was appended
+    after the newest ``ask`` event. Stamps have whole-second resolution and would
+    tie, so the order decides. A tail cut short of the ``ask`` event counts as
+    current only when it holds no report either."""
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == "ask":
+            return True
+        if kind == "report":
+            return False
+    return True
+
+
+def item_ask_is_current(slot_key: str, item: Mapping[str, Any]) -> bool:
+    """:func:`ask_is_current` over *item*'s own event tail on *slot_key*'s ledger.
+    A tail that cannot be read hides the record: the welcome then says the reason
+    was not written, never shows an old one. FILE I/O."""
+    try:
+        tail = _tail_events(slot_key, str(item.get("item_id")), _MAX_EVENT_TAIL)
+    except Exception:
+        logger.debug("no event tail for a warm welcome ask", exc_info=True)
+        return False
+    return ask_is_current([event.to_dict() for event in tail])
+
+
+def item_running(state: DashboardState, item: Mapping[str, Any]) -> bool:
+    """Whether *item*'s local worker has a turn in flight, as the board reads it.
+    A remote item answers False here: :func:`item_awaits_person` reads its record
+    off the loop. Memory reads."""
+    stored = work_ledger.WorkItem.from_dict(dict(item))
+    if stored.worker_instance_id:
+        return False
+    running, _closed, _looping, _held = work_ledger.item_liveness(
+        "",
+        stored,
+        running=lambda k: _slot_running(state, k),
+        closed=lambda k: _slot_closed(state, k),
+        looping=_slot_looping,
+        held=_slot_loop_held,
+    )
+    return running
+
+
+#: The producers whose pull-request observations the Board draws: the warm
+#: welcome's own read only.
+_PR_FACT_PRODUCERS = ("warm_brief",)
+
+
+def pr_facts(slot: str, items: list[work_ledger.WorkItem]) -> dict[str, dict[str, Any]]:
+    """Per open item holding a ledger pull request, what code last read about it:
+    ``{label, url, reads: {producer: {facts, observed_at}}}`` from the slot's
+    ``objects`` fold (``object/observed``, gateway-written only). Never a network
+    read. FILE I/O -- call off the loop. TOTAL: ``{}`` when the fold cannot be read."""
+    from kiro_crew.dashboard.warm_task_brief_inputs import ledger_ref
+
+    try:
+        from kiro_crew.crew_log import projection
+
+        # Request path: a slot with no warm cell answers "not ready" (no PR facts)
+        # rather than folding on the loop, and asks one background prime to fold
+        # it, so a later poll reads a warm cell.
+        try:
+            value = projection.read_slot_projection(slot, "objects", cold=False).value
+        except projection.SlotFoldNotReady:
+            from kiro_crew.crew_log import slot_prime
+
+            slot_prime.schedule(slot, "objects", for_reader=True)
+            return {}
+        latest = value.get("latest") if isinstance(value, Mapping) else None
+    except Exception:
+        logger.debug("no pull-request observations for this board", exc_info=True)
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    if not isinstance(latest, Mapping):
+        return out
+    for item in items:
+        if item.is_terminal:
+            continue
+        ref = ledger_ref(item.to_dict())
+        row = latest.get(ref.url) if ref is not None else None
+        if ref is None or not isinstance(row, Mapping):
+            continue
+        reads = {
+            producer: {
+                "facts": dict(cell.get("facts") or {}),
+                "observed_at": cell.get("observed_at"),
+            }
+            for producer, cell in row.items()
+            if producer in _PR_FACT_PRODUCERS and isinstance(cell, Mapping)
+        }
+        if reads:
+            out[item.item_id] = {
+                "label": f"{ref.repo}#{ref.number}",
+                "url": ref.url,
+                "reads": reads,
+            }
+    return out
+
+
 def closed_items(slot_key: str) -> list[dict[str, Any]]:
     """The closed items on thread *slot_key*'s own ledger, as this board reads them.
 
@@ -635,12 +755,15 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
     asks = await asyncio.to_thread(
         _conductor_asks, requested, {item.item_id for item in items if not item.is_terminal}
     )
+    # What the warm welcome last read about each item's pull request, with its read time.
+    facts_by_item = await asyncio.to_thread(pr_facts, requested, items)
 
     payload = {
         "conductor": record.to_dict(),
         "conductor_alive": "idle" if conductor_alive else "closed",
         "items": rows,
         "asks": asks,
+        "pr_facts": facts_by_item,
         # The ONE capability the page actually reads, because it changes what the
         # page renders: no take-over button is rendered while this is false.
         #
