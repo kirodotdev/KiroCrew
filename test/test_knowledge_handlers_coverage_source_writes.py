@@ -113,6 +113,24 @@ class TestAddAgentDocumentRoute:
         assert fake_add.await_args.kwargs["reason"] == ""
         assert fake_add.await_args.kwargs["source_uri"] == ""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["content", "source_uri"])
+    async def test_a_lone_surrogate_is_a_coded_400(self, store, monkeypatch, field):
+        # JSON's \ud800 decodes to a str UTF-8 cannot encode; the content hash and
+        # the document slug both encode, so it answered 500 before.
+        monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
+        body = {"title": "t", "content": "c", "source_uri": "https://e.test/x"}
+        body[field] += "\ud800"
+        pipeline = MagicMock(ingest_file=AsyncMock())
+        async with _client(_make_app(store, pipeline=pipeline)) as client:
+            resp = await client.post("/api/knowledge/agent-document", json=body)
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": f"{field} contains characters that cannot be encoded",
+                "code": "document_rejected",
+            }
+        pipeline.ingest_file.assert_not_awaited()
+
 
 # ingest_text
 
@@ -166,6 +184,23 @@ class TestIngestText:
             assert await resp.json() == {
                 "error": "text must be a string",
                 "code": "invalid_field_type",
+            }
+        pipeline.ingest_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_lone_surrogate_in_text_is_a_coded_400(self, store):
+        # JSON's \ud800 decodes to a str UTF-8 cannot encode, and the text is
+        # written to the temp file as UTF-8, so it answered 500 before.
+        sid = store.add_source("s", "web", "https://example.com")
+        pipeline = MagicMock(ingest_file=AsyncMock(return_value="job-9"))
+        async with _client(_make_app(store, pipeline=pipeline)) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text", json={"text": "a\ud800b"}
+            )
+            assert resp.status == 400
+            assert await resp.json() == {
+                "error": "text contains characters that cannot be encoded",
+                "code": "text_not_encodable",
             }
         pipeline.ingest_file.assert_not_awaited()
 

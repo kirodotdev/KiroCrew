@@ -225,6 +225,46 @@ class TestAddDocument:
         assert (await add_agent_document(pipeline, title="X", content="   ", source_uri="test://X"))["status"] == "error"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["title", "content", "source_uri"])
+    async def test_a_lone_surrogate_is_an_error_not_a_crash(self, pipeline, kstore, field):
+        # JSON's \ud800 decodes to a str UTF-8 cannot encode; each of these
+        # fields reaches an encode, so it raised UnicodeEncodeError before.
+        doc = {"title": "T", "content": "c", "source_uri": "test://T"}
+        doc[field] += "\ud800"
+        res = await add_agent_document(pipeline, **doc)
+        assert res == {"status": "error",
+                       "error": f"{field} contains characters that cannot be encoded"}
+        assert kstore.db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_lone_surrogate_past_a_cap_is_cut_off_as_before(self, pipeline):
+        res = await add_agent_document(
+            pipeline,
+            title="T" * agent_source_mod._MAX_TITLE_LEN + "\ud800",
+            content="c",
+            source_uri="test://" + "u" * agent_source_mod._MAX_URI_LEN + "\ud800",
+        )
+        assert res.get("status") == "added"
+
+    @pytest.mark.asyncio
+    async def test_a_surrogate_title_on_a_duplicate_is_still_a_duplicate(self, pipeline):
+        # Neither duplicate return stores the title, so main answered them as before.
+        await add_agent_document(pipeline, title="T", content="body", source_uri="test://a")
+        same = await add_agent_document(
+            pipeline, title="T\ud800", content="body", source_uri="test://a")
+        twin = await add_agent_document(
+            pipeline, title="T\ud800", content="body", source_uri="test://b")
+        assert (same.get("status"), twin.get("status")) == ("duplicate", "duplicate")
+
+    @pytest.mark.asyncio
+    async def test_a_surrogate_inside_a_redacted_credential_is_still_added(self, pipeline):
+        # Redaction replaces the whole credential span before the content is
+        # first encoded, so main stored this document.
+        content = "notes\naws_secret_access_key=" + "a" * 20 + "\ud800" + "b" * 19 + "\nend"
+        res = await add_agent_document(pipeline, title="T", content=content, source_uri="test://r")
+        assert res.get("status") == "added"
+
+    @pytest.mark.asyncio
     async def test_credentials_are_redacted_before_storage(self, pipeline, kstore):
         secret = "AKIAIOSFODNN7EXAMPLE"
         res = await add_agent_document(
