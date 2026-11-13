@@ -165,6 +165,7 @@ class _ChatSlot:
         "_hidden_scratch_notice_shown",
         "_telemetry_notice_shown",
         "_project_hook_files_notice_shown",
+        "_session_notice_marks",
         "_on_message",
         "_on_row",
         "_on_card_event",
@@ -490,6 +491,9 @@ class _ChatSlot:
     # A mark of the project folder and hook-file names whose withheld-files notice
     # this chat last showed, "" for none; saved on the metadata line like the above.
     _project_hook_files_notice_shown: str
+    # Marks of the session-start spec notices this chat showed, oldest first
+    # (``dashboard.session_notice_marks``); saved on the metadata line.
+    _session_notice_marks: list[str]
     _pending_reset_history_key: str | None
     _pending_reset_clears_cwd: bool
     _pending_discard_conversation_key: str | None

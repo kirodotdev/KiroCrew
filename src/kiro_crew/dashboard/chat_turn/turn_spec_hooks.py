@@ -50,6 +50,7 @@ from kiro_crew.dashboard.chat_utils_injected_rows import (
     SPEC_HOOKS_RUN_NOWHERE_NOTICE,
 )
 from kiro_crew.dashboard.engine_fallback import hook_session_model
+from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
 from kiro_crew.dashboard.state import (
     DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
@@ -286,24 +287,30 @@ async def _prepare_spec_hooks(
     except Exception:  # noqa: BLE001 - a hook-file read must never fail a turn
         logger.debug("user hook files could not be merged; none added", exc_info=True)
     if is_new and lost:
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_spec_keys_notice(agent, lost)),
-            "msg msg-info",
-            meta=(
-                {"kind": MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND} if oauth_servers_in(lost) else None
-            ),
-        )
+        text = _redact_display_text(_spec_keys_notice(agent, lost))
+        if _session_notice_is_new(slot, text):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+                meta=(
+                    {"kind": MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND}
+                    if oauth_servers_in(lost)
+                    else None
+                ),
+            )
     if is_new and unconfirmable:
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable)),
-            "msg msg-info",
-        )
+        text = _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable))
+        if _session_notice_is_new(slot, text):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+            )
     if is_new:
         await _surface_overlong_hook_commands(
             state,
@@ -543,33 +550,39 @@ async def _prepare_observer_spec_hooks(
     if is_new:
         unmet = post_tool_matchers_no_builtin_meets(client, observed)
         if len(observed) < len(hooks):
-            append_and_surface(
-                state,
-                slot,
-                "notice",
-                _redact_display_text(
-                    _pre_tool_hooks_run_nowhere_notice(agent, others_run=not unmet)
-                ),
-                "msg msg-info",
-                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            text = _redact_display_text(
+                _pre_tool_hooks_run_nowhere_notice(agent, others_run=not unmet)
             )
+            if _session_notice_is_new(slot, text):
+                append_and_surface(
+                    state,
+                    slot,
+                    "notice",
+                    text,
+                    "msg msg-info",
+                    meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+                )
         if unmet:
-            append_and_surface(
-                state,
-                slot,
-                "notice",
-                _redact_display_text(_post_tool_matchers_unmet_notice(agent, unmet)),
-                "msg msg-info",
-                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
-            )
+            text = _redact_display_text(_post_tool_matchers_unmet_notice(agent, unmet))
+            if _session_notice_is_new(slot, text):
+                append_and_surface(
+                    state,
+                    slot,
+                    "notice",
+                    text,
+                    "msg msg-info",
+                    meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+                )
         if unconfirmable:
-            append_and_surface(
-                state,
-                slot,
-                "notice",
-                _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable)),
-                "msg msg-info",
-            )
+            text = _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable))
+            if _session_notice_is_new(slot, text):
+                append_and_surface(
+                    state,
+                    slot,
+                    "notice",
+                    text,
+                    "msg msg-info",
+                )
         await _surface_overlong_hook_commands(state, slot, agent, project_dir, session_key)
         await _surface_withheld_project_hooks(
             state, slot, client, agent, user_hooks_run=bool(observed)
@@ -632,14 +645,16 @@ async def _surface_overlong_hook_commands(
         logger.debug("too-long spec hooks for %r could not be read", agent, exc_info=True)
         return
     if hooks:
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_overlong_hook_commands_notice(agent, hooks)),
-            "msg msg-info",
-            meta={"kind": SPEC_HOOKS_NOTICE_KIND},
-        )
+        text = _redact_display_text(_overlong_hook_commands_notice(agent, hooks))
+        if _session_notice_is_new(slot, text, project_dir, kas_checkout):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
 
 
 async def _surface_withheld_project_hook_files(
@@ -720,14 +735,16 @@ async def _notice_spec_hooks_run_nowhere(
         # not run gets no tag: the dashboard offers no Dismiss link on it.
         if "preToolUse" not in events:
             meta["spec_hooks_notice"] = SPEC_HOOKS_RUN_NOWHERE_NOTICE
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_spec_hooks_run_nowhere_notice(agent, events)),
-            "msg msg-info",
-            meta=meta,
-        )
+        text = _redact_display_text(_spec_hooks_run_nowhere_notice(agent, events))
+        if _session_notice_is_new(slot, text):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+                meta=meta,
+            )
 
 
 async def _notice_tools_settings_applied_nowhere(
@@ -759,13 +776,15 @@ async def _notice_tools_settings_applied_nowhere(
         logger.debug("agent spec toolsSettings for %r could not be read", agent, exc_info=True)
         return
     if unapplied:
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_spec_keys_notice(agent, unapplied)),
-            "msg msg-info",
-        )
+        text = _redact_display_text(_spec_keys_notice(agent, unapplied))
+        if _session_notice_is_new(slot, text):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+            )
 
 
 #: How many ``file://`` entries the unread-steering notice names before it counts the rest.
@@ -812,13 +831,15 @@ async def _notice_unread_steering(
         logger.debug("agent spec resources for %r could not be read", agent, exc_info=True)
         return
     if entries:
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_unread_steering_notice(agent, entries)),
-            "msg msg-info",
-        )
+        text = _redact_display_text(_unread_steering_notice(agent, entries))
+        if _session_notice_is_new(slot, text):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+            )
 
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
@@ -938,14 +959,18 @@ async def _surface_withheld_project_hooks(
         logger.debug("could not check %r's project spec for withheld hooks", agent, exc_info=True)
         return
     if withheld:
-        append_and_surface(
-            state,
-            slot,
-            "notice",
-            _redact_display_text(_spec_withheld_hooks_notice(agent, user_hooks_run=user_hooks_run)),
-            "msg msg-info",
-            meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+        text = _redact_display_text(
+            _spec_withheld_hooks_notice(agent, user_hooks_run=user_hooks_run)
         )
+        if _session_notice_is_new(slot, text, project_dir):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                text,
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
 
 
 def _crew_fires_agent_spawn(client) -> bool:
