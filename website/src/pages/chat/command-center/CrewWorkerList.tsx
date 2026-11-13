@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { crewBoardQueryKey } from '../../../api/crewBoard'
+import { refreshDashboardReads } from '../../../api/dashboardRefresh'
 import type { ChatSlot, CrewWorker } from '../../../types'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { SearchFilterBar } from '../../../components/SearchFilterBar'
@@ -92,13 +93,15 @@ export function useCrewWorkersPush(root: string, enabled: boolean): void {
   // `null` until the first enabled run: a list cached by an earlier mount may predate
   // pushes that landed while nothing was mounted (queries never go stale on their own).
   const seen = useRef<string | null>(null)
-  // A re-read never cancels one in flight (no overlap), and waits while the page is hidden.
+  // A re-read never cancels one in flight (no overlap): a push that lands during a read
+  // owes exactly one more read once it settles (`refreshDashboardReads`). Waits while the
+  // page is hidden.
   const reread = useCallback(() => {
     if (document.visibilityState === 'hidden') return
-    void queryClient.invalidateQueries({ queryKey: crewWorkersQueryKey(root) }, { cancelRefetch: false })
+    refreshDashboardReads(queryClient, crewWorkersQueryKey(root))
     // The Status view's milestones read the board's `alive`, the same slot facts:
     // re-read it on the same push, so Status and the List move together.
-    void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) })
+    refreshDashboardReads(queryClient, crewBoardQueryKey(root))
   }, [queryClient, root])
   useEffect(() => {
     if (!enabled || !root) return
@@ -123,11 +126,10 @@ export function useCrewWorkersPush(root: string, enabled: boolean): void {
 /** One root's worker list while shown, re-read on every push for its crew. Shared by
  *  the side panel and the worker view's breadcrumb, so both name a worker the same way. */
 export function useCrewWorkers(root: string, active: boolean) {
-  const qc = useQueryClient()
   useCrewWorkersPush(root, active)
   return useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => readCrewWorkers(qc, crewWorkersQueryKey(root), root),
+    queryFn: () => readCrewWorkers(root),
     enabled: active && !!root,
     refetchInterval: query => (active && !routeNotServed(query.state.error) ? crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS) : false),
   })
@@ -152,11 +154,10 @@ export function useCrewWorkerSummary(root: string): {
    *  with the open live rows the store carries on its own. */
   lastWorkers: CrewWorker[] | undefined
 } {
-  const qc = useQueryClient()
   useCrewWorkersPush(root, true)
   const query = useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => readCrewWorkers(qc, crewWorkersQueryKey(root), root),
+    queryFn: () => readCrewWorkers(root),
     enabled: !!root,
     refetchInterval: query => (routeNotServed(query.state.error) ? false : crewWorkersGapMs(root, CREW_WORKERS_FALLBACK_POLL_MS)),
   })

@@ -58,19 +58,25 @@ describe('crew-workers polling', () => {
     state.mockRestore()
   })
 
-  it('a shown panel re-reads on a push, and never starts a read while one is in flight', async () => {
-    let release: (v: unknown) => void = () => {}
+  it('a push during a read owes one follow-up read after it settles, however many pushes land', async () => {
     const { store } = mount(<Panel root="r1" active />)
     await act(() => vi.advanceTimersByTimeAsync(10))
     expect(api.crewWorkers).toHaveBeenCalledTimes(1)
-    api.crewWorkers.mockImplementation(() => new Promise(r => { release = r }))
+    const pending: Array<(v: unknown) => void> = []
+    api.crewWorkers.mockImplementation(() => new Promise(r => { pending.push(r) }))
     push(store, 1)
     await act(() => vi.advanceTimersByTimeAsync(CREW_WORKERS_PUSH_COALESCE_MS + 10))
     expect(api.crewWorkers).toHaveBeenCalledTimes(2)
-    // More pushes while the second read is still out: no third request.
+    // More pushes while that read is out: no overlapping request.
     for (let i = 2; i < 6; i++) { push(store, i); await act(() => vi.advanceTimersByTimeAsync(CREW_WORKERS_PUSH_COALESCE_MS + 10)) }
     expect(api.crewWorkers).toHaveBeenCalledTimes(2)
-    release(ANSWER)
+    // The read settles with the older state; exactly one newer read follows.
+    pending[0]({ root: 'r1', workers: [{ key: 'old' }] })
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(api.crewWorkers).toHaveBeenCalledTimes(3)
+    pending[1]({ root: 'r1', workers: [{ key: 'new' }] })
+    await act(() => vi.advanceTimersByTimeAsync(CREW_WORKERS_FALLBACK_POLL_MS / 2))
+    expect(api.crewWorkers).toHaveBeenCalledTimes(3)
   })
 
   it('a page that comes back to view reads once at once; a hidden page does not read on a push', async () => {
@@ -89,32 +95,69 @@ describe('crew-workers polling', () => {
   })
 
   it('backs off while answers are slower than the wait, and resets on a fast one', async () => {
-    const qc = new QueryClient()
     api.crewWorkers.mockImplementation(() => new Promise(r => setTimeout(() => r(ANSWER), 1000)))
-    const slow = readCrewWorkers(qc, ['k'], 'r1')
+    const slow = readCrewWorkers('r1')
     await vi.advanceTimersByTimeAsync(1000)
     await slow
     expect(crewWorkersGapMs('r1', CREW_WORKERS_PUSH_COALESCE_MS)).toBe(1000)
     expect(crewWorkersGapMs('r1', CREW_WORKERS_FALLBACK_POLL_MS)).toBe(CREW_WORKERS_FALLBACK_POLL_MS)
     api.crewWorkers.mockResolvedValue(ANSWER)
-    await readCrewWorkers(qc, ['k'], 'r1')
+    await readCrewWorkers('r1')
     expect(crewWorkersGapMs('r1', CREW_WORKERS_PUSH_COALESCE_MS)).toBe(CREW_WORKERS_PUSH_COALESCE_MS)
   })
 
-  it('never has more than the cap of list requests out, so a send always finds a free connection', async () => {
-    const qc = new QueryClient()
-    const out: Array<(v: unknown) => void> = []
-    let peak = 0
+  /** Reads that stay out until released, in the order they were sent. */
+  function held() {
+    const out: Array<{ root: string; settle: (v: unknown, ok?: boolean) => void }> = []
     let open = 0
-    api.crewWorkers.mockImplementation(() => { open++; peak = Math.max(peak, open); return new Promise(r => { out.push(v => { open--; r(v) }) }) })
-    // Every root already has a list, so these are re-reads.
-    for (let i = 0; i < 8; i++) qc.setQueryData(['k', i], ANSWER)
-    const reads = Array.from({ length: 8 }, (_, i) => readCrewWorkers(qc, ['k', i], 'r' + i))
+    let peak = 0
+    api.crewWorkers.mockImplementation((root: string) => {
+      open++; peak = Math.max(peak, open)
+      return new Promise((resolve, reject) => { out.push({ root, settle: (v, ok = true) => { open--; (ok ? resolve : reject)(v) } }) })
+    })
+    return { out, peak: () => peak }
+  }
+
+  it('a third root waits for a slot and then reads fresh data, not a cached list', async () => {
+    const { out } = held()
+    const reads = ['a', 'b', 'c'].map(r => readCrewWorkers(r))
     await vi.advanceTimersByTimeAsync(0)
-    expect(peak).toBe(CREW_POLL_CAP)
+    expect(out.map(o => o.root)).toEqual(['a', 'b'])
+    out[0].settle({ root: 'a', workers: [] })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(out.map(o => o.root)).toEqual(['a', 'b', 'c'])
+    out[1].settle({ root: 'b', workers: [] })
+    out[2].settle({ root: 'c', workers: [{ key: 'fresh' }] })
+    expect((await reads[2] as { workers: unknown[] }).workers).toEqual([{ key: 'fresh' }])
+  })
+
+  it('a cold load of 6 roots never has more than the cap out, and keeps arrival order', async () => {
+    const { out, peak } = held()
+    const roots = ['r0', 'r1', 'r2', 'r3', 'r4', 'r5']
+    const reads = roots.map(r => readCrewWorkers(r))
+    await vi.advanceTimersByTimeAsync(0)
     expect(CREW_POLL_CAP).toBeLessThan(6)
-    out.forEach(r => r(ANSWER))
+    for (let i = 0; i < roots.length; i++) {
+      out[i].settle(ANSWER)
+      await vi.advanceTimersByTimeAsync(0)
+    }
     await Promise.all(reads)
+    expect(peak()).toBe(CREW_POLL_CAP)
+    expect(out.map(o => o.root)).toEqual(roots)
+  })
+
+  it('a rejected read frees its slot and still reports its error', async () => {
+    const { out } = held()
+    const reads = ['a', 'b', 'c'].map(r => readCrewWorkers(r))
+    const failed = expect(reads[0]).rejects.toThrow('boom')
+    await vi.advanceTimersByTimeAsync(0)
+    out[0].settle(new Error('boom'), false)
+    await failed
+    await vi.advanceTimersByTimeAsync(0)
+    expect(out.map(o => o.root)).toEqual(['a', 'b', 'c'])
+    out[1].settle(ANSWER)
+    out[2].settle(ANSWER)
+    await Promise.all(reads.slice(1))
   })
 })
 

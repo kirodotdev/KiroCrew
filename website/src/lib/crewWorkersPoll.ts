@@ -8,32 +8,42 @@
  * - Backoff: `crewWorkersGapMs` is the wait before the next re-read. When the last
  *   answer took longer than the base wait it doubles until it is longer than the
  *   answer (up to `CREW_POLL_MAX_MS`); a fast answer resets it to the base.
- * - Cap: at most `CREW_POLL_CAP` list requests are in flight per origin. A re-read
- *   that finds the cap full and a cached list returns the cached list, so four of
- *   the six connections are always free for sends and everything else.
+ * - Cap: at most `CREW_POLL_CAP` list requests are in flight per origin. A read that
+ *   finds the cap full (first read or re-read) waits its turn in a FIFO queue and
+ *   then reads fresh data, so four of the six connections are always free for sends
+ *   and everything else. A slot is released in `finally`, so a rejected read frees it.
  *
  * shortcut: the cap counts this route only; other background polls are not
  * counted. Move them onto this scheduler if they start to crowd sends.
  */
-import type { QueryClient } from '@tanstack/react-query'
 import { api } from '../api/client'
 
 export const CREW_POLL_CAP = 2
 export const CREW_POLL_MAX_MS = 60_000
 
 let inFlight = 0
+const waiters: Array<() => void> = []
 const lastMs = new Map<string, number>()
 
-/** Read the list, timing the answer; a re-read over the cap returns the cached list. */
-export async function readCrewWorkers(qc: QueryClient, key: readonly unknown[], root: string) {
-  const cached = qc.getQueryData<Awaited<ReturnType<typeof api.crewWorkers>>>(key)
-  if (cached && inFlight >= CREW_POLL_CAP) return cached
-  inFlight++
+/** Take a slot, in arrival order. A freed slot is handed straight to the first waiter. */
+const acquire = (): Promise<void> => {
+  if (inFlight < CREW_POLL_CAP) { inFlight++; return Promise.resolve() }
+  return new Promise(resolve => waiters.push(resolve))
+}
+const release = () => {
+  const next = waiters.shift()
+  if (next) next()
+  else inFlight--
+}
+
+/** Read the list, waiting for a free slot when the cap is full; times the answer. */
+export async function readCrewWorkers(root: string) {
+  await acquire()
   const t0 = Date.now()
   try {
     return await api.crewWorkers(root)
   } finally {
-    inFlight--
+    release()
     lastMs.set(root, Date.now() - t0)
   }
 }
@@ -49,5 +59,6 @@ export function crewWorkersGapMs(root: string, baseMs: number): number {
 /** Test seam: forget the schedule. */
 export function resetCrewWorkersPoll() {
   inFlight = 0
+  waiters.length = 0
   lastMs.clear()
 }

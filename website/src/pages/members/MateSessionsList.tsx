@@ -14,7 +14,7 @@
  */
 import { useId, useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { api } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
@@ -92,10 +92,9 @@ export interface MateSessionsListProps {
 
 export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty }: MateSessionsListProps) {
   const { t } = useTranslation()
-  const qc = useQueryClient()
   const listed = useQuery({
     queryKey: crewWorkersQueryKey(root),
-    queryFn: () => readCrewWorkers(qc, crewWorkersQueryKey(root), root),
+    queryFn: () => readCrewWorkers(root),
     enabled: !!root,
     refetchInterval: q => (listNotServed(q.state.error) ? false : crewWorkersGapMs(root, MATE_SESSIONS_POLL_MS)),
   })

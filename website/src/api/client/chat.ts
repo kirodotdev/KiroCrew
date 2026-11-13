@@ -96,7 +96,7 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
       const r = await fetch('/api/chat/slots/' + encodeURIComponent(root) + '/crew-workers', hit ? { headers: { 'If-None-Match': hit.etag } } : undefined)
       if (r.status === 304 && hit) return hit.data
       const data: CrewWorkersAnswer = await j(r)
-      const etag = r.headers?.get('ETag')
+      const etag = r.headers?.get('etag')
       if (etag) crewWorkersEtags.set(root, { etag, data })
       else crewWorkersEtags.delete(root)
       return data
