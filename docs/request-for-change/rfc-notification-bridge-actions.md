@@ -409,7 +409,9 @@ transport's sink is extended it stays read-only.
   dashboard" link for free-form questions.
 - **B4f — mute the source channel:** the mute action, reusing `ChannelSettings`
   the bridge already writes, so a mute from chat and a mute from the dashboard are
-  the same write.
+  the same write. *Dropped:* every note that carries a decision is on
+  `system.approval`, which `ChannelSettings` refuses to mute, so no bridged note
+  can offer a mute.
 - **B4g — remaining transports:** Discord, Telegram, Webex sinks extended to the
   affordances their SDKs carry; WeCom/weixin stay read-only.
 - **B4h — preview flag off → on (separate PR, gated on sign-off):** flip the
