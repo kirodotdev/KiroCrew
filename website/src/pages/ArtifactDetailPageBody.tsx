@@ -16,7 +16,8 @@ import { ArtifactChatPanel } from '../components/ArtifactChatPanel'
 import { CommentThreadPopover } from '../components/CommentThreadPopover'
 // Artifact body renderers, extracted here so the chat side panel shares them.
 import { ArtifactBodyNative, ArtifactBodyIframe, ArtifactBodyImage } from '../components/ArtifactBody'
-import { PublishHub, publishNoticeKey } from '../components/PublishHub'
+import { PublishHub } from '../components/PublishHub'
+import { publishNoticeKey } from '../lib/publishHelpers'
 import type { Artifact, ArtifactEvent, ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'

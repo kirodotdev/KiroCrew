@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Globe } from 'lucide-react'
 import { api } from '../../api/client'
-import { findLiveSite } from '../PublishHub'
+import { findLiveSite } from '../../lib/publishHelpers'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../../utils/previewFlags'

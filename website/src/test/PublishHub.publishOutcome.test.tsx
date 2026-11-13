@@ -16,7 +16,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import { PublishHub, readPublishOutcome } from '../components/PublishHub'
+import { PublishHub } from '../components/PublishHub'
+import { readPublishOutcome } from '../lib/publishHelpers'
 import type { Artifact } from '../types'
 
 function wrapper({ children }: { children: React.ReactNode }) {

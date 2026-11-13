@@ -1,7 +1,7 @@
 import { useAppSelector } from '../store'
 import { i18nT } from '../i18n/t'
 import { useUpdateSwitchesShown } from '../utils/updateSwitches'
-import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from '../pages/settings/AboutPanel'
+import { AppAutoDownloadSwitch, GatewayAutoUpdateSwitch } from '../pages/settings/AboutPanelUpdateSwitches'
 
 /**
  * The update controls at the foot of the post-update "What's new" modal: the

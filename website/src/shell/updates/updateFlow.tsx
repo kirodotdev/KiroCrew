@@ -10,7 +10,7 @@ import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
 import { reportForError, type ErrorReport } from '../../utils/errorReport'
-import { InAppUpdateFlow } from '../../pages/settings/AboutPanel'
+import { InAppUpdateFlow } from '../../pages/settings/AboutPanelUpdateFlow'
 import WhatsNewAutoUpdateToggle from '../../components/WhatsNewAutoUpdateToggle'
 import { i18nT } from '../../i18n/t'
 
