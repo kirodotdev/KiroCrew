@@ -546,6 +546,7 @@ def main() -> None:
     cli_parser_gateway.register_manifest_parser(sub)
     cli_parser_agent.register_cron_parser(sub)
     cli_parser_agent.register_spawn_parser(sub)
+    cli_parser_agent.register_models_parser(sub)
     cli_parser_agent.register_run_parser(sub, _jail_opts)
     cli_parser_admin.register_snapshot_parser(sub)
     cli_parser_admin.register_restore_parser(sub)
@@ -981,6 +982,10 @@ def main() -> None:
         from kiro_crew.cli_commands import _spawn
 
         _spawn(args)
+    elif args.command == "models":
+        from kiro_crew.cli_models import _models
+
+        sys.exit(_models(args))
     elif args.command == "run":
         from kiro_crew.cli_server import _run_task
 

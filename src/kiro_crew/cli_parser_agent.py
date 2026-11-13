@@ -67,8 +67,32 @@ Tool permission prompt (same keys as kiro-cli chat):
         parents=[_jail_opts],
     )
     chat_parser.add_argument("-m", "--message", help="Single message (non-interactive)")
-    chat_parser.add_argument("--model", help="Model to use (default: from config)")
+    chat_parser.add_argument(
+        "--model", help="Model to use (default: from config; `kirocrew models` lists the names)"
+    )
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
+
+
+def register_models_parser(sub: _Commands) -> None:
+    models_parser = cli_help.add_command(
+        sub,
+        "models",
+        epilog="""
+Examples:
+  kirocrew models                  # Names --model accepts; * marks the default
+  kirocrew models --json           # The same list for scripts
+  kirocrew models claude-sonnet    # Is this name valid? Exit 1 with the closest if not
+""",
+        formatter_class=_fmt,
+    )
+    models_parser.add_argument("name", nargs="?", default=None, help="A model name to check")
+    models_parser.add_argument("--json", action="store_true", help="Print JSON instead of text")
+    models_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Dashboard port (default: found as `kirocrew status` finds it)",
+    )
 
 
 def register_cron_parser(sub: _Commands) -> None:
@@ -210,7 +234,7 @@ Examples:
         "--model",
         dest="model",
         default="",
-        help="Model id for the agent wake (as advertised by kiro-cli --list-models)",
+        help="Model id for the agent wake (`kirocrew models` lists the names)",
     )
     cron_add.add_argument(
         "--persistent-session",
