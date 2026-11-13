@@ -183,14 +183,17 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         ROUTE_CODES,
         _audit,
         _drop_nulls,
+        _finite_float,
         _json_object,
         _refuse_400,
         _refuse_403,
         _refuse_404,
         _refuse_409,
         _refuse_503,
+        _refuse_non_finite,
         _refuse_store_error,
         _sel,
+        _strict_loads,
         _validation_code,
     )
     from kiro_crew.dashboard.handlers.work_ledger_worker import (  # noqa: F401

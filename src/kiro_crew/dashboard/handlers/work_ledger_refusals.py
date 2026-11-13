@@ -10,7 +10,9 @@ import and patch; this module never imports it.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 from typing import Any
 
 from aiohttp import web
@@ -172,11 +174,31 @@ def _refuse_store_error(exc: WorkLedgerError) -> web.Response:
 # ── shared request plumbing ───────────────────────────────────────────────
 
 
+def _refuse_non_finite(token: str) -> Any:
+    raise ValueError(f"{token} is not a JSON number")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"{text} overflows to a non-finite number")
+    return value
+
+
+def _strict_loads(text: str) -> Any:
+    """``json.loads`` that refuses ``NaN``, ``Infinity`` and an overflowing float.
+
+    Python's parser accepts them, but they are not JSON: once stored in a ledger
+    field they make every later strict-JSON read of the board fail.
+    """
+    return json.loads(text, parse_constant=_refuse_non_finite, parse_float=_finite_float)
+
+
 async def _json_object(
     request: web.Request,
 ) -> tuple[dict[str, Any], None] | tuple[None, web.Response]:
     try:
-        body = await request.json()
+        body = await request.json(loads=_strict_loads)
     except Exception:
         return None, _refuse_400("invalid_json", "invalid JSON")
     if not isinstance(body, dict):
