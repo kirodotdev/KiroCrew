@@ -194,6 +194,53 @@ class TestEffectiveModelSection:
         assert "out of date" not in out, "report must agree with the resolver"
         assert issues == []
 
+    def test_a_template_model_pick_is_attributed_above_the_bound_pin(self, capsys) -> None:
+        """``templates.<name>.model`` outranks the bound spec's pin in the resolver,
+        so the report marks it as the deciding tier and still agrees."""
+        from kiro_crew.config.integration_sections import TemplateSettingsConfig
+
+        self._install_spec(None)
+        (self._agents_dir() / "custom.agent.json").write_text(
+            json.dumps({"name": "custom.agent", "model": "claude-opus-4.8"}), encoding="utf-8"
+        )
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom.agent")
+        cfg.templates = {"custom.agent": TemplateSettingsConfig(model="claude-sonnet-5")}
+        issues: list[str] = []
+
+        cli_doctor._doctor_effective_model(cfg, "", issues)
+
+        out = capsys.readouterr().out
+        assert "effective:   'claude-sonnet-5'" in out
+        assert "decided by:  template model pick ('custom.agent')" in out
+        assert "out of date" not in out, "report must agree with the resolver"
+        assert issues == []
+
+    def test_a_template_pick_the_harness_cannot_claim_does_not_decide(self, capsys) -> None:
+        """The resolver skips a pick the active harness cannot claim, so the
+        report attributes the model to the bound pin instead and still agrees."""
+        from unittest import mock
+
+        from kiro_crew.config.integration_sections import TemplateSettingsConfig
+
+        self._install_spec(None)
+        (self._agents_dir() / "custom.agent.json").write_text(
+            json.dumps({"name": "custom.agent", "model": "claude-opus-4.8"}), encoding="utf-8"
+        )
+        cfg = self._bind_custom_agent(self._cfg("auto"), "custom.agent")
+        cfg.templates = {"custom.agent": TemplateSettingsConfig(model="gpt-5.6-sol")}
+        issues: list[str] = []
+
+        with mock.patch(
+            "kiro_crew.config.loader.model_scope.scoped_pin",
+            side_effect=lambda pin, ns, **kw: "" if pin == "gpt-5.6-sol" else pin,
+        ):
+            cli_doctor._doctor_effective_model(cfg, "", issues)
+
+        out = capsys.readouterr().out
+        assert "effective:   'claude-opus-4.8'" in out
+        assert "decided by:  bound agent pin ('custom.agent')" in out
+        assert issues == []
+
     def test_a_bound_markdown_agent_shows_the_file_that_holds_it(self, capsys) -> None:
         """The "bound spec" line is the file the resolver read, so for a markdown
         agent it names ``<name>.md``; a ``.json`` join would point the operator

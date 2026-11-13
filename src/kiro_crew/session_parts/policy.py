@@ -357,7 +357,8 @@ def _session_model(
     through :func:`resolve_effective_model`, the resolver the dashboard's model
     chip reads, so a session and its chip cannot disagree. A caller's own model
     (a slot pin) outranks this and is handled before it is reached; below it,
-    highest first: the crew's pin, the bound template's pin, the app's
+    highest first: the crew's pin, the bound template's model (the user's
+    ``templates.<name>.model``, else the template's pin), the app's
     ``apps.<name>.model`` (*app_name*), the global ``agent.model``, the
     installed agent file. ``""`` and ``"auto"`` inherit at every tier.
 
