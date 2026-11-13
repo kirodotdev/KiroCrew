@@ -2796,7 +2796,15 @@ document validates. Otherwise it does three things, in order:
   it rebuilds the factory, re-derives the pool and drains the warm pool, but
   never touches a registered session, so in-flight turns keep running and only
   NEW sessions see the new defaults. `reload_provider_factory` (which retires
-  sessions built by the old factory) is not on this path.
+  sessions built by the old factory) is not on this path. Its `defer_busy`
+  form, which the dashboard's reset-all-sessions route (`_reset_all_sessions`)
+  uses, leaves a session a turn holds (a cron run, a chat reply) on its old
+  provider and resets it when that turn ends. Repeated reloads share one pending
+  reset per session instance; completion removes only that task's record, and
+  `close_all` cancels it with the other background tasks. The route's following
+  `drain_all_providers(keep_busy=True)` skips the same sessions. A channel
+  member's lifelong lease (`lifecycle_lease`) is not a turn, so that session is
+  reset at once, as before. The provider-switch applier calls it without the flag.
   `session.eager_spawn` is deliberately absent: it is read live per spawn in
   `chat_runner`, so draining the pool for it would be pure churn.
 - **Re-clamp the watchdog windows on every live handle** when the change touches

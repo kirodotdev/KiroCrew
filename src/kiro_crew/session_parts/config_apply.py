@@ -149,12 +149,15 @@ def _sync_autocompact_pct(self: SessionManager) -> None:
         self._cfg.session.autocompact_pct = published
 
 
-async def reload_provider_factory(self: SessionManager, cfg: KiroCrewConfig | None = None) -> None:
+async def reload_provider_factory(
+    self: SessionManager, cfg: KiroCrewConfig | None = None, *, defer_busy: bool = False
+) -> None:
     """Rebuild the provider factory and retire sessions created by the old one.
 
     ``cfg`` is the config the live applier already holds; ``None`` loads.
+    ``defer_busy`` resets a session a turn holds when that turn ends instead of now.
     """
-    await self._lifecycle_boundary().reload_provider_factory(cfg=cfg)
+    await self._lifecycle_boundary().reload_provider_factory(cfg=cfg, defer_busy=defer_busy)
 
 
 def widen_cold_start_queues(self: SessionManager) -> None:

@@ -29,7 +29,7 @@ from kiro_crew.session import (
 )
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 
 class TestRecycleBackground:
@@ -1171,3 +1171,71 @@ async def test_a_stalled_run_runtime_is_replaced_only_once_confirmed_dead(cfg, c
             await mgr._get_or_bootstrap_run_runtime("taskrunner:run")
         assert spawned == []
     dead.kill.assert_awaited_once()
+
+
+class TestReloadDefersABusySession:
+    """A reload with ``defer_busy`` leaves a mid-turn session alone until its turn ends."""
+
+    @pytest.mark.asyncio
+    async def test_a_mid_turn_session_is_reset_when_its_turn_ends(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        busy, _, _ = await mgr.get_or_create("busy")  # holds the turn semaphore
+        idle, _, _ = await mgr.get_or_create("idle")
+        mgr.release("idle")
+
+        with (
+            patch.object(KiroCrewConfig, "load", return_value=cfg),
+            patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()),
+        ):
+            await mgr.reload_provider_factory(defer_busy=True)
+
+        idle.shutdown.assert_awaited_once()
+        assert not mgr.has_session("idle")
+        # The running turn keeps its session and its process.
+        busy.shutdown.assert_not_awaited()
+        assert mgr.has_session("busy")
+
+        mgr.release("busy")
+        await async_wait_until(lambda: busy.shutdown.await_count == 1)
+        await async_wait_until(lambda: not mgr.has_session("busy"))
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_two_reloads_during_one_turn_still_reset_the_session_once(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        try:
+            busy, _, _ = await asyncio.wait_for(
+                mgr.get_or_create("busy"), timeout=FALLBACK_TIMEOUT_SECS
+            )
+            with (
+                patch.object(KiroCrewConfig, "load", return_value=cfg),
+                patch.object(cfg, "create_provider_factory", return_value=_mock_provider_factory()),
+            ):
+                await asyncio.wait_for(
+                    mgr.reload_provider_factory(defer_busy=True), timeout=FALLBACK_TIMEOUT_SECS
+                )
+                await asyncio.wait_for(
+                    mgr.reload_provider_factory(defer_busy=True), timeout=FALLBACK_TIMEOUT_SECS
+                )
+
+            busy.shutdown.assert_not_awaited()
+            mgr.release("busy")
+            await async_wait_until(lambda: not mgr.has_session("busy"))
+            await async_wait_until(lambda: busy.shutdown.await_count == 1)
+            busy.shutdown.assert_awaited_once()
+        finally:
+            await asyncio.wait_for(mgr.close_all(), timeout=FALLBACK_TIMEOUT_SECS)
+
+    @pytest.mark.asyncio
+    async def test_drain_keep_busy_leaves_a_mid_turn_session(self, cfg):
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("busy")
+        idle, _, _ = await mgr.get_or_create("idle")
+        mgr.release("idle")
+
+        providers = await mgr.drain_all_providers(keep_busy=True)
+
+        assert providers == [idle]
+        assert mgr.has_session("busy")
+        mgr.release("busy")
+        await mgr.close_all()
