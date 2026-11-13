@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, AlertCircle, Link2, ArrowUpRight, Tag } from 'lucide-react'
+import { ChevronLeft, Copy, Download, Archive, X, RefreshCw, Link2, ArrowUpRight, Tag } from 'lucide-react'
 import { Card, Btn, Badge, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
@@ -13,6 +13,7 @@ import { fmtNumber } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useLatestMutationError } from '../../utils/latestMutationError'
 function highlightEntities(text: string, entities: Entity[], onEntityClick?: (name: string) => void) {
   if (!entities?.length) return text
   const names = [...entities].sort((a, b) => b.name.length - a.name.length).map(e => e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -211,6 +212,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
     },
   })
 
+  const actionError = useLatestMutationError(archiveMutation, deleteMutation)
   const { copied, copy } = useCopy()
   const copyContent = () => {
     if (!item) return
@@ -343,10 +345,13 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
           : <Btn aria-disabled={archiveMutation.isPending || undefined} aria-busy={archiveMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!archiveMutation.isPending) archiveMutation.mutate({ id: item.id, status: 'archived' }) }}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
         <Btn aria-disabled={deleteMutation.isPending || undefined} aria-busy={deleteMutation.isPending || undefined} className="aria-disabled:opacity-30 aria-disabled:cursor-not-allowed" onClick={() => { if (!deleteMutation.isPending && confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
       </div>
-      {(archiveMutation.isError || deleteMutation.isError) && (
-        <div className="mt-2 text-[12px] text-danger flex items-center gap-1">
-          <AlertCircle size={12} /> {(archiveMutation.error || deleteMutation.error)?.message || i18nT('pages.knowledge.detailView.action_failed')}
-        </div>
+      {actionError != null && (
+        <ErrorNotice
+          askAgent
+          className="mt-2"
+          variant="inline"
+          message={(actionError instanceof Error ? actionError.message : '') || i18nT('pages.knowledge.detailView.action_failed')}
+        />
       )}
     </div>
   )
