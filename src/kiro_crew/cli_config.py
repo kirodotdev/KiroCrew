@@ -628,8 +628,12 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
         os.execvp(editor, [editor, str(p)])
     elif action == "defaults":
         _defaults_cmd(args)
+    elif action == "pending":
+        from kiro_crew.cli_config_pending import pending_cmd
+
+        pending_cmd(args)
     else:
-        print("Usage: kirocrew config {get,set,edit,defaults}", file=sys.stderr)
+        print("Usage: kirocrew config {get,set,edit,defaults,pending}", file=sys.stderr)
         sys.exit(1)
 
 
