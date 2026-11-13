@@ -55,3 +55,11 @@ export const OPENDYSLEXIC_MONO_STACK =
  * A future bundled mono face becomes a second constant + a second inlined row.
  */
 export const OPENDYSLEXIC_MONO_FAMILY_NAME = 'OpenDyslexicMono'
+
+/**
+ * Web font families the dashboard bundles (font-faces.css), listed in the Custom
+ * font picker: they render on every machine, but the probe measures one as
+ * missing until something on screen has loaded it. useFontOptions.test.ts pins
+ * this list to the families font-faces.css downloads.
+ */
+export const BUNDLED_WEB_FONT_FAMILIES = ['Space Grotesk', 'JetBrains Mono', 'OpenDyslexic', OPENDYSLEXIC_MONO_FAMILY_NAME]
