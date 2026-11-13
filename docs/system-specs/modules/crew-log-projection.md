@@ -897,6 +897,10 @@ of the cold-fold API per file, and `test_crew_log_read_budget_gaps.py` pins the 
 of the whole-unit reads (`.page(`, `.thread_page(`, `.get(<seq>)` on a log handle,
 `iter_from(1`); each count may only go down.
 
+`list_session_units` builds a row from the unit's `status` fold when the fold's count
+covers every seq; the first listing of a unit folds it from the top and writes its
+`status` savepoint, so later listings read only the records since.
+
 ## 5. The push
 
 A `session_projection` frame carries `{session_id, slot, name, seq, value, revision}`

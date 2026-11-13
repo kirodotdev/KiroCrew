@@ -161,7 +161,8 @@ def _crew_log_units(now_ms: int) -> list[dict[str, Any]]:
     """``[{unit, slot, open, entries: [{type, time, data}]}]`` for recent units.
 
     Reads through the same reader the crew-log routes serve from
-    (:mod:`kiro_crew.crew_log.read`), which opens logs for reading only.
+    (:mod:`kiro_crew.crew_log.read`), which opens logs for reading only; the first
+    listing of a unit writes its ``status`` savepoint beside the log.
     """
     from kiro_crew.crew_log import read as crew_read
 
