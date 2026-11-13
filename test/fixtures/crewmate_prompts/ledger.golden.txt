@@ -206,7 +206,12 @@ Promote it yourself with `work_ledger_record` `action=accept`, then verify. A
 worker that could fill in its own acceptance could point it at anybody's green
 pull request.
 Use `session_read_message` for detail the record does not carry — a question's
-substance, a stall's shape. Never for a verdict.
+substance, a stall's shape. Never for a verdict. On every patrol turn, also read
+each open item's worker with `since` at the cursor you stored (none stored: no
+`since`, read the newest 10) and `limit: 10`;
+when the new lines drift from the item's title, acceptance or the goal,
+`session_send` a correction with `steer: true` and record it with
+`action=decide`. On track, say nothing.
 `work_ledger_record` `action=close` with the item's `state` is what ends an item.
 
 
