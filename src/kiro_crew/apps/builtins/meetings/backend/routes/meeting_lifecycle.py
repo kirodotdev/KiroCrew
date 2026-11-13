@@ -1006,7 +1006,12 @@ async def handle_post_note_image(request: web.Request) -> web.Response:
         _reject("too_many_images")
         raise BadRequest(f"this note already has {k.MAX_NOTE_IMAGES} images")
 
-    reader = await request.multipart()
+    try:
+        reader = await request.multipart()
+    except (AssertionError, KeyError, ValueError):
+        # A multipart type with no usable boundary.
+        _reject("not_multipart")
+        raise BadRequest("expected a multipart/form-data body") from None
     part = await reader.next()
     while part is not None and getattr(part, "name", None) != "file":
         part = await reader.next()

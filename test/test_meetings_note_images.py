@@ -264,6 +264,16 @@ class TestUpload:
             assert resp.status == 400
 
     @pytest.mark.asyncio
+    async def test_refuses_a_multipart_type_with_no_boundary(self, app, root: Path):
+        async with client_for(app) as client:
+            resp = await client.post(
+                f"{k.API_BASE}/meetings/m1/note/images",
+                data=b"x",
+                headers={"Content-Type": "multipart/form-data"},
+            )
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
     async def test_refuses_a_body_with_no_file_field(self, app):
         async with client_for(app) as client:
             resp = await _upload(client, PNG, field="screenshot")
