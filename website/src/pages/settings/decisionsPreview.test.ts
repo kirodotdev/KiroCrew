@@ -30,6 +30,7 @@ const OFF = {
   enabled: false,
   configuredEndpoint: '',
   endpointMoved: false,
+  withdrawn: false,
   // The tool-argument egress scope reads FALSE for an unreadable body, on the same
   // fail-closed terms as `enabled`: a body nobody could parse grants nothing.
   toolArgs: false,
@@ -59,6 +60,7 @@ describe('readConsent', () => {
         enabled: true,
         configuredEndpoint: ENDPOINT,
         endpointMoved: false,
+        withdrawn: false,
         // Consent to SEND is not consent to send tool arguments: a body that does
         // not mention the scope grants none of it.
         toolArgs: false,
@@ -111,6 +113,14 @@ describe('readConsent', () => {
     expect(readConsent({ enabled: false, configured_endpoint: ENDPOINT, permits: false }).endpointMoved)
       .toBe(false)
   })
+
+  it('reads a policy refusal as withdrawn, never as a moved address', () => {
+    const view = readConsent({ enabled: true, configured_endpoint: ENDPOINT, endpoint: ENDPOINT, permits: false, withdrawn: true })
+    expect(view.withdrawn).toBe(true)
+    expect(view.endpointMoved).toBe(false)
+    // Only an exact `true` is a refusal; an older gateway omits it.
+    expect(readConsent({ enabled: true, configured_endpoint: ENDPOINT, permits: false, withdrawn: 1 }).withdrawn).toBe(false)
+  })
 })
 
 describe('readBucket', () => {
@@ -159,6 +169,7 @@ describe('readDecisions', () => {
         enabled: true,
         configuredEndpoint: ENDPOINT,
         endpointMoved: false,
+        withdrawn: false,
         bucket: 25,
         toolArgs: false,
         compaction: false,

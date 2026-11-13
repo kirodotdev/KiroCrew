@@ -548,6 +548,9 @@ class TestHandler:
             "endpoint": "",
             "configured_endpoint": DEFAULT_ENDPOINT,
             "permits": False,
+            # No policy refuses the configured model: ``permits`` is false for want
+            # of consent, not because the administrator withdrew it.
+            "withdrawn": False,
             "history_budget_chars": 0,
             # Reported so the card draws the scope actually recorded rather than
             # inferring it from ``enabled``; absent on this keystone reads false.
@@ -572,6 +575,7 @@ class TestHandler:
         configured(CUSTOM)
         body = json.loads((await api_decisions_consent_get(_request())).text)
         assert body["enabled"] is True and body["permits"] is False
+        assert body["withdrawn"] is False, "a moved address is not a refusal"
         assert body["endpoint"] == DEFAULT_ENDPOINT and body["configured_endpoint"] == CUSTOM
         # Every successful read is audited too, with the address it reported.
         assert [(r["operation"], r["outcome"]) for r in audit] == [

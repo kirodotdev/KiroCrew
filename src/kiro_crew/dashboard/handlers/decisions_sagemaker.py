@@ -306,15 +306,18 @@ def hosted_offers(hosted_denied: bool, configured_region: str = "") -> tuple[boo
     )
 
 
-def switch_refused(endpoint: str, *, local: bool) -> bool:
+def switch_refused(endpoint: str, model: str, *, local: bool) -> bool:
     """Whether a switch to the route-built *endpoint* is withheld by the ceiling.
 
-    The row for its side, and for an option that leaves the machine also the
-    ``endpoints`` list, so the PUT refuses what the picker would not offer.
+    The row for its side and the model's own ``providers`` entry, and for an option
+    that leaves the machine also the ``endpoints`` list, so the PUT refuses what the
+    picker would not offer.
     """
-    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.capability import is_decisions_denied, provider_id
 
-    return is_decisions_denied(local=local) or (not local and endpoint_refused(endpoint))
+    if is_decisions_denied(local=local, provider=provider_id(endpoint, model)):
+        return True
+    return not local and endpoint_refused(endpoint)
 
 
 OP_SAGEMAKER_TEST = "decisions_provider_sagemaker_test"
@@ -344,9 +347,14 @@ def _sagemaker_test_target(body: object) -> tuple[str, str]:
     The same body and checks as a SageMaker provider PUT, and the model that PUT
     would write. Refused like the PUT when the fleet withdraws the hosted side, or
     when the decisions ceiling's ``models`` / ``endpoints`` lists refuse it: the
-    test leaves the machine too. Filesystem IO.
+    test leaves the machine too, and when the ``providers`` list does not allow
+    SageMaker. Filesystem IO.
     """
-    from kiro_crew.decisions.capability import is_decisions_denied, targets_denied
+    from kiro_crew.decisions.capability import (
+        PROVIDER_SAGEMAKER,
+        is_decisions_denied,
+        targets_denied,
+    )
     from kiro_crew.decisions.impl_sagemaker import policy_endpoint
 
     if not isinstance(body, dict) or body.get("preset") != PRESET_SAGEMAKER:
@@ -356,11 +364,11 @@ def _sagemaker_test_target(body: object) -> tuple[str, str]:
             'body must be {"preset": "sagemaker", "endpoint_name", "region"[, "profile"]}',
         )
     address, model, _ = sagemaker_target(body)
-    if is_decisions_denied(local=False) or targets_denied(
+    if is_decisions_denied(local=False, provider=PROVIDER_SAGEMAKER) or targets_denied(
         point=None, model=model, endpoint=policy_endpoint(address)
     ):
         raise ProviderRefused(
-            403, _CODE_CAPABILITY_DENIED, "this decision model is turned off by policy"
+            403, _CODE_CAPABILITY_DENIED, "this decision model is not allowed by your administrator"
         )
     return address, model
 

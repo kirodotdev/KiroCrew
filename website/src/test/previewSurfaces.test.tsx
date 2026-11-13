@@ -426,10 +426,10 @@ describe('Settings > Developer > Feature Previews', () => {
     /**
      * The Decisions card is INCLUDED, subtree and all.
      *
-     * In the state this test renders — governance permitting, consent off, no stored
-     * credential — that card draws no buttons at all: its point rows are
-     * `role="tab"`, and the credential's reveal and replace controls exist only once a
-     * key is stored. So excluding its frame subtracted an empty set and left the census
+     * In the state this test renders (governance permitting, consent off, no stored
+     * credential) that card draws no ingress button: its point rows are
+     * `role="tab"`, and the hosted provider's key field lives in that provider's own
+     * picker entry. So excluding its frame subtracted an empty set and left the census
      * blind to the largest card on the tab for no benefit.
      *
      * Counting it is what makes this a ratchet rather than decoration: a button
@@ -449,9 +449,10 @@ describe('Settings > Developer > Feature Previews', () => {
      * tab would have done neither: it went unscoped, so the same name on another card
      * disappeared from the census too, and it bounded no count.
      *
-     * The two it draws once settled: the hand-off on its read-failure notice (this tab
-     * stubs no API, so the card's reads fail here) and the credential field's reveal.
-     * Neither navigates. A third belongs in the expected set with a reason, never behind
+     * What it draws once settled: the hand-off on its read-failure notice (this tab
+     * stubs no API, so the card's reads fail here) and the two info tips. None
+     * navigates. The hosted provider's key field is not among them: it is drawn inside
+     * that provider's picker entry, which this unstubbed tab never loads. A third belongs in the expected set with a reason, never behind
      * a blanket allowance -- and because the set is exact, a duplicate of one of these
      * fails too, which a name filter could not catch.
      */
@@ -507,7 +508,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // the hand-off on the read-failure notice after, so a bare expect reads whichever
     // moment it hit. A button this set does not name never converges, so it fails here.
     await waitFor(() => {
-      expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
+      expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information'])
     })
     await waitFor(() => {
       expect(kasButtons()).toEqual(['Ask the agent', 'Retry'])
@@ -519,7 +520,7 @@ describe('Settings > Developer > Feature Previews', () => {
     })
     expect(partition()).toEqual({ tips: INFO_TIP_COUNT, ingress: ['Open Webhooks'] })
     // And the card beside it still draws only its own two.
-    expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information', 'Show'])
+    expect(decisionsButtons()).toEqual(['Ask the agent', 'More information', 'More information'])
   })
 
   it('renders the section-wide caveat once, above the grouped cards', () => {

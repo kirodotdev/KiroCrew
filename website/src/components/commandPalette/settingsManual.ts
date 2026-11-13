@@ -53,6 +53,21 @@ export const SETTINGS_MANUAL: ManualSettingEntry[] = [
   // Every one is GOVERNED: each id is also in `settingsSearchCore.DECISIONS_SETTING_IDS`,
   // so a search that KNOWS `capabilities.decisions` is denied offers none of them, and a
   // user with the feature available can still find the switch they are looking for.
+  // The hosted provider's API key. It REPLACES the entry extracted from the key field
+  // only to anchor the link on that provider's entry in the picker rather than on the
+  // field, which is drawn once the reader chooses the entry: the link lands on the
+  // entry and highlights it, and opening it is the reader's own pick. Governed, like
+  // the three below (`DECISIONS_SETTING_IDS`).
+  {
+    id: 'developer.jev-api-key',
+    labelKey: 'pages.developer.featurePreviewsTab.decisions_api_key_label',
+    descriptionKey: 'pages.developer.featurePreviewsTab.decisions_api_key_desc',
+    tab: 'developer',
+    params: { sub: 'feature-previews' },
+    type: 'input',
+    occurrence: 1,
+    settingId: 'developer.jev-api-key',
+  },
   {
     id: 'developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls',
     labelKey: 'pages.developer.featurePreviewsTab.decisions_tool_args',

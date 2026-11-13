@@ -226,7 +226,9 @@ def _llm_lane_available() -> bool:
         return False
 
 
-def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
+def _points(
+    state: dict, *, permits: bool, denied: bool = False, judge_denied: bool | None = None
+) -> list[dict]:
     """One row per decision point this build ships, for the card's overview list.
 
     Projected from the seam's own registry (``gate.DECISION_POINT_NAMES``,
@@ -262,9 +264,16 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     judged on the keystone AND this point's own scope, fail-closed the way the gate
     reads it: a point with no registered scope has no grant to run that lane on. The
     sampled share binds all three.
+
+    *judge_denied* is the ceiling the judge's LLM lane obeys: the row alone, never the
+    configured model's ``providers`` entry, because that lane sends to the provider the
+    owner's sessions use, not to the configured decision model
+    (``gate._judge_authority``). ``None`` reads it as *denied*.
     """
     from kiro_crew.decisions import consent
     from kiro_crew.decisions import gate as _gate
+
+    llm_lane_denied = denied if judge_denied is None else judge_denied
 
     # Read per SCOPE rather than per point, and only for the scopes this build
     # actually has: a point's row says whether ITS OWN consent is recorded, so a
@@ -316,7 +325,10 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
             # calling the judge active under that pin would describe a judge that
             # cannot answer. ``permits`` already carries the denial, but only together
             # with consent, and this lane needs the denial WITHOUT the consent.
-            if not sampled or denied:
+            # Which refusal binds depends on the lane: the LLM lane obeys the row
+            # alone, the Jev lane the configured model's entry too (folded into
+            # ``permits``, and so into ``jev_armed``).
+            if not sampled or (llm_lane_denied if lane == _gate.LANE_LLM else denied):
                 status = _POINT_OFF
             elif lane == _gate.LANE_LLM:
                 # Judged on its own terms like the Jev lane below: whether this lane can
@@ -364,12 +376,12 @@ def _points(state: dict, *, permits: bool, denied: bool = False) -> list[dict]:
     return rows
 
 
-def _payload(state: dict, *, denied: bool) -> dict:
+def _payload(state: dict, *, denied: bool, judge_denied: bool | None = None) -> dict:
     """What both verbs return: the keystone and the endpoint config names now.
 
-    *denied* subtracts from ``permits`` rather than appearing as a field of its own:
-    the effective answer is what a caller acts on, and a separate reason field had no
-    reader. It is passed in rather than probed here because the probe is filesystem
+    *denied* subtracts from ``permits``, the effective answer a caller acts on, and is
+    reported beside it as ``withdrawn`` so the card can tell a refusal from a moved
+    address. It is passed in rather than probed here because the probe is filesystem
     IO and both callers already have a worker thread to spend it on.
 
     SYNCHRONOUS ON PURPOSE, and both callers reach it through ``asyncio.to_thread``.
@@ -393,9 +405,13 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # A governance denial makes the gate read the keystone as off, so it lands
         # here too: ``permits`` is the EFFECTIVE answer, and folding the denial into
         # it is what keeps the card from claiming a decision would be sent under a
-        # pin. The denial is not reported as a field of its own -- nothing reads one,
-        # and the surface a caller acts on is the 403 on an enabling write.
+        # pin.
         "permits": permits,
+        # Whether that denial is why: the administrator's policy refuses the model the
+        # config names. The card reads it so a refusal is not mistaken for consent
+        # given to another address, whose advice (switch off and on again) the 403
+        # on an enabling write would defeat.
+        "withdrawn": denied,
         # The prior-conversation CEILING the owner reviewed. Reported so the card can
         # say what was consented to rather than what config.json currently asks for
         # -- those differ exactly when an agent has raised the config value, which is
@@ -427,7 +443,7 @@ def _payload(state: dict, *, denied: bool) -> dict:
         # rather than on a route of its own because the card reads this payload
         # already and a point's status is a function of the same keystone: a second
         # endpoint would be a second read that could answer differently.
-        "points": _points(state, permits=permits, denied=denied),
+        "points": _points(state, permits=permits, denied=denied, judge_denied=judge_denied),
     }
 
 
@@ -435,8 +451,46 @@ def _seam_withdrawn() -> bool:
     """Whether governance withdraws the seam for the provider configured now. Filesystem IO.
 
     A local preset adds ``capabilities.decisions_local`` on top of
-    ``capabilities.decisions``; any other provider reads the hosted row. Derived from the config,
-    never from the request, so a caller cannot pick the more permissive row.
+    ``capabilities.decisions``; any other provider reads the hosted row, and every one
+    reads its own ``providers`` entry. Derived from the config, never from the
+    request, so a caller cannot pick the more permissive row or entry.
+    """
+    from kiro_crew.decisions import gate as _gate
+    from kiro_crew.decisions.capability import (
+        is_decisions_denied,
+        is_local_preset,
+        names_local_preset,
+        provider_id,
+    )
+
+    endpoint, model = _gate.configured_endpoint(), _gate.configured_provider_model(None)
+    # Preparing counts: the switch is offered while the chosen preset downloads. An
+    # unattested preset shape answers under both rows too, as on the send path, and
+    # the local evaluation already holds the hosted row's deny. The configured model's
+    # own ``providers`` entry is asked with them, as the send path asks it.
+    local = is_local_preset(endpoint, model, serving=False) or names_local_preset(endpoint, model)
+    return is_decisions_denied(local=local, provider=provider_id(endpoint, model))
+
+
+def _judge_withdrawn() -> bool:
+    """Whether governance withdraws the judge's LLM lane. Filesystem IO.
+
+    The row alone, as ``gate._judge_authority`` asks it: that lane sends to the provider
+    the owner's sessions use, so the configured model's ``providers`` entry does not
+    bind it, and a refusal of that model must not report the judge as off.
+    """
+    from kiro_crew.decisions.capability import is_decisions_denied
+
+    return is_decisions_denied()
+
+
+def _withdrawal_message() -> str:
+    """Why :func:`_seam_withdrawn` said yes, in the words a 403 carries. Filesystem IO.
+
+    The rows withdrawing the seam (the administrator turned decision models off) and
+    the ``providers`` list refusing only the configured model are different facts, and
+    the second leaves every other model available, so each has its own sentence. Asked
+    only on the refusal path, so a permitted write pays nothing for it.
     """
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions.capability import (
@@ -446,11 +500,10 @@ def _seam_withdrawn() -> bool:
     )
 
     endpoint, model = _gate.configured_endpoint(), _gate.configured_provider_model(None)
-    # Preparing counts: the switch is offered while the chosen preset downloads. An
-    # unattested preset shape answers under both rows too, as on the send path, and
-    # the local evaluation already holds the hosted row's deny.
     local = is_local_preset(endpoint, model, serving=False) or names_local_preset(endpoint, model)
-    return is_decisions_denied(local=local)
+    if is_decisions_denied(local=local):
+        return "decision models are turned off by your administrator"
+    return "this decision model is not allowed by your administrator"
 
 
 async def api_decisions_consent_get(request: web.Request) -> web.Response:
@@ -465,7 +518,10 @@ async def api_decisions_consent_get(request: web.Request) -> web.Response:
     # read from disk. Audited by the probe itself. Named ``withdrawn`` because
     # ``denied`` above is the owner gate's refusal, a different decision.
     withdrawn = await asyncio.to_thread(_seam_withdrawn)
-    payload = await asyncio.to_thread(_payload, state, denied=withdrawn)
+    judge_withdrawn = await asyncio.to_thread(_judge_withdrawn)
+    payload = await asyncio.to_thread(
+        _payload, state, denied=withdrawn, judge_denied=judge_withdrawn
+    )
     # Read audited too: WHO learned whether the owner's messages leave the machine
     # is itself a fact an auditor needs, and it pairs with the denied-read row so
     # the log shows every read of the switch, not only the refused ones.
@@ -805,7 +861,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
         await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="capability_denied")
         return web.json_response(
             {
-                "error": "the decision seam is withdrawn by governance policy",
+                "error": await asyncio.to_thread(_withdrawal_message),
                 "code": _CODE_CAPABILITY_DENIED,
             },
             status=403,
@@ -945,7 +1001,10 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             f"browser_images={consent.consented_browser_images(state)}"
         ),
     )
-    return web.json_response(await asyncio.to_thread(_payload, state, denied=withdrawn))
+    judge_withdrawn = await asyncio.to_thread(_judge_withdrawn)
+    return web.json_response(
+        await asyncio.to_thread(_payload, state, denied=withdrawn, judge_denied=judge_withdrawn)
+    )
 
 
 async def api_decisions_feedback(request: web.Request) -> web.Response:
@@ -1094,15 +1153,15 @@ def _provider_payload() -> dict:
     """The presets and the preset the config names now. Filesystem IO."""
     from kiro_crew.config import live
     from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.handlers.decisions_offers import provider_offers
     from kiro_crew.dashboard.handlers.decisions_sagemaker import (
         PRESET_SAGEMAKER,
         configured_sagemaker,
         endpoint_refused,
-        hosted_offers,
     )
     from kiro_crew.decisions import gate as _gate
     from kiro_crew.decisions import impl_sagemaker, local_models
-    from kiro_crew.decisions.capability import denied_sides
+    from kiro_crew.decisions.capability import PROVIDER_SAGEMAKER, denied_sides
     from kiro_crew.decisions.local_runtime import get_runtime
 
     cfg = live.snapshot() or KiroCrewConfig.load()
@@ -1117,21 +1176,32 @@ def _provider_payload() -> dict:
     if sagemaker is not None:
         active = PRESET_SAGEMAKER
     hosted_denied, local_denied = denied_sides()
-    hosted_permitted, sagemaker_permitted = hosted_offers(
-        hosted_denied, (sagemaker or {}).get("region", "")
+    offers = provider_offers(
+        hosted_denied=hosted_denied,
+        local_denied=local_denied,
+        sagemaker_region=(sagemaker or {}).get("region", ""),
     )
+    hosted_permitted = offers["hosted_permitted"]
+    sagemaker_permitted = offers["sagemaker_permitted"]
     # The hosted default (or an unset endpoint, which falls back to it) that the
-    # ceiling's ``endpoints`` list refuses is a provider the send path never reaches:
-    # report "No model" so the card asks for a choice instead of naming a destination.
-    # The config is not rewritten. A row-level denial keeps its own reading.
+    # ceiling's ``endpoints`` or ``providers`` list refuses is a provider the send path
+    # never reaches: report "No model" so the card asks for a choice instead of naming
+    # a destination. The config is not rewritten. A row-level denial keeps its own reading.
     if active == local_models.PRESET_JEV and not hosted_denied and not hosted_permitted:
         active = local_models.PRESET_NONE
     # The same holds for a configured SageMaker address whose own regional runtime host
-    # the ceiling refuses, whatever other regions it permits: the send path and the
-    # consent PUT refuse that host, so it reads "No model". Whether the SageMaker OPTION
-    # is offered (any region) is a separate answer, ``sagemaker_permitted``.
+    # the ceiling refuses, whatever other regions it permits, or that the ``providers``
+    # list does not allow: the send path and the consent PUT refuse it, so it reads "No
+    # model". Whether the SageMaker OPTION is offered is a separate answer.
     configured_refused = False
-    if active == PRESET_SAGEMAKER and not hosted_denied and endpoint_refused(endpoint, audit=False):
+    if (
+        active == PRESET_SAGEMAKER
+        and not hosted_denied
+        and (
+            not offers["listed"].get(PROVIDER_SAGEMAKER, False)
+            or endpoint_refused(endpoint, audit=False)
+        )
+    ):
         active = local_models.PRESET_NONE
         configured_refused = True
     return {
@@ -1161,8 +1231,13 @@ def _provider_payload() -> dict:
         # SageMaker runtime host in at least one region.
         "sagemaker_permitted": sagemaker_permitted,
         # The configured SageMaker address itself is refused by the ceiling's
-        # ``endpoints`` list (its own regional host), so ``active`` reads "none".
+        # ``endpoints`` list (its own regional host) or its ``providers`` list, so
+        # ``active`` reads "none".
         "configured_refused": configured_refused,
+        # Per decision model, by allow-list id: whether the ceiling allows it, every
+        # part that governs it ANDed (``decisions_offers``). The picker draws a refused
+        # model greyed with the administrator's wording; the PUT refuses it.
+        "provider_permitted": offers["provider_permitted"],
     }
 
 
@@ -1255,14 +1330,18 @@ async def resume_local_decision_model() -> str:
         return await asyncio.to_thread(resume_configured)
 
 
-def _carry_consent(endpoint: str) -> bool:
+def _carry_consent(endpoint: str, model: str) -> bool:
     """Re-bind a standing consent to local *endpoint*; whether it did. Filesystem IO."""
     from kiro_crew.decisions import consent
-    from kiro_crew.decisions.capability import is_decisions_denied
+    from kiro_crew.decisions.capability import is_decisions_denied, provider_id
     from kiro_crew.decisions.local_models import is_loopback_endpoint
 
-    # Only route-built preset addresses reach here, so both rows govern.
-    if not is_loopback_endpoint(endpoint) or is_decisions_denied(local=True):
+    # Only route-built preset addresses reach here, so both rows govern, and the
+    # preset's own ``providers`` entry: a standing consent is never carried to a
+    # model the ceiling does not allow.
+    if not is_loopback_endpoint(endpoint) or is_decisions_denied(
+        local=True, provider=provider_id(endpoint, model)
+    ):
         return False
     # One locked check-and-write: a consent revoked while this PUT ran stays revoked.
     return consent.rebind_if_enabled(endpoint)
@@ -1335,7 +1414,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
     # "No model" sends nothing and runs nothing, so no row has anything to withhold:
     # it is the way out on a fleet that denies both, and it is never refused.
     if endpoint != ENDPOINT_NONE and await asyncio.to_thread(
-        switch_refused, endpoint, local=target_local
+        switch_refused, endpoint, model, local=target_local
     ):
         await _audit(
             request,
@@ -1346,7 +1425,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": "this decision model is turned off by policy",
+                "error": "this decision model is not allowed by your administrator",
                 "code": _CODE_CAPABILITY_DENIED,
             },
             status=403,
@@ -1385,7 +1464,7 @@ async def api_decisions_provider_put(request: web.Request) -> web.Response:
         # which is also the state the keystone is in -- nothing is sent until the
         # owner turns the switch off and on again.
         try:
-            carried = await asyncio.to_thread(_carry_consent, endpoint)
+            carried = await asyncio.to_thread(_carry_consent, endpoint, model)
         except Exception as exc:
             carried = False
             await _audit(

@@ -13,11 +13,13 @@ import { FeaturePreviewsSection } from '../pages/settings/FeaturePreviewsSection
 /** Rendered through the whole section, because that is where the card ships. */
 export function renderSection() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter><FeaturePreviewsSection /></MemoryRouter>
     </QueryClientProvider>,
   )
+  // The client too, so a test can play a live policy change through its reads.
+  return Object.assign(view, { client })
 }
 
 /** The card's own switch. Named in full so "Decisions" cannot match another row. */
@@ -144,7 +146,8 @@ export const toolArgsSwitch = () => screen.getByRole('switch', { name: SCOPE_SWI
  * drawn, the keystone (or a rejection), and the config's bucket.
  *
  * `decisions_enabled: true` is the ungoverned default every case assumes —
- * a case that wants the withdrawn state passes `governed: false` and gets no card.
+ * a case that wants the withdrawn state passes `decisions_enabled: false` and gets the
+ * administrator's notice in place of the card's controls.
  */
 export function stubGateway(
   consent: DecisionsConsentData | (Partial<DecisionsConsentData> & { enabled: boolean }) | Error,
@@ -184,3 +187,20 @@ export function stubGateway(
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(full)
   }
 }
+
+/**
+ * The hosted provider configured and allowed, so the picker opens its entry and draws
+ * the API key field inside it (`DecisionsHostedKeyField`).
+ */
+export const stubHostedProvider = (overrides: Record<string, unknown> = {}) =>
+  vi.spyOn(api, 'getDecisionsProvider').mockResolvedValue({
+    presets: [],
+    active: 'jev',
+    configured_endpoint: 'https://api.typesafe.ai/v1/systemone',
+    loopback: false,
+    hosted_permitted: true,
+    local_permitted: true,
+    sagemaker_available: true,
+    sagemaker_permitted: true,
+    ...overrides,
+  } as never)
