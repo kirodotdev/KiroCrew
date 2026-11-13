@@ -30,6 +30,7 @@ from kiro_crew.apps.lifecycle_sdk import AppLifecycleSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 from kiro_crew.apps.untrusted_text_sdk import UntrustedTextSDK
+from kiro_crew.apps.webhook_source_sdk import WebhookSourceSDK
 from kiro_crew.apps.worker_auto_approve import WorkerAutoApprove
 
 
@@ -142,6 +143,10 @@ class AppContext:
     # (``chat_slot_sdk``). None unless the manifest declares
     # ``permissions.chatSlots``.
     chat_slots: ChatSlotSDK | None = None
+    # The ``webhooks`` governance answer for the app's own inbound route, under the
+    # app's name (``webhook_source_sdk``). None unless the manifest declares
+    # ``permissions.webhookSource``; an app without it refuses its webhook.
+    webhook_source: WebhookSourceSDK | None = None
     # The gateway's untrusted-text screen, neutralizer and fences. Unconditional,
     # like `scrub`, and built from `name` so its audit rows name this app.
     untrusted: UntrustedTextSDK = field(init=False)
@@ -340,6 +345,8 @@ def build_app_context(
         except ValueError:
             ctx_logger.warning("app %r: its name cannot carry an auto-approve grant", app_name)
 
+    webhook_source = WebhookSourceSDK(app_name) if perms.get("webhookSource") is True else None
+
     return AppContext(
         name=app_name,
         data_dir=data_dir,
@@ -359,4 +366,5 @@ def build_app_context(
         http_app=http_app,
         turns=turns,
         chat_slots=chat_slots,
+        webhook_source=webhook_source,
     )
