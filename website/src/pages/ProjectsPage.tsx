@@ -67,6 +67,23 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
   )
 }
 
+/** The run's state in the app language. A status the runner adds later still
+ *  shows, verbatim, rather than disappearing. */
+export function runStatusLabel(run: Pick<ProjectRun, 'running' | 'status'>): string {
+  if (run.running) return i18nT('pages.projectsPage.running')
+  switch (run.status) {
+    case 'completed': return i18nT('pages.projectsPage.status_completed')
+    case 'failed': return i18nT('pages.projectsPage.status_failed')
+    case 'cancelled': return i18nT('pages.projectsPage.status_cancelled')
+    case 'planned': return i18nT('pages.projectsPage.status_planned')
+    case 'planning': return i18nT('pages.projectsPage.planning')
+    case 'running': return i18nT('pages.projectsPage.running')
+    case 'paused': return i18nT('pages.projectsPage.status_paused')
+    case 'pausing': return i18nT('pages.projectsPage.status_pausing')
+    default: return run.status
+  }
+}
+
 export default function ProjectsPage() {
   const ime = useImeGuard()
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
@@ -478,7 +495,13 @@ export default function ProjectsPage() {
             <span className="text-[14px]">{icon}</span>
             <div className="flex-1 min-w-0">
               <div className="text-[13px] font-semibold text-text-strong truncate">{name}</div>
-              <div className="text-[11px] text-muted">{r.task_id} · {r.completed}/{r.tasks} · {r.running ? 'running' : r.status}</div>
+              {/* Count and state first and never truncated: they wrap (before the
+                  "·", which stays with the state) where a long label cannot fit
+                  the rail. The id after them gives way first and drops out. */}
+              <div className="flex min-w-0 text-[11px] text-muted" title={`${r.task_id} · ${r.completed}/${r.tasks} · ${runStatusLabel(r)}`}>
+                <span className="min-w-0 break-words">{r.completed}/{r.tasks} {'·\u00a0'}{runStatusLabel(r)}</span>
+                <span className="truncate whitespace-pre basis-0 grow"> · {r.task_id}</span>
+              </div>
             </div>
             {/* Auto-approve indicator. Gated on the LIVE grant (matches the
                 run-detail toggle sync effect at line 225: "Reflect only a
@@ -752,7 +775,7 @@ export default function ProjectsPage() {
                 onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}
                 onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') } }}
               ><Pencil className="lucide-inline" /></span>}
-              <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : selectedRun.status}</span>
+              <span className="text-[12px] text-muted">{selectedRun.status === 'planning' ? <><Hourglass className="lucide-inline" /> {i18nT('pages.projectsPage.planning')}</> : selectedRun.running ? <><RefreshCw className="lucide-inline" /> {i18nT('pages.projectsPage.running')}</> : runStatusLabel(selectedRun)}</span>
               <div className="flex-1" />
               {selectedRun.status === 'planned' && <>
                 <label className="flex items-center gap-1.5 text-[12px] text-muted cursor-pointer select-none" title={i18nT('pages.projectsPage.run_unattended_auto_approve_this_run_s_tool_call')}>
