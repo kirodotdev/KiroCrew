@@ -44,6 +44,11 @@ describe('stripHtmlComments', () => {
     expect(() => stripHtmlComments('<script>var = ;</script>')).toThrow(/does not parse/)
   })
 
+  it('finds a script whose end tag carries a space, so its comments never reach the markup pass', () => {
+    const html = '<script>\n  var s = "<!-- kept -->"; // note\n</script >\n<!-- gone -->\n<p></p>'
+    expect(stripHtmlComments(html)).toBe('<script>\n  var s = "<!-- kept -->";\n</script >\n<p></p>')
+  })
+
   it('strips every comment from the real index.html and keeps its scripts parseable', () => {
     const src = readFileSync(path.resolve(__dirname, '../../index.html'), 'utf8')
     const out = stripHtmlComments(src)

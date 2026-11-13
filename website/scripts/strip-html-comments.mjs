@@ -11,8 +11,8 @@
 // JSON data) are left as they are.
 import { parseSync } from 'vite'
 
-const SCRIPT = /(<script\b[^>]*>)([\s\S]*?)(<\/script>)/gi
-const HTML_COMMENT = /<!--[\s\S]*?-->/g
+const SCRIPT = /(<script\b[^>]*>)([\s\S]*?)(<\/script\b[^>]*>)/gi
+const HTML_COMMENT = /<!--[\s\S]*?--!?>/g
 const JS_TYPES = new Set(['', 'text/javascript', 'application/javascript', 'module'])
 
 function scriptType(openTag) {
