@@ -566,8 +566,27 @@ Each cycle:
    instruction you want the worker to read out of `work_brief`; it is the ONE
    field the worker treats as an instruction, so keep it to a decision.
 5. `session_read_message` for detail the record does not carry — a question's
-   substance, a stall's shape. Never for a verdict, and never as the routine
-   cycle read: the ledger is that.
+   substance, a stall's shape. Never for a verdict: the ledger is that.
+
+   **Check each worker for drift.** A report is the worker's own claim, so a
+   worker building the wrong thing looks fine until acceptance. On every patrol
+   turn, the floor turn after a quiet run included, call `session_read_message`
+   for each OPEN local item's worker with `since` = that item's cursor from your
+   session ledger's `next` (none yet: no `since`) and `limit: 10`. No new rows:
+   the transcript did not move, skip it. When the reply's `total` is past its
+   `next_since`, the worker moved more than 10 rows: read the newest 10 once
+   more without `since`. A `cursor_unavailable` refusal means the same read.
+   Compare the new assistant lines with the item's `title`, its acceptance and
+   the goal (the owner's ask). Off direction (building something the item
+   does not name, widening scope, redoing finished work): `session_send` with
+   `steer: true` saying what is wrong and what to do instead, then
+   `work_ledger_record` `action=decide` with the same instruction. On track:
+   say nothing. Then write each read's `total` into `next` as that item's
+   cursor with `session_ledger_record`. Skip a remote item on a patrol wake:
+   reading and steering it need an owner turn (Remote dispatch). Cost: at most
+   two reads per open item per patrol turn (the `since` read, plus the newest
+   10 only on overflow), so at most 20 rows per item, and patrol turns come
+   only from a report, a flag or the quiet-run floor.
 6. **Say nothing unless there is a real signal.** An item passing acceptance,
    failing it, asking a question, or stalling. Never post "nothing changed":
    a cycle with no signal ends with a `nothing_to_do` call, because a turn
@@ -631,7 +650,7 @@ the next round is dispatched, end that same turn with two calls, in order:
 1. `session_ledger_record` with everything the next turn needs:
    - `goal` — the goal, one line;
    - `next` — the round number, and for each open item its item id, its
-     worker key and its PR number (or "no PR yet").
+     worker key, its PR number (or "no PR yet") and its drift cursor (step 5).
 
    Check the item ids, worker keys and PRs against a fresh `work_ledger_read`,
    not against memory: the work ledger is the record, `next` is the pointer.
@@ -914,8 +933,9 @@ what the composer renders:
 ## Cost discipline
 
 - The ledger read is cheap and bounded — that one you do every cycle.
-- `session_read_message` only when the record does not answer the question, and
-  with `since` when you use it.
+- `session_read_message` for the patrol drift check (step 5: new rows only,
+  from the stored cursor, `limit: 10`), or when the record does not answer
+  the question, and with `since` when you use it.
 - One `accept_eval` call per cycle covers every `done` item, and only those.
 - Write only what changed to your own session ledger.
 - Stay silent on a quiet cycle.
