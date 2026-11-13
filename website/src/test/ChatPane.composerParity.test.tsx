@@ -82,6 +82,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
+import { loadPromptStash } from '../utils/promptStash'
 
 const SLOT = 'chat-1-parity'
 
@@ -136,6 +137,21 @@ describe('ChatPane composer parity (chat-core P3-b): voice through the Composer 
     await renderPane()
     await act(async () => { fireEvent.click(mic()) })
     await waitFor(() => expect(engine.start).toHaveBeenCalledTimes(1))
+  })
+
+  it('keeps a restored pane draft in the stash until the in-memory copy is used', async () => {
+    await renderPane()
+    const input = screen.getByLabelText('Message input')
+    fireEvent.change(input, { target: { value: 'pane-only draft' } })
+
+    expect(fireEvent.keyDown(input, { key: 's', ctrlKey: true })).toBe(false)
+    await waitFor(() => expect(input).toHaveValue(''))
+    expect(loadPromptStash(SLOT).map(entry => entry.text)).toEqual(['pane-only draft'])
+
+    expect(fireEvent.keyDown(input, { key: 's', ctrlKey: true })).toBe(false)
+    await waitFor(() => expect(input).toHaveValue('pane-only draft'))
+    expect(loadPromptStash(SLOT).map(entry => entry.text)).toEqual(['pane-only draft'])
+    expect(screen.queryByTestId('prompt-stash-count')).toBeNull()
   })
 })
 
