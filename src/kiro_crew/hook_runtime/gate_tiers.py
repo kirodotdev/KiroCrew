@@ -1253,15 +1253,22 @@ def _spec_command_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     """Whether a spec's ``toolsSettings.shell.allowedCommands`` grants this call.
 
     Only a shell call (kiro-cli's ``execute_bash`` among its names) with its
-    command recovered by the host and plain, or a chain of plain commands, each of
+    command recovered by the host and plain once its plain redirects are taken off,
+    or a chain of plain commands, each of
     which one of ``spec_granted_commands`` matches whole
     (:func:`_command_matches_any`), as kiro-cli anchors each entry at both ends. Each entry is read
     by :mod:`kiro_crew.platform.allowed_commands`, which accepts only the syntax
     both engines read alike and matches it in linear time; any other grants nothing.
+    Every file a redirect opens must pass Crew's floors
+    (:func:`kiro_crew.platform.redirect_floor.redirects_clear`).
     """
     if not call.spec_granted_commands or "execute_bash" not in names or not call.is_shell:
         return False
-    return _command_matches_any(call.command, call.spec_granted_commands)
+    from kiro_crew.platform.redirect_floor import redirects_clear
+
+    return _command_matches_any(call.command, call.spec_granted_commands) and redirects_clear(
+        call.command, call.spec_write_cwd
+    )
 
 
 def _spec_write_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
@@ -1376,7 +1383,8 @@ def _tier_spec_shell_allowlist(facts: GateFacts, tier: GateTier) -> ToolHookResu
             "Blocked by this agent's spec: toolsSettings.execute_bash.denyByDefault is set "
             "and this command matches allowedCommands, but a chain (&&, ||, ;, |) matches only "
             "when every command in it does and it holds no quote, backslash, non-ASCII "
-            "character or --%, and >, <, $() or backticks never match. "
+            "character or --%, and $(), backticks or a redirect before the command never "
+            "match. "
             "Run the script alone, or move the pipeline into the script."
         )
     from kiro_crew.platform import allowed_commands
