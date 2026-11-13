@@ -642,14 +642,25 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
     # with no explanation. When the card cannot exist yet, persist
     # the explanation as a slot notice instead.
     if _sid not in _native_tracker and event.text and event.text.startswith(_REJECT_NOTICE_LEADS):
-        # Stays English: the ACP handle composes this permission-rejection line
-        # (its fixed reason fused with the redacted tool title) into
-        # ``event.text`` at its source, and the event carries no structured
-        # reason/title field to localize from. A token here needs a new field
-        # on the ACP event, read by other consumers too, so it is not threaded
-        # through here.
+        from kiro_crew.agent_sdk.drivers.acp_vocab import (
+            AUTO_REJECT_MISSING_SECURITY_CONTEXT,
+            AUTO_REJECT_STRANDED_BETWEEN_TURNS,
+        )
+        from kiro_crew.dashboard import gateway_notice as gn
+
+        # A known reason localizes the row; any other rejection line stays English.
+        _token = {
+            AUTO_REJECT_STRANDED_BETWEEN_TURNS: gn.GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_STRANDED,
+            AUTO_REJECT_MISSING_SECURITY_CONTEXT: (
+                gn.GATEWAY_NOTICE_PERMISSION_AUTO_REJECTED_NO_SECURITY_CONTEXT
+            ),
+        }.get(getattr(event, "auto_reject_reason", ""))
         _txt = redact(event.text)
-        slot.append("notice", _txt, "msg msg-info")
+        if _token:
+            _meta = gn.gateway_notice_meta(_token, tool=redact(event.title or ""))
+            slot.append("notice", _txt, "msg msg-info", meta=_meta)
+        else:
+            slot.append("notice", _txt, "msg msg-info")
     # Some kiro-cli builds also stream the sub-agent's own text via
     # agent_message_chunk on this channel — surface it on the card.
     if _sid in _native_tracker and event.text:

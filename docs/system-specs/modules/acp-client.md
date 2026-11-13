@@ -1510,7 +1510,12 @@ For a CHILD event, the identity lane only helps a consumer the handle actually
 delivers to: the session handle fail-closes every low-fidelity child permission
 request whose consumer never set `child_fidelity_aware`
 (`child_low_fidelity_unaware_consumer`), steering the `surface_policy` host
-notice before the reject. The dashboard runner and `kirocrew
+notice before the reject. That reject, like a child request the pre-turn drain
+rejects as stranded between turns, yields a `Blocked:` `EVENT_SUBAGENT_ACTIVITY` notice
+whose `auto_reject_reason` (`AUTO_REJECT_MISSING_SECURITY_CONTEXT` /
+`AUTO_REJECT_STRANDED_BETWEEN_TURNS`) and `title` (the bounded, redacted tool
+title) ride beside its unchanged English `text`; the dashboard turns them into a
+localized notice token, and every other consumer keeps reading `text`. The dashboard runner and `kirocrew
 chat` both opt in — the CLI qualifies because its approval path runs no
 content-matching auto-approve: hook gate, then the `_unverifiable_shell`
 fail-close, then an interactive prompt that shows only non-model-authored

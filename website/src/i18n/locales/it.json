@@ -14196,6 +14196,8 @@
         "eager_spawn_stopped_other": "L'agente di questa chat non è riuscito ad avviarsi {{count}} volte di seguito, quindi non verrà più avviato in background. Invia un messaggio per riprovare. Ultimo errore: {{detail}}",
         "turn_failed_before_start": "Questo messaggio non è riuscito prima di iniziare. Il log del gateway contiene i dettagli.",
         "local_command_failed_before_start": "`{{command}}` non è riuscito. Il log del gateway contiene i dettagli.",
+        "permission_auto_rejected_stranded": "Autorizzazione rifiutata automaticamente (rimasta in sospeso tra due turni): {{tool}}",
+        "permission_auto_rejected_no_security_context": "Autorizzazione rifiutata automaticamente (contesto di sicurezza mancante): {{tool}}",
         "turn_timeout": "Questo turno ha raggiunto il limite di {{limit}} ed è stato interrotto. Il lavoro già scritto su disco è ancora lì: nulla è stato annullato. Invia un messaggio per continuare da dove si è fermato.{{hint}}",
         "turn_timeout_native_pending": "Questo turno ha raggiunto il limite di {{limit}}. L'agente nativo non ha confermato la richiesta di arresto, quindi lo strumento precedente potrebbe essere ancora in fase di completamento. Non riprendere questa sessione finché non è inattiva. Il lavoro già scritto su disco è ancora lì: nulla è stato annullato.{{hint}}",
         "background_turn_abandoned": "Questo turno non è mai iniziato: ha atteso {{waited}} uno slot di turno in background e ha rinunciato. Non è stato eseguito nulla e nulla è stato annullato; il prossimo messaggio o ciclo del loop avvia un nuovo turno. Se i turni continuano ad accodarsi al limite, aumenta `dashboard.max_background_turns`.",

@@ -14196,6 +14196,8 @@
         "eager_spawn_stopped_other": "L'agent de ce chat n'a pas réussi à démarrer {{count}} fois de suite, il ne sera donc plus démarré en arrière-plan. Envoie un message pour réessayer. Dernière erreur : {{detail}}",
         "turn_failed_before_start": "Ce message a échoué avant de démarrer. Le journal de la passerelle contient les détails.",
         "local_command_failed_before_start": "`{{command}}` a échoué. Le journal de la passerelle contient les détails.",
+        "permission_auto_rejected_stranded": "Autorisation refusée automatiquement (bloquée entre deux tours) : {{tool}}",
+        "permission_auto_rejected_no_security_context": "Autorisation refusée automatiquement (contexte de sécurité manquant) : {{tool}}",
         "turn_timeout": "Ce tour a atteint la limite de {{limit}} et a été arrêté. Le travail déjà écrit sur le disque est toujours là — rien n'a été annulé. Envoie un message pour reprendre là où il s'est arrêté.{{hint}}",
         "turn_timeout_native_pending": "Ce tour a atteint la limite de {{limit}}. L'agent natif n'a pas accusé réception de la demande d'arrêt, donc son outil précédent est peut-être encore en train de finir. Ne reprends pas cette session tant qu'elle n'est pas inactive. Le travail déjà écrit sur le disque est toujours là — rien n'a été annulé.{{hint}}",
         "background_turn_abandoned": "Ce tour n'a jamais démarré : il a attendu {{waited}} un créneau de tour en arrière-plan et a abandonné. Rien n'a été exécuté ni annulé ; le prochain message ou cycle de boucle démarre un nouveau tour. Si les tours continuent de s'accumuler à la limite, augmente `dashboard.max_background_turns`.",

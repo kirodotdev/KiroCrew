@@ -14196,6 +14196,8 @@
         "eager_spawn_stopped_other": "O agente deste chat não conseguiu iniciar {{count}} vezes seguidas, então não será iniciado novamente em segundo plano. Envie uma mensagem para tentar de novo. Último erro: {{detail}}",
         "turn_failed_before_start": "Esta mensagem falhou antes de começar. O log do gateway tem os detalhes.",
         "local_command_failed_before_start": "`{{command}}` falhou. O log do gateway tem os detalhes.",
+        "permission_auto_rejected_stranded": "Permissão recusada automaticamente (ficou pendente entre turnos): {{tool}}",
+        "permission_auto_rejected_no_security_context": "Permissão recusada automaticamente (falta o contexto de segurança): {{tool}}",
         "turn_timeout": "Este turno atingiu o limite de {{limit}} e foi interrompido. O trabalho já gravado em disco continua lá: nada foi revertido. Envie uma mensagem para continuar de onde parou.{{hint}}",
         "turn_timeout_native_pending": "Este turno atingiu o limite de {{limit}}. O agente nativo não confirmou o pedido de parada, então a ferramenta anterior dele pode ainda estar terminando. Não retome esta sessão até que ela fique ociosa. O trabalho já gravado em disco continua lá: nada foi revertido.{{hint}}",
         "background_turn_abandoned": "Este turno nunca começou: esperou {{waited}} por uma vaga de turno em segundo plano e desistiu. Nada foi executado e nada foi revertido; a próxima mensagem ou ciclo do laço inicia um novo turno. Se os turnos continuarem se acumulando no limite, aumente `dashboard.max_background_turns`.",

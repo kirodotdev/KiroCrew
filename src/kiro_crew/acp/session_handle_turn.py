@@ -75,6 +75,7 @@ from kiro_crew.acp.session_handle_agent_turns import AGENT_STARTED_REQUEST_ID
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_mcp import hold_untold_first_turn
 from kiro_crew.acp.session_handle_native_children import (
+    AUTO_REJECT_STRANDED_BETWEEN_TURNS,
     _is_claude_subagent_update,
     _keep_working_claude_redactors,
 )
@@ -1059,13 +1060,13 @@ async def _run_turn(
         _notices = list(self._pending_reject_notices)
         self._pending_reject_notices.clear()
         for _n_sid, _n_title in _notices:
+            _n_shown = redact_text(str(_n_title)[:4096])[:120]
             yield AcpEvent(
                 kind=EVENT_SUBAGENT_ACTIVITY,
                 sub_session_id=_n_sid,
-                text=(
-                    "Blocked: permission auto-rejected (stranded between turns): "
-                    f"{redact_text(str(_n_title)[:4096])[:120]}"
-                ),
+                text=f"Blocked: permission auto-rejected (stranded between turns): {_n_shown}",
+                title=_n_shown,
+                auto_reject_reason=AUTO_REJECT_STRANDED_BETWEEN_TURNS,
             )
         async for _incoming in _dispatch:
             if (
