@@ -353,6 +353,14 @@ def missing_agent_reason(agent: str, *, member: str = "") -> str:
         default = missing_default_agent_explanation(agent)
         if default is not None:
             reason += f" It is agent.default_agent, which setup does not write. {default[1]}"
+        # A linked-worktree gateway is refused the shared agent home, so on a home
+        # with no specs the definition was never written: say so, and what to do.
+        try:
+            from kiro_crew.agent import _worktree_declined_spec_hint
+
+            reason += _worktree_declined_spec_hint()
+        except Exception:  # noqa: BLE001 - the hint is a label, never a gate
+            logger.debug("no worktree hint for a missing agent %r", agent, exc_info=True)
         return reason
     if not owner.enabled:
         return (
