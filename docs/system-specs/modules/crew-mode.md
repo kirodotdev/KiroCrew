@@ -2332,8 +2332,11 @@ Notes moves focus to the back control (New schedule focuses its own form), so
 Escape still pops the page, and popping returns focus to the control that opened it.
 
 The Bots page's SidePanel visibility has two flags, one per placement
-(`panelChrome`). Docked beside the thread, it reads the persisted
-`mc-members-panel-open` (`usePersistedBool`, default shown), and the header's
+(`panelChrome`). Docked beside the thread, each Bot keeps its own choice under
+`mc-members-panel-open:<name>`; a Bot with no choice of its own reads the bare
+`mc-members-panel-open` (`usePersistedBool`, default shown), which no toggle
+writes. A toggle writes only the open Bot's own key, and another window's
+toggle reaches this one through the `storage` event. The header's
 panel opener is withdrawn while the docked panel is open, because the panel's
 own strip carries the close control. As an overlay it reads a separate
 per-visit flag that starts closed and is reset whenever the panel docks, and
