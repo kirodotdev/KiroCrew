@@ -1300,6 +1300,30 @@ class TestNativeManagedMcpIdentity:
         unrelated = to_client_custom_agent("worker", spec, "p")
         assert "env" not in unrelated["mcpServers"]["kirocrew-work"]
 
+    def test_a_central_ceiling_puts_managed_stdio_children_in_cache_only_mode(self, monkeypatch):
+        """KAS gives managed children a minimal env; the gateway supplies the markers."""
+        from kiro_crew.platform import policy_distribution as pd
+
+        monkeypatch.setattr(pd, "central_ceiling_installed", lambda: True)
+        monkeypatch.setattr(pd, "effective_max_cache_age", lambda: 600)
+        out = to_client_custom_agent(
+            "a",
+            _spec(
+                mcpServers={
+                    "kirocrew-core": {
+                        "command": "x",
+                        "env": {pd.POLICY_CACHE_ONLY_ENV: "0", pd.POLICY_MAX_AGE_ENV: "9"},
+                    },
+                    "third-party": {"command": "y"},
+                }
+            ),
+            "p",
+        )
+        env = out["mcpServers"]["kirocrew-core"]["env"]
+        assert env[pd.POLICY_CACHE_ONLY_ENV] == "1"
+        assert env[pd.POLICY_MAX_AGE_ENV] == "600"
+        assert "env" not in out["mcpServers"]["third-party"]
+
 
 class TestHoistManagedServers:
     """Managed declarations travel in the session-level array, restrictions intact.

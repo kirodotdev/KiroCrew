@@ -343,7 +343,11 @@ def _is_first_party_managed_argv(
     invocation = _cached_managed_invocation(name)
     try:
         # circular import: agent is loaded during package init
-        from kiro_crew.agent import _kirocrew_mcp_invocation, _managed_mcp_env
+        from kiro_crew.agent import (
+            POLICY_MARKER_KEYS,
+            _kirocrew_mcp_invocation,
+            _managed_mcp_env,
+        )
 
         expected_env = _managed_mcp_env()
         if invocation is None:
@@ -370,5 +374,9 @@ def _is_first_party_managed_argv(
     return (
         command == expected_command
         and list(args) == list(expected_args)
-        and dict(env or {}) == expected_env
+        # A spec's copy of the cache-only policy markers never runs: ``probe_server``
+        # strips Kiro Crew's reserved names and re-derives the markers. So a spec
+        # written before the host's central policy changed still names the same code.
+        and {k: v for k, v in (env or {}).items() if k not in POLICY_MARKER_KEYS}
+        == {k: v for k, v in expected_env.items() if k not in POLICY_MARKER_KEYS}
     )

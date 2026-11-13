@@ -53,6 +53,7 @@ from typing import (
 
 from kiro_crew import edition
 from kiro_crew.config.paths import config_dir  # noqa: F401 - re-export
+from kiro_crew.constants import ENV_TRUTHY  # noqa: F401 - re-export
 from kiro_crew.mcp_provenance import is_marked
 from kiro_crew.platform.admission import (  # noqa: F401 - re-export
     canonical_signing_bytes,
@@ -1282,6 +1283,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTCORE_POLICY_ONLY,
         _AGENTCORE_POSTURES,
         _AGENTCORE_SCOPE,
+        _POLICY_DISTRIBUTION_CACHE_ONLY_ENV,
         _POLICY_DISTRIBUTION_HEADERS_ENV,
         _POLICY_DISTRIBUTION_URL_ENV,
         _TELEMETRY_OTLP_ENDPOINT,
@@ -1409,7 +1411,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         policy_signing_payload,
     )
     from kiro_crew.platform.governance_parts.tiers import (  # noqa: F401
-        _POLICY_DISTRIBUTION_CACHE_ONLY_ENV,
         _POLICY_ENV,
         _POLICY_HOME_LEAF,
         _SLACK_CHANNEL_LEAF,

@@ -23,6 +23,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Dict, Mapping, Optional, Tuple
 
+from kiro_crew.constants import ENV_TRUTHY
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_parts.archetypes import (
     MODE_ALLOW,
@@ -57,6 +58,7 @@ logger = logging.getLogger("kiro_crew.platform.governance")
 MAX_DURATION_SECS = threading.TIMEOUT_MAX
 
 _POLICY_DISTRIBUTION_URL_ENV = "KIROCREW_POLICY_URL"
+_POLICY_DISTRIBUTION_CACHE_ONLY_ENV = "KIROCREW_POLICY_CACHE_ONLY"
 
 #: Named here only so the declared-source refusal can point at it; the engine owns it.
 _POLICY_DISTRIBUTION_HEADERS_ENV = "KIROCREW_POLICY_HEADERS"
@@ -604,9 +606,15 @@ class PolicyDistribution:
                     f"{sorted(_UNAVAILABLE_DISPOSITIONS)}"
                 )
 
+        # A cache-only child receives no source by design; it validates and adopts
+        # the gateway's cached policy without starting a fetch itself. Read with the
+        # same truthy rule as ``policy_distribution_source.cache_only``, so a value
+        # that does not turn cache-only mode on does not lift this refusal either.
         if (
             not source
             and not os.environ.get(_POLICY_DISTRIBUTION_URL_ENV, "").strip()
+            and os.environ.get(_POLICY_DISTRIBUTION_CACHE_ONLY_ENV, "").strip().lower()
+            not in ENV_TRUTHY
             # An LTS build supplies the source itself (RFC D2), so a block that
             # only tunes the cadence or staleness bound is not inert there.
             and not _is_lts()

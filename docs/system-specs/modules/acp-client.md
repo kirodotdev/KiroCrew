@@ -32,6 +32,18 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/launch.py` | the launch tail both drivers hand their plan to (`launch`): pod bundle swap, scratch window, sandbox wrap with the host's credential mask, cgroup scope, the child's environment and the suspended spawn; plus what several per-process hosts share before it -- the Node-adapter and self-served binary ladders, the resolution-cache generation fence, the enforced-host preflight and the read-back child plumbing |
 | `acp/harness/{claude,opencode,mimocode,goose,pi,deepseek}.py` | one `ProcessAdapter` per host the client starts one process per session for (`process_adapter_for`): its binary resolution and caches, argv and labels, credential mask, gate sealing and routing read-back, and its additions to the child's environment. The client keeps the instance for the life of the process (`_process_adapter`, dropped by `_reset_state`), reads what its read-back found through `_harness_read_back` (a `HarnessReadBack`, empty when no adapter is kept), and asks it for the host's own `session/new` / `session/load` entries through `session_mcp_servers` (`_adapter_session_mcp_servers`) |
 
+The shared launch tail also passes a centrally installed policy ceiling to ACP
+harnesses that boot their own platform context, including KAS managed MCP
+children. It sets `KIROCREW_POLICY_CACHE_ONLY=1` and the effective cache age
+bound after the agent environment scrub, so the child resolves the gateway's
+verified cache without inheriting the policy URL or request headers. The
+sandbox shows that cache read-only on such a host
+(`sandbox_tiers.enterprise_policy_cache_view`). A cache
+that is missing, stale or invalid still fails closed in the child.
+Kiro Crew's managed MCP declarations carry the same cache-only markers in their
+server `env`, because some harnesses construct managed-server environments from
+the declaration rather than forwarding the ACP process environment.
+
 `AcpClient`'s own behaviour lives in `acp/client_*.py` owner modules, one
 responsibility each. A member's body is a module-level function there whose first
 parameter is `self` (annotated `AcpClient` for type checkers only), and the class
