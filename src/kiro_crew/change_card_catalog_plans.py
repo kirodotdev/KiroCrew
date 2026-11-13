@@ -1318,12 +1318,20 @@ IMPORT_STEP_CREATE = "create"
 IMPORT_STEP_GOAL = "goal"
 IMPORT_STEP_RULES = "rules"
 IMPORT_STEP_FILES = "files"
+IMPORT_STEP_DASHBOARD = "dashboard"
 IMPORT_STEP_CRON = "cron"
 
 
 def _import_message_crons(p: dict[str, Any]) -> list[dict[str, Any]]:
     """The crons a plain cron step creates; a ``script`` cron is made with its script."""
     return [job for job in p.get("crons") or () if "script" not in job]
+
+
+def _import_applies_dashboard(p: dict[str, Any]) -> bool:
+    """A built-in page the receiver ships; any other stays in ``not_imported``."""
+    return bool(p.get("dashboard_template")) and "dashboardTemplate" not in (
+        p.get("not_imported") or ()
+    )
 
 
 def import_step_roles(p: dict[str, Any]) -> list[str]:
@@ -1335,6 +1343,8 @@ def import_step_roles(p: dict[str, Any]) -> list[str]:
         roles.append(IMPORT_STEP_RULES)
     if p.get("carried"):
         roles.append(IMPORT_STEP_FILES)
+    if _import_applies_dashboard(p):
+        roles.append(IMPORT_STEP_DASHBOARD)
     roles += [IMPORT_STEP_CRON] * len(_import_message_crons(p))
     return roles
 
@@ -1359,6 +1369,14 @@ def _import_files_step(sha: str) -> dict[str, Any]:
     fills = _import_member_fills()
     body = _with_fills({"sha256": sha}, fills[1:])
     return step("POST", import_files_path(placeholder(fills[0])), body, fill=fills)
+
+
+def _import_dashboard_step(template: str) -> dict[str, Any]:
+    """Adopt the shipped dashboard ``builtin:<id>`` on the new crewmate."""
+    fills = _import_member_fills()
+    path = f"/api/members/{placeholder(fills[0])}/dashboard/template"
+    body = _with_fills({"template_id": template.removeprefix("builtin:")}, fills[1:])
+    return step("POST", path, body, fill=fills)
 
 
 def _import_cron_step(job: dict[str, Any]) -> dict[str, Any]:
@@ -1460,6 +1478,8 @@ def _import_preview(p: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, An
         apply.append(_import_rules_step(p["rules"]))
     if carried:
         apply.append(_import_files_step(p["bundle_sha256"]))
+    if _import_applies_dashboard(p):
+        apply.append(_import_dashboard_step(p["dashboard_template"]))
     apply += [_import_cron_step(job) for job in _import_message_crons(p)]
     out["apply"] = apply
     return out
@@ -1473,6 +1493,7 @@ def import_undo(
     Its plain crons are deleted by the ids their creates answered, its carried
     files (and the script crons made with them) by the file step's own record,
     its rules are cleared (a rules file outlives the crewmate it belongs to),
+    the dashboard the card adopted is removed only at the version it adopted,
     and the crewmate is deleted last, so every earlier step still finds it.
     """
     roles = import_step_roles(p)[:applied_steps]
@@ -1483,6 +1504,13 @@ def import_undo(
             plan.append(step("DELETE", f"/api/crons/{_q(str(job_id))}"))
     name = (evidence[0].get("name") if evidence else None) or p["name"]
     slug = str((evidence[0].get("member_id") if evidence else "") or "")
+    if IMPORT_STEP_DASHBOARD in roles:
+        at = roles.index(IMPORT_STEP_DASHBOARD)
+        adopted = evidence[at].get("instance_version") if at < len(evidence) else None
+        if isinstance(adopted, int):  # no recorded version: the page cannot be proven ours
+            tid = str(p["dashboard_template"]).removeprefix("builtin:")
+            body = {"member": name, "template_id": tid, "instance_version": adopted}
+            plan.append(step("DELETE", f"/api/members/{_q(slug)}/dashboard/template", body))
     if IMPORT_STEP_FILES in roles:
         plan.append(step("DELETE", import_files_path(_q(slug)), {"member": name}))
     if IMPORT_STEP_RULES in roles:

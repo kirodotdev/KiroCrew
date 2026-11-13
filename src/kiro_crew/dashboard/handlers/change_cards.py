@@ -1371,6 +1371,15 @@ def _arm_card_undo_cron_guard(
 
         # Only an admitted import card step may write (or take back) carried files.
         request[REQ_CARD_IMPORT_FILES] = rec["id"]
+    if kind == catalog.KIND_CREWMATE_IMPORT and str(plan_step.get("path", "")).endswith(
+        "/dashboard/template"
+    ):
+        from kiro_crew.dashboard.handlers.member_import_dashboard import (
+            REQ_CARD_IMPORT_DASHBOARD,
+        )
+
+        # Only an admitted import card step may set the new Bot's dashboard.
+        request[REQ_CARD_IMPORT_DASHBOARD] = True
     if kind == catalog.KIND_FOLDER_STEERING:
         replaced = (rec.get("params") if op == catalog.OP_UNDO else rec.get("before")) or {}
         request[REQ_CARD_FOLDER_STEERING_EXPECT] = catalog.string_items(
