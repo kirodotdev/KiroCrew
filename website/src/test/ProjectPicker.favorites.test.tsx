@@ -35,6 +35,14 @@ describe('ProjectPicker favourites', () => {
     expect(screen.queryByRole('option', { name: /projA/ })).not.toBeInTheDocument()
   })
 
+  it('titles a favourite row with its folder name on a native Windows path', async () => {
+    vi.mocked(api.favoriteProjects).mockResolvedValue({ dirs: ['D:\\work\\proj'] })
+    open()
+    const list = await screen.findByRole('listbox', { name: 'Favorite projects' })
+    const row = (await within(list).findByText('proj')).closest('[role="option"]') as HTMLElement
+    expect(within(row).getByText('D:\\work\\proj')).toBeInTheDocument()
+  })
+
   it('falls back to Recent when there are no favourites', async () => {
     vi.mocked(api.favoriteProjects).mockResolvedValue({ dirs: [] })
     open()
