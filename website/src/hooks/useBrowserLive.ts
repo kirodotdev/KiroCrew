@@ -35,7 +35,7 @@ import { i18nT } from '../i18n/t'
 import { BROWSER_HANDBACK_CHAT_EVENT, type BrowserHandbackSaid } from '../api/client/browserLive'
 import type { BrowserInputEvent } from './useBrowserLive.input'
 import { FrameRing, decodeBrowserFrame, type DecodedBrowserFrame } from './useBrowserLive.frame'
-import { readQuickAsk, type QuickAsk, type QuickAskAction, type QuickAskAnswer, type QuickAskValues } from '../pages/chat/quickAsk/types'
+import { readQuickAsk, type QuickAsk, type QuickAskAction, type QuickAskAnswer, type QuickAskValues, type QuickAskVaultChoice } from '../pages/chat/quickAsk/types'
 
 export type BrowserLiveState = 'waiting_allow' | 'live' | 'in_control' | 'done' | 'login_needed' | 'error'
 export type BrowserKind = 'user_chrome' | 'edge' | 'kiro_chromium'
@@ -792,13 +792,14 @@ class BrowserLiveStore {
    * the record, not the error text, not a log. A refusal resolves with the
    * gateway's `error` code (or `send_failed`), never throws.
    */
-  async answerAsk(sessionKey: string, askId: string, action: QuickAskAction, values?: QuickAskValues): Promise<QuickAskAnswer> {
+  async answerAsk(sessionKey: string, askId: string, action: QuickAskAction, values?: QuickAskValues, vault?: QuickAskVaultChoice): Promise<QuickAskAnswer> {
     try {
-      const r = await this.writes.answer({ session_key: sessionKey, ask_id: askId, action, ...(values ? { values } : {}) })
-      const d = (r ?? {}) as { ok?: unknown; outcome?: unknown; error?: unknown }
+      const r = await this.writes.answer({ session_key: sessionKey, ask_id: askId, action, ...(values ? { values } : {}), ...(vault ?? {}) })
+      const d = (r ?? {}) as { ok?: unknown; outcome?: unknown; error?: unknown; saved?: unknown }
       return {
         ok: d.ok === true,
         ...(typeof d.outcome === 'string' ? { outcome: d.outcome } : {}),
+        ...(typeof d.saved === 'boolean' ? { saved: d.saved } : {}),
         ...(d.ok === true ? {} : { error: typeof d.error === 'string' && d.error ? d.error : 'send_failed' }),
       }
     } catch (e) {

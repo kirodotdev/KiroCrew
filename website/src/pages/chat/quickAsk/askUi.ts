@@ -22,6 +22,7 @@ class AskUi {
   private claimed = new Map<string, string>()
   private collapsed = new Set<string>()
   private answered = new Set<string>()
+  private unsaved = new Set<string>()
   private listeners = new Set<Listener>()
   private version = 0
 
@@ -62,8 +63,16 @@ class AskUi {
   markAnswered(askId: string): void { this.answered.add(askId); this.notify() }
   isAnswered(askId: string): boolean { return this.answered.has(askId) }
 
+  /**
+   * A sign-in the person asked to save landed, but the save did not: the sheet
+   * is gone with the ask, so the session's live surfaces say so until dismissed.
+   */
+  markUnsaved(sessionKey: string): void { this.unsaved.add(sessionKey); this.notify() }
+  dismissUnsaved(sessionKey: string): void { if (this.unsaved.delete(sessionKey)) this.notify() }
+  isUnsaved(sessionKey: string): boolean { return this.unsaved.has(sessionKey) }
+
   __resetForTests(): void {
-    this.surfaces.clear(); this.claimed.clear(); this.collapsed.clear(); this.answered.clear(); this.notify()
+    this.surfaces.clear(); this.claimed.clear(); this.collapsed.clear(); this.answered.clear(); this.unsaved.clear(); this.notify()
   }
 }
 
