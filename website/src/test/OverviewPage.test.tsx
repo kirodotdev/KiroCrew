@@ -318,6 +318,12 @@ describe('OverviewPage — whole-sentence lines', () => {
     expect(screen.getByText('Test Provider では使用量のトラッキングを利用できません。')).toBeInTheDocument()
   })
 
+  it('writes the plan share with the language percent sign', async () => {
+    await act(async () => { await i18next.changeLanguage('de') })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(await screen.findByText(line('SPAN', '42\u00a0%'))).toBeInTheDocument()
+  })
+
   it('keeps the WakaTime total styled inside its sentence', async () => {
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     const total = await screen.findByText('2h')
