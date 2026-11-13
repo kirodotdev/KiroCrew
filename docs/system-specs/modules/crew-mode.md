@@ -3369,7 +3369,12 @@ gateway), and
 `dashboard/waiting_changed` when `waiting_items` differs from the last list
 recorded, checked after each growth of that DM log (`emit.add_growth_listener`,
 coalesced for 0.4 s; only a session's first growth in that window walks the open
-slots to learn which thread it is, and a retired question looks its slot up by key), folded as `waiting` (`items`, `count`, `omitted`, `newest`). The list
+slots to learn which thread it is, and a retired question looks its slot up by key), folded as `waiting` (`items`, `count`, `omitted`, `newest`). A change card
+that expires writes nothing to that log, so each record arms one timer per thread
+for its soonest open card's `expires_at` that reads the list again as a retired
+question does (after 60 s instead when a card is past its expiry but still open, or
+the append that emptied the list has not committed); the timer does not survive a
+gateway restart. The list
 reads the change-card store, and the settle runs on the serving loop, so each
 settle first awaits `CardStore.warm()` (the file and vault-key read in a worker
 thread); when warming fails nothing is recorded, so the last complete list stands
