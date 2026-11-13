@@ -1950,10 +1950,12 @@ skips it without guessing:
 
 For an admitted store it allocates the `member_id` exactly as member creation
 does (`_allocate_member_id`: the alias slug, uuid-suffixed on collision with
-any `member_id` or `owner_member_id`; for a create, a live legacy agent's name slug
-and a retained DM binding's slug are reserved too, while the upgrade may claim a
-binding that names the migrating member or one it cannot read, since that binding
-is the member's own), then in one SQLite transaction creates
+any `member_id` or `owner_member_id`; for a create, a live legacy agent's name slug,
+a retained DM binding's slug and every `constants.WINDOWS_DEVICE_STEMS` stem (a
+`members/<id>` directory cannot carry a Windows device name) are reserved too, while
+the upgrade may claim a binding that names the migrating member or one it cannot
+read, since that binding is the member's own, and keeps a device-stem slug, since
+the live member's records are already keyed by it), then in one SQLite transaction creates
 each missing `MEMBER_SCHEMA_SQL` table, runs `record_meta.ensure_schema`,
 ensures `schema_version` carries the crew version, inserts the
 `member_database` row and makes the `schema_lineage` stamp `crew`; existing
