@@ -231,6 +231,18 @@ describe('the redirect address an org admin allows', () => {
     expect(within(tip).getByRole('alert')).toHaveTextContent('Copy failed. Select the redirect address and copy it yourself.')
     expect(within(tip).queryByText('Copied')).toBeNull()
     expect(within(tip).queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+    // Dismissed, focus returns to the copy button; a quick retry that fails
+    // again shows the notice again.
+    const dismiss = within(tip).getByRole('button', { name: /Dismiss/ })
+    dismiss.focus()
+    expect(document.activeElement).toBe(dismiss)
+    fireEvent.click(dismiss)
+    expect(within(tip).queryByRole('alert')).toBeNull()
+    expect(document.activeElement).toBe(within(tip).getByRole('button', { name: /Copy redirect address/ }))
+    await act(async () => {
+      fireEvent.click(within(tip).getByRole('button', { name: /Copy redirect address/ }))
+    })
+    expect(within(tip).getByRole('alert')).toHaveTextContent('Copy failed.')
   })
 
   it('stays open while one of its controls holds focus after the pointer leaves', async () => {
