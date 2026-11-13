@@ -20,6 +20,7 @@ import { applyCardUpdate } from '../api/cards'
 import type { Notification, TodoList, McpSessionReport } from '../types'
 import { i18nT } from '../i18n/t'
 import { CONFIG_PENDING_QUERY_KEY } from '../pages/settings/configPendingQuery'
+import { MCP_GATEWAY_STATUS_QUERY_KEY } from '../pages/overview/mcpShareRefusedQuery'
 import { teamRoots } from '../pages/chat/command-center/model'
 import {
   applySessionProjection,
@@ -233,6 +234,9 @@ export function useWebSocket() {
       // `config_pending_changed` is one-shot: a change while the socket was down
       // is only seen by re-reading.
       void queryClient.invalidateQueries({ queryKey: CONFIG_PENDING_QUERY_KEY }, { cancelRefetch: false })
+      // A refused share is recorded when the gateway starts, which this tab sees
+      // as a new connection: the waiting-share count on Customize re-reads it here.
+      void queryClient.invalidateQueries({ queryKey: MCP_GATEWAY_STATUS_QUERY_KEY }, { cancelRefetch: false })
       // The Context tab's usage revisions belong to the previous process too.
       resetContextTraceRefresh()
       // Cache auto-speak preference

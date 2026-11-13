@@ -15,6 +15,7 @@ import { legacyConnectionsTarget } from './connections/connectionsLinks'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
 import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
 import KiroPowersTab from './overview/KiroPowersTab'
+import { useMcpShareRefusedCount } from './overview/mcpShareRefusedQuery'
 import { ContentSkeleton } from '../components/ui'
 
 // The custom-agent editor is a drill-in most sessions never open; its chunk is
@@ -52,6 +53,9 @@ export default function CapabilitiesPage() {
   })
   const pendingList = pendingSkills?.pending
   const pendingSkillCount = Array.isArray(pendingList) ? pendingList.length : 0
+  // Shared servers waiting for an approval; the Customize rail row carries the
+  // same count (shell/nav/railBadges.ts).
+  const mcpWaitingCount = useMcpShareRefusedCount()
   // A failed read leaves the count at 0, which would read as "nothing is
   // waiting". The rail footer says the check failed instead, from every tab.
   const pendingSkillsNotice = pendingSkillsError ? (
@@ -85,7 +89,7 @@ export default function CapabilitiesPage() {
       { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent, badge: { count: pendingSkillCount, label: t('pages.capabilitiesPage.skills_awaiting_review', { count: pendingSkillCount }) } },
       // MCP Servers sits beside Skills: both are what the agent can use.
       // `view` (Sharing) is a drill-in, so a rail pick opens the Servers view.
-      { key: 'mcp-servers', label: t('nav.mcp_servers'), icon: <Server size={16} />, description: t('pages.capabilitiesPage.mcp_servers_description'), group: groupAgent, drillInParams: ['view'] },
+      { key: 'mcp-servers', label: t('nav.mcp_servers'), icon: <Server size={16} />, description: t('pages.capabilitiesPage.mcp_servers_description'), group: groupAgent, drillInParams: ['view'], badge: { count: mcpWaitingCount, label: t('pages.capabilitiesPage.mcp_servers_waiting', { count: mcpWaitingCount }) } },
       // Powers and Agent Plugins installed for Kiro, listed read-only: none is
       // loaded yet, and each row says why (agent-plugins spec §6).
       { key: 'powers', label: t('pages.capabilitiesPage.powers_label'), icon: <Puzzle size={16} />, description: t('pages.capabilitiesPage.powers_description'), group: groupAgent },
@@ -105,7 +109,7 @@ export default function CapabilitiesPage() {
     // `t` is a real dependency, not decoration: it subscribes to the language, so
     // a memo keyed only on `provider` would keep whichever language's labels it
     // first computed and the rail would stay in the old language after a switch.
-  }, [provider, t, pendingSkillCount])
+  }, [provider, t, pendingSkillCount, mcpWaitingCount])
 
   // Before the layout mounts: it would otherwise remember a tab that is gone.
   if (legacyTarget) return <Navigate to={legacyTarget} replace />

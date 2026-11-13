@@ -148,6 +148,47 @@ describe('which refusal reads as a new launch', () => {
     expect(changedHintKey(changed)).toBe(KEY(hint))
   })
 
+  it('reads one program listed more often, with other env values, as an env change', () => {
+    // One line per launch: the same program before and after, only its PATH moved.
+    const line = ['/opt/a', '--one']
+    const moved = refusal({
+      approved_commands: [line, line],
+      approved_envs: [['PATH=#1111'], ['PATH=#2222']],
+      commands: [line, line, line],
+      envs: [['PATH=#3333'], ['PATH=#4444'], ['PATH=#2222']],
+    })
+    expect(stateLabelKey('needs_reapproval', moved)).toBe(KEY('state_needs_reapproval'))
+    expect(changedHintKey(moved)).toBe(KEY('command_changed_hint_settings'))
+    expect(M('command_changed_hint_settings')).toBe(
+      'It runs the same program. Only its environment variables changed. Approve the update to share it again.',
+    )
+  })
+
+  it('keeps "command changed" when the repeated line carries a redaction tag', () => {
+    // Two different values read as the same tag, so equal lines prove nothing.
+    const line = ['/opt/a', '--token=[REDACTED: credential]']
+    const moved = refusal({
+      approved_commands: [line, line],
+      approved_envs: [['PATH=#1111'], ['PATH=#2222']],
+      commands: [line, line, line],
+      envs: [['PATH=#3333'], ['PATH=#4444'], ['PATH=#2222']],
+    })
+    expect(changedHintKey(moved)).toBe(KEY('command_changed_hint_command'))
+  })
+
+  it('does not claim the same program for an unchanged line that carries a redaction tag', () => {
+    // The lists are equal as drawn, but the tag hides the value, so the env line's
+    // "same program" would be a claim the display cannot support.
+    const line = ['/opt/a', '--token=[REDACTED: credential]']
+    const moved = refusal({
+      approved_commands: [line],
+      approved_envs: [['PATH=#1111']],
+      commands: [line],
+      envs: [['PATH=#2222']],
+    })
+    expect(changedHintKey(moved)).toBe(KEY('command_changed_hint'))
+  })
+
   it.each<[string, Partial<LaunchRefusal>]>([
     ['a partial refusal', { complete: false }],
     ['a refusal without an identity', { expected_launch: undefined }],
