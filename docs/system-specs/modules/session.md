@@ -3038,6 +3038,39 @@ is the host's own best-effort abort (queue drain, injection retry, run
 teardown), not a person pressing Stop, and must not suppress a continuation
 the way a Stop does.
 
+### A Stop during turn preparation
+
+A dashboard turn can wait a long time before it opens its provider stream: in
+fair admission, a cold session start, its context build. A Stop or Interrupt
+pressed then gets `"idle"` from `stop_turn()` because no provider turn exists
+yet. The handler then ends that runner itself
+(`turn_stop._cancel_preparing_runner`). The exit guard names its `_TurnExit`
+on the slot (`slot._preparing_turn`) for the runner's whole turn, with the
+task running the guard (`_TurnExit.runner`), and compare-and-clears it; it
+leaves it unset for an agent-started turn, whose native cycle only its own
+stream can cancel. The handler reads `slot._preparing_turn` before it awaits
+`stop_turn()`, and cancels the record's own runner task only if that record is
+still the slot's, the task is not done, and the record has not opened its
+stream (`reached_provider`), recorded no outcome, is not handed off, and runs
+no local command (Stop leaves a local command as it was). It cancels
+`_TurnExit.runner`, not `slot.task`: a bounded turn
+(`turn_dispatch._bounded_turn`) runs the guard in an inner task under
+`asyncio.shield`, and cancelling that task also ends fair admission's own inner
+task below it, so the outer `slot.task` ends with it. The handler clears
+`slot._preparing_turn` before the cancel, so a second press cannot cancel a
+runner already unwinding and cut short its admission settle or its
+partial-reply write. The cancelled runner's exit guard runs its tail, which
+hands the queue off as at the end of any stopped turn, so a send queued during
+preparation, or the card an Interrupt chose, starts once. Without the cancel a
+second press found the posture back at idle and could not escalate, and the
+slot kept reading running until preparation finished. The dispatch gate's
+`_stop_pressed()` check stays as the backstop for a Stop that lands at the
+stream edge. An `"idle"` answer for a runner that has already opened its stream
+(the provider finished, the slot has not settled) cancels nothing and answers
+`{"ok": true, "info": "no active turn"}`. A dashboard send still waiting in
+fair admission before its runner starts has no record yet and is not covered
+(#36433). Tests: `test/test_stop_during_turn_preparation.py`.
+
 ### Cancelled-turn context restore
 
 `_Session.prev_turn_cancelled` is a one-shot flag. `stop_turn()`

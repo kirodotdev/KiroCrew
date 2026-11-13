@@ -196,6 +196,7 @@ class _ChatSlot:
         "_guarded_history_writes",
         "_last_turn_auth_required",
         "_cycle_reached_provider",
+        "_preparing_turn",
         "_slack_linked",
         "_slack_channel",
         "_slack_thread_ts",
@@ -584,6 +585,7 @@ class _ChatSlot:
     _stop_escalated_card_id: str | None
     _last_turn_auth_required: bool
     _cycle_reached_provider: bool
+    _preparing_turn: Any
     _subagent_delivery_pending: dict[str, list[SubagentDelivery]]
     _pending_context: list[dict[str, Any]]
     _inflight_merge_contexts: list[dict[str, Any]]

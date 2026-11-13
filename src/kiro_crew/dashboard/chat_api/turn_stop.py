@@ -868,6 +868,7 @@ async def stop_slot_turn(
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
+    preparing = getattr(slot, "_preparing_turn", None)
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -890,6 +891,9 @@ async def stop_slot_turn(
     # would idle its stop, and its next press would start over instead of
     # escalating to the hard kill.
     _owns_posture = slot._stop_generation == stop_generation
+    if outcome == "idle" and _cancel_preparing_runner(slot, preparing):
+        # The runner had no provider turn yet: this press stopped it.
+        _idle_running = False
     if outcome == "idle" and slot._stop_event_id and _owns_posture:
         _resolve_stop_event(slot, "soft")
         slot._stop_state = "idle"
@@ -923,6 +927,41 @@ async def stop_slot_turn(
         # Naming it keeps the reply from reading as "stopped a running turn".
         return {"ok": True, "info": "no active turn"}
     return {"ok": True}
+
+
+def _cancel_preparing_runner(slot: "_ChatSlot", preparing: Any) -> bool:
+    """End the runner a Stop found still preparing its turn; whether it did.
+
+    ``stop_turn`` answers ``"idle"`` while a runner is still in fair admission,
+    a cold start or its context build: no provider turn exists to cancel. The
+    runner's own dispatch gate would refuse it once preparation ends, but until
+    then it holds the slot and a second press finds nothing to escalate, so a
+    wedged preparation could not be stopped. *preparing* is the slot's
+    ``_preparing_turn`` record read before the press awaited. Only while it is
+    still current, its own runner task (``preparing.runner``, the task running
+    the exit guard, which a bounded turn keeps apart from ``slot.task``) is not
+    done, and it has opened no provider stream (``reached_provider``), recorded
+    no outcome, is not handed off and runs no local command, is that task
+    cancelled. The record is cleared first, so a second press finds nothing to
+    cancel while the runner unwinds. Its exit guard runs the tail, which hands
+    the queue off.
+    """
+    runner = getattr(preparing, "runner", None)
+    if (
+        preparing is None
+        or getattr(slot, "_preparing_turn", None) is not preparing
+        or runner is None
+        or runner.done()
+        or preparing.reached_provider
+        or preparing.outcome is not None
+        or preparing.handed_off
+        or preparing.local_command
+    ):
+        return False
+    logger.info("Stop: ending slot %s's turn before it reached the provider", slot.key)
+    slot._preparing_turn = None
+    runner.cancel()
+    return True
 
 
 def _compaction_in_flight(state: DashboardState, cancel_key: str) -> bool:
@@ -1394,6 +1433,7 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
     # pending ask_question card.
     _unblock_pending_waits(state, slot)
 
+    preparing = getattr(slot, "_preparing_turn", None)
     outcome = await state.sessions.stop_turn(
         cancel_key,
         force=False,
@@ -1401,6 +1441,9 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
         on_soft=_on_soft,
         on_hard=_on_hard,
     )
+    if outcome == "idle":
+        # Its tail drains the promoted card, as at the end of any stopped turn.
+        _cancel_preparing_runner(slot, preparing)
     # Same ownership rule as ``stop_slot_turn``: a later press that claimed a
     # new generation during the await owns the card and the posture.
     _owns_posture = slot._stop_generation == claim_generation

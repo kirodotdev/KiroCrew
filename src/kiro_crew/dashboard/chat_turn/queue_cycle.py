@@ -646,7 +646,9 @@ class _TurnExit:
     the tail needs: its depth, whether a provider saw it, the local slash
     command it is running, and -- at the top of the ``finally``, before anything
     there can be cancelled -- its outcome. The guard runs :func:`_end_turn_tail`
-    from it unless the turn already did."""
+    from it unless the turn already did. The guard also names it on the slot
+    (``_preparing_turn``) for the turn's length, which is how a Stop finds a
+    runner still preparing its turn and the task to cancel."""
 
     __slots__ = (
         "actor",
@@ -656,6 +658,7 @@ class _TurnExit:
         "outcome",
         "reached_provider",
         "responsive_owner",
+        "runner",
         "stop_reason",
         "turn_id",
     )
@@ -673,6 +676,10 @@ class _TurnExit:
         self.responsive_owner: Any = None
         # The terminal event's stop reason; None while the turn reached none.
         self.stop_reason: str | None = None
+        # The task running the exit guard, the one a Stop cancels
+        # (``turn_stop._cancel_preparing_runner``). Not always ``slot.task``: a
+        # bounded turn runs the guard in an inner task under ``asyncio.shield``.
+        self.runner: asyncio.Task[Any] | None = None
 
 
 def _end_browser_live_turn(slot: _ChatSlot) -> None:

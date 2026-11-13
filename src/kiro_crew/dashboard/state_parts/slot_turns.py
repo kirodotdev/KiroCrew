@@ -465,6 +465,13 @@ def init_turns_fields(self: _ChatSlot) -> None:
     # and summarize, however many local commands or cancelled replays it
     # also ran.
     self._cycle_reached_provider = False
+    # The exit record (``_TurnExit``) of the dashboard runner, set by its exit
+    # guard for the runner's whole turn and compare-and-cleared there, so an
+    # older runner cannot clear a successor's. A Stop that finds no provider
+    # turn to cancel reads the record's ``reached_provider`` to tell a turn
+    # still preparing from a dispatched one, and ends only the former
+    # (``turn_stop._cancel_preparing_runner``), clearing the record first.
+    self._preparing_turn = None
     # Queued sub-agent completions whose delivery tombstone is still owed:
     # queue-id -> the agent ids whose ``result.txt`` that row promises. A
     # completion routed into a BUSY slot is queued, so the parent's context

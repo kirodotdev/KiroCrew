@@ -461,6 +461,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_crew_log_previous_sid": ("value", "''"),
     "_crew_log_previous_undecided": ("value", "None"),
     "_cycle_reached_provider": ("value", "False"),
+    "_preparing_turn": ("value", "None"),
     "_dashboard_card_exempt": ("value", "False"),
     "_dashboard_card_identity": ("type", "builtins.str"),
     "_deferred_model_switch_key": ("value", "''"),
