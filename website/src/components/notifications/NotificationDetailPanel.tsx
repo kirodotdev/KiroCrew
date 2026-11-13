@@ -20,7 +20,6 @@ import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } f
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
 import { buildNotificationPrompt, isCutCronResult, wholeCronResult } from './notificationHandoff.prompt'
-import { cronJobsQuery } from '../../api/cronJobsQuery'
 import { isMemberThreadSlot } from '../../hooks/unreadOnAttention'
 
 import { i18nT } from '../../i18n/t'
@@ -140,10 +139,12 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
   // gateway is down: the composer it lands in could not send.
   const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
   // A cron note whose body the store cut hands over the job's whole result,
-  // read ahead so the click stays synchronous inside the leave guard.
-  const { data: cronJobs } = useQuery({ ...cronJobsQuery, enabled: isCutCronResult(n) })
+  // read ahead so the click stays synchronous inside the leave guard. The job's
+  // own read, since the list carries only a preview of it.
+  const cronJobRead = useQuery({ queryKey: ['crons', 'job', n.job_id], queryFn: () => api.cron(n.job_id!), enabled: isCutCronResult(n) })
+  const cronJob = cronJobRead.data
   const fixWithCrew = () => leave(() => {
-    const whole = wholeCronResult(n, cronJobs?.find(j => j.id === n.job_id))
+    const whole = wholeCronResult(n, cronJob)
     const prompt = buildNotificationPrompt(n, i18nT('components.notifications.notificationDetailPanel.fix_with_crew_ask'), whole)
     // `leaveGranted`: the guard above already asked the host page.
     if (sendErrorToChat(prompt, { leaveGranted: true })) onClose()
@@ -295,9 +296,24 @@ export default function NotificationDetailPanel({ n, onClose, onLeave }: { n: No
 
         {/* Approvals are excluded: Approve / Reject below already are the response. */}
         {n.kind !== 'approval' && gatewayConnected && (
-          <div className="flex gap-3 mt-4">
-            <button type="button" className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" data-testid="notif-fix-with-crew" onClick={fixWithCrew}><Sparkles className="lucide-inline" aria-hidden="true" /> {i18nT('components.notifications.notificationDetailPanel.fix_with_crew')}</button>
-          </div>
+          <>
+            <div className="flex gap-3 mt-4">
+              <button type="button" className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" data-testid="notif-fix-with-crew" onClick={fixWithCrew}><Sparkles className="lucide-inline" aria-hidden="true" /> {i18nT('components.notifications.notificationDetailPanel.fix_with_crew')}</button>
+            </div>
+            {/* No hand-off: an OVERLAY that may sit over an unsaved draft (see
+                `handoffNotice`). Only on a cut note whose click sends the cut
+                text: the job's read is cached across notes and pages. */}
+            <ErrorNotice
+              variant="inline"
+              className="mt-2"
+              testId="notif-whole-result-error"
+              message={isCutCronResult(n) && cronJobRead.isError && wholeCronResult(n, cronJob) === undefined
+                ? i18nT('components.notifications.notificationDetailPanel.could_not_load_the_whole_result_button_sends_the_cut_text', {
+                  button: i18nT('components.notifications.notificationDetailPanel.fix_with_crew'),
+                })
+                : null}
+            />
+          </>
         )}
 
         {/* Kind-specific actions. A crew member's approval is decided on its

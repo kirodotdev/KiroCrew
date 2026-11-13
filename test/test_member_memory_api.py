@@ -1536,6 +1536,7 @@ async def test_the_dashboard_owner_still_sees_and_controls_every_run(env):
         "api_cron_history",
         "api_cron_history_detail",
         "api_cron_history_all",
+        "api_cron_get",
         "api_cron_script_source",
         "api_cron_secret_grant",
         "api_crons",

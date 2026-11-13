@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
+import { triggerCronRefresh } from '../store/dashboardSlice'
 import SchedulePage from '../pages/SchedulePage'
 import { SCHEDULE_PRESETS, PRESET_CATEGORIES } from '../utils/schedulePresets'
 import type { CronJob } from '../types'
@@ -23,6 +24,7 @@ const mkJob = (overrides: Partial<CronJob> = {}): CronJob => ({
 vi.mock('../api/client', () => ({
   api: {
     crons: vi.fn(),
+    cron: vi.fn(),
     cronFolders: vi.fn().mockResolvedValue([]),
     deleteCron: vi.fn(),
     batchDeleteCron: vi.fn(),
@@ -756,6 +758,64 @@ describe('SchedulePage failed-job error surface', () => {
     fireEvent.click(await screen.findByText('Nightly report'))
 
     expect(await screen.findByText('12 files copied')).toBeInTheDocument()
+  })
+
+  it('the detail dialog shows the whole last output, read for the job, not the list preview', async () => {
+    // GET /api/crons cuts a long result to a preview; GET /api/crons/{id} carries it whole.
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ last_status: 'ok', last_result: 'first lines' })],
+    })
+    vi.mocked(api).cron.mockResolvedValueOnce(mkJob({ last_status: 'ok', last_result: 'first lines and the rest' }))
+
+    renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    expect(await screen.findByText('first lines and the rest')).toBeInTheDocument()
+    expect(api.cron).toHaveBeenCalledWith('job-1')
+  })
+
+  it('a failed read of the whole text says so and keeps the preview', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ last_status: 'ok', last_result: 'first lines' })],
+    })
+    vi.mocked(api).cron.mockRejectedValueOnce(new Error('job not found'))
+
+    const { queryClient } = renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+
+    const notice = await screen.findByTestId('schedule-job-full-text-error')
+    expect(notice).toHaveTextContent("Couldn't load the full text of the last run, so the text below may be cut short.")
+    expect(notice).not.toHaveTextContent('job not found')
+    expect(screen.getByTestId('schedule-job-last-output')).toHaveTextContent('first lines')
+
+    vi.mocked(api).cron.mockResolvedValueOnce(mkJob({ last_status: 'ok', last_result: 'first lines and the rest' }))
+    await act(() => queryClient.invalidateQueries({ queryKey: ['crons'] }))
+    expect(await screen.findByText('first lines and the rest')).toBeInTheDocument()
+    expect(screen.queryByTestId('schedule-job-full-text-error')).not.toBeInTheDocument()
+  })
+
+  it("a failed re-read after a new run shows that run's output, not the earlier run kept in the cache", async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ last_status: 'error', last_error: 'boom', last_run_ts: 100 })],
+    })
+    vi.mocked(api).cron.mockResolvedValueOnce(mkJob({ last_status: 'error', last_error: 'boom, whole traceback', last_run_ts: 100 }))
+    const { store, queryClient } = renderWithProviders(<SchedulePage />)
+    fireEvent.click(await screen.findByText('Nightly report'))
+    await waitFor(() => expect(screen.getByTestId('schedule-job-last-error')).toHaveTextContent('boom, whole traceback'))
+
+    vi.mocked(api).crons.mockResolvedValue({
+      jobs: [mkJob({ last_status: 'ok', last_result: 'ran fine', last_run_ts: 200 })],
+    })
+    vi.mocked(api).cron.mockRejectedValueOnce(new Error('read failed'))
+    act(() => { store.dispatch(triggerCronRefresh()) })
+    await act(() => queryClient.invalidateQueries({ queryKey: ['crons'] }))
+
+    await screen.findByTestId('schedule-job-full-text-error')
+    expect(screen.getByTestId('schedule-job-last-output')).toHaveTextContent('ran fine')
+    expect(screen.queryByTestId('schedule-job-last-error')).not.toBeInTheDocument()
   })
 
   it('the failed-run traceback surface is not clipped to the 200px sliver', async () => {
