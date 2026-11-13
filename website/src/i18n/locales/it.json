@@ -9766,8 +9766,9 @@
       "assign_tags": "Assegna tag",
       "close": "Chiudi",
       "close_tag_picker": "Chiudi il selettore di tag",
-      "new_tag": "Nuovo tag…",
-      "no_tags_yet_create_one_below": "Ancora nessun tag. Creane uno qui sotto.",
+      "create_tag_named": "Crea «{{name}}»",
+      "find_or_create_tag": "Cerca o crea un tag…",
+      "no_tags_yet_type_a_name": "Ancora nessun tag. Scrivi un nome per crearne uno.",
       "tags": "Tag"
     },
     "snipOverlay": {

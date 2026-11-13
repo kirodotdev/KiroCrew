@@ -9302,8 +9302,9 @@
       "assign_tags": "태그 지정",
       "close": "닫기",
       "close_tag_picker": "태그 선택기 닫기",
-      "new_tag": "새 태그…",
-      "no_tags_yet_create_one_below": "아직 태그가 없습니다. 아래에서 만드세요.",
+      "create_tag_named": "‘{{name}}’ 만들기",
+      "find_or_create_tag": "태그 검색 또는 만들기…",
+      "no_tags_yet_type_a_name": "아직 태그가 없습니다. 이름을 입력해 만드세요.",
       "tags": "태그"
     },
     "snipOverlay": {

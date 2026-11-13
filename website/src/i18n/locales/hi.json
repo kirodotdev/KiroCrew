@@ -9534,8 +9534,9 @@
       "assign_tags": "टैग असाइन करें",
       "close": "बंद करें",
       "close_tag_picker": "टैग पिकर बंद करें",
-      "new_tag": "नया टैग…",
-      "no_tags_yet_create_one_below": "अभी कोई टैग नहीं। नीचे एक बनाएँ।",
+      "create_tag_named": "“{{name}}” बनाओ",
+      "find_or_create_tag": "टैग खोजो या बनाओ…",
+      "no_tags_yet_type_a_name": "अभी कोई टैग नहीं। नया बनाने के लिए नाम लिखो।",
       "tags": "टैग"
     },
     "snipOverlay": {

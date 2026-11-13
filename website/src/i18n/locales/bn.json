@@ -9534,8 +9534,9 @@
       "assign_tags": "ট্যাগ নির্ধারণ করুন",
       "close": "বন্ধ করুন",
       "close_tag_picker": "ট্যাগ পিকার বন্ধ করুন",
-      "new_tag": "নতুন ট্যাগ…",
-      "no_tags_yet_create_one_below": "এখনও কোনো ট্যাগ নেই। নিচে একটি তৈরি করুন।",
+      "create_tag_named": "“{{name}}” তৈরি করো",
+      "find_or_create_tag": "ট্যাগ খোঁজো বা তৈরি করো…",
+      "no_tags_yet_type_a_name": "এখনও কোনো ট্যাগ নেই। একটি তৈরি করতে নাম লেখো।",
       "tags": "ট্যাগ"
     },
     "snipOverlay": {

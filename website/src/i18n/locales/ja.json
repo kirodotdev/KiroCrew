@@ -9302,8 +9302,9 @@
       "assign_tags": "タグを割り当てる",
       "close": "閉じる",
       "close_tag_picker": "タグピッカーを閉じる",
-      "new_tag": "新しいタグ…",
-      "no_tags_yet_create_one_below": "まだタグがありません。下記で作成してください。",
+      "create_tag_named": "「{{name}}」を作成",
+      "find_or_create_tag": "タグを検索または作成…",
+      "no_tags_yet_type_a_name": "まだタグがありません。名前を入力して作成してください。",
       "tags": "タグ"
     },
     "snipOverlay": {

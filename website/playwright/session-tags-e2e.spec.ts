@@ -740,7 +740,7 @@ test.describe('E2E: sidebar tag columns', () => {
     await page.getByRole('menuitem', { name: /Tags/ }).click()
     const picker = page.locator('[data-testid="slot-tag-picker"]')
     await expect(picker).toBeVisible()
-    await picker.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+    await picker.getByRole('option', { name: /Review/ }).click()
     await expect.poll(async () => {
       const updated = await (await request.get('/api/chat/slots')).json()
       return updated.find((x: { key: string }) => x.key === s.key)?.tags ?? []
@@ -818,7 +818,7 @@ test.describe('E2E: sidebar tag columns', () => {
     await expect(menu).toBeVisible()
     await menu.getByRole('menuitem', { name: /Tags/ }).click()
     await expect(picker).toBeVisible()
-    await picker.getByRole('menuitemcheckbox', { name: /Review/ }).click()
+    await picker.getByRole('option', { name: /Review/ }).click()
     await expect.poll(async () => {
       const slots = await (await request.get('/api/chat/slots')).json()
       return slots.find((x: { key: string }) => x.key === b.key)?.tags ?? []

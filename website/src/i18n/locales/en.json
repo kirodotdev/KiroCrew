@@ -5961,8 +5961,9 @@
       "assign_tags": "Assign tags",
       "close": "Close",
       "close_tag_picker": "Close tag picker",
-      "new_tag": "New tag…",
-      "no_tags_yet_create_one_below": "No tags yet. Create one below.",
+      "create_tag_named": "Create “{{name}}”",
+      "find_or_create_tag": "Find or create a tag…",
+      "no_tags_yet_type_a_name": "No tags yet. Type a name to create one.",
       "tags": "Tags"
     },
     "snipOverlay": {

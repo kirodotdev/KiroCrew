@@ -9766,8 +9766,9 @@
       "assign_tags": "Asignar etiquetas",
       "close": "Cerrar",
       "close_tag_picker": "Cerrar el selector de etiquetas",
-      "new_tag": "Nueva etiqueta…",
-      "no_tags_yet_create_one_below": "Aún no hay etiquetas. Crea una abajo.",
+      "create_tag_named": "Crear “{{name}}”",
+      "find_or_create_tag": "Busca o crea una etiqueta…",
+      "no_tags_yet_type_a_name": "Aún no hay etiquetas. Escribe un nombre para crear una.",
       "tags": "Etiquetas"
     },
     "snipOverlay": {
