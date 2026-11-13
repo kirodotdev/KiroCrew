@@ -313,8 +313,17 @@ few seconds), every 15 seconds while a listed Crew isn't online, and about once
 a minute otherwise, and it never carries an access token. The control plane can
 itself take a minute or two after a host connects to report its tunnel
 connected, so a Crew can read offline for that long whatever the dashboard
-does. The group appears only once your account has at least
-one Team Crew, or when it has a sign-in or load problem to show.
+does. The group appears once your account has at least one Team Crew, when it
+has a sign-in or load problem to show, or when the gateway names the account the
+list was read for.
+
+Under its heading the group shows one muted line, **Signed in with** and the
+account kind, such as Builder ID. For IAM Identity Center it adds the portal host,
+so a sign-in to the wrong portal is visible. The line wraps rather than cutting
+the host off. It shows only when the sign-in is the same before and after the list
+read, so it never names an account that changed during the read. With such an
+account and no Team Crews, the group still shows, with that line and the empty
+text.
 
 **Settings → Remote Crew** shows the same list in a **Shared Crews** card, read
 from the same request, so the two can't disagree. Unlike the switcher group, it
