@@ -48,7 +48,7 @@ const ACTION_CREATORS = [
   'sideOptimisticRollback', 'sideReleaseConsumed', 'sideRestore', 'sideRestoreReading', 'sideResync', 'sideSendStatus', 'sseActivityEvent', 'sseAutomation',
   'sseChatMessage', 'sseChatMessagePatchByTs', 'sseChatMessageUpdate', 'sseContextUsage',
   'sseMcpAppRender', 'sseSideQueue', 'sseSideResult', 'sseSubagentBatchChunks',
-  'sseSubagentBatchUpdate', 'sseSubagentDone', 'sseSubagentPending', 'sseSubagentQueued',
+  'sseSubagentBatchUpdate', 'sseSubagentDone', 'sseSubagentLabel', 'sseSubagentPending', 'sseSubagentQueued',
   'sseSubagentRetrying', 'sseSubagentSnapshot', 'sseSubagentSpawn', 'sseSubagentStalled',
   'sseSubagentTool', 'sseThinkingChunk', 'sseToolActivity', 'sseToolResult', 'sseWorkflowEvent',
   'stagePendingSend', 'stageToMainComposer', 'startLocalTurn', 'startServerTurn', 'subagentReplayDone', 'syncSlotRunningFromServer', 'toggleActivity', 'truncateAfterIndex',
