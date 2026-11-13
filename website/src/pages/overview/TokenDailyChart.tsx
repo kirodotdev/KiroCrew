@@ -94,6 +94,33 @@ function FilterSelect({
   )
 }
 
+/** One day's figures: the tooltip's content, and the screen-reader list's. */
+function DayFigures({
+  d,
+  providerSel,
+  modelSel,
+}: {
+  d: TokenBucket & { date: string }
+  providerSel: string
+  modelSel: string
+}) {
+  return (
+    <>
+      <div className="font-medium">{d.date}</div>
+      <div>{i18nT('pages.overview.tokenDailyChart.in_out', { input: fmtCompact(d.input), output: fmtCompact(d.output) })}</div>
+      {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtCompact(d.cacheRead)}</div>}
+      {d.cacheCreate > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_create')} {fmtCompact(d.cacheCreate)}</div>}
+      {d.costUsd > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cost')} {formatCost(d.costUsd)}</div>}
+      {(providerSel !== ALL || modelSel !== ALL) && (
+        <div className="mt-1 pt-1 border-t border-border text-muted">
+          {providerSel !== ALL && <div>{i18nT('pages.overview.tokenDailyChart.provider_2')} {providerSel}</div>}
+          {modelSel !== ALL && <div>{i18nT('pages.overview.tokenDailyChart.model_2')} {modelSel}</div>}
+        </div>
+      )}
+    </>
+  )
+}
+
 /**
  * Stacked bar chart of daily token usage with cascading provider/model
  * filters. The model dropdown narrows to only models that have actually
@@ -195,24 +222,25 @@ export function TokenDailyChart({
               {/* Tooltip -- positioned below top to avoid overflow clipping. It keeps an
                 *  UNGATED `:hover` so a tap on a touch screen still shows the
                 *  day's figures: the bar has no click action for iOS to drop,
-                *  and this tooltip is the only place those numbers appear. */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden [.group:hover_&]:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
-                <div className="font-medium">{d.date}</div>
-                <div>{i18nT('pages.overview.tokenDailyChart.in_out', { input: fmtCompact(d.input), output: fmtCompact(d.output) })}</div>
-                {d.cacheRead > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_read')} {fmtCompact(d.cacheRead)}</div>}
-                {d.cacheCreate > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cache_create')} {fmtCompact(d.cacheCreate)}</div>}
-                {d.costUsd > 0 && <div>{i18nT('pages.overview.tokenDailyChart.cost')} {formatCost(d.costUsd)}</div>}
-                {(providerSel !== ALL || effectiveModel !== ALL) && (
-                  <div className="mt-1 pt-1 border-t border-border text-muted">
-                    {providerSel !== ALL && <div>{i18nT('pages.overview.tokenDailyChart.provider_2')} {providerSel}</div>}
-                    {effectiveModel !== ALL && <div>{i18nT('pages.overview.tokenDailyChart.model_2')} {effectiveModel}</div>}
-                  </div>
-                )}
+                *  and this tooltip is the only place those numbers appear on
+                *  screen. Hidden from assistive technology, which reads the
+                *  same figures from the list after the chart. */}
+              <div aria-hidden="true" className="absolute top-0 left-1/2 -translate-x-1/2 mt-1 hidden [.group:hover_&]:block bg-bg-elevated border border-border rounded px-2 py-1 text-[11px] whitespace-nowrap z-50 shadow-lg pointer-events-none">
+                <DayFigures d={d} providerSel={providerSel} modelSel={effectiveModel} />
               </div>
             </div>
           )
         })}
       </div>
+      {/* The bars are drawn, and the tooltip shows only under a pointer, so
+          without this list a screen reader learns nothing about any day. */}
+      <ul className="sr-only">
+        {recent.map(d => (
+          <li key={d.date}>
+            <DayFigures d={d} providerSel={providerSel} modelSel={effectiveModel} />
+          </li>
+        ))}
+      </ul>
       {/* X-axis labels */}
       <div className="flex gap-1 text-[10px] text-muted">
         {recent.map((d, i) => (
