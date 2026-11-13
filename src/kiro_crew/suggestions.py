@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError
 from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.chat_title import _ui_language
 from kiro_crew.history import TranscriptWithheld, is_incognito_transcript
@@ -278,6 +279,11 @@ async def generate_suggestions(state: DashboardState, *, ui_language: str) -> li
     # rather than surfacing it.
     try:
         text = await run_bg_oneliner(state.sessions, prompt, sel_source="suggestions", timeout=60)
+    except AcpError as exc:
+        # The backend's own failure (a missing sign-in, say) is in its message;
+        # the stack is the ACP layer's and adds nothing to the gateway log.
+        logger.warning("Suggestions generation failed: %s", exc)
+        return []
     except Exception:
         logger.warning("Suggestions generation failed", exc_info=True)
         return []

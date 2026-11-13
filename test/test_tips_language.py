@@ -6,12 +6,14 @@ carries that tag. With no usable tag the prompt carries no language line.
 
 from __future__ import annotations
 
+import logging
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 from kiro_crew import tips
+from kiro_crew.acp.client import AcpError
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.tips_pool import CatalogEntry
 
@@ -103,3 +105,46 @@ async def test_ui_language_is_read_off_the_event_loop(monkeypatch) -> None:
     await _generated_prompt(monkeypatch)
 
     assert load_threads and threading.get_ident() not in load_threads
+
+
+# The engine's own words on a signed-out host, passed through unclassified.
+_SIGNED_OUT = "Sign in to Kiro to send a prompt."
+
+
+async def _tips_on_failure(monkeypatch: pytest.MonkeyPatch, error: Exception) -> tuple[list, list]:
+    _configure(monkeypatch, None)
+
+    async def _fails(_sessions, _prompt, **_kw):
+        raise error
+
+    monkeypatch.setattr(tips, "_build_context", lambda _state: _CONTEXT)
+    monkeypatch.setattr(tips, "run_bg_oneliner", _fails)
+    cache = tips.TipsCache(catalog=[CatalogEntry("Cron", "Run tasks on a schedule.", "cron.md")])
+    state = SimpleNamespace(sessions=None, _tips_cache=cache)
+    return await tips.generate_tips(state), tips._fallback_tips(cache.catalog, cache.state)
+
+
+@pytest.mark.asyncio
+async def test_a_backend_failure_logs_one_line_without_a_traceback(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="kiro_crew.tips")
+
+    got, fallback = await _tips_on_failure(monkeypatch, AcpError(_SIGNED_OUT))
+
+    assert got == fallback and got
+    [record] = [r for r in caplog.records if r.name == "kiro_crew.tips"]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert _SIGNED_OUT in record.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_keeps_its_traceback(monkeypatch, caplog) -> None:
+    caplog.set_level(logging.WARNING, logger="kiro_crew.tips")
+
+    got, fallback = await _tips_on_failure(
+        monkeypatch, RuntimeError("background session unavailable")
+    )
+
+    assert got == fallback and got
+    [record] = [r for r in caplog.records if r.name == "kiro_crew.tips"]
+    assert record.exc_info is not None

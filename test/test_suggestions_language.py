@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew import suggestions
+from kiro_crew.acp.client import AcpError
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.testing.wait import async_wait_until
 
@@ -186,3 +188,37 @@ async def test_a_generation_that_yields_nothing_is_an_empty_list(monkeypatch, on
     monkeypatch.setattr(suggestions, "run_bg_oneliner", oneliner)
 
     assert await suggestions.generate_suggestions(_state(), ui_language="zh-CN") == []
+
+
+# The engine's own words on a signed-out host, passed through unclassified.
+_SIGNED_OUT = "Sign in to Kiro to send a prompt."
+
+
+async def _signed_out(_sessions, _prompt, **_kw):
+    raise AcpError(_SIGNED_OUT)
+
+
+@pytest.mark.asyncio
+async def test_a_backend_failure_logs_one_line_without_a_traceback(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(suggestions, "_build_context", lambda _state: _CONTEXT)
+    monkeypatch.setattr(suggestions, "run_bg_oneliner", _signed_out)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.suggestions")
+
+    assert await suggestions.generate_suggestions(_state(), ui_language="en") == []
+
+    [record] = [r for r in caplog.records if r.name == "kiro_crew.suggestions"]
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert _SIGNED_OUT in record.getMessage()
+
+
+@pytest.mark.asyncio
+async def test_an_unexpected_error_keeps_its_traceback(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(suggestions, "_build_context", lambda _state: _CONTEXT)
+    monkeypatch.setattr(suggestions, "run_bg_oneliner", _call_fails)
+    caplog.set_level(logging.WARNING, logger="kiro_crew.suggestions")
+
+    assert await suggestions.generate_suggestions(_state(), ui_language="en") == []
+
+    [record] = [r for r in caplog.records if r.name == "kiro_crew.suggestions"]
+    assert record.exc_info is not None

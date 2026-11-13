@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from kiro_crew.agent_sdk.drivers.acp_vocab import AcpError
 from kiro_crew.atomic_write import atomic_write, read_bytes_with_retry
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
@@ -1228,6 +1229,11 @@ async def generate_tips(state: DashboardState) -> list[dict]:  # type: ignore[ty
         text = await run_bg_oneliner(
             state.sessions, prompt, model=tips_model, sel_source="tips", timeout=90
         )
+    except AcpError as exc:
+        # The backend's own failure (a missing sign-in, say) is in its message;
+        # the stack is the ACP layer's and adds nothing to the gateway log.
+        logger.warning("Tips generation failed; using catalog fallback: %s", exc)
+        return _fallback_tips(cache.catalog, st)
     except Exception:
         logger.warning("Tips generation failed; using catalog fallback", exc_info=True)
         return _fallback_tips(cache.catalog, st)

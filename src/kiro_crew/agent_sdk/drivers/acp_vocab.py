@@ -2,7 +2,8 @@
 
 Stop classes and the stop-reason classifier, the tool-call and tool-result
 event kinds, the stop reasons of a turn the backend did not finish, the
-structured-status frame and its wait reasons, the terminal tool-call statuses, the session-start and prompt timeouts and the
+structured-status frame and its wait reasons, the terminal tool-call statuses, the base backend
+error, the session-start and prompt timeouts and the
 native-child marker are backend vocabulary a consumer compares against or
 raises on, and so is the continuation that hands a timed-out call back to the
 model. The in-flight tool-call tracker is here too: a sub-agent's run
@@ -83,6 +84,7 @@ __all__ = [
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
+    "AcpError",
     "AcpRequestTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",
