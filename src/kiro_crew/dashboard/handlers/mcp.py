@@ -1086,6 +1086,14 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
     entry: dict[str, Any] = {"command": command}
     if body.get("args"):
         entry["args"] = body["args"]
+    # Saved as before (back-compat), but a field of the wrong shape is named in
+    # the reply: this file is the one kiro-cli reads too, and a list command,
+    # string args or list env lands there unchanged. The shape rule is the
+    # Add Custom form's; body-scope import because mcp_custom imports this module.
+    from kiro_crew.dashboard.handlers.mcp_custom import _validate_spec
+
+    shape_error = _validate_spec({**entry, **({"env": body["env"]} if body.get("env") else {})})
+    warnings = [shape_error] if shape_error else []
     if body.get("env"):
         # This file is consumed directly by the ACP runtime (declared env is
         # applied per key), and this caller is programmatic (App Kit), not a
@@ -1119,13 +1127,19 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
                 return _agent_home_not_owned_response(name)
 
     logger.info("MCP register via REST: %s command=%s", name, command)
+    if warnings:
+        # The name only: the warning text is built from the body, which can carry env secrets.
+        logger.warning("MCP register via REST: %s saved with a wrongly shaped field", name)
     sel().log_api_access(
         caller="dashboard",
         operation="mcp_server_register",
         outcome="completed",
         resources=name,
     )
-    return web.json_response({"ok": True, "name": name}, status=200)
+    reply: dict[str, Any] = {"ok": True, "name": name}
+    if warnings:
+        reply["warnings"] = warnings
+    return web.json_response(reply, status=200)
 
 
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
