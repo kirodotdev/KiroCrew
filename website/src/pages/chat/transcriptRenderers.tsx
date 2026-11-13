@@ -44,7 +44,7 @@ import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, capabilityRefusal, isAppAge
 import { isFeatureRequestRow } from '../../prompts/featureRequest'
 import { feedbackTracker } from '../../feedbackTracker'
 import NoticeCard from './NoticeCard'
-import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
+import { isKasSignedOut, kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
 import TrustResetNoticeCard, { type LostMode } from './TrustResetNoticeCard'
@@ -178,6 +178,12 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
    *  card in Settings. Omitted on a surface with no settings route. */
   onOpenSignIn?: () => void
+  /** True while Kiro's own sign-in works (`/api/kas-login`). The newest
+   *  `kas_signed_out` row then offers Resume beside the sign-in, since a
+   *  retry no longer meets that wall. Omitted: that row never does. */
+  kiroSignedIn?: boolean
+  /** That read's failure, on a surface where nothing else reports it. */
+  kiroSignInCheckError?: Error | null
   /** Fix affordance for a capability refusal row (`capabilityRefusal`): open
    *  the named crew member where that code's fix lives. Omitted on a surface
    *  with no crew editor. */
@@ -835,27 +841,37 @@ export function createTranscriptRenderers(
         const imageRepair = isImageRepair(m)
         // The sign-in button sits under the row, so its copy points at it.
         const besideSignIn = authRequired && o.onOpenSignIn ? kasSignedOutBesideButton(m) : null
+        // A rejection the backend says no retry can fix never offers Continue,
+        // even when this row is the newest and the turn was interrupted:
+        // resuming would replay the identical rejection (or the same
+        // signed-out wall, unless it is Kiro's own sign-in and that works
+        // again, or the same spent allowance, or the same start that already
+        // failed twice, or the same model the backend refused).
+        const onContinue =
+          !pickModelFix && (!authRequired || (!!o.kiroSignedIn && isKasSignedOut(m))) && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
+            ? o.onContinue
+            : undefined
+        // Signed in since this row: Resume, beside the kept sign-in button,
+        // reruns its turn in this chat, with copy that says so.
+        const signInWorks = authRequired && onContinue !== undefined
         return ctx.row(
           <ErrorCard
             content={besideSignIn ?? (transient ? transient.text : m.content)}
-            resumeContent={transient?.card === 'error' ? transient.resumeText : undefined}
-            meta={m.meta}
-            // A rejection the backend says no retry can fix never offers Continue,
-            // even when this row is the newest and the turn was interrupted:
-            // resuming would replay the identical rejection (or the same
-            // signed-out wall, or the same spent allowance, or the same start
-            // that already failed twice, or the same model the backend refused).
-            onContinue={
-              !pickModelFix && !authRequired && !overflow && !featureRequestFormUrl && !sessionStartRepeat && !refusal && !isAppAgentRefused(m) && o.onContinue && o.continuable && o.interrupted && newest
-                ? o.onContinue
-                : undefined
+            resumeContent={
+              signInWorks
+                ? i18nT('pages.chat.errorCard.retry_kas_signed_in')
+                : transient?.card === 'error' ? transient.resumeText : undefined
             }
+            meta={m.meta}
+            onContinue={onContinue}
             sessionStartRepeat={sessionStartRepeat}
             onRestartGateway={sessionStartRepeat ? o.onRestartGateway : undefined}
             continuing={o.continuing}
             onPickModel={pickModelFix ? o.onPickModel : undefined}
             onOpenDefaultModel={pickModelFix ? o.onOpenDefaultModel : undefined}
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
+            signInWorks={signInWorks}
+            signInCheckError={authRequired && newest && isKasSignedOut(m) ? o.kiroSignInCheckError : undefined}
             unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
             kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}

@@ -756,6 +756,14 @@ function outcomeAfter(messages: readonly ChatMessage[], index: number): Outcome 
 }
 
 /**
+ * True for a KAS signed-out row: the one whose fix is Kiro Crew's own sign-in.
+ * Not the launcher form, whose fix is kiro-cli's login (no token is stamped).
+ */
+export function isKasSignedOut(m: ChatMessage): boolean {
+  return shapeOf(m)?.token === 'kas_signed_out'
+}
+
+/**
  * Copy for a KAS signed-out row drawn with the sign-in button under it, or null
  * for any other row. The row's own copy names the Settings path, for a surface
  * with no button; next to the button, the button is the way.

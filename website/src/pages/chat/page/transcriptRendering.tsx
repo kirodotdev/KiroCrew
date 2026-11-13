@@ -4,6 +4,10 @@ import { Clock, AppWindow } from 'lucide-react'
 import type { MessageQuoteRole, MessageQuote } from '../../../chat-core/composer/messageQuote'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import type { CapabilityFix, FreshSessionState, RepairImagesState } from '../ErrorCard'
+import { isKasSignedOut } from '../gatewayNotice'
+import { signedInNow } from '../../developer/kiroSignInState'
+import { KIRO_SIGN_IN_NOTICE_POLL_MS } from '../../../components/KiroSignInNotice'
+import { useOutageFailure } from '../../../hooks/useOutageFailure'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { type MessageRenderer, mergeRenderers, type MessageRenderContext, resolveRenderer } from '../../../app-sdk/messageRenderers'
 import { createTranscriptRenderers } from '../transcriptRenderers'
@@ -212,6 +216,25 @@ export function useTranscriptRendering({
     enabled: !!activeSlot,
     staleTime: 15_000,
   })
+  // Whether Kiro's own sign-in works now, read only while the turn ended on a
+  // row whose fix is that sign-in: the row offers Resume once it does. Keyed
+  // by the row, so a read from before it (which can predate the sign-out)
+  // never counts; under the sign-in card's key, so a sign-in there re-reads it;
+  // re-read every minute, for a frame signed in from another window; and a
+  // failed later read withdraws Resume instead of trusting the kept data.
+  // Frames show a failed read on the row unless it came from a gateway outage;
+  // the dashboard leaves it to the app-level notice.
+  const newestError = messages.findLast(m => m.role === 'error')
+  const signedOutRow = interrupted && newestError !== undefined && isKasSignedOut(newestError) ? newestError : undefined
+  const { data: kasStatus, error: kasStatusError, isError: kasStatusFailed, errorUpdatedAt: kasStatusErrorAt, refetch: refetchKasStatus } = useQuery({
+    queryKey: ['kas-login', signedOutRow?.meta?.mid ?? signedOutRow?.ts],
+    queryFn: api.kasLoginStatus,
+    enabled: signedOutRow !== undefined,
+    staleTime: 0,
+    refetchInterval: KIRO_SIGN_IN_NOTICE_POLL_MS,
+  })
+  const kasStatusOutage = useOutageFailure(kasStatusFailed, kasStatusErrorAt, () => refetchKasStatus({ cancelRefetch: false }))
+  const kiroSignedIn = kasStatus !== undefined && kasStatusError === null && signedInNow(kasStatus)
   // Copy on select is device-only, so it is not in chatConfig (which syncs to
   // other browsers); Settings → Chat writes the same key.
   const [copyOnSelect] = usePersistedBool('mc-chat-copy-on-select', false)
@@ -470,6 +493,8 @@ export function useTranscriptRendering({
       onPickModel: openModelPickerFromError,
       onOpenDefaultModel: embedded || popout ? undefined : openDefaultModelSetting,
       onOpenSignIn: embedded || popout ? undefined : openKiroSignIn,
+      kiroSignedIn,
+      kiroSignInCheckError: (embedded || popout) && !kasStatusOutage ? kasStatusError : null,
       onOpenTurnLimit: embedded || popout ? undefined : openTurnLimitSetting,
       // The repeat-start remedy (#13791). The restart itself is owner-gated on
       // the server; a refusal comes back as an ApiError the card shows.
@@ -516,7 +541,7 @@ export function useTranscriptRendering({
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleForkWithModel, forkDirectionChoice, forkHasLaterMessages, handleQuote, handleAsk, stableJumpToQuote, chatConfig, copyOnSelect, activeSlot, regenerating, replacingMids, firstNewReplyIdx, newReplyStarted, activeSlotRemoteBound, stableRegenerate, stableEditResend, rowHandlersFor, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, kiroSignedIn, kasStatusError, kasStatusOutage, openMemberCapabilities, openTurnLimitSetting, handleFreshSession, freshSession, handleRepairImages, repairImages, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen, farmPassRef, messagesRef, handleSteerAction, steerActionPending, steerActionRefusals, steerActionRequestFailures, handleOpenCrewTab, editSkillPicker])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role

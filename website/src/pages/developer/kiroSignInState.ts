@@ -19,3 +19,13 @@ import type { KasLoginStatus } from '../../api/client'
 export function signInLapsed(status: KasLoginStatus): boolean {
   return !status.usable || status.refresh_rejected
 }
+
+/**
+ * Whether an agent started now would find the sign-in working: signed in, the
+ * access token outside the refresh margin, and not lapsed. Stricter than
+ * `!signInLapsed`, which reads an expired token as usable whenever a refresh
+ * token is stored, even one whose renewal cannot run.
+ */
+export function signedInNow(status: KasLoginStatus): boolean {
+  return status.authenticated && !status.expired && !signInLapsed(status)
+}

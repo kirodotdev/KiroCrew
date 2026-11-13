@@ -4,22 +4,27 @@
  * drawn row gets, the tool-group approval routing, and the off-screen measurement
  * farm's rows (same wrappers, measured with the farm flag up only while it builds).
  */
-import { describe, it, expect, vi } from 'vitest'
-import { renderHook } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { afterEach, describe, it, expect, onTestFinished, vi } from 'vitest'
+import { act, cleanup, render as renderDom, renderHook, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider, defaultScheduler, notifyManager, useQuery } from '@tanstack/react-query'
 import { isValidElement, type ReactElement, type ReactNode } from 'react'
 
 vi.mock('../api/client', () => ({
   api: {
     artifactSessionDocs: vi.fn(async () => ({ docs: [] })),
+    kasLoginStatus: vi.fn(),
   },
 }))
 
+import { api, type KasLoginStatus } from '../api/client'
+import { ApiError } from '../api/apiError'
 import { loadChatConfig } from './chat/ChatSettings'
 import type { DisplayItem, TurnItem } from './chat/types'
 import type { ChatMessage } from '../types'
 import { useTranscriptRendering } from './chat/page/transcriptRendering'
 import { UserMessage, AssistantMessage } from './chat'
+import { KIRO_SIGN_IN_NOTICE_POLL_MS } from '../components/KiroSignInNotice'
+import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
 
 type Props = Parameters<typeof useTranscriptRendering>[0]
 
@@ -237,5 +242,97 @@ describe('renderFarmItem', () => {
     const single = el(result.current.renderFarmItem(3))
     expect(single.props.className).toBe('px-4 mx-auto w-full py-1 empty:hidden')
     expect(farmPassRef.current).toBe(false)
+  })
+})
+
+describe('a signed-out row on the dashboard and in an embed or popout frame (#34690)', () => {
+  const user = msg('user', 'What can you do for me today?', 'k1')
+  const signedOut = msg('error', 'Not signed in to Kiro.', 'k2', { mid: 'm-out', kind: 'auth_required', notice: 'kas_signed_out' })
+  const signedIn: KasLoginStatus = {
+    authenticated: true, provider: 'Google', identity: 'social', transport: 'device',
+    expires_at: '2099-01-01T00:00:00Z', expired: false, has_refresh_token: true, refresh_rejected: false, usable: true,
+  }
+  const readFailed = () => new ApiError(500, 'Could not read the stored sign-in.', '{"error":"Could not read the stored sign-in.","code":"token_store_failed"}')
+
+  afterEach(() => {
+    vi.useRealTimers()
+    cleanup()
+  })
+
+  function renderRow(over: Partial<Props>) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const rows = [user, signedOut]
+    const p = props({ interrupted: true, continuable: true, messages: rows, messagesRef: { current: rows }, ...over })
+    function Row() {
+      const row = useTranscriptRendering(p).renderMessage(1, signedOut)
+      // The row's read as this same render saw it, so a test can wait on a
+      // drawn failure before asserting what the row left out.
+      const read = useQuery({ queryKey: ['kas-login', 'm-out'], queryFn: api.kasLoginStatus, enabled: false })
+      return <><span data-testid="row-read" data-status={read.status} />{row}</>
+    }
+    renderDom(<QueryClientProvider client={client}><Row /></QueryClientProvider>)
+    return client
+  }
+
+  it('withdraws Resume and shows the failure once a later sign-in read fails', async () => {
+    const status = vi.mocked(api.kasLoginStatus)
+    status.mockResolvedValue(signedIn)
+    const client = renderRow({ embedded: true })
+
+    await waitFor(() => expect(screen.getByTestId('error-card-continue')).toBeInTheDocument())
+    expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+
+    status.mockRejectedValue(readFailed())
+    await client.refetchQueries({ queryKey: ['kas-login'] })
+    await waitFor(() => expect(screen.getByTestId('error-card-sign-in-check-failed')).toBeInTheDocument())
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+  })
+
+  it('leaves a failed read on the dashboard to the app-level notice, keeping Sign in and withdrawing Resume', async () => {
+    const status = vi.mocked(api.kasLoginStatus)
+    status.mockRejectedValue(readFailed())
+    renderRow({ embedded: false, popout: false })
+
+    await waitFor(() => expect(screen.getByTestId('row-read')).toHaveAttribute('data-status', 'error'))
+    expect(screen.getByTestId('error-card-sign-in')).toBeInTheDocument()
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+    expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+  })
+
+  it('leaves a read that failed while the gateway was down to the offline state, then re-reads once it is back', async () => {
+    const status = vi.mocked(api.kasLoginStatus)
+    status.mockRejectedValue(new TypeError('Failed to fetch'))
+    setGatewayConnected(false)
+    onTestFinished(() => __resetGatewayConnectedForTests())
+    renderRow({ embedded: true })
+
+    await waitFor(() => expect(screen.getByTestId('row-read')).toHaveAttribute('data-status', 'error'))
+    expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+
+    status.mockResolvedValue(signedIn)
+    act(() => setGatewayConnected(true))
+    expect(await screen.findByTestId('error-card-continue')).toBeInTheDocument()
+    expect(screen.queryByTestId('error-card-sign-in-check-failed')).toBeNull()
+  })
+
+  it('re-reads on its own clock, so a frame signed in from elsewhere gains Resume', async () => {
+    // Fake timers go on before the render so the query's interval is a fake
+    // one, and no waitFor runs under them. Notifications run on microtasks, so
+    // the `act` around each advance flushes the re-render.
+    vi.useFakeTimers({ shouldAdvanceTime: false })
+    notifyManager.setScheduler(queueMicrotask)
+    onTestFinished(() => notifyManager.setScheduler(defaultScheduler))
+    const status = vi.mocked(api.kasLoginStatus)
+    status.mockResolvedValue({ ...signedIn, authenticated: false, usable: false })
+    const client = renderRow({ embedded: true })
+
+    await act(() => vi.advanceTimersByTimeAsync(0))
+    expect(client.getQueryState(['kas-login', 'm-out'])?.status).toBe('success')
+    expect(screen.queryByTestId('error-card-continue')).toBeNull()
+
+    status.mockResolvedValue(signedIn)
+    await act(() => vi.advanceTimersByTimeAsync(KIRO_SIGN_IN_NOTICE_POLL_MS))
+    expect(screen.getByTestId('error-card-continue')).toBeInTheDocument()
   })
 })

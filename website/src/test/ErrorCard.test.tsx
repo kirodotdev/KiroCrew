@@ -319,6 +319,22 @@ describe('ErrorCard — agent not signed in', () => {
     cleanup()
   })
 
+  it('keeps Sign in and adds Resume beside it once the host reads the sign-in as working', () => {
+    const onContinue = vi.fn()
+    const onOpenSignIn = vi.fn()
+    render(
+      <ErrorCard content="Not signed in to Kiro." resumeContent="Signed in again." onContinue={onContinue} onOpenSignIn={onOpenSignIn} signInWorks />,
+    )
+    const card = screen.getByTestId('error-card')
+    expect(card).toHaveAttribute('data-auth-required', 'true')
+    expect(card).toHaveTextContent('Signed in again.')
+    fireEvent.click(screen.getByTestId('error-card-continue'))
+    expect(onContinue).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByTestId('error-card-sign-in'))
+    expect(onOpenSignIn).toHaveBeenCalledTimes(1)
+    cleanup()
+  })
+
   it('recognises the auth_required kind on both the live and the rebuilt carrier', () => {
     expect(isAuthRequired({ kind: 'auth_required' })).toBe(true)
     expect(isAuthRequired({ meta: { kind: 'auth_required' } })).toBe(true)

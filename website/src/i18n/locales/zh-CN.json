@@ -12464,6 +12464,7 @@
         "retry_tool_stalled": "工具似乎已停滞 — 恢复即可从中断处继续。",
         "retry_tools_not_ready": "智能体未能启动，因为它的内置工具没有及时就绪。你的消息仍在这里 — 恢复即可重试。如果反复出现，详情见网关日志。",
         "retry_backend_hiccup": "智能体遇到了短暂故障 — 恢复即可从中断处继续。",
+        "retry_kas_signed_in": "已登录 Kiro — 恢复即可重新发送你的消息。",
         "default_model": "更改默认模型",
         "default_model_hint": "打开“设置 → 对话 → 默认模型”。新会话都从这个值开始。",
         "turn_limit": "更改单轮时间上限",

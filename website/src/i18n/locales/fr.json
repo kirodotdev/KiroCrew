@@ -13018,6 +13018,7 @@
         "retry_tool_stalled": "L’outil semble bloqué — reprends là où ça s’est arrêté.",
         "retry_tools_not_ready": "L’agent n’a pas pu démarrer, car ses outils intégrés n’étaient pas prêts à temps. Ton message est toujours là — reprends pour réessayer. Si ça se reproduit, le journal de la passerelle contient les détails.",
         "retry_backend_hiccup": "L’agent a rencontré un bref problème — reprends là où ça s’est arrêté.",
+        "retry_kas_signed_in": "Tu es connecté à Kiro — reprends pour renvoyer ton message.",
         "default_model": "Changer le modèle par défaut",
         "default_model_hint": "Ouvrir Paramètres → Chat → Modèle par défaut. Les nouvelles sessions démarrent avec cette valeur.",
         "turn_limit": "Modifier la durée maximale d’un tour",
