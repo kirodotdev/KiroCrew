@@ -1139,7 +1139,7 @@ every recovery uses, and reconnects the main window to the page it was on
 `gateway:restart` channels, both behind the local-dashboard gate). It does not
 call the gateway's `POST /api/restart`: that replaces the process in place with
 `os.execv`, so on macOS and Linux the port is down while the pid stays, and the
-liveness monitor reads a rebind slower than its three missed probes as a wedge
+liveness monitor reads a rebind slower than its six missed probes as a wedge
 and kills it; on Windows the exec starts a new process and exits the old one,
 so the app loses its child and no longer stops the gateway on quit. A restart
 through the app ends turns that are mid-reply the way quitting does; they keep
