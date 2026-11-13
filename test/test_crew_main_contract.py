@@ -754,7 +754,7 @@ def test_an_unseeded_tree_is_not_read_as_root_and_asks_for_a_seed(monkeypatch) -
     from kiro_crew.dashboard import state as dashboard_state
 
     asks: list[int] = []
-    monkeypatch.setattr(dashboard_state, "_request_lineage_seed", lambda: asks.append(1))
+    monkeypatch.setattr(dashboard_state, "_request_lineage_seed", lambda *_a: asks.append(1))
     monkeypatch.setattr(
         session_tree_projection,
         "projection",
