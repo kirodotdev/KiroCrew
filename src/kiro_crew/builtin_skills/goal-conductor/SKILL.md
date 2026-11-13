@@ -596,6 +596,15 @@ Each cycle:
    two reads per open item per patrol turn (the `since` read, plus the newest
    10 only on overflow), so at most 20 rows per item, and patrol turns come
    only from a report, a flag or the quiet-run floor.
+
+   **When the lines show the item itself is wrong, re-plan that item now.**
+   Already done on main, mis-scoped, needing a split, or a bar that cannot be
+   met: `close` it `abandoned` with the reason in the close call's `decision`
+   field (a closed item refuses `decide`), then `create` the replacement
+   item(s). Or `action=accept` a corrected bar, never weaker than the goal
+   asks. Rewrite the goal text's Plan and Changed lines, `session_send` the
+   worker, and record `decide` on the item still open. Name every closed item
+   and bar change, old and new, in your next report to the owner.
 6. **Say nothing unless there is a real signal.** An item passing acceptance,
    failing it, asking a question, or stalling. Never post "nothing changed":
    a cycle with no signal ends with a `nothing_to_do` call, because a turn
@@ -616,7 +625,9 @@ report is information, not a gate, and the Round-0 go-ahead already covers the
 next round. The user can redirect you at any time (see below).
 
 Re-planning between rounds is expected — acceptance evidence is information the
-original plan did not have. Re-planning mid-round is not: let the round finish.
+original plan did not have. Mid-round, re-plan only one item at a time, when
+its own drift lines show it is wrong (Patrol step 5). A round-level re-plan
+waits for the round to finish.
 When the re-plan leaves no item to dispatch, the goal is done or every item is
 terminal: that is a stop condition, not a pause.
 
