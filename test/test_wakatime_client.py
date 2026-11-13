@@ -315,3 +315,42 @@ async def test_close_is_idempotent() -> None:
     await client.close()
     assert session.closed is True
     await client.close()
+
+
+def _set_proxy(monkeypatch: pytest.MonkeyPatch, proxy: str) -> None:
+    from urllib import request as urllib_request
+
+    monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
+    monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+
+
+async def test_api_and_verify_go_through_the_configured_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a proxy-only network both the read verbs and the key check use the proxy."""
+    proxy = "http://proxy.invalid:3128"
+    _set_proxy(monkeypatch, proxy)
+    session = _FakeSession([_FakeResp(200, {"data": []}), _FakeResp(200, {"data": {}})])
+    client = _client_with(session)
+
+    await client.get_summaries("2026-09-01", "2026-09-03")
+    await client.verify()
+
+    assert [call["proxy"] for call in session.calls] == [proxy, proxy]
+
+
+@pytest.mark.parametrize(
+    "base", ["http://localhost:3000/api", "http://127.0.0.1:3000/api", "http://[::1]:3000/api"]
+)
+async def test_a_loopback_wakapi_is_never_sent_through_the_proxy(
+    monkeypatch: pytest.MonkeyPatch, base: str
+) -> None:
+    """The request carries the API key, so a loopback base must stay on the machine."""
+    _set_proxy(monkeypatch, "http://proxy.invalid:3128")
+    session = _FakeSession([_FakeResp(200, {"data": {}})])
+    client = WakaTimeClient(api_key=_FAKE_KEY, api_base=base)
+    client._session = session  # type: ignore[assignment]
+
+    await client.verify()
+
+    assert session.calls[0]["proxy"] is None
