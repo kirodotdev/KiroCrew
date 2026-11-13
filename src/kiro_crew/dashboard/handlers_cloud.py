@@ -42,6 +42,7 @@ from kiro_crew.cloud import ssm
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
 from kiro_crew.cloud.launch_engine import RealLaunchEngine
 from kiro_crew.cloud.login_target import KiroLoginTarget, LoginTargetError, target_from_whoami
+from kiro_crew.cloud.provisioners import offered_provisioners
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response
 from kiro_crew.dashboard.handlers.sessions import fetch_local_identity
 from kiro_crew.dashboard.handlers.source_providers import (
@@ -158,24 +159,7 @@ async def _astore(state: "DashboardState") -> lj.LaunchJobStore:
     return store
 
 
-def _provisioners() -> list:
-    """The deployment's provisioners, from the CPP ``remote_provisioners`` seam.
-
-    ``safe_context_call`` fallback is the built-in descriptor alone: a degraded
-    seam read keeps today's AWS tab working rather than emptying it, which is
-    the fail-safe direction for a listing (nothing here mints or bills). Rows
-    with a blank id or kind are dropped, never shadowed. Synchronous; called via
-    ``_in_executor`` from a handler because context resolution can touch disk.
-    """
-    from kiro_crew.platform.context import current_context, safe_context_call
-    from kiro_crew.platform.defaults import BUILTIN_REMOTE_PROVISIONER
-
-    rows = safe_context_call(
-        lambda: list(current_context().remote_provisioners.provisioners()),
-        fallback_factory=lambda: [BUILTIN_REMOTE_PROVISIONER],
-        log_message="remote_provisioners.provisioners degraded; offering the built-in lane only",
-    )
-    return [r for r in rows if getattr(r, "id", "") and getattr(r, "kind", "")]
+_provisioners = offered_provisioners
 
 
 def _provisioner_dict(p) -> dict:

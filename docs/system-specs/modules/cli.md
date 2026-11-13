@@ -835,6 +835,15 @@ exfiltration redactors run.
 
 The saved project dir enables running `kirocrew` from any directory.
 
+A step that runs straight after an answer prints its text and asks its question
+before it imports anything heavy. Otherwise a cold terminal goes silent for
+seconds, and an Enter pressed into that silence answers a question the operator
+has not seen yet (#35021). So the Dashboard URL notice reads its port through
+`port_resolution`, not `cli_server`. The cloud step reads its lane list through
+`cloud/provisioners.py::offered_provisioners`, the light leaf the dashboard's
+Set-up tab also reads (`handlers_cloud._provisioners`), and not through the
+handler module.
+
 ### Slack credentials are checked before they are stored
 
 `kirocrew setup --slack` asks Slack about each value as it is pasted, so a typo,

@@ -508,17 +508,15 @@ def _setup_impl(
 def _builtin_cloud_lane_offered() -> bool:
     """Whether the composed platform offers the built-in ``aws_ec2`` lane.
 
-    Reads the list through ``dashboard/handlers_cloud.py::_provisioners`` itself,
-    the same read and degraded-seam fallback the Set-up tab is drawn from, so the
+    Reads the list through ``cloud/provisioners.py::offered_provisioners``, the
+    same read and degraded-seam fallback the Set-up tab is drawn from, so the
     wizard and the tab cannot disagree about whether this deployment offers EC2.
     ``PlatformCompositionError`` still propagates, per ``safe_context_call``.
     """
-    # Deferred: the dashboard handler module pulls in the cloud/dashboard graph,
-    # which only this last, optional wizard step needs.
-    from kiro_crew.dashboard.handlers_cloud import _provisioners
+    from kiro_crew.cloud.provisioners import offered_provisioners
     from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
-    return any(r.id == BUILTIN_PROVISIONER_ID for r in _provisioners())
+    return any(r.id == BUILTIN_PROVISIONER_ID for r in offered_provisioners())
 
 
 def _maybe_setup_cloud() -> None:
@@ -1122,9 +1120,9 @@ _CUSTOM_DOMAIN = "kirocrew.localhost"
 
 def _configured_port() -> int:
     """Return the dashboard port using the same resolution as other CLI commands."""
-    from kiro_crew.cli_server import (
-        resolve_client_port,  # local import keeps cli_server (heavy import graph) out of cli_setup's import time
-    )
+    # The light leaf, not cli_server: this runs right after the timezone answer,
+    # before anything is printed, and cli_server's import graph costs seconds.
+    from kiro_crew.port_resolution import resolve_client_port
 
     return resolve_client_port(None)
 

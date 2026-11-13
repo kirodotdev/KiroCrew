@@ -852,3 +852,52 @@ class TestSetupChannelGating:
         out = capsys.readouterr().out
         assert "--whatsapp is ignored with --agent-only" in out
         assert "--slack is ignored" not in out
+
+
+def test_steps_after_the_timezone_answer_ask_before_any_heavy_import(tmp_path):
+    """The Dashboard URL notice and the AWS question show before a slow import.
+
+    They run straight after the timezone answer, with nothing on screen, so an
+    import of ``cli_server`` or the dashboard handler graph there keeps a cold
+    terminal silent for seconds, and an Enter pressed into that silence answers
+    the AWS question before it is shown. A fresh child process is the only place
+    where "not yet imported" means anything.
+    """
+    import os
+    import subprocess
+    import sys
+
+    from kiro_crew.subprocess_utf8 import UTF8_TEXT
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    probe = (
+        "import builtins, sys\n"
+        "import kiro_crew.cli_setup as s\n"
+        "heavy = ('kiro_crew.cli_server', 'kiro_crew.dashboard.handlers_cloud')\n"
+        "def ask(prompt=''):\n"
+        "    print('LOADED-AT-PROMPT', [m for m in heavy if m in sys.modules])\n"
+        "    return ''\n"
+        "builtins.input = ask\n"
+        "s._maybe_setup_custom_domain()\n"
+        "s._maybe_setup_cloud()\n"
+    )
+    root = Path(__file__).resolve().parents[1]
+    env = dict(
+        os.environ,
+        PYTHONPATH=str(root / "src"),
+        HOME=str(tmp_path),
+        KIROCREW_HOME=str(tmp_path / "crew"),
+    )
+    env.pop("KIROCREW_PORT", None)
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        cwd=tmp_path,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        timeout=FALLBACK_TIMEOUT_SECS,
+        **UTF8_TEXT,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Dashboard available at http://localhost:" in result.stdout
+    assert "LOADED-AT-PROMPT []" in result.stdout, result.stdout
