@@ -120,6 +120,7 @@ const SYSTEM_NOTE_TITLE_KEY = {
   chat_stopped_refused: 'components.notifications.systemNote.chat_stopped_title',
   chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_title',
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_title',
+  repeated_failures: 'components.notifications.systemNote.repeated_failures_title',
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
@@ -135,6 +136,7 @@ const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
   chat_stopped_refused: 'components.notifications.systemNote.chat_stopped_refused_body',
   chat_stopped_stalled: 'components.notifications.systemNote.chat_stopped_stalled_body',
   folder_agent_label: 'components.notifications.systemNote.folder_agent_label_body',
+  repeated_failures: 'components.notifications.systemNote.repeated_failures_body',
 }
 
 /** The note's title and body, in the dashboard's language when the gateway

@@ -3253,7 +3253,9 @@
         "chat_stopped_refused_body": "The model declined to answer and the chat stopped. Open the chat to see why.",
         "chat_stopped_stalled_body": "The chat stalled and could not recover. Open the chat to start a new one.",
         "folder_agent_label_title": "Check a folder's Default agent",
-        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings."
+        "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings.",
+        "repeated_failures_title": "Tool failures keep coming back",
+        "repeated_failures_body": "Some agent tool calls failed again and again this week. Open this note to see them and turn one into a lesson."
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",
@@ -9654,7 +9656,9 @@
         "channel_tip_terminal": "When a terminal tab's shell exits with an error or is killed. The tab closes, so the exit code is kept here.",
         "channel_tip_member": "When a bot replies to you in its own chat. Quiet by default: no sound or banner.",
         "channel_tip_apps": "When a newer version of an app you installed is published. You hear about each version once.",
-        "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included."
+        "channel_tip_turn": "When a chat stops with an error you need to act on, such as a provider outage or rate limit, a refused reply, or a lost connection. Chats an app runs are not included.",
+        "channel_memory": "Repeated failures",
+        "channel_tip_memory": "Once a week, when an agent tool failure kept coming back. Only if you turned on the weekly note in Memory."
       },
       "securityPanel": {
         "configPending": {

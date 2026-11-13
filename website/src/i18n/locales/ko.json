@@ -8300,7 +8300,9 @@
         "chat_stopped_refused_body": "모델이 답변을 거부해 채팅이 중지되었습니다. 채팅을 열어 이유를 확인하세요.",
         "chat_stopped_stalled_body": "채팅이 멈춘 뒤 복구할 수 없었습니다. 채팅을 열어 새 채팅을 시작하세요.",
         "folder_agent_label_title": "폴더의 기본 에이전트 확인",
-        "folder_agent_label_body": "이 폴더들의 기본 에이전트는 Bot과 이름이 같지만, 새 채팅은 그 Bot에서 실행되지 않습니다: {{folders}}. Bot을 사용하려면 폴더 설정에서 기본 에이전트로 선택하세요."
+        "folder_agent_label_body": "이 폴더들의 기본 에이전트는 Bot과 이름이 같지만, 새 채팅은 그 Bot에서 실행되지 않습니다: {{folders}}. Bot을 사용하려면 폴더 설정에서 기본 에이전트로 선택하세요.",
+        "repeated_failures_title": "도구 실패가 계속 반복됩니다",
+        "repeated_failures_body": "이번 주 에이전트의 일부 도구 호출이 계속해서 실패했습니다. 이 알림을 열어 확인하고 그중 하나를 교훈으로 만드세요."
       },
       "notificationBanner": {
         "dismiss_notification": "알림 닫기",
@@ -17257,7 +17259,11 @@
         "trend": "추세",
         "trend_growing": "증가",
         "trend_new": "신규",
-        "trend_steady": "유지"
+        "trend_steady": "유지",
+        "notice_label": "종 알림으로 주 1회 알림",
+        "notice_description": "도구 실패가 계속 반복되면 일주일에 한 번 종 알림으로 알려 줍니다. 기본값은 꺼짐입니다.",
+        "notice_load_failed": "주 1회 알림 설정을 읽을 수 없습니다",
+        "notice_save_failed": "주 1회 알림 설정을 저장할 수 없습니다"
       },
       "memoryRetiredCard": {
         "actions": "작업",
@@ -19441,7 +19447,9 @@
         "channel_tip_skills": "{{productName}} 이(가) 세션을 바탕으로 새 스킬이나 스킬 변경안을 작성하면 알립니다. 검토하기 전까지는 아무것도 바뀌지 않습니다.",
         "channel_tip_subagent": "백그라운드 보조 에이전트가 완료되거나 실패하거나 재시작으로 중단되었는데, 열린 채팅에 그 결과가 표시되지 않으면 알립니다. 기본적으로 조용하며 소리나 배너가 없습니다.",
         "channel_tip_taskrunner": "작업 실행이 진행되거나 사용자가 필요할 때 알립니다. 계획 준비, 시작, 재시도 또는 재계획, 완료, 실패, 정체 또는 시간 초과, 재시작 후 일시 중지 등입니다.",
-        "channel_tip_terminal": "터미널 탭의 셸이 오류로 종료되거나 강제 종료되면 알립니다. 탭이 닫히므로 종료 코드는 여기에 남습니다."
+        "channel_tip_terminal": "터미널 탭의 셸이 오류로 종료되거나 강제 종료되면 알립니다. 탭이 닫히므로 종료 코드는 여기에 남습니다.",
+        "channel_memory": "반복된 실패",
+        "channel_tip_memory": "에이전트의 도구 실패가 계속 반복되었을 때 일주일에 한 번. 메모리에서 주 1회 알림을 켠 경우에만."
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

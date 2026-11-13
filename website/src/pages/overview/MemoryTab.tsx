@@ -129,6 +129,9 @@ function lessonKey(lesson: Lesson) {
 
 /** `?focus=` value that lands the global Memory view on its lessons. */
 export const MEMORY_FOCUS_LESSONS = 'lessons'
+/** `?focus=` value that lands the global Memory view on the Repeated failures
+ *  card: the link of the weekly repeated-failures bell note. */
+export const MEMORY_FOCUS_FAILURES = 'failures'
 /** The Lessons card, the landing spot for that focus when vector memory is off. */
 export const LESSONS_CARD_ID = 'memory-lessons-card'
 
@@ -202,7 +205,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
           }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
         </div>
       </>}
-    </Card> : <GlobalMemoryTab refreshTrigger={refreshTrigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} />}
+    </Card> : <GlobalMemoryTab refreshTrigger={refreshTrigger} onDirtyChange={setDirty} focusLessons={focus === MEMORY_FOCUS_LESSONS} focusFailures={focus === MEMORY_FOCUS_FAILURES} />}
     {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
       <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
       <div className="flex flex-wrap gap-2">
@@ -213,7 +216,7 @@ export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNaviga
   </>
 }
 
-function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean }) {
+function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false, focusFailures = false }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void; focusLessons?: boolean; focusFailures?: boolean }) {
   const queryClient = useQueryClient()
   // The failed-session link leaves this tab; through the same guard as the
   // outer tab's exits, since the drafts held here are what the guard protects.
@@ -864,6 +867,7 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange, focusLessons = false }
     <MemoryFailuresCard
       refreshTrigger={refreshTrigger}
       onLessonSaved={reloadSavedLesson}
+      focus={focusFailures}
       onDirtyChange={d => setDocDirty(old => old.failures === d ? old : { ...old, failures: d })}
     />
     {!vectorActive && (

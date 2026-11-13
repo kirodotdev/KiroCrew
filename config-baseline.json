@@ -2773,6 +2773,7 @@
         "persistence_enabled": true,
         "writes_enabled": true,
         "lesson_extraction_enabled": true,
+        "repeated_failures_notice": false,
         "kind_routing": "off",
         "lesson_origin_gate": "off",
         "lesson_tier_policy": "off",
@@ -3344,6 +3345,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "memory.repeated_failures_notice",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Weekly Repeated-Failures Note",
+      "help": "On: at most once a week, when an agent tool failure kept coming back during the last seven days, the bell gets one note that links to the Repeated failures card on the Memory page. Off by default; nothing is written to memory either way.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "memory.kind_routing",

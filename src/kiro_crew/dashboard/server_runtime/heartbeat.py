@@ -159,6 +159,9 @@ def _start_loop_heartbeat(
             # A hand-edited sealed keystone file going pending raises one bell
             # note; same contract as above (self-gated, bounded, never raises).
             await config_pending.sync_pending_notes(state, t0)
+            # The opt-in weekly repeated-failures note: one clock read here,
+            # the check itself runs in a task and a worker thread of its own.
+            state.repeated_failures_notifier.maybe_check(state)
             released = await _heap_trim_maintainer.maybe_trim()
             if released >= platform_compat.HEAP_TRIM_LOG_THRESHOLD_BYTES:
                 logger.info(
