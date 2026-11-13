@@ -211,6 +211,10 @@ export function TeamsPanel() {
   const [appPassword, setAppPassword] = useState('')
   const [pwClear, setPwClear] = useState(false)
   const [formKey, setFormKey] = useState(0)
+  // The save's onSuccess reads the secret field as it is when it lands, not
+  // as it was when the request started.
+  const secretRef = useRef({ appPassword, pwClear })
+  useEffect(() => { secretRef.current = { appPassword, pwClear } }, [appPassword, pwClear])
   const [saved, setSaved] = useState(false)
   const [restartHint, setRestartHint] = useState(false)
   const [error, setError] = useState('')
@@ -249,11 +253,32 @@ export function TeamsPanel() {
       // leaves a quiet form that reads as saved.
       setError(msg)
     },
-    onSuccess: res => {
+    onSuccess: (res, vars) => {
       setSaved(true)
       setRestartHint(!!res.restart_required)
-      syncArmed.current = true
-      setFormKey(k => k + 1)
+      // Not re-arming the draft sync: the server took the values we sent, and
+      // a reseed would overwrite any field edited while the save was in
+      // flight. Only the password just sent is cleared, and only while the
+      // field still holds what was sent.
+      const s = secretRef.current
+      const nextPassword = vars.app_password && s.appPassword.trim() === vars.app_password ? '' : s.appPassword
+      setAppPassword(nextPassword)
+      if (vars.app_password_clear) setPwClear(false)
+      // Collapse the secret field back to its stored preview only when no
+      // newer edit is pending in it; a remount would hide it.
+      if (!nextPassword && !(s.pwClear && !vars.app_password_clear)) setFormKey(k => k + 1)
+      setDraft(d => {
+        if (!d) return d
+        // The stored App ID is masked once set; blank the sent value as the
+        // reseed did, unless it was edited during the save.
+        const appId = vars.app_id && d.app_id.trim() === vars.app_id ? '' : d.app_id
+        // A blank folder name was saved as the channel's own name: show that,
+        // unless the field was cleared after a named folder was sent.
+        const folder = d.session_folder_on && !d.session_folder.trim() && vars.session_folder === CHANNEL_NAME
+          ? vars.session_folder
+          : d.session_folder
+        return appId === d.app_id && folder === d.session_folder ? d : { ...d, app_id: appId, session_folder: folder }
+      })
       setTimeout(() => setSaved(false), 6000)
       qc.invalidateQueries({ queryKey: ['teams-config'] })
     },
@@ -451,6 +476,9 @@ export function TeamsPanel() {
             isSet={data.app_password_set}
             preview={SECRET_MASK}
             readOnly={ro}
+            // A value still pending (typed during a save) stays in the editor,
+            // even once the refetch reports a stored credential.
+            editing={appPassword ? true : undefined}
             value={appPassword}
             onChange={setAppPassword}
             cleared={pwClear}
