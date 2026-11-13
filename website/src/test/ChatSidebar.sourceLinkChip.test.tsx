@@ -43,7 +43,8 @@ vi.mock('../api/client', async (importOriginal) => {
         'sessions', 'chatSlots', 'chatSlotDetail', 'createChatSlot', 'deleteChatSlot',
         'resumeChatSlot', 'deleteSession', 'agentDetail', 'spawnList', 'fetchHistory',
         'renameSlot', 'forkSession', 'chatTags', 'chatFolders', 'crewWorkers',
-      ].map(k => [k, vi.fn().mockResolvedValue({})]),
+      // Tags and folders are lists: a test that awaits a crew read lets them land.
+      ].map(k => [k, vi.fn().mockResolvedValue(k === 'chatTags' || k === 'chatFolders' ? [] : {})]),
     ),
   }
 })
@@ -326,13 +327,42 @@ describe('ChatSidebar – PR chip', () => {
 
     const root = document.querySelector('[data-slot-key="k-root"]') as HTMLElement
     const marker = within(root).getByTestId('session-compact-attention')
-    expect(marker.getAttribute('data-state')).toBe('crew_approval')
-    expect(marker.getAttribute('aria-label')).toBe('Approval needed · 1')
+    expect(marker.getAttribute('data-state')).toBe('crew_needs_you')
+    expect(marker.getAttribute('aria-label')).toBe('1 needs you')
     expect(marker.closest('[data-session-title]')).toBeTruthy()
     const crew = within(root).getByTestId('session-compact-crew')
     expect(crew.getAttribute('aria-label')).toBe('Ultra Mode')
     expect(crew.closest('[data-session-title]')).toBeTruthy()
     expect(within(root).queryByTestId('crew-eyebrow')).toBeNull()
+  })
+
+  // The title-only marker reads the status line's own needs-you count, so what
+  // the hidden line would say still shows on the title.
+  it('marks a remote crew member waiting on an approval on a title-only card', async () => {
+    vi.mocked(api.crewWorkers).mockResolvedValueOnce({
+      workers: [{ key: 'k-remote', title: 'Remote', agent: '', status: 'needs_approval', group: 'approval', last_activity: '', ledger_item: '', created_by: 'k-root' }],
+      paused: false,
+    } as never)
+    turnOnCrewModePreview()
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    renderSidebar({ onOpenSource: took(), rows: [crewRows[0]] })
+
+    const root = document.querySelector('[data-slot-key="k-root"]') as HTMLElement
+    const marker = await within(root).findByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('crew_needs_you')
+    expect(marker.getAttribute('aria-label')).toBe('1 needs you')
+  })
+
+  it('marks a root whose ledger waits on a person on a title-only card', () => {
+    turnOnCrewModePreview()
+    localStorage.setItem('mc-chat-config', JSON.stringify({ compactSessionCards: true }))
+    const rows = [{ ...crewRows[0], running: true, crew_work: { open: 1, person: 1, person_workers: ['k-w1'], items: [] } }] as unknown as ChatSlot[]
+    renderSidebar({ onOpenSource: took(), rows })
+
+    const root = document.querySelector('[data-slot-key="k-root"]') as HTMLElement
+    const marker = within(root).getByTestId('session-compact-attention')
+    expect(marker.getAttribute('data-state')).toBe('crew_needs_you')
+    expect(marker.getAttribute('aria-label')).toBe('1 needs you')
   })
 
   it('keeps the Paused mark of a paused Ultra Mode crew on a title-only card', async () => {
