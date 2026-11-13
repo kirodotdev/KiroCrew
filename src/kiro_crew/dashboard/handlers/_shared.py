@@ -232,6 +232,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _resolve_package_skill_path,
         _resolve_skill_root,
         _resolved_set,
+        fold_package_keys,
+        package_root_qualifier,
+        split_package_key,
     )
     from kiro_crew.dashboard.handlers._shared_workspace import (  # noqa: F401
         _get_active_workspace,

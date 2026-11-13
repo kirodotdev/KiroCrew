@@ -17,7 +17,12 @@ from typing import Any, NamedTuple
 
 from kiro_crew.agent_discovery import expand_skill_uri, parsed_agent_specs
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.dashboard.handlers._shared_skill_roots import _edition_skill_roots
+from kiro_crew.dashboard.handlers._shared_skill_roots import (
+    _edition_package_roots,
+    _edition_skill_roots,
+    _resolve_package_skill_path,
+    package_root_qualifier,
+)
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
@@ -512,7 +517,53 @@ def collect_skills_blocking(
         workspace_rows.extend(project_rows)
     result.extend(workspace_rows)
     annotate_skills_with_agents(result, project_dir=project_dir)
-    return _one_row_per_skill_file(result)
+    rows = _one_row_per_skill_file(result)
+    _qualify_colliding_package_rows(rows)
+    return rows
+
+
+def _qualify_colliding_package_rows(rows: list[dict[str, Any]]) -> None:
+    """Give each package row that shares its key with another file its own key.
+
+    Two package roots bundling the same relative path list two rows under one
+    ``package/<rel>`` key, which the resolver refuses. Each such row is rekeyed,
+    in place, to the ``package/<qualifier>:<rel>`` key that resolves to its own
+    file, the same key the agent catalog walk offers for that copy. A row no
+    qualified key resolves to keeps its key.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        key = row.get("key") or ""
+        if row.get("source") == "package" and key.startswith("package/"):
+            groups.setdefault(key, []).append(row)
+    colliding = [group for group in groups.values() if len(group) > 1]
+    if not colliding:
+        return
+    qualifiers = [q for q in map(package_root_qualifier, _edition_package_roots()) if q]
+    for group in colliding:
+        rel = str(group[0]["key"])[len("package/") :]
+        targets: dict[Path, str] = {}
+        for qualifier in qualifiers:
+            hit = _resolve_package_skill_path(f"{qualifier}:{rel}")
+            if hit is None:
+                continue
+            try:
+                targets.setdefault(hit.resolve(), f"package/{qualifier}:{rel}")
+            except (OSError, RuntimeError):
+                continue
+        for row in group:
+            raw = str(row.get("path") or "")
+            if not raw:
+                continue
+            try:
+                skill_md = Path(raw)
+                if skill_md.is_dir():
+                    skill_md = skill_md / "SKILL.md"
+                qualified = targets.get(skill_md.resolve())
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if qualified is not None:
+                row["key"] = qualified
 
 
 def _skill_file_identity(row: dict[str, Any]) -> tuple[int, int] | None:
