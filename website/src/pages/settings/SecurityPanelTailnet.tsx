@@ -10,6 +10,7 @@ import { Badge, Btn, Toggle } from '../../components/ui'
 import { SettingsCard } from '../../components/settings'
 import InfoTip from '../../components/InfoTip'
 import { api, type TailnetStatusData } from '../../api/client'
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import { fmtTimeNumeric } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -250,10 +251,16 @@ export function TailnetOriginCard() {
         <div className="text-[12px] text-warn mt-2 flex items-start gap-1.5 leading-relaxed">
           <ShieldAlert size={13} className="shrink-0 mt-0.5" />
           <span>
-            {i18nT('pages.settings.securityPanel.tailnet_pin_caveat')}{' '}
-            <a href={`${CODE_BASE}/issues/1762`} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
-              {i18nT('pages.settings.securityPanel.tailnet_pin_caveat_link')}
-            </a>
+            <Trans
+              i18nKey="pages.settings.securityPanel.tailnet_pin_caveat_tracking_link"
+              components={{
+                link: (
+                  <a href={`${CODE_BASE}/issues/1762`} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">
+                    {i18nT('pages.settings.securityPanel.tailnet_pin_caveat_link')}
+                  </a>
+                ),
+              }}
+            />
           </span>
         </div>
       )}

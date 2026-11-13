@@ -18,6 +18,7 @@ import { useImeGuard } from '../../hooks/useImeGuard'
 import { parseErrorCode } from '../../utils/errorReport'
 import { TagListEditor } from './SlackPanel'
 
+import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 import { OptionalSdkCard } from './OptionalSdkCard'
@@ -1098,15 +1099,21 @@ export function WhatsAppPanel() {
       </div>
 
       <p className="text-[11.5px] text-muted m-0">
-        {i18nT('pages.settings.whatsAppPanel.group_participation_is_opt_in_per_group')}{' '}
-        <a
-          href={SETUP_GUIDE}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-accent hover:underline"
-        >
-          {i18nT('pages.settings.whatsAppPanel.setup_guide')}
-        </a>
+        <Trans
+          i18nKey="pages.settings.whatsAppPanel.group_participation_setup_guide"
+          components={{
+            link: (
+              <a
+                href={SETUP_GUIDE}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-accent hover:underline"
+              >
+                {i18nT('pages.settings.whatsAppPanel.setup_guide')}
+              </a>
+            ),
+          }}
+        />
       </p>
     </div>
   )
