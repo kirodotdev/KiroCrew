@@ -4,6 +4,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 
 import { i18nT } from '../../i18n/t'
 import { fmtCompact } from '../../i18n/format'
+import { parseLocalDay } from '../telemetryRange'
 export type TokenBucket = {
   input: number
   output: number
@@ -33,6 +34,18 @@ const ALL = '__all__'
 
 function emptyBucket(): TokenBucket {
   return { input: 0, output: 0, cacheCreate: 0, cacheRead: 0, costUsd: 0 }
+}
+
+const DAY_MS = 86_400_000
+
+/**
+ * The *n* calendar days ending at *end* (`YYYY-MM-DD`), oldest first. Stepped in
+ * UTC on the date alone, so no time zone or DST shift can skip or repeat a day.
+ */
+export function calendarDays(end: string, n: number): string[] {
+  const [y, m, d] = end.split('-').map(Number)
+  const last = Date.UTC(y, m - 1, d)
+  return Array.from({ length: n }, (_, i) => new Date(last - (n - 1 - i) * DAY_MS).toISOString().slice(0, 10))
 }
 
 /**
@@ -132,11 +145,14 @@ export function TokenDailyChart({
   providers,
   models,
   providerModels,
+  endDate,
 }: {
   history: TokenDay[]
   providers?: string[]
   models?: string[]
   providerModels?: Record<string, string[]>
+  /** The gateway's local day (`YYYY-MM-DD`): the last bar, recorded or not. */
+  endDate?: string
 }) {
   const [providerSel, setProviderSel] = useState<string>(ALL)
   const [modelSel, setModelSel] = useState<string>(ALL)
@@ -180,10 +196,22 @@ export function TokenDailyChart({
   const effectiveModel =
     modelSel !== ALL && !modelOpts.includes(modelSel) ? ALL : modelSel
 
-  const recent = useMemo(
-    () => history.slice(-14).map(d => ({ date: d.date, ...filterDay(d, providerSel, effectiveModel) })),
-    [history, providerSel, effectiveModel],
-  )
+  // The history lists only the days that recorded a turn, so its last 14 entries
+  // can span weeks; drawn as 14 equal bars, a quiet stretch vanished and the axis
+  // read as two busy weeks in a row. The bars are the 14 calendar days ending at
+  // the gateway's day (or the last recorded day), with a day that recorded
+  // nothing drawn empty.
+  const end = endDate && parseLocalDay(endDate) ? endDate : history[history.length - 1]?.date
+  const recent = useMemo(() => {
+    if (!end || !parseLocalDay(end)) {
+      return history.slice(-14).map(d => ({ date: d.date, ...filterDay(d, providerSel, effectiveModel) }))
+    }
+    const byDate = new Map(history.map(d => [d.date, d]))
+    return calendarDays(end, 14).map(date => {
+      const d = byDate.get(date)
+      return { date, ...(d ? filterDay(d, providerSel, effectiveModel) : emptyBucket()) }
+    })
+  }, [history, end, providerSel, effectiveModel])
   const maxTokens = Math.max(
     ...recent.map(d => d.input + d.output + d.cacheCreate + d.cacheRead),
     1,

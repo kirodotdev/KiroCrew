@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { filterDay, TokenDailyChart } from '../pages/overview/TokenDailyChart'
+import { calendarDays, filterDay, TokenDailyChart } from '../pages/overview/TokenDailyChart'
 
 const ALL = '__all__'
 
@@ -201,15 +201,55 @@ describe('TokenDailyChart figures for assistive technology', () => {
   it('lists every day with its tokens and cost', () => {
     render(<TokenDailyChart history={days} />)
     const items = screen.getAllByRole('listitem')
-    expect(items).toHaveLength(2)
-    expect(items[0]).toHaveTextContent('2026-05-13')
-    expect(items[1]).toHaveTextContent('2026-05-14')
-    expect(items[1]).toHaveTextContent('$0.05')
+    // One item per calendar day, so an idle day is announced too.
+    expect(items).toHaveLength(14)
+    expect(items[12]).toHaveTextContent('2026-05-13')
+    expect(items[13]).toHaveTextContent('2026-05-14')
+    expect(items[13]).toHaveTextContent('$0.05')
   })
 
   it('keeps the pointer tooltip out of the accessibility tree', () => {
     const { container } = render(<TokenDailyChart history={days} />)
     const tooltip = container.querySelector('.pointer-events-none')
     expect(tooltip?.getAttribute('aria-hidden')).toBe('true')
+  })
+})
+
+// The history lists only the days that recorded a turn. Drawn as its last 14
+// entries, a quiet week vanished and the bars read as consecutive days, so two
+// busy days ten days apart sat side by side with nothing between them.
+describe('TokenDailyChart calendar days', () => {
+  const tooltips = (container: HTMLElement) => Array.from(container.querySelectorAll('.pointer-events-none'))
+
+  it('draws the 14 calendar days ending at the gateway day, idle ones empty', () => {
+    const days = [
+      { ...sampleDay, date: '2026-05-03' },
+      { ...sampleDay, date: '2026-05-13' },
+    ]
+    const { container } = render(<TokenDailyChart history={days} endDate="2026-05-16" />)
+    const bars = tooltips(container)
+    expect(bars).toHaveLength(14)
+    expect(bars[0]).toHaveTextContent('2026-05-03')
+    expect(bars[10]).toHaveTextContent('2026-05-13')
+    expect(bars[13]).toHaveTextContent('2026-05-16')
+  })
+
+  it('ends at the last recorded day when no gateway day is given', () => {
+    const { container } = render(<TokenDailyChart history={[sampleDay]} />)
+    const bars = tooltips(container)
+    expect(bars).toHaveLength(14)
+    expect(bars[13]).toHaveTextContent('2026-05-14')
+    expect(bars[0]).toHaveTextContent('2026-05-01')
+  })
+
+  it('ignores a gateway day that is not a real calendar day', () => {
+    const { container } = render(<TokenDailyChart history={[sampleDay]} endDate="2026-02-30" />)
+    const bars = tooltips(container)
+    expect(bars).toHaveLength(14)
+    expect(bars[13]).toHaveTextContent('2026-05-14')
+  })
+
+  it('steps across a month boundary without skipping or repeating a day', () => {
+    expect(calendarDays('2026-03-02', 4)).toEqual(['2026-02-27', '2026-02-28', '2026-03-01', '2026-03-02'])
   })
 })

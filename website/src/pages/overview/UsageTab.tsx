@@ -141,6 +141,7 @@ export default function UsageTab() {
             providers={data.tokenProviders}
             models={data.tokenModels}
             providerModels={data.tokenProviderModels}
+            endDate={data.localDay}
           />
         </Card>
       )}
