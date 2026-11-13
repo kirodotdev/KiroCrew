@@ -2733,12 +2733,17 @@ alongside the owner shutdown event before arming cron, heartbeat,
 automatic memory work or channel transports. Persisted Crew work and restored
 legacy channel agents resume after that wait. Dashboard status and recovery
 routes remain available, while memory content routes return their existing
-fail-closed 503 during preparation. Every agent-backed dashboard turn waits up to
-30 seconds on the same task at the central pre-turn admission seam, before expiring controls,
+fail-closed 503 during preparation. Every agent-backed dashboard chat turn waits
+on the same task at the central pre-turn admission seam, before expiring controls,
 publishing the turn identity, resolving memory ownership, allocating a provider
-or writing metadata. A deadline returns a retryable `memory_unavailable` refusal
-without recording a session failure or consuming queued intent. The wait is
-shielded: a deadline or the user's Stop action cannot cancel shared preparation.
+or writing metadata. That wait has no 30-second grace: it ends when preparation
+succeeds (the turn then runs), within about a second of a recorded preparation
+failure or stopped startup, or at `MEMORY_PREPARATION_DEADLINE_SECONDS` plus a
+margin. The last two return a `memory_unavailable` refusal without recording a
+session failure or consuming queued intent. The other callers of the same wait
+(new conversation create, inbound webhooks, the crew pause hand-back check and the
+gateway boot supervisor) keep the bounded 30-second grace. The wait is shielded:
+a deadline or the user's Stop action cannot cancel shared preparation.
 While preparation runs, `_start_next_queued_turn` leaves a slot's queue untouched,
 posts one `MEMORY_PREPARATION_PARKED_TEXT` notice per slot ("Queued messages will run
 when it is ready"), and arms a one-shot done-callback that starts the next turn on
