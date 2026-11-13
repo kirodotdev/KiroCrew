@@ -337,6 +337,17 @@ security conductor's queue, has no concurrency cap. After two rounds in a row wi
 nothing accepted the conductor tells the user and re-plans the failing items
 once; a third stops new dispatches until the user answers.
 
+Host memory pressure pauses dispatch too. While the gateway sees host memory
+tight (sustained for ten minutes) or critical, the `conductor` block carries
+`host_pressure` (`level`, `since`, `age_secs`, `reading`, `load_per_cpu`), and
+a record nobody refreshed for 90 seconds reads as absent (a `clear`, written
+once, reads for 900 seconds so a busy conductor still gets its resume wake). Each level change
+(tight, critical, clear) wakes every watched conductor once. At `tight` the
+conductor starts nothing new; at `critical` it also holds its workers' heavy
+steps, and a `create` is refused `host_pressure_critical` (409) with nothing
+written; at `clear` it resumes. The signal is memory only: CPU load is shown,
+not acted on.
+
 ## Not the same as the session ledger, or subagents
 
 Two records carry the word, and a third mechanism gets reached for instead of

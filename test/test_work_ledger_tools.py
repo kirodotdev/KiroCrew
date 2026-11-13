@@ -404,6 +404,7 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "item_closed": 409,
         "item_cap_exceeded": 409,
         "goal_concurrency_cap_reached": 409,
+        "host_pressure_critical": 409,
         "depth_exceeded": 409,
         "crew_log_incomplete": 409,
         "cache_dirty": 409,

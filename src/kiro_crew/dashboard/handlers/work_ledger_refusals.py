@@ -40,6 +40,7 @@ _CODE_STATUS: dict[str, int] = {
     work_ledger.CODE_ITEM_CLOSED: 409,
     work_ledger.CODE_ITEM_CAP_EXCEEDED: 409,
     work_ledger.CODE_GOAL_CONCURRENCY_CAP_REACHED: 409,
+    work_ledger.CODE_HOST_PRESSURE_CRITICAL: 409,
     work_ledger.CODE_DEPTH_EXCEEDED: 409,
     work_ledger.CODE_FIELD_TOO_LONG: 400,
     work_ledger.CODE_INVALID_ACTION: 400,

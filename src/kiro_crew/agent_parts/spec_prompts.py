@@ -208,6 +208,21 @@ substance, a stall's shape. Never for a verdict.
 """,
     "close_item": """`work_ledger_record` `action=close` with the item's `state` is what ends an item.
 """,
+    "host_pressure": """**Host memory pressure pauses dispatch.** When `work_ledger_read` shows
+`conductor.host_pressure`, act on its `level`:
+
+- `tight`: start no new `create`, `bind` or `session_create`; let running items
+  finish. Say `paused: host memory tight (<reading>)` in your report.
+- `critical`: the same, and `decide` + `session_send` each open item about to run
+  a heavy step: hold full suites, builds and subagent waves until it clears; light
+  work is fine. A `create` is refused `host_pressure_critical` meanwhile.
+- `clear`, or no `host_pressure`: resume dispatch and tell held items to resume.
+
+While `host_pressure` is present it wins: dispatch nothing. Once it is clear or
+absent, `resource_status` sizes each wave again. Never kill a worker, and never
+ask the person about it.
+
+""",
     "skill_first": """The `goal-conductor` skill carries the operating procedure — the work-item
 tests, the dispatch steps, the patrol cycle, the stop conditions. Read it before
 acting on a goal. """,
@@ -361,6 +376,7 @@ loop.
 
 """,
     ),
+    ("host_pressure", _LEDGER_CONDUCTOR_RULES["host_pressure"]),
     (
         "patrol_ends",
         """**Patrol ends on two signals only:** every ledger item is terminal, or the user
