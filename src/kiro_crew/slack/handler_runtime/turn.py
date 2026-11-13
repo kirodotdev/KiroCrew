@@ -167,6 +167,7 @@ class _SlackTurn:
     # session's channel link (``test_crew_log_class_recorder`` reads it as one).
     _acquired: "bool"
     _agent: "str | None"
+    spec_agent: "str | None"
     answer: "_AnswerStream"
     client: "LLMProvider | None"
     _had_error: "bool"
@@ -911,9 +912,11 @@ async def _run_turn(turn: _SlackTurn) -> bool:
 
         # The permission ladder reads the routed conversation, its agent and this
         # turn's presentation off the turn (``_answer_permission_request``); none of
-        # them is rebound past this point.
+        # them is rebound past this point. Its spec hooks are the template's, so a
+        # channel bound to a Crew record is gated by the agent the record runs.
         turn.session_key = session_key
         turn._agent = _agent
+        turn.spec_agent = _context_agent
         turn.answer = answer
         turn.task = task
 

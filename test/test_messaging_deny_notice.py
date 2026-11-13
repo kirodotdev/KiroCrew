@@ -724,8 +724,9 @@ _SURFACES = {
         steer=r"^\s*await _steer_host_deny\(",
         audit=r"^\s*sel\(\)\.log_tool_invocation\(",
         sites=(
-            # _answer_permission_request: the PreToolUse hook said deny -- a host verdict.
-            _Site('error="hook_deny"', "host"),
+            # _answer_permission_request: the security gate's deny or the agent spec's
+            # own PreToolUse refusal -- a host verdict.
+            _Site("error=_deny_error,", "host"),
             # _reject_orphaned_tool: teardown answers a wire the fallback arms
             # re-raised past; not a decision of its own.
             _Site("Failed to reject orphaned tool", "cleanup"),

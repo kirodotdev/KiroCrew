@@ -232,6 +232,7 @@ def _ladder_turn(answer: Any) -> Any:
         context_builder=None,
         session_key="slack:probe-ladder",
         _agent=None,
+        spec_agent=None,
         status_ctrl=status,
         answer=answer,
         task=task,
