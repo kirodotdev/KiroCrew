@@ -19,7 +19,11 @@ on-disk bytes differ from it, so a later unrelated save cannot re-endorse a tamp
 file. Every key is covered, tightening and loosening alike; there is
 no key table. A file that differs is pending, and an ordinary save of it is refused
 (:func:`refuse_save_if_pending`) until the owner applies or discards the change, so the
-change is neither endorsed nor silently overwritten.
+change is neither endorsed nor silently overwritten. A file with no endorsed copy yet
+(one written before this check existed) is endorsed as it is once, at gateway start
+before any session of the run (:func:`adopt_unendorsed`); one it cannot take as written
+(missing, malformed, or not stored as Kiro Crew writes it) is served as written until the
+gateway's first save of it or a later start that can adopt it.
 
 **Where it applies.** The per-file bind, and the rename-detach that lapses it, exist
 ONLY in the Linux namespace sandbox, so the check runs on a Linux host that can build
@@ -64,6 +68,7 @@ this content check together.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
 import errno
 import hashlib
@@ -71,6 +76,7 @@ import json
 import logging
 import math
 import os
+import secrets
 import stat
 import sys
 import threading
@@ -471,10 +477,10 @@ def reconcile(leaf: str, disk_bytes: bytes) -> bytes:
     Where the sandbox seals these files (:func:`enforcement_active`): when the on-disk
     bytes differ from the gateway-endorsed copy, the endorsed copy is returned and the
     substitution is logged once -- so a direct in-sandbox rewrite of ANY key is ignored.
-    Elsewhere, or when there is no endorsed copy yet (a file the gateway has not saved
-    since this check shipped), the on-disk bytes are returned unchanged. Every gateway
-    publish of these files endorses first (:func:`endorsing`), so the gateway's own
-    rename never unseals a file with no copy. An existing but unreadable copy raises
+    Elsewhere, or when there is no endorsed copy (the gateway's start endorses each file
+    that has none and can be taken as written, :func:`adopt_unendorsed`), the on-disk
+    bytes are returned unchanged. Every gateway publish of these files endorses first
+    (:func:`endorsing`), so the gateway's own rename never unseals a file with no copy. An existing but unreadable copy raises
     ``OSError`` (:func:`endorsed_bytes`).
     shortcut: a host-side rename by another program (an editor saving by rename) also
     detaches the bind, and a file with no copy then loads an in-sandbox write as
@@ -544,6 +550,60 @@ def endorse_installed(path: Path, content: bytes) -> None:
     leaf = leaf_for(path)
     if leaf is not None:
         record(leaf, content, strict=enforcement_active())
+
+
+def adopt_unendorsed() -> None:
+    """Endorse each protected leaf that has no endorsed copy yet, as it is on disk.
+
+    The gateway runs this once at start, before any session of the run, so a file
+    written before this check existed is protected from the start instead of from the
+    gateway's first save of it. A leaf with anything at its copy's name is skipped, also
+    when a writer endorses it after that check (the copy is hard-linked into place, which
+    never replaces a name): the copy is the record that it was adopted, so a file that
+    differs from its copy stays pending. Read with the pending scan's own reader (:func:`_read_regular`), so a link
+    to a FIFO or ``/dev/zero`` cannot hang the start. Only a JSON object stored as Kiro
+    Crew writes one is adopted: a malformed file would become a baseline that blocks
+    Apply and Discard, and one with a byte-order mark or a carriage return never equals
+    the normalized text the config loaders compare with the copy. Never asks
+    :func:`enforcement_active`, which off-loop with nothing cached runs the userns probe.
+    """
+    for leaf in PROTECTED_LEAVES:
+        if os.path.lexists(_endorsed_path(leaf)):
+            continue
+        try:
+            content = _read_regular(config_dir() / leaf)
+        except OSError:
+            continue
+        if content.startswith(codecs.BOM_UTF8) or b"\r" in content:
+            continue
+        if _parse_object(content) is None:
+            continue
+        # Written whole under a private name, then hard-linked into place: a partial copy
+        # is never visible, and a link refuses a name another writer took meanwhile.
+        target = _endorsed_path(leaf)
+        staging = target.with_name(f".{leaf}.{secrets.token_hex(8)}.adopt")
+        created = False
+        try:
+            (config_dir() / RECORD_DIR_LEAF).mkdir(mode=_DIR_MODE, exist_ok=True)
+            _endorsed_dir().mkdir(mode=_DIR_MODE, exist_ok=True)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+            fd = os.open(staging, flags, _FILE_MODE)
+            created = True
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(staging, target)
+            _unrestored.pop(str(target), None)
+        except FileExistsError:
+            pass  # another writer's copy is in place: it is never replaced
+        except OSError:
+            # No hard links on this volume, a full disk: the leaf loads as written.
+            logger.warning("loosening provenance: could not adopt %s at start", leaf, exc_info=True)
+        finally:
+            if created:
+                with contextlib.suppress(OSError):
+                    os.unlink(staging)
 
 
 @contextlib.contextmanager
@@ -800,8 +860,9 @@ def pending_changes() -> list[dict]:
     """Each protected leaf whose on-disk bytes differ from its endorsed copy.
 
     ``[]`` wherever the content check does not apply (:func:`enforcement_active`).
-    A leaf with no endorsed copy is not pending (it is served as written until the
-    gateway's first save of it endorses it), and a leaf
+    A leaf with no endorsed copy is not pending: the gateway's start endorses each one
+    it can take as written (:func:`adopt_unendorsed`), and any other is served as
+    written until the gateway's first save of it or a later start adopts it. A leaf
     whose copy cannot be read is skipped (its loaders already fail closed). A file that
     is missing or unreadable while its copy exists is pending as ``removed`` (signature
     :data:`REMOVED_SIGNATURE`): every reader serves the copy (:func:`reconciled_bytes`),

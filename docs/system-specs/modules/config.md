@@ -134,9 +134,14 @@ without user namespaces (a container), the on-disk file is served as written. Ev
 device reads as removed). It is
 separate from the sibling `write_provenance.py`: that one pins the INODE
 identity for the Linux launcher, this one keeps the CONTENT the loaders parse. The copy is
-always a writer's published bytes; nothing endorses a file at rest. A file with no copy yet (one
-the gateway has not saved since this check shipped) is not pending and is served as written, as before this
-check; the gateway's first save of it endorses it (the known limit for such a file is in
+always a writer's published bytes, with one exception: the gateway's start endorses each
+protected file that has no copy yet (`adopt_unendorsed`), once, after the previous run's
+sessions are swept and before any session of the run, publishing the copy only while none
+exists (a hard link, so a save that endorses the file meanwhile keeps its own copy): only a
+regular file holding a JSON object stored as Kiro Crew writes one (no byte-order mark or carriage return, which the loaders'
+normalized read would never match). Any other file with no copy is not pending and is served as
+written until the gateway's first save of it endorses it or a later start adopts it (the known
+limit for such a file is in
 [security](../modules/security.md)). A file that differs from an existing copy is PENDING (`pending_changes`: leaf, on-disk signature,
 a changed-key diff with credential-bearing values withheld): it keeps loading as the endorsed
 copy until the owner applies or discards it in Settings > Security, or with `kirocrew config

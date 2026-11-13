@@ -921,6 +921,10 @@ async def run(self: GatewayOrchestrator) -> None:
     # path, and the force-exit handler, doing exactly their pre-existing work.
     await asyncio.to_thread(cleanup_orphaned_sessions, narrow_with_leaders=False)
 
+    # The previous run's sessions ended just above and none of this run exists yet:
+    # endorse each keystone file with no copy yet. Bound: four small reads and writes.
+    await asyncio.to_thread(loosening_provenance.adopt_unendorsed)
+
     # KAS MCP launch snapshots no session of this run references: the previous run's
     # agent processes, and the launchers they started, ended just above, and no
     # session of this run exists yet. The cutoff is taken HERE, so a snapshot this

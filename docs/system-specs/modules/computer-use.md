@@ -125,7 +125,9 @@ so nothing re-endorses a tampered `enabled: true`; while the keystone is pending
 ordinary save of it is refused (`file_pending_review`) until the owner applies or discards. Where the
 sandbox seals the keystone, a copy that cannot be written aborts the save, and an
 unreadable copy reads as an unreadable keystone (disabled). A keystone with no endorsed copy
-yet is read as written until the gateway's first save of it endorses it. A keystone that
+yet is endorsed as it is by the gateway's next start (`adopt_unendorsed`, a JSON object stored
+as Kiro Crew writes one); any other is read as written until the gateway's first save of it
+endorses it or a later start adopts it. A keystone that
 differs from its copy (a hand edit, or an in-sandbox write) is PENDING: `is_enabled()` keeps
 reading the endorsed copy until the dashboard owner applies or discards the change in
 Settings > Security (owner-gated, CSRF-guarded, never an agent or MCP tool), so writing
