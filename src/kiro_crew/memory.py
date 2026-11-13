@@ -1671,7 +1671,8 @@ class MemoryStore:
                     floor = max(1, min(2, len(terms)))
                     cursor = conn.execute(
                         f"SELECT path, content, ({score}) AS hits FROM memory_fts "
-                        "WHERE hits >= ? ORDER BY hits DESC, path LIMIT ?",
+                        # Reverse path order: ties go to the newest dated history file.
+                        "WHERE hits >= ? ORDER BY hits DESC, path DESC LIMIT ?",
                         (*parameters, floor, limit),
                     )
                     matched = cursor.fetchall()

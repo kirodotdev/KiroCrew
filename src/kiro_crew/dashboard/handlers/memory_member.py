@@ -304,23 +304,28 @@ async def api_memory_recall(request: web.Request) -> web.Response:
             facts = list(retrieval.get("facts") or [])
             episodes = list(retrieval.get("episodes") or [])
             wanted = recall_terms(query)
+
+            def coverage(body: str) -> float:
+                return len(wanted & recall_terms(body)) / max(1, len(wanted))
+
             for evidence in facts + episodes:
                 body = evidence.get("snippet", evidence.get("text", ""))
-                coverage = len(wanted & recall_terms(body)) / max(1, len(wanted))
                 # Semantic matches remain useful even without shared wording.
                 cosine = (evidence.get("retrieval") or {}).get("cosine")
                 semantic = cosine if isinstance(cosine, (int, float)) else 0.0
-                evidence["recall_relevance"] = max(0.5, coverage, semantic)
+                evidence["recall_relevance"] = max(0.5, coverage(body), semantic)
             for row in rows:
                 snippet = row["snippet"]
+                shown = snippet[:_MARKDOWN_SNIPPET_CHARS]
                 facts.append(
                     {
                         "id": "markdown:" + row["path"],
                         "source": row["path"],
-                        "snippet": snippet[:_MARKDOWN_SNIPPET_CHARS],
+                        "snippet": shown,
                         "snippet_truncated": row.get("snippet_truncated", False)
                         or len(snippet) > _MARKDOWN_SNIPPET_CHARS,
-                        "recall_relevance": row.get("relevance", 0.0),
+                        # Scored on the text it returns, not the whole file.
+                        "recall_relevance": coverage(shown),
                     }
                 )
             retrieval["facts"] = sorted(

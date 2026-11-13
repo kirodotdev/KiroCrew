@@ -275,6 +275,60 @@ async def test_empty_notebook_index_is_rebuilt_from_files_before_recall_answers(
     assert "index_unavailable" not in text
 
 
+@pytest.mark.asyncio
+async def test_long_history_files_never_push_answering_facts_out_of_recall(env, monkeypatch):
+    query = "What did we decide for the Zephyrine console homepage banner layout?"
+    store = await document_store(env, "")
+    filler = "Routine standup notes about unrelated chores and tickets. " * 40
+    days = [f"2026-09-{day:02d}" for day in range(10, 18)]
+    for day in days:
+        # Every query term is present, but far apart: the snippet sees one.
+        body = f"# {day}\n" + "".join(
+            f"#### {term}\n{filler}\n"
+            for term in ("zephyrine", "console", "homepage", "banner", "layout", "decide")
+        )
+        (store._history_dir / f"{day}.md").write_text(body, encoding="utf-8")
+    store.rebuild_index()
+    tier = env.tiers[""]
+    tier.set_semantic(
+        "project.zephyrine",
+        "Zephyrine console homepage banner: keep the hero card, drop the carousel FACT_ANSWER",
+        1.0,
+        "user_explicit",
+    )
+    assert tier.write_episodic(
+        "Zephyrine homepage banner layout review settled on one hero EPISODE_ANSWER",
+        importance=1.0,
+    )
+    env.state._slots["global"] = SimpleNamespace(blocks_reads=False)
+    env.metadata["dashboard:global"] = {"memory_store": "default"}
+    monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: os.getpid())
+    monkeypatch.setattr(memory_member, "_RECALL_CONTEXT_CAP", 1500)
+
+    response = await memory_member.api_memory_recall(
+        request(env, query={"q": query}, session="dashboard:global", internal=True)
+    )
+    assert response.status == 200, _response_text(response)
+    retrieval = json.loads(_response_text(response))["retrieval"]
+
+    facts, episodes = retrieval["facts"], retrieval["episodes"]
+    assert any("EPISODE_ANSWER" in row["text"] for row in episodes)
+    vector = [row for row in facts if not row["id"].startswith("markdown:")]
+    notebook = [row for row in facts if row["id"].startswith("markdown:")]
+    assert any("FACT_ANSWER" in row["snippet"] for row in vector)
+    assert notebook and facts[: len(vector)] == vector
+    assert all(
+        row["recall_relevance"] < min(v["recall_relevance"] for v in vector + episodes)
+        for row in notebook
+    )
+    shown = [row["id"].rsplit("/", 1)[-1] for row in notebook]
+    assert shown == sorted(shown, reverse=True)
+    assert shown[0] == f"{days[-1]}.md"
+    assert retrieval["omitted_for_payload_budget"] > 0
+    # The bound dropped notebook rows only: at most five ever entered.
+    assert len(notebook) + retrieval["omitted_for_payload_budget"] <= 5
+
+
 def test_noise_never_displaces_relevant_episode():
     payload = {
         "lessons_context": "rule " * 180,
