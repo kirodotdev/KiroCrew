@@ -17,6 +17,7 @@ import type { BrowserLiveCanvasHandle } from './BrowserLiveCardCanvas'
 import { clearTopOverlay, holdPinnedPromptAside } from './browserLiveClearance'
 import { BrowserLiveAllowView, BrowserLiveDoneRow, BrowserLiveLiveView, BrowserLiveStagedRow, hostOf } from './BrowserLiveCardViews'
 import BrowserLiveSheet from './BrowserLiveSheet'
+import { VaultUnsavedNotice } from './quickAsk/QuickAskVault'
 
 /** How long the takeover's grow animation takes to settle before the card re-checks its place. */
 const GROW_SETTLE_MS = 400
@@ -248,6 +249,7 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
             onOpenLive={openLive}
           />
         )}
+        {!staged && isCurrent && <VaultUnsavedNotice sessionKey={sessionKey} />}
       </motion.div>
       {/* The sheet surface of the stage, for this card's turn. */}
       {hostsSheet && <BrowserLiveSheet sessionKey={sessionKey} />}

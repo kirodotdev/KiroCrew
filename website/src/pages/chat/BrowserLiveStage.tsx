@@ -24,6 +24,7 @@ import type { BrowserHandbackSaid } from '../../api/client/browserLive'
 import { ReplayStepList, ReplayTimeline, replayKeyAction, useReplayPlayer } from './BrowserLiveTimeline'
 import { QuickAskZoom } from './quickAsk/QuickAskParts'
 import { useQuickAsk } from './quickAsk/useQuickAsk'
+import { VaultUnsavedNotice } from './quickAsk/QuickAskVault'
 
 /**
  * The agent's browser, big: the side panel's "Agent browser" view and the
@@ -331,6 +332,7 @@ export default function BrowserLiveStage({ sessionKey, stage, active }: BrowserL
           </div>
 
           {mode === 'live' && (!inControl || quick.scoped) && quick.askSlot}
+          <VaultUnsavedNotice sessionKey={sessionKey} />
           {inControl && !quick.scoped && mode === 'live' && turn && (
             <BrowserLiveHandbackBar key={turn.turnId} offered={turn.handbackOptions} onHandBack={release} draft={browserLiveStore.handBackDraft(sessionKey, turn.turnId)} className="shrink-0" />
           )}

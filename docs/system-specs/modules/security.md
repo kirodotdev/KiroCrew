@@ -1304,6 +1304,30 @@ Security properties:
   existed (405, `Allow: DELETE`). A remote server's `headers`
   and the process environment are not scanned: the first is never resolved, and
   the second is not a reference Kiro Crew wrote.
+- **Browser sign-in reads a login inside the gateway only.** Under the
+  `secrets_vault` feature preview, a browser `credentials` quick ask may be
+  answered from a vault login (`browser_harness/vault_fill.py`; see
+  [browser](browser.md), "Sign-in from the Secrets vault"). This is no read-back
+  path: the owner's card receives each matching login's entry name and username,
+  never a password; the person's click on the owner-only
+  `POST /api/browser/ask/answer` (internal secret refused) names one, and the
+  gateway reads its username and password and writes them straight into the
+  bound, re-verified page field. The agent's `ask` op and its outcome words do
+  not change. The offered usernames reach only the owner-only live event, for
+  the person to pick by; no password reaches it, and no password or username
+  reaches the agent, a log, the SEL, the replay, the poll or the tool result. A login is offered by base domain (eTLD+1 from the
+  bundled Public Suffix List), exact host and port where there is none, and never
+  from https onto an http page. The same quick ask stores what the person TYPED
+  only when they ticked "Save to Secrets store" (off by default, offered whenever they
+  type, beside a match too), only after the fill landed, and only as a new item
+  (`SecretVault.add_item_under_free_name` picks a free name under the store
+  lock, so nothing is overwritten, and skips every name `POST /api/secrets` would
+  refuse the same caller, through `secrets.reserved_name_check`: a Connections
+  client secret, the WakaTime OAuth tokens, and for a remote caller a channel
+  credential, so a remote session cannot plant one from the browser card; the
+  route and that check share `_managed_name_owned` and `_remote_channel_reserved`,
+  so each rule is written once). One SEL row per vault fill and per save
+  names the item and the origin.
 - **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
   which the OS-level sandbox bind-mounts away from the agent subprocess tree,
   so the agent cannot read the ciphertext off disk either. On Linux a mount

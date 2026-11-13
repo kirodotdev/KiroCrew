@@ -817,6 +817,55 @@ person holds the reopened tab is held for the hand-back like any other. The done
 line keeps two actions: Open live and Replay when the tab is open (Open in Chrome
 moves into the live view's menu), else Replay and Open in Chrome.
 
+**Sign-in from the Secrets vault** (`browser_harness/vault_fill.py`, behind the
+feature preview `dashboard.feature_previews.secrets_vault`, which the gateway and
+the card both read; off, the card is as above). The agent's side does not change:
+the same `ask` op, the same outcome words, and `type` into a password field stays
+refused. For a `credentials` ask (targeted or the sign-in walk), `run_ask` reads
+the vault in the gateway and puts each matching login item's entry name and
+username on the card (`ask.vault = {items: [{name, username}], more?}`, never a
+password; a name and a username at most 120 plain characters, else not offered;
+at most `MAX_OFFERED` = 50 items, and `more` counts any past that, which the card
+says once all are shown); `vault` is absent when the preview is off or the vault cannot be
+read. A login matches by base domain, as 1Password's and Bitwarden's defaults do:
+its stored URL's host and the ask's host have the same registrable domain (eTLD+1)
+by the Public Suffix List with its private section (the `publicsuffixlist` wheel's
+bundled copy, pinned exactly, never fetched), port ignored. A host with no
+registrable domain (an IP, `localhost`, one label, a public suffix itself) matches
+only the same host and port. An http page is offered only logins stored for http;
+an http login on an https page is offered. Hosts compare in punycode; a URL that
+does not parse, or a host that will not encode, matches nothing. Per-URL match
+modes and linked sites (`apple.com` with `icloud.com`) need a vault schema change
+and are not offered.
+
+The card shows one button per match, labelled by the login's username (the
+person is already on the site, so the entry name adds nothing); a login with no
+username shows its entry name, and two offered logins sharing a username also show
+each entry name, muted. The first 3 show; a **More** row shows the rest in place.
+With a match, the typed fields sit behind an **Other account** row. A click on a
+login posts `{action: "fill", vault_item: <name>}` and nothing else (no `values`, no
+`save`); the gateway refuses a name the card was not offered (400 `bad_action`),
+re-reads the item and re-matches it against the bound origin (an item edited,
+moved or deleted since the card was drawn is 409 `vault_unusable`, the ask stays
+open), keeps the password and, where the ask has a place for one, the username,
+checks them with `check_values` like typed values, and fills through the same
+bound, re-verified `fill` / `sign_in`. No fill happens without that click.
+Typing (no match, or **Other account** opened beside one) offers **Save to Secrets store**,
+off by default (`save: true` on the typed answer), so a second account can be saved
+from the card. Only after a fill that landed does the gateway store a NEW login item named after
+the host (`github.com`, then `github.com (2)`... on a clash: an existing item is
+never overwritten, and a name the Secrets write route would refuse this caller is
+skipped too: a Connections client secret, the WakaTime OAuth tokens and, for a
+remote caller, a channel credential; `secrets.reserved_name_check`), with the typed username and password and
+`urls = [the bound origin]`. The answer carries `saved` back to the card; a save
+that failed is said in an `ErrorNotice` after the sheet is gone, by the session's
+current card in every view (live or finished) and by the big view in live and
+replay alike, until the person dismisses it; the turn ending does not hide it. One
+SEL row per vault fill and per save names the item and the origin. No password
+reaches anything but the page. The offered usernames reach only the owner's live
+card (the owner-only live event); no username or password reaches a log, the SEL,
+the replay, the poll or the tool result, so the agent sees neither.
+
 ### Turn replay
 
 `browser_harness/recording.py` keeps one recording per (session, turn) so the
@@ -1207,7 +1256,7 @@ installs the browser (`browser_harness/governance.py`, refusals shaped by
 | the engine starting (browser, relay, daemon, credential apply) | `HarnessSupervisor._start` |
 | hand-back and quick-ask polls of a parked tool call | the two poll routes; the tool ends its wait on `policy_denied` |
 | takeover claim and input, visibility, frame acks, "Open in browser", "Open live" | `handlers/browser_live._run` |
-| quick-ask answer (fill, take over, done) | `handlers/browser_ask.api_browser_ask_answer` |
+| quick-ask answer (fill, fill from the vault, take over, done) | `handlers/browser_ask.api_browser_ask_answer` |
 | turn replay (list, detail, frames) | `handlers/browser_recordings._gate` |
 | Settings → Browser status, Install, Connect | `handlers/browser_harness_status` |
 | startup auto-install and warm connect | `auto_setup_browser_harness` (`policy_denied` outcome) |
@@ -1437,6 +1486,9 @@ modifies it, and the row is silent when the directory is absent.
 | Local addresses | `navigate` keeps the public-only gate plus `dashboard.browser_local_origins`, applied TWICE by one shared predicate (`browser_harness/url_gate.py`): in the shim to the URL asked for, and in the gateway to the URL the navigation (or `back`) committed on, so a public page that redirects to loopback, private or link-local is refused (`redirect_refused`) and the tab moved to `about:blank`. **Accepted residual:** DNS rebinding (a public name resolving to a private address) is not seen by either check; names are not resolved |
 | Governance | `capabilities.browse` is checked on every call and a denial never falls back; the gateway asks it again, fail-closed, at every browser route, the engine start and every helper, so a direct POST or a policy pushed mid-session cannot keep a browser running |
 | Page content | treated as untrusted input; a URL, instruction or form target read off a page never decides the next navigation |
+| Agent obtains a vault login through a quick ask | the agent's `ask` and its outcome words are unchanged; the owner's card shows each login's entry name and username, never a password; a vault fill needs the person's click on the owner-only answer route (which refuses the internal secret) and goes through the same bound, re-verified fill; the item is re-read and re-matched against the bound origin at answer time; values never reach a log, the SEL, the replay, the live event, the poll or the tool result |
+| A typed password is kept | only when the person ticked "Save to Secrets store" (off by default) while typing, and only after the fill landed; the save is a new item (never an overwrite) for the bound origin |
+| A saved login is offered on the wrong site | base-domain match by the bundled Public Suffix List (private section included); exact host and port where there is no registrable domain; never an https login on an http page. **Accepted residual:** every host under one registrable domain is treated as one site, as in 1Password's and Bitwarden's defaults |
 | Preview tab | native view, deny-all partition, no agent channel, local origins only |
 
 ### What this stack replaced
