@@ -88,6 +88,7 @@ export default function CrewmateSwitcher({
   activeName,
   onPick,
   onCreate,
+  canImport = true,
   onShowRoster,
   onToggleStar,
   starPending,
@@ -106,6 +107,8 @@ export default function CrewmateSwitcher({
   onPick: (name: string) => void
   /** Opens the New crewmate dialog. Omitted while creation is held. */
   onCreate?: () => void
+  /** Whether Import from file is offered under New bot (it is the owner's alone). */
+  canImport?: boolean
   /** Pins the roster column back beside the thread. The page hides this chip
    *  while the column is open (it is the list the chip folds), so the action
    *  only ever shows; the column's own close lifts the pin. Omitted, the
@@ -363,7 +366,7 @@ export default function CrewmateSwitcher({
             {/* Import from file sits under New crewmate and is held with it:
                 both end in a new crewmate, and only the owner's press on the
                 import card creates one (rfc-crewmate-share.md §5.4). */}
-            {onCreate && (
+            {onCreate && canImport && (
               <button
                 type="button"
                 onClick={() => {

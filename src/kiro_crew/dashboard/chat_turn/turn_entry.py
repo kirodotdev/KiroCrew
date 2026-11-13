@@ -254,6 +254,12 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         # `_turn_owner_sent` is overwritten here. Adopted only for a turn the
         # person sent.
         slot._turn_owner_sent = turn._directive_owner_origin is True and slot._turn_user_sent
+        # A team Crew teammate started this turn (``attribution.teammate_started``,
+        # set by their request or by the drain from its entries): on a Bot's thread
+        # it takes none of the owner's approvals (``tool_approval``).
+        from kiro_crew.shared_crew.attribution import teammate_started
+
+        slot._turn_teammate_sent = teammate_started()
         # The assistant rows this turn writes say the agent started it
         # (`_segment_row_meta`); every outermost turn sets it, so no turn inherits it.
         slot._turn_agent_started = turn._agent_started

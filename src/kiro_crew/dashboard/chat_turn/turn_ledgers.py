@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.chat_delivery import attachment_meta
 from kiro_crew.dashboard.chat_utils import RecoveryPayload
 from kiro_crew.dashboard.recovery_replays import replays_of
-from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels
+from kiro_crew.dashboard.slot_queue_repository import stamp_source_channels, stamp_teammate_origin
 from kiro_crew.wakatime.heartbeats import CADENCE_MIN_INTERVAL_SECS
 
 if TYPE_CHECKING:
@@ -218,6 +218,10 @@ def _queue_recovery(
         directive_channel_origin=_directive_channel_origin,
         directive_owner_origin=_recovery_owner_origin,
     )
+    # A recovery is a second turn of the same request: a turn a teammate's text
+    # reached stays the teammate's, off the owner's approvals.
+    if getattr(slot, "_turn_teammate_sent", False) is True:
+        stamp_teammate_origin(slot, _recovery_qid)
     # A recovery a Regenerate turn queues before it has any reply (a replay of
     # its message or a continuation) is the same Regenerate's next attempt: it
     # settles the previous reply, not this turn.

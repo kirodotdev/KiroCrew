@@ -212,11 +212,45 @@ async def card_turn_delegation_middleware(request: web.Request, handler: Any) ->
         refusal = _refuse(
             403,
             "card_turn_delegation_refused",
-            "a turn started by a Dashboard card cannot hand work to another session or job",
+            "a turn started by a Dashboard card, or by a teammate on a Bot's thread, cannot hand "
+            "work to another session or job",
+        )
+        _audit(request, None, refusal)
+        return refusal
+    if (
+        request.get("internal_auth") is True
+        and request.method == "POST"
+        and request.path in _TEAMMATE_SELF_WRITE_ROUTES
+        # The live turn or the one this request arrived from: a turn stopped while
+        # the request waits in auth, and an owner's turn started after it, does not
+        # turn an in-flight write into the owner's. A teammate's turn only: an
+        # owner's Dashboard card turn keeps these writes.
+        and teammate_turn_seen(request, request.headers.get("X-Session-Key", "").strip())
+    ):
+        refusal = _refuse(
+            403,
+            "restricted_turn_self_write_refused",
+            "a teammate's turn on a Bot's thread cannot change the Bot's own record",
         )
         _audit(request, None, refusal)
         return refusal
     return await handler(request)
+
+
+#: The Bot's own-record writes its ``kirocrew-mate`` tools make without a prompt
+#: (``agent_parts.spec_grants._MATE_AUTO_GRANTS``): ``update_self`` (name,
+#: description, face), ``save_notes`` (its briefing), ``save_goal_report`` and
+#: ``key_result_progress`` (its goal readings). Each is pre-allowed because the
+#: owner asked for it in the Bot's own chat; a teammate's turn there is not the
+#: owner's word, so these answer 403 for it. Reads and card offers are untouched.
+_TEAMMATE_SELF_WRITE_ROUTES = frozenset(
+    {
+        "/api/member/self/update",
+        "/api/member/self/notes",
+        "/api/member/self/goals/report",
+        "/api/member/self/goals/key-result",
+    }
+)
 
 
 def card_turn_cron_tool_refusal(
@@ -233,7 +267,8 @@ def card_turn_cron_tool_refusal(
     refusal = _refuse(
         403,
         "card_turn_delegation_refused",
-        "a turn started by a Dashboard card cannot hand work to another session or job",
+        "a turn started by a Dashboard card, or by a teammate on a Bot's thread, cannot hand "
+        "work to another session or job",
     )
     _audit(request, None, refusal)
     return refusal
@@ -252,14 +287,26 @@ def latest_user_row_is_card(messages: list[dict]) -> bool:
 
 
 def card_turn_running(session_key: str) -> bool:
-    """Whether a Dashboard card's turn is running on *session_key* right now."""
+    """Whether a turn that takes no auto-approval is running on *session_key* right now.
+
+    A Dashboard card's turn, or a team Crew teammate's turn on a Bot's thread
+    (``approval_posture.teammate_turn_running``): neither may hand work to anything
+    that would take its approvals from elsewhere, so every card refusal holds both.
+    """
+    from kiro_crew.dashboard.approval_posture import teammate_turn_running
+
     with _lock:
-        return _running_card_turns.get(session_key, 0) > 0
+        if _running_card_turns.get(session_key, 0) > 0:
+            return True
+    return bool(session_key) and teammate_turn_running(session_key)
 
 
 #: Request key: whether the session the request names in ``X-Session-Key`` was running
 #: a card turn when the request ARRIVED (:func:`card_turn_arrival_middleware`).
 CARD_TURN_AT_ARRIVAL = "kirocrew_card_turn_at_arrival"
+
+#: Request key: the same, for a team Crew teammate's turn on a Bot's thread alone.
+TEAMMATE_TURN_AT_ARRIVAL = "kirocrew_teammate_turn_at_arrival"
 
 
 @web.middleware
@@ -273,9 +320,31 @@ async def card_turn_arrival_middleware(request: web.Request, handler: Any) -> we
     a refusal (it names the session whose mark is read), so trusting it here, before
     auth, can refuse a caller's own request and never admit one.
     """
+    from kiro_crew.dashboard.approval_posture import teammate_turn_running
+
     caller = request.headers.get("X-Session-Key", "").strip()
     request[CARD_TURN_AT_ARRIVAL] = card_turn_running(caller)
+    request[TEAMMATE_TURN_AT_ARRIVAL] = bool(caller) and teammate_turn_running(caller)
     return await handler(request)
+
+
+def teammate_turn_seen(request: Any, session_key: str) -> bool:
+    """Whether *session_key* runs a teammate's Bot turn now, or did when *request* arrived.
+
+    The teammate-only half of :func:`card_turn_seen`, for the Bot's own-record writes
+    an owner's card turn keeps.
+    """
+    from kiro_crew.dashboard.approval_posture import teammate_turn_running
+
+    if not session_key:
+        return False
+    if teammate_turn_running(session_key):
+        return True
+    try:
+        arrived = request.get(TEAMMATE_TURN_AT_ARRIVAL) is True
+    except Exception:
+        return False
+    return arrived and request.headers.get("X-Session-Key", "").strip() == session_key
 
 
 def card_turn_seen(request: Any, session_key: str) -> bool:

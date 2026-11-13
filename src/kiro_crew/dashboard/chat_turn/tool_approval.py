@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.agent_sdk.spec_hooks import post_tool_identity, spec_keys_notice
+from kiro_crew.dashboard.approval_posture import teammate_bot_turn
 from kiro_crew.dashboard.chat_utils import _broadcast_auto_tool, open_construct_at_end
 from kiro_crew.dashboard.deny_override import (
     DENY_OVERRIDE_META_KEY,
@@ -249,6 +250,9 @@ def _slot_is_trusted(slot: Any) -> bool:
     signal is its watchdog, and renewing here would let a crew whose watchdog died
     keep its grant alive off its own tool calls — which is the bound this is for.
     """
+    if teammate_bot_turn(slot):
+        # A teammate's turn on a Bot's thread runs on none of the owner's grants.
+        return False
     if getattr(slot, "_trust", False):
         return True
     scope = str(getattr(slot, "_trust_scope", "") or "")
@@ -558,12 +562,19 @@ def _pay_permission_cut(turn: _ChatTurn) -> None:
 
 
 def _audit_card_turn_decline(*, session_key: str, slot: Any, event: Any, tier: str) -> None:
-    """Record that an auto-approve was withheld because the turn is a Dashboard card's.
+    """Record that an auto-approve was withheld because the turn is a Dashboard card's,
+    or a teammate's on a Bot's thread.
 
     Written only for the tiers that decide without asking anyone (the hook
     auto-approve list and session trust or YOLO), where the grant WOULD have applied.
     ``tier`` names which one. The title is redacted like every other tool row.
     """
+    if teammate_bot_turn(slot):
+        error = "the turn was started by a teammate, who never runs on the owner's approvals"
+        reason = "teammate_turn"
+    else:
+        error = "the turn was started by a Dashboard card, which never inherits an auto-approval"
+        reason = "card_origin_turn"
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -572,8 +583,8 @@ def _audit_card_turn_decline(*, session_key: str, slot: Any, event: Any, tier: s
         tool_kind=event.tool_kind,
         outcome="auto_approve_declined",
         request_id=event.request_id,
-        error="the turn was started by a Dashboard card, which never inherits an auto-approval",
-        metadata={"reason": "card_origin_turn", "tier": tier},
+        error=error,
+        metadata={"reason": reason, "tier": tier},
     )
 
 
@@ -653,7 +664,12 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
     # card. A hook DENY still denies: that rung only ever refuses. A tool the agent's own
     # spec pre-allows (``allowedTools``) never raises a permission request, so it never
     # reaches this function and is outside the rule.
-    _card_turn = turn._card_origin
+    # A team Crew teammate's turn on a Bot's thread takes the same path: the owner's
+    # grants (trust, trust-reads, a scoped grant, trusted patterns and YOLO) are the
+    # owner's approvals, never the teammate's, so the call reaches the approval
+    # card. Read per request, so a grant the owner adds mid-turn is withheld too.
+    # Session deny overrides already need the owner's own turn (``slot_may_override``).
+    _card_turn = turn._card_origin or teammate_bot_turn(slot)
     # Drain the key as soon as its permission decision begins. The
     # stream handles one decision at a time, so one bounded key is
     # enough for every approval arm below and in _on_permission_prompt;
@@ -1401,6 +1417,15 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
         _audit_card_turn_decline(session_key=session_key, slot=slot, event=event, tier="trust")
         slot_trusted = False
         yolo_active = False
+    elif teammate_bot_turn(slot) and (
+        getattr(slot, "_trust", False) is True
+        or str(getattr(slot, "_trust_scope", "") or "")
+        or state.is_yolo_active()
+    ):
+        # A teammate's Bot turn already reads neither grant (``_slot_is_trusted`` and
+        # ``yolo_reaches`` answer no), so the decline is recorded here: the owner's
+        # Trust or YOLO is on, and this call asks instead.
+        _audit_card_turn_decline(session_key=session_key, slot=slot, event=event, tier="trust")
     if (
         slot._trust_reads
         and not slot_trusted

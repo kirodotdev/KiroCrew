@@ -47,6 +47,7 @@ interface MembersPageThreadHeaderProps {
   profile: ProfileCardOpen | null
   openQuick: () => void
   createHeld: string | null
+  importHeld: boolean
   active: MemberRosterRow
 }
 
@@ -81,7 +82,7 @@ function PanelOpener({ inBar, pressed, onToggle }: { inBar: boolean; pressed: bo
 /** The thread header, portaled into the shell's top bar while the page has one there. */
 export function MembersPageThreadHeader({
   layout, profileCard, drawers, rosterView, thread, threadView, rosterSignals, profileFlight, navigation,
-  navigate, location, setSearchParams, profile, openQuick, createHeld, active,
+  navigate, location, setSearchParams, profile, openQuick, createHeld, importHeld, active,
 }: MembersPageThreadHeaderProps) {
   const { t } = useTranslation()
   const { rosterPinned, switcherSlotRef, setRosterPin, panelVisible, showOpener } = layout
@@ -143,6 +144,7 @@ export function MembersPageThreadHeader({
             if (m) void openMember(m)
           }}
           onCreate={createHeld ? undefined : openQuick}
+          canImport={!importHeld}
           onShowRoster={() => setRosterPin(true)}
           onToggleStar={toggleStar}
           starPending={starPending}

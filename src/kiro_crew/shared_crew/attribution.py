@@ -20,10 +20,11 @@ writer carries the key unchanged because no writer lists it as owned.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from kiro_crew.shared_crew.codec import SCHEMA_VERSION
@@ -308,6 +309,51 @@ def bind_request_author(actor: ActorContext) -> None:
         task = None
     if task is not None:
         _REQUEST_AUTHOR.set((task, author_meta(actor)))
+    # Set on every request, so a keep-alive task never carries the last caller's.
+    _TEAMMATE_STARTED.set(_is_relay_teammate(actor.principal))
+
+
+#: Whether the work running in this context was started by a team Crew teammate
+#: the Kiro relay verified. Unlike :data:`_REQUEST_AUTHOR` it IS inherited: a turn
+#: or drain the teammate's request starts runs as the teammate's, which is what
+#: keeps it off the owner's approvals (``chat_turn.tool_approval``). Inheriting
+#: errs only toward asking: a successor the queue drain starts sets it from its
+#: own entries (:func:`teammate_origin`).
+_TEAMMATE_STARTED: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "shared_crew_teammate_started", default=False
+)
+
+
+def _is_relay_teammate(principal: Principal) -> bool:
+    """A person the relay verified who is not this Crew's owner.
+
+    ``identity.relay_principal`` is the one constructor of a ``kiro``-provider
+    principal, and only for a caller who is not the owner (the relayed owner keeps
+    the local operator's provider).
+    """
+    from kiro_crew.shared_crew.contracts import Provenance
+    from kiro_crew.shared_crew.identity import PROVIDER_KIRO
+
+    return (
+        principal.kind is PrincipalKind.HUMAN
+        and principal.provider == PROVIDER_KIRO
+        and principal.provenance is Provenance.KIRO_RELAY
+    )
+
+
+def teammate_started() -> bool:
+    """Whether the work running here was started by a relay teammate."""
+    return _TEAMMATE_STARTED.get()
+
+
+@contextlib.contextmanager
+def teammate_origin(started: bool) -> Iterator[None]:
+    """Start the work created inside the block as a teammate's, or as nobody's."""
+    token = _TEAMMATE_STARTED.set(bool(started))
+    try:
+        yield
+    finally:
+        _TEAMMATE_STARTED.reset(token)
 
 
 def with_request_author(meta: dict[str, Any] | None) -> dict[str, Any] | None:

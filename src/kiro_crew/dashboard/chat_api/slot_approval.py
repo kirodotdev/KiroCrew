@@ -879,6 +879,12 @@ def _sweep_pending_approvals(
         # row's window on the event loop (``load_window_off_loop`` is what a
         # reader awaits first), once per such slot on every all-slots grant.
         return
+    from kiro_crew.dashboard.approval_posture import teammate_bot_turn
+
+    if teammate_bot_turn(slot):
+        # A teammate's turn on a Bot's thread takes no grant, a new one included:
+        # its open cards stay for a person to answer.
+        return
     _elicitations = _pending_elicitation_ids(slot)
     for aid, fut in list(slot._approval_futures.items()):
         if aid in _elicitations or _is_deny_override_card(slot, aid):

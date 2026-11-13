@@ -358,6 +358,7 @@ class _ChatSlot:
         "_turn_channel_origin",
         "_turn_user_sent",
         "_turn_owner_sent",
+        "_turn_teammate_sent",
         "_turn_agent_started",
         "_turn_wrote_text",
         "_steer_admissions",
@@ -716,6 +717,9 @@ class _ChatSlot:
     _turn_channel_origin: bool
     _turn_user_sent: bool
     _turn_owner_sent: bool
+    #: A team Crew teammate started the turn running now; on a Bot's thread it takes
+    #: none of the owner's approvals (``chat_turn.tool_approval``).
+    _turn_teammate_sent: bool
     #: The turn running now is one the agent started on its own between prompts
     #: (``chat_turn.agent_started``); its assistant rows carry ``meta.origin``.
     _turn_agent_started: bool

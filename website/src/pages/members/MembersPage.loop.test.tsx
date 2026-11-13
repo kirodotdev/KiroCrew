@@ -6,6 +6,8 @@ import { renderWithProviders } from '../../test/helpers'
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },
     memberThread: vi.fn((slug: string) =>
       Promise.resolve({ slot_key: 'member-' + slug, slug, member: slug, created: true }),

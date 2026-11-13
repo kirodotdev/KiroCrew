@@ -21,6 +21,8 @@ import type { Notification } from '../types'
 vi.mock('../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
     ackNotification: vi.fn().mockResolvedValue({}),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     updateNotificationChannelSettings: vi.fn().mockResolvedValue({}),

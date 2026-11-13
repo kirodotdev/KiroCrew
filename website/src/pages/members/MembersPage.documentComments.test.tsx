@@ -22,6 +22,8 @@ const COMMENT = 'Say how long the query is kept.'
 vi.mock('../../api/client', () => ({
   api: {
     members: vi.fn(),
+    // The owner check behind Import from file (`useViewerIsNotOwner`): the owner.
+    viewerOwnerOk: vi.fn(() => Promise.resolve(true)),
     teams: { list: vi.fn(() => Promise.resolve({ teams: [] })) },
     crewBoard: vi.fn(() => Promise.reject(Object.assign(new Error('no_ledger'), { status: 404 }))),
     memberThread: vi.fn(),

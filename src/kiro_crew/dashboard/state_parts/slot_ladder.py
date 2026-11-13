@@ -39,8 +39,8 @@ Writes: ``_acp_pipe_death_retries``, ``_active_fallback_model``, ``_batch_reject
 ``_synthesis_recheck``, ``_synthesis_rechecks``,
 ``_tool_stall_exhausted_emitted``, ``_tool_stall_retries``, ``_transient_5xx_retries``,
 ``_transient_ladder_started``, ``_turn_agent_started``, ``_turn_channel_narrowed``,
-``_turn_channel_origin``, ``_turn_owner_sent``, ``_turn_retries``, ``_turn_user_sent``,
-``_turn_wrote_text``,
+``_turn_channel_origin``, ``_turn_owner_sent``, ``_turn_retries``,
+``_turn_teammate_sent``, ``_turn_user_sent``, ``_turn_wrote_text``,
 ``_wait_contested``, ``_wait_last_ping``,
 ``_wait_state``, ``_wait_steer_baseline``, ``replays``.
 """
@@ -448,6 +448,8 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     # session reads (`handlers_instances_crew_reads`), whose peer transcripts
     # only the owner may see.
     self._turn_owner_sent = False
+    # Set by every outermost turn's open, like the next one.
+    self._turn_teammate_sent = False
     # Set by every outermost turn's open, so it describes the turn running now.
     self._turn_agent_started = False
     # Whether the turn running now has streamed reply text. Reset by every

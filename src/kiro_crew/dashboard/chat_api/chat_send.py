@@ -785,6 +785,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         )
     if slot.mode == "member":
         _member_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        # A team Crew teammate never runs on the owner's approvals (thread open's check).
+        from kiro_crew.dashboard.handlers.members import teammate_turn_refusal
+
+        if (_refused := teammate_turn_refusal(request, _member_cfg, slot)) is not None:
+            return _refused
         if slot.agent not in _member_cfg.agents:
             sel().log_api_access(
                 caller=request.remote or "",
