@@ -3011,6 +3011,7 @@
       "agent_wrong_version_detail": "This host has {{name}} {{version}}, which {{productName}} has not verified. Install the verified release to use it.",
       "agent_install_on_host": "Install {{name}} on the gateway host.",
       "agent_missing_components": "Missing: {{components}}",
+      "agent_install_needs_node": "This command needs Node.js and npm on the gateway host. <0>Download Node.js</0>",
       "agent_install_then_check": "After installing, press Check again so the gateway looks for {{name}} again.",
       "agent_restart_required_detail": "{{name}} is installed on the gateway host. Press Check again to pick it up. If this line is still here after that, restart {{productName}} on that host.",
       "agent_unverified_detail": "{{productName}} could not confirm that {{name}} is installed. Press Check again to verify the installation before using this agent. Setup stays open until your chosen agent is ready. You can switch agents here, or later in Settings > Agent Harness.",

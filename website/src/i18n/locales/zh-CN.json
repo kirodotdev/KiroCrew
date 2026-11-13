@@ -7865,6 +7865,7 @@
       "agent_wrong_version_detail": "此主机上的 {{name}} 版本为 {{version}}，{{productName}} 未验证过该版本。请安装已验证的版本后再使用。",
       "agent_install_on_host": "在网关主机上安装 {{name}}。",
       "agent_missing_components": "缺少组件：{{components}}",
+      "agent_install_needs_node": "此命令需要网关主机上已安装 Node.js 和 npm。<0>下载 Node.js</0>",
       "agent_install_then_check": "安装后点击“重新检查”，让网关重新查找 {{name}}。",
       "agent_restart_required_detail": "{{name}} 已安装在网关主机上。点击“重新检查”以识别它。如果这行仍然出现，请在该主机上重启 {{productName}}。",
       "agent_unverified_detail": "{{productName}} 无法确认 {{name}} 是否已安装。使用此代理前，点击“重新检查”验证安装。在你选择的代理准备就绪之前，安装设置会保持打开。你可以在这里切换代理，也可以稍后在“设置 > 代理运行框架”中切换。",

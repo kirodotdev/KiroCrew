@@ -8283,6 +8283,7 @@
       "agent_wrong_version_detail": "Este host tem o {{name}} {{version}}, que o {{productName}} não verificou. Instale a versão verificada para usá-lo.",
       "agent_install_on_host": "Instale o {{name}} no host do gateway.",
       "agent_missing_components": "Componentes ausentes: {{components}}",
+      "agent_install_needs_node": "Este comando precisa do Node.js e do npm no host do gateway. <0>Baixar o Node.js</0>",
       "agent_install_then_check": "Depois de instalar, toque em Verificar novamente para que o gateway procure o {{name}} de novo.",
       "agent_restart_required_detail": "O {{name}} está instalado no host do gateway. Toque em Verificar novamente para detectá-lo. Se esta linha continuar, reinicie o {{productName}} nesse host.",
       "agent_unverified_detail": "O {{productName}} não conseguiu confirmar que o {{name}} está instalado. Pressione Verificar novamente para confirmar a instalação antes de usar este agente. A configuração continua aberta até que o agente escolhido esteja pronto. Você pode trocar de agente aqui ou, mais tarde, em Configurações > Harness do agente.",
