@@ -6806,7 +6806,7 @@ any of them names an app. `APP_SDK_LEVEL` is one integer on both sides
 pull-request panel (§18g); level 6 adds the SDK's issue list (§18h); level 7 adds the
 manifest's `agentReadOnlyDirs` (§39), the backend SDK package (§40), and the desktop
 window host's spanning overlay, background window, panel gutter and the messages between
-an app's windows (§35). Several seams share level 7, so an app that needs one
+an app's windows (§35); level 8 adds `ctx.embed`'s batch members. Several seams share level 7, so an app that needs one
 feature-detects it (the manifest key or attribute), never the level alone. An app reads `ctx.sdk_level` or the SDK export to detect an
 older host and degrade, instead of failing on a missing attribute.
 
@@ -6835,6 +6835,27 @@ process and message), and when called on a running event loop. `run(func, *args,
 **kwargs)` binds the call with `functools.partial` before handing it to
 `executors.run_in_embed_pool`, so no keyword an app passes reaches the pool's own
 parameters. No method raises into the app.
+
+The batch members `embed_batch_sync(texts, instruction=None)` and its pooled
+`embed_batch` (seam level 8) are ungated like the rest of `EmbedSDK`: no manifest key
+could gate them honestly while the single-text members load the same model, so fair
+use comes from the bulk priority and the batch cap. They return an `EmbedBatchResult`
+with `model_id`, `dim` and
+`embeddings_shared.embedding_space_signature(model_id, dim)`, or an empty result with
+a `reason` (`invalid_input`, `too_many_texts` past `MAX_BATCH_TEXTS` = 64,
+`on_event_loop`, `not_ready`, `failed`). They call the shared backend's `embed_batch`
+at `PRIORITY_BULK`, behind memory recall (`PRIORITY_INTERACTIVE`) and explicit memory
+writes (`PRIORITY_NORMAL`), level with the host's own bulk work. A `None` answer is
+the backend's "no embedding available" (a cold model loading, a model swap, a full
+bulk queue) and reads as `not_ready`; `failed` is a raise or malformed vectors. Bulk
+work is paced and never times out, so `embed_batch` runs on `mc-membg`, not `run`'s
+`mc-embed`, whose slots turn context waits on, and under an admission of its own (one
+slot, one thread), not consolidation's, so the host's memory writes never queue
+behind app batches for a slot or a thread. The backend cuts each text, and an
+optional instruction is prefixed as `Instruct: <instruction>\nQuery:`. No new route
+or listener: an app that serves vectors over HTTP does so from its own routes, behind
+its own auth, and a process outside the gateway (a script cron, a backend with its
+own `backend.entryPoint`) has no `ctx.embed`.
 
 **Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
 `apps/manifest_sections.py`), preserved by `AppManifest.to_dict` and by the built-in
@@ -8088,7 +8109,7 @@ copying its target into the agent-readable record. Agents may now read it, which
 write" names. A purge uninstall now
 removes the record with the app's data.
 
-**Seam level.** `APP_SDK_LEVEL` is 7. An app reads `ctx.sdk_level` and, below 7, knows
+**Seam level.** The key is seam level 7. An app reads `ctx.sdk_level` and, below 7, knows
 nothing fences the directories: an older host ignores the key.
 
 Writers: `apps/agent_readonly_dirs.py`, `apps/credential_masks.py`, `apps/manifest.py`,

@@ -173,6 +173,10 @@ _MAX_MEMORY_BACKGROUND_WORKERS = 2
 # thread each through ``run_in_executor`` without admission; these extra threads
 # are theirs, so consolidation keeps its two workers while they run.
 _MEMORY_BACKGROUND_LOOP_THREADS = 2
+# An app's batch embed (``ctx.embed.embed_batch``, paced, minutes) has its own
+# admission key with this many slots and its own thread, so consolidation never
+# waits behind an app's queue of batches.
+_APP_EMBED_BATCH_WORKERS = 1
 
 # Governance checks for EXTERNALLY-triggered surfaces: the per-inbound-message
 # channels gate (every Slack/Discord/Telegram/Webex/WeCom message + approval
@@ -826,15 +830,19 @@ def embed_executor() -> ThreadPoolExecutor:
 def memory_background_executor() -> ThreadPoolExecutor:
     """Return the background memory pool (consolidation, backfill), creating it once.
 
-    Threads are named ``mc-membg``. See :data:`_MAX_MEMORY_BACKGROUND_WORKERS` and
-    :data:`_MEMORY_BACKGROUND_LOOP_THREADS`.
+    Threads are named ``mc-membg``. See :data:`_MAX_MEMORY_BACKGROUND_WORKERS`,
+    :data:`_MEMORY_BACKGROUND_LOOP_THREADS` and :data:`_APP_EMBED_BATCH_WORKERS`.
     """
     global _memory_background_pool
     if _memory_background_pool is None:
         with _lock:
             if _memory_background_pool is None:
                 _memory_background_pool = ThreadPoolExecutor(
-                    max_workers=_MAX_MEMORY_BACKGROUND_WORKERS + _MEMORY_BACKGROUND_LOOP_THREADS,
+                    max_workers=(
+                        _MAX_MEMORY_BACKGROUND_WORKERS
+                        + _MEMORY_BACKGROUND_LOOP_THREADS
+                        + _APP_EMBED_BATCH_WORKERS
+                    ),
                     thread_name_prefix="mc-membg",
                 )
                 atexit.register(shutdown_maintenance_executor)

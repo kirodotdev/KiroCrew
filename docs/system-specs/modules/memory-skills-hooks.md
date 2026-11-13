@@ -801,7 +801,11 @@ context (`build_message`) runs there, and a backlog of consolidation passes once
 held seven of its eight workers. The gateway's embedding backfill and member
 repair loops run on `mc-membg` too, on two threads of their own outside that
 admission, so a backfill that runs for hours never takes a consolidation worker
-and background memory work waits only for itself.
+and background memory work waits only for itself. An app's batch embed
+(`ctx.embed.embed_batch`) runs on `mc-membg` too, for the same reason (paced bulk
+work would hold an `mc-embed` worker for minutes), under an admission of its own:
+one slot (`_APP_EMBED_BATCH_WORKERS`) on a thread of its own, so consolidation
+never waits behind an app's queue of batches.
 
 Structured `[Monitor wake]` turns never call `maybe_consolidate()`: their prompt
 and resulting action are automation evidence, not user-authored memory. Monitor
