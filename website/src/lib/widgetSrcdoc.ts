@@ -48,6 +48,7 @@ const TAILWIND_RUNTIME_PATH = withBase(TAILWIND_RUNTIME_PATH_ROOT)
 import { sanitizeCssValue } from './cssSanitize'
 import { SWIPE_GESTURE_IDLE_MS } from './trackpadGesture'
 import { HEIGHT_REPORTER_BODY } from './widgetHeightReporter'
+import { FRAGMENT_SCROLL_BODY } from './widgetFragmentScroll'
 
 /** The sandbox grants for every frame that holds an agent-written page: saved
  * artifacts (`ArtifactBody`), library thumbnails (`ArtifactThumbs`), a teammate's
@@ -1612,6 +1613,11 @@ export function buildSrcdoc({
     const reporter = hostScript()
     reporter.textContent = HEIGHT_REPORTER_BODY
     body.appendChild(reporter)
+    // A self-sized frame cannot scroll to its own fragment links; this asks the
+    // host to (lib/widgetFragmentScroll.ts).
+    const fragmentScroll = hostScript()
+    fragmentScroll.textContent = FRAGMENT_SCROLL_BODY
+    body.appendChild(fragmentScroll)
   }
 
   // Unsafe-centering guard: keeps the top of flex/grid-centered artifact

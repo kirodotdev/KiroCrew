@@ -7,6 +7,7 @@ import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
 import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
+import { useFrameFragmentScroll } from '../hooks/useFrameFragmentScroll'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { Btn } from './ui'
 import ErrorNotice from './ErrorNotice'
@@ -388,6 +389,9 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   // Links in the page open through the host after a real click in this frame
   // (the frame itself grants no popups), or through the button it returns.
   const linkChip = useFrameLinkBridge([iframeRef])
+  // A frame sized to its document cannot scroll to its own `#section` links, so
+  // the page around it does. A side panel's fixed-height frame scrolls itself.
+  useFrameFragmentScroll(iframeRef, !heightStyle)
   return (
     // The side panel's heightStyle still wins outright — that surface fits a
     // fixed pane and scrolls inside it. On the full page the wrapper takes no

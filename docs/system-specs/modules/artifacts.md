@@ -1868,6 +1868,20 @@ to this kind would store content no reader can parse.
     scheduled off the `load` event is a race on a slow connection. Content height
     only ever *correlated* with the symptom because tall content happened to
     trigger one of those invalidations.
+  - Because the frame is as tall as its document, its own viewport never
+    scrolls, so an in-page `#id` link (a table of contents) cannot move the
+    view by itself: the browser's fragment scroll does not cross from the
+    opaque-origin frame into the page. The frame keeps the browser's fragment
+    navigation, then posts `mc-widget-scroll-to {top}` with the target's offset
+    (`website/src/lib/widgetFragmentScroll.ts`, injected with the height
+    reporter), and the page scrolls its container to the frame's offset plus
+    `top` (`website/src/hooks/useFrameFragmentScroll.ts`). Only that frame's
+    window is heard and `top` is clamped to the frame's height. A same-document
+    link with no `target` under `<base target="_blank">` is set to `_self`, so it
+    scrolls instead of asking for a window the sandbox refuses. The side panel's
+    fixed-height frame scrolls itself and ignores the message. A
+    `position: sticky` element inside the artifact still scrolls away here: it
+    sticks to the frame's viewport, which is the whole document.
 - **A frame showing something that is not ours offers a retry.** The document URL
   is single-use, so a navigation the ENGINE starts on its own (memory pressure, a
   back/forward cache eviction) re-requests a spent URL and lands the frame on a
