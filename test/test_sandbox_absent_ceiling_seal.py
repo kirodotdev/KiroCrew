@@ -395,7 +395,7 @@ class TestSealAppliesToAPreviouslyAbsentCeiling:
             sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
             + sandbox._CREW_PRECREATE_READONLY_FILE_LEAVES
             + sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
-            + (".env", "refresh_chains.json")
+            + (".env", "refresh_chains.json", "token_signing.key")
         )
         missing = [
             leaf

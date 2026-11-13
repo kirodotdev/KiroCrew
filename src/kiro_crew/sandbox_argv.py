@@ -61,6 +61,7 @@ from kiro_crew.sandbox_staging import (
     _materialize_maskable_dirs,
     _materialize_md_notebook_mask_targets,
     _materialize_refresh_chains_mask_target,
+    _materialize_signing_key_mask_target,
     _md_notebook_degraded_mask_dirs,
     _member_records_move,
     _migrate_md_notebook_legacy_state,
@@ -804,10 +805,11 @@ def namespace_argv(
     # creatable from any sandbox simply because the data-home ROOT is writable there and
     # an absent name has no mask. Publishing the stub first makes the mask non-vacuous.
     _materialize_live_target_mask_target(_required_targets)
-    # The channel-credential file and the refresh-chain store have the same gap: an
-    # absent name gets no mask.
+    # The channel-credential file, the refresh-chain store and the signing key have the
+    # same gap: an absent name gets no mask.
     _materialize_env_mask_target(_required_targets)
     _materialize_refresh_chains_mask_target(_required_targets)
+    _materialize_signing_key_mask_target(_required_targets)
     # The directories apps declare read-only to agents: a linked one refuses the spawn, and
     # an absent one is created so its seal is never vacuous.
     _establish_app_readonly_dirs(_required_targets)

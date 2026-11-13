@@ -717,6 +717,9 @@ class TestInlinePayloadNamesTheMintSurface:
             "warm_auth_singletons": "loads the key into the process cache at startup; returns nothing",
             "extract_numeric_claim": "reads one claim out of a token it VERIFIES; returns the claim",
             "revoke_access_cookie": "adds a verified token's nonce to the denylist; returns a bool",
+            "_materialize_signing_key_mask_target": (
+                "creates an absent key so the sandbox mask binds; returns its path, never the key"
+            ),
         }
         misses = []
         for mod in seeds:
