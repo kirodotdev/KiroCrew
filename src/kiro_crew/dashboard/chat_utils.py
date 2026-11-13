@@ -635,6 +635,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.chat_utils_completion import (  # noqa: F401
         _CHUNK_GENERATION,
+        SUBAGENT_ATTACHMENT_RECOVERY_GUIDANCE,
         SYNTHESIS_CLEAR,
         SYNTHESIS_HELD,
         SYNTHESIS_UNKNOWN,
@@ -646,6 +647,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         chat_done_payload,
         chunk_generation,
         idle_compaction_blocker,
+        subagent_attachment_detail_async,
         subagents_attached,
         subagents_attached_async,
         synthesis_fire_verdict,
@@ -742,6 +744,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         HEARTBEAT_PROMPT_KIND,
         IMAGE_REPAIR_KIND,
         KIRO_CLI_MISSING_KIND,
+        LIFECYCLE_RECOVERY_KIND,
         MCP_APP_MESSAGE_KIND,
         MCP_SIGN_IN_UNSUPPORTED_NOTICE_KIND,
         MODEL_UNAVAILABLE_KIND,
