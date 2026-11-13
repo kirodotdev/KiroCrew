@@ -124,7 +124,9 @@ def _start_loop_heartbeat(
     thread — unaffected by a loop thread blocked in a syscall — and dumps all
     thread stacks via faulthandler once the heartbeat stops beating, so the
     stuck frame lands in the log automatically instead of leaving us to sample
-    the PID by hand.
+    the PID by hand. The beat is withheld while the loop's default executor
+    leaves a no-op unrun (``LoopStallWatchdog.default_executor_live``), so a
+    wedged pool takes the same path as a wedged loop.
     """
 
     async def _loop_heartbeat() -> None:
@@ -148,7 +150,10 @@ def _start_loop_heartbeat(
             lag = platform_compat.awake_now() - t0 - interval
             # Claimed before beat(): check() holds its own capture flag until a beat.
             capture_lag = _loop_watchdog.claim_lag_enrichment(lag)
-            _loop_watchdog.beat()
+            # Beat only while the default executor still runs work: when its
+            # workers are all wedged, every to_thread call stops with this loop live.
+            if _loop_watchdog.default_executor_live(asyncio.get_running_loop()):
+                _loop_watchdog.beat()
             # Resource-pressure notifications ride the heartbeat cadence
             # rather than owning a task: the notifier self-gates to its own
             # sample interval, never raises, and off-loads its synchronous

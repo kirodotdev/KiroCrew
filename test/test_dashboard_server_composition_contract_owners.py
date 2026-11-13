@@ -100,6 +100,9 @@ class _Watchdog:
         self.calls.append(("claim", threading.current_thread().name))
         return sum(1 for name, _ in self.calls if name == "claim") == 1
 
+    def default_executor_live(self, loop: asyncio.AbstractEventLoop) -> bool:
+        return True
+
     def beat(self) -> None:
         self.calls.append(("beat", threading.current_thread().name))
 
