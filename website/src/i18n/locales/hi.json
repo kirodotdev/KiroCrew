@@ -15521,6 +15521,7 @@
         "mcp_deny_rule": "{{name}} पर एक MCP टूल बंद करने से उसी सर्वर के सारे टूल रुक जाते हैं, सिर्फ़ वही नहीं जो तुमने बंद किया।",
         "missing_components": "इस मशीन पर अनुपस्थित: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "नए सत्र इस एजेंट का उपयोग करते हैं। खुले सत्र वही एजेंट रखते हैं जिससे वे शुरू हुए थे।",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "यह बिल्ड यह एजेंट नहीं देता।",
         "note_crew_command_channel": "स्लैश कमांड {{productName}} के कमांड चैनल से जाते हैं।",
         "note_crew_sandbox_stands_down": "इसका अपना अलग घेरा है। Windows पर, और macOS पर जब इसका अंदरूनी घेरा चालू हो, {{productName}} का घेरा इसके लिए पीछे हट जाता है।",

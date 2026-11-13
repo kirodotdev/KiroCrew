@@ -16323,6 +16323,7 @@
         "mcp_deny_rule": "Отключение одного MCP-инструмента в {{name}} останавливает все инструменты того же сервера, а не только отключённый.",
         "missing_components": "Отсутствует на этой машине: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Новые сессии используют этого агента. Открытые сессии сохраняют того, с которым начали.",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "Эта сборка не предлагает такого агента.",
         "note_crew_command_channel": "Слэш-команды идут по командному каналу {{productName}}.",
         "note_crew_sandbox_stands_down": "Имеет свою песочницу. В Windows, а в macOS — когда включена её внутренняя песочница, песочница {{productName}} для него отключается.",

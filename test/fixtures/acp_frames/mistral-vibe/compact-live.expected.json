@@ -1,0 +1,49 @@
+[
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "title": "Compacting conversation history...",
+        "tool_call_id": "vibe-call-9",
+        "tool_kind": "other",
+        "wire_title": "Compacting conversation history..."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "vibe-call-9",
+        "tool_final": true,
+        "tool_output": "Conversation context compacted",
+        "tool_output_bytes": 30,
+        "tool_output_digest": "7e13e2bc84abddada75d1570d284ee32d7ce97bcc9d2db8804f59fa96c3aa6e7",
+        "tool_status": "completed"
+      },
+      {
+        "kind": "tool_call_update",
+        "title": "Compacted conversation history",
+        "tool_call_id": "vibe-call-9",
+        "wire_title": "Compacted conversation history"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "stop_reason": "end_turn"
+  }
+]

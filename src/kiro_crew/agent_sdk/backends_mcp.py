@@ -26,6 +26,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
     ACP_BACKEND_STRANDS,
@@ -165,6 +166,7 @@ ACP_BACKENDS_SESSION_MCP_ARRAY: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -426,6 +428,9 @@ ACP_BACKENDS_UNASKED_NATIVE_TOOLS = frozenset({ACP_BACKEND_MIMOCODE})
 # ``session/request_permission``, so ``_deny_zero_tools`` sees each one; it is
 # mirrored, enforced (``Routing.VERIFIED_GATE_EXTENSION``) and ``AcpClient``-served.
 #
+# mistral-vibe is NOT a member: its routing is enforced and its projection is
+# broker-only, but no zero-tools capture exists for the harness (unlike Copilot's
+# measured unasked read above), so a total ban cannot be proven honoured.
 # A fourth fact excludes a backend that meets the other three: membership in
 # ``ACP_BACKENDS_UNASKED_NATIVE_TOOLS``, a harness some of whose own tools run with
 # no permission request at all. ``_deny_zero_tools`` runs at that request, so those

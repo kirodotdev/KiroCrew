@@ -108,6 +108,7 @@ class TestBackendPredicates:
             provider.is_deepseek_backend,
             provider.is_copilot_backend,
             provider.is_strands_backend,
+            provider.is_mistral_vibe_backend,
         ]
         assert sum(held) == 1
 

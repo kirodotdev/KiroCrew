@@ -15922,6 +15922,7 @@
         "mcp_deny_rule": "Spegnere uno strumento MCP su {{name}} ferma tutti gli strumenti dello stesso server, non solo quello che hai spento.",
         "missing_components": "Mancante su questa macchina: {{components}}",
         "new_sessions_use_this_agent_a_session_that_is_al": "Le nuove sessioni usano questo agente. Le sessioni aperte mantengono quello con cui sono partite.",
+        "mistral_vibe": "Mistral Vibe",
         "not_offered_by_this_build": "Questa build non offre questo agente.",
         "note_crew_command_channel": "I comandi slash passano dal canale comandi di {{productName}}.",
         "note_crew_sandbox_stands_down": "Ha un proprio ambiente isolato. Su Windows, e su macOS quando il suo isolamento interno è attivo, quello di {{productName}} si ritira per lui.",

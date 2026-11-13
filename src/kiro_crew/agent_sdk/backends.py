@@ -461,6 +461,7 @@ ACP_BACKEND_STRANDS = "strands"
 # therefore strips. A separate id, not an alias of ``opencode``: a saved choice or
 # a governance rule naming ``opencode`` must keep meaning OpenCode.
 ACP_BACKEND_MIMOCODE = "mimocode"
+ACP_BACKEND_MISTRAL_VIBE = "mistral-vibe"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -508,6 +509,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -532,6 +534,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -676,6 +679,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_MISTRAL_VIBE,
     }
 )
 
@@ -704,6 +708,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
     ACP_BACKEND_MIMOCODE: ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_MISTRAL_VIBE: ACP_BACKEND_MISTRAL_VIBE,
 }
 
 #: The backend a deployment policy may never deny.

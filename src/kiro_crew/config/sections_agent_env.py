@@ -357,12 +357,16 @@ AGENT_ENV_DENIED_NAMES = frozenset(
 #: ``MIMOCODE_DANGEROUSLY_SKIP_PERMISSIONS``), the variable that relocates its
 #: credential (``MIMOCODE_HOME``) and a whole provider credential store in one value
 #: (``MIMOCODE_AUTH_CONTENT``).
+#: ``VIBE_`` is the same for Mistral Vibe: its routing seeds, its ask switches and
+#: ``VIBE_HOME``, which relocates the whole vibe home including the config the
+#: allow stores anchor on.
 AGENT_ENV_DENIED_PREFIXES = (
     "KIROCREW_",
     "KIRO_",
     "DSH_",
     "OPENCODE_",
     "MIMOCODE_",
+    "VIBE_",
     "LD_",
     "DYLD_",
     "PYTHON",

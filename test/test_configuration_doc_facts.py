@@ -30,7 +30,7 @@ def _row(key: str) -> str:
 
 def test_every_selectable_acp_backend_has_a_row_in_the_backend_table() -> None:
     section = _doc().split("## ACP Backend", 1)[1].split("\n## ", 1)[0]
-    listed = set(re.findall(r"^\| `([a-z]+)` \|", section, re.MULTILINE))
+    listed = set(re.findall(r"^\| `([a-z-]+)` \|", section, re.MULTILINE))
     expected = set(BASELINE_SELECTABLE_BACKENDS) - {ACP_BACKEND_KIRO}
     assert expected <= listed, sorted(expected - listed)
 
