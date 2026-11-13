@@ -16,7 +16,7 @@ import { chromium } from 'playwright'
 import { mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { serveDist } from './lib/serve-dist.mjs'
-import { installApiFixtures, logPageFailures } from './lib/api-fixtures.mjs'
+import { installApiFixtures, installSettingsShell, logPageFailures } from './lib/api-fixtures.mjs'
 import { SECURITY_RAIL_FIXTURES } from './lib/security-fixtures.mjs'
 
 const OUT = process.argv[2] || '../temp-screenshots/credential-redaction'
@@ -64,23 +64,7 @@ async function main() {
       })
     }
     logPageFailures(page)
-    await page.addInitScript(t => {
-      localStorage.clear()
-      localStorage.setItem('mc-theme', t)
-      localStorage.setItem('mc-onboarded', '1')
-      window.updateAPI = {
-        onState: () => () => {},
-        check: async () => ({ ok: true }),
-        download: async () => ({ ok: true }),
-        install: async () => ({ ok: true }),
-        getInfo: async () => ({
-          version: '0.5.0', channel: 'stable', stampedChannel: 'stable',
-          channelSwitchable: true, channelPreference: '',
-          platform: 'darwin-arm64', packaged: true,
-        }),
-        setChannel: async () => ({ ok: true }),
-      }
-    }, theme)
+    await installSettingsShell(page, theme)
     await page.goto(`${base}/settings?tab=security&section=redaction`, { waitUntil: 'domcontentloaded' })
     // Assert the state actually rendered before the shot: a plausible frame of the
     // wrong state satisfies the gate and misleads the reviewer.

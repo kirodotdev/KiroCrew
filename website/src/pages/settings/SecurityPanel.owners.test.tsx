@@ -63,6 +63,7 @@ describe('SecurityPanel owners', () => {
       'SecurityPanelLayers.tsx',
       'SecurityPanelPosture.tsx',
       'SecurityPanelRedaction.tsx',
+      'SecurityPanelSshAgent.tsx',
       'SecurityPanelTailnet.tsx',
       'SecurityPanelTrust.tsx',
     ])
