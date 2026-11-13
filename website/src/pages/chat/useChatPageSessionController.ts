@@ -876,6 +876,13 @@ export function useChatPageSessionController({
   // slow first frame. A landed list starts the deadline, but is not assumed to
   // be the final restored list.
   const slotsLoaded = useAppSelector(s => s.dashboard.slotsLoaded)
+  // A full key the roster lacks can still have its transcript on disk, when the
+  // session was closed or its open-tab entry was lost (#29460). The notice then
+  // says it was closed and offers Resume. A click, not an automatic resume: this
+  // page writes the full key into `?sid=` itself on every switch, so a reload
+  // naming it is not a request to reopen.
+  const [sidClosed, setSidClosed] = useState<{ key: string; title: string; error: string } | null>(null)
+  const queryClient = useQueryClient()
   useEffect(() => {
     if (!connected || !slotsLoaded) return
     const urlSlot = initialSidRef.current
@@ -884,18 +891,34 @@ export function useChatPageSessionController({
     if (!urlSlot || sessionShortNameFrom(urlSlot)) return
     const timer = setTimeout(() => {
       if (initialSidRef.current) {
-        const error = i18nT('pages.chatPage.session_not_found', { name: urlSlot })
-        deniedSidRef.current = {
+        const denied = {
           key: urlSlot,
           activeSlot: activeSlotRef.current,
           activeSlotChanged: false,
-          error,
+          error: i18nT('pages.chatPage.session_not_found', { name: urlSlot }),
           deniedAt: Date.now(),
         }
+        deniedSidRef.current = denied
         initialSidRef.current = null
         pendingSidRef.current = false
         popInFlightRef.current = false
-        setSidError(error)
+        // Asked before the notice shows, so it never flips from one verdict to
+        // the other. A failed probe keeps "not found", as before.
+        void queryClient.fetchQuery({
+          queryKey: ['session-meta', urlSlot],
+          queryFn: () => api.sessionMeta(urlSlot),
+          retry: false,
+          staleTime: 0,
+          gcTime: 0,
+        }).then(row => row, () => null).then(row => {
+          // A slots frame carrying the key retired this verdict while it ran.
+          if (deniedSidRef.current !== denied) return
+          if (row) {
+            denied.error = i18nT('store.chatSlice.session_closed_find_in_older_sessions')
+            setSidClosed({ key: row.key, title: row.title || row.key, error: denied.error })
+          }
+          setSidError(denied.error)
+        })
         // Deliberately does NOT refresh the session on screen. The deep link did
         // own this mount's fetch, so that session's messages can be as stale as
         // Redux left them — but a refresh here races the user: five seconds is
@@ -906,7 +929,16 @@ export function useChatPageSessionController({
       }
     }, 5000)
     return () => clearTimeout(timer)
-  }, [connected, slotsLoaded, activeSlotRef])
+  }, [connected, slotsLoaded, activeSlotRef, queryClient])
+  // Offered only while the notice still shows that session's sentence, and
+  // hidden offline, as a closed-session chip is.
+  const resumeSidClosed = connected && sidClosed && sidClosed.error === sidError
+    ? () => {
+      if (!connectedRef.current) return
+      setSidError('')
+      void dispatch(resumeFromHistory({ key: sidClosed.key, title: sidClosed.title }))
+    }
+    : null
 
   // A slots frame can arrive after the deadline while the gateway restores its
   // full session list. Once it carries the denied key, the old banner is false.
@@ -961,7 +993,6 @@ export function useChatPageSessionController({
     unmountedRef.current = false
     return () => { unmountedRef.current = true }
   }, [])
-  const queryClient = useQueryClient()
   const openShortNameMatch = useCallback((match: ShortNameMatch) => {
     if (!connectedRef.current) return
     // The roster is read at click time: a listed closed session may have been
@@ -1425,6 +1456,7 @@ export function useChatPageSessionController({
     sidMatches,
     setSidMatches,
     openShortNameMatch,
+    resumeSidClosed,
     ownChatClosedElsewhere,
   }
 }
