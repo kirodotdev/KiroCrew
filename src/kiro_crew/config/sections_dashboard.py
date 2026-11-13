@@ -460,7 +460,7 @@ class DashboardConfig:
             "Raise it on a host that does heavy subprocess work (long builds, "
             "test suites, many child reaps), which can wedge the loop briefly "
             "without being genuinely dead. Clamped to 10s..300s. The desktop app's "
-            "liveness probe kills at roughly 20s independently, so a value "
+            "liveness probe kills after about a minute independently, so a value "
             "above that only takes effect for a headless gateway — the desktop "
             "probe wins first and the stack dump is lost.",
             restart=True,
