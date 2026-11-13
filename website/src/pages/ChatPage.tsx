@@ -4,7 +4,7 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
 import { useAppSelector, store, type AppDispatch } from '../store'
 import {
-  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey,
+  switchSlot, openActivityPanel, openActivityToTab, selectSubagent, mcpAppKey, selectSlotToolLog,
 } from '../store/chatSlice'
 import { DeliveryWarningStrip } from '../components/DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from '../components/useDeliveryWarningStrip'
@@ -89,7 +89,7 @@ import SearchHighlightContext from '../hooks/SearchHighlightContext'
 import { useChatProjectDir } from '../components/sessionEnvironmentHooks'
 import { loadChatConfig, CONTENT_WIDTH, type ChatConfig } from './chat/ChatSettings'
 import { scaleContentWidth } from './chat/contentWidth'
-import { transcriptActivityKey, turnSentHere } from './chat/ChatFooter'
+import { allToolCallsReturned, transcriptActivityKey, turnSentHere } from './chat/ChatFooter'
 import { TOGGLE_RECT } from './chat/SessionFlyout'
 
 
@@ -191,6 +191,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const pendingInput = useAppSelector(s => s.chat.pendingInput)
   const pendingInputSend = useAppSelector(s => s.chat.pendingInputSend)
   const mainComposerAppend = useAppSelector(s => s.chat.mainComposerAppend)
+  const footerToolsReturned = useAppSelector(s => allToolCallsReturned(selectSlotToolLog(s, activeSlot)))
 
   const [chatConfig, setChatConfig] = useState<ChatConfig>(loadChatConfig)
   useEffect(() => {
@@ -1190,6 +1191,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               currentSlot={currentSlot} projectDir={transcriptProjectDir} regenerating={regenerating} sendUnconfirmed={sendUnconfirmed} dockH={dockH} lastRole={lastRole} streamTick={streamTick}
               footerActivityKey={!slotLoading && slotSwitchTarget !== activeSlot && (slotRunning || !currentSlot?.preparing) ? transcriptActivityKey(messages) : undefined}
               footerSentHere={turnSentHere(messages)}
+              footerToolsReturned={footerToolsReturned}
               toggleAct={toggleAct} renderedDisplayItems={renderedDisplayItems} stableMsgKey={stableMsgKey} virtualKey={virtualKey} handleLoadEarlier={handleLoadEarlier}
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}

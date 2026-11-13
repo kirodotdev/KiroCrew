@@ -36,7 +36,7 @@ import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import McpLoadingBar from '../pages/chat/McpLoadingBar'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
-import ChatFooter, { transcriptActivityKey, turnSentHere } from '../pages/chat/ChatFooter'
+import ChatFooter, { allToolCallsReturned, transcriptActivityKey, turnSentHere } from '../pages/chat/ChatFooter'
 import { useChatProjectDir, useEnvironmentStartLabel, useSlotRunsHere } from './sessionEnvironmentHooks'
 import { ChatProjectDirCtx } from './markdown/contexts'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
@@ -58,7 +58,7 @@ import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectSlotToolLog, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { appendFollowUpOption, removeFollowUpOption, selectSingleFollowUpOption, type OwnedSuffix } from '../lib/followUpToggle'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
@@ -203,6 +203,7 @@ export default function ChatPane({
     setInput((cur) => mergeCarriedDraft(cur, carried))
   }, [mainComposerAppend, slotKey, dispatch, carryIntoComposer, setInput])
   const streamState = useAppSelector((s) => selectSlotStreamState(s, slotKey))
+  const toolsReturned = useAppSelector((s) => allToolCallsReturned(selectSlotToolLog(s, slotKey)))
   const running = streamState !== 'idle'
   // Per-slot context-window usage for the input-bar ring (mirrors ChatPage; the
   // store keys these by slot). Undefined until the slot has a reading: the ring
@@ -1029,6 +1030,7 @@ export default function ChatPane({
                       sentHere={turnSentHere(messages)}
                       browserSessionKey={slotKey}
                       waitingOnUser={!!paneSlot?.pending_approval || !!paneSlot?.needs_input}
+                      toolsReturned={toolsReturned}
                     />
                     {preparing && !crewmateLive && (
                       <div className="px-4 text-[12px] text-muted" data-testid="chat-pane-preparing-catch-up" role="status">
