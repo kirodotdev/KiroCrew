@@ -209,6 +209,15 @@ class KiroLoginTarget:
             return f"IAM Identity Center ({self.start_url}, {self.region})"
         return "Builder ID"
 
+    def login_command(self) -> str:
+        """The ``cloud login`` command for this target: Identity Center flags when pinned."""
+        login_cmd = "kirocrew cloud login"
+        if self.is_identity_center:
+            login_cmd += (
+                f" --identity-provider {self.start_url} --license pro --idp-region {self.region}"
+            )
+        return login_cmd
+
     def recovery_command(self) -> str:
         """The two commands that sign the wrong session out and the right one in.
 
@@ -217,13 +226,8 @@ class KiroLoginTarget:
         Identity Center flags for a pinned target, the bare command for the
         Builder ID default.
         """
-        login_cmd = "kirocrew cloud login"
-        if self.is_identity_center:
-            login_cmd += (
-                f" --identity-provider {self.start_url} --license pro --idp-region {self.region}"
-            )
         # Two commands, not an `&&` chain: Windows PowerShell 5.1 cannot parse `&&`.
-        return f"`kirocrew cloud logout`, then `{login_cmd}`"
+        return f"`kirocrew cloud logout`, then `{self.login_command()}`"
 
 
 # ── whoami parsing (shared with the dashboard's credit readout) ─────────────

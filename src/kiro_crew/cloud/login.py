@@ -627,19 +627,31 @@ def resume_login_daemon(
     )
 
 
+SIGNIN_WAIT_ATTEMPTS = 30
+SIGNIN_POLL_SECONDS = 5
+
+
+def signin_wait_limit() -> str:
+    """How long :func:`wait_until_logged_in` waits by default, worded for the user.
+
+    The polling pauses add up to 2.5 min; each remote sign-in check adds its own time.
+    """
+    return f"about {SIGNIN_WAIT_ATTEMPTS * SIGNIN_POLL_SECONDS / 60:g} min plus check time"
+
+
 def wait_until_logged_in(
     instance_id: str,
     profile: str = "",
     region: str = "",
     *,
-    attempts: int = 30,
+    attempts: int = SIGNIN_WAIT_ATTEMPTS,
     target: Optional[KiroLoginTarget] = None,
 ) -> bool:
     """Poll :func:`is_logged_in` (against *target* when given) until true or attempts exhausted."""
     for _ in range(max(1, attempts)):
         if is_logged_in(instance_id, profile, region, target=target):
             return True
-        ssm._sleep(5)
+        ssm._sleep(SIGNIN_POLL_SECONDS)
     return False
 
 
