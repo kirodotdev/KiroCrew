@@ -14,6 +14,20 @@ too. An entry names a FILE: a directory at a declared path refuses the spawn. Th
 own spawned backend gets its declared files back, each only while it is absent or a
 regular file with one name, and nothing else does.
 
+**A directory entry.** An entry of ONE segment ending in ``/`` (``"state/"``) names a
+DIRECTORY, masked whole, so every file the app writes inside it is covered, including the
+temp file a write stages beside its target and renames over it. A file mask cannot cover
+that temp, and a rename over a masked file detaches the mask from every running session,
+so an app that rewrites its credential by rename keeps it in a declared directory. Before
+each Linux spawn the sandbox creates the directory when absent inside the app's existing
+``data/`` (``sandbox_staging._materialize_declared_mask_dirs``), so the mask is in place
+before the backend first writes into it; a file or a link at the name refuses the spawn. Its backend gets the directory back only
+while it is absent or a real directory. A declared directory gets the protection a core
+``HIDDEN`` directory has: its files are not judged one by one for a second hard link,
+because nothing outside the app's backend can name them. A directory entry needs App Kit
+level 7, and an older host refuses a manifest carrying one (its grammar has no ``/``
+ending), so it never runs the app with the directory unmasked.
+
 **Wherever the data is.** The app lifecycle moves ``data/`` aside to
 ``apps/.<name>-data-tmp/`` while an install or update replaces the app's files, and a
 default uninstall removes the manifest and keeps the data. So each entry is masked at
@@ -88,6 +102,8 @@ DATA_LEAF = "data"
 #: The manifest grammar's path separator, on every OS: an entry is a manifest string,
 #: not a host path, and the sandbox joins it to the data home itself.
 ENTRY_SEPARATOR = "/"
+#: An entry ending in this names a directory (one segment, masked whole).
+DIRECTORY_SUFFIX = ENTRY_SEPARATOR
 #: The lifecycle's move-aside name for ``data/`` is ``.<name>`` plus this, beside the app
 #: directory (``apps/manager_install.py``, ``manager_uninstall.py``, ``manager_adopt.py``).
 STAGED_DATA_SUFFIX = "-data-tmp"
@@ -129,7 +145,10 @@ def entry_error(entry: object) -> str | None:
         return "must not contain a backslash, a colon, a control character or a lone surrogate"
     if entry.startswith(ENTRY_SEPARATOR):
         return "must be relative to the app's data directory"
-    segments = entry.split(ENTRY_SEPARATOR)
+    directory = is_directory_entry(entry)
+    segments = entry_path(entry).split(ENTRY_SEPARATOR)
+    if directory and len(segments) > 1:
+        return "a directory entry must be one name ending in '/'"
     if len(segments) > MAX_SEGMENTS:
         return f"must have at most {MAX_SEGMENTS} path segments"
     for segment in segments:
@@ -137,6 +156,33 @@ def entry_error(entry: object) -> str | None:
             return "must not contain an empty, '.' or '..' segment"
         if segment != segment.strip() or segment.endswith("."):
             return "must not start or end a segment with a space, or end one with a dot"
+    return None
+
+
+def is_directory_entry(entry: str) -> bool:
+    """Whether *entry* names a directory (it ends in :data:`DIRECTORY_SUFFIX`)."""
+    return entry.endswith(DIRECTORY_SUFFIX)
+
+
+def entry_path(entry: str) -> str:
+    """*entry*'s path below the data directory, without a directory entry's ``/``."""
+    return entry[: -len(DIRECTORY_SUFFIX)] if is_directory_entry(entry) else entry
+
+
+def _overlap_error(entries: list[str]) -> str | None:
+    """Why two valid *entries* cannot both be declared, or ``None``.
+
+    An entry at or beneath a directory entry is already masked by it, and the two kinds
+    disagree on what may sit at the name, so the pair is refused rather than merged.
+    """
+    directories = {entry_path(e) for e in entries if is_directory_entry(e)}
+    for entry in entries:
+        path = entry_path(entry)
+        for directory in directories:
+            if is_directory_entry(entry) and path == directory:
+                continue
+            if path == directory or path.startswith(directory + ENTRY_SEPARATOR):
+                return f"{entry!r} is at or beneath the directory entry {directory + '/'!r}"
     return None
 
 
@@ -153,6 +199,13 @@ def declaration_errors(value: object, *, kind: DeclarationKind = CREDENTIAL_MASK
         reason = entry_error(entry)
         if reason is not None:
             errors.append(f"{kind.key}[{index}] {reason}")
+    if len(value) <= MAX_ENTRIES:
+        # Past the cap the declaration is refused already; the pairwise check is skipped
+        # so an oversized list costs one pass, never a quadratic one.
+        valid = [e for e in value if isinstance(e, str) and entry_error(e) is None]
+        overlap = _overlap_error(valid)
+        if overlap is not None:
+            errors.append(f"{kind.key}: {overlap}")
     return errors
 
 
@@ -163,17 +216,29 @@ def valid_entries(value: object) -> tuple[str, ...]:
     """
     if not isinstance(value, list) or len(value) > MAX_ENTRIES:
         return ()
-    return tuple(dict.fromkeys(e for e in value if isinstance(e, str) and entry_error(e) is None))
+    entries = list(dict.fromkeys(e for e in value if isinstance(e, str) and entry_error(e) is None))
+    directories = {entry_path(e) for e in entries if is_directory_entry(e)}
+    # An entry an overlapping directory entry already covers is dropped; the directory
+    # stays, so the whole tree is still masked.
+    return tuple(
+        e
+        for e in entries
+        if is_directory_entry(e)
+        or not any(e == d or e.startswith(d + ENTRY_SEPARATOR) for d in directories)
+    )
 
 
 def crew_leaf(app: str, entry: str) -> str:
-    """The crew-home-relative leaf *entry* names for *app*: ``apps/<app>/data/<entry>``."""
-    return f"{APPS_LEAF}/{app}/{DATA_LEAF}/{entry}"
+    """The crew-home-relative leaf *entry* names for *app*: ``apps/<app>/data/<entry>``.
+
+    A directory entry's leaf carries no trailing ``/``: it is a path, joined like any other.
+    """
+    return f"{APPS_LEAF}/{app}/{DATA_LEAF}/{entry_path(entry)}"
 
 
 def staged_crew_leaf(app: str, entry: str) -> str:
     """The leaf *entry* names while the lifecycle holds *app*'s data aside."""
-    return f"{APPS_LEAF}/.{app}{STAGED_DATA_SUFFIX}/{entry}"
+    return f"{APPS_LEAF}/.{app}{STAGED_DATA_SUFFIX}/{entry_path(entry)}"
 
 
 def record_path(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> Path:
@@ -354,6 +419,17 @@ def declared_crew_leaves(
     )
 
 
+def declared_crew_dir_leaves(*, installed: bool = True) -> frozenset[str]:
+    """The subset of :func:`declared_crew_leaves` that directory entries name."""
+    return frozenset(
+        leaf
+        for app, entries in declared_masks(installed=installed).items()
+        for entry in entries
+        if is_directory_entry(entry)
+        for leaf in (crew_leaf(app, entry), staged_crew_leaf(app, entry))
+    )
+
+
 def declared_crew_leaves_for(
     app: str, *, builtin: bool, kind: DeclarationKind = CREDENTIAL_MASKS
 ) -> tuple[str, ...]:
@@ -364,6 +440,12 @@ def declared_crew_leaves_for(
     """
     masks = declared_masks(builtin=builtin, installed=not builtin, kind=kind)
     return tuple(crew_leaf(app, entry) for entry in masks.get(app, ()))
+
+
+def declared_crew_dir_leaves_for(app: str, *, builtin: bool) -> frozenset[str]:
+    """The directory entries among :func:`declared_crew_leaves_for`, from the same source."""
+    masks = declared_masks(builtin=builtin, installed=not builtin)
+    return frozenset(crew_leaf(app, e) for e in masks.get(app, ()) if is_directory_entry(e))
 
 
 def remember_declaration(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> None:

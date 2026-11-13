@@ -337,6 +337,9 @@ _LAUNCHER_PLAN_GOLDEN: dict[str, Any] = {
         "<ROOT>/op/.kirocrew/mcp",
         "<ROOT>/crew/apps",
         "<ROOT>/crew/mcp",
+        "<ROOT>/op/.kiro/crew/apps/aws-control",
+        "<ROOT>/op/.kirocrew/apps/aws-control",
+        "<ROOT>/crew/apps/aws-control",
     ],
     "readonly_dirs": [
         "<ROOT>/crew/policy_cache",
@@ -623,6 +626,9 @@ _PROFILE_GOLDEN = """\
 (deny file-write* (literal "<ROOT>/op/.kirocrew/mcp"))
 (deny file-write* (literal "<ROOT>/crew/apps"))
 (deny file-write* (literal "<ROOT>/crew/mcp"))
+(deny file-write* (literal "<ROOT>/op/.kiro/crew/apps/aws-control"))
+(deny file-write* (literal "<ROOT>/op/.kirocrew/apps/aws-control"))
+(deny file-write* (literal "<ROOT>/crew/apps/aws-control"))
 (deny file-write* (literal "<ROOT>/op/.kiro/crew/subagents"))
 (deny file-write* (subpath "<ROOT>/op/.kiro/crew/subagents"))
 (deny file-link (subpath "<ROOT>/op/.kiro/crew/subagents"))

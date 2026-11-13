@@ -58,20 +58,28 @@ def declaration_errors(value: object) -> list[str]:
 
 
 def mask_conflict_errors(dirs: object, masks: object) -> list[str]:
-    """Errors for ``agentReadOnlyDirs`` entries at or beneath a ``credentialMasks`` file.
+    """Errors for ``agentReadOnlyDirs`` entries at or beneath a ``credentialMasks`` entry.
 
     A credential mask names a FILE, and the sandbox creates an absent read-only directory
     so it can seal it, so such an entry would put a directory where the mask expects a
-    file and refuse every sandboxed spawn. A directory that holds a masked file is fine:
-    the seal is placed first and the mask on top of it.
+    file and refuse every sandboxed spawn. A directory entry in ``credentialMasks``
+    (``"state/"``) is masked whole, so a read-only directory at or beneath it would be
+    created and sealed inside a directory only the app's backend sees; it is refused the
+    same way. A directory that holds a masked file is fine: the seal is placed first and
+    the mask on top of it.
     """
-    files = valid_entries(masks)
-    return [
-        f"{MANIFEST_KEY}[{index}] must not be or sit beneath a credentialMasks file ({mask})"
-        for index, entry in enumerate(valid_entries(dirs))
-        for mask in files
-        if entry == mask or entry.startswith(mask + credential_masks.ENTRY_SEPARATOR)
-    ]
+    errors: list[str] = []
+    for index, entry in enumerate(valid_entries(dirs)):
+        path = credential_masks.entry_path(entry)
+        for mask in valid_entries(masks):
+            masked = credential_masks.entry_path(mask)
+            if path == masked or path.startswith(masked + credential_masks.ENTRY_SEPARATOR):
+                shape = "directory" if credential_masks.is_directory_entry(mask) else "file"
+                errors.append(
+                    f"{MANIFEST_KEY}[{index}] must not be or sit beneath a credentialMasks "
+                    f"{shape} ({mask})"
+                )
+    return errors
 
 
 def valid_entries(value: object) -> tuple[str, ...]:

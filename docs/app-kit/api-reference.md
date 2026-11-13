@@ -1783,7 +1783,8 @@ notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
 [`ctx.app_token()` and `ctx.gateway_origin()`](#app-token-ctxapp_token), level 6
 adds the dashboard's [issue list](#issue-list) (`useIssues`, `IssueList`, `IssueCard`),
 and level 7 adds the manifest's `agentReadOnlyDirs` (see
-[manifest-reference.md](manifest-reference.md#agent-read-only-directories)), the
+[manifest-reference.md](manifest-reference.md#agent-read-only-directories)), directory
+entries in `credentialMasks` (`"state/"`), the
 [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk), the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
 [manifest-reference.md](manifest-reference.md#desktop-windows)), the exact
