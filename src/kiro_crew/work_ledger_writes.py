@@ -510,13 +510,13 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
             field="items",
         )
     # The goal's own fan-out bound, only on a board that recorded a goal (a queue
-    # board never does). A person decides past it.
+    # board never does). A bound below the store's is one the user set.
     if live.goal_version > 0 and len(open_items) >= live.concurrency_cap:
         raise WorkLedgerError(
             f"this goal holds {len(open_items)} open items and its concurrency cap "
-            f"is {live.concurrency_cap}. Dispatch nothing new until one lands; to "
-            "run more at once, ask the user, and if they agree raise the cap with "
-            "work_ledger_record action=goal concurrency_cap=<new cap> "
+            f"is {live.concurrency_cap}. Dispatch nothing new until one lands: wait "
+            "for a seat, do not ask to raise it. Only a bound the user sets changes "
+            "it, with work_ledger_record action=goal concurrency_cap=<new cap> "
             f"(at most {MAX_GOAL_CONCURRENCY_CAP})",
             code=CODE_GOAL_CONCURRENCY_CAP_REACHED,
             field="concurrency_cap",

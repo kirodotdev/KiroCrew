@@ -527,6 +527,7 @@ CONDUCTOR_MODE_SKILL_ANCHORS: dict[str, tuple[str, ...]] = {
     "claimed_pr": ("claimed pr is never read as the bar", "action=accept"),
     "read_message_detail": ("session_read_message for detail the record does not carry",),
     "close_item": ("work_ledger_record action=close with the item's state",),
+    "resource_wave": ("resource_status decides the wave", "never ask to raise the cap"),
     "goal_plan": ("a finding rewrites the plan at once", "rewrite the goal text's plan and"),
     "host_pressure": (
         "host memory pressure pauses dispatch",

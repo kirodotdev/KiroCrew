@@ -326,8 +326,10 @@ spend, an irreversible step or deleting someone's work, a costly preference
 they cannot infer, or a choice the person said they want to make.
 
 Parallel work is bounded in code, not only in the prompt. Each goal may hold at
-most `concurrency_cap` items open at once. The default is 6; a `goal` write sets
-it (`concurrency_cap`, 1 to 32). A `create` past it is refused
+most `concurrency_cap` items open at once. `resource_status` decides the wave;
+a bound the user set is `concurrency_cap`, written by a `goal` write (1 to 32).
+With none set it is 32, the store's own open bound, which refuses first with
+`item_cap_exceeded`. A `create` past a lower cap is refused
 `goal_concurrency_cap_reached`, and the board writes nothing. That is not a
 stop: the next item that lands frees a seat, and the conductor waits for it
 rather than asking to raise the cap. Closed items never count toward it.

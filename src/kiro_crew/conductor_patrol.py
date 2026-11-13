@@ -83,10 +83,16 @@ PATROL_MESSAGE = (
     "session_send. "
     "Answer question and blocked "
     "items with session_send. Ignore progress. This loop has no cycle cap; its one "
-    "bound is the 7-day runaway backstop. When every item is terminal or the user "
-    "says stop, first send "
+    "bound is the 7-day runaway backstop. When every item is terminal and nothing "
+    "is queued, or the user says stop, first send "
     "the user one final report (what landed, what is left, links); then, in a "
     "later step, call autonudge_stop."
+)
+
+#: The gateway's default patrol text before queued work held the patrol open.
+_PATROL_MESSAGE_BEFORE_QUEUE = PATROL_MESSAGE.replace(
+    "When every item is terminal and nothing is queued, or the user says stop",
+    "When every item is terminal or the user says stop",
 )
 
 #: Every text the gateway has armed a default patrol with. A persisted loop keeps
@@ -95,6 +101,7 @@ PATROL_MESSAGE = (
 SHIPPED_PATROL_MESSAGES: frozenset[str] = frozenset(
     {
         PATROL_MESSAGE,
+        _PATROL_MESSAGE_BEFORE_QUEUE,
         "Conductor patrol (armed by the gateway when you dispatched work and had no "
         "active loop). Run work_ledger_read with compact=true. For each item with status "
         "done, read its bar with a full work_ledger_read, pass the done-only "
