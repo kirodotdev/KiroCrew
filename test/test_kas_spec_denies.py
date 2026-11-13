@@ -170,7 +170,7 @@ def test_an_ascii_read_deny_never_lifts_the_refusal_another_deny_makes(order: in
 
 @pytest.mark.parametrize(
     "beside",
-    [{"denyByDefault": True}],
+    [{"autoAllowReadonly": "yes"}],
 )
 def test_another_restriction_beside_the_deny_keeps_the_grant_at_the_prompt(beside) -> None:
     settings = {"shell": {"allowedCommands": ["make build"], "deniedCommands": ["rm .*"], **beside}}
@@ -178,23 +178,24 @@ def test_another_restriction_beside_the_deny_keeps_the_grant_at_the_prompt(besid
     assert grant is None or not grant.commands
 
 
-def test_a_grant_beside_denied_commands_and_deny_by_default_still_asks() -> None:
-    """Both readings at once: the ``allowedCommands`` answer keeps ``denyByDefault``
-    out of the restriction but still reads ``deniedCommands`` as one, and the deny
-    lift reads ``denyByDefault`` as a restriction. So neither answers the matched
-    command, and it asks (fail toward ask)."""
+def test_a_grant_beside_denied_commands_and_deny_by_default_runs_what_no_deny_names() -> None:
+    """``denyByDefault`` refuses only a command no ``allowedCommands`` entry matches,
+    so beside a checked deny it holds no matched command back, as on kiro-cli: the
+    deny lift answers it, and the deny still refuses what it names."""
     settings = {
         "shell": {
-            "allowedCommands": ["make build"],
+            "allowedCommands": ["make build", "rm .*"],
             "deniedCommands": ["rm .*"],
             "denyByDefault": True,
         }
     }
     out, grant = _project(toolsSettings=settings)
     assert CREW_ANSWERED_COMMANDS_KEY not in out
-    assert grant is None or not grant.commands
+    assert grant is not None and grant.commands == ("make build", "rm .*")
     verdict = _judge(_shell("make build"), out, grant)
-    assert verdict.action != TOOL_AUTO_APPROVE and verdict.tier != "spec-builtin-grant"
+    assert (verdict.action, verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+    denied = _judge(_shell("rm notes"), out, grant)
+    assert (denied.action, denied.tier) == (TOOL_DENY, "spec-denies")
     # Without the deny, the same `denyByDefault` keeps the grant.
     plain, plain_grant = _project(
         toolsSettings={"shell": {"allowedCommands": ["make build"], "denyByDefault": True}}
@@ -202,6 +203,9 @@ def test_a_grant_beside_denied_commands_and_deny_by_default_still_asks() -> None
     assert plain[CREW_ANSWERED_COMMANDS_KEY] == ["make build"]
     plain_verdict = _judge(_shell("make build"), plain, plain_grant)
     assert (plain_verdict.action, plain_verdict.tier) == (TOOL_AUTO_APPROVE, "spec-builtin-grant")
+    # A whole-tool shell grant beside the same keys still asks.
+    _, tool_grant = _project(allowedTools=["shell"], toolsSettings=settings)
+    assert tool_grant is not None and "execute_bash" not in tool_grant.builtins
 
 
 # ── a deny KAS did not carry, with no grant beside it ─────────────────────────

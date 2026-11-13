@@ -3123,7 +3123,7 @@ a changed list is never answered from another text's reading and a shell call co
 entry; a value that is not a string, is empty or is longer than 1,024 characters is refused before
 the cache on every call; each entry
 read by `platform/allowed_commands.py` in Rust's `regex` syntax, as Rust reads it:
-literal characters, escaped punctuation, `.`, bracket classes (ranges, `^`
+literal characters, escaped punctuation, the control escapes `\n \t \r \f \v \a`, `.`, bracket classes (ranges, `^`
 negation, a `-` only first, last or as a range, POSIX classes and `\d \w \s`
 inside), `\d \w \s \D \W \S`, `\b \B`, `^ $ \A \z` anywhere, groups `( )`,
 `(?: )` and named, alternation, the repeats `* + ?`, `{n}`, `{n,}` and `{n,m}`
@@ -3190,7 +3190,8 @@ composition instead of saying no entry matches. The note decides nothing.
 or write `deniedPaths` beside a grant no longer keeps that grant at the prompt
 when Crew can read every entry of the deny list itself
 (`allowed_commands.parse_deny`, `allowed_paths.parse`). `parse_deny` refuses an
-entry holding `|`, `\<`, `\>` or `\b{`, which the grant-side reader takes narrower
+entry holding `\<`, `\>` or `\b{`, or alternation (`Pattern.alternates`; a `|` in a
+class or escaped is a literal and reads alike), which the grant-side reader takes narrower
 than kiro-cli's Rust engine, so such a deny keeps its grant at the prompt, and
 `denied_match` answers unknown for an ASCII-read entry against a command holding
 a non-ASCII character, which grants nothing. It still tries every other entry, so
@@ -3215,8 +3216,11 @@ might never run; and inside a `[[ ... ]]` test a separator is part of the test,
 not a new command (`(( ... ))` already holds a parenthesis, so it never splits). `spec-builtin-grant` honours the recorded grant only after the same
 check answers a clear no; an unreadable entry, a command that is not plain, a
 target it cannot read or resolve, or an exhausted match budget grants nothing.
-Any other key beside the deny (`denyByDefault`, `fallbackAction`, an authored
-`ask`) still withholds the grant; a boolean shell `autoAllowReadonly` does not. The KAS deny rules the translation carries
+Any other key beside the deny (`fallbackAction`, an authored `ask`) still withholds
+the grant; a boolean shell `autoAllowReadonly` does not, and `denyByDefault` withholds
+only the whole-tool shell grant, never the `allowedCommands` beside it, which refuses
+only an unmatched command (`kas_grant_only_settings.without_shell_grant_keys`, the
+reading `kas_agents._allowed_commands_withheld` gives them). The KAS deny rules the translation carries
 are unchanged.
 
 A `deniedCommands` entry KAS receives no rule for (no glob spelling, a redirect

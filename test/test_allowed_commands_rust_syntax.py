@@ -202,6 +202,10 @@ _RUST = [
     ("ls [^\u00e0-\u00ff]+", "ls \u00e9", False),
     ("ls [^\u00e0-\u00ff]+", "ls e", True),
     ("touch marker(a{4294967295}){0}", "touch marker", True),
+    ("a\\tb", "a\tb", True),
+    ("a\\tb", "a b", False),
+    ("a[\\f]b", "a\x0cb", True),
+    ("a\\ab\\vc\\rd", "a\x07b\x0bc\rd", True),
 ]
 
 #: Entries Rust refuses to compile, so kiro-cli allows nothing by them.
@@ -277,6 +281,17 @@ def test_a_deny_read_by_ascii_is_unknown_for_a_non_ascii_command() -> None:
     assert denied_match([r"^make clean\b"], "make clean now", word_bounded=True) is True
     assert denied_match([r"^make clean\b"], "make cleanup", word_bounded=True) is False
     assert denied_match([r"^make (?i)CLEAN"], "make clean x", word_bounded=True) is True
+
+
+def test_a_deny_reads_a_literal_pipe_but_not_alternation() -> None:
+    """A ``|`` in a class or escaped is a literal, read alike here and in Rust, so
+    such a deny is checked; alternation (``\\Aa|b\\z`` reads wider in Rust) is not."""
+    deny = r".*[;&|`$<>(){}\\\n].*"
+    assert denied_match([deny], "sleep 5") is False
+    assert denied_match([deny], 'git commit -m "fix(x)"') is True
+    assert denied_match([r"make \|"], "make build") is False
+    assert denied_match([r"make clean|npm publish"], "make build") is None
+    assert denied_match([r"(make|npm) publish"], "make build") is None
 
 
 @pytest.mark.parametrize("unjudged", [r"make \w+", r"make \p{L}"])

@@ -7,9 +7,10 @@ that deny list is one Crew reads the way kiro-cli does, this module records the
 grants the deny alone held back under :data:`CREW_SPEC_DENIES_KEY`, together with
 the list, and the session handle reads them back as one
 :class:`~kiro_crew.platform.spec_denied_grant.SpecDeniedGrant`. See that module for
-how the gate uses it. Any other key beside a deny (``denyByDefault``,
-``fallbackAction``, an authored ``ask``) keeps the grant withheld, as before; a
-boolean shell ``autoAllowReadonly`` does not.
+how the gate uses it. Any other key beside a deny (``fallbackAction``, an
+authored ``ask``) keeps the grant withheld, as before; a boolean shell
+``autoAllowReadonly`` does not, and ``denyByDefault`` withholds only the whole-tool
+shell grant, never the ``allowedCommands`` beside it.
 """
 
 from __future__ import annotations
@@ -314,20 +315,21 @@ def spec_denies_record(
     if denied_paths:
         lifted_settings = _without(lifted_settings, _WRITE_SETTINGS_KEYS, "deniedPaths")
     lifted = withhold_answered_under_authored_rules(
-        candidates | {"execute_bash"},
+        candidates,
         policy,
         authored_permissions=spec.get("permissions"),
         tools_settings=lifted_settings,
     )
     builtins = sorted((lifted & candidates & _LIFTABLE) - answered)
-    from kiro_crew.platform.governance import may_grant_builtin_at_gate_now
+    # The `allowedCommands` answer's own reading: `denyByDefault` refuses only a
+    # command no entry matches, so it holds no matched one back.
+    from kiro_crew.acp.kas_agents import _allowed_commands_withheld
 
     lifted_commands = (
         commands
         if commands
         and not commands_answered
-        and "execute_bash" in lifted
-        and may_grant_builtin_at_gate_now("execute_bash")
+        and not _allowed_commands_withheld(spec, policy, lifted_settings)
         else []
     )
     if not (builtins or lifted_commands):
