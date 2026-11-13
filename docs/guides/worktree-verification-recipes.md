@@ -46,7 +46,7 @@ fast path answers `has_more=false` unless a session has size-rotated `archive/`
 segments, and rotation only happens once a transcript outgrows a 10 MiB budget,
 so every scenario built from a handful of messages leaves "load earlier"
 structurally unreachable. Seed `sessions-long-history` for anything on that
-seam - it ships one pinned session whose oldest 60 rows sit below a real
+seam - it ships one pinned session whose oldest 120 rows sit below a real
 rotation boundary, so the initial slot load answers `has_more=true` with a
 cursor that pages into the archive. Its archive segment is real
 `ConversationLog` rotation output rather than authored bytes; regenerate it by

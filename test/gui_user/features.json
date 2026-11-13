@@ -496,7 +496,7 @@
         "seed": "sessions-long-history",
         "members": [],
         "feature_flags": [],
-        "notes": "Uses pages/chat/pagination.ts and EarlierMessagesBar; sessions-long-history initial load returns 8 live rows with has_more=true, next_before=60, and paging reads the archive segment."
+        "notes": "Uses pages/chat/pagination.ts and EarlierMessagesBar. The chat opens the pinned long-history session with a 100-row page (OLDER_PAGE_LIMIT) cut from its 129-row corpus (120 archived + 9 live rows), so the first page answers has_more=true and Load earlier pages into the archive segment. The no-limit slot read returns the 9 live rows with has_more=true, next_before=120."
       },
       "runnable": "nightly",
       "estimated_steps": 4,
@@ -1012,7 +1012,7 @@
         "seed": "apps-installed",
         "members": [],
         "feature_flags": [],
-        "notes": "At least one enabled fixture app declaring contributes.panelTabs (bundled ESM tab) and contributes.sessionControls with a status route."
+        "notes": "No seed carries this: panelTabs[].entry and sessionControls[].entryPoint are ESM modules. Stage one app before the test: <dir>/app.json = {\"name\": \"fixture-notes-ui\", \"displayName\": \"Fixture Notes UI\", \"version\": \"1.0.0\", \"description\": \"GUI-lane staging app\", \"author\": \"kirocrew-fixture\", \"ui\": {\"entry\": \"page.mjs\", \"pages\": [{\"route\": \"/apps/fixture-notes-ui\", \"label\": \"Fixture Notes UI\"}]}, \"contributes\": {\"panelTabs\": [{\"id\": \"notes\", \"title\": \"Fixture notes\", \"menuLabel\": \"Fixture notes\", \"icon\": \"FileText\", \"entry\": \"panel.mjs\"}], \"sessionControls\": [{\"id\": \"notes-chip\", \"entryPoint\": \"control.mjs\", \"label\": \"Fixture notes\", \"icon\": \"Tag\"}]}}, and <dir>/ui/page.mjs, panel.mjs and control.mjs each a one-line `export default function X() { return '<some text>' }`. Install it with `KIROCREW_HOME=<lane home> KIROCREW_PORT=<lane port> kirocrew app install <dir>`, then, as the dashboard owner, POST /api/security/trusted-apps/fixture-notes-ui with {} and POST /api/apps/fixture-notes-ui/enable with {} (`kirocrew app enable` is refused: third-party app execution is off by default). /chat then shows a 'Fixture notes' chip in the composer bar and a 'Fixture notes' row in the side panel's + menu that opens the tab. The chip has no statusPath, which would need an app backend."
       },
       "runnable": "nightly",
       "estimated_steps": 4,
@@ -1405,7 +1405,7 @@
         "seed": "apps-installed",
         "members": [],
         "feature_flags": [],
-        "notes": "APPS_NAV_LIMIT = 6; state persisted in 'mc-apps-expanded'; needs more than 6 enabled apps with UI pages."
+        "notes": "APPS_NAV_LIMIT = 6; state persisted in 'mc-apps-expanded'. apps-installed ships seven enabled local apps with a ui.pages route (fixture-notes, fixture-board, fixture-clock, fixture-diary, fixture-inbox, fixture-ledger, fixture-tasks), so the toggle renders from the seed alone."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -2124,15 +2124,15 @@
     {
       "id": "capabilities-agent-templates",
       "feature": "capabilities",
-      "title": "Agent templates inside a crew's Template pane",
+      "title": "The agent template a bot is built from",
       "user_story": "As an operator, I want to inspect the harness-level agent definitions crews bind to, so that I understand what a crew actually runs.",
       "start_url": "/capabilities",
-      "entry_path": "Customize → Mates tab → open a mate → Template pane (the shared definitions live on the Custom agents tab)",
+      "entry_path": "Customize → Bots tab → open a bot → General pane → Built from field (the shared definitions live on the Custom agents tab, ?tab=templates)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": ""
+        "notes": "Nothing to stage: minimal boots with two bots on the Bots tab (default, built from kirocrew, and Bot)."
       },
       "runnable": "nightly",
       "estimated_steps": 2,
@@ -2144,7 +2144,7 @@
       "merged_from": [
         "capabilities-agent-templates"
       ],
-      "component": "website/src/components/crew/AgentTemplateDetail.tsx"
+      "component": "website/src/components/crew/CrewEditorNextDialog.tsx"
     },
     {
       "id": "capabilities-crew-appearance-library",
@@ -3666,7 +3666,7 @@
         "seed": "apps-installed",
         "members": [],
         "feature_flags": [],
-        "notes": "Fixture app ships a static UI. Sample two or three builtin routes (e.g. /worlds, /channels). Installed apps do not highlight Discover or Library; orphaned apps tint warn."
+        "notes": "The seed gives fixture-notes a ui.pages route, so it has an Apps rail row and /apps/fixture-notes opens; it shows the 'Agent-only app' notice because a seed ships no UI bundle. For an app-owned page body, stage the fixture-notes-ui app described in chat-app-contributed-panel-tabs and open /apps/fixture-notes-ui, which renders its page.mjs text. Sample two or three builtin routes (e.g. /worlds, /channels). Installed apps do not highlight Discover or Library; orphaned apps tint warn."
       },
       "runnable": "nightly",
       "estimated_steps": 2,
@@ -7716,7 +7716,7 @@
         "seed": "minimal",
         "members": [],
         "feature_flags": [],
-        "notes": ""
+        "notes": "minimal leaves telemetry off, so the pane opens on 'Telemetry is off'. Stage before navigating: `KIROCREW_HOME=<lane home> kirocrew config set telemetry.enabled true` (applies live, no restart), send one chat turn (POST /api/chat {\"message\": \"hello\", \"slot\": \"starter\"}), then wait for the first metrics-*.jsonl shard under <lane home>/metrics (the exporter flushes every telemetry.export_interval_seconds, default 60). The next dashboard load opens the 'Performance metrics are on' notice; press Keep on. The pane then shows turn latency, the Latency/Startup tabs and the Instruments table."
       },
       "runnable": "nightly",
       "estimated_steps": 2,
