@@ -127,6 +127,19 @@ sessions neither read nor write it, whatever these keys say. The keys apply to
 every surface (dashboard, channels, cron, sub-agents) at once, where a memory
 mode is chosen per session.
 
+To see what the `"shadow"` (and `"propose"`) stages above have recorded, run
+`kirocrew memory shadow report`. Per stage it prints the flag, when its window
+started, the days and session starts seen against the bar (14 days and 200
+session starts), and how many items the new policy would change. It shows
+counts only, never memory text, and writes nothing. `--stage <name>` adds counts
+by day, `--since 7d` or `--since YYYY-MM-DD` moves the start, `--store <name>`
+reads another store, and `--json` prints the same data as JSON. Only `shadow`
+counters and sampled fields count; Dreaming keeps `propose`. If a window starts
+partway through a UTC day, the report excludes that day from counters, samples
+and session starts and reports the next UTC midnight as `window_start`. This
+conservatively undercounts readiness by at most one day, avoiding counters that
+mix policy versions. A start exactly at UTC midnight keeps that day.
+
 ## Memory Modes
 
 Each session can operate in one of three memory modes:

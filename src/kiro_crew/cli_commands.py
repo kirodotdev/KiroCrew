@@ -960,6 +960,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _memory_forget,
         _memory_search_embedding,
         _memory_search_history,
+        _memory_shadow,
         _memory_show,
         _memory_verb,
         _refuse_forget_outside_owner_terminal,
