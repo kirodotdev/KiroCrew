@@ -1287,7 +1287,7 @@ jobs:
           # that test's own timeout (scripts/ci_faulthandler_budget.py). Not a
           # fixed faulthandler_timeout: a dump of a thread still running Python
           # can segfault the worker, so it must never fire inside a test's budget.
-          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30)
+          PROGRESS=(-p scripts.ci_pytest_progress --ci-progress-dir="$RUNNER_TEMP/pytest-progress" --max-worker-restart=0 -p scripts.ci_faulthandler_budget --faulthandler-grace=30 -p scripts.ci_rss_probe --ci-rss-dir="$RUNNER_TEMP/pytest-rss")
           # An explicit worker count, like the macOS lane's `-n 2`, instead of the
           # xdist budget: that budget reserves 5 GiB a worker for a FULL-suite
           # collection (at 3 GiB it granted a file shard 4 of the fleet runner's 8 cores).
@@ -1307,7 +1307,14 @@ jobs:
             peak=0
             while sleep 5; do
               used=$(awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{print int((t-a)/1024)}' /proc/meminfo)
-              if [ "$used" -gt "$peak" ]; then peak=$used; echo "$peak" > "$RUNNER_TEMP/mem-peak-mib"; fi
+              if [ "$used" -gt "$peak" ]; then
+                peak=$used; echo "$peak" > "$RUNNER_TEMP/mem-peak-mib"
+                if [ "$used" -gt 11000 ]; then
+                  { date -u +%H:%M:%S; echo "used=$used"; ps -eo rss,pid,ppid,etimes,args --sort=-rss | head -15 | cut -c1-220; } > "$RUNNER_TEMP/mem-peak-ps.txt"
+                fi
+              fi
+              tick=$(( ${tick:-0} + 1 ))
+              if [ $(( tick % 6 )) -eq 0 ]; then echo "$(date -u +%H:%M:%S) used=$used" >> "$RUNNER_TEMP/mem-series.txt"; fi
             done
           ) > /dev/null 2>&1 &
           MEM_SAMPLER=$!
@@ -1407,6 +1414,21 @@ jobs:
         run: |
           total=$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo)
           echo "peak memory in use: $(cat "$RUNNER_TEMP/mem-peak-mib" 2>/dev/null || echo unknown) MiB of ${total} MiB"
+          echo "::group::processes at the peak"; cat "$RUNNER_TEMP/mem-peak-ps.txt" 2>/dev/null || true; echo "::endgroup::"
+          echo "::group::host memory every 30s"; cat "$RUNNER_TEMP/mem-series.txt" 2>/dev/null || true; echo "::endgroup::"
+          python3 - "$RUNNER_TEMP/pytest-rss" <<'PY' || true
+          import json, pathlib, sys
+          recs, ends = [], []
+          for f in pathlib.Path(sys.argv[1]).glob("*.jsonl"):
+              for line in f.read_text(encoding="utf-8").splitlines():
+                  r = json.loads(line)
+                  (ends if r.get("end") else recs).append(r)
+          for r in sorted(ends, key=lambda r: r["w"]):
+              print("CI_RSS_END", json.dumps(r))
+          for key in ("d_hwm", "d_rss", "d_kids"):
+              for r in sorted(recs, key=lambda r: -r[key])[:25]:
+                  print(f"CI_RSS top-{key}", json.dumps(r))
+          PY
 
       - name: Upload Linux pytest progress
         if: ${{ always() }}
