@@ -665,6 +665,26 @@ class StreamRedactor:
         self.reset()
         return out
 
+    def release_sentence_end(self) -> str:
+        """Release the withheld run when it is one plain word ending a sentence.
+
+        Returns the run, redacted like any committed text, or ``""`` when nothing
+        is released: the run is anything else (:func:`ends_plain_sentence`), a
+        value is being dropped, or the structured detectors still read a unit in
+        it. Unlike :meth:`flush` it keeps the stream going. Text glued to the run
+        is then read without it: no pattern needs such a word on its left to
+        match, so no more is shown; a pattern a ``.`` on its left turns off masks
+        more. A caller that wants a sentence's last word shown before the next
+        chunk calls this after :meth:`feed`; one that never does holds the run.
+        """
+        if self.discarding or not ends_plain_sentence(self._buf):
+            return ""
+        read = _submodule(_SEAM).stream_read(self._ctx, self._buf)
+        if read is not None and (read.undecided or read.tail):
+            return ""
+        run, self._buf = self._buf, ""
+        return self._redact_window(run)
+
     @property
     def held(self) -> str:
         """The raw run withheld so far (``""`` while a value is being dropped)."""
