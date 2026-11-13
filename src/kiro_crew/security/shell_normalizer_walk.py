@@ -272,13 +272,15 @@ def _substitution_bodies(text: str) -> "list[str]":
     cannot disagree.
     """
     bodies: list[str] = []
+    quote_at: "dict[int, tuple[int, bool]] | None" = None
     i = 0
     while i < len(text):
         # PROCESS substitutions run their body as a command just as a command
         # substitution does -- ``cat <(kirocrew token)`` executes the inner command and
         # feeds its output through a pipe.  Same paren-nesting walk.
         if text.startswith(("<(", ">(", "$("), i):
-            end, proven = _matching_close_paren(text, i + 2)
+            quote_at = quote_at or _quote_states(text)
+            end, proven = _matching_close_paren(text, i + 2, quote_at[i + 2])
             bodies.append(text[i + 2 : end - 1] if proven else text[i + 2 :])
             i = end
             continue
@@ -501,7 +503,9 @@ class _ShellChar(NamedTuple):
     trailing_escape: bool
 
 
-def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterator[_ShellChar]":
+def _iter_shell_chars(
+    text: str, state: int = 0, ansi: bool = False, start: int = 0
+) -> "Iterator[_ShellChar]":
     """THE shell quote/escape state machine. Every push-path reading of shell
     quoting walks through this one generator.
 
@@ -525,9 +529,10 @@ def _iter_shell_chars(text: str, state: int = 0, ansi: bool = False) -> "Iterato
     "still open" where bash closed hides a separator or a ``git`` word.
 
     *state* and *ansi* resume a walk, which is what lets a quoted word spanning
-    whitespace be read without desyncing.
+    whitespace be read without desyncing; *start* resumes it at that offset of
+    *text* without copying the rest, and every offset stays one of *text*'s own.
     """
-    i = 0
+    i = start
     n = len(text)
     dollar_run = 0  # consecutive LITERAL ``$`` immediately before this char
     while i < n:
@@ -814,7 +819,9 @@ def _arms_case_context(text: str, index: int, in_case_body: bool = False) -> boo
     return True  # chain too deep to decide -- arm, the long direction
 
 
-def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
+def _matching_close_paren(
+    text: str, open_end: int, at: "tuple[int, bool] | None" = None
+) -> "tuple[int, bool]":
     """``(index just past the matching ``)``, proven)`` for a paren opened before
     *open_end*, walked QUOTE-AWARELY through :func:`_iter_shell_chars`.
 
@@ -861,28 +868,33 @@ def _matching_close_paren(text: str, open_end: int) -> "tuple[int, bool]":
     The ``${...}`` reading is kept only where it CLOSES the span later than the
     paren-only walk does. Where it cannot close it (text it does not model, such
     as a here-document), the paren-only span stands, so no span gets shorter.
+
+    *at* is the ``(state, ansi)`` a walk of *text* from offset 0 holds at
+    *open_end* (:func:`_quote_states`). Given it, the walk starts AT *open_end*
+    with that state rather than re-reading the text before it, which is what keeps
+    a text with one span per line linear; the steps from *open_end* on are the same.
     """
-    paren = _close_paren_walk(text, open_end, False)
+    paren = _close_paren_walk(text, open_end, False, at)
     if text.find("{", open_end, paren[0]) < 0:
         return paren  # no ``${`` on the way, so the second walk takes the same steps
-    spanned = _close_paren_walk(text, open_end, True)
+    spanned = _close_paren_walk(text, open_end, True, at)
     return spanned if spanned[1] and spanned[0] > paren[0] else paren
 
 
-def _close_paren_walk(text: str, open_end: int, expansions: bool) -> "tuple[int, bool]":
+def _close_paren_walk(
+    text: str, open_end: int, expansions: bool, at: "tuple[int, bool] | None" = None
+) -> "tuple[int, bool]":
     """The walk behind :func:`_matching_close_paren`; *expansions* reads ``${...}``."""
     frames = ["("]  # innermost last: ``(`` is command text, ``{`` a ``${...}`` word
     cases = 0
     outer_cases: "list[int]" = []  # a ``${...}`` word starts outside any ``case``
-    pos = 0
-    state = 0
-    ansi = False
+    pos, (state, ansi) = (0, (0, False)) if at is None else (open_end, at)
     while pos <= len(text):
         jumped = False
         dollars = 0  # live ``$`` run just before this step: ``$${`` is the PID, then ``{``
         prev = ""  # the live character just before this step
-        for step in _iter_shell_chars(text[pos:], state, ansi):
-            off = pos + step.offset
+        for step in _iter_shell_chars(text, state, ansi, pos):
+            off = step.offset
             if off < open_end:
                 continue
             if not step.active:
@@ -942,6 +954,18 @@ def _close_paren_walk(text: str, open_end: int, expansions: bool) -> "tuple[int,
         if not jumped:
             break
     return (len(text), False)
+
+
+def _quote_states(text: str) -> "dict[int, tuple[int, bool]]":
+    """``(state, ansi)`` a walk of *text* from offset 0 holds at each step boundary.
+
+    The end of every ``$(`` / ``<(`` / ``>(`` is one: neither of its two characters
+    is a backslash, so no escape pair can straddle it.
+    """
+    states = {0: (0, False)}
+    for step in _iter_shell_chars(text):
+        states[step.offset + len(step.text)] = (step.state, step.ansi)
+    return states
 
 
 def _matching_close_backtick(text: str, start: int) -> "tuple[int, bool]":
