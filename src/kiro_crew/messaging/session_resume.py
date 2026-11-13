@@ -415,7 +415,9 @@ async def resolve_session_choices(
         multi_word = [n.text for n in needles if n.required] != [phrase] or any(
             n.word for n in needles
         )
-        if not rows and multi_word:
+        # A title-only match cannot prove excluded text is absent from content,
+        # so queries with exclusions cannot use this fallback.
+        if not rows and multi_word and not any(needle.excluded for needle in needles):
             # search_sessions matches multi-word queries needle-wise, so out-of-order
             # words DO resolve. What it cannot reach is a session older than its scan
             # window, so this unbounded TITLE match is the last resort for a long-lived

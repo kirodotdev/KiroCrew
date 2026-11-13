@@ -108,6 +108,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     CJK_SEGMENT_MAX_RUNS,
     SEARCH_MAX_TOKENS,
     CjkSegmenter,
+    QueryOperators,
     SearchNeedle,
     TitleScope,
     _cjk_slot,
@@ -115,6 +116,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     _cjk_words_lock,
     _cjk_words_memo,
     _CjkSegmenterSlot,
+    _excludes,
     _forge_lead_in,
     _forge_spellings,
     _forge_type_suffix,
@@ -131,6 +133,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     _source_offset,
     _valid_words,
     count_needle,
+    exclusion_needles,
     is_han_run,
     logger,
     needles_match_text,
@@ -141,6 +144,7 @@ from kiro_crew.history_search_query import (  # noqa: F401 - facade re-exports
     reset_search_ref_resolver_for_tests,
     snippet_needle_tiers,
     snippet_needles,
+    split_query_operators,
     split_title_scope,
     tiered_first_hit,
 )
@@ -265,7 +269,9 @@ def search_candidate_cap(query: str = "") -> int:
 
     A ``title:`` query with nothing after its term reads titles only and is not
     held to the window, so for it the window itself is the cap. The ranking reads
-    no window on that path, so this is still the one read for the search.
+    no window on that path, so this is still the one read for the search. Any
+    text after the term, exclusions alone included, reads transcripts within the
+    window and takes the ceiling like any content search.
     """
     from kiro_crew.config.sections_limits import SEARCH_SCAN_WINDOW_MAX
 
@@ -749,10 +755,17 @@ class SessionCatalogProjection:
         it owns. Membership is re-judged under the transcript lock through snippet
         extraction for each output row; a failed check or lock timeout drops the row.
 
+        A ``"quoted phrase"`` must appear as typed, and a session holding any
+        ``-excluded`` term in its title or content is dropped before scoring; see
+        :func:`split_query_operators` for which quotes and hyphens count.
+
         A query that starts with ``title:`` (see :func:`split_title_scope`) is
         scoped to titles: only sessions whose title matches its term qualify, and
         any text after the term is searched as above among them. With nothing after
-        the term, :meth:`_search_titles` answers from titles alone. A bare
+        the term, :meth:`_search_titles` answers from titles alone. When that
+        text holds only ``-exclusions``, the title matches are judged within the
+        scan window like any other title-scoped query, and the ones whose title or
+        content holds an excluded term are dropped, newest first. A bare
         ``title:`` names no title yet and matches nothing.
         """
         if not query or limit <= 0 or not self._log._dir.exists():
@@ -769,8 +782,12 @@ class SessionCatalogProjection:
             # and the snippet look for, and the term only narrows the window.
             query = scope.rest
         needles, phrase, adjacency_floor = parse_search_query(query)
+        if not needles and title_filter is not None:
+            # Exclusions alone match nothing on their own, but under a title scope
+            # they remove sessions from the title matches.
+            needles = exclusion_needles(split_query_operators(query))
         if not needles:
-            # Whitespace-only query: no needles to require, so nothing can match.
+            # Whitespace or exclusions alone: no needles to require, so nothing can match.
             # Returning [] keeps this from degenerating into "match everything",
             # and skips reading every session file to reach that conclusion.
             return []
@@ -780,7 +797,7 @@ class SessionCatalogProjection:
         # collapses "a a" to one needle while its phrase is still two words, and
         # a single CJK term expands to several needles while the phrase is what
         # rewards its characters appearing together.
-        multi = [n.text for n in required] != [phrase]
+        multi = bool(required) and [n.text for n in required] != [phrase]
         gate = _MemoGate(needles, phrase, multi)
         # Pinned for the whole query: a memo full of other terms evicts those,
         # never the terms this query is reading and filling right now.
@@ -854,6 +871,9 @@ class SessionCatalogProjection:
         releases it.
         """
         multi = gate.multi
+        # False for a title scope followed by exclusions alone: every surviving
+        # session scores zero, and the rank tiebreak leaves them newest first.
+        ranks_on_terms = any(not needle.excluded for needle in needles)
         now = _time.time()
         # (verbatim runs hit, score, -rank, meta, needs_snippet)
         scored: list[tuple[int, float, int, dict, bool]] = []
@@ -922,6 +942,9 @@ class SessionCatalogProjection:
             for needle, needle_key in zip(needles, needle_keys):
                 in_content = content.count(needle, needle_key)
                 in_title = count_needle(needle, title_folded)
+                if needle.excluded and (in_content or in_title):
+                    disqualified = True
+                    break
                 if needle.required and not in_content and not in_title:
                     # AND semantics: one absent required needle disqualifies the
                     # session, so stop counting the rest.
@@ -979,7 +1002,7 @@ class SessionCatalogProjection:
                         * idf[pos]
                     )
                 title_hits += in_title * needle.weight * idf[pos]
-            if not (content_hits or saturated_hits or title_hits):
+            if ranks_on_terms and not (content_hits or saturated_hits or title_hits):
                 continue
             if adjacency_floor and not adjacency_hits:
                 # Adjacency floor: a CJK query whose characters ALL appear but
