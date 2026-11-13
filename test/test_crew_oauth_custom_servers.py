@@ -505,3 +505,21 @@ def test_a_moved_dcr_redirect_stages_the_new_client_and_keeps_the_grant(vendor, 
     assert plan.client.client_id == "new"
     assert ClientStore().read(key)[0].client_id == "old"
     assert TokenStore().read(key)[0].access == "at"
+
+
+def test_an_entry_at_an_unowned_registry_url_takes_the_owner_server_path(owner, monkeypatch):
+    """Sentry's card has no Crew sign-in, so a hand-added Sentry is not left with neither."""
+    import kiro_crew.config.loader as loader
+    from kiro_crew.connections.owner_servers import CONFIG_ROOT_KEY, CONFIG_SERVERS_KEY
+    from kiro_crew.connections.registry import get_provider
+
+    assert "sentry" not in crew_oauth.SUPPORTED_SLUGS
+    url = str(get_provider("sentry")["mcp_url"])
+    config = {CONFIG_ROOT_KEY: {CONFIG_SERVERS_KEY: {"my-sentry": {"url": url}}}}
+    monkeypatch.setattr(loader, "read_config_for_update", lambda: config)
+    assert crew_oauth.signs_in_custom({"url": url})
+    key = crew_oauth.custom_key("my-sentry", url)
+    owner.add(key)
+    assert crew_oauth.routed_slug("my-sentry", {"url": url}, None, backend="kas") == key
+    # An owned card's url still keeps the card path for the dashboard sign-in too.
+    assert not crew_oauth.signs_in_custom({"url": str(get_provider("github")["mcp_url"])})
