@@ -8,9 +8,11 @@ is dropped when the call returns: nothing is kept between calls, judgements or
 sessions, and outside a call every reader computes afresh.
 
 Only a PURE reader may be marked: its answer is decided by its one argument and by
-module constants, never by the filesystem, the clock or configuration. That is what
-makes one read and many reads the same verdict; ``test_deny_gate_call_sharing.py``
-judges a corpus with the memo and without. A leaf, so every shell reader can import it.
+module constants, never by the filesystem, the clock or configuration. The one exception,
+the ssh self-target walk (``argv_floor_ssh._is_ssh_to_self``), reads this host's names
+and keeps its first answer as that call's snapshot. Purity is what makes one read and
+many reads the same verdict; ``test_deny_gate_call_sharing.py`` judges a corpus with the
+memo and without. A leaf, so every shell reader can import it.
 """
 
 from __future__ import annotations

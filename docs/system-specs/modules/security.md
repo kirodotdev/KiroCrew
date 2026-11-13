@@ -1013,14 +1013,17 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   read once inside that call however many floors ask. Marked today: the shell tokenizer
   (`shell_normalizer._shell_tokens`, which hands every caller its own list), the program
   basename, the operand normalizer and the self-program test of a token, the quote-aware
-  line-continuation fold, and the Python lexer the inline-payload reader walks
-  (`inline_payload._lex`, read to its end once per view). Only a PURE reader may be marked:
-  its answer is decided by its one argument and module constants, never by the
-  filesystem, the clock or configuration, which is what makes one read and many reads the
-  same verdict. Outside a call every reader computes afresh, and nothing is kept between
-  calls, judgements or sessions. `test_deny_gate_call_sharing.py` judges a corpus with the
-  memo and without and requires one verdict. A leaf: it imports nothing from the package,
-  so `shell_normalizer_walk.py` and every reader above it can import it.
+  line-continuation fold, the Python lexer the inline-payload reader walks
+  (`inline_payload._lex`, read to its end once per view), and the ssh self-target walk
+  (`argv_floor_ssh._is_ssh_to_self`). Only a PURE reader may be marked: its answer is
+  decided by its one argument and module constants, never by the filesystem, the clock or
+  configuration, which is what makes one read and many reads the same verdict. The one
+  exception is the ssh self-target walk: it reads this host's names and keeps its first
+  answer inside one call as that call's snapshot. Outside a call every reader computes
+  afresh, and nothing is kept between calls, judgements or sessions.
+  `test_deny_gate_call_sharing.py` judges a corpus with the memo and without and requires
+  one verdict. A leaf: it imports nothing from the package, so `shell_normalizer_walk.py`
+  and every reader above it can import it.
 - `shell_commands.py` — the shared quote-aware command reader. `read_commands(text, track)`
   walks the text once with `shell_normalizer._iter_shell_chars` and returns one `ShellCommand`
   per command: its steps (raw text, raw offsets, quote state), its words (split at live
