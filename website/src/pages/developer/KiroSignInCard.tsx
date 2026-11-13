@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Eye, EyeOff, KeyRound, Loader2, LogOut, RefreshCw } from 'lucide-react'
 import { api, type KasLoginStatus } from '../../api/client'
 import { isAccountOnly, parseKiroUsagePayload } from '../../api/kiroUsage'
@@ -8,7 +8,6 @@ import { providerLabelFromWire } from '../../components/kasProviderLabel'
 import { KIRO_ACCOUNT_EMAIL_HIDDEN_KEY } from '../../components/KiroAccountModal'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { configuredAcpBackend, type AcpBackendConfig } from '../../api/acpBackend'
-import { clearCachedModels } from '../../providers/adapters/acp'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Btn, Card, CardTitle } from '../../components/ui'
@@ -16,6 +15,14 @@ import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR } from '../../hooks/useSettingHighlight'
 import { fmtDateTime, fmtRelative } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { signInLapsed } from './kiroSignInState'
+import {
+  SignInStoreUnreadableErrors,
+  KiroSignInSourcesNotice,
+  SOURCES_QUERY_KEY,
+  sourcesNotice,
+  useKiroSignInSources,
+  useKiroSignOut,
+} from './KiroSignInSources'
 
 // Same cache key the embedded flow reads status under (KasLoginGate.QUERY_KEY):
 // a sign-out here must invalidate the flow's query, not a private copy of it.
@@ -109,21 +116,7 @@ function SignedInSummary({
    *  not here: this summary unmounts the moment the status turns unauthenticated. */
   onSignedOut: () => void
 }) {
-  const queryClient = useQueryClient()
-  const logout = useMutation({
-    mutationFn: () => api.kasLoginLogout(status.identity ?? ''),
-    onSuccess: () => {
-      onSignedOut()
-      void queryClient.invalidateQueries({ queryKey: STATUS_QUERY_KEY })
-      // The signed-out account's model list goes with it: the gateway forgot its
-      // catalog on this sign-out, and `['available-models']` would otherwise stay
-      // fresh (global `staleTime: Infinity`) until a session spawns.
-      clearCachedModels()
-      void queryClient.resetQueries({ queryKey: ['available-models'] })
-      // So does its usage reading, which names it: no stale name on the next sign-in.
-      void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
-    },
-  })
+  const logout = useKiroSignOut(status.identity ?? '', onSignedOut)
   const lapsed = signInLapsed(status)
   const provider = providerLabelFromWire(status.provider)
   const account = useSignedInAccount()
@@ -275,9 +268,21 @@ export function KiroSignInCard({
   })
   const authenticated = observed?.authenticated === true
   const account = useSignedInAccount()
+  // Which stored sign-in sessions run as, read apart from the status above so a
+  // slow answer never holds the card's first paint back. Re-read whenever a
+  // sign-in lands or leaves: both change which account that is.
+  const queryClient = useQueryClient()
+  const { data: sources, error: sourcesError } = useKiroSignInSources()
+  const notice = sourcesNotice(sources)
+  const lastAuthenticated = useRef<boolean | null>(null)
   useEffect(() => {
     if (authenticated) setSignedOutNote(false)
-  }, [authenticated])
+    if (observed === undefined) return
+    if (lastAuthenticated.current !== null && lastAuthenticated.current !== authenticated) {
+      void queryClient.invalidateQueries({ queryKey: SOURCES_QUERY_KEY })
+    }
+    lastAuthenticated.current = authenticated
+  }, [authenticated, observed, queryClient])
   // The compact fold: `null` follows the sign-in state, a boolean is the person's toggle.
   const signedIn = authenticated && observed !== undefined && !signInLapsed(observed)
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
@@ -306,7 +311,9 @@ export function KiroSignInCard({
     }
   }, [openRequest])
   // A failed status read is not an answer to fold on: its error and retry are inside.
-  const open = userOpen ?? autoOpen ?? statusFailed
+  // Two different accounts open the fold too: a closed heading reading "Signed in"
+  // would hide that sessions are not running as the kiro-cli account.
+  const open = userOpen ?? (notice === 'two_accounts' ? true : (autoOpen ?? statusFailed))
   const body = (
     <>
       {signedOutNote ? (
@@ -314,6 +321,17 @@ export function KiroSignInCard({
           {i18nT('pages.developer.kiroSignInCard.takes_effect_next_process')}
         </p>
       ) : null}
+      {notice === 'using_kiro_cli' ? (
+        <KiroSignInSourcesNotice sources={sources} identity="" onRemoved={() => undefined} />
+      ) : null}
+      {/* No hand-off: the embedded Company SSO form can hold an unsaved portal URL and region. */}
+      <ErrorNotice
+        className="mb-3"
+        title={i18nT('pages.developer.kiroSignInCard.could_not_read_sources')}
+        message={sourcesError?.message || null}
+        testId="kiro-sign-in-sources-error"
+      />
+      <SignInStoreUnreadableErrors sources={sources} />
       <KasLoginEmbedded
         renderPending={() => (
           <p className="flex items-center gap-2 text-[13px] text-muted" data-testid="kiro-sign-in-pending">
@@ -322,7 +340,16 @@ export function KiroSignInCard({
           </p>
         )}
         renderAuthenticated={(status, { reauth }) => (
-          <SignedInSummary status={status} onReauth={reauth} onSignedOut={() => setSignedOutNote(true)} />
+          <>
+            {notice !== 'using_kiro_cli' ? (
+              <KiroSignInSourcesNotice
+                sources={sources}
+                identity={status.identity ?? ''}
+                onRemoved={() => setSignedOutNote(true)}
+              />
+            ) : null}
+            <SignedInSummary status={status} onReauth={reauth} onSignedOut={() => setSignedOutNote(true)} />
+          </>
         )}
         renderReauthCancel={(cancel, busy) => (
           <button
@@ -371,6 +398,12 @@ export function KiroSignInCard({
                 provider: providerLabelFromWire(observed.provider),
               })}
               {account.hidden ? null : <AccountName {...account} />}
+            </span>
+          )}
+          {!open && !signedIn && notice === 'using_kiro_cli' && (
+            <span data-testid="kiro-sign-in-fold-state" className="ml-1.5 font-normal text-muted">
+              {'· '}
+              {i18nT('pages.developer.kiroSignInCard.using_kiro_cli_title')}
             </span>
           )}
         </summary>

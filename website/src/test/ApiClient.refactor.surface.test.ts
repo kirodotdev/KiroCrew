@@ -31,7 +31,7 @@ const API_KEY_ORDER = [
   'crewBoard', 'crewBoardAction', 'wakatimeExportDownload',
   'sessionSummary', 'dashboardCard', 'generateSessionSummary',
   'beaconStatus', 'collectionStatus', 'kiroPrerequisite', 'repairKiroPrerequisiteSpecs',
-  'updateKiroPrerequisiteCli', 'kasLoginStatus', 'kasLoginBeginDevice', 'kasLoginPoll',
+  'updateKiroPrerequisiteCli', 'kasLoginStatus', 'kasLoginSources', 'kasLoginBeginDevice', 'kasLoginPoll',
   'kasLoginBeginLoopback', 'kasLoginCancel', 'kasLoginLogout', 'kasBundleStatus', 'kasBundleInstall', 'onboardingImportScan',
   'onboardingImportApply', 'onboardingImportState', 'securityStats', 'securityPosture',
   'mobileLoginLink', 'mobileConnectMethods', 'tailnetStatus', 'tailnetMobile',

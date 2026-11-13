@@ -15,6 +15,15 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       kasLoginStatus: vi.fn(),
+      // No kiro-cli sign-in beside the card's own: the card says nothing extra.
+      kasLoginSources: vi.fn().mockResolvedValue({
+        active: 'none',
+        kiro_crew: { stored: false },
+        kiro_cli: { stored: false, usable: false },
+        name_pending: false,
+        same_account: null,
+        can_use_kiro_cli: false,
+      }),
       kasLoginLogout: vi.fn().mockResolvedValue({ ok: true }),
       kasLoginBeginDevice: vi.fn().mockResolvedValue({
         login_id: 'login-1',
