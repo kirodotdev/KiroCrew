@@ -10,6 +10,7 @@ import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { useAnchorTracking } from '../hooks/useAnchorTracking'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
 import type { SendMode } from '../pages/chat/ChatSettings'
+import { compareText } from '../i18n/format'
 
 /**
  * Catalog KEY for each command's description, keyed by the command's TRIGGER
@@ -181,7 +182,7 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
   })
   const allCommands = useMemo(() => {
     const names = new Set(apiCommands.map(c => c.name))
-    return [...apiCommands, ...FRONTEND_COMMANDS.filter(c => !names.has(c.name))].sort((a, b) => a.name.localeCompare(b.name))
+    return [...apiCommands, ...FRONTEND_COMMANDS.filter(c => !names.has(c.name))].sort((a, b) => compareText(a.name, b.name))
   }, [apiCommands])
   const commands = useMemo(
     () => (hidden?.length ? allCommands.filter(c => !hidden.includes(c.name)) : allCommands),
