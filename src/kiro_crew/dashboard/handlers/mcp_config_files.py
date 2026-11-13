@@ -324,15 +324,17 @@ def _load_config_for_update(path: Path) -> dict[str, Any] | None:
     return None if isinstance(loaded, web.Response) else loaded
 
 
-def _mcp_write_failed(route: str) -> web.Response:
-    """A failed global mcp.json write, answered with a code and a fixed sentence.
+def _mcp_write_failed(route: str, name: str = "global mcp.json") -> web.Response:
+    """A failed MCP config write (the global mcp.json unless *name* says), answered
+    with a code and a fixed sentence.
 
     The exception's own text is for the server log; the client switches on the
     code. Call this inside the ``except`` block, where ``exc_info`` still sees it.
     """
-    logger.warning("%s: global mcp.json write failed", route, exc_info=True)
+    logger.warning("%s: %s write failed", route, name, exc_info=True)
+    file_name = name.split()[-1]
     return web.json_response(
-        {"error": "failed to write mcp.json", "code": "config_write_failed"}, status=500
+        {"error": f"failed to write {file_name}", "code": "config_write_failed"}, status=500
     )
 
 

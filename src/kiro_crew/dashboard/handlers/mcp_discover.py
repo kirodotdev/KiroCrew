@@ -599,6 +599,8 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
     from kiro_crew.dashboard.handlers.mcp import (
         _agent_home_not_owned,
         _agent_home_not_owned_response,
+        _mcp_config_busy,
+        _mcp_write_failed,
         _sync_mcp_to_agent,
     )
 
@@ -632,6 +634,10 @@ async def _install_via_capability(request: web.Request, server_id: str) -> web.R
             # before it. Answered as the refusal it is, like every other write
             # failure on this path.
             return _agent_home_not_owned_response(server_id)
+        except PermissionError:
+            return _mcp_config_busy("mcp discover install")
+        except OSError:
+            return _mcp_write_failed("mcp discover install", "kirocrew.json")
     state = request.app["state"]
     state.push_refresh("agents")
 
