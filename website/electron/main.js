@@ -72,8 +72,9 @@ const {
   shutdownCrewCompanion,
   suspendCrewCompanion,
   resumeCrewCompanion,
-  hostsDashboard,
 } = require("./crew-companion/index");
+const { hostsDashboard, openDashboardSession } = require("./dashboard-session");
+const { openExternalSafely } = require("./external-scheme");
 const { createDeepLinkHandler, installDeepLinks, installNavigateReady } = require("./deep-link-handler");
 
 // An update install stops the gateway and quits the app. Close the Crew
@@ -928,6 +929,11 @@ app.whenReady().then(async () => {
       cookieHeader: sessionCookieHeader,
       preloadPath: path.join(__dirname, "app-window-preload.js"),
       log: glog,
+      displayMemoryPath: path.join(app.getPath("userData"), "app-window-displays.json"),
+      showDashboardSession: (slotKey) => openDashboardSession(
+        windows.focusedDashboardWindow() || null, BACKEND_URL, slotKey,
+      ),
+      openExternal: (url) => openExternalSafely(shell.openExternal, url, glog),
     });
     appWindowHost.start();
   } catch (error) {

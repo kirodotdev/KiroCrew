@@ -2298,11 +2298,13 @@ Pair it with `platform.requiresDesktopApp` when the window is the app's own inte
 | `desktop.windows[]` | object[] | 1 to 4 windows |
 | `desktop.windows[].id` | string | `^[a-z][a-z0-9-]{0,31}$`, unique within the app |
 | `desktop.windows[].entry` | string | ESM module mounted in the window, relative to the app's `ui/` directory (like `contributes.panelTabs[].entry`), ending in `.js` or `.mjs` |
-| `desktop.windows[].kind` | `"overlay"` \| `"panel"` | `overlay`: covers the display under the cursor, transparent, always on top, click-through outside the hit regions your page reports, never focused unless it asks. `panel`: a frameless always-on-top window of the size below |
+| `desktop.windows[].kind` | `"overlay"` \| `"panel"` \| `"background"` | `overlay`: covers the display under the cursor, transparent, always on top, click-through outside the hit regions your page reports, never focused unless it asks. `panel`: a frameless always-on-top window of the size below. `background`: a page that is never shown, for work that must keep running while the app is on (a notification socket, a reminder poll); reopened at once if it dies. At most one per app |
 | `desktop.windows[].openOnEnable` | boolean | Open while the app is enabled (default `false`: opened by a shortcut or by another of your windows) |
+| `desktop.windows[].displays` | `"cursor"` \| `"all"` | Overlay only. `all`: one copy on every display, with your avatar on exactly one of them; dragging it across a display edge moves it (default `cursor`). At most one per app |
 | `desktop.windows[].width` / `height` | integer | Panel only. 160 to 1600 / 120 to 1200 (default 400 / 560) |
 | `desktop.windows[].position` | string | Panel only. `bottom-right` (default), `top-right` or `center` of the work area |
-| `desktop.windows[].transparent` | boolean | Panel only (default `false`) |
+| `desktop.windows[].transparent` | boolean | Panel only (default `false`). A transparent panel draws its own shadow |
+| `desktop.windows[].gutter` | integer | Panel only. 0 to 48 (default 0): the transparent margin around the card you draw, left out when the panel opens beside an anchor |
 | `desktop.shortcuts[]` | object[] | 0 to 4 global shortcuts |
 | `desktop.shortcuts[].id` | string | Delivered to the page when pressed |
 | `desktop.shortcuts[].accelerator` | string | An Electron accelerator with two different modifier keys on every platform (`CommandOrControl+Control` is one key on Windows), one of them not `Shift`, and one letter, digit, `F1`-`F24`, arrow or `Space` key |
@@ -2318,6 +2320,28 @@ that take the pointer, `setFocusable(true)` while an overlay needs the keyboard,
 `open(id)` to open another of your windows, `close()`, and `onShortcut(cb)`. Check
 `level` before using a call newer than the bridge you built against. The window is
 closed when the app is disabled, and a module that fails to load or throws closes it.
+
+Level 2 of the bridge (App Kit seam level 7) adds:
+
+- `send(id, message)` and `broadcast(message)`: a JSON message (64 Ki characters of JSON at most) to
+  another of your windows, or to all of them, received with
+  `onMessage((from, message) => ...)`. Nothing reaches another app's windows.
+- `onWindowChange((id, open) => ...)`: another of your windows opened or closed.
+- `open(id, { anchor: { x, y, width, height } })`: open a panel beside a box in your
+  page's pixels; the panel hears `onPlaced(({ side }) => ...)`. `close(id)` closes
+  another of your windows and `closeAll()` all of them.
+- On a `displays: "all"` overlay: `onActive(({ active, x, y, dragging }) => ...)` says
+  whether this copy hosts the avatar; call `beginDrag({ offsetX, offsetY, width,
+  height })` from it when the user starts dragging (the shell starts one only within 2 s
+  of a click it saw in this copy) and `endDrag()` from any copy on
+  release, and follow `onDrag((phase, x, y) => ...)` (`start`, `move`, `end`).
+  A message sent to this window goes to the copy hosting the avatar.
+- `showSession(slotKey)`: raise the dashboard on a session (resolves `true` once it
+  is there to show it), and `openExternal(url)` for an `https:` link. Each is answered
+  only within 2 s of a mouse or key press the shell saw in the window, one request per
+  press (its release does not count again), never from a background window.
+
+The trust prompt lists the window shapes you declare before the user says yes.
 
 ## Open Command
 

@@ -5,7 +5,8 @@
  *
  * Loaded only into windows app-window-host.js creates, which run sandboxed with
  * context isolation and no Node. It exposes `window.kirocrewDesktopWindow`: a few
- * fire-and-forget calls and one event, nothing else. The identity it reports is
+ * fire-and-forget calls, one answered call (`showSession`) and a few events,
+ * nothing else. The identity it reports is
  * informational — the host resolves every message back to the window that sent
  * it and acts only within that window's app declaration, so a page that lies
  * about who it is changes nothing.
@@ -20,7 +21,37 @@ const CHANNELS = {
   hitRegions: "app-window:set-hit-regions",
   focusable: "app-window:set-focusable",
   shortcut: "app-window:shortcut",
+  closeAll: "app-window:close-all",
+  send: "app-window:send",
+  broadcast: "app-window:broadcast",
+  message: "app-window:message",
+  windowChange: "app-window:window-change",
+  placed: "app-window:placed",
+  beginDrag: "app-window:begin-drag",
+  endDrag: "app-window:end-drag",
+  active: "app-window:active",
+  drag: "app-window:drag",
+  showSession: "app-window:show-session",
+  openExternal: "app-window:open-external",
 };
+
+/** Subscribe *cb* to one host event; *map* turns its arguments into the callback's. */
+function subscribe(ipc, channel, cb, map) {
+  if (typeof cb !== "function") return () => {};
+  const listener = (_event, ...args) => {
+    const out = map(...args);
+    if (out) cb(...out);
+  };
+  ipc.on(channel, listener);
+  return () => ipc.removeListener(channel, listener);
+}
+
+function box(r) {
+  return {
+    x: Number(r && r.x), y: Number(r && r.y),
+    width: Number(r && r.width), height: Number(r && r.height),
+  };
+}
 
 /** `--kc-app-window=<app>/<id>/<kind>/<level>`, set by the host on this window. */
 function identityFrom(argv) {
@@ -38,19 +69,23 @@ function createBridge(ipc, identity) {
     kind: identity.kind,
     /** Reveal this window. Call once the first frame is painted. */
     ready: () => ipc.send(CHANNELS.ready),
-    /** Close this window. */
-    close: () => ipc.send(CHANNELS.close),
-    /** Open another window this app declares, by its id. */
-    open: (windowId) => ipc.send(CHANNELS.open, String(windowId)),
+    /** Close this window, or another window this app declares, by its id. */
+    close: (windowId) => (windowId === undefined
+      ? ipc.send(CHANNELS.close)
+      : ipc.send(CHANNELS.close, String(windowId))),
+    /** Close every window of this app (it reopens what it declares `openOnEnable` while enabled). */
+    closeAll: () => ipc.send(CHANNELS.closeAll),
+    /**
+     * Open another window this app declares, by its id. `{ anchor }`, a box in this
+     * page's pixels, opens a panel beside it.
+     */
+    open: (windowId, options) => (options && options.anchor
+      ? ipc.send(CHANNELS.open, String(windowId), { anchor: box(options.anchor) })
+      : ipc.send(CHANNELS.open, String(windowId))),
     /** Overlay only: the boxes, in page pixels, that take the pointer. The rest clicks through. */
     setHitRegions: (regions) => ipc.send(
       CHANNELS.hitRegions,
-      Array.isArray(regions)
-        ? regions.map((r) => ({
-          x: Number(r && r.x), y: Number(r && r.y),
-          width: Number(r && r.width), height: Number(r && r.height),
-        }))
-        : [],
+      Array.isArray(regions) ? regions.map(box) : [],
     ),
     /** Overlay only: take keyboard focus (true) or hand it back (false). */
     setFocusable: (focusable) => ipc.send(CHANNELS.focusable, focusable === true),
@@ -63,6 +98,55 @@ function createBridge(ipc, identity) {
       ipc.on(CHANNELS.shortcut, listener);
       return () => ipc.removeListener(CHANNELS.shortcut, listener);
     },
+    /** Send a JSON message to another window this app declares (to the avatar's copy of a spanning overlay). */
+    send: (windowId, message) => ipc.send(CHANNELS.send, String(windowId), message),
+    /** Send a JSON message to every other open window of this app. */
+    broadcast: (message) => ipc.send(CHANNELS.broadcast, message),
+    /** Called with (fromWindowId, message) for a message another of this app's windows sent. */
+    onMessage: (cb) => subscribe(ipc, CHANNELS.message, cb, (from, message) => (
+      typeof from === "string" ? [from, message] : null
+    )),
+    /** Called with (windowId, open) when another of this app's windows opens or closes. */
+    onWindowChange: (cb) => subscribe(ipc, CHANNELS.windowChange, cb, (id, open) => (
+      typeof id === "string" ? [id, open === true] : null
+    )),
+    /** Panel only: called with `{ side }` when the panel was placed beside an anchor. */
+    onPlaced: (cb) => subscribe(ipc, CHANNELS.placed, cb, (placement) => (
+      placement && typeof placement === "object" ? [{ side: placement.side === "left" ? "left" : "right" }] : null
+    )),
+    /**
+     * Spanning overlay only: called with `{ active, x?, y?, dragging? }` when this
+     * copy starts or stops hosting the avatar; `x`/`y` place it on a hand-off.
+     */
+    onActive: (cb) => subscribe(ipc, CHANNELS.active, cb, (state) => (
+      state && typeof state === "object" ? [{ ...state, active: state.active === true }] : null
+    )),
+    /**
+     * Spanning overlay only, from the copy hosting the avatar: the user started
+     * dragging it. `offsetX`/`offsetY` are the cursor's offset into the avatar box
+     * of `width` x `height` page pixels.
+     */
+    beginDrag: (drag) => ipc.send(CHANNELS.beginDrag, {
+      offsetX: Number(drag && drag.offsetX), offsetY: Number(drag && drag.offsetY),
+      width: Number(drag && drag.width), height: Number(drag && drag.height),
+    }),
+    /** Spanning overlay only, from any copy: the drag was released. */
+    endDrag: () => ipc.send(CHANNELS.endDrag),
+    /**
+     * Spanning overlay only: called with ("start") on every copy when a drag
+     * starts, and with ("move", x, y) / ("end", x, y) on the copy hosting it.
+     */
+    onDrag: (cb) => subscribe(ipc, CHANNELS.drag, cb, (phase, x, y) => (
+      typeof phase === "string" ? [phase, x, y] : null
+    )),
+    /**
+     * Raise the dashboard on a session (or just raise it, for ""). Resolves true
+     * only when the dashboard is there to show it. Answered only while the user
+     * is acting in this window, never from a background window.
+     */
+    showSession: (slotKey) => ipc.invoke(CHANNELS.showSession, String(slotKey || "")),
+    /** Open an https link in the user's browser; the same rule as `showSession`. */
+    openExternal: (url) => ipc.send(CHANNELS.openExternal, String(url)),
   });
 }
 

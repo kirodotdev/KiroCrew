@@ -29,6 +29,7 @@ import TrustAppModal, {
   isTrustDeniedError, localOnlyTrustRepository, SESSION_APPROVAL_CONSENT_REQUIRED, useTrustGate,
 } from '../components/appstore/TrustAppModal'
 import { isRegistrySourced } from '../components/appstore/types'
+import { desktopRequestOf } from '../components/appstore/desktopRequest'
 import { REGISTRY_STALE_MS, registryQueryFn } from './apps/useAppsData'
 import AppSource from '../components/appstore/AppSource'
 import { consentTierFor } from '../components/appstore/registryTier'
@@ -730,6 +731,7 @@ export default function AppDetailPage() {
         memberThreads: app.manifest?.permissions?.memberThreads === true,
         workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
         reachableByUserSessions: app.manifest?.permissions?.reachableByUserSessions,
+        desktop: desktopRequestOf(app.manifest),
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
         replacesInstalled: app.installed === true,
@@ -868,6 +870,7 @@ export default function AppDetailPage() {
           memberThreads: app.manifest?.permissions?.memberThreads === true,
           workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
           reachableByUserSessions: app.manifest?.permissions?.reachableByUserSessions,
+          desktop: desktopRequestOf(app.manifest),
         })
       } else if (action === 'enable' && isSessionApprovalConsentRequiredError(e)) {
         // The grant changed under the dialog (an update added a scope it did not
