@@ -54,6 +54,8 @@ export function readStoredStaleCollapse(): number {
 export const FOLDERS_SHELVED_LS_KEY = 'mc-filter-folders-shelved'
 /** The filter menu's "Group by kind" option: '1' on, anything else off. */
 export const GROUP_BY_KIND_LS_KEY = 'mc-session-group-by-kind'
+/** "Move folders with unread chats to the top": '1' on, anything else off. */
+export const FOLDERS_UNREAD_FIRST_LS_KEY = 'mc-sidebar-folders-unread-first'
 // A status chip's HIDE state ('1' = drop its matching rows). One per chip that
 // can hide; referenced from that chip's `SESSION_FILTERS` entry in ./filters.
 export const UNREAD_HIDDEN_LS_KEY = 'mc-session-unread-hidden'
