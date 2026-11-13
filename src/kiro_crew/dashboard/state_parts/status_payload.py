@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.platform.update_capability import runs_in_container
 from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes
 
@@ -30,6 +31,10 @@ if TYPE_CHECKING:
 #: exactly one served bundle per process, and the snapshot that reads it sits
 #: on the hot status path.
 _BUNDLE_ID_CACHE: dict[str, tuple[tuple[int, int], str]] = {}
+
+
+#: What a person on the host runs to get a sign-in link from a container gateway.
+_CONTAINER_SIGN_IN_COMMAND = "docker exec kirocrew kirocrew token"
 
 
 #: The entry point the gateway serves (``server.py``'s ``_DIST_DIR``).
@@ -287,6 +292,10 @@ def status_snapshot(
         # The dashboard uses this to give prerelease users an obvious way to
         # report a bug; see release_channel.py for the full rule.
         "release_channel": _release_channel_of_build(),
+        # The sign-in command the dashboard names in place of its catalog's
+        # ``kirocrew token``, which does not exist on a container's host. ""
+        # keeps the catalog's command.
+        "sign_in_command": _CONTAINER_SIGN_IN_COMMAND if runs_in_container() else "",
         # True only when Socket Mode actually connected this session, not
         # merely that tokens were present at boot. slack_client is set
         # whenever tokens existed, even if connect() then failed

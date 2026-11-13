@@ -55,6 +55,7 @@ surfaces, and `X-Session-Key: dashboard:ui` stays correlation metadata.
 | The `X-Session-Key` default, the request helpers and the `j`/`jNullable`/`jInstancesDisabled`/`jCrewBoard`/`jSlotEnvironment`/`jSharedCrewPreview` parsers (the last four read one route each and do not journal its expected denial: `/api/instances`' 403 from a disabled control plane, `/api/crew-board`'s 404 `no_ledger`, and the 403 `owner_only` that the slot-environment read and the Shared Crew preview read answer a caller that is not the dashboard owner, which their readers do not retry); the warm-path silent refresh on a 403 `X-Auth-Required`; the embedded-pane hand-off; the re-auth banner with its in-place `GET /api/auth/me?token=` exchange; the 401 `stale_session_reauth` prompt; and the sign-in instruction shown in place of the gateway's own refusal reason | `website/src/api/client.ts` |
 | The `api` object's endpoint methods, grouped by domain under `website/src/api/client/`, each module built on the transport above rather than its own; the mobile sign-in mint `POST /api/auth/mobile-link` is `mobileLoginLink` in `website/src/api/client/remoteAccess.ts`. Four methods stay defined in `client.ts`: three that other docs or the i18n gate pin there, and `wakatimeExportDownload`, which reads a sibling through `api` at call time | the domain endpoint modules |
 | The words for an interposed proxy's sign-in page, and the generic error text other failures render with | `website/src/api/edgeAuthChallenge.ts` and `website/src/api/apiError.ts` |
+| The sign-in command the banner and the other sign-in sentences name: the catalog's `kirocrew token`, or, on a container gateway, the status payload's `sign_in_command` (`docker exec kirocrew kirocrew token`, set from the baked distribution stamp), put in each sentence in place of the catalog's command. Fed from the boot status read and every `dashboard` WebSocket frame, so a tab that boots with no session keeps `kirocrew token` | `website/src/api/signInCommand.ts` |
 
 ## Architecture
 
@@ -1208,6 +1209,8 @@ Note: Loopback is accepted by `origin.check_origin()`'s no-Origin CSRF branch, s
 HTML 403 page directs users to create a mobile sign-in link from an existing
 dashboard session; if no other device is signed in, it restores the
 `kirocrew token` CLI recovery path. The middleware never raises unhandled exceptions.
+That page names `kirocrew token` on every install: it is served before
+authentication, so it does not say which kind of install answers.
 
 The dashboard client reads a refusal by its shape. A 403 carrying
 `X-Auth-Required: true` is this middleware's own denial (JSON with `error` and

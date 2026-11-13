@@ -42,6 +42,7 @@ import { useAgentInstallLatch } from '../hooks/useAgentInstallLatch'
 import { useNotificationSound } from '../hooks/useNotificationSound'
 import { recordSessionStart } from '../rum'
 import { api, isAuthBannerShown } from '../api/client'
+import { noteSignInCommand } from '../api/signInCommand'
 import { isPermissionRefusal } from '../api/apiError'
 import { useKiroUsageReadout } from './topbar/kiroUsageReadout'
 import { safeSetItem } from '../utils/safeStorage'
@@ -947,7 +948,7 @@ export function useAppShell() {
     // behind this one via markBootNotificationsFetched() (see notificationsSlice).
     const disarmNotificationsFallback = armBootNotificationsFallback(() => dispatch(fetchNotifications()))
     // Fetch status immediately to sync YOLO state (WS status push is periodic)
-    api.status().then(s => { dispatch(sseStatus(s)); recordSessionStart(s) }).catch(() => {})
+    api.status().then(s => { dispatch(sseStatus(s)); noteSignInCommand(s.sign_in_command); recordSessionStart(s) }).catch(() => {})
     return disarmNotificationsFallback
   }, [dispatch])
   const { subscribeLogs, subscribeSubagents, forceReconnect } = useWebSocket()

@@ -126,6 +126,13 @@ export interface StatusData {
    */
   update_bundled_by_app?: boolean
   /**
+   * The command the sign-in sentences name in place of the catalog's
+   * `kirocrew token`: on a container gateway, `docker exec kirocrew kirocrew
+   * token`, run on the host. Empty, or absent on older gateways, keeps the
+   * catalog's command. Read through `api/signInCommand.ts`.
+   */
+  sign_in_command?: string
+  /**
    * Commit distance from a git checkout's upstream, both directions. Diverged
    * (both > 0) reports `update_available: false` exactly like a current
    * checkout — the destructive apply paths must never be offered local

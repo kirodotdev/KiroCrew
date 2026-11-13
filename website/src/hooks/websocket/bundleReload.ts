@@ -10,6 +10,7 @@
 import { useMemo, useRef } from 'react'
 import type { AppDispatch, RootState } from '../../store'
 import { sseStatus, setUpdateProgress } from '../../store/dashboardSlice'
+import { noteSignInCommand } from '../../api/signInCommand'
 import type { StatusData } from '../../types'
 import type { FrameData } from './frames'
 
@@ -104,6 +105,9 @@ export function useBundleReload(
 
   return useMemo<BundleReload>(() => ({
     onDashboardStatus(data) {
+      // Every frame, ahead of the skip below: the sign-in sentences read it
+      // outside the store.
+      noteSignInCommand(data.sign_in_command)
       // Detect server version change → full reload (actual update)
       const prev = lastVersionRef.current
       const next = data.version
