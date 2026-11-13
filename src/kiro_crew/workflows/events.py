@@ -78,6 +78,8 @@ class EventStream:
     ) -> None:
         self.run_id = run_id
         self._seq = starting_seq
+        #: The 1-based ordinal of the last ``phase_started`` emitted; 0 before any.
+        self.phase_index = 0
         # Optional HOST per-event clock. When ``None`` each event keeps the
         # caller-supplied ``ts``; when set (the runner path) every event is
         # stamped from it, so the fixed script-visible ``ctx.now`` never becomes
@@ -114,7 +116,11 @@ class EventStream:
 
     # --- phases / progress ---
     def phase_started(self, ts: str, *, title: str) -> WorkflowEvent:
-        return self._emit(ts, "phase_started", {"title": title})
+        # ``phase_index`` is the phase's 1-based ordinal in the run, so a consumer
+        # (the tracer, an external producer) never recounts. Not in
+        # REQUIRED_DATA_KEYS: journals written before it must still deserialize.
+        self.phase_index += 1
+        return self._emit(ts, "phase_started", {"title": title, "phase_index": self.phase_index})
 
     def log(self, ts: str, *, message: str) -> WorkflowEvent:
         return self._emit(ts, "log", {"message": message})
@@ -124,12 +130,27 @@ class EventStream:
 
     # --- agents ---
     def agent_started(
-        self, ts: str, *, agent_id: str, label: str, phase: str, call_index: int
+        self,
+        ts: str,
+        *,
+        agent_id: str,
+        label: str,
+        phase: str,
+        call_index: int,
+        phase_index: int = 0,
     ) -> WorkflowEvent:
+        # ``phase_index``: the ordinal of the phase the call runs in, 0 outside any
+        # (optional, like ``phase_started``'s).
         return self._emit(
             ts,
             "agent_started",
-            {"agent_id": agent_id, "label": label, "phase": phase, "call_index": call_index},
+            {
+                "agent_id": agent_id,
+                "label": label,
+                "phase": phase,
+                "call_index": call_index,
+                "phase_index": phase_index,
+            },
         )
 
     def agent_progress(

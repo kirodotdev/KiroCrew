@@ -100,6 +100,8 @@ class _TurnRoot:
     on_end: Callable[[Any], None] | None = None
     #: The span whose roll-up this turn's spend joins; default: the span it hangs under.
     rollup_key: str = ""
+    #: The turn span's name in place of ``invoke_agent <agent>`` (a workflow call).
+    name: str = ""
 
 
 _ROOT: contextvars.ContextVar[_TurnRoot | None] = contextvars.ContextVar(
@@ -122,6 +124,7 @@ def bind_turn_root(
     attrs: dict[str, Any] | None = None,
     on_end: Callable[[Any], None] | None = None,
     rollup_key: str = "",
+    name: str = "",
 ) -> contextvars.Token | None:
     """Make *turn_id* the id of the turns this task streams next.
 
@@ -130,7 +133,8 @@ def bind_turn_root(
     carry its root's ``session.id`` (RFC R4, R6). *links* go on the turn span;
     *attrs* (correlation ids) on every span of the turn. *rollup_key* names the
     span whose roll-up the turn's spend joins, when that is not the span it hangs
-    under (a sub-agent run moved onto a continuation trace).
+    under (a sub-agent run moved onto a continuation trace). *name* replaces the
+    turn span's ``invoke_agent <agent>`` name.
 
     Bound whatever the switch says (one context-variable write), so the first
     turn of a process, which streams while the switch is still being read,
@@ -148,6 +152,7 @@ def bind_turn_root(
             dict(attrs or {}),
             on_end,
             rollup_key,
+            name,
         )
     )
 
@@ -264,6 +269,8 @@ class TurnTrace:
         self._complete_event: Any = None
         self._ended = False
         self._stats_before = _prompt_stats(source)
+        #: The turn's spend attributes once it ends, for an ``on_end`` that sums them.
+        self.spend: dict[str, Any] = {}
         root = _ROOT.get()
         if root is not None and root.task is _current_task():
             root.attempts += 1
@@ -301,7 +308,8 @@ class TurnTrace:
         )
         self.agent = str(agent.get("gen_ai.agent.name", ""))
         self.turn_span = self._start(
-            f"{OP_INVOKE_AGENT} {self.agent}".strip(),
+            (root.name if root is not None and root.name else "")
+            or f"{OP_INVOKE_AGENT} {self.agent}".strip(),
             ids.KIND_TURN,
             parent,
             {**agent, "gen_ai.operation.name": OP_INVOKE_AGENT},
@@ -367,6 +375,7 @@ class TurnTrace:
                 usage, model, "" if resolved.lower() == "auto" else resolved, usage_complete
             )
         )
+        self.spend = spend
         if complete:
             stop = correlation.clean({"kirocrew.stop_reason": getattr(event, "stop_reason", "")})
             self._marker(SPAN_TURN_COMPLETE, ids.KIND_TURN_COMPLETE, stop)
@@ -505,6 +514,21 @@ def open_turn(acp_session_id: str) -> TurnTrace | None:
     """The turn streaming on ACP session *acp_session_id* right now, if traced."""
     with _lock:
         return _open_turns.get(acp_session_id)
+
+
+def open_turn_of_session(session_key: str) -> TurnTrace | None:
+    """The turn streaming for Crew session *session_key* right now, if traced.
+
+    shortcut: a scan of the open turns (bounded by ``_MAX_OPEN``); key them by
+    session as well if a hot path ever needs this.
+    """
+    if not session_key:
+        return None
+    with _lock:
+        for turn in _open_turns.values():
+            if turn.session_key == session_key:
+                return turn
+    return None
 
 
 def spawn_span_of(turn: TurnTrace) -> str:

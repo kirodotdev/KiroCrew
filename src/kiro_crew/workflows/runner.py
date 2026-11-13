@@ -42,6 +42,9 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 from kiro_crew.metrics.events import WORKFLOW_RUNS, emit_counter
+from kiro_crew.tracing import provider as trace_provider
+from kiro_crew.tracing import surfaces as trace_surfaces
+from kiro_crew.tracing import workflows as trace_workflows
 
 from . import BudgetExceeded, WorkflowEvent, WorkflowStepInterrupted
 from .budget_watch import BudgetWatch
@@ -615,6 +618,13 @@ class _RunContext:
         # str(): a script can pass a non-string prompt (a dict row, a number); the
         # label is display-only, and the call's own try records what agent_fn does.
         call_label = label or _fallback_label(str(prompt))
+        # The ordinal of the phase this call runs in; 0 when it names a phase of its
+        # own (``phase=``) or runs before any ``ctx.phase``.
+        phase_index = (
+            self._stream.phase_index
+            if self._current_phase and use_phase == self._current_phase
+            else 0
+        )
         self._record(
             self._stream.agent_started(
                 self.now,
@@ -622,6 +632,7 @@ class _RunContext:
                 label=call_label,
                 phase=use_phase,
                 call_index=call_index,
+                phase_index=phase_index,
             )
         )
         # Mark this call in flight so the ceiling can name it if the run runs out
@@ -648,6 +659,16 @@ class _RunContext:
         fingerprint = _call_fingerprint(prompt, opts, position)
         replay_index = self._replay_indices.pop(fingerprint, None) if fingerprint else None
         error = ""
+        # A live call is one turn under its phase in the run's trace; a replayed one
+        # streams nothing, so it emits nothing. Named by the script's own label or
+        # the call id: the fallback label is prompt text and never reaches a span.
+        trace_root = (
+            None
+            if replay_index is not None
+            else trace_workflows.bind_agent(
+                self._run_id, agent_id, label or agent_id, use_phase, phase_index
+            )
+        )
         try:
             if replay_index is not None:
                 # Resume: replay the prior run's result for this same call (same
@@ -689,6 +710,8 @@ class _RunContext:
             error = describe_agent_error(exc)
             if isinstance(exc, WorkflowStepInterrupted) and not self.interrupted_error:
                 self.interrupted_error = error
+        finally:
+            trace_workflows.release_agent(trace_root)
         # Settled: drop it from the in-flight set (only calls still running when
         # the ceiling fires should appear in the ceiling error).
         self._in_flight.pop(agent_id, None)
@@ -995,6 +1018,40 @@ class WorkflowRunner:
         self._execution_guard = execution_guard
 
     async def run(
+        self,
+        source: str,
+        *,
+        run_id: str,
+        session_key: str = "",
+        on_event: Optional[Callable[[WorkflowEvent], None]] = None,
+        **kwargs: Any,
+    ) -> RunResult:
+        """Execute a workflow script end-to-end; the arguments are :meth:`_run`'s.
+
+        While tracing is on the run is one trace (``tracing/workflows.py``): its root
+        is opened here, around everything the run does, and records how it ended.
+        """
+        name = ""
+        if trace_provider.peek() is not None and source:
+            vr = validate(source)
+            name = str((vr.meta or {}).get("name", "")) if vr.ok else ""
+        with trace_workflows.run_root(run_id, name, session_key) as surface:
+            res = await self._run(
+                source,
+                run_id=run_id,
+                session_key=session_key,
+                on_event=trace_workflows.observe(run_id, on_event),
+                **kwargs,
+            )
+            if not res.ok:
+                surface.status = (
+                    trace_surfaces.STATUS_CANCELLED
+                    if res.error == "cancelled"
+                    else trace_surfaces.STATUS_FAILED
+                )
+            return res
+
+    async def _run(
         self,
         source: str,
         *,
@@ -1577,6 +1634,8 @@ class WorkflowRunner:
         run_id instantly instead of blocking on a slow synchronous author. The
         authored script is written back onto the handle for rerun/restart.
         """
+        # Here, before the run is scheduled: the turn that launched it is still open.
+        trace_workflows.pin_launcher(run_id, session_key)
 
         def _publish_source(src: str) -> None:
             # Write the authored script onto the handle the instant authoring
