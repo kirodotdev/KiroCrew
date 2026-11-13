@@ -6,6 +6,8 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { COMPANY_SIGN_IN_URL_KEY } from '../utils/companySignIn'
 import { fmtTime } from '../i18n/format'
+import { i18next } from '../i18n/all'
+import { attachReport, sendErrorToChat } from '../utils/errorReport'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -37,6 +39,11 @@ vi.mock('../api/client', async importOriginal => {
       kasLoginCancel: vi.fn().mockResolvedValue({ ok: true }),
     },
   }
+})
+
+vi.mock('../utils/errorReport', async importOriginal => {
+  const mod = await importOriginal<typeof import('../utils/errorReport')>()
+  return { ...mod, sendErrorToChat: vi.fn(() => true) }
 })
 
 const kasLoginStatus = vi.mocked(api.kasLoginStatus)
@@ -561,33 +568,50 @@ describe('KasLoginGate', () => {
     expect(screen.getByLabelText('Company sign-in URL')).toHaveValue('')
   })
 
+  const PORTAL = "Use your company's AWS access portal URL, which looks like https://your-company.awsapps.com/start."
+  const REGION = 'AWS Region (optional)'
+  const START_URL = 'Company sign-in URL'
+  // [status, code, reason, headline, message under it, fields marked invalid]
   it.each([
-    [400, 'invalid_region', 'Check the AWS Region. A Region name looks like us-east-1.', ['AWS Region (optional)']],
-    [400, 'invalid_start_url', 'Check the company sign-in URL.', ['Company sign-in URL']],
+    [400, 'invalid_region', '', 'Check the AWS Region. A Region name looks like us-east-1.', 'Not a valid AWS region name.', [REGION]],
+    [400, 'invalid_start_url', 'characters', 'Check the company sign-in URL.', `The URL contains a space or a symbol that is not allowed. ${PORTAL}`, [START_URL]],
+    [400, 'invalid_start_url', 'not_a_url', 'Check the company sign-in URL.', `That does not look like a web address. ${PORTAL}`, [START_URL]],
+    [400, 'invalid_start_url', 'not_https', 'Check the company sign-in URL.', `The URL must begin with https://. ${PORTAL}`, [START_URL]],
+    [400, 'invalid_start_url', 'credentials', 'Check the company sign-in URL.', `The URL must not include a user name or password. ${PORTAL}`, [START_URL]],
+    [400, 'invalid_start_url', 'port', 'Check the company sign-in URL.', `The URL must not include a port number (a colon and digits after the site name). ${PORTAL}`, [START_URL]],
+    [400, 'invalid_start_url', 'hostname', 'Check the company sign-in URL.', `That does not look like a web address. ${PORTAL}`, [START_URL]],
+    [400, 'invalid_start_url', 'aws_rejected', 'Check the company sign-in URL.', `AWS did not accept this URL. ${PORTAL}`, [START_URL]],
+    // A reason this build has no sentence for keeps the gateway's own text.
+    [400, 'invalid_start_url', 'a_future_rule', 'Check the company sign-in URL.', 'gateway detail (AWS: Invalid request)', [START_URL]],
     [
       400,
       'start_url_or_region_rejected',
+      '',
       'Check the company sign-in URL and the AWS Region.',
-      ['Company sign-in URL', 'AWS Region (optional)'],
+      "AWS found no Identity Center for this URL in this Region. Check the URL for a typo; if it is right, set Region to the Region your company's Identity Center is in.",
+      [START_URL, REGION],
     ],
-    [502, 'auth_service_unreachable', 'Check your connection', []],
-  ])('company SSO: a %i %s begin error names the field to fix, not the connection', async (status, code, headline, fields) => {
+    [502, 'auth_service_unreachable', '', 'Check your connection', 'gateway detail (AWS: Invalid request)', []],
+  ])('company SSO: a %i %s (%s) begin error names the field to fix, in the catalog\'s words', async (status, code, reason, headline, message, fields) => {
+    const detail = 'gateway detail (AWS: Invalid request)'
     kasLoginBeginDevice.mockRejectedValueOnce(
-      new ApiError(status, 'gateway detail', JSON.stringify({ error: 'gateway detail', code })),
+      new ApiError(status, detail, JSON.stringify({ error: detail, code, ...(reason ? { reason } : {}) })),
     )
     renderWithProviders(<KasLoginGate />)
     fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
     await screen.findByTestId('kas-login-sso-form')
-    fireEvent.change(screen.getByLabelText('Company sign-in URL'), {
+    fireEvent.change(screen.getByLabelText(START_URL), {
       target: { value: 'https://acme.awsapps.com/strat' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent(headline)
-    expect(alert).toHaveTextContent('gateway detail')
+    expect(alert).toHaveTextContent(message)
+    // A sentence from the catalog replaces the gateway's English and AWS's raw answer.
+    if (message !== detail) expect(alert).not.toHaveTextContent('(AWS:')
     if (fields.length) expect(alert).not.toHaveTextContent('Check your connection')
     // Only the named fields are invalid, and they point at the error that says why.
-    for (const label of ['Company sign-in URL', 'AWS Region (optional)']) {
+    for (const label of [START_URL, REGION]) {
       const input = screen.getByLabelText(label)
       if (fields.includes(label)) {
         expect(input).toHaveAttribute('aria-invalid', 'true')
@@ -597,6 +621,71 @@ describe('KasLoginGate', () => {
         expect(input).not.toHaveAttribute('aria-describedby')
       }
     }
+  })
+
+  it('company SSO in the card: the hand-off of a translated refusal still carries its report', async () => {
+    const detail = 'Start URL must use https. Use the portal URL.'
+    // The transport pins its structured report to the rejection, as the api client does.
+    kasLoginBeginDevice.mockRejectedValueOnce(
+      attachReport(
+        new ApiError(400, detail, JSON.stringify({ error: detail, code: 'invalid_start_url', reason: 'not_https' })),
+        { id: 'sso-report', at: 1, source: 'api', message: detail, status: 400, code: 'invalid_start_url' },
+      ),
+    )
+    vi.mocked(sendErrorToChat).mockClear()
+    renderWithProviders(<KasLoginEmbedded renderAuthenticated={() => null} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Continue with company SSO' }))
+    fireEvent.change(await screen.findByLabelText(START_URL), { target: { value: 'http://acme.awsapps.com/start' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(`The URL must begin with https://. ${PORTAL}`)
+    // Closing the form leaves the refusal up and offers the agent.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(within(screen.getByRole('alert')).getByRole('button', { name: 'Ask the agent' }))
+    expect(sendErrorToChat).toHaveBeenCalledTimes(1)
+    const prompt = vi.mocked(sendErrorToChat).mock.calls[0][0]
+    expect(prompt).toContain('400')
+    expect(prompt).toContain('invalid_start_url')
+  })
+
+  describe('company SSO in German', () => {
+    afterEach(async () => {
+      await act(async () => { await i18next.changeLanguage('en') })
+    })
+
+    it.each([
+      [
+        'invalid_start_url',
+        'aws_rejected',
+        'Prüfe die Anmelde-URL deiner Firma.',
+        'AWS hat diese URL nicht akzeptiert. Verwende die URL des AWS-Zugangsportals deiner Firma. Sie sieht so aus: https://your-company.awsapps.com/start.',
+        'Anmelde-URL deiner Firma',
+      ],
+      [
+        'invalid_region',
+        '',
+        'Prüfe die AWS-Region. Ein Regionsname sieht so aus: us-east-1.',
+        'Das ist kein gültiger AWS-Regionsname.',
+        'AWS-Region (optional)',
+      ],
+    ])('a %s (%s) refusal is said in German, without AWS\'s raw answer', async (code, reason, headline, message, field) => {
+      await act(async () => { await i18next.changeLanguage('de') })
+      const detail = 'AWS did not accept the start URL. (AWS: Invalid request)'
+      kasLoginBeginDevice.mockRejectedValueOnce(
+        new ApiError(400, detail, JSON.stringify({ error: detail, code, ...(reason ? { reason } : {}) })),
+      )
+      renderWithProviders(<KasLoginGate />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Mit Firmen-SSO fortfahren' }))
+      fireEvent.change(await screen.findByLabelText('Anmelde-URL deiner Firma'), {
+        target: { value: 'https://nonexistent-portal.awsapps.com/start' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: 'Weiter' }))
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent(headline)
+      expect(alert).toHaveTextContent(message)
+      expect(alert).not.toHaveTextContent('(AWS:')
+      expect(alert).not.toHaveTextContent('did not accept')
+      expect(screen.getByLabelText(field)).toHaveAttribute('aria-invalid', 'true')
+    })
   })
 
   // ---- loopback transport ---------------------------------------------------

@@ -181,13 +181,22 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
             status=400,
         )
     except InvalidStartUrlError as err:
-        return web.json_response({"error": str(err), "code": "invalid_start_url"}, status=400)
+        # `reason` names the broken rule so the form can say it in the user's language.
+        return web.json_response(
+            {"error": str(err), "code": "invalid_start_url", "reason": err.reason}, status=400
+        )
     except StartUrlRejectedError as err:
         # AWS refused what the user typed (the URL or the region): a 400 the form
         # can fix, not an auth-service failure. A bare answer names neither field.
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
-        code = "invalid_start_url" if err.names_start_url else "start_url_or_region_rejected"
-        return web.json_response({"error": str(err), "code": code}, status=400)
+        if err.names_start_url:
+            return web.json_response(
+                {"error": str(err), "code": "invalid_start_url", "reason": "aws_rejected"},
+                status=400,
+            )
+        return web.json_response(
+            {"error": str(err), "code": "start_url_or_region_rejected"}, status=400
+        )
     except (DeviceAuthError, BuilderIdAuthError) as err:
         await _audit(request, "kas_login_begin_device", "failed", error=str(err))
         return web.json_response(

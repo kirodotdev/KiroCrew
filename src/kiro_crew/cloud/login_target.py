@@ -73,7 +73,15 @@ _CONTROL_OR_SHELL_RE = re.compile(r"[\x00-\x1f\x7f\s\"'`\$\\;&|<>(){}\[\]*?!~#]"
 
 
 class LoginTargetError(ValueError):
-    """The supplied identity target is not one ``kiro-cli login`` can act on."""
+    """The supplied identity target is not one ``kiro-cli login`` can act on.
+
+    ``reason`` names the start-URL rule a refusal broke, so the dashboard can say
+    it in the user's language; a refusal that names no rule leaves it empty.
+    """
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def normalize_start_url(raw: str) -> str:
@@ -94,7 +102,9 @@ def normalize_start_url(raw: str) -> str:
     if not value:
         raise LoginTargetError("start URL is required for an Identity Center sign-in")
     if _CONTROL_OR_SHELL_RE.search(value):
-        raise LoginTargetError("start URL contains characters that are not allowed")
+        raise LoginTargetError(
+            "start URL contains characters that are not allowed", reason="characters"
+        )
     if "://" not in value:
         value = "https://" + value
     # urlsplit and its .port accessor raise bare ValueError on malformed input
@@ -104,18 +114,18 @@ def normalize_start_url(raw: str) -> str:
         parts = urlsplit(value)
         port = parts.port
     except ValueError as exc:
-        raise LoginTargetError("start URL is not a valid URL") from exc
+        raise LoginTargetError("start URL is not a valid URL", reason="not_a_url") from exc
     if parts.scheme != "https":
-        raise LoginTargetError("start URL must use https")
+        raise LoginTargetError("start URL must use https", reason="not_https")
     if parts.username is not None or parts.password is not None:
-        raise LoginTargetError("start URL must not carry credentials")
+        raise LoginTargetError("start URL must not carry credentials", reason="credentials")
     if port is not None:
-        raise LoginTargetError("start URL must use the default https port")
+        raise LoginTargetError("start URL must use the default https port", reason="port")
     if parts.query or parts.fragment:
         raise LoginTargetError("start URL must not carry a query or fragment")
     host = (parts.hostname or "").lower()
     if not _HOSTNAME_RE.fullmatch(host):
-        raise LoginTargetError("start URL host must be a valid DNS hostname")
+        raise LoginTargetError("start URL host must be a valid DNS hostname", reason="hostname")
     path = parts.path.rstrip("/") or "/start"
     return f"https://{host}{path}"
 

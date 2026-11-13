@@ -158,6 +158,24 @@ class TestLoginTargetValidation:
         with pytest.raises(LoginTargetError):
             normalize_start_url("")
 
+    @pytest.mark.parametrize(
+        "raw, reason",
+        [
+            ("https://example.awsapps.com/start?x=1", "characters"),
+            ("https://example.awsapps.com:abc/start", "not_a_url"),
+            ("http://example.awsapps.com/start", "not_https"),
+            ("https://user:pw@example.awsapps.com/start", "credentials"),
+            ("https://example.awsapps.com:8443/start", "port"),
+            ("meinefirma", "hostname"),
+            ("", ""),
+        ],
+    )
+    def test_a_refusal_names_the_rule_it_broke(self, raw, reason):
+        """The dashboard says each rule in the user's language from this name."""
+        with pytest.raises(LoginTargetError) as refused:
+            normalize_start_url(raw)
+        assert refused.value.reason == reason
+
 
 class TestWhoamiParsing:
     def test_leading_json_only_and_bounded(self):
