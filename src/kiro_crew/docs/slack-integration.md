@@ -189,6 +189,30 @@ session actions menu later.
 
 Off by default. Applies to the next new session with no restart.
 
+## Slack conversations in the session list
+
+Conversations that start in Slack (threads, DMs and channel mentions) appear in
+the dashboard's session list next to your other sessions, so you can read or
+continue one from either side. Turn off **Show Slack conversations in the session
+list** at `/settings/channels/slack` (`slack.show_in_session_list`) to keep them
+out of that list. This setting changes the list only:
+
+- The conversations keep working in Slack exactly as before.
+- They stay in History and search. Open one from there, from a notification or
+  from a link, and it shows in the main pane with its row while it is the open
+  session.
+- One waiting on your approval or answer keeps its row until you answer, and
+  hidden conversations add nothing to unread counts.
+- Nothing is closed, archived or deleted. Turn the setting back on and they are
+  listed again, including conversations that started while it was off.
+- Sessions you start in the dashboard and connect to Slack, and Slack code
+  channel sessions with their helper agents, are always listed.
+
+On by default. Applies when saved, with no restart. The separate
+`dashboard.surface_channel_sessions` setting stops every messaging channel's
+conversations from being added to the session list at the next restart; this
+one is for Slack only and takes effect at once.
+
 ## OPTIONS Buttons
 
 When Kiro Crew presents choices, each one is a button: one click sends that

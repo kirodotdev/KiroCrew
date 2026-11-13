@@ -1985,7 +1985,8 @@ a present value the reader cannot use takes the reader's value:
   trusts no bot and a malformed `mcp.extra_path_dirs` adds no directory.
 - A narrowing or safe value that holds whatever the default is: `mention` for an
   invalid `slack.channels.<id>.activation`, `true` for a non-boolean
-  `dashboard.tailscale.bind_refresh_chains`, `node` for an unrecognised
+  `dashboard.tailscale.bind_refresh_chains` or `slack.show_in_session_list` (a
+  malformed value keeps Slack conversations listed, as before the field existed), `node` for an unrecognised
   `dashboard.tailscale.pin_scope`, `auto` for an unknown `agent.jail`, `false` for
   a present non-boolean `agent.dangerously_skip_permissions` (never a grant),
   `per-channel-peer` for an unknown `messaging.dm_scope` (never one session for
