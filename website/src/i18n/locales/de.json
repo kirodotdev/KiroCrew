@@ -17896,6 +17896,7 @@
         "add_tool_placeholder": "z. B. fs_write oder @github/…",
         "spawn_tool_hint": "Lass diesen Agenten andere Agenten im Hintergrund ausführen, jeweils mit einem Aufgabenfeld und Stopp im Chat.",
         "spawn_tool_add": "Hintergrund-Agenten erlauben",
+        "no_tools_added_servers_hint": "Diese Agentendatei führt keine eigenen Werkzeuge auf. Ihre Sitzungen erhalten trotzdem Werkzeuge von hinzugefügten MCP-Servern.",
         "no_tools_hint": "Dieser Agent führt keine Werkzeuge auf und kann deshalb keine Befehle ausführen und nicht mit Dateien arbeiten.",
         "all_tools_add": "Alle Werkzeuge erlauben",
         "tool_state_wildcard": "nicht automatisch genehmigt",

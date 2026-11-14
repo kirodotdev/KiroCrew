@@ -17428,6 +17428,7 @@
         "add_tool_placeholder": "예: fs_write 또는 @github/…",
         "spawn_tool_hint": "이 에이전트가 다른 에이전트를 백그라운드에서 실행하게 합니다. 각각 채팅에 작업 상자와 중지 버튼이 표시됩니다.",
         "spawn_tool_add": "백그라운드 에이전트 허용",
+        "no_tools_added_servers_hint": "이 에이전트 파일 자체에는 도구가 지정되어 있지 않습니다. 세션에는 추가된 MCP 서버의 도구가 계속 제공됩니다.",
         "no_tools_hint": "이 에이전트에는 지정된 도구가 없어서 명령 실행이나 파일 작업을 할 수 없습니다.",
         "all_tools_add": "모든 도구 허용",
         "tool_state_wildcard": "자동 승인 안 됨",

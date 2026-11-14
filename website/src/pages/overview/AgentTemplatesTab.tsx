@@ -59,8 +59,8 @@ export interface TemplateReference {
   label: string
 }
 
-/** `GET /api/agents/detail/{name}`: the spec passed through, plus the two
- *  computed views (`skills`, `unmanaged_skills`) over `resources`. */
+/** `GET /api/agents/detail/{name}`: the spec passed through, computed skill
+ *  views over `resources`, and whether the saved spec's KAS projection lists tools. */
 interface TemplateDetail {
   name?: string
   description?: string
@@ -72,6 +72,7 @@ interface TemplateDetail {
   mcpServers?: unknown
   skills?: string[]
   unmanaged_skills?: string[]
+  session_lists_tools?: boolean
 }
 
 /** The editable definition. `allowed` mirrors `allowedTools`: the tools the
@@ -1097,7 +1098,9 @@ export default function AgentTemplatesTab() {
                             Saved with the Save bar, like any edit. */}
                         {!detailReadOnly && !listsTools(detailDraft.tools) && (
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
-                            <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.no_tools_hint')}</span>
+                            <span className="text-muted">{i18nT(detailQuery.data?.session_lists_tools && !listsTools(toolList(detailQuery.data.tools))
+                              ? 'pages.overview.agentTemplatesTab.no_tools_added_servers_hint'
+                              : 'pages.overview.agentTemplatesTab.no_tools_hint')}</span>
                             <Btn
                               type="button"
                               data-testid="tpl-allow-every-tool"
