@@ -83,6 +83,7 @@ __all__ = [
     "STOP_RECOVERY_MAX_RETRIES",
     "TERMINAL_TOOL_STATUSES",
     "WAIT_REASON_INPUT",
+    "AcpProcessDied",
     "AcpRequestTimeout",
     "AcpTimeoutError",
     "InFlightToolTracker",

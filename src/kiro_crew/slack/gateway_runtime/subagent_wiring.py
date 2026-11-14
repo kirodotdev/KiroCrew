@@ -717,4 +717,5 @@ def _init_subagents(self: GatewayOrchestrator) -> None:
     # rather than as two bound methods because the halves have to agree about
     # which runs they are talking about.
     self.sessions.set_child_teardown_handler(self.subagent_mgr)
+    self.sessions.on_runtime_gone = self.subagent_mgr.on_runtime_gone
     self.subagent_mgr.start_reaper()

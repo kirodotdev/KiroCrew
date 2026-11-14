@@ -960,6 +960,9 @@ class SessionManager:
         # channel turn's end, which no dashboard turn boundary sees, and to push
         # the row of a tab linked to that session.
         self.on_session_released: Callable[[str], None] | None = None
+        # Fired on the loop with each pid the runtime reconcile found gone; the
+        # sub-agent manager ends a run parked on that runtime.
+        self.on_runtime_gone: Callable[[int], None] | None = None
 
         self._compaction = CompactionCoordinator(
             self,

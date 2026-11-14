@@ -136,6 +136,7 @@ class _Owner:
         self._bg_runtime_lock = asyncio.Lock()
         self.on_session_expire = None
         self.on_stuck_turn = None
+        self.on_runtime_gone = None
         self.recycled: list[tuple[str, str]] = []
 
     def get_pid(self, key: str) -> int | None:

@@ -308,6 +308,18 @@ class OrphanStallMonitor(ManagerComponent):
         if event is not None:
             event.set()
 
+    def on_runtime_gone(self, pid: int) -> None:
+        """Session seam: runtime *pid* died. Release each run parked on a wait
+        there, matched by ``_pid`` so a parent's shared runtime counts; a run
+        with a prompt in flight hears it from its stream."""
+        for info in list(self._manager._agents.values()):
+            event = info._resume_event
+            if info.done or not info._slot_released or event is None:
+                continue
+            if info._pid == pid:
+                info._runtime_gone = event
+                event.set()
+
     def _taskq_pump_impl(self) -> None:
         """One pump pass: replay owed terminal writes, expire wait deadlines, tick
         due dependency scopes, re-arm.

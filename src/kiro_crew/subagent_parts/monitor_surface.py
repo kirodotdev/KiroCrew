@@ -328,3 +328,8 @@ async def dependency_coordinator_async(self: SubagentManager) -> Any:
 
 def _taskq_pump(self: SubagentManager) -> None:
     self._monitor._taskq_pump_impl()
+
+
+def on_runtime_gone(self: SubagentManager, pid: int) -> None:
+    """``SessionManager.on_runtime_gone``: end each run parked on that dead runtime."""
+    self._monitor.on_runtime_gone(pid)

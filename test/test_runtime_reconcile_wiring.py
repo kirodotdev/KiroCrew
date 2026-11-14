@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from runtime_reconcile_helpers import _cleanup, _refusals
+from runtime_reconcile_helpers import _cleanup, _refusals, _Session
 
 from kiro_crew import runtime_reconcile as rr
 from kiro_crew.testing.ids import unallocatable_pids
@@ -1078,6 +1078,34 @@ def test_the_notification_memory_bound_evicts_and_counts_the_overflow(
         "every eviction is counted, because each one costs a duplicate notice; "
         f"{reconciler._notified_dead_overflow}"
     )
+
+
+@pytest.mark.asyncio
+async def test_the_dead_runtime_notice_hands_the_pid_to_the_seam_once_on_the_loop() -> None:
+    """``_note_dead_runtime`` runs on the reconciler's worker thread and hands the
+    dead pid to ``on_runtime_gone`` once, on the loop thread, beside the recycle
+    notice each session on it gets; a session on another pid gets nothing, and a pid
+    no session names still reaches the seam."""
+    from kiro_crew.testing.wait import async_wait_until
+
+    cleanup, _ = _cleanup(candidates=[])
+    owner = cleanup._owner
+    owner._sessions = {key: _Session(pid=pid) for key, pid in (("a", _P1), ("b", _P1), ("c", _P2))}
+    handed: list[tuple[int, int]] = []
+    owner.on_runtime_gone = lambda pid: handed.append((pid, threading.get_ident()))
+    for pid in (_P1, _P3):
+        worker = threading.Thread(
+            target=cleanup._note_dead_runtime, args=(pid, asyncio.get_running_loop())
+        )
+        worker.start()
+        worker.join(timeout=30)
+        assert not worker.is_alive()
+    await async_wait_until(
+        lambda: len(handed) == 2 and len(owner.recycled) == 2,
+        describe=lambda: f"handed {handed}, recycled {owner.recycled}",
+    )
+    assert handed == [(_P1, threading.get_ident()), (_P3, threading.get_ident())]
+    assert sorted(owner.recycled) == [(k, "runtime process is gone") for k in ("a", "b")]
 
 
 # ── "not mine to retract" is a steady state, not a fault ─────────────────────

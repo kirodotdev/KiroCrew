@@ -219,7 +219,8 @@ async def _await_lane_resume_impl(
     ``wake_through`` seam), so a scope that is not due yet is never
     re-entered early. False on timeout / failure, with the resume entry
     withdrawn so a late grant cannot hand a slot to a run that gave up. A
-    run that never yielded answers True at once.
+    run that never yielded answers True at once. Raises ``AcpProcessDied``
+    (withdrawn too) when its runtime died meanwhile (``on_runtime_gone``).
     """
     if not info._slot_released:
         return True
@@ -237,6 +238,11 @@ async def _await_lane_resume_impl(
         return False
     finally:
         info._resume_event = None
+    if info._runtime_gone is event:
+        from kiro_crew.agent_sdk.drivers.acp_vocab import AcpProcessDied
+
+        self._withdraw_resume(info)
+        raise AcpProcessDied("Process exited while the run waited to resume", transient=False)
     if info._wait_failed:
         self._withdraw_resume(info)
         return False

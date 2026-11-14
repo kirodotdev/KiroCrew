@@ -112,6 +112,7 @@ class CleanupOwner(Protocol):
     on_session_expire: Callable[[str], None] | None
     on_stuck_turn: Callable[[str, float], None] | None
     on_rss_hold: Callable[[str, RssHold], None] | None
+    on_runtime_gone: Callable[[int], None] | None
 
     async def _cleanup_loop(self) -> None: ...
 
@@ -745,13 +746,15 @@ class SessionCleanup:
         using it, which is the difference between a tidy registry and a session
         that learns its runtime died only when its next turn times out. Reuses the
         recycle callback the RSS path already fires, so the notification a user
-        sees is the one they already know.
+        sees is the one they already know, and hands the pid to ``on_runtime_gone``.
 
         Called from the reconciler's worker thread, so the callback is SCHEDULED
         on *loop* rather than awaited here: a slow consumer must not hold the
         reconciliation open, and a coroutine cannot be awaited off-loop anyway.
         """
         keys = self._sessions_on_pid(pid)
+        if (gone := self._owner.on_runtime_gone) is not None:
+            loop.call_soon_threadsafe(gone, pid)
         if not keys:
             return
         for key in keys:

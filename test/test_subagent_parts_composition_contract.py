@@ -911,6 +911,7 @@ _BASE_CLASS: dict[str, tuple[str, str]] = {
         "method",
         "(self, info: 'SubagentInfo', reason: 'str' = 'delivery timed out') -> 'None'",
     ),
+    "on_runtime_gone": ("method", "(self, pid: 'int') -> 'None'"),
     "open_teardown_fence": ("method", "(self, parent_session_key: 'str') -> \"'set[str] | None'\""),
     "pending_work_count": ("property", ""),
     "prepare_spawn": (

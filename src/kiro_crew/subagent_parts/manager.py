@@ -915,6 +915,7 @@ class SubagentManager:
     dependency_coordinator = _monitor_surface.dependency_coordinator
     dependency_coordinator_async = _monitor_surface.dependency_coordinator_async
     _taskq_pump = _monitor_surface._taskq_pump
+    on_runtime_gone = _monitor_surface.on_runtime_gone
 
     # subagent_parts/terminal_surface.py
     _claim_finalize = _terminal_surface._claim_finalize

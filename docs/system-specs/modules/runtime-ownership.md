@@ -466,7 +466,7 @@ different leak:
 
 | Direction | What it means | Action |
 |---|---|---|
-| `owned_dead` | A record names a pid that is gone, or one the kernel gave to an unrelated process. | Retract the record; tell the holder once. The stranger is never signalled. |
+| `owned_dead` | A record names a pid that is gone, or one the kernel gave to an unrelated process. | Retract the record; tell the holder once (`SessionCleanup._note_dead_runtime`: the recycle notice, plus `SessionManager.on_runtime_gone` with the pid, which ends a sub-agent run parked on a wait on that runtime, its parent's shared runtime included). The stranger is never signalled. |
 | `unowned_alive` | A process runs in this install's own agent slice and no record claims it, and it is not excluded as sandboxed tool work (below). | Count it. Kill only when every condition below holds. |
 | `owned_alive` | The healthy population. | Reported as the denominator. |
 

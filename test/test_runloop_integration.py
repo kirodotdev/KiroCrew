@@ -63,7 +63,8 @@ from kiro_crew.subagent_manager.monitoring import OrphanStallMonitor
 from kiro_crew.taskq import RUNNING, STARTING, WAITING_DEPENDENCY, WAITING_INPUT
 from kiro_crew.taskq import dependency as dep_mod
 from kiro_crew.taskq.dependency import DependencyCoordinator
-from kiro_crew.testing.wait import async_wait_until, await_until
+from kiro_crew.testing.ids import unallocatable_pids
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -1067,6 +1068,57 @@ async def test_dependency_scope_failure_ends_the_run():
 
 
 @pytest.mark.asyncio
+async def test_a_parked_run_whose_runtime_died_ends_as_a_process_death():
+    """The reconcile's notice that a parked run's runtime is gone ends the
+    run at once, long before its ``retry_at``, as a mid-prompt death would
+    (``failed`` naming the death, resume withdrawn, coordinator and row let go).
+    It is matched by the runtime's pid, so a shared run parked on that runtime,
+    which no session key names, is released too. A parked run on another pid, and
+    runs on the same pid whose prompt is still in flight (one holding its slot,
+    one in a typed input wait), are untouched."""
+
+    def factory(msg: str, *a, **kw):
+        async def _gen():
+            raise AcpFakeThrottle("ThrottlingException: Rate exceeded")
+            yield  # noqa: unreachable
+
+        return _gen()
+
+    dead, elsewhere = unallocatable_pids(2)
+    sessions = _mock_sessions(factory)
+    sessions.get_pid.return_value = dead
+    mgr = await _ready_manager(sessions)
+    coordinator = _fast_coordinator(mgr, backoff=backoff(_HELD_PARK_SECS, _HELD_PARK_SECS))
+    with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+        info = mgr.spawn("parked work")
+        assert info is not None
+        await _await_parked(mgr, coordinator, "provider:acp", info.id)
+        assert info._pid == dead
+        shared = SubagentInfo(id="shared", task="t", conversation_key="no-session-uses-this")
+        shared._session_sharing, shared._slot_released = True, True
+        other = SubagentInfo(id="parked-elsewhere", task="t")
+        other._slot_released = True
+        prompting = SubagentInfo(id="prompting", task="t")
+        typed_input = SubagentInfo(id="typed-input", task="t")
+        typed_input._slot_released = True
+        bystanders = (other, prompting, typed_input)
+        for run in (shared, *bystanders):
+            run._pid = elsewhere if run is other else dead
+            run._resume_event = None if run is typed_input else asyncio.Event()
+            mgr._agents[run.id] = run
+        mgr.on_runtime_gone(info._pid)
+        await await_until(mgr._tasks[info.id], what=f"parked run {info.id} ends")
+    await _drain_posted(mgr)
+    assert info.outcome == "failed"
+    assert "AcpProcessDied" in info.error and "Process exited" in info.error
+    assert not info._resume_pending and coordinator.waiters("provider:acp") == []
+    assert _row(mgr, info.id).state == "failed"
+    assert shared._runtime_gone is shared._resume_event and shared._resume_event.is_set()
+    assert all(b._runtime_gone is None for b in bystanders)
+    assert not other._resume_event.is_set() and not prompting._resume_event.is_set()
+
+
+@pytest.mark.asyncio
 async def test_unclassified_transient_keeps_the_in_turn_ladder():
     """An error no adapter knows is not a dependency wait: the bounded in-turn
     retry (same prompt, ``subagent_retrying``) still handles it."""
@@ -1419,6 +1471,32 @@ async def test_on_fail_releases_a_run_parked_on_its_resume_event():
     assert info._resume_event.is_set() and info._wait_failed == "scope gave up"
     ok = await mgr._await_lane_resume(info, reason="x", timeout=0.05)
     assert ok is False and info._resume_pending is False
+
+
+@pytest.mark.asyncio
+async def test_a_runtime_gone_mark_fails_only_the_wait_it_interrupted():
+    """A mark left by an earlier wait (the run has since moved on, a cancel
+    recovery onto a new runtime included) never raises; one naming the wait in
+    progress does."""
+    from kiro_crew.agent_sdk.drivers.acp_vocab import AcpProcessDied
+
+    mgr = await _ready_manager(_mock_sessions(lambda *a, **k: None))
+    stale, current = (SubagentInfo(id=f"parked-{m}", task="t") for m in ("stale", "current"))
+    for info in (stale, current):
+        info._slot_released = True
+        info._resume_event = asyncio.Event()
+        info._resume_event.set()
+        mgr._agents[info.id] = info
+    stale._runtime_gone = asyncio.Event()
+    current._runtime_gone = current._resume_event
+    stale_wait = mgr._await_lane_resume(
+        stale, reason="x", timeout=FALLBACK_TIMEOUT_SECS, request=False
+    )
+    assert await stale_wait is False
+    with pytest.raises(AcpProcessDied, match="Process exited"):
+        await mgr._await_lane_resume(
+            current, reason="x", timeout=FALLBACK_TIMEOUT_SECS, request=False
+        )
 
 
 def _spy_rearms(monkeypatch, waits_mod) -> list[Any]:
