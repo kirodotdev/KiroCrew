@@ -513,6 +513,31 @@ class RuntimeOwnership:
             return len(entry.leases)
         return 0
 
+    def keyed_lease_counts(self) -> list[int]:
+        """The lease count of each LIVE runtime placed under a compatibility key.
+
+        For telemetry: counts only, never a key, pid or session. A runtime placed
+        by chat runtime sharing is keyed by its ``ChatRuntimeKey``; a registration
+        lease (``acquire_session_lease``) is keyed by the runtime object itself,
+        so ``entry.key is entry.runtime`` tells the two apart without this module
+        knowing either key type. Same liveness rule as :meth:`leases_on_pid`.
+        """
+        return [
+            len(entry.leases)
+            for entry in list(self._entries)
+            if entry.key is not entry.runtime and entry.leases and self._alive(entry)
+        ]
+
+    def held_leases_on_runtime(self, runtime: object) -> int:
+        """Leases still recorded on this runtime OBJECT, alive or not, for telemetry.
+
+        Unlike :meth:`leases_on_runtime` this does not drop a dead runtime: a
+        process reaped by its exit watcher is already not alive when its death is
+        announced, and its leases are what says how many chats it took down. Never
+        a kill-gate answer, which must stay live-only.
+        """
+        return sum(len(e.leases) for e in list(self._entries) if e.runtime is runtime)
+
     # -- internals --
 
     def _pick(self, key: Hashable, *, cap: int, session_key: str) -> _Entry | None:

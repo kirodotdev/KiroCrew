@@ -379,6 +379,7 @@ _LAZY_IMPORTS = {
         "_hist_mod _rs crew_pause crewmate_harness_notice mcp_listing_gateway model_registry stt"
     ),
     "kiro_crew.agent": "rebuild_agent_config rebuild_agent_config_reporting",
+    "kiro_crew.agent_sdk.chat_runtime_sharing": "chat_runtime_sharing_enabled",
     "kiro_crew.change_card_catalog": "HOOKED_ROUTES",
     "kiro_crew.apps.bridges": "reconcile_enabled_app_resources",
     "kiro_crew.apps.builtin_adoption": (
@@ -464,6 +465,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.memory": "MemoryStore",
     "kiro_crew.messaging.session_trust": "clear_trusted_sessions",
     "kiro_crew.metrics": "_gauges",
+    "kiro_crew.metrics.chat_runtime_share": "record_toggled",
     "kiro_crew.metrics.crew_log_export": "install_otel_crew_log_subscriber",
     "kiro_crew.page_cache": "read_now",
     "kiro_crew.security": "redact_credentials redact_exfiltration_urls",
@@ -498,7 +500,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 152
+    assert len(expected) == 154
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

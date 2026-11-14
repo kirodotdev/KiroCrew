@@ -65,6 +65,9 @@ import weakref
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.metrics.chat_runtime_share import record_process_died
+from kiro_crew.runtime_ownership import RUNTIME_OWNERSHIP
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,6 +111,20 @@ class RuntimeDeath:
 _deaths: "weakref.WeakKeyDictionary[Any, RuntimeDeath]" = weakref.WeakKeyDictionary()
 
 
+def _chat_leases_at_death(runtime: object, death: RuntimeDeath) -> int:
+    """How many chat leases *runtime* held when it died, for the death counter.
+
+    ``death.leases`` is the kill gate's live-only count, which is 0 for a process
+    the exit watcher reaped before ``_mark_dead`` ran. The leases themselves are
+    still in the table then (nothing has released them), so they are read by
+    identity, alive or not. Never raises: telemetry must not break the death path.
+    """
+    try:
+        return max(death.leases, RUNTIME_OWNERSHIP.held_leases_on_runtime(runtime))
+    except Exception:
+        return death.leases
+
+
 def announce(
     runtime: object,
     *,
@@ -132,6 +149,7 @@ def announce(
         leases=max(0, leases),
         acp_sessions=max(0, acp_sessions),
     )
+    record_process_died(expected=death.expected, tenants=_chat_leases_at_death(runtime, death))
     try:
         _deaths[runtime] = death
     except TypeError:

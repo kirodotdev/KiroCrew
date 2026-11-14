@@ -55,6 +55,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
     JsonRpcMessage,
 )
+from kiro_crew.metrics.chat_runtime_share import chat_leases_on, record_kas_queued
 
 if TYPE_CHECKING:
     from kiro_crew.acp.session_handle import AcpSessionHandle
@@ -475,6 +476,10 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             EVENT_STEER_CONSUMED if kind == kas_wire.KIND_STEERING_INJECTED else EVENT_STEER_QUEUED
         )
         return [AcpEvent(kind=steer_kind, text=text)]
+    if kind == kas_wire.KIND_QUEUED:
+        # The engine parked this prompt behind another session's turn (its one
+        # active model slot). Counted only: nothing renders it.
+        record_kas_queued(tenants=chat_leases_on(self._runtime, getattr(self, "_session_key", "")))
     return []
 
 

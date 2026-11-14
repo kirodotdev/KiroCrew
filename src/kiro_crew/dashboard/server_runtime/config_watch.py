@@ -276,6 +276,18 @@ def _register_config_watch(
         # A failure propagates so the watcher retries the apply.
         await stale_wake.sync_job(getattr(state, "crons", None))
 
+    def _count_chat_runtime_sharing_toggle(change: ConfigChange) -> None:
+        # Adoption telemetry: one count per on/off flip of the preview, from
+        # whichever writer flipped it. A synthesized change has no old document.
+        if change.old is None or not change.touched("dashboard.feature_previews"):
+            return
+        from kiro_crew.agent_sdk.chat_runtime_sharing import chat_runtime_sharing_enabled
+        from kiro_crew.metrics.chat_runtime_share import record_toggled
+
+        after = chat_runtime_sharing_enabled(change.new)
+        if chat_runtime_sharing_enabled(change.old) != after:
+            record_toggled(after)
+
     def _push_app_settings(change: ConfigChange) -> None:
         # The app session mute and the per-app model picker read ``apps`` off the
         # ``kirocrewConfig`` query, which only a refresh frame invalidates.
@@ -343,6 +355,11 @@ def _register_config_watch(
             "dashboard.feature_previews",
             callback=_sync_stale_wake,
             name="dashboard.stale_wake",
+        ),
+        live.subscribe(
+            "dashboard.feature_previews",
+            callback=_count_chat_runtime_sharing_toggle,
+            name="dashboard.chat_runtime_sharing_toggle",
         ),
         live.subscribe("apps", callback=_push_app_settings, name="apps"),
         live.subscribe(
