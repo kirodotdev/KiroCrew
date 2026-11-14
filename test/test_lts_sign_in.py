@@ -739,6 +739,12 @@ class TestStoredSignIns:
     ) -> None:
         assert sign_in.same_account(vault_kind, _ARN, cli_kind, _ARN, **named) is expected
 
+    @pytest.mark.parametrize("kind", ["identity_center", "external_idp"])
+    def test_equal_organization_profile_arns_count_as_one_account(self, kind) -> None:
+        # One organization can share this ARN. Calling two people one account only
+        # leaves the two-accounts notice out; it never claims a wrong account.
+        assert sign_in.same_account(kind, _ARN, kind, _ARN) is True
+
     def test_different_social_arns_are_different_accounts(self) -> None:
         assert sign_in.same_account("social", _ARN, "social", _OTHER_ARN) is False
 

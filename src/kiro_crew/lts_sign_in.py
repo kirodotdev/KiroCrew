@@ -548,6 +548,9 @@ def same_account(
     accounts, even with equal ARNs. The types use ``whoami``'s spelling; a social
     type with no provider named decides nothing. Otherwise two profile ARNs decide,
     except that equal social ARNs are unknown: different people can share one.
+    Equal Identity Center or External IdP ARNs count as one account even though one
+    organization can share that ARN; the cost is a missing two-accounts notice, never
+    a wrong one.
     Without both ARNs, a Builder ID in the vault beside a kiro-cli sign-in naming
     its own profile is a different account (Builder ID has no profile; the engine
     gets a fixed one). Everything else is unknown: two Builder IDs carry nothing

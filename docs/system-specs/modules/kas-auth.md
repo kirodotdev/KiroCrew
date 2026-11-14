@@ -664,7 +664,8 @@ engine instead ([aws-control.md](aws-control.md)).
   as stored and Kiro Crew never renews it. With both stored and not provably one account, it names both
   and offers **Use the Kiro CLI account**, which asks once in place and then runs the
   card's own sign-out (`POST /api/kas-login/logout`, owner-only); signing in on the
-  card again undoes it. When the two accounts cannot be compared, the notice says
+  card again undoes it. Only the owner is offered the button (`can_use_kiro_cli`), since
+  anyone else would get a 403 from that sign-out. When the two accounts cannot be compared, the notice says
   that Kiro Agent may not be using the Kiro CLI account's quota; the button explains
   before the first click that it removes the sign-in stored here. When a side has no
   name, or both read the same (a Builder ID beside a Builder ID), the notice names

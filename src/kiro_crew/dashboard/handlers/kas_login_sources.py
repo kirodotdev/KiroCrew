@@ -191,10 +191,12 @@ async def api_kas_login_sources(request: web.Request) -> web.Response:
     # Offer the switch only to a kiro-cli sign-in the LTS gate would then accept: one
     # with no profile, or one outside the account the lock pinned, would close it.
     # oss has neither rule (no gate, no account lock), so its answer is unchanged.
+    # Only the owner may run the sign-out the switch needs, so no one else is offered it.
     lts = edition.is_lts()
     policy = lts_sign_in.LTS if lts else lts_sign_in.OSS
     can_use_kiro_cli = bool(
-        stored.vault is not None
+        owner
+        and stored.vault is not None
         and relay
         and stored.kiro_cli is not None
         and lts_sign_in.profile_eligible(stored.kiro_cli.profile_arn, policy)

@@ -212,6 +212,17 @@ async def test_two_different_accounts_offer_the_kiro_cli_one(world) -> None:
 
 
 @pytest.mark.asyncio
+async def test_only_the_owner_is_offered_the_kiro_cli_account(world) -> None:
+    # The switch runs the card's sign-out, which answers anyone else with 403.
+    world["stored"] = sign_in.StoredSignIns(
+        _stored("builder_id"), True, _stored("aws", arn=_ARN), True
+    )
+    body = await _get_named(_FakeRequest(owner=False))
+    assert body["active"] == "kiro_crew"
+    assert body["can_use_kiro_cli"] is False
+
+
+@pytest.mark.asyncio
 async def test_a_different_kind_named_by_whoami_is_a_different_account(world) -> None:
     # The stores alone cannot tell: kiro-cli keeps both kinds under one key.
     world["stored"] = sign_in.StoredSignIns(_stored("builder_id"), True, _stored("aws"), True)
