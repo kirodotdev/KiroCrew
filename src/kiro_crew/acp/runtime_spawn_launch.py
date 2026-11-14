@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import agent_scratch, member_essential_context, platform_compat
-from kiro_crew.acp import kas_cli_settings, kas_secret_storage
+from kiro_crew.acp import kas_cli_settings, kas_memory, kas_secret_storage
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -390,7 +390,9 @@ async def _initialize_handshake(
 
     ``client_capabilities`` is the declaration :meth:`spawn` resolved before
     the process existed (the harness constant, or the wire-filled variant a
-    ``client_meta_settings`` host gets); this helper only owns the budget.
+    ``client_meta_settings`` host gets); this helper owns the budget, and on a
+    local KAS process with ``agent.orchestrator_memory`` on adds native memory
+    ``disabled`` as the process default. With the setting off it adds nothing.
 
     The budget is :data:`_INITIALIZE_TIMEOUT` whatever the host's state:
     ``initialize`` is answered only once kiro-cli has started, so a slow
@@ -400,6 +402,15 @@ async def _initialize_handshake(
     names overload instead of a killed process. Any other timeout, and an
     exited process, propagate unchanged.
     """
+    if (
+        self.acp_backend == ACP_BACKEND_KAS
+        and not self.is_cloud_sandbox
+        and await asyncio.to_thread(kas_memory.orchestrator_memory_enabled)
+    ):
+        # The process default for sessions that state no policy of their own.
+        client_capabilities = with_client_meta_settings(
+            client_capabilities, kas_memory.memory_settings(kas_memory.MODE_DISABLED)
+        )
     throttled_at_spawn = agents_slice_throttling()
     timeout = _INITIALIZE_TIMEOUT
     if throttled_at_spawn:

@@ -153,6 +153,13 @@ UNLANDED_SID_FIELD = "unlanded_sid"
 # for an empty ``sid``, so every write or clear of ``sid`` drops it.
 NATIVE_FORK_FIELD = "native_fork"
 
+#: The KAS local-memory mode the mapped sid's session was created under
+#: (:mod:`kiro_crew.acp.kas_memory`). Carried beside ``provider`` and read for
+#: the same kind of decision: KAS honours a session's stored memory record over
+#: anything a ``session/load`` names, so a chat whose recorded mode reads the
+#: host's memories its chat is not granted must stop resuming that session.
+KAS_MEMORY_FIELD = "kas_memory"
+
 # Flags that are durable SETTINGS rather than session-scoped state, and so keep
 # their entry alive through :meth:`SessionMap.prune`. Membership is opt-in
 # BECAUSE immortality has a cost: an entry that prune can never collect is a row
@@ -361,7 +368,7 @@ def _keeps_entry(entry: dict) -> bool:
 
 
 def _stash_and_clear_sid(entry: dict) -> bool:
-    """Drop *entry*'s ``sid`` while keeping it as ``discarded_sid``. True if it changed.
+    """Drop *entry*'s session pointer and metadata. True if either changed.
 
     One definition for every path that empties ``sid`` in place, because the
     three that existed disagreed and the disagreement was reachable: a provider
@@ -372,13 +379,16 @@ def _stash_and_clear_sid(entry: dict) -> bool:
     the one between them. Which path emptied the field is not a distinction any
     reader of it can use, so the field cannot be written by only some of them.
 
-    A pending native fork is dropped too, even with no ``sid`` to stash: it
-    would otherwise restore a conversation the caller has just cleared.
+    The KAS memory mode describes only the mapped SID, so it is dropped with
+    the pointer. A pending native fork is dropped too, even with no ``sid`` to
+    stash: it would otherwise restore a conversation the caller has just
+    cleared.
     """
     fork_dropped = entry.pop(NATIVE_FORK_FIELD, None) is not None
+    mode_dropped = entry.pop(KAS_MEMORY_FIELD, None) is not None
     sid = entry.get("sid")
     if not sid:
-        return fork_dropped
+        return fork_dropped or mode_dropped
     entry["discarded_sid"] = sid
     entry["sid"] = ""
     return True
@@ -893,8 +903,21 @@ class SessionMap:
             self._note_inbound_unbind(key, inbound, reason)
 
     @_guarded
-    def set(self, key: str, sid: str, *, provider: str = "", cwd: str = "") -> None:
-        """Save mapping and persist to disk, preserving existing slack fields."""
+    def set(
+        self,
+        key: str,
+        sid: str,
+        *,
+        provider: str = "",
+        cwd: str = "",
+        kas_memory: str | None = None,
+    ) -> None:
+        """Save mapping and persist to disk, preserving existing link fields.
+
+        ``kas_memory=None`` preserves the mapped session's mode when its id is
+        remapped, as ``seed_conversation`` does. A string replaces the mode;
+        ``""`` clears it for a session created without a KAS memory setting.
+        """
         key = canonical_key(key)
         existing = self._data.get(key)
         if existing:
@@ -904,12 +927,18 @@ class SessionMap:
             existing.pop(NATIVE_FORK_FIELD, None)
             if provider:
                 existing["provider"] = provider
+            if not sid or kas_memory == "":
+                existing.pop(KAS_MEMORY_FIELD, None)
+            elif kas_memory is not None:
+                existing[KAS_MEMORY_FIELD] = kas_memory
             if cwd:
                 existing["cwd"] = cwd
         else:
             entry: dict = {"sid": sid, "slack_thread_ts": None, "slack_channel_id": None}
             if provider:
                 entry["provider"] = provider
+            if sid and kas_memory:
+                entry[KAS_MEMORY_FIELD] = kas_memory
             if cwd:
                 entry["cwd"] = cwd
             self._data[key] = entry
@@ -942,6 +971,19 @@ class SessionMap:
             return ""
         return entry.get("provider", "")
 
+    def get_kas_memory(self, key: str) -> str:
+        """The KAS memory mode *key*'s mapped session was created under, or ''.
+
+        ``''`` for every entry written before the setting existed and for every
+        session that stated no mode, which is the same answer: that session
+        asked KAS for no memory. See :data:`KAS_MEMORY_FIELD`.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not entry:
+            return ""
+        recorded = entry.get(KAS_MEMORY_FIELD, "")
+        return recorded if isinstance(recorded, str) else ""
+
     @_guarded
     def clear_sid(self, key: str) -> bool:
         """Clear the stored session ID without removing the entry.
@@ -952,17 +994,21 @@ class SessionMap:
         manually reversible — the native conversation still exists on disk;
         only the pointer to it is dropped.
 
-        Returns whether a pointer was actually dropped, so a caller clearing a
-        SET of keys can report how many conversations it orphaned without a
-        second lookup. ``get`` is the wrong probe for that: it gates on the
+        Returns whether a pointer was actually dropped -- the ``sid`` or a
+        pending native fork -- so a caller clearing a SET of keys can report how
+        many conversations it orphaned without a second lookup. Dropping only a
+        leftover KAS memory mode is saved but answers False: it pointed at no
+        conversation. ``get`` is the wrong probe for that: it gates on the
         transcript file existing and prunes stale entries as a side effect, so
         it answers "is this resumable" rather than "is a pointer recorded".
         """
         entry = self._data.get(canonical_key(key))
-        if entry and _stash_and_clear_sid(entry):
+        if not entry:
+            return False
+        pointer_dropped = bool(entry.get("sid")) or entry.get(NATIVE_FORK_FIELD) is not None
+        if _stash_and_clear_sid(entry):
             self._save()
-            return True
-        return False
+        return pointer_dropped
 
     @_guarded
     def mark_sid_unlanded(self, key: str, sid: str) -> bool:

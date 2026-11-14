@@ -114,6 +114,22 @@ async def test_three_shared_sub_agents_survive_a_stop_then_an_edit(cfg):
     await mgr.close_all()
 
 
+@pytest.mark.parametrize("memory_mode", ["read_only", "disabled", ""])
+@pytest.mark.asyncio
+async def test_a_swap_records_the_replacement_memory_mode(cfg, memory_mode):
+    mgr, provider, _runs, _children = await _setup(cfg)
+    provider.kas_memory_mode = memory_mode
+    mgr._session_map.set(KEY, "old-sid", kas_memory=memory_mode)
+    try:
+        assert await mgr.swap_conversation(KEY) == "swapped"
+
+        assert mgr._session_map.mapped_sid(KEY) == "fresh-sid"
+        assert mgr._session_map.get_kas_memory(KEY) == memory_mode
+        assert mgr._session_map.get_discarded_sid(KEY) == "old-sid"
+    finally:
+        await mgr.close_all()
+
+
 @pytest.mark.asyncio
 async def test_a_busy_session_is_not_swapped(cfg):
     mgr, provider, _runs, _children = await _setup(cfg)

@@ -29,6 +29,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew.acp import kas_memory
 from kiro_crew.acp.harness.base import (
     NotificationAliases,
     SessionExtras,
@@ -236,6 +237,8 @@ class KasCloudSandboxHarness(KasHarness):
             cloud["isEmptyWorkspace"] = True
         out = dict(params)
         meta = dict(out.get("_meta") or {})
-        meta["kiro"] = {**(meta.get("kiro") or {}), **cloud}
+        # The sandbox does not run Kiro Crew's native memory preview.
+        local = kas_memory.without_memory_settings(meta.get("kiro") or {})
+        meta["kiro"] = {**local, **cloud}
         out["_meta"] = meta
         return out, None

@@ -14,6 +14,8 @@ past its TTL, a dead one, and one started before a request was refused for a
 changed tools list (`kiro_cli.spawned_before_tools_list_refusal`), because that
 process read its Tool Search never-defer list before the refusal was known and
 may still defer Kiro Crew's own tools ([mcp](../../architecture/mcp.md#what-belongs-in-kirocrew-core-and-what-does-not)).
+While KAS orchestrator memory is enabled, KAS sessions bypass the pool because
+their requested memory mode is fixed when the engine session is created.
 
 Successful native ACP resume suppresses replay from both disk and the
 dashboard's live slot window. The runner honors the actual provider client's
@@ -4074,6 +4076,27 @@ when a switch is detected (stored SID exists AND providers differ).
    settled lease starts it undelivered. Committing on that later turn rests on
    the premise the first-turn history settle already uses: a prompt kept by the
    live session is in its transcript once a later answer lands.
+
+**The same rotation, for a withdrawn engine memory grant.** KAS honours a
+session's stored memory record over anything a `session/load` names, so turning
+`agent.orchestrator_memory` off (or switching the chat to Temporary, or adding a
+second person to the Crew) cannot disable a session created while the setting
+granted recall. `SessionMap` records the mode of the actual mapped SID beside
+`provider` (`KAS_MEMORY_FIELD`, read through `get_kas_memory`). Clearing the SID
+clears its mode; `clear_sid` still answers True only when it dropped a SID or a
+pending native fork, not a leftover mode alone. `seed_conversation` omits the
+mode to preserve it on a mapped SID; if a compaction restart cannot start a
+successor, restoring the cleared SID records the kept provider's actual mode.
+When `acp.kas_memory.memory_plan` returns a plan with `MemoryPlan.rotate` set,
+`get_or_create` drops `resume_sid`, calls `clear_sid` and arms
+`provider_switch_replay` — the five steps above, for the same reason: the
+conversation has to move to a session the current answer applies to. A
+successful load retains and re-saves the mapped SID's actual mode; a fallback
+`session/new` uses the current requested mode. With the setting off, no
+request states a mode, so a resume re-saves none. Turning
+the setting ON rotates nothing, so an existing chat keeps the engine session it
+has. Contract:
+[memory-skills-hooks](memory-skills-hooks.md#the-engines-own-memory-store-agentorchestrator_memory).
 
 **Fresh first-turn history debt.** A fresh dashboard session has a second, separate
 lease, `_Session.first_turn_history_owed`, so the replay lease's SID-preservation

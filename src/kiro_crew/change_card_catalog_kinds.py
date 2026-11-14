@@ -195,6 +195,8 @@ _SETTING_ORDER: dict[str, tuple[Any, ...]] = {
     # On, an agent may add documents to the knowledge library
     # (``knowledge_add_document``); off, that tool refuses.
     "knowledge.auto_add_documents": (False, True),
+    # On, a personal KAS chat may read the memories other Kiro clients saved.
+    "agent.orchestrator_memory": (False, True),
     # Fair admission on holds each person to their limit; off lets one person
     # take the whole host.
     "dashboard.shared_crew.admission_enabled": (True, False),

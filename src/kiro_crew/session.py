@@ -1172,6 +1172,7 @@ class SessionManager:
             sid,
             provider=_provider_label(session.provider),
             cwd="" if session.cwd_retracted else session.provider.cwd,
+            kas_memory=getattr(session.provider, "kas_memory_mode", ""),
         )
         session.provider_switch_replay = False
         return True

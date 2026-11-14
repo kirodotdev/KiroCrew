@@ -66,6 +66,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_files import kas_wire_agent_id
+from kiro_crew.agent_sdk.tool_search import with_client_meta_settings
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
 from kiro_crew.providers.mirrors.registry import has_mirror
 from kiro_crew.start_priority import StartPriority
@@ -87,6 +88,7 @@ async def load_session(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    kas_memory_mode: str | None = None,
     require_replay: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     focus_resume: bool = False,
@@ -116,6 +118,13 @@ async def load_session(
     does: session/load re-initializes this session's MCP servers, so a resume
     that dropped it would take the channel identity away from a conversation
     that already had it.
+
+    ``kas_memory_mode`` names the saved SID's native policy. The load re-sends
+    its tool mount and policy for a missing record; an explicit stored record
+    remains authoritative. Its acknowledgement must match before prompting.
+    ``""`` states none; ``None`` follows
+    :func:`~kiro_crew.acp.kas_memory.runtime_memory_mode`. The mode sent is
+    recorded on the handle, so a live reload can re-send it unchanged.
 
     ``require_replay`` makes the load fail when the engine replayed no earlier
     turn before answering. KAS answers ``session/load`` for an id whose stored
@@ -324,6 +333,8 @@ async def load_session(
     # The load that parks the session in the host's start agent first, when a
     # person waits on this re-open; ``None`` on every other resume and host.
     parking: dict[str, Any] | None = None
+    # The native memory policy the load actually asks KAS for; "" states none.
+    sent_kas_memory_mode = ""
     if self._acp_backend == ACP_BACKEND_KAS:
         kas_extras = await self._kas_custom_agents(
             active_agent,
@@ -387,7 +398,14 @@ async def load_session(
             )
             load_params["mcpServers"] = wire_servers
         withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
-        attach_kas_custom_agents(load_params, kas_agents)
+        from kiro_crew.acp import kas_memory
+
+        kas_memory_mode = await kas_memory.runtime_memory_mode(self.acp_backend, kas_memory_mode)
+        if kas_memory_mode:
+            load_params = with_client_meta_settings(
+                load_params, kas_memory.memory_settings(kas_memory_mode)
+            )
+        attach_kas_custom_agents(load_params, kas_agents, memory_mode=kas_memory_mode)
         # The same last word session/new gets, asked inside this branch so the
         # kiro resume path still stops at the comparison above.
         load_params, agent = self._harness.session_request(
@@ -396,6 +414,8 @@ async def load_session(
             agent,
             agent_capabilities=self._agent_capabilities,
         )
+        # The policy the resume was actually asked for, which KAS must acknowledge.
+        sent_kas_memory_mode = kas_memory.sent_memory_mode(load_params)
         if resume_sid in self._parked_copies:
             # A re-open on this process was cut off before the engine confirmed
             # freeing the copy it parked. The engine ignores the batch of a load
@@ -451,6 +471,16 @@ async def load_session(
             "the stored conversation was not restored"
         )
 
+    if sent_kas_memory_mode:
+        from kiro_crew.acp import kas_memory
+
+        try:
+            kas_memory.require_memory_ack(resp, sent_kas_memory_mode)
+        except Exception:
+            # A refused resume must retain its stored conversation.
+            await self.evict_session(resume_sid)
+            raise
+
     # Register the queue AFTER _send_and_await returns. During session/load
     # kiro-cli replays the full prior transcript on stdout; without a
     # registered queue those replay frames hit the "unknown session -> drop"
@@ -485,6 +515,7 @@ async def load_session(
     )
     # Mirrors create_session: the resumed session's own stub token.
     handle.stub_session_token = stub_token
+    handle.kas_memory_mode = sent_kas_memory_mode
     # The restored history predates this handle's batch guard.
     batch_guard.mark_resumed(handle._batch_window)
     handle.member_dispatch_mounted = member_mounted

@@ -11,7 +11,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_client``, ``_cloud_governance_scope``,
 ``_defer_replay_sid_promotion``, ``_history_replay_needed``, ``_shared_scratch``,
-``startup_notice``.
+``kas_memory_mode``, ``kas_memory_new_mode``, ``startup_notice``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``_harness_pin``, ``_keepalive_routed``, ``_on_gate_acquired``, ``_on_gate_queued``,
@@ -472,6 +472,7 @@ async def _load_session_with_retry(
     member_session_key: str = "",
     session_key: str = "",
     channel_id: str = "",
+    kas_memory_mode: str | None = None,
     require_replay: bool = False,
     crew_agent: str | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
@@ -507,6 +508,7 @@ async def _load_session_with_retry(
             member_session_key=member_session_key,
             session_key=session_key,
             channel_id=channel_id,
+            kas_memory_mode=kas_memory_mode,
             require_replay=require_replay,
             crew_agent=crew_agent,
             start_priority=start_priority,
@@ -694,6 +696,10 @@ async def _start_kiro_runtime_impl(
         )
         else None
     )
+    if isinstance(remote, PreparedCloudSession):
+        # The cloud relay does not carry native memory policy; this preview is local.
+        self.kas_memory_mode = ""
+        self.kas_memory_new_mode = ""
     if isinstance(remote, PreparedCloudSession) and self.memory_mode != "persistent":
         # Before any sandbox exists: a private chat never reopens its session, so
         # each start would mint a new sandbox and strand the last one's files.
@@ -956,6 +962,7 @@ async def _start_kiro_runtime_impl(
                         member_session_key=self._member_session_key(),
                         session_key=self._owning_session_key(),
                         channel_id=self._owning_channel_id() or "",
+                        kas_memory_mode=self.kas_memory_mode,
                         require_replay=self.is_kas_backend,
                         crew_agent=self._crew_agent,
                         start_priority=start_priority,
@@ -978,6 +985,7 @@ async def _start_kiro_runtime_impl(
         _t_sess = time.monotonic()
 
         if handle is None:
+            self.kas_memory_mode = self.kas_memory_new_mode
             # ── Fix B: respawn if runtime died during resume attempt ──
             # The orphan sweep may have killed the runtime's PID during the
             # session/load window (race condition). Calling create_session on
@@ -1081,6 +1089,7 @@ async def _start_kiro_runtime_impl(
                     # crew identity is the founder's, not this chat's.
                     crew_agent=self._crew_agent,
                     memory_mode=self.memory_mode,
+                    kas_memory_mode=self.kas_memory_mode,
                     session_key=self._owning_session_key(),
                     channel_id=self._owning_channel_id() or "",
                     on_gate_acquired=self._on_gate_acquired,
@@ -1271,6 +1280,8 @@ async def _start_kiro_runtime_impl(
                     phases["set_model"] = (time.monotonic() - _t_model) * 1000.0
                     turn_timing.phase("set_model", phases["set_model"])
 
+        # A live reload re-sends exactly the policy this SID stated.
+        self.kas_memory_mode = handle.kas_memory_mode
         # Replace the placeholder AcpClient with the real AcpSessionProvider
         provider = AcpSessionProvider(
             handle,
@@ -1288,6 +1299,7 @@ async def _start_kiro_runtime_impl(
             # pushes a keyless claim gatewayd throws away.
             session_key=self._owning_session_key(),
             channel_id=self._owning_channel_id(),
+            kas_memory_mode=self.kas_memory_mode,
         )
         provider.kas_default_model_notice = _default_model_notice
         provider.memory_mode = self.memory_mode

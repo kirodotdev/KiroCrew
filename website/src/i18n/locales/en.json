@@ -8396,6 +8396,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "Orchestrator memory",
+        "orchestrator_memory_description": "Use existing Kiro memories in personal chats. Changes apply when an agent session starts; start a new chat to use the updated setting.",
+        "orchestrator_memory_hint": "Uses memories saved in other Kiro clients alongside {{productName}}'s existing memory. Kiro memories are read-only here. {{productName}}'s learning behavior and each Bot's separate memory are unchanged. Kiro memories are available in Incognito chats, but excluded from Temporary chats.",
+        "orchestrator_memory_preview": "Preview",
+        "orchestrator_memory_save_failed": "Could not save orchestrator memory. Try again.",
         "approval_agent_spec": "Asks before each tool, because {{productName}} tells it to.",
         "approval_seeded_settings": "Asks before each tool only if its own settings say so. {{productName}} writes that setting and cannot confirm it took effect.",
         "approval_session_config": "Asks before it runs a command or changes a file. {{productName}} turns that on and checks it. Plain reads do not ask.",

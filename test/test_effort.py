@@ -666,6 +666,7 @@ class TestPoolEffortPostClaim:
         pooled.change_effort = AsyncMock(return_value=True)
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
@@ -705,6 +706,7 @@ class TestPoolEffortPostClaim:
         pooled.change_effort = AsyncMock(return_value=False)
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)
@@ -749,6 +751,7 @@ class TestPoolEffortPostClaim:
         pooled.change_effort = AsyncMock(side_effect=RuntimeError("KAS effort unsupported"))
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         mgr = SessionManager(cfg, factory)

@@ -561,7 +561,9 @@ async def _bind_shared_handle_impl(
     # A subagent's provider never rekeys either, and its whole point is that
     # it is NOT its parent: without the key its re-claim carries none and
     # gatewayd drops it, leaving this session unable to re-bind its token.
-    provider = AcpSessionProvider(handle, runtime, session_key=session_key)
+    provider = AcpSessionProvider(
+        handle, runtime, session_key=session_key, kas_memory_mode=handle.kas_memory_mode
+    )
     provider.memory_mode = info.memory_mode
     # The handle exists now. Publish ownership before any cancellable await so
     # force-reap always takes the shared-session branch and destroys this handle

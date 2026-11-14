@@ -2321,7 +2321,15 @@ membership `ACP_BACKENDS_MCP_WIRE_REINJECT`). The engine registers a session's
 plus the local unregister, which frees the resident copy and KEEPS the stored
 record (KAS's teardown verb, `_kiro/session/delete`, removes it) -- and then
 `load_session` on the same id with no transcript path, inside
-`AcpRuntime.keep_record_on_teardown(sid)`: the load's failure arms end the
+`AcpRuntime.keep_record_on_teardown(sid)`. The provider carries the memory mode
+that SID actually stated (recorded on its handle, `""` when it stated none) into
+the load, so the refreshed custom-agent frame retains the matching memory-tool
+mount without trying to change KAS's stored policy, whatever
+`agent.orchestrator_memory` reads now. A local KAS load that states a policy
+does so for a missing record and validates the response's native memory
+acknowledgement before returning a handle; a SID that stated none is reloaded
+with none and checked for none. The
+load's failure arms end the
 session through `terminate_session`, whose KAS verb deletes the stored record,
 and inside that scope the call evicts instead. The engine replays the
 conversation, the load re-projects the batch from the spec as it now is, and the

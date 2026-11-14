@@ -1390,6 +1390,21 @@ class AgentConfig:
             "created itself.",
         ),
     )
+    orchestrator_memory: bool = field(
+        default=False,
+        metadata=_meta(
+            "Orchestrator memory",
+            "Let a new chat in your own dashboard read the memories the Kiro agent "
+            "engine already stored for you, so it recalls your preferences without "
+            "being told again. Read-only: the chat never adds, changes or deletes "
+            "a memory, and it reflects on nothing. It applies to chats you start "
+            "after turning it on, never to one already open, and only on the Kiro "
+            "agent engine (agent.acp_backend unset). Withheld from workers, Bot DM "
+            "threads, app-owned and scheduled sessions, Temporary chats, and from "
+            "every session once anyone else can reach this Crew, because the "
+            "memories are yours alone. Off by default.",
+        ),
+    )
     session_manager_chain: bool = field(
         default=False,
         metadata=_meta(

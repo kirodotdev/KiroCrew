@@ -15485,6 +15485,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "Orchestrator-Gedächtnis",
+        "orchestrator_memory_description": "Vorhandene Kiro-Erinnerungen in persönlichen Chats nutzen. Änderungen gelten beim Start einer Agentensitzung; starte einen neuen Chat, um die aktualisierte Einstellung zu nutzen.",
+        "orchestrator_memory_hint": "Nutzt in anderen Kiro-Clients gespeicherte Erinnerungen zusammen mit dem vorhandenen Gedächtnis von {{productName}}. Kiro-Erinnerungen werden hier nur gelesen. Das Lernverhalten von {{productName}} und das separate Gedächtnis von jedem Bot bleiben unverändert. Kiro-Erinnerungen sind in Inkognito-Chats verfügbar, aber von temporären Chats ausgeschlossen.",
+        "orchestrator_memory_preview": "Vorschau",
+        "orchestrator_memory_save_failed": "Das Orchestrator-Gedächtnis konnte nicht gespeichert werden. Versuch es erneut.",
         "approval_agent_spec": "Fragt vor jedem Werkzeug, weil {{productName}} es so vorgibt.",
         "approval_seeded_settings": "Fragt vor jedem Werkzeug nur, wenn die eigenen Einstellungen es sagen. {{productName}} schreibt diese Einstellung und kann ihre Wirkung nicht bestätigen.",
         "approval_session_config": "Fragt, bevor es einen Befehl ausführt oder eine Datei ändert. {{productName}} schaltet das ein und prüft es. Reines Lesen fragt nicht.",

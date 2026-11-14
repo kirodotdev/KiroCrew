@@ -1186,6 +1186,7 @@ class TestNewConversation:
             cwd="/tmp/ws",
             agent="kirocrew",
             memory_mode="persistent",
+            kas_memory_mode="",
             session_key="",
             member_session_key="",
             channel_id="",

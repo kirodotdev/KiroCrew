@@ -900,6 +900,7 @@ class TestABarePinOnAPairIdHarness:
         )
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         manager = SessionManager(cfg, MagicMock(return_value=pooled))
         manager._drain_and_claim = AsyncMock(return_value=pooled)
