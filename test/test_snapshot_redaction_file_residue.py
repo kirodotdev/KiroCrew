@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from redaction_structured_cases import github_classic
+
 from kiro_crew import snapshot_redact as redact
 
-KEY = "AKIAIOSFODNN7EXAMPLE"
+KEY = github_classic(seed=51)
 
 
 def _stage(tmp_path: Path) -> Path:

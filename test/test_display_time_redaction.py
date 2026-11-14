@@ -27,6 +27,7 @@ import pathlib
 
 import pytest
 from chat_test_helpers import _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard import mcp_oauth_provenance
 from kiro_crew.dashboard.chat_persistence import (
@@ -40,7 +41,7 @@ from kiro_crew.dashboard.chat_utils import _history_key_for, _prepare_messages
 
 # A credential shape `redact_credentials` catches, kept in one place so a change
 # to the detector surfaces as one failure rather than six.
-SECRET = "AKIAIOSFODNN7EXAMPLE"
+SECRET = github_classic(seed=41)
 
 
 def _seed(state, slot_key: str, role: str, content: str) -> None:

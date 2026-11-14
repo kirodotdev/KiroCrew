@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import request
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.handlers import memory as handlers
 from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
@@ -24,7 +25,7 @@ async def test_private_profile_failure_is_stable_and_keeps_safe_log_diagnostics(
 ):
     memory = await markdown_memory_for_store(env.state, "member-alice")
     before = memory.read_preferences(), memory.read_projects()
-    credential = "AKIAIOSFODNN7EXAMPLE"
+    credential = github_classic(seed=1)
     writer = MagicMock(side_effect=error_type(f"identity unavailable at {path}: {credential}"))
     monkeypatch.setattr(memory, "write_private_profile_validated", writer)
     req = request(

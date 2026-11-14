@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import cli_doctor
 from kiro_crew import members as members_mod
@@ -14,6 +15,10 @@ from kiro_crew import memory_stores
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
 from kiro_crew.config.sections import MemoryStoreConfig
 from kiro_crew.vector_memory import VectorMemoryStore
+
+# An AWS key ID is an Identifier with the structured detectors on, so the
+# credential-shaped member name these tests store is a GitHub token.
+SECRET = github_classic(seed=17)
 
 
 def _snapshot(home: Path) -> dict[str, bytes]:
@@ -231,7 +236,7 @@ def test_dispatchability_is_silent_for_an_nfd_only_legacy_name(members, capsys):
 
 def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(members, capsys):
     cfg, _, _, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = SECRET
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()
@@ -256,7 +261,7 @@ def test_nondispatchable_member_name_is_reported_by_count_without_disclosure(mem
 
 def test_memory_binding_diagnostic_skips_nondispatchable_record(members, capsys):
     cfg, home, private_store, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = SECRET
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()
@@ -296,7 +301,7 @@ def _composition_failed(monkeypatch):
 
 def test_dispatchability_survives_a_platform_composition_failure(members, capsys, monkeypatch):
     cfg, _, _, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = SECRET
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()
@@ -318,7 +323,7 @@ def test_dispatchability_survives_a_platform_composition_failure(members, capsys
 
 def test_memory_bindings_survive_a_platform_composition_failure(members, capsys, monkeypatch):
     cfg, home, _, writes = members
-    name = "AKIAIOSFODNN7EXAMPLE"
+    name = SECRET
     cfg.agents[name] = KiroCrewAgentConfig()
     cfg.save()
     cfg = KiroCrewConfig.load()

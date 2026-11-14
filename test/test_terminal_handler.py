@@ -29,6 +29,7 @@ from terminal_handler_helpers import (  # noqa: F401 -- the autouse fixture regi
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers import terminal, terminal_lifecycle
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import async_wait_until, await_until
 
 
@@ -1277,7 +1278,7 @@ class TestApiTerminalRedact:
     async def test_redacts_credentials_in_contiguous_text(self):
         # The exact evasion the endpoint exists for: a secret that per-chunk
         # scanning would have split. The contiguous scan must catch it.
-        secret = "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        secret = f"aws_secret_access_key = {SAMPLE_AWS_SECRET}"
         req = self._req({"text": f"config dump:\n{secret}\ndone"})
         with patch.object(terminal, "_is_enabled", return_value=True), \
              patch.object(terminal, "_sel") as mock_sel:

@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_app_with_agent_routes, _make_state
+from redaction_structured_cases import github_classic
 
 from kiro_crew.testing.wait import await_until
 
@@ -577,8 +578,8 @@ class TestSessionReload:
         eager.assert_called_once()
         assert eager.call_args.kwargs.get("allow_resume") is True
 
-    # A fake AWS access key id: matches (?:AKIA|ASIA)[A-Z0-9]{16}, asserted absent.
-    _TOKEN = "AKIA" + "RELOADROW0123456"
+    # A synthetic GitHub classic token (valid checksum) the redactor removes, asserted absent.
+    _TOKEN = github_classic(seed=106)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

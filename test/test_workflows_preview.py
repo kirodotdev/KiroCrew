@@ -444,15 +444,15 @@ class TestACutNeverLeavesACredentialFragment:
     to happen on already-redacted text, not before it.
 
     Measured against the real redactor: of a 40-character ``ghp_`` token, a 33-character
-    prefix survives unredacted, and of a 20-character AWS key id a 19-character prefix
-    does. Each case below places the token so the cut leaves exactly that prefix, which
-    is the state a cut-then-redact order ships.
+    prefix survives unredacted, and of a 40-character AWS secret key a 39-character
+    prefix does. Each case below places the token so the cut leaves exactly that prefix,
+    which is the state a cut-then-redact order ships.
     """
 
     # (token, the longest prefix the redactor does NOT recognize)
     TOKENS = (
         ("ghp_" + "a" * 36, 33),
-        ("AKIAIOSFODNN7EXAMPLE", 19),
+        ("".join(["Qh4Tm2Vx9KpRc/Z8Nw3Hd", "/Jf1Lb5Gs0Ye9Ua2WkE"]), 39),
     )
 
     def _pad(self, token: str, survives: int, limit: int) -> str:

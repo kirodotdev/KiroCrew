@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
 
 
 class TestSlotDetailPaginationUnflushedTail:
@@ -195,7 +196,7 @@ class TestSlotDetailPaginationUnflushedTail:
         from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
-        raw = "AKIAIOSFODNN7EXAMPLE"
+        raw = github_classic(seed=16)  # a checksummed GitHub token, redacted
         loaded, _ = redact_exfiltration_urls(raw)
         loaded, _ = redact_credentials(loaded)
         assert loaded != raw, "fixture no longer exercises a real redaction"

@@ -34,13 +34,16 @@ from handlers_memory_coverage_helpers import (  # noqa: F401 -- the autouse fixt
     _reset_setup_status,
     _store,
 )
+from redaction_structured_cases import github_classic
 
 import kiro_crew.dashboard.handlers.memory as mem_mod
 from kiro_crew.testing.wait import await_until
 
 _MOD = "kiro_crew.dashboard.handlers.memory"
 
-_CRED = "AKIAIOSFODNN7EXAMPLE"
+# A GitHub token with a valid checksum, which the plan redacts. An AWS key ID
+# stays visible as an identifier, so it cannot show that a value is redacted.
+_CRED = github_classic(seed=47)
 
 
 # preferences / projects / history — GET + PUT + malformed body

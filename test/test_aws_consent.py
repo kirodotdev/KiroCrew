@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from kiro_crew import aws_consent
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 
 @pytest.fixture()
@@ -1450,7 +1451,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
     emits the bare ``service`` with no ``": "``.
     """
 
-    SECRET = "AKIAIOSFODNN7EXAMPLE"  # 20-char AWS access key ID
+    SECRET = SAMPLE_AWS_SECRET  # synthetic 40-char AWS secret
 
     @staticmethod
     def _capture(monkeypatch):
@@ -1476,7 +1477,7 @@ class TestAuditDecisionRedactsBeforeTruncate:
 
         assert len(calls) == 1
         resources = calls[0]["resources"]
-        assert "AKIA" not in resources, resources
+        assert self.SECRET[:4] not in resources, resources
         assert resources.startswith("polly: ")
         # Redaction ran over the full text; only the redacted text was clipped.
         assert len(resources) <= len("polly: ") + 200

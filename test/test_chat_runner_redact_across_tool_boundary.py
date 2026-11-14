@@ -16,8 +16,8 @@ as one placeholder.
 These drive the real ``_run_chat`` through ``turn_harness.run_turn`` and read what
 the turn sent on the WebSocket, what it persisted, and what it queued for the
 slot's stream readers (the /api/chat SSE stream and the OpenAI-compatible
-replies). The key is the documented AWS example key, split so no literal sits in
-the repo.
+replies). The key is a synthetic AWS secret access key, split so no literal sits
+in the repo.
 """
 
 from __future__ import annotations
@@ -48,10 +48,14 @@ from kiro_crew.dashboard import chat_runner, openai_compat
 from kiro_crew.dashboard.chat_turn import turn_reply_seams
 from kiro_crew.dashboard.chat_utils import _build_stream_chunk
 from kiro_crew.security import REDACTED_CREDENTIAL_TAG, redact
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-#: The AWS documentation's example access key id, split so no literal sits here.
-_HEAD, _TAIL = "AKIA", "IOSFODNN7EXAMPLE"
+#: A synthetic 40-character AWS secret access key, split so no literal sits here.
+#: An AWS key ID would not do: it is an identifier the redactor keeps visible.
+_HEAD, _TAIL = SAMPLE_AWS_SECRET[:4], SAMPLE_AWS_SECRET[4:]
 _KEY = _HEAD + _TAIL
+#: The start of an AWS key ID, a run that could still become a credential.
+_KEY_ID_HEAD = "AKIA"
 _TAG = REDACTED_CREDENTIAL_TAG
 #: A made-up URL credential parameter: the name, then a value no other pass reads
 #: as a secret, so only the name in front of it makes it one.
@@ -375,8 +379,8 @@ class TestCredentialSplitAcrossABoundary:
 
 _PLAIN_ENDS = ("settled.", "playing.", "they've.", "Done.", "is.", "x.", "Okay.")
 _NOT_PLAIN_ENDS = (
-    _HEAD,
-    _HEAD + ".",
+    _KEY_ID_HEAD,
+    _KEY_ID_HEAD + ".",
     "SG.",
     "eyJ.",
     "IOSF.",

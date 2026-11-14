@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.security import redact_credentials
 from kiro_crew.security import redaction as _redaction
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
-# The canonical AWS documentation example secret key, never a live credential.
-KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+# A synthetic 40-char AWS secret key (not the documentation example), never a live credential.
+KEY = SAMPLE_AWS_SECRET
 TAG = "[REDACTED: credential]"
 
 # The issue's shape: a mixed-case, digit-bearing target-group name glued by `/`
@@ -26,6 +28,7 @@ def test_the_fixtures_are_what_they_claim() -> None:
 def test_without_the_exemption_the_target_group_arn_is_redacted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Control: with the exemption gone, the same ARN is redacted."""
     monkeypatch.setattr(_redaction, "_arn_resource_spans", lambda text: [])
     cleaned, warnings = redact_credentials(TARGET_GROUP_ARN)
     assert TAG in cleaned
@@ -140,10 +143,11 @@ def test_the_exemption_matches_only_the_target_group_resource() -> None:
 
 
 def test_labelled_and_fixed_shape_credentials_inside_an_arn_are_still_redacted() -> None:
-    # Passes 1 and 2 do not consult the ARN shape.
-    text = "arn:aws:iam::123456789012:user/AKIAIOSFODNN7EXAMPLE"
+    # A fixed-shape credential is found by its own shape, not the ARN's.
+    secret = github_classic(seed=31)
+    text = f"arn:aws:iam::123456789012:user/{secret}"
     cleaned, warnings = redact_credentials(text)
-    assert "AKIAIOSFODNN7EXAMPLE" not in cleaned
+    assert secret not in cleaned
     assert warnings
 
 
@@ -152,6 +156,7 @@ def test_the_exemption_leaves_the_exfil_scan_unchanged() -> None:
 
 
 def test_many_arns_are_scanned_once() -> None:
+    """Many ARNs in one text cost one exemption scan, not one per ARN."""
     calls = 0
     real = _redaction._arn_resource_spans
 

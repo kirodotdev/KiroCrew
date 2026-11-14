@@ -23,6 +23,7 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import DashboardRequest, InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.testing.wait import await_until, finished
 
 
@@ -44,6 +45,9 @@ def _rename(state, caller, target: str, title: str) -> dict:
 # Upper bound on each step of a race scenario. Every step finishes in
 # milliseconds; the bound only turns a hang into a reported failure.
 _RACE_STEP_TIMEOUT_S = 10.0
+
+# A synthetic 40-character AWS secret access key, which the redactor replaces.
+_SECRET = SAMPLE_AWS_SECRET
 
 
 def _run_race(make_first, during, started: asyncio.Event, release: asyncio.Event):
@@ -430,7 +434,7 @@ def test_a_credential_shaped_title_is_sanitized_before_it_is_stored(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = _SECRET
 
     out = _rename(state, caller, "chat-2", f"deploy with {secret}")
 
@@ -552,11 +556,11 @@ def test_a_redacted_title_is_read_back_as_stored(tmp_path):
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
-    title = "keys " + ("AKIA" + "ABCDEFGHIJKLMNOP") * 2
+    title = f"keys {_SECRET} {_SECRET}"
 
     out = _rename(state, caller, "chat-2", title)
 
-    assert "AKIA" + "ABCDEFGHIJKLMNOP" not in target.title
+    assert _SECRET not in target.title
     assert len(target.title) <= 200
     assert out["title"] == target.title
 
@@ -759,9 +763,9 @@ def test_a_credential_split_by_a_kept_invisible_character_is_still_redacted(tmp_
     state = _make_state(tmp_path)
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
-    tail = "ABCDEFGHIJKLMNOP"
+    head, tail = _SECRET[:4], _SECRET[4:]
 
-    out = _rename(state, caller, "chat-2", f"deploy AKIA{joiner}{tail}")
+    out = _rename(state, caller, "chat-2", f"deploy {head}{joiner}{tail}")
 
     assert tail not in target.title
     assert tail not in out["title"]
@@ -844,8 +848,8 @@ def test_a_blank_glyph_anywhere_in_a_title_is_refused(tmp_path, title):
 @pytest.mark.parametrize(
     "title",
     [
-        # Ten keys: 200 characters sent, longer once each key becomes a marker.
-        ("AKIA" + "ABCDEFGHIJKLMNOP") * 10,
+        # Nine short tokens: 197 characters sent, longer once each becomes a marker.
+        " ".join(["xoxb-1234" "-5678-abcdef"] * 9),
         # A marker with brackets of its own (an IPv6 URL host) past the cap.
         "a" * 160 + " http://[2001:db8::1]/ssh-rsa+",
     ],
@@ -865,7 +869,7 @@ def test_a_title_redaction_pushes_past_the_cap_is_refused(tmp_path, title):
 
     assert exc.value.code == "invalid_title"
     assert "redacted" in str(exc.value)
-    assert "AKIA" not in str(exc.value) and "2001" not in str(exc.value)
+    assert "xoxb" not in str(exc.value) and "2001" not in str(exc.value)
     assert target.title == "untouched"
     assert target._title_epoch == epoch
 
@@ -875,7 +879,7 @@ def test_a_redacted_title_within_the_cap_is_stored_whole(tmp_path):
     caller = state.get_or_create_slot("chat-1")
     target = state.get_or_create_slot("chat-2")
 
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = _SECRET
     _rename(state, caller, "chat-2", "deploy key " + secret)
 
     assert target.title.startswith("deploy key [REDACTED")

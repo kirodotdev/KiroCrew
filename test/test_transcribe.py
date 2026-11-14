@@ -34,6 +34,7 @@ from transcribe_helpers import (
 
 from kiro_crew import stt, transcribe
 from kiro_crew.config.loader import SttConfig
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 from kiro_crew.transcribe import availability_detail, find_brew, is_available, transcribe_audio
 
 
@@ -810,14 +811,14 @@ class TestTranscriptRedaction:
         monkeypatch.setattr(stt, "availability", lambda: stt.Availability(True))
 
         async def fake_transcribe_pcm(pcm, **kwargs):
-            return "the key is AKIAIOSFODNN7EXAMPLE ok", stt.Availability(True)
+            return f"the key is {SAMPLE_AWS_SECRET} ok", stt.Availability(True)
 
         monkeypatch.setattr(stt, "transcribe_pcm", fake_transcribe_pcm)
 
         result = await transcribe_audio(str(audio), cfg)
 
         assert result is not None
-        assert "AKIAIOSFODNN7EXAMPLE" not in result
+        assert SAMPLE_AWS_SECRET not in result
         assert "[REDACTED: credential]" in result
         # The surrounding speech survives: redaction replaces the secret, it does
         # not discard the utterance.

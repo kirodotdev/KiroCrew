@@ -27,6 +27,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from member_memory_helpers import write_member_home
 from off_loop_helpers import off_loop
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent_panel
 from kiro_crew import members as members_mod
@@ -535,7 +536,7 @@ async def test_a_hostile_member_name_is_refused_on_the_read(vetted):
 
 @pytest.mark.asyncio
 async def test_a_credential_shaped_legacy_crew_can_read_its_redacted_panel(vetted):
-    shaped = "".join(["AKIA", "IOSFODNN7", "EXAMPLE"])
+    shaped = github_classic(seed=27)
     assert agent_panel._scrub(shaped) != shaped, "fixture is no longer redacted"
 
     slug = members_mod.slug_for_name(shaped)

@@ -26,6 +26,7 @@ import pytest
 
 from kiro_crew.apps.builtins.aws_control.backend import library
 from kiro_crew.deploy.engine import AWSError
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 ACCOUNT = "123456789012"
 
@@ -125,7 +126,8 @@ class TestListPushable:
         )
         newer = NS(
             slug="fresh",
-            name="key=AKIAIOSFODNN7EXAMPLEKEYX secret",
+            # A 40-char AWS secret; an AWS key ID is kept visible, so it cannot stand in.
+            name=f"key={SAMPLE_AWS_SECRET} secret",
             kind="markdown",
             version=1,
             updated_at="2026-06-01T00:00:00Z",
@@ -139,7 +141,7 @@ class TestListPushable:
         # Newest updatedAt sorts first.
         assert [r["slug"] for r in rows] == ["fresh", "pushed"]
         # The credential-shaped fragment in the name is redacted away.
-        assert "AKIAIOSFODNN7EXAMPLEKEYX" not in rows[0]["name"]
+        assert SAMPLE_AWS_SECRET not in rows[0]["name"]
         # An un-pushed artifact carries null push-state; the pushed one carries
         # the ledger's version.
         assert rows[0]["pushedVersion"] is None

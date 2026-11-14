@@ -5,10 +5,16 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import aws_secret
 
 from kiro_crew.webex.client import WEBEX_MAX_TEXT
 from kiro_crew.webex.renderer import _STATUS_EDIT_BUDGET, WebexRenderer
 from kiro_crew.webex.transport import WEBEX_CAPABILITIES
+
+#: A synthetic 40-character AWS secret, which the credential plan redacts, and the
+#: same secret split by emphasis markers that Webex renders away.
+_TOKEN = aws_secret(seed=44)
+_SPLIT_TOKEN = _TOKEN[:4] + "**" + _TOKEN[4:8] + "**" + _TOKEN[8:]
 
 #: A last-status time every throttle window has passed. Not ``0.0``: the clock is
 #: ``time.monotonic()``, which can read under the doubled throttle (256 s by the
@@ -196,18 +202,18 @@ class TestFinalAnswer:
     async def test_a_delimiter_split_credential_is_redacted(self) -> None:
         """The driver's byte scan cannot see this one.
 
-        ``AKIA**IOSF**ODNN7EXAMPLE`` survives a byte-for-byte scan and is then
+        ``<4 chars>**<4 chars>**<rest>`` survives a byte-for-byte scan and is then
         reassembled whole by Webex's own markdown renderer, so the answer is
         scanned in its DISPLAYED form as well.
         """
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        await r.on_text_chunk("token AKIA**IOSF**ODNN7EXAMPLE ok")
+        await r.on_text_chunk(f"token {_SPLIT_TOKEN} ok")
         await r.on_done()
 
         delivered = c.edits[-1][2]
-        assert "AKIAIOSFODNN7EXAMPLE" not in delivered.replace("*", "")
+        assert _TOKEN not in delivered.replace("*", "")
         assert "REDACTED" in delivered
 
     @pytest.mark.asyncio
@@ -220,7 +226,7 @@ class TestFinalAnswer:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        await r.on_text_chunk("token AKIA**IOSF**ODNN7EXAMPLE")
+        await r.on_text_chunk(f"token {_SPLIT_TOKEN}")
         # The throttle window opened at on_turn_start; a status frame is a paced
         # edit, so reopening it is what lets one render inside the test.
         r._last_status = _LONG_AGO
@@ -228,7 +234,7 @@ class TestFinalAnswer:
 
         frames = [body for (_mid, _room, body) in c.edits]
         assert frames, "no status frame was rendered"
-        assert not any("AKIAIOSFODNN7EXAMPLE" in f.replace("*", "") for f in frames)
+        assert not any(_TOKEN in f.replace("*", "") for f in frames)
 
     @pytest.mark.asyncio
     async def test_an_email_address_is_not_defanged(self) -> None:
@@ -291,14 +297,12 @@ class TestFinalAnswer:
         """
         c = FakeClient()
         r = _renderer(c)
-        item = SimpleNamespace(
-            path="/tmp/chart.png", alt="AKIA**IOSF**ODNN7EXAMPLE", data=b"x", mime="image/png"
-        )
+        item = SimpleNamespace(path="/tmp/chart.png", alt=_SPLIT_TOKEN, data=b"x", mime="image/png")
 
         await r._send_uploads([item])
 
         caption = c.files[-1]["markdown"]
-        assert "AKIAIOSFODNN7EXAMPLE" not in caption
+        assert _TOKEN not in caption
         assert "REDACTED" in caption
 
     @pytest.mark.asyncio
@@ -312,13 +316,11 @@ class TestFinalAnswer:
         """
         c = FakeClient()
         r = _renderer(c)
-        item = SimpleNamespace(
-            path="/tmp/AKIAIOSFODNN7EXAMPLE.png", alt="chart", data=b"x", mime="image/png"
-        )
+        item = SimpleNamespace(path=f"/tmp/{_TOKEN}.png", alt="chart", data=b"x", mime="image/png")
 
         await r._send_uploads([item])
 
-        assert "AKIAIOSFODNN7EXAMPLE" not in c.files[-1]["filename"]
+        assert _TOKEN not in c.files[-1]["filename"]
 
     @pytest.mark.asyncio
     async def test_the_upload_extension_follows_the_sniffed_mime(self) -> None:

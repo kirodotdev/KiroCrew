@@ -25,6 +25,7 @@ from agent_panel_routes_helpers import (  # noqa: F401 -- fixtures are used by n
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from off_loop_helpers import off_loop
+from redaction_structured_cases import github_classic
 
 from kiro_crew import agent_panel
 from kiro_crew import members as members_mod
@@ -39,6 +40,8 @@ RECORD_PATH = "/api/agent-panel/dashboard/record"
 JOB_ID = "stock-poll"
 CRON_KEY = f"cron:{JOB_ID}"
 MEMBER_ID = "fleet-crew"
+#: A credential the plan redacts: a GitHub classic token with a valid checksum.
+SECRET = github_classic(seed=31)
 
 
 def _execution(member_id: str | None = MEMBER_ID) -> ExecutionContext:
@@ -384,8 +387,8 @@ def test_colliding_keys_are_suffixed_in_linear_time():
     # Per key: one probe for the base, and for every collision one probe for the
     # suffix it is given -- so at most two per key, linear in N.
     assert _Counting.probes <= 2 * n, _Counting.probes
-    secret = "AKIA" + "1234567890123456"
-    scrubbed = agent_panel_record._redacted_record({f"{secret}{i:05d}": i for i in range(50)})
+    secret = SECRET
+    scrubbed = agent_panel_record._redacted_record({f"{secret} {i:05d}": i for i in range(50)})
     assert len(scrubbed) == 50 and not any(secret in key for key in scrubbed)
 
 
@@ -477,7 +480,7 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
     its ``authorization`` key -- and the fold answers the scrubbed form."""
     from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
-    secret = "AKIA" + "1234567890123456"
+    secret = SECRET
     bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
     async with _client() as c:
         resp = await _post(
@@ -504,11 +507,11 @@ async def test_the_door_scrubs_the_record_even_when_the_client_did_not(bound_cro
 
 @pytest.mark.asyncio
 async def test_a_value_with_two_tokens_loses_both_at_the_door(bound_cron):
-    """The keyed judgement runs on the CLEANED value: a header value carrying an access
-    key the bare scrub catches AND a bearer only its key reveals keeps neither."""
+    """The keyed judgement runs on the CLEANED value: a header value carrying a token
+    the bare scrub catches AND a bearer only its key reveals keeps neither."""
     from kiro_crew.security import REDACTED_CREDENTIAL_TAG
 
-    secret = "AKIA" + "1234567890123456"
+    secret = SECRET
     bearer = "Bearer " + "abcdefghijklmnopqrstuvwxyz0123"
     async with _client() as c:
         resp = await _post(
@@ -832,7 +835,7 @@ def test_the_scheduler_records_a_bound_crons_failed_run_and_the_fold_marks_it(bo
     the error, and the entry folds onto that writer's record."""
     from kiro_crew.dashboard.handlers.agent_panel_record import record_cron_failure
 
-    secret = "AKIA" + "1234567890123456"
+    secret = SECRET
     assert off_loop(
         crew_log_emit.on_dashboard_custom,
         bound_cron,

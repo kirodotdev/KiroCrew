@@ -26,6 +26,7 @@ from typing import cast
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from redaction_structured_cases import B64URL, github_classic, synth
 
 from kiro_crew.config.sections import KiroCrewAgentConfig, _safe_avatar
 from kiro_crew.dashboard.handlers.agents import (
@@ -229,7 +230,7 @@ class TestRosterRowKeySet:
         A middleware sets ``request["app"]``, which is what ``token_auth`` does
         for a verified app token and what ``members_access.py::_deny_app_caller`` reads.
         """
-        probe = "AKIAIOSFODNN7EXAMPLE"
+        probe = github_classic(seed=28)
         seed = _seed_config_with_every_field_set()
         seed["agents"]["roster-probe"]["description"] = f"see {probe}"
         tmp = tmp_path / "config.json"
@@ -318,7 +319,7 @@ class TestRosterRowIsAnAllowlistNotASpread:
 class TestUnshowableValuesAreMasked:
     """The read half: nothing that cannot be shown verbatim leaves as content."""
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    PROBE = github_classic(seed=28)
     # The five declared-``str`` record fields a roster row ships besides the
     # ones with their own inline guard. The loader now pins all of them to
     # their default on a non-string (``_safe_str``), so the mask below is
@@ -456,7 +457,9 @@ class TestAvatarIsShapeAllowlistedNotMasked:
     nothing, and a masked ``kind`` loses ghost-vs-image.
     """
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    # Avatar strings are cut to 32 characters, so the probe is a credential that
+    # fits whole: a GitLab token is 26.
+    PROBE = "glpat-" + synth(20, B64URL, 14)
     FILE_PIN = "0123456789abcdef.png"
 
     def test_a_credential_shaped_trait_value_is_masked(self) -> None:
@@ -656,7 +659,7 @@ class TestCredentialShapedNamesAreRefusedAtCreation:
     logs, error messages and telemetry. Refusing it at creation closes the source.
     """
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    PROBE = github_classic(seed=28)
 
     def test_the_create_rule_is_keyed_to_the_read_rule(self) -> None:
         """One detector, so the two halves cannot drift apart.
@@ -746,7 +749,7 @@ class TestCredentialShapedNamesAreRefusedAtCreation:
 class TestCallerClassIsTheOwnerPredicate:
     """Who counts as the owner is delegated, not hand-rolled per caller class."""
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    PROBE = github_classic(seed=28)
 
     def _app(self, *, user: str, owner_id: str) -> web.Application:
         """An app whose requests carry a dashboard identity and an owner_id.
@@ -867,7 +870,7 @@ class TestCallerClassIsTheOwnerPredicate:
 class TestMaskIsTreatedAsUnchangedOnWrite:
     """The write half, without which the read half destroys stored config."""
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    PROBE = github_classic(seed=28)
 
     @pytest.fixture(autouse=True)
     def _as_owner(self, monkeypatch):

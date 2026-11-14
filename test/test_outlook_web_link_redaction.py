@@ -14,10 +14,11 @@ import pytest
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security import redaction as _redaction
 from kiro_crew.security import scan_exfiltration_urls
+from kiro_crew.testing.synthetic_credentials import SAMPLE_AWS_SECRET
 
 # The canonical AWS documentation example secret key, never a live credential,
 # and the same key without its `/`, so it fits an id or a field value whole.
-KEY = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+KEY = SAMPLE_AWS_SECRET
 SEGMENT_KEY = "wJalrXUtnFEMIzK7MDENGqbPxRfiCYEXAMPLEKEY"
 TAG = "[REDACTED: credential]"
 # A real-shaped Outlook item id (see test_document_link_redaction.OUTLOOK_ID).

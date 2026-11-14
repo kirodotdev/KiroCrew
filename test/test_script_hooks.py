@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic, synth
 
 from kiro_crew import platform_compat
 from kiro_crew.hooks import (
@@ -30,6 +31,10 @@ _IS_WINDOWS = platform.system() == "Windows"
 # shell-specific: POSIX sh expands ``$VAR``, cmd.exe expands ``%VAR%`` and
 # leaves ``$VAR`` as a literal.
 _ECHO_HOOK_EVENT = "echo %KIROCREW_HOOK_EVENT%" if _IS_WINDOWS else "echo $KIROCREW_HOOK_EVENT"
+
+
+# A synthetic 40-character secret the redactor removes; an AWS key ID stays visible.
+_SECRET = synth(40, seed=204)
 
 
 def _script_command(script: Path, body: str) -> str:
@@ -338,11 +343,12 @@ class TestCappedScriptHookOutput:
         # The limit falls inside the key. Cut first, the key's first ten
         # characters would reach the caller unredacted, as no pattern matches a
         # fragment; cut after redaction, only the redaction text is cut.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = github_classic(seed=94)
         monkeypatch.setattr("kiro_crew.sandbox.wrap_argv", lambda argv, **k: (list(argv), None))
         monkeypatch.setattr("kiro_crew.sandbox.cgroup_scope_argv", lambda argv: list(argv))
         command = _script_command(
-            tmp_path / "leaky_output.py", f"import sys\nsys.stdout.write('o' * 90 + {secret!r})\n"
+            tmp_path / "leaky_output.py",
+            f"import sys\nsys.stdout.write('o' * 90 + ' ' + {secret!r})\n",
         )
         hook = ScriptHook(
             id="leaky-output",
@@ -495,7 +501,7 @@ class TestRunScriptHook:
     def test_subprocess_env_excludes_gateway_credentials(self, monkeypatch):
         from kiro_crew.hooks import _hook_subprocess_env
 
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         proxy_secret = "http://svc:pa55word@proxy.example.com"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         monkeypatch.setenv("HTTPS_PROXY", proxy_secret)
@@ -544,7 +550,7 @@ class TestRunScriptHook:
     @pytest.mark.asyncio
     async def test_subprocess_routes_allowlist_through_safe_spawn_funnel(self, monkeypatch):
         """The wrapper gets bus locators without widening the hook base env."""
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         bus_address = "unix:path=/run/user/4242/bus"
         monkeypatch.setenv("AWS_ACCESS_KEY_ID", secret)
         seen: dict[str, object] = {}
@@ -592,7 +598,7 @@ class TestRunScriptHook:
 
     @pytest.mark.asyncio
     async def test_stdout_and_stderr_are_redacted_before_return(self, tmp_path):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         command = _script_command(
             tmp_path / "leaky_hook.py",
             "import sys\n"
@@ -618,7 +624,7 @@ class TestRunScriptHook:
 
     @pytest.mark.asyncio
     async def test_exception_text_is_redacted_before_return_or_persistence(self):
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         hook = ScriptHook(
             id="redacted-exception",
             name="redacted-exception",
@@ -1156,7 +1162,7 @@ class TestLastError:
         # hooks.json is operator-writable; a persisted last_error can carry a
         # credential. from_dict() must scrub it before it reaches /api/hooks and
         # the dashboard InfoTip — not only the runtime write path.
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        secret = _SECRET
         hook = ScriptHook.from_dict(
             {"id": "sek", "name": "leaky", "last_error": f"auth failed: {secret}"}
         )

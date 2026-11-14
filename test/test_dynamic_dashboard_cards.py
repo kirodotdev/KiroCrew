@@ -15,10 +15,25 @@ import pytest
 from dynamic_dashboard_cards_helpers import _seeded_session_tree  # noqa: F401
 from dynamic_dashboard_cards_helpers import lifecycle_fixture  # noqa: F401
 from dynamic_dashboard_cards_helpers import _parked, _worker_done
+from redaction_structured_cases import github_classic
 
 from kiro_crew.crew_main_contract import CARD_FIELDS, PHRASES_FIELD
 from kiro_crew.dashboard.dynamic_cards import CardBudget, CardPublisher, normalize_card
 from kiro_crew.testing.wait import await_until
+
+# A synthetic GitHub token the redaction plan removes by its structure; no cut
+# of it used below is a credential on its own.
+_KEY = github_classic(seed=1)
+
+
+@pytest.fixture
+def _structured_detectors_off():
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(False)
+    yield
+    compat.publish_use_rule_table(before)
 
 
 def test_layout_can_be_reused_but_first_publication_needs_one():
@@ -787,11 +802,15 @@ def test_safe_html_entities_and_literal_data_survive_without_reserialization():
 _SPLIT_LABEL_MARKUP = "<p><b>aws_secret_access_key:</b> <code>" + "A" * 40 + "</code></p>"
 
 
+@pytest.mark.usefixtures("_structured_detectors_off")
 def test_markup_cannot_hold_a_labelled_credential_apart_from_its_label():
     """A labelled credential is one run of text; a tag between the label and the
     value misleads a raw scan, not the browser. The output side refuses
     the card. Negative control: the same text with the tag boundary closed is caught
-    by the raw scan, and a layout that names the label with no value publishes."""
+    by the raw scan, and a layout that names the label with no value publishes.
+
+    Covers the plan with the structured detectors off: with them on, a value that
+    has the shape of a secret is redacted with or without its label."""
     import json
 
     from kiro_crew.dashboard.card_lifecycle import _redact, _redact_card_output
@@ -842,9 +861,9 @@ def test_markup_cannot_hide_a_split_credential_behind_a_character_reference(refe
 @pytest.mark.parametrize(
     "split",
     [
-        "<span>AKIAIOSFOD</span><span>NN7EXAMPLE</span>",
-        "AKIAIOS<b></b>FODNN7EXAMPLE",
-        "<p>AKIAIOSFOD</p><p>NN7EXAMPLE</p>",
+        f"<span>{_KEY[:10]}</span><span>{_KEY[10:]}</span>",
+        f"{_KEY[:7]}<b></b>{_KEY[7:]}",
+        f"<p>{_KEY[:10]}</p><p>{_KEY[10:]}</p>",
     ],
 )
 def test_markup_cannot_split_a_credential_token_across_tags(split):
@@ -858,7 +877,7 @@ def test_markup_cannot_split_a_credential_token_across_tags(split):
 
     from kiro_crew.dashboard.card_lifecycle import _hides_secret, _redact, _redact_card_output
 
-    token = "AKIAIOSFODNN7EXAMPLE"
+    token = _KEY
     assert _redact("<p>" + token + "</p>") != "<p>" + token + "</p>"
     markup = "<p>" + split + "</p>"
     assert token not in markup
@@ -1158,9 +1177,9 @@ async def test_remote_executor_revokes_completed_and_read_cards(
 def test_a_stray_text_lt_before_a_tag_cannot_hide_a_split_credential():
     from kiro_crew.dashboard import card_lifecycle
 
-    # A browser shows "x < AKIAIOSFODNN7EXAMPLE": the "< " is text, and the
-    # stray </b> inside the paragraph is ignored.
-    split = "Deploy key: x < AKIA</b>IOSFODNN7EXAMPLE"
+    # A browser shows "x < <the token>": the "< " is text, and the stray </b>
+    # inside the paragraph is ignored.
+    split = f"Deploy key: x < {_KEY[:4]}</b>{_KEY[4:]}"
     assert card_lifecycle._hides_secret(split)
     html = f'<div><p>{split}</p><p data-dashboard-field="s"></p></div>'
     assert (
@@ -1173,14 +1192,14 @@ def test_a_stray_text_lt_before_a_tag_cannot_hide_a_split_credential():
     # none of it, so a key split by one reads joined.
     # Every ending the HTML tokenizer honours.
     for comment in ("<!-- > -->", "<!---->", "<!-- <b> -->", "<!--x--!>", "<!-->", "<!--->"):
-        assert card_lifecycle._hides_secret(f"Deploy key: AKIA{comment}IOSFODNN7EXAMPLE"), comment
+        assert card_lifecycle._hides_secret(f"Deploy key: {_KEY[:4]}{comment}{_KEY[4:]}"), comment
     assert card_lifecycle._html_texts("a<!-- b > c")[1] == "a"
     assert card_lifecycle._html_texts("a<!-->b")[1] == "ab"
     assert card_lifecycle._html_texts("a<!--x--!>b<!---->c")[1] == "abc"
     # A "<!--" inside an attribute value is attribute text, not a comment, so the
     # text after the tag is still shown and still scanned.
-    split = '<p title="<!--">AKIA<b>IOSFODNN7EXAMPLE</b></p>'
-    assert card_lifecycle._html_texts(split)[1] == "AKIAIOSFODNN7EXAMPLE"
+    split = f'<p title="<!--">{_KEY[:4]}<b>{_KEY[4:]}</b></p>'
+    assert card_lifecycle._html_texts(split)[1] == _KEY
     assert card_lifecycle._hides_secret(split)
     # The browser's comment endings live in the override; a stdlib refactor that
     # stopped calling it would silently fall back to the stdlib's own rule.

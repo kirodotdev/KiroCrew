@@ -9,6 +9,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from redaction_structured_cases import github_classic
+
+# A GitHub token with a valid checksum, which the plan redacts (AWS key IDs
+# are kept visible as identifiers).
+_SECRET = github_classic(seed=13)
 
 GATEWAY_PROMPT = "[Workflow `nightly` finished: finished] Its result was just posted above."
 
@@ -457,7 +462,7 @@ class TestRegenerateAndVariants:
         slot.append("assistant", "safe content")
         # Plant a fake credential inside a variant
         slot.messages[-1]["variants"] = [
-            {"content": "AKIAIOSFODNN7EXAMPLE secret stuff", "ts": "t1"},
+            {"content": f"{_SECRET} secret stuff", "ts": "t1"},
             {"content": "safe content", "ts": "t2"},
         ]
         slot.messages[-1]["variant_idx"] = 1
@@ -469,9 +474,9 @@ class TestRegenerateAndVariants:
         persisted = state.conversation_log.read_messages(key)
         ai = [m for m in persisted if m.get("role") == "assistant"][0]
         assert "variants" in ai
-        # The AKIA key must not appear in either variant after redaction
+        # The token must not appear in either variant after redaction
         for v in ai["variants"]:
-            assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
+            assert _SECRET not in v.get("content", "")
 
     @pytest.mark.asyncio
     async def test_switch_variant_rejects_when_running(self, tmp_path, monkeypatch):
@@ -719,7 +724,7 @@ class TestRegenerateAndVariants:
         slot.append("user", "hi")
         slot.append("assistant", "safe")
         slot.messages[-1]["variants"] = [
-            {"content": "AKIAIOSFODNN7EXAMPLE leaked key", "ts": "t1"},
+            {"content": f"{_SECRET} leaked key", "ts": "t1"},
             {"content": "safe", "ts": "t2"},
         ]
         from kiro_crew.dashboard.chat import _prepare_messages
@@ -727,7 +732,7 @@ class TestRegenerateAndVariants:
         prepared = _prepare_messages(slot.messages, False, live_child="")
         ai = [m for m in prepared if m.get("role") == "assistant"][0]
         for v in ai["variants"]:
-            assert "AKIAIOSFODNN7EXAMPLE" not in v.get("content", "")
+            assert _SECRET not in v.get("content", "")
 
     @pytest.mark.asyncio
     async def test_switch_variant_corrupt_entry(self, tmp_path, monkeypatch):

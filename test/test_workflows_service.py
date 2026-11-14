@@ -27,10 +27,15 @@ from kiro_crew.acp.runtime import AcpRequestTimeout
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.session import SessionManager
 from kiro_crew.taskrunner_switch import TASK_RUNNER_OFF_MESSAGE
+from kiro_crew.testing.synthetic_credentials import B64, synth
 from kiro_crew.testing.wait import async_wait_until, await_until, finished
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
+
+# A synthetic 40-character value in an AWS secret key's shape, which the source
+# gate must refuse. Built at run time; not a real credential.
+_PLANTED = synth(40, B64, seed=3)
 
 pytestmark = pytest.mark.asyncio
 
@@ -801,7 +806,7 @@ async def test_save_definition_validates_explicit_lineage_against_revision_histo
 async def test_save_and_update_reject_source_that_would_be_redacted(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
     svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
-    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", f"ctx.log('{_PLANTED}')")
 
     rejected_create = svc.save_definition(sensitive)
     saved = svc.save_definition(GOOD_SCRIPT)
@@ -1085,7 +1090,7 @@ async def test_host_rebind_persistence_runs_off_event_loop() -> None:
 async def test_promote_run_rejects_sensitive_raw_source(tmp_path) -> None:
     library = WorkflowDefinitionLibrary(tmp_path)
     svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
-    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", f"ctx.log('{_PLANTED}')")
     started = await svc.start(sensitive, name="Sensitive")
     await _wait_terminal(svc, started["run_id"])
 
@@ -1099,7 +1104,7 @@ async def test_promote_run_rejects_sensitive_raw_source(tmp_path) -> None:
 async def test_promote_run_rejects_redacted_source_restored_after_restart(tmp_path) -> None:
     store = WorkflowRunStore(tmp_path / "store")
     library = WorkflowDefinitionLibrary(tmp_path / "library")
-    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", f"ctx.log('{_PLANTED}')")
     original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
     started = await original.start(sensitive, name="Sensitive")
     await _wait_durable_terminal(original, started["run_id"])
@@ -1826,7 +1831,7 @@ async def test_orderly_restart_waits_for_terminal_snapshot(tmp_path, monkeypatch
 
     monkeypatch.setattr(store, "save", delayed_save)
     original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
-    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", f"ctx.log('{_PLANTED}')")
     started = await original.start(sensitive)
     waiter = asyncio.create_task(_wait_durable_terminal(original, started["run_id"]))
     try:

@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import embeddings
 from kiro_crew.apps import registry as app_registry
@@ -317,8 +318,9 @@ def test_context_redact_runs_enterprise_policy(enterprise_ctx) -> None:
     assert "[REDACTED-SSO]" in mcp_core.redact("token=SSO-COOKIE")
     assert "[REDACTED-SSO]" in agent.redact("token=SSO-COOKIE")
     # Baseline credential redaction is preserved (delegated to security.redact).
-    out = mcp_core.redact("AKIAIOSFODNN7EXAMPLE")
-    assert "AKIAIOSFODNN7EXAMPLE" not in out
+    secret = github_classic(seed=93)
+    out = mcp_core.redact(secret)
+    assert secret not in out
 
 
 # ── telemetry (point 5) ──

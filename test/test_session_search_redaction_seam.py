@@ -27,6 +27,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew import security
 from kiro_crew.dashboard import handlers_instances as hi
@@ -224,7 +225,9 @@ class TestFederatedLocalRowsRedactForReal:
     @pytest.mark.asyncio
     async def test_a_credential_in_a_local_row_never_reaches_the_browser(self, monkeypatch):
         _enable_instances(monkeypatch)
-        secret = "AKIAIOSFODNN7EXAMPLE"
+        # A synthetic GitHub token: an AWS key ID is kept visible with the
+        # structured detectors on.
+        secret = github_classic(seed=31)
         rows = [
             {"key": "k1", "title": f"deploy {secret}", "snippet": f"ran with {secret}"},
             {"key": "k2", "title": "clean title", "snippet": "clean snippet"},

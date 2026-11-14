@@ -241,7 +241,9 @@ async def test_what_they_approve_cannot_close_its_fence_or_render_markup(gateway
 
 @pytest.mark.asyncio
 async def test_what_they_approve_is_redacted_and_cut_like_the_native_card(gateway):
-    secret = "AKIAIOSFODNN7EXAMPLE"
+    from redaction_structured_cases import github_classic
+
+    secret = github_classic(seed=116)
     await _open(gateway, approval_detail=f"aws s3 ls --key {secret}\n" * 200)
     [(blocks, _text)] = gateway.slack_client.blocks
     shown = blocks[1]["text"]["text"]

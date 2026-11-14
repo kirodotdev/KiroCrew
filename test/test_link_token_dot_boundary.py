@@ -16,13 +16,13 @@ import json
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import link_token
 
 from kiro_crew.security import redact_credentials
 
-#: A neutral token of the two-segment shape: `eyJ` plus a 100-char payload in the
-#: base64url alphabet, a `.`, and a 43-char signature. Built from repeated filler,
-#: so it decodes to nothing meaningful.
-_TOKEN = "eyJ" + "a-b_" * 25 + "." + "c" * 21 + "-" + "d" * 21
+#: A synthetic token of the two-segment shape: a base64url JSON payload carrying
+#: the link-token claims, a `.`, and a 43-char signature.
+_TOKEN = link_token()
 _PLACEHOLDER = "[REDACTED: credential]"
 
 

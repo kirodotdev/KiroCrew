@@ -6,6 +6,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.agent_discovery import AgentInfo
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, PendingEditBlocksSave
@@ -263,7 +264,7 @@ class TestSyncRefusesCredentialShapedNames:
     this source too.
     """
 
-    PROBE = "AKIAIOSFODNN7EXAMPLE"
+    PROBE = github_classic(seed=61)
 
     @pytest.mark.asyncio
     async def test_a_credential_shaped_discovered_name_is_not_synced(self):
