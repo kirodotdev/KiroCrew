@@ -163,8 +163,20 @@ export function changedHintKey(refusal?: LaunchRefusal): string {
   const same = (a?: string[][], b?: string[][]) => JSON.stringify(a ?? []) === JSON.stringify(b ?? [])
   if (refusal?.approved_commands === undefined) return keys.any
   if (refusalOnlyAddsLaunches(refusal)) return keys.newLaunch
-  if (!same(refusal.commands, refusal.approved_commands)) return keys.command
-  if (!same(refusal.envs, refusal.approved_envs)) return keys.settings
+  // One command line is drawn per launch, and two launches of one program differ
+  // only in their env. So when the lists differ, the lines are compared as a set:
+  // the same program listed twice before and three times after is not a changed
+  // command. A redaction tag stands for any value, so lines carrying one never
+  // prove the program is the same: a differing list keeps the command wording,
+  // and an equal one gets the general line instead of the env line's claim.
+  const lines = (commands?: string[][]) => new Set((commands ?? []).map(c => JSON.stringify(c)))
+  const before = lines(refusal.approved_commands)
+  const after = lines(refusal.commands)
+  const redacted = [...before, ...after].some(line => line.includes('[REDACTED'))
+  const sameList = same(refusal.commands, refusal.approved_commands)
+  const sameSet = before.size === after.size && [...before].every(line => after.has(line))
+  if (!sameList && (!sameSet || redacted)) return keys.command
+  if (!same(refusal.envs, refusal.approved_envs)) return redacted ? keys.any : keys.settings
   return keys.any
 }
 

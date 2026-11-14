@@ -149,7 +149,7 @@ export function NavBadge({ navId, collapsed, appBadges, runState }: { navId: str
   const surfaceHasBadgeSource = surface !== undefined && (surface.unreadSelector !== undefined || surface.slotMode !== undefined)
   const appName = navId.startsWith('app-') ? navId.slice(4) : navId
   const dynamicCount = surfaceHasBadgeSource ? 0 : (appBadges[appName] || 0)
-  const builtinLabel = surface?.badgeLabel ?? i18nT('app.updates')
+  const builtinLabel = surface?.badgeLabelKey ? i18nT(surface.badgeLabelKey) : surface?.badgeLabel ?? i18nT('app.updates')
   const activityCount = useAppSelector(selectSurfaceActivityCount(navId))
   const activityLabel = surface?.activityLabel ?? i18nT('app.subagents_in_flight_fallback')
   return (
