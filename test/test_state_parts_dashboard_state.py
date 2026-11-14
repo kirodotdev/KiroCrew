@@ -715,6 +715,13 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, *, include_check_status: 'bool' = False, dashboard_user: 'bool' = "
         "False) -> 'list'",
     ),
+    "serialize_slots_yielding": (
+        "function",
+        True,
+        False,
+        "(self, *, include_check_status: 'bool' = False, dashboard_user: 'bool' = "
+        "False) -> 'list'",
+    ),
     "served_bundle_id": ("staticmethod", False, False, "(index: 'Path | None' = None) -> 'str'"),
     "serving_loop": ("property", False, False, "(self) -> \"'asyncio.AbstractEventLoop | None'\""),
     "set_chunk_scope_capable": (

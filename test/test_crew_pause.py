@@ -25,6 +25,15 @@ from kiro_crew.dashboard.turn_dispatch import mark_turn_unstarted
 from kiro_crew.testing.wait import until_parked
 
 
+def _yielding(serialize):
+    """The state's ``serialize_slots_yielding`` over a stub's synchronous rows."""
+
+    async def serialize_slots_yielding(**kwargs):
+        return serialize(**kwargs)
+
+    return serialize_slots_yielding
+
+
 @pytest.fixture(autouse=True)
 def _pause_store(tmp_path, _floor_monkeypatch):
     path = tmp_path / "work-ledger" / "crew-pause.json"
@@ -196,7 +205,10 @@ def _state(rows: list[dict[str, Any]], slots: dict[str, Any] | None = None) -> A
 
     slots = slots if slots is not None else {r["key"]: _fake_slot(r["key"]) for r in rows}
     return SimpleNamespace(
-        serialize_slots=serialize_slots, get_slot=slots.get, push_slots_update=lambda: None
+        serialize_slots=serialize_slots,
+        serialize_slots_yielding=_yielding(serialize_slots),
+        get_slot=slots.get,
+        push_slots_update=lambda: None,
     )
 
 
