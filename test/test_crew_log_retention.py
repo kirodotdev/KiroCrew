@@ -24,10 +24,10 @@ from crew_log_type_helpers import minimal_data
 from off_loop_helpers import off_loop
 
 from kiro_crew import crew_log as lg
-from kiro_crew.crew_log import CrewLog, store
+from kiro_crew.crew_log import CrewLog, eager, store
 from kiro_crew.crew_log.lease import LEASE_FILE
 from kiro_crew.session_ledger import _store_name
-from kiro_crew.testing.wait import wait_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, wait_until
 
 SESSION = "s-retain"
 CREW = "qa"
@@ -1119,6 +1119,9 @@ async def test_a_destroyed_sessions_log_is_then_collectable_by_the_sweep():
     assert_drained()
     assert await manager.destroy("thread-aged") is None
     assert_drained()
+    # The close woke the eager folder, which seals the unit under a shared hold of its
+    # lease; a sweep that claims the lease mid-seal answers ``owned`` and removes nothing.
+    assert eager.drain(timeout=FALLBACK_TIMEOUT_SECS), "the eager folder never settled"
 
     # Age the close the sweep reads, the same way the fixtures above do.
     path = _unit_dir(lg.KIND_SESSION, "acp-aged") / "log.jsonl"
