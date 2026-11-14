@@ -307,12 +307,26 @@ class TestThePlanHidesTheDeclaredLeaves:
             staged = os.path.join(str(Path.home()), f"{prefix}/apps/.demo-data-tmp/tokens")
             assert f'(deny file-write* (literal "{staged}"))' in backend
 
-    def test_namespace_plans_no_parent_guard_for_a_declared_leaf(self, home):
-        """A mount moves with a renamed parent, so the namespace plan needs none."""
-        before = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
-        _install(home, "demo", ["tokens/oauth.json"])
-        after = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
-        assert after.runtime_ancestor_guards == before.runtime_ancestor_guards
+    def test_namespace_pins_every_parent_of_a_declared_leaf(self, home):
+        """A mount moves with a renamed parent, so the next spawn would read the leaf there."""
+        data = _install(home, "demo", ["tokens/oauth.json"])
+        (data / "tokens").mkdir()
+        (home / "apps" / ".demo-data-tmp" / "tokens").mkdir(parents=True)
+        agent = sandbox._spawn_plan(sandbox_plan.BACKEND_NAMESPACE, "standard")
+        lifted = sandbox.app_declared_mask_targets("demo", builtin=False)
+        assert lifted, "the declaration lifted nothing, so this pins nothing"
+        backend = sandbox._spawn_plan(
+            sandbox_plan.BACKEND_NAMESPACE, "standard", extra_visible_dirs=lifted
+        )
+
+        pins = set(agent.runtime_ancestor_guards)
+        for parent in ("apps", "apps/demo", "apps/demo/data", "apps/demo/data/tokens"):
+            assert str(home / parent) in pins, f"an agent can rename {parent}"
+        tokens = str(home / "apps" / "demo" / "data" / "tokens")
+        assert tokens not in set(backend.runtime_ancestor_guards), "the backend cannot rotate it"
+        # The move-aside spelling is not handed back, so it stays pinned there too.
+        staged = str(home / "apps" / ".demo-data-tmp" / "tokens")
+        assert staged in pins and staged in set(backend.runtime_ancestor_guards)
 
     def test_the_lifecycle_staging_spelling_is_masked_too(self, home):
         _install(home, "demo", ["secrets.json"])
