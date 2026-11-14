@@ -94,6 +94,10 @@ class Provenance(str, enum.Enum):
     #: relay client (``dashboard/kiro_relay``). Never the local operator, so a
     #: gate that requires that provenance still refuses a relayed caller.
     KIRO_RELAY = "kiro_relay"
+    #: A person the Kiro Space app attested on a request carrying its mapped webhook
+    #: token into a session the host bound (``hooks``). Built only from that
+    #: attestation by ``identity.room_principal``; never the local operator.
+    KIRO_SPACE_ROOM = "kiro_space_room"
     #: Server-internal automation with a named owner component.
     INTERNAL = "internal"
     NONE = "none"

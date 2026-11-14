@@ -38,6 +38,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+import unicodedata
 import uuid
 from typing import TYPE_CHECKING, Any
 
@@ -74,6 +75,9 @@ SSM_ISSUER = "crew"
 #: A person the Kiro relay verified: keyed by their Kiro user ID.
 PROVIDER_KIRO = "kiro"
 KIRO_ISSUER = "kiro-relay"
+#: A person the Kiro Space app attested (see :func:`room_principal`).
+PROVIDER_ROOM = "room"
+ROOM_ISSUER = "room"
 
 #: The system component every internal-secret caller (kiro-cli, MCP, doctor) is
 #: attributed to. The secret proves the call came from inside, not which person
@@ -237,6 +241,43 @@ def relay_principal(
         # reach an audit record read back from a transcript. The email is only the
         # label when the relay sent no name.
         display=DisplaySnapshot(name=label[:128], login=""),
+    )
+
+
+_LABEL_MAX = 128
+
+
+def clean_label(text: str, limit: int = _LABEL_MAX) -> str:
+    """*text* as one plain line: control, format and separator characters become a space.
+
+    Newlines, bidi overrides and the like cannot reach a transcript or a prompt through a
+    label. Runs of whitespace collapse, the ends are stripped, and the result is capped.
+    """
+    plain = "".join(" " if unicodedata.category(ch)[0] in ("C", "Z") else ch for ch in text)
+    return " ".join(plain.split())[:limit]
+
+
+def room_principal(user_id: str, display: str = "") -> Principal:
+    """The principal of a person the Kiro Space app attested on a bound-session post.
+
+    Built only from the ``{userId, displayName}`` carried by a request authenticated
+    with the app's mapped webhook token; the caller (``hooks.api_hooks_agent``) never
+    calls it for any other token. Keyed by the user id alone, so a rename never
+    changes who they are; the display name is a label. No login is carried (a stored
+    stamp loses its provenance) and the provenance is never the local operator's.
+    """
+    subject = user_id.strip()
+    if not subject:
+        return Principal.unknown()
+    label = clean_label(display) or "Room collaborator"
+    return Principal(
+        id=principal_id_for(PROVIDER_ROOM, ROOM_ISSUER, subject),
+        kind=PrincipalKind.HUMAN,
+        provider=PROVIDER_ROOM,
+        issuer=ROOM_ISSUER,
+        subject=subject,
+        provenance=Provenance.KIRO_SPACE_ROOM,
+        display=DisplaySnapshot(name=label, login=""),
     )
 
 

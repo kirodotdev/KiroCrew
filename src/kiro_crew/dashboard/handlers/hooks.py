@@ -80,12 +80,83 @@ from kiro_crew.permission_floor import (
 )
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.session_capabilities import CapabilityStartupError
+from kiro_crew.shared_crew import room_sessions
 from kiro_crew.shared_crew.admission import OperationKind
+from kiro_crew.shared_crew.attribution import stamp_principal_author
+from kiro_crew.shared_crew.contracts import Principal
+from kiro_crew.shared_crew.identity import room_principal
 from kiro_crew.shared_crew.turn_gate import TurnRefused, run_admitted_or_raise
 from kiro_crew.tool_gate_busy import hook_gate_busy
 from kiro_crew.tracing import surfaces as trace_surfaces
 
 logger = logging.getLogger(__name__)
+
+
+def _bound_refusal(code: str, error: str, status: int) -> web.Response:
+    webhooks.count_request(webhooks.METRIC_OUTCOME_REJECTED_BODY)
+    return web.json_response({"error": error, "code": code}, status=status)
+
+
+def _app_author(raw: object) -> Principal | None:
+    """The room principal for an app-attested ``{userId, displayName}``; None when malformed."""
+    if not isinstance(raw, dict):
+        return None
+    user_id, name = raw.get("userId"), raw.get("displayName")
+    if not isinstance(user_id, str) or not isinstance(name, str):
+        return None
+    if not room_sessions.AUTHOR_ID_RE.fullmatch(user_id):
+        return None
+    return room_principal(user_id, name)
+
+
+async def _bound_session_gate(
+    session_key: str, token_app: str, body: dict[str, Any]
+) -> tuple[web.Response | None, Principal | None]:
+    """Decide a ``hook:ks-session:*`` key: ``(refusal, author)``.
+
+    The ``hook:ks-session:`` prefix is reserved for every source: a key that has it but
+    is not the exact bound shape is refused, never run as an ordinary key. A key
+    without the prefix is today's behavior and never reaches the registry.
+    Only a source the operator mapped to the app may post into a BOUND key, and
+    only into a bound one; any other source is refused on a bound key. The author is
+    read from the body on this path alone, so no other source can set one.
+    """
+    if not room_sessions.is_bound_key_shape(session_key):
+        if session_key.startswith(room_sessions.BOUND_KEY_PREFIX):
+            return _bound_refusal("session_key_reserved", "this session key is reserved", 400), None
+        return None, None
+    is_app = token_app == webhooks.APP_KIRO_SPACE
+    if is_app and not room_sessions.room_enabled():
+        return _bound_refusal("room_disabled", "shared sessions are not enabled", 403), None
+    try:
+        bound = await asyncio.to_thread(room_sessions.bindings().is_bound, session_key)
+    except webhooks.WebhookStoreUnreadable:
+        webhooks.count_request(webhooks.METRIC_OUTCOME_UNAVAILABLE)
+        return (
+            web.json_response(
+                {"error": "inbound webhooks are unavailable", "code": "webhooks_unavailable"},
+                status=503,
+            ),
+            None,
+        )
+    if not is_app:
+        if bound:
+            return (
+                _bound_refusal("session_key_bound", "this session key is not available", 403),
+                None,
+            )
+        return None, None
+    if not bound:
+        return _bound_refusal("session_key_unbound", "this session key is not bound", 403), None
+    author = _app_author(body.get("author"))
+    if author is None:
+        return (
+            _bound_refusal(
+                "author_invalid", "author must be {userId, displayName} as strings", 400
+            ),
+            None,
+        )
+    return None, author
 
 
 # Deliberately NOT wrapped in @_store_failure_guard. This route is externally
@@ -426,6 +497,24 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             status=400,
         )
 
+    app_mapping = str(source_entry.get("app") or "") if source_entry else ""
+    refusal, author = await _bound_session_gate(session_key, app_mapping, body)
+    if refusal is not None:
+        _sel().log_api_access(
+            caller=source,
+            operation="hooks.agent",
+            outcome="denied",
+            source="webhook",
+            resources=f"token:{token_id}",
+            error="bound session key refused",
+        )
+        return refusal
+    if author is not None:
+        # A turn on a bound session is never delivered to Slack or notifications, and the
+        # agent is told these are another person's words, not the owner's.
+        deliver = False
+        message = room_sessions.attribute_message(author.display.name, message)
+
     mapped_agent = str(source_entry.get("agent") or "") if source_entry else ""
     if mapped_agent and requested_agent and requested_agent != mapped_agent:
         _sel().log_api_access(
@@ -575,6 +664,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             source="webhook",
             resources=session_key,
         )
+        bound_kwargs: dict[str, Any] = {}
+        if author is not None:
+            bound_kwargs = {"author": author, "message_meta": stamp_principal_author({}, author)}
         task = asyncio.create_task(
             _run_hook_agent(
                 state,
@@ -586,6 +678,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
                 timeout_secs,
                 token_id=token_id,
                 execution_context=execution,
+                **bound_kwargs,
             )
         )
     except BaseException:
@@ -764,6 +857,7 @@ async def _run_hook_inner(
     *,
     execution_context: ExecutionContext | None = None,
     on_client: Callable[[Any], None] | None = None,
+    message_meta: dict[str, Any] | None = None,
 ) -> str:
     """Inner agent turn — called within timeout wrapper.
 
@@ -865,6 +959,17 @@ async def _run_hook_inner(
         # Off-loop like the dashboard's sibling seam: the restored-context prefix
         # ``_run_hook_agent`` prepends is not bounded by _HOOK_MESSAGE_MAX_LEN.
         full_message = await asyncio.to_thread(_neutralize_structural_markers, full_message)
+    if message_meta:
+        # A bound shared session: put the turn in the host's slot with the author the
+        # app attested, so the transcript names who wrote it. No slot, no row.
+        slot = (getattr(state, "_slots", None) or {}).get(session_key)
+        if slot is not None:
+            try:
+                slot.append(
+                    "user", room_sessions.strip_attribution(message), "msg msg-u", meta=message_meta
+                )
+            except Exception:
+                logger.warning("bound session row could not be recorded: %s", session_key)
     result_text = ""
     _complete_event: object | None = None
     # Wall clock for the webhook agent turn: acp leaves TurnUsage.duration_ms
@@ -1077,10 +1182,14 @@ async def _run_hook_agent(
     timeout_secs: int,
     token_id: str | None = None,
     execution_context: ExecutionContext | None = None,
+    author: Principal | None = None,
+    message_meta: dict[str, Any] | None = None,
 ) -> None:
     """Execute a webhook-triggered agent turn in an ephemeral session.
 
-    Sessions are always destroyed after the turn completes (like subagents).
+    Sessions are always destroyed after the turn completes (like subagents),
+    except a bound shared session (``author`` set): it belongs to the host and
+    is only released, never reset, so the shared transcript survives the turn.
     Context continuity across webhook calls is provided by hooks.json —
     the agent calls ``register_hook`` to persist context_summary, and this
     handler injects it into the next fresh session.
@@ -1137,6 +1246,7 @@ async def _run_hook_agent(
                     agent,
                     execution_context=execution_context,
                     on_client=clients.append,
+                    message_meta=message_meta,
                 ),
                 session_key=session_key,
                 text=message,
@@ -1213,7 +1323,8 @@ async def _run_hook_agent(
         except Exception:
             logger.exception("Hook execution withdrawal failed: %s", session_key)
         try:
-            await state.sessions.reset(session_key)
+            if author is None:  # a bound shared session keeps its transcript
+                await state.sessions.reset(session_key)
         except Exception:
             logger.exception("Hook session reset failed: %s", session_key)
         finally:
