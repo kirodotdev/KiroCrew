@@ -78,6 +78,7 @@ from kiro_crew.portability_archive import (
     MEMORY_EXPORT_MANIFEST_VERSION,
     MEMORY_ONLY_FILES,
     MEMORY_ONLY_TREES,
+    REBUILDABLE_DIRS,
     _chat_stem,
     _entry_is_link,
     _is_link_entry,
@@ -86,8 +87,10 @@ from kiro_crew.portability_archive import (
     _mc_dir,
     _read_first_line_fd,
     _rotation_segment_for_stem,
+    _skipped_on_import,
     _transcript_header_verdict,
     _unsafe_member_name,
+    import_size_problem,
     logger,
     manifest_is_memory_only,
 )
@@ -786,12 +789,9 @@ def apply_import_zip(
                 raise ValueError(
                     f"Import archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})"
                 )
-            total_uncompressed = sum(i.file_size for i in infos)
-            if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
-                raise ValueError(
-                    f"Import archive uncompressed size {total_uncompressed} exceeds cap "
-                    f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
-                )
+            size_problem = import_size_problem(infos, os.path.getsize(zip_path))
+            if size_problem is not None:
+                raise ValueError(size_problem)
             session_mtimes = _read_session_mtimes(zf)
             if not memory_only:
                 # The same one manifest the validator read decides the scope; a file
@@ -809,6 +809,8 @@ def apply_import_zip(
                 if _unsafe_member_name(info.filename):
                     continue
                 if _is_link_entry(info):
+                    continue
+                if _skipped_on_import(parts):
                     continue
                 if memory_only and not _is_memory_member(tuple(parts[1:])):
                     continue
@@ -1140,11 +1142,18 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DASHBOARD_STEM_PREFIX,
         _DRIVE_PREFIX,
         _FILE_ATTRIBUTE_REPARSE_POINT,
+        _IMPORT_DISK_RESERVE,
+        _MAX_IMPORT_COMPRESSION_RATIO,
+        _MAX_IMPORT_UNCOMPRESSED_CEILING,
         _MAX_TRANSCRIPT_HEADER_BYTES,
         _SETTINGS_DOCUMENTS,
+        _SHRINK_HINT,
         _TRANSCRIPT_SUFFIX,
+        _gb,
+        _in_rebuildable_dir,
         _is_excluded,
         _keep_top_level_transcript,
+        _largest_folders,
         _transcript_stem,
     )
     from kiro_crew.portability_export import (  # noqa: F401

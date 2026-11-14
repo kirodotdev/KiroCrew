@@ -39,6 +39,7 @@ from kiro_crew.portability_archive import (
     _TRANSCRIPT_SUFFIX,
     _chat_stem,
     _entry_is_link,
+    _in_rebuildable_dir,
     _is_excluded,
     _is_rotation_header,
     _keep_top_level_transcript,
@@ -139,7 +140,7 @@ def _keep_for_export(rel: PurePath) -> bool:
     # ``EXCLUDE_DIRS`` walk both stop matching -- ``workspace/notes/.env`` was
     # exported on Windows. Rebuilding from ``parts`` keeps the separator the
     # exclusion rules are written against.
-    if _is_excluded(PurePosixPath(*rel.parts)):
+    if _is_excluded(PurePosixPath(*rel.parts)) or _in_rebuildable_dir(rel.parts):
         return False
     return not (rel.parts[0] == "skills" and "auto" in rel.parts)
 
