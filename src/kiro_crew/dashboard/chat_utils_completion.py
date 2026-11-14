@@ -400,6 +400,11 @@ def wire_session_subagent_probe(state: DashboardState) -> None:
     # The idle-compaction probe reads the same slots and is wired at the same
     # two points, so it is installed with this one.
     wire_session_idle_compaction_probe(state)
+    # So are the idle sweep's unanswered-turn hooks. Imported here: the module
+    # reads the turn queue cycle, which imports this one.
+    from kiro_crew.dashboard.idle_unanswered import wire_unanswered_turn_hooks
+
+    wire_unanswered_turn_hooks(state)
 
 
 def idle_compaction_blocker(state: DashboardState, session_key: str) -> str | None:

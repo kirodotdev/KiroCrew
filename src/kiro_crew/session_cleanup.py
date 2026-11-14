@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from kiro_crew import session_cleanup_leftovers as _leftovers
 from kiro_crew import session_cleanup_spare as _spare
+from kiro_crew import session_cleanup_unanswered as _unanswered
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.metrics.events import SESSION_RUNTIME_RECONCILE
 from kiro_crew.process_identity import (
@@ -312,6 +313,8 @@ class CleanupDeps:
     provider_background_launch: Callable[[LLMProvider], tuple[float, str] | None] = (
         _no_background_launch
     )
+    # The dashboard's unanswered-turn hooks (session_cleanup_unanswered), read per call.
+    unanswered_turn_hooks: Callable[[], _unanswered.UnansweredHooks | None] = _unanswered.no_hooks
 
 
 class SessionCleanup:
@@ -1752,6 +1755,7 @@ class SessionCleanup:
                     key,
                 )
                 continue
+            unanswered_age = await _unanswered.turn_age(self._deps, key)
             # Also BOTH axes: a free semaphore only proves the parent's OWN turn
             # is over. With session sharing on, sub-agents dispatched by that
             # turn keep running on this session's runtime after it ends, so the
@@ -1988,6 +1992,7 @@ class SessionCleanup:
                     self._deps.get_session_idle_expired_event(),
                     {"turn_active": turn_active, "orphaned": bool(is_orphan)},
                 )
+                await _unanswered.record_expiry(self._deps, key, unanswered_age)
                 # Tell the chat, which otherwise resets with no explanation.
                 # After ``reset``, so nothing here reopens a pre-reset window.
                 if hold_reason is not None:

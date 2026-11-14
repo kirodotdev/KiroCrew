@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast  # noqa: F401
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
     from kiro_crew.session_capabilities import LoadedCapabilities  # noqa: F401
+    from kiro_crew.session_cleanup_unanswered import UnansweredHooks
     from kiro_crew.session_rss_rebound import RssHold
 
 import kiro_crew._facade_mirror as _facade_mirror
@@ -825,6 +826,7 @@ class SessionManager:
     set_injection_probe = _sweeps.set_injection_probe
     _has_pending_injection = _sweeps._has_pending_injection
     set_idle_compaction_probe = _sweeps.set_idle_compaction_probe
+    set_unanswered_turn_hooks = _sweeps.set_unanswered_turn_hooks
     _idle_compaction_blocker = _sweeps._idle_compaction_blocker
     _expire_idle_hook = _sweeps._expire_idle_hook
     _bg_drain_reap_hook = _sweeps._bg_drain_reap_hook
@@ -895,6 +897,9 @@ class SessionManager:
         # Installed by the dashboard (set_idle_compaction_probe); None means no
         # chat can be shown idle, so no idle compaction runs.
         self._idle_compaction_probe: "Callable[[str], str | None] | None" = None
+        # Installed by the dashboard (set_unanswered_turn_hooks); None means the
+        # idle sweep records no unanswered turn.
+        self._unanswered_turn_hooks: "UnansweredHooks | None" = None
         # Both cold-start widths are restart settings. Built on the gateway boot
         # path and the event loop, so "auto" is sized from the cached host
         # reading only (the floors until it exists); widen_cold_start_queues

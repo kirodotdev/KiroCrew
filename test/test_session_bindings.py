@@ -350,6 +350,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "set_slack_paused": ("function", False, "f83180910a99", "links"),
     "set_subagent_probe": ("function", False, "15a1fb4a5fb2", "sweeps"),
     "set_thread": ("function", True, "ca35fd6d7149", "links"),
+    "set_unanswered_turn_hooks": ("function", False, "494ec9f52290", "sweeps"),
     "set_unbind_listener": ("staticmethod", False, "de25b1a3a879", "session"),
     "settle_turn": ("function", False, "958babeb61c8", "claims"),
     "slack_link_nonce": ("function", False, "f1d40e624ae4", "links"),

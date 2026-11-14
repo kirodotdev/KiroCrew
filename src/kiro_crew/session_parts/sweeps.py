@@ -52,7 +52,7 @@ manager's own state on the instance, and a patch of the member on the class or
 on an instance reaches every caller.
 
 Instance fields written: ``_cleanup``, ``_idle_compaction_probe``, ``_injection_probe``,
-``_subagent_probe``.
+``_subagent_probe``, ``_unanswered_turn_hooks``.
 
 Instance fields read: none.
 """
@@ -105,6 +105,7 @@ from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 
 if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
+    from kiro_crew.session_cleanup_unanswered import UnansweredHooks
 
 #: The session manager's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.session")
@@ -175,6 +176,8 @@ def _cleanup_deps(self: SessionManager) -> CleanupDeps:
         has_attached_subagents=lambda key: self._has_attached_subagents(key),
         # Same reason, different owner: the gateway installs this one.
         has_pending_injection=lambda key: self._has_pending_injection(key),
+        # Installed by the dashboard after this manager exists, so read per call.
+        unanswered_turn_hooks=lambda: getattr(self, "_unanswered_turn_hooks", None),
     )
 
 
@@ -295,6 +298,12 @@ def _idle_compaction_blocker(self: SessionManager, key: str) -> str | None:
     if probe is None:
         return "no_activity_probe"
     return probe(key)
+
+
+def set_unanswered_turn_hooks(self: SessionManager, hooks: UnansweredHooks | None) -> None:
+    """Install what the idle sweep asks about an unanswered prompt on an expiring
+    session (``kiro_crew.session_cleanup_unanswered``). ``None`` uninstalls them."""
+    self._unanswered_turn_hooks = hooks
 
 
 # ── Idle cleanup ──

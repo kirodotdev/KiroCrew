@@ -946,14 +946,25 @@ def _note_failed_before_the_try(slot: _ChatSlot, turn_exit: _TurnExit) -> None:
         )
     else:
         slot.append(
-            "error",
-            "⚠️ This message failed before it started. The gateway log has the details.",
-            "msg msg-err",
-            meta={
-                TURN_FAILED_META: True,
-                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TURN_FAILED_BEFORE_START),
-            },
+            "error", FAILED_BEFORE_START_TEXT, "msg msg-err", meta=failed_before_start_meta()
         )
+
+
+#: The error row of a user turn that never started; the idle sweep writes it too,
+#: for a prompt its expiry left unanswered (``dashboard/idle_unanswered.py``).
+FAILED_BEFORE_START_TEXT = (
+    "⚠️ This message failed before it started. The gateway log has the details."
+)
+
+
+def failed_before_start_meta() -> dict[str, object]:
+    """The meta of the :data:`FAILED_BEFORE_START_TEXT` row."""
+    from kiro_crew.dashboard import gateway_notice as gn
+
+    return {
+        TURN_FAILED_META: True,
+        **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_TURN_FAILED_BEFORE_START),
+    }
 
 
 async def _turn_record_outcome(turn: _ChatTurn) -> None:
