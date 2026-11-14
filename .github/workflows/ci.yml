@@ -1,10 +1,17 @@
 name: CI
 
 on:
+  # Release branches (`release/**`) get the same lanes as main: a backport PR
+  # and the push that lands it are tested like any change to main. No merge
+  # queue runs there, so a push to a release branch runs the full matrix,
+  # macOS boot leg included (see e2e-boot-matrix). Fast Gate, Build and the
+  # Internal Content Scan Gate carry the same filter, and pr-readiness.yml
+  # counts these lanes on a release base only when that branch's own copy of
+  # this line lists it.
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   # The merge queue tests each PR against the main it will actually land on.
   # A merge_group run is what makes "every PR was green" imply "main is green".
   merge_group:
@@ -814,8 +821,11 @@ jobs:
       # routinely NEWER than the event's base.sha and `--is-ancestor` against
       # that single commit correctly says no. What restores the probe is a
       # bounded deepening of the base BRANCH, which is also what the three-dot
-      # fallback inside ratchet_scope needs. `main` and not base.ref because
-      # origin/main is the literal ref ratchet_scope looks for.
+      # fallback inside ratchet_scope needs. The base BRANCH, not base.sha:
+      # `main` on a PR to main, merge group or push to main, the release branch
+      # on a PR or push to `release/**`. ratchet_scope reads the same branch
+      # from GITHUB_BASE_REF / GITHUB_REF_NAME, so the ref fetched here is the
+      # one it probes.
       #
       # If the base has moved further than the window, unshallow instead of
       # accepting the whole-tree fallback, so this job is never WORSE than the
@@ -824,6 +834,8 @@ jobs:
       # against ~296 MiB for depth 2 plus a 50-commit base, and a live PR's
       # merge ref sat 8 commits behind main.
       - name: Give the baselined gates their diff base (bounded)
+        env:
+          BASE_BRANCH: ${{ github.base_ref || github.event_name == 'push' && github.ref_name || 'main' }}
         run: |
           # Nothing happens on a complete repository, and that is a guard, not
           # an optimisation: a `--depth` fetch TRUNCATES a complete clone to
@@ -832,10 +844,10 @@ jobs:
           # lines are ever run outside a fresh CI checkout (#17146). A complete
           # clone already has what the gates need.
           if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
-            git fetch --no-tags --quiet --depth=50 origin main
-            if ! git merge-base --is-ancestor HEAD^1 origin/main 2>/dev/null; then
+            git fetch --no-tags --quiet --depth=50 origin "$BASE_BRANCH"
+            if ! git merge-base --is-ancestor HEAD^1 "origin/$BASE_BRANCH" 2>/dev/null; then
               echo "::notice::the base moved past the 50-commit window; unshallowing so the gates stay diff-scoped."
-              git fetch --no-tags --quiet --unshallow origin main
+              git fetch --no-tags --quiet --unshallow origin "$BASE_BRANCH"
             fi
           fi
 

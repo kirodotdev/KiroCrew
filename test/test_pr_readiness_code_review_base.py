@@ -91,6 +91,17 @@ def test_an_unrecorded_scan_of_an_older_release_branch_counts(runner: Runner):
     assert outputs["status_state"] == "success"
 
 
+def test_an_unrecorded_scan_still_counts_once_that_release_branch_runs_ci(runner: Runner):
+    # Counting CI on a release base must not drop the exemption above: the
+    # branch's code-review.yml may still record no base.
+    runner.env["BASE_REF"] = "release/0.12.0"
+    runner.env["CI_ON_RELEASE"] = "true"
+    _code_review(runner, display_title="Code Review")
+    proc, outputs = runner.evaluate()
+    assert proc.returncode == 0, proc.stderr
+    assert outputs["status_state"] == "success"
+
+
 def test_the_run_name_records_the_base_readiness_reads():
     spec = yaml.safe_load((WORKFLOW.parent / "code-review.yml").read_text(encoding="utf-8"))
     assert spec["run-name"] == "[base ${{ github.event.pull_request.base.ref }}]"
