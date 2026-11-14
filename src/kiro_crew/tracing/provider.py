@@ -124,12 +124,11 @@ def _inputs(cfg: Any) -> tuple[object, ...]:
         getattr(cfg, "traces_otlp_endpoint", ""),
         _pairs(getattr(cfg, "traces_otlp_headers_secret", None)),
         _pairs(getattr(cfg, "traces_otlp_headers_env", None)),
-        getattr(cfg, "traces_ultra_mode", CONDUCTOR_MODE_RUN),
+        getattr(cfg, "traces_conductor_mode", CONDUCTOR_MODE_RUN),
     )
 
 
-#: ``telemetry.traces_ultra_mode`` (a saved config key, so it keeps its spelling): a
-#: conductor mode round is one trace (``run``), or every turn its own (``turn``).
+#: ``telemetry.traces_conductor_mode``: a conductor mode round is one trace (``run``), or every turn its own (``turn``).
 #: Read with the switch, served by :func:`conductor_mode_shape`.
 CONDUCTOR_MODE_RUN = "run"
 CONDUCTOR_MODE_TURN = "turn"
@@ -182,7 +181,7 @@ def _build() -> TraceState | None:
     global _built, _conductor_mode_shape
     _conductor_mode_shape = (
         CONDUCTOR_MODE_TURN
-        if getattr(cfg, "traces_ultra_mode", "") == CONDUCTOR_MODE_TURN
+        if getattr(cfg, "traces_conductor_mode", "") == CONDUCTOR_MODE_TURN
         else CONDUCTOR_MODE_RUN
     )
     # Today's caps reach the kept tracer whatever the switch says: a turn still

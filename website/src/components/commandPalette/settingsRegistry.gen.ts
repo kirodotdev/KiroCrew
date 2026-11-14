@@ -1912,7 +1912,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "chat.start-new-chats-in-conductor-mode",
-    "label": "Start New Chats in Conductor Mode",
+    "label": "Start New Chats in conductor mode",
     "labelKey": "pages.settings.chatPanel.new_chat_crew_mode",
     "description": "Conductor mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
     "hint": "Not for Incognito or Temporary chats, or chats on another agent.",

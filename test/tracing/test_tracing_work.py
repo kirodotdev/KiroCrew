@@ -179,8 +179,8 @@ async def _two_rounds(spans) -> dict:
 async def test_two_rounds_are_two_linked_traces_with_one_goal_id(spans, recorded):
     ran = await _two_rounds(spans)
     finished = spans.get_finished_spans()
-    (round_1,) = _named(finished, "ultra round 1")
-    (round_2,) = _named(finished, "ultra round 2")
+    (round_1,) = _named(finished, "conductor_mode round 1")
+    (round_2,) = _named(finished, "conductor_mode round 2")
     goal_id = wl.read_conductor(CONDUCTOR).goal_id
     assert goal_id and round_1.attributes["kirocrew.work.goal_id"] == goal_id
     assert round_2.attributes["kirocrew.work.goal_id"] == goal_id
@@ -214,7 +214,7 @@ async def test_two_rounds_are_two_linked_traces_with_one_goal_id(spans, recorded
         (done,) = _named(trace, "work_item outcome accepted")
         assert _parent(done) == _hex(item.context.span_id)
         assert done.attributes["kirocrew.work.verdict"] == "pass"
-        (closed,) = _named(trace, "ultra outcome closed")
+        (closed,) = _named(trace, "conductor_mode outcome closed")
         assert _parent(closed) == anchor
         assert all(s.attributes["session.id"] == conductor_session for s in trace)
     assert _named(finished, "work_item outcome accepted")[0].attributes[
@@ -247,7 +247,7 @@ async def test_a_restart_rederives_the_anchor_and_emits_it_once(spans, recorded)
     work.reset_for_testing()
     second = await _turn(CONDUCTOR)
     finished = spans.get_finished_spans()
-    (anchor,) = _named(finished, "ultra round 1")
+    (anchor,) = _named(finished, "conductor_mode round 1")
     for turn_id in (first, second):
         span = _turn_span(finished, turn_id)
         assert span.context.trace_id == anchor.context.trace_id
@@ -267,9 +267,9 @@ async def test_an_item_open_across_a_round_change_moves_to_the_new_round(spans, 
     await _goal(2)
     worker_turn = await _work(WORKER_A, credits=1.0)
     finished = spans.get_finished_spans()
-    (round_1,) = _named(finished, "ultra round 1")
-    (round_2,) = _named(finished, "ultra round 2")
-    (advanced,) = _named(finished, "ultra outcome advanced")
+    (round_1,) = _named(finished, "conductor_mode round 1")
+    (round_2,) = _named(finished, "conductor_mode round 2")
+    (advanced,) = _named(finished, "conductor_mode outcome advanced")
     assert _parent(advanced) == _hex(round_1.context.span_id)
     moved = [
         s
@@ -290,7 +290,7 @@ async def test_a_new_goal_mints_a_new_goal_id(spans, recorded):
     await _goal(1, new_goal=True)
     second = wl.read_conductor(CONDUCTOR).goal_id
     assert second and second != first
-    anchors = _named(spans.get_finished_spans(), "ultra round 1")
+    anchors = _named(spans.get_finished_spans(), "conductor_mode round 1")
     assert [a.attributes["kirocrew.work.goal_id"] for a in anchors] == [first, second]
 
 
@@ -301,7 +301,7 @@ async def test_turn_mode_roots_every_turn_and_keeps_the_write_in_it(spans, recor
     item_id = await _item(WORKER_A, spans)
     worker_turn = await _work(WORKER_A, credits=1.0)
     finished = spans.get_finished_spans()
-    assert not [s for s in finished if s.name.startswith(("ultra", "work_item"))]
+    assert not [s for s in finished if s.name.startswith(("conductor_mode", "work_item"))]
     span = _turn_span(finished, worker_turn)
     assert span.parent is None and span.attributes["kirocrew.work.item_id"] == item_id
     (report,) = _named(finished, "kirocrew.work.report")
@@ -340,7 +340,7 @@ async def test_a_bot_board_is_traced_as_a_mate_root(spans, recorded):
     await _goal(1)
     turn_id = await _turn(CONDUCTOR)
     finished = spans.get_finished_spans()
-    (anchor,) = _named(finished, "ultra round 1")
+    (anchor,) = _named(finished, "conductor_mode round 1")
     assert anchor.attributes["kirocrew.crew.root_kind"] == "mate"
     span = _turn_span(finished, turn_id)
     assert span.attributes["kirocrew.crew.root_kind"] == "mate"
@@ -353,8 +353,8 @@ async def test_a_round_past_its_span_budget_rolls_over(spans, recorded, monkeypa
     monkeypatch.setattr(runs, "SPAN_BUDGET", 2)  # the anchor and the goal write
     later = await _turn(CONDUCTOR)
     finished = spans.get_finished_spans()
-    (first,) = _named(finished, "ultra round 1")
-    (cont,) = _named(finished, "ultra round 1 (cont 2)")
+    (first,) = _named(finished, "conductor_mode round 1")
+    (cont,) = _named(finished, "conductor_mode round 1 (cont 2)")
     assert cont.links[0].context.span_id == first.context.span_id
     assert _turn_span(finished, later).context.trace_id == cont.context.trace_id
 
@@ -418,14 +418,17 @@ async def test_the_turn_that_opens_a_round_puts_its_writes_in_that_round(spans, 
     bootstrap = await _turn(CONDUCTOR, lambda: _goal(1))
     opener = await _turn(CONDUCTOR, bump, create)
     finished = spans.get_finished_spans()
-    for name, turn_id in (("ultra round 1", bootstrap), ("ultra round 2", opener)):
+    for name, turn_id in (
+        ("conductor_mode round 1", bootstrap),
+        ("conductor_mode round 2", opener),
+    ):
         (anchor,) = _named(finished, name)
         turn = _turn_span(finished, turn_id)
         assert turn.context.trace_id != anchor.context.trace_id
         (goal,) = _named(_in(finished, anchor.context.trace_id), "kirocrew.work.goal")
         assert _parent(goal) == _hex(anchor.context.span_id)
         assert [link.context.span_id for link in goal.links] == [turn.context.span_id]
-    (round_2,) = _named(finished, "ultra round 2")
+    (round_2,) = _named(finished, "conductor_mode round 2")
     trace = _in(finished, round_2.context.trace_id)
     (item,) = _named(trace, f"work_item {made['id']}")
     (create_span,) = _named(trace, "kirocrew.work.create")
@@ -449,7 +452,7 @@ async def test_a_round_ends_once_with_every_conductor_turns_spend(spans, recorde
         await _goal(2)
 
     await _turn(CONDUCTOR, close_second, bump, credits=3.0)
-    (closed,) = _named(spans.get_finished_spans(), "ultra outcome closed")
+    (closed,) = _named(spans.get_finished_spans(), "conductor_mode outcome closed")
     assert closed.attributes["kirocrew.usage.credits_total"] == pytest.approx(5.0)
     assert closed.attributes["kirocrew.usage.turns_total"] == 3
 
@@ -460,7 +463,7 @@ async def test_a_rolled_over_round_keeps_its_items_under_its_continuation(
 ):
     await _goal(1)
     item_id = await _item(WORKER_A, spans)
-    (round_1,) = _named(spans.get_finished_spans(), "ultra round 1")
+    (round_1,) = _named(spans.get_finished_spans(), "conductor_mode round 1")
     monkeypatch.setattr(
         runs, "SPAN_BUDGET", provider.span_count(format(round_1.context.trace_id, "032x"))
     )
@@ -469,7 +472,7 @@ async def test_a_rolled_over_round_keeps_its_items_under_its_continuation(
     after = await _work(WORKER_A, credits=1.0)
     await _accept(item_id)
     finished = spans.get_finished_spans()
-    (cont,) = _named(finished, "ultra round 1 (cont 2)")
+    (cont,) = _named(finished, "conductor_mode round 1 (cont 2)")
     trace = _in(finished, cont.context.trace_id)
     (item,) = _named(trace, f"work_item {item_id}")
     assert _parent(item) == _hex(cont.context.span_id)
@@ -520,7 +523,7 @@ async def test_a_round_older_than_the_age_budget_rolls_over_after_a_restart(
     ManualClock(start=time.time() + runs.AGE_BUDGET_SECS + 60).install(monkeypatch, runs)
     worker_turn = await _work(WORKER_A, credits=1.0)
     finished = spans.get_finished_spans()
-    (cont,) = _named(finished, "ultra round 1 (cont 2)")
+    (cont,) = _named(finished, "conductor_mode round 1 (cont 2)")
     trace = _in(finished, cont.context.trace_id)
     (item,) = _named(trace, f"work_item {item_id}")
     assert _parent(_turn_span(trace, worker_turn)) == _hex(item.context.span_id)

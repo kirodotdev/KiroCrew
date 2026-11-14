@@ -2,7 +2,7 @@
 
 A conductor (a conductor mode root, or a Bot thread) and every worker it dispatched
 carry the same ``kirocrew.crew.root``, so one filter selects a whole run;
-``kirocrew.crew.root_kind`` says which kind (``ultra`` for conductor mode, or ``mate``). A worker
+``kirocrew.crew.root_kind`` says which kind (``conductor_mode`` or ``mate``). A worker
 also carries the work item it is bound to, so ``kirocrew.work.item_id`` selects
 one item across the conductor and the worker. Session keys are hashed; the item
 id and round are raw (random and a counter). No goal, title or other ledger text.
@@ -19,9 +19,7 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-# The attribute value stays "ultra": exported spans carry it and saved trace
-# queries filter on it.
-ROOT_KIND_CONDUCTOR_MODE = "ultra"
+ROOT_KIND_CONDUCTOR_MODE = "conductor_mode"
 ROOT_KIND_MATE = "mate"
 
 
