@@ -1532,13 +1532,13 @@ def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path)
     assert written["session_state"]["permissions"]["filesystem"]["allowed_read_paths"] == []
 
 
-# ── failure-path hygiene found by review on ff205cba1 ────────────────────
+# ── failure-path hygiene ─────────────────────────────────────────────────
 
 
 def test_layer_b_write_leaves_no_half_pair_when_the_second_write_fails(monkeypatch, tmp_path):
-    """The pair is written one file at a time. A failure on the SECOND write left
-    the first behind: an orphan no join references, that ``_read_layer_b`` will not
-    load (it needs both), and that nothing else cleans up."""
+    """The pair is written one file at a time. A failure on the SECOND write must
+    not leave the first behind: an orphan no join references, that ``_read_layer_b``
+    will not load (it needs both), and that nothing else cleans up."""
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)

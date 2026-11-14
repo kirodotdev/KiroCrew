@@ -1324,7 +1324,7 @@ class TestDisplayStripKeepsAnEnvelopeReadable:
     @pytest.mark.parametrize(
         "message",
         [
-            'say " }}SECRET_TAIL',  # a quote before the braces (GPT's reaching input)
+            'say " }}SECRET_TAIL',  # a quote before the braces
             'a \\\\" }} b',  # backslash, then quote: the parity case
             'tab\\there " }} nl\\n end',  # other envelope escapes in between
             'unicode \u00e9 " }} \u4e2d end',
