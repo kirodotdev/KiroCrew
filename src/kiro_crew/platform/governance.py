@@ -1344,6 +1344,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         resolve_pinned_commands,
     )
     from kiro_crew.platform.governance_parts.matching import (  # noqa: F401
+        _ALLOW_MATCHERS,
         _DEFAULT_MATCHER,
         _DENY_MATCHERS,
         _MATCHERS,
@@ -1367,8 +1368,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _match_mcp,
         _match_origin,
         _match_path,
+        _norm_expanded,
         _norm_item,
+        _norm_items,
         _origin_form,
+        _path_allowed,
         _UnmatchableCommand,
         _upper_drive,
         _url_host,

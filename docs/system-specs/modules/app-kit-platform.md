@@ -1557,7 +1557,10 @@ kiro-cli reports a tool call's relative `diff` and `locations` paths, in `sessio
 and in permission requests, against its process directory, so the runtime maps any path
 under the launch directory (either spelling of a linked home) to the session's cwd before
 a frame is routed (`AcpRuntime._map_launch_cwd_paths`,
-`apps.agent_launch.map_process_cwd_paths`). Crew's own session-start reads judge the copy
+`apps.agent_launch.map_process_cwd_paths`). A `locations` spelling is resolved as the tool
+resolves it: `~`, `$VAR` and `${VAR}` expanded, a Windows `%VAR%` kept literal. When this
+host's expansion of the `%VAR%` names a different file, the location and its diff are made
+unanchored, which the edit gates refuse. Crew's own session-start reads judge the copy
 as read by its path at spawn (`apps.agent_launch.read_launch_copy`), never by name: the
 control-plane elements take it as their `spec_override` with or without a skill
 projection, and the unresolved-ref snapshot is that copy. The pooled MCP stubs are looked

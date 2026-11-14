@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.agent_spec_format import APP_AGENT_LAUNCH_PREFIX
+from kiro_crew.security.paths_resolver import _expanded_spellings
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +197,8 @@ def map_process_cwd_paths(update: object, roots: tuple[str, ...], session_cwd: s
     gates should judge. ``locations`` carries the spelling the tool was given, so:
 
     * every ``locations`` path is resolved as the tool resolved it: ``$VAR`` and ``~``
-      expanded,
+      expanded; a Windows ``%VAR%``, which the tool keeps literal and this host
+      expands, is made unanchored when the two readings name different files,
       a relative one joined to *session_cwd*;
     * a ``diff`` path takes the ONE spelling ``locations`` names, resolved the same
       way, whatever kiro-cli reported;
@@ -211,8 +213,15 @@ def map_process_cwd_paths(update: object, roots: tuple[str, ...], session_cwd: s
         return
 
     def resolved(spelling: str) -> str:
-        path = os.path.expanduser(os.path.expandvars(spelling))
-        return os.path.normpath(path if os.path.isabs(path) else os.path.join(session_cwd, path))
+        paths = {
+            os.path.normpath(p if os.path.isabs(p) else os.path.join(session_cwd, p))
+            for p in _expanded_spellings(spelling)
+        }
+        # The tool and this host read a Windows ``%VAR%`` apart: judge neither file.
+        return paths.pop() if len(paths) == 1 else unanchored(spelling)
+
+    def unanchored(value: str) -> str:
+        return os.path.join("unanchored", os.path.basename(value) or "path")
 
     def under_root(path: str) -> str | None:
         for root in roots:
@@ -250,7 +259,7 @@ def map_process_cwd_paths(update: object, roots: tuple[str, ...], session_cwd: s
         if mapped is not None:
             item["path"] = mapped
         else:
-            item["path"] = os.path.join("unanchored", os.path.basename(value) or "path")
+            item["path"] = unanchored(value)
 
 
 def app_agent_launch_name(app_name: str, agent: str) -> str:

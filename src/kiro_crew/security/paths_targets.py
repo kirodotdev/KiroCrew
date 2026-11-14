@@ -38,6 +38,7 @@ from .paths_lists import (
 from .paths_resolver import (
     _PATH_RESOLVE_REBUILD_TIMEOUT_SECS,
     PathResolutionStalled,
+    _expanded_spellings,
     _fold_windows_alias,
     _realpath_or_none,
     _realpaths_or_none,
@@ -70,8 +71,14 @@ def _candidate_forms(
     returns for a path that has no link left to follow. Reserved for
     :func:`is_sensitive_resolved_path`; see there for why a caller may claim it.
     """
-    # Expand ~ and $HOME
-    raw = os.path.expanduser(os.path.expandvars(path_str))
+    candidates: set[str] = set()
+    for raw in _expanded_spellings(path_str):
+        candidates |= _spelling_forms(raw, base_dir, pre_resolved=pre_resolved)
+    return candidates
+
+
+def _spelling_forms(raw: str, base_dir: str | None, *, pre_resolved: bool) -> set[str]:
+    """The candidate forms of one expanded spelling (see :func:`_candidate_forms`)."""
     # Fold before resolving (a ``\\?\`` spelling would skip resolution as UNC-shaped);
     # the raw spelling stays a lexical candidate, so folding only adds candidates.
     expanded = _fold_windows_alias(raw)

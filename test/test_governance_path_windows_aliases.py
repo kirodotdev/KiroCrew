@@ -94,3 +94,67 @@ def test_off_windows_a_prefix_is_part_of_the_file_name(monkeypatch):
     item = "\\\\?\\" + SECRET
     assert matching._norm_item(item).endswith(item)
     assert not matching._match_path(item, SECRET)
+
+
+# The tool expands ``$VAR`` and ``~`` only, so it writes ``C:\ws\%DECOY%\..\k`` as
+# ``C:\ws\k``; this host's ``ntpath.expandvars`` reads it as ``C:\ws\a\k``.
+DECOY_ITEM = r"C:\ws\%KC_DECOY%\..\k"
+
+
+@pytest.mark.usefixtures("windows")
+class TestPercentVariableKeptLiteralByTheTool:
+    @pytest.fixture(autouse=True)
+    def _decoy(self, _floor_monkeypatch):
+        _floor_monkeypatch.setenv("KC_DECOY", r"a\b")
+
+    def test_a_deny_meets_the_file_the_tool_writes(self):
+        assert matching._match_denied_path(DECOY_ITEM, r"C:\ws\k")
+
+    def test_a_deny_still_meets_the_expanded_reading(self):
+        assert matching._match_denied_path(DECOY_ITEM, r"C:\ws\a\k")
+
+    def test_an_allow_must_cover_both_readings(self):
+        assert not matching._path_allowed(DECOY_ITEM, [r"C:\ws\a\**"])
+        assert not matching._path_allowed(DECOY_ITEM, [r"C:\ws\k"])
+        assert matching._path_allowed(DECOY_ITEM, [r"C:\ws\**"])
+
+    def test_separate_allow_entries_may_cover_each_reading(self):
+        assert matching._path_allowed(DECOY_ITEM, [r"C:\ws\k", r"C:\ws\a\k"])
+        ceiling = parse_policy(
+            _policy_body(
+                filesystem={"write": {"mode": "allow", "allow": [r"C:\ws\k", r"C:\ws\a\k"]}}
+            )
+        )
+        assert resolve(ceiling, None, "filesystem.write", DECOY_ITEM).permitted
+        ceiling = parse_policy(
+            _policy_body(filesystem={"write": {"mode": "allow", "allow": [r"C:\ws\a\**"]}})
+        )
+        assert not resolve(ceiling, None, "filesystem.write", DECOY_ITEM).permitted
+
+    def test_the_plain_matcher_still_meets_the_host_reading(self):
+        # Policy translation tests deny entries with the plain matcher, so it must
+        # meet every pattern it met before (either spelling, never both).
+        assert matching._MATCHERS["path"](DECOY_ITEM, r"C:\ws\a\**")
+        assert matching._MATCHERS["path"](DECOY_ITEM, r"C:\ws\k")
+
+    def test_a_policy_deny_refuses_the_spelling(self):
+        ceiling = parse_policy(
+            _policy_body(filesystem={"write": {"mode": "deny", "deny": [r"C:\ws\k"]}})
+        )
+        assert not resolve(ceiling, None, "filesystem.write", DECOY_ITEM).permitted
+
+
+@pytest.mark.usefixtures("windows")
+def test_an_intersection_drops_a_percent_entry_one_set_covers_on_one_reading_only(
+    _floor_monkeypatch,
+):
+    # The tool writes ``C:\ws\k``; this host reads ``C:\ws\a\k``. A set whose glob
+    # covers only the host reading must not keep the entry in the intersection.
+    from kiro_crew.platform import enterprise_policy_translate as translate
+
+    _floor_monkeypatch.setenv("KC_DECOY", r"a\b")
+    row = translate.Managed(("filesystem", "write"), matcher="path")
+    sets = [[DECOY_ITEM], [r"C:\ws\a\**"]]
+    assert translate._intersect(sets, "filesystem.write", row) == []
+    sets = [[DECOY_ITEM], [r"C:\ws\**"]]
+    assert translate._intersect(sets, "filesystem.write", row) == [DECOY_ITEM]
