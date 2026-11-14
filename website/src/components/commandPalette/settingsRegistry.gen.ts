@@ -2218,8 +2218,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "type": "toggle",
     "occurrence": 1,
-    "label": "Also send snippets of recalled memories so Jev can drop the ones that do not help",
-    "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to Jev, which then says which ones to keep. It can only remove them — never add one, never reorder them — and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
+    "label": "Also send snippets of recalled memories so the decision model can drop the ones that do not help",
+    "description": "When the assistant asks its own memory a question, the entries closest in wording come back. This also sends each one's id and the first 200 characters of its text to the decision model, which then says which ones to keep. It can only remove them, never add one or reorder them, and if it is slow or unreachable they all come back as before. Passwords and keys are replaced before anything is sent. Off until you turn it on, even if the switch above is already on."
   },
   {
     "id": "developer.also-send-the-conversation-and-tool-call-inputs-so-jev-can-score-compaction",
@@ -2230,8 +2230,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "type": "toggle",
     "occurrence": 1,
-    "label": "Also send the conversation and tool-call inputs so Jev can score compaction",
-    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to Jev, and asks which ones would have been worth keeping. Tool OUTPUT is never sent — only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever Jev answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments — a whole session's conversation goes, not one call — so it is off until you turn it on, whatever else you have already agreed to."
+    "label": "Also send the conversation and tool-call inputs so the decision model can score compaction",
+    "description": "Every time context fills up and Kiro Crew compacts a session automatically, this sends that conversation and the inputs of the tool calls in it to the decision model, and asks which ones would have been worth keeping. Tool OUTPUT is never sent, only how many characters it was. Passwords and keys are replaced before anything is sent. It is a measurement: the compaction happens exactly as it does now whatever the decision model answers, and the answer appears as one line on the compaction notice. It is wider than sending one tool call's arguments (a whole session's conversation goes, not one call), so it is off until you turn it on, whatever else you have already agreed to."
   },
   {
     "id": "developer.also-send-tool-call-arguments-so-jev-can-flag-risky-calls",
@@ -2242,8 +2242,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "type": "toggle",
     "occurrence": 1,
-    "label": "Also send tool-call arguments so Jev can flag risky calls",
-    "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to Jev, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
+    "label": "Also send tool-call arguments so the decision model can flag risky calls",
+    "description": "In a session that approves its own tool calls, this also sends the name and arguments of each call to the decision model, which then puts a note on the ones it thinks are worth a look. Passwords and keys are replaced before anything is sent. It changes nothing about which tool calls are allowed. Off until you turn it on, even if the switch above is already on."
   },
   {
     "id": "developer.artifact-deploy",
@@ -2324,8 +2324,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "developer.decisions-jev",
-    "label": "Decisions (Jev)",
+    "id": "developer.decisions",
+    "label": "Decisions",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",
     "hint": "A small, fast model makes quick calls for Kiro Crew, such as which of your skills fits your message. Pick the model below. If it is slow or does not answer, the built-in rule decides instead, so your reply is never held up.",
     "tab": "developer",
@@ -2340,7 +2340,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Earlier conversation one decision may carry, in characters",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_history_label",
     "description": "A larger number sends more of the conversation off this machine.",
-    "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main Jev switch was agreed for, so a larger number sends more off the machine.",
+    "hint": "Earlier messages of yours and of the agent go with the question, newest first, up to this many characters. Tool output is never sent. Zero sends the message on its own, which is what the main decision model switch was agreed for, so a larger number sends more off the machine.",
     "tab": "developer",
     "type": "input",
     "occurrence": 1,

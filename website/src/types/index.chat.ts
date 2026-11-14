@@ -271,7 +271,7 @@ export interface ChatSlot extends TurnIdentityFields {
    *  deliberately kept when withheld, so this must not drive a write. */
   model_withheld?: boolean | null
   /** Whether this session's turns ask Jev which model tier to run on -- the chat
-   *  picker's `Auto (Jev)` entry (`lib/jevRoute.ts`, `decisions/points/model_route.py`).
+   *  picker's `Auto (decision model)` entry (`lib/jevRoute.ts`, `decisions/points/model_route.py`).
    *
    *  Shipped on every slot, so "the owner picked a model by hand" is a positive
    *  value rather than an absent key. Unlike `model_withheld` and `served_model`
@@ -587,7 +587,7 @@ export interface ChatMessage {
   /** Gateway process generation that numbered `seq` (folded snapshot rows). */
   gen?: string
   /** One skill-selection decision the gateway stamped on the row that ends the
-   *  turn, when the Decisions (Jev) seam answered for it. Typed `unknown`
+   *  turn, when the Decisions seam answered for it. Typed `unknown`
    *  because the shape is validated at the read, by
    *  `pages/chat/decisionRecord.ts` — the strip draws nothing for a record it
    *  cannot check. The gateway stamps it under `meta` on both doors, and this

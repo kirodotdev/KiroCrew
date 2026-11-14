@@ -66,7 +66,7 @@ export interface SettingEntryScore {
  * re-append it.
  */
 /**
- * Registry id of the Decisions (Jev) main toggle — the card's own switch.
+ * Registry id of the Decisions main toggle — the card's own switch.
  *
  * The card carries more rows than this one; :data:`DECISIONS_SETTING_IDS` below is
  * the whole governed set, and the predicate reads that.
@@ -78,10 +78,10 @@ export interface SettingEntryScore {
  * that the page has the row, so an unfiltered corpus would land the user on a section
  * where nothing is there — which reads as a broken page rather than an absent feature.
  */
-export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
+export const DECISIONS_SETTING_ID = 'developer.decisions'
 
 /**
- * Every registry id the Decisions (Jev) card owns, the main toggle included.
+ * Every registry id the Decisions card owns, the main toggle included.
  *
  * The card is one governed unit: `capabilities.decisions` withdraws every control on it,
  * so a search that knows the feature is denied must withhold the address field and

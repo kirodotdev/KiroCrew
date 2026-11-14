@@ -76,7 +76,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'FollowDefaultModelAction.tsx': 'one action button under the Chat tab\'s Default Model that counts, then clears, the model older chats keep; it holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'CrewVersionStatus.tsx': "a connected Remote Crew row's version badge and its Update action; it reports and acts on one crew, and holds no setting",
-  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, or a SageMaker endpoint\'s name, region and profile, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
+  'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, or a SageMaker endpoint\'s name, region and profile, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions entry deep-links to',
   'ImportPanel.tsx': 'single action button launching the import wizard; no persistent settings',
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
   'McpManagement.tsx': 'rendered on the MCP Servers page (`/mcp`), not on a Settings tab — a settings deep link would be dead; its per-server switches are table rows keyed by server, not Settings* primitives',
@@ -241,7 +241,7 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     reason:
       'the sampling-share range input has no slider primitive, exactly as ' +
       "NotificationsPanel's volume does; it is reached through the card the " +
-      'developer.decisions-jev entry deep-links to, and a manual entry for it would ' +
+      'developer.decisions entry deep-links to, and a manual entry for it would ' +
       'advertise a row that the capabilities.decisions ceiling can withdraw',
   },
   'DecisionsProviderPicker.tsx': {
@@ -250,7 +250,7 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'the provider radio group and the SageMaker endpoint fields: not a config path ' +
       '(the choice is written through the owner-only provider route as a preset id, ' +
       'or as an endpoint name, region and profile the gateway checks), and they sit ' +
-      'inside the card the developer.decisions-jev entry deep-links to',
+      'inside the card the developer.decisions entry deep-links to',
   },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1, input: 1 },
@@ -468,7 +468,7 @@ const EXPECTED_DYNAMIC_SKIPS: Record<string, { count: number; reason: string }> 
       'from a Record keyed by the SERVER id (the scope name, the tier), which is what ' +
       'lets a gateway ship another point or scope with no edit here — the same ' +
       'arrangement AgentBackendTab uses for capability labels. Both are one level ' +
-      'inside the card the developer.decisions-jev entry deep-links to, and a manual ' +
+      'inside the card the developer.decisions entry deep-links to, and a manual ' +
       'entry would advertise a row the capabilities.decisions ceiling can withdraw',
   },
   'NotificationsPanel.tsx': {

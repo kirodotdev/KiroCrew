@@ -42,7 +42,7 @@ function isGoogleRegistrySlug(slug: string): boolean {
  * locale.
  */
 export const SETTINGS_MANUAL: ManualSettingEntry[] = [
-  // The Decisions (Jev) card's three per-point consent switches.
+  // The Decisions card's three per-point consent switches.
   //
   // Declared here rather than extracted because the card draws them from ONE component
   // on whichever point's panel is open, labelled from a map keyed by the scope the

@@ -981,10 +981,11 @@ def landing_holds_lease(key: str) -> bool:
     return key in _LANDING_LEASES
 
 
-#: Lowercased spellings of the picker's Jev entry that ``session_set_model``
-#: refuses alongside the exact sentinel: its display label and any case of the
-#: sentinel id. Owner-only, like the sentinel itself.
-_JEV_ROUTE_SPELLINGS = frozenset({"auto (jev)", "auto:jev"})
+#: Lowercased spellings of the picker's decision-model entry that
+#: ``session_set_model`` refuses alongside the exact sentinel: its display
+#: label (the current one and the one older clients still show) and any case of
+#: the sentinel id. Owner-only, like the sentinel itself.
+_JEV_ROUTE_SPELLINGS = frozenset({"auto (decision model)", "auto (jev)", "auto:jev"})
 
 
 def _target_busy_error(body: dict[str, Any] | None = None) -> SessionControlError:

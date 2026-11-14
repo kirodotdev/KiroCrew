@@ -244,27 +244,27 @@ _OWNING_PAGES: dict[str, dict[str, str]] = {
     "decisions.bucket": {
         "tab": "developer",
         "sub": "feature-previews",
-        "highlight": "developer.decisions-jev",
+        "highlight": "developer.decisions",
     },
     "decisions.nudge_wake.provider": {
         "tab": "developer",
         "sub": "feature-previews",
-        "highlight": "developer.decisions-jev",
+        "highlight": "developer.decisions",
     },
     "decisions.nudge_wake.llm_model": {
         "tab": "developer",
         "sub": "feature-previews",
-        "highlight": "developer.decisions-jev",
+        "highlight": "developer.decisions",
     },
     "decisions.history_budget_chars": {
         "tab": "developer",
         "sub": "feature-previews",
-        "highlight": "developer.decisions-jev",
+        "highlight": "developer.decisions",
     },
     "decisions.provider.endpoint": {
         "tab": "developer",
         "sub": "feature-previews",
-        "highlight": "developer.decisions-jev",
+        "highlight": "developer.decisions",
     },
 }
 

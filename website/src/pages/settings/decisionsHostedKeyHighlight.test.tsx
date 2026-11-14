@@ -77,7 +77,7 @@ describe('the API key search link with a late picker', () => {
         </MemoryRouter>
       </QueryClientProvider>,
     )
-    await screen.findByRole('switch', { name: 'Decisions (Jev)' }, LATE_PICKER_DRAWS)
+    await screen.findByRole('switch', { name: 'Decisions' }, LATE_PICKER_DRAWS)
     // The hook's first probe runs while the picker's chunk is still held.
     act(() => {
       vi.advanceTimersByTime(500)

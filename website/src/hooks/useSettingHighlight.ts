@@ -58,6 +58,9 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'connections.oauth-client-google-sheets': 'connections.oauth-client-google',
   'connections.oauth-client-google-docs': 'connections.oauth-client-google',
   'connections.oauth-client-google-slides': 'connections.oauth-client-google',
+  // The Decisions card dropped the provider name from its title, shifting the
+  // derived id with it.
+  'developer.decisions-jev': 'developer.decisions',
   // The banner switch is labelled by when it fires.
   'notifications.show-a-banner-for-new-notifications': 'notifications.show-a-banner-while-this-window-is-open',
 }
