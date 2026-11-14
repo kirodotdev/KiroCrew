@@ -2915,8 +2915,18 @@ no file, and a sandboxed process cannot create the file first with `disable_all`
   on the Settings > Security read and write paths and for the webhook contexts in
   `hooks.json`, whose script-hook readers hand `json.loads` the bytes, which drops
   the mark too). A file
-  that is present but unreadable, not JSON or not an object also yields that
-  state, and logs a WARNING because its `user_added` rules then do not apply.
+  that is missing, not JSON or not an object also yields that state, clears
+  the last good state recorded for that path, and (when present) logs a
+  WARNING because its `user_added` rules then do not apply. A read that
+  RAISES (a Windows sharing violation outlasting the retry, or another I/O
+  error) serves the last state this process parsed or saved for that path,
+  its `user_added` rules only, with every built-in enforced; a cached
+  `disable_all` / `disabled_ids` opt-out is never revived. With no earlier
+  good state it yields `{}`. A dashboard save records its state
+  (`record_denied_state_save`), and a read begun before that save cannot
+  replace it. The gate and both dashboard readers read through
+  `loosening_provenance.read_regular_with_retry`, which retries the sharing
+  window around the non-blocking, `fstat`-checked regular-file reader.
 - **Write (dashboard):** the `/api/security/denied-commands` mutations run
   `_write_denied_state` — an atomic read-modify-write of `denied_commands.json`
   under the shared config lock, routed through
@@ -2937,7 +2947,7 @@ no file, and a sandboxed process cannot create the file first with `disable_all`
   a restart. These operator endpoints open the file directly and do NOT route
   through the agent tool gate. Their readers (`_read_denied_data` for the
   snapshot and the user-rule existence pre-checks, `_read_denied_strict` for
-  the mutation) go through `atomic_write.read_bytes_with_retry`, so a read that
+  the mutation) go through `loosening_provenance.read_regular_with_retry`, so a read that
   lands in a concurrent writer's replace on Windows (`PermissionError`,
   WinError 32) retries for one bounded window instead of reading the file as empty — which would show
   no rules and answer 404 "unknown user rule" for a rule that exists.

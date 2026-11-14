@@ -52,7 +52,6 @@ from typing import TYPE_CHECKING
 from aiohttp import web
 
 from kiro_crew import _facade_mirror
-from kiro_crew.atomic_write import read_bytes_with_retry
 from kiro_crew.config.loader import (
     denied_commands_path,
 )
@@ -77,7 +76,7 @@ def _read_denied_data() -> dict:
     root IS the opt-out object (``{disable_all, disabled_ids, user_added}``).
 
     The read retries the Windows sharing violation a concurrent
-    ``_write_denied_state`` replace causes (:func:`read_bytes_with_retry`), so a
+    ``_write_denied_state`` replace causes (``loosening_provenance.read_regular_with_retry``), so a
     reader that lands in that window gets the file, not ``{}``. The rule
     toggle/delete pre-checks read through here off the event loop; folding that
     transient into ``{}`` would answer 404 "unknown user rule" for a rule that
@@ -92,13 +91,20 @@ def _read_denied_data() -> dict:
         content = loosening_provenance.reconciled_bytes(
             loosening_provenance.LEAF_DENIED_COMMANDS,
             denied_commands_path(),
-            read_bytes_with_retry,
+            loosening_provenance.read_regular_with_retry,
         )
         if content is None:
             return {}
         loaded = loads_user_json(content.decode("utf-8"))
         return loaded if isinstance(loaded, dict) else {}
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except OSError:
+        # A read that raises is not an empty file: show what the gate enforces,
+        # which keeps the last rules it read rather than dropping them.
+        logger.warning("denied_commands.json unreadable; showing the gate's state", exc_info=True)
+        from kiro_crew.hooks import load_denied_commands_state
+
+        return load_denied_commands_state()
+    except (UnicodeDecodeError, json.JSONDecodeError):
         logger.warning("denied_commands.json unreadable/corrupt; treating as empty", exc_info=True)
         return {}
 
@@ -116,7 +122,9 @@ def _read_denied_strict() -> dict:
         from kiro_crew.config import loosening_provenance
 
         content = loosening_provenance.reconciled_bytes(
-            loosening_provenance.LEAF_DENIED_COMMANDS, path, read_bytes_with_retry
+            loosening_provenance.LEAF_DENIED_COMMANDS,
+            path,
+            loosening_provenance.read_regular_with_retry,
         )
         if content is None:
             return {}
@@ -375,6 +383,10 @@ async def _write_denied_state(mutate, *, resolving_pending: bool = False) -> dic
             # before it mkdir's, then locks the temp. A mkdir here would walk
             # through a planted link and create dirs under its target first.
             atomic_write(path, payload, restrict_to_owner=True)
+        # The gate's fallback for a read that raises must reflect this save.
+        from kiro_crew import hooks as hooks_mod
+
+        hooks_mod.record_denied_state_save(path, json.dumps(denied))
         return denied
 
     async with _get_config_lock():

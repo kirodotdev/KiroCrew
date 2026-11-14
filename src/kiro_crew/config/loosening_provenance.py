@@ -232,6 +232,17 @@ def _read_regular(path: Path) -> bytes:
         return handle.read()
 
 
+def read_regular_with_retry(path: Path) -> bytes:
+    """:func:`_read_regular`, retrying the Windows sharing-violation window.
+
+    For a reader that must survive a concurrent atomic replace without giving up the
+    non-blocking open and ``fstat`` check a bare ``read_bytes`` would drop.
+    """
+    from kiro_crew.atomic_write import retry_read_sharing_window
+
+    return retry_read_sharing_window(lambda: _read_regular(path), path)
+
+
 def _refuse_special(path: Path) -> None:
     """Raise ``OSError`` when *path* exists and is not a regular file (a missing one is
     left to the reader).
