@@ -22,6 +22,7 @@ import {
   TAILWIND_RUNTIME_SRC,
 } from './src/lib/vendorPaths'
 import { precompressPlugin } from './scripts/precompress.mjs'
+import { stripHtmlCommentsPlugin } from './scripts/strip-html-comments.mjs'
 import { atomicPublishPlugin } from './scripts/publish-dist.mjs'
 import { uiAutoStampPlugin } from './scripts/lib/ui-auto-stamp.mjs'
 import { CONTEXT_SINGLETON_DEDUPE } from './vite.shared'
@@ -783,7 +784,7 @@ export default defineConfig({
     // the Babel pass costs per listed file instead of per module. After the
     // stamp (it reads source offsets), before react() (it needs JSX intact).
     ...reactCompilerPlugins(),
-    react(), tokenProxyPlugin(), appImportMapPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
+    react(), tokenProxyPlugin(), appImportMapPlugin(), stripHtmlCommentsPlugin(), vendorRuntimePlugin(), excalidrawFontsPlugin(), swVersionPlugin(), buildIdPlugin(), editionExtensionPlugin(), editionLanguagesPlugin(), tailwindcss(), bundleReportPlugin(), appWindowUrls(), precompressPlugin(), atomicPublishPlugin()],
   // Worker bundles do not inherit `plugins`; the hljs worker needs the edition
   // languages module (see editionLanguagesPlugin).
   worker: { plugins: () => [editionLanguagesPlugin()] },
