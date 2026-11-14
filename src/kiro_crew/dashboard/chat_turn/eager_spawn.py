@@ -1066,7 +1066,9 @@ async def _spawn_admitted_prefetch(
     # slot's (now stale) agent/cwd bindings. Tear it down.
     if state.get_slot(slot.key) is not slot:
         logger.info("Eager spawn: slot %s vanished mid-handshake, removing session", slot.key)
-        await sessions.remove(session_key)
+        # Shielded as in _prefetch_ttl: a later slot signal cancels this task, and
+        # a cancel after the pop would leak the process holding the session lock.
+        await asyncio.shield(sessions.remove(session_key))
         return
     # Same shape for a binding change: a switch handler's reset ran
     # before registration and found nothing, so the session we just
@@ -1078,7 +1080,8 @@ async def _spawn_admitted_prefetch(
             "Eager spawn: slot %s bindings changed mid-handshake, removing session",
             slot.key,
         )
-        await sessions.remove(session_key)
+        # Shielded for the same reason as the vanished-slot removal above.
+        await asyncio.shield(sessions.remove(session_key))
         return
     if not resumed:
         # Stamp first, matching the turn site. This call IS the allocation, so the
