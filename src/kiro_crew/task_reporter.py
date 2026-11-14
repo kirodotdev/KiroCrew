@@ -25,6 +25,17 @@ from kiro_crew.task_planner import group_parallel_tasks
 
 logger = logging.getLogger(__name__)
 
+# One icon per task status, shared by the progress file and the completion notice.
+TASK_STATUS_ICONS: dict[TaskStatus, str] = {
+    TaskStatus.PASSED: "✅",
+    TaskStatus.FAILED: "❌",
+    TaskStatus.IN_PROGRESS: "🔄",
+    TaskStatus.REVIEWING: "🔍",
+    TaskStatus.PENDING: "⬜",
+    TaskStatus.SKIPPED: "⏭️",
+    TaskStatus.CANCELLED: "🚫",
+}
+
 
 # ── Notifications ──
 
@@ -131,15 +142,7 @@ def save_progress(run: Project) -> None:
             "## Tasks\n",
         ]
         for task in run.tasks:
-            icon = {
-                TaskStatus.PASSED: "✅",
-                TaskStatus.FAILED: "❌",
-                TaskStatus.IN_PROGRESS: "🔄",
-                TaskStatus.REVIEWING: "🔍",
-                TaskStatus.PENDING: "⬜",
-                TaskStatus.SKIPPED: "⏭️",
-                TaskStatus.CANCELLED: "🚫",
-            }[task.status]
+            icon = TASK_STATUS_ICONS[task.status]
             line = f"- {icon} **Task {task.index}:** {task.title}"
             if task.attempts > 1:
                 line += f" (attempts: {task.attempts})"
@@ -340,9 +343,7 @@ def format_completion_summary(run: Project) -> str:
     lines.append(f"📁 `{run.work_dir}`")
     if run.branch_name:
         lines.append(f"🌿 Branch: `{run.branch_name}`")
-    task_list = "\n".join(
-        f"  {'✅' if t.status == TaskStatus.PASSED else '❌'} {t.title}" for t in run.tasks
-    )
+    task_list = "\n".join(f"  {TASK_STATUS_ICONS.get(t.status, '❌')} {t.title}" for t in run.tasks)
     if task_list:
         lines.append(f"\n**Tasks:**\n{task_list}")
     return "\n".join(lines)

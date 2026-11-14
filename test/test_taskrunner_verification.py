@@ -474,6 +474,17 @@ class TestRecordAndReport:
         assert "1/3 verified" in summary
         assert "1 skipped" in summary and "1 not configured" in summary
 
+    def test_the_summary_marks_a_skipped_step_skipped_not_failed(self, tmp_path: Path) -> None:
+        statuses = (StepStatus.PASSED, StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.PASSED)
+        steps = [
+            Step(index=i, title=f"S{i}", description="d", status=status)
+            for i, status in enumerate(statuses, start=1)
+        ]
+        run = _run(tmp_path, *steps)
+        run.started_at = 1.0
+        task_list = format_completion_summary(run).split("**Tasks:**\n", 1)[1]
+        assert task_list.splitlines() == ["  ✅ S1", "  ❌ S2", "  ⏭️ S3", "  ✅ S4"]
+
 
 class TestARequeuedStepKeepsNoEarlierVerdict:
     """A step set back to pending has no verdict for its next run, on every reset path."""
