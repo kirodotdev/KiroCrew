@@ -187,3 +187,29 @@ describe('TokenDailyChart cascading filters', () => {
     expect(await readOptions(modelTrigger())).toEqual(['All', 'claude-sonnet-4', 'opus'])
   })
 })
+
+// The bars are drawn and each day's figures sit in a tooltip that shows only
+// under a pointer, so a screen reader reached no figure at all. The same
+// figures are now a list, one item per day, with the tooltip hidden from
+// assistive technology so nothing is read twice.
+describe('TokenDailyChart figures for assistive technology', () => {
+  const days = [
+    { ...sampleDay, date: '2026-05-13', input: 1500, output: 300 },
+    sampleDay,
+  ]
+
+  it('lists every day with its tokens and cost', () => {
+    render(<TokenDailyChart history={days} />)
+    const items = screen.getAllByRole('listitem')
+    expect(items).toHaveLength(2)
+    expect(items[0]).toHaveTextContent('2026-05-13')
+    expect(items[1]).toHaveTextContent('2026-05-14')
+    expect(items[1]).toHaveTextContent('$0.05')
+  })
+
+  it('keeps the pointer tooltip out of the accessibility tree', () => {
+    const { container } = render(<TokenDailyChart history={days} />)
+    const tooltip = container.querySelector('.pointer-events-none')
+    expect(tooltip?.getAttribute('aria-hidden')).toBe('true')
+  })
+})
