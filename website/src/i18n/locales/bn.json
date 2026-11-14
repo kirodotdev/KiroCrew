@@ -20361,6 +20361,8 @@
         "credential_redaction_write_failed": "পরিবর্তন সংরক্ষণ করা যায়নি। {{state}} 'এজেন্টের সঙ্গে চ্যাট খোলো' লিঙ্কটি শুধু এই ত্রুটি বার্তাটি শেয়ার করে।",
         "credential_redaction_retry": "আবার চেষ্টা করো",
         "credential_redaction_desc_intro": "{{productName}} এজেন্টের আউটপুট তোমার কাছে পৌঁছানোর আগে সেখান থেকে ক্রেডেনশিয়ালের মতো দেখতে সবকিছু — access key, token, private key — গোপন করে। এটি তোমার নিজের কোনো মান গোপন করলে যা তোমাকে আবার পড়তে হবে, এই চারটি ধাপে সেটি তোমার সামনে আসবে।",
+        "credential_redaction_desc_intro_locked": "{{productName}} এজেন্টের আউটপুট তোমার কাছে পৌঁছানোর আগে সেখান থেকে ক্রেডেনশিয়ালের মতো দেখতে সবকিছু — access key, token, private key — গোপন করে।",
+        "credential_redaction_held_on": "চালু: ড্যাশবোর্ড তোমার জন্য যে ফাইলগুলো খোলে, সেগুলোতে ক্রেডেনশিয়াল গোপন থাকে।",
         "credential_redaction_step_write": "এজেন্টকে মানটি একটি ফাইলে লিখতে বলো।",
         "credential_redaction_step_off": "নিচের সুইচটি বন্ধ করো।",
         "credential_redaction_step_open": "সেই ফাইল চ্যাটের সাইড প্যানেলের Files ট্যাব থেকে খোলো।",

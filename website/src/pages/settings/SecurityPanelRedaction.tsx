@@ -15,6 +15,9 @@ import { api, ApiError, type CredentialRedactionState } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import { LockedByPolicyBadge } from '../../components/settingRef/LockedByPolicyBadge'
+
+const LOCKED_NOTE_ID = 'credential-redaction-locked-note'
 
 /* ── Credential redaction switch ─────────────────────────────────────────────
  *
@@ -77,6 +80,9 @@ function CredentialRedactionCard() {
   // the whole test for "unreadable".
   const view = isError ? undefined : data
   const ownerGateRefused = isError && isOwnerGateRefusal(error)
+  // A governed host's policy holds redaction ON: the switch is drawn held, not
+  // offered, because the server refuses OFF there.
+  const lockedByPolicy = view?.locked_by_policy === true
   const busy = isLoading || set.isPending
 
   return (
@@ -87,10 +93,13 @@ function CredentialRedactionCard() {
       {/* The one task this card exists for is the read-back recipe, so it is a
           numbered list the reader can follow, not a clause in a paragraph. */}
       <div className="text-[12px] text-muted mb-2 leading-relaxed">
-        <p className="m-0">{i18nT('pages.settings.securityPanel.credential_redaction_desc_intro')}</p>
+        {/* The full intro ends by pointing at the recipe; a held switch has no
+            recipe, so it gets the intro without that sentence. */}
+        <p className="m-0">{i18nT(lockedByPolicy ? 'pages.settings.securityPanel.credential_redaction_desc_intro_locked' : 'pages.settings.securityPanel.credential_redaction_desc_intro')}</p>
         {/* The recipe names "the switch below"; a viewer the owner gate refuses
-            has no switch, so the steps are not shown to them. */}
-        {!ownerGateRefused && (
+            has no switch, and a switch policy holds ON cannot be turned off,
+            so the steps are not shown in either case. */}
+        {!ownerGateRefused && !lockedByPolicy && (
           <ol className="my-1.5 pl-5 list-decimal space-y-0.5">
             <li>{i18nT('pages.settings.securityPanel.credential_redaction_step_write')}</li>
             <li>{i18nT('pages.settings.securityPanel.credential_redaction_step_off')}</li>
@@ -110,11 +119,20 @@ function CredentialRedactionCard() {
         <div data-testid="credential-redaction-row" className="flex flex-col gap-1.5 border border-border rounded-md px-3 py-2">
           <SettingsToggle
             label={i18nT('pages.settings.securityPanel.credential_redaction_toggle')}
-            description={i18nT('pages.settings.securityPanel.credential_redaction_toggle_help_summary')} hint={i18nT('pages.settings.securityPanel.credential_redaction_toggle_help')}
+            description={lockedByPolicy ? undefined : i18nT('pages.settings.securityPanel.credential_redaction_toggle_help_summary')} hint={i18nT('pages.settings.securityPanel.credential_redaction_toggle_help')}
             checked={view.enabled}
-            disabled={busy}
+            disabled={busy || lockedByPolicy}
+            describedBy={lockedByPolicy ? LOCKED_NOTE_ID : undefined}
             onChange={enabled => set.mutate(enabled)}
           />
+          {lockedByPolicy && (
+            <div id={LOCKED_NOTE_ID} data-testid="credential-redaction-locked-note" className="flex items-center gap-2 text-[12px] text-muted">
+              <LockedByPolicyBadge />
+              {/* The badge names WHY (its title carries the shared policy text);
+                  this line names the position, which the dimmed switch cannot. */}
+              <span>{i18nT('pages.settings.securityPanel.credential_redaction_held_on')}</span>
+            </div>
+          )}
           {!view.enabled && (
             <div data-testid="credential-redaction-off-notice" className="flex items-start gap-2 text-[11px] text-warn leading-relaxed">
               <AlertTriangle size={13} className="shrink-0 mt-px" />

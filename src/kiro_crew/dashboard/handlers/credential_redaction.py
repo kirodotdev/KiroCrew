@@ -109,12 +109,28 @@ async def _deny_non_owner(request: web.Request, operation: str) -> web.Response 
     return _owner_denial_response(request, "dashboard owner required", _CODE_OWNER_REQUIRED)
 
 
+def _state_body(state: redaction_switch.RedactionState) -> dict[str, object]:
+    """The response body: the switch in force, and whether policy holds it ON.
+
+    ``locked_by_policy`` lets the Settings card draw the switch as held by the
+    governance policy instead of offering an OFF the PUT would refuse. It is
+    display only: the PUT re-checks the policy itself. Reads governance, so call
+    it off the event loop.
+    """
+    return {**state.to_dict(), "locked_by_policy": not redaction_switch.owner_may_disable()}
+
+
+def _read_body() -> tuple[redaction_switch.RedactionState, dict[str, object]]:
+    state = redaction_switch.read_state()
+    return state, _state_body(state)
+
+
 async def api_credential_redaction_get(request: web.Request) -> web.Response:
     """GET /api/security/credential-redaction -- the switch in force."""
     denied = await _deny_non_owner(request, "credential_redaction.read")
     if denied:
         return denied
-    state = await asyncio.to_thread(redaction_switch.read_state)
+    state, body = await asyncio.to_thread(_read_body)
     # Every disclosure of a security setting is in the SEL, refusals AND owner
     # reads, so the history can say who read the switch and what it said. Not
     # critical: a read must not fail because the log is briefly unavailable.
@@ -125,7 +141,7 @@ async def api_credential_redaction_get(request: web.Request) -> web.Response:
         caller=str(request.get("user") or "owner"),
         detail=f"enabled={state.enabled}",
     )
-    return web.json_response(state.to_dict())
+    return web.json_response(body)
 
 
 async def api_credential_redaction_put(request: web.Request) -> web.Response:
@@ -219,29 +235,43 @@ async def api_credential_redaction_put(request: web.Request) -> web.Response:
     # caches and open tabs, and only a push reaches it. Owner sockets only --
     # the switch position is owner posture, and ``_send_ws_owners`` bypasses the
     # app-scope gate by construction, so no app token sees it.
-    _broadcast_switch_changed(request, state)
-    return web.json_response(state.to_dict())
+    body = await asyncio.to_thread(_state_body, state)
+    _broadcast_switch_changed(request, state, bool(body["locked_by_policy"]))
+    return web.json_response(body)
 
 
-#: The switch position owner dashboards were last told about (None until seeded).
-_pushed_enabled: bool | None = None
+#: The (position, locked_by_policy) pair owner dashboards were last told about
+#: (None until seeded).
+_pushed: tuple[bool, bool] | None = None
 #: Bumped on every push, so a queued policy frame can tell a newer push overtook it.
 _push_count = 0
 
 
-def _broadcast_switch_changed(request: web.Request, state: redaction_switch.RedactionState) -> None:
-    _push_to_owners(request.app["state"], state)
+def _broadcast_switch_changed(
+    request: web.Request, state: redaction_switch.RedactionState, locked: bool
+) -> None:
+    _push_to_owners(request.app["state"], state, locked)
 
 
-def _push_to_owners(dashboard_state, state: redaction_switch.RedactionState) -> None:
-    global _pushed_enabled, _push_count
-    _pushed_enabled = state.enabled
+def _push_to_owners(
+    dashboard_state,
+    state: redaction_switch.RedactionState,
+    locked: bool,
+    *,
+    lock_only: bool = False,
+) -> None:
+    global _pushed, _push_count
+    _pushed = (state.enabled, locked)
     _push_count += 1
+    payload: dict[str, object] = {"enabled": state.enabled, "changed_at": state.changed_at}
+    if lock_only:
+        # Only the policy lock moved: the position every connected owner document
+        # was last told is still the one in force, so no raw body can have become
+        # stale. The frame carries that fact so documents re-read the switch
+        # without dropping file bodies; every other frame purges.
+        payload["lock_only"] = True
     try:
-        dashboard_state.broadcast_ws_owners(
-            "credential_redaction_changed",
-            {"enabled": state.enabled, "changed_at": state.changed_at},
-        )
+        dashboard_state.broadcast_ws_owners("credential_redaction_changed", payload)
     except Exception:  # noqa: BLE001 -- the write already landed; a lost push must not fail the PUT
         logger.warning(
             "could not push the redaction switch change to owner dashboards", exc_info=True
@@ -250,25 +280,29 @@ def _push_to_owners(dashboard_state, state: redaction_switch.RedactionState) -> 
 
 def seed_pushed_switch() -> None:
     """Record the switch in force at boot, so the first policy refresh can compare."""
-    global _pushed_enabled
-    _pushed_enabled = redaction_switch.read_state().enabled
+    global _pushed
+    _pushed = (redaction_switch.read_state().enabled, not redaction_switch.owner_may_disable())
 
 
 def push_switch_moved_by_policy(app: web.Application, loop: asyncio.AbstractEventLoop) -> None:
-    """Post-install hook: a refresh that moved the switch in force tells owner dashboards.
+    """Post-install hook: a refresh that moved the switch or its lock tells owner dashboards.
 
     A policy that withdraws the opt-in turns a stored OFF into ON (``read_state``), and
-    the push is what makes open documents drop the raw file bodies they hold. Runs on
-    the refresher thread on every confirming poll, so it pushes only on a change.
+    the push is what makes open documents drop the raw file bodies they hold. A grant
+    or withdrawal that leaves the position ON still changes ``locked_by_policy``, and
+    the push is what lets an open Settings card offer or hold the switch. Runs on the
+    refresher thread on every confirming poll, so it pushes only on a change.
     """
     state = redaction_switch.read_state()
-    if state.enabled == _pushed_enabled:
+    locked = not redaction_switch.owner_may_disable()
+    if (state.enabled, locked) == _pushed:
         return
+    lock_only = _pushed is not None and _pushed[0] == state.enabled
     seen = _push_count
 
     def _push_unless_superseded() -> None:
         if _push_count == seen:  # an owner PUT pushed since the read: its frame is newer
-            _push_to_owners(app["state"], state)
+            _push_to_owners(app["state"], state, locked, lock_only=lock_only)
 
     try:
         loop.call_soon_threadsafe(_push_unless_superseded)

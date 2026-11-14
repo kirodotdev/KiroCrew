@@ -20361,6 +20361,8 @@
         "credential_redaction_write_failed": "परिवर्तन सहेजा नहीं जा सका। {{state}} 'एजेंट से चैट खोलो' लिंक केवल यह त्रुटि संदेश साझा करता है।",
         "credential_redaction_retry": "फिर कोशिश करो",
         "credential_redaction_desc_intro": "{{productName}} एजेंट आउटपुट तुम्हें दिखने से पहले उसमें से क्रेडेंशियल जैसी दिखने वाली हर चीज़ — access keys, tokens, private keys — रिडैक्ट कर देता है। जब यह तुम्हारा कोई ऐसा मान रिडैक्ट कर रहा हो जिसे तुम्हें वापस पढ़ना है, तो ये चार चरण उसे तुम्हारे सामने ला देते हैं।",
+        "credential_redaction_desc_intro_locked": "{{productName}} एजेंट आउटपुट तुम्हें दिखने से पहले उसमें से क्रेडेंशियल जैसी दिखने वाली हर चीज़ — access keys, tokens, private keys — रिडैक्ट कर देता है।",
+        "credential_redaction_held_on": "चालू: डैशबोर्ड जो फ़ाइलें तुम्हारे लिए खोलता है, उनमें क्रेडेंशियल रिडैक्ट रहते हैं।",
         "credential_redaction_step_write": "एजेंट से वह मान एक फ़ाइल में लिखवाओ।",
         "credential_redaction_step_off": "नीचे का स्विच बंद करो।",
         "credential_redaction_step_open": "उस फ़ाइल को चैट साइड पैनल के Files टैब से खोलो।",

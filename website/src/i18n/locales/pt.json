@@ -20881,6 +20881,8 @@
         "credential_redaction_write_failed": "Não foi possível salvar a alteração. {{state}} O link \"Abrir um chat com o agente\" compartilha apenas esta mensagem de erro.",
         "credential_redaction_retry": "Tentar novamente",
         "credential_redaction_desc_intro": "O {{productName}} oculta tudo que se pareça com uma credencial (chaves de acesso, tokens, chaves privadas) da saída do agente antes que você a veja. Quando ele ocultar um valor seu que você precisa ler de volta, estes quatro passos o colocam à sua frente.",
+        "credential_redaction_desc_intro_locked": "O {{productName}} oculta tudo que se pareça com uma credencial (chaves de acesso, tokens, chaves privadas) da saída do agente antes que você a veja.",
+        "credential_redaction_held_on": "Ativado: as credenciais continuam ocultas nos arquivos que o painel abre para você.",
         "credential_redaction_step_write": "Peça ao agente para gravar o valor em um arquivo.",
         "credential_redaction_step_off": "Desative o interruptor abaixo.",
         "credential_redaction_step_open": "Abra esse arquivo pela aba Arquivos do painel lateral do chat.",
