@@ -31,6 +31,14 @@ class TestDispatch:
         assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
         assert "kirocrew cloud" in capsys.readouterr().out
 
+    def test_no_action_lists_connect_once(self, capsys):
+        assert cli_cloud.handle_cloud(_args(cloud_action=None)) == 0
+        out = capsys.readouterr().out
+        connect_lines = [line for line in out.splitlines() if "connect" in line]
+        assert len(connect_lines) == 1
+        assert connect_lines[0].strip().startswith("connect")
+        assert "tunnel" in connect_lines[0]
+
     def test_iam_policy(self, capsys):
         assert cli_cloud.handle_cloud(_args(cloud_action="iam-policy")) == 0
         out = capsys.readouterr().out
