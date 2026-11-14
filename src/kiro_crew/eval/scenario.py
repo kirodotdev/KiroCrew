@@ -95,27 +95,33 @@ def _load_yaml(text: str) -> Any:
     return _yaml.safe_load(text)
 
 
+#: The file suffixes a scenario is read from.
+SCENARIO_SUFFIXES = (".yaml", ".yml", ".json")
+
+
+def parse_scenario_text(text: str, suffix: str) -> Scenario:
+    """A scenario from the text of a YAML or JSON file whose name ends in *suffix*."""
+    data = _load_yaml(text) if suffix in (".yaml", ".yml") else json.loads(text)
+    return _parse_scenario(data)
+
+
 def load_scenario(path: str | Path) -> Scenario:
     """Load a scenario from a YAML or JSON file."""
     p = Path(path)
-    text = p.read_text(encoding="utf-8")
-    if p.suffix in (".yaml", ".yml"):
-        data = _load_yaml(text)
-    else:
-        data = json.loads(text)
-    return _parse_scenario(data)
+    return parse_scenario_text(p.read_text(encoding="utf-8"), p.suffix)
+
+
+def scenario_files(path: str | Path) -> list[Path]:
+    """*path* itself when it is a file, else the scenario files directly in it, sorted."""
+    p = Path(path)
+    if p.is_file():
+        return [p]
+    return [f for f in sorted(p.iterdir()) if f.suffix in SCENARIO_SUFFIXES]
 
 
 def load_scenarios(path: str | Path) -> list[Scenario]:
     """Load all scenarios from a directory or single file."""
-    p = Path(path)
-    if p.is_file():
-        return [load_scenario(p)]
-    return [
-        load_scenario(f)
-        for f in sorted(p.iterdir())
-        if f.suffix in (".yaml", ".yml", ".json")
-    ]
+    return [load_scenario(f) for f in scenario_files(path)]
 
 
 def _parse_scenario(data: dict[str, Any]) -> Scenario:
