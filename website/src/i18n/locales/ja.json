@@ -10848,6 +10848,7 @@
       "result_cancelled": "断りました：{{title}}",
       "result_expired": "期限切れ：{{title}}",
       "result_failed": "適用されませんでした：{{title}}",
+      "result_moved": "下に再表示しました：{{title}}",
       "result_partial": "一部完了しました：{{title}}",
       "result_undone": "元に戻しました：{{title}}",
       "retry": "再試行",

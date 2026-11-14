@@ -10848,6 +10848,7 @@
       "result_cancelled": "已拒绝：{{title}}",
       "result_expired": "已过期：{{title}}",
       "result_failed": "未应用：{{title}}",
+      "result_moved": "已在下方再次显示：{{title}}",
       "result_partial": "部分完成：{{title}}",
       "result_undone": "已恢复：{{title}}",
       "retry": "重试",

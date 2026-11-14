@@ -10848,6 +10848,7 @@
       "result_cancelled": "거절됨: {{title}}",
       "result_expired": "만료됨: {{title}}",
       "result_failed": "적용되지 않음: {{title}}",
+      "result_moved": "아래에 다시 표시됨: {{title}}",
       "result_partial": "일부 완료: {{title}}",
       "result_undone": "복원됨: {{title}}",
       "retry": "다시 시도",

@@ -24,6 +24,8 @@ import ConversationCard, { readCardRef } from './ConversationCard'
 import { answerWindow } from './ChangeCard'
 import type { ChatMessage } from '../types'
 import { CardAuthorContext, cardProposer } from './cardAuthor'
+import { mergeRenderers, resolveRenderer } from '../app-sdk/messageRenderers'
+import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 
 const L = (k: string, v?: Record<string, unknown>) => i18nT(`components.changeCards.${k}`, v)
 const SLOT = 'slot-A'
@@ -922,6 +924,38 @@ describe('one-shot schedule', () => {
 })
 
 describe('a card in the conversation', () => {
+  it('draws a card a repeated proposal showed again live only at its newest row', async () => {
+    pending = [card()]
+    const first = row(card())
+    const again = { ...first, meta: { ...first.meta, mid: 'm-c1-again' } }
+    const rows = [first, again]
+    const entries = mergeRenderers(createTranscriptRenderers({ slot: SLOT }))
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <Provider store={reduxStore}>
+        <QueryClientProvider client={qc}>
+          <MemoryRouter>
+            {rows.map((m, index) => (
+              <div key={String(m.meta?.mid)}>
+                {resolveRenderer(m, entries)?.render(m, {
+                  index, messages: rows, running: false, key: `k${index}`, hideCardOwnedOAuth: false,
+                  autoDeniedIds: new Set<string>(), wrapper: c => c, row: c => c,
+                })}
+              </div>
+            ))}
+          </MemoryRouter>
+        </QueryClientProvider>
+      </Provider>,
+    )
+    const [earlier, newest] = screen.getAllByTestId('conversation-card')
+    expect(await within(newest).findByTestId('change-card-apply')).toBeTruthy()
+    const line = within(earlier).getByTestId('change-card-record')
+    expect(line.getAttribute('data-card-status')).toBe('moved')
+    expect(line.textContent).toBe('Shown again below: Shorter replies')
+    expect(within(earlier).queryByRole('button')).toBeNull()
+    expect(screen.getAllByTestId('change-card-apply')).toHaveLength(1)
+  })
+
   it('turns into its result line IN PLACE when the gateway reports it applied', async () => {
     pending = [card()]
     renderCards()

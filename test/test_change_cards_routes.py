@@ -151,30 +151,53 @@ def test_propose_lands_in_the_callers_slot_and_only_an_agent_may_propose(world, 
     assert agent_pending == 403
 
 
-def test_a_repeated_proposal_tells_the_model_a_card_is_already_waiting(
+def _card_rows(state, card_id):
+    """Indices of the slot's ``card`` rows naming *card_id*, and the row count."""
+    msgs = state._slots[SLOT].messages
+    rows = [
+        i
+        for i, m in enumerate(msgs)
+        if m.get("role") == "card" and (m.get("meta") or {}).get("card", {}).get("id") == card_id
+    ]
+    return rows, len(msgs)
+
+
+async def _propose_again(c):
+    r = await c.post(
+        "/api/cards/agent/propose",
+        json={
+            "kind": "setting.change",
+            "params": {"path": "chat.verbosity", "value": "ultra-brief"},
+        },
+        headers=AGENT,
+    )
+    return r.status, await r.json()
+
+
+def test_a_repeated_proposal_shows_the_waiting_card_again_at_the_end_of_the_chat(
     world, tmp_path, monkeypatch
 ):
-    """The route answers a repeat with 409 duplicate_card and writes no second row, and
-    the propose_change tool turns that answer into one line naming the waiting card,
-    so the model says the card is already there instead of failing the turn."""
+    """A repeat of a pending card is still refused with 409 duplicate_card and the store
+    still holds one card, but the card's row is appended again at the end of the chat,
+    below whatever came after the first proposal, and the refusal says so. The
+    propose_change tool turns that answer into one line naming the waiting card."""
     store = CardStore(tmp_path / "c.json")
 
     async def go(c):
         first = await _propose_setting(c)
-        again = await c.post(
-            "/api/cards/agent/propose",
-            json={
-                "kind": "setting.change",
-                "params": {"path": "chat.verbosity", "value": "ultra-brief"},
-            },
-            headers=AGENT,
-        )
-        return first, again.status, await again.json()
+        state = c.app["state"]
+        state._slots[SLOT].append("assistant", "a long reply after the card", "msg msg-a")
+        status, body = await _propose_again(c)
+        return first, status, body, _card_rows(state, first["id"])
 
-    first, status, body = _run(world, store, go)
+    first, status, body, (rows, count) = _run(world, store, go)
     assert status == 409 and body["code"] == "duplicate_card"
-    assert first["id"] in body["error"]
+    assert body["error"] == (
+        f"the same change is already on card {first['id']}, waiting for the person: "
+        "it is shown again at the end of the chat"
+    )
     assert [c["id"] for c in store.pending(SLOT)] == [first["id"]]
+    assert len(rows) == 2 and rows[0] < count - 2 and rows[1] == count - 1
     monkeypatch.setattr(mcp_guide, "_strict_session_key", lambda: (SK, ""))
     monkeypatch.setattr(mcp_guide, "_post", lambda *a, **k: dict(body))
     out = mcp_guide._call_tool_inner(
@@ -182,6 +205,27 @@ def test_a_repeated_proposal_tells_the_model_a_card_is_already_waiting(
         {"kind": "setting.change", "params": {"path": "chat.verbosity", "value": "ultra-brief"}},
     )
     assert out.startswith(f"Error: the same change is already on card {first['id']}")
+
+
+def test_a_repeated_proposal_of_a_card_being_applied_writes_no_row(world, tmp_path):
+    """A card already being applied stays where it is: the repeat keeps today's text."""
+    store = CardStore(tmp_path / "c.json")
+
+    async def go(c):
+        first = await _propose_setting(c)
+        store.begin_step(
+            store.get(first["id"]), revision=first["revision"], op=catalog.OP_APPLY, index=0
+        )
+        status, body = await _propose_again(c)
+        return first, status, body, _card_rows(c.app["state"], first["id"])
+
+    first, status, body, (rows, _count) = _run(world, store, go)
+    assert status == 409 and body["code"] == "duplicate_card"
+    assert body["error"] == (
+        f"the same change is already on card {first['id']}, waiting for the person: "
+        "this one would only repeat it"
+    )
+    assert len(rows) == 1
 
 
 def test_an_internal_or_app_caller_can_never_apply_a_card(world, tmp_path):

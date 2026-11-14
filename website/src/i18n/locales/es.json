@@ -11362,6 +11362,7 @@
       "result_cancelled": "Rechazado: {{title}}",
       "result_expired": "Caducado: {{title}}",
       "result_failed": "No aplicado: {{title}}",
+      "result_moved": "Se muestra de nuevo abajo: {{title}}",
       "result_partial": "Hecho en parte: {{title}}",
       "result_undone": "Restaurado: {{title}}",
       "retry": "Reintentar",

@@ -11105,6 +11105,7 @@
       "result_cancelled": "ठुकराया गया: {{title}}",
       "result_expired": "समय-सीमा खत्म: {{title}}",
       "result_failed": "लागू नहीं हुआ: {{title}}",
+      "result_moved": "नीचे फिर से दिखाया गया: {{title}}",
       "result_partial": "कुछ हिस्सा हुआ: {{title}}",
       "result_undone": "पहले जैसा किया गया: {{title}}",
       "retry": "फिर से कोशिश करो",

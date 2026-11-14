@@ -4823,6 +4823,7 @@
       "result_cancelled": "Declined: {{title}}",
       "result_expired": "Expired: {{title}}",
       "result_failed": "Not applied: {{title}}",
+      "result_moved": "Shown again below: {{title}}",
       "result_partial": "Partly done: {{title}}",
       "result_undone": "Restored: {{title}}",
       "retry": "Try again",
