@@ -869,6 +869,11 @@ def marker_wanted_for_empty_store(db: sqlite3.Connection) -> bool:
     return True
 
 
+def full_pass_needed(db: sqlite3.Connection) -> bool:
+    """Whether :func:`reconcile` would scan every row of a populated store. Reads only."""
+    return not marker_wanted_for_empty_store(db) and not _marker_is_trusted(db)
+
+
 def install_marker_if_empty(db: sqlite3.Connection) -> None:
     """Mark a store that has no rows yet, inside the caller's schema transaction."""
     if marker_wanted_for_empty_store(db):

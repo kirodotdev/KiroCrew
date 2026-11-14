@@ -2,6 +2,7 @@
 
 import pytest
 
+from kiro_crew import memory_reconcile_child as child
 from kiro_crew import memory_record_metadata as meta
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.vector_memory import VectorMemoryStore
@@ -10,6 +11,8 @@ from kiro_crew.vector_memory import VectorMemoryStore
 @pytest.fixture(autouse=True)
 def _clear_notes_every_start(_floor_monkeypatch):
     _floor_monkeypatch.setattr(meta, "_DIRTY_KEEP", 0)
+    # These tests count the in-process pass; the child is covered in test_memory_reconcile_child.
+    _floor_monkeypatch.setattr(child, "run_full_pass_in_child", lambda *_a, **_k: False)
 
 
 @pytest.fixture
