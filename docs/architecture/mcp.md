@@ -1430,7 +1430,10 @@ approval, and a never-pooled one are not named.
 
 On the page, the hero card holds the page-wide sharing switch and the
 measured memory figures (`GET /api/mcp-gateway/footprint`, owner only, PSS read
-from `/proc`; hidden when any process cannot be read). Turning that switch on
+from `/proc`; both hidden when any process cannot be read). "Using now" shows
+whenever it was read, on its own; "with sharing" shows only when it was read
+too, so with sharing off, when no stub runs to price it, the row shows "Using
+now" alone. Turning that switch on
 asks first and names every server it shares: the ones enabled by hand, and the
 shareable ones nobody chose for, each pinned to the launch read for it. It
 never enables a server turned off by hand (a `false` entry in
