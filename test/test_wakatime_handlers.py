@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -316,6 +317,7 @@ def _oauth_app() -> web.Application:
     app.router.add_post("/api/wakatime/oauth/authorize", wt.api_wakatime_oauth_authorize)
     app.router.add_get("/api/wakatime/oauth/callback", wt.api_wakatime_oauth_callback)
     app.router.add_post("/api/wakatime/oauth/disconnect", wt.api_wakatime_oauth_disconnect)
+    app.router.add_get("/api/wakatime/oauth/status", wt.api_wakatime_oauth_status)
     return app
 
 
@@ -434,6 +436,91 @@ async def test_authorize_400_when_not_configured(monkeypatch: pytest.MonkeyPatch
         resp = await client.post("/api/wakatime/oauth/authorize")
         assert resp.status == 400
         assert (await resp.json())["code"] == "not_configured"
+
+
+@pytest.fixture
+def oauth_vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> wt_oauth.SecretVault:
+    monkeypatch.setattr(wt_oauth, "config_dir", lambda: tmp_path)
+    return wt_oauth.SecretVault(tmp_path)
+
+
+@pytest.mark.parametrize("has_secret", [False, True])
+@pytest.mark.parametrize("connected", [False, True])
+@pytest.mark.asyncio
+async def test_status_reports_connected_and_client_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    oauth_vault: wt_oauth.SecretVault,
+    has_secret: bool,
+    connected: bool,
+) -> None:
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt_oauth, "read_access_token", lambda: "stored-access" if connected else "")
+    if has_secret:
+        oauth_vault.set_sync(wt_oauth.CRED_WAKATIME_OAUTH_CLIENT_SECRET, "placeholder-secret")
+
+    class _Cfg:
+        class wakatime:
+            oauth_client_id = "client-123"
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda cls: _Cfg())
+    )
+    async with TestClient(TestServer(_oauth_app())) as client:
+        resp = await client.get("/api/wakatime/oauth/status")
+        assert resp.status == 200
+        assert await resp.json() == {"connected": connected, "client_configured": has_secret}
+
+
+@pytest.mark.asyncio
+async def test_status_loads_config_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    oauth_vault: wt_oauth.SecretVault,
+) -> None:
+    # KiroCrewConfig.load reads (and may rewrite) config.json; on the gateway
+    # loop it would stall every other request.
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt_oauth, "read_access_token", lambda: "")
+    on_loop: list[bool] = []
+    oauth_vault.set_sync(wt_oauth.CRED_WAKATIME_OAUTH_CLIENT_SECRET, "placeholder-secret")
+
+    class _Cfg:
+        class wakatime:
+            oauth_client_id = "client-123"
+
+    def _load(cls: Any) -> Any:
+        try:
+            asyncio.get_running_loop()
+            on_loop.append(True)
+        except RuntimeError:
+            on_loop.append(False)
+        return _Cfg()
+
+    monkeypatch.setattr("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(_load))
+    async with TestClient(TestServer(_oauth_app())) as client:
+        resp = await client.get("/api/wakatime/oauth/status")
+        assert resp.status == 200
+        assert (await resp.json())["client_configured"] is True
+    assert on_loop == [False]
+
+
+@pytest.mark.asyncio
+async def test_status_reports_disconnected_when_no_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt_oauth, "read_access_token", lambda: "")
+
+    class _Cfg:
+        class wakatime:
+            oauth_client_id = ""
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda cls: _Cfg())
+    )
+    async with TestClient(TestServer(_oauth_app())) as client:
+        resp = await client.get("/api/wakatime/oauth/status")
+        assert resp.status == 200
+        assert await resp.json() == {"connected": False, "client_configured": False}
 
 
 @pytest.mark.asyncio

@@ -1,14 +1,17 @@
 import { Clock, Code2, FolderGit2, PlugZap } from 'lucide-react'
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Card, CardTitle } from '../../components/ui'
+import { useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Btn, Card, CardTitle } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
-import { findReport } from '../../utils/errorReport'
+import { findReport, parseErrorCode, parseErrorField } from '../../utils/errorReport'
 import { api } from '../../api/client'
-import type { WakaTimeStats, WakaTimeStatsEntry } from '../../api/client'
+import { ApiError } from '../../api/apiError'
+import type { WakaTimeStats, WakaTimeStatsEntry, WakaTimeOauthStatus } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtDuration } from '../../i18n/format'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { isElectron } from '../../lib/electron'
 
 // Ranges the stats endpoint accepts, in the order shown in the toolbar. The
 // value is the API's named range; labelKey is the full literal i18n key so the
@@ -66,6 +69,23 @@ function rangeDates(range: string): { start: string; end: string } {
 export default function WakaTimeTab() {
   const [range, setRange] = useState<string>(DEFAULT_RANGE)
   const [exportErr, setExportErr] = useState<string | null>(null)
+  // Keep the callback's one-shot result in this mounted panel only. Stripping
+  // its URL markers through the router preserves the panel, but a reload or
+  // leaving the view drops the notice.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [oauthResult, setOauthResult] = useState<'connected' | 'error' | null>(() => {
+    const value = searchParams.get('wakatime_oauth')
+    return value === 'connected' || value === 'error' ? value : null
+  })
+  useEffect(() => {
+    if (!searchParams.has('wakatime_oauth') || !oauthResult) return
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('wakatime_oauth')
+      next.delete('reason')
+      return next
+    }, { replace: true })
+  }, [searchParams, setSearchParams, oauthResult])
   const { data, error: queryErr, isLoading } = useQuery<WakaTimeStats>({
     queryKey: ['wakatime-stats', range],
     queryFn: () => api.wakatimeStats(range),
@@ -75,15 +95,34 @@ export default function WakaTimeTab() {
   // show it through the shared ErrorNotice so the structured status, endpoint
   // and error-code context and the ask-agent affordance are preserved, rather
   // than a bare "0 hours" view.
+  // WakaTime refusing the read (code reconnect_required) gets reconnect wording.
+  // Either way the connect control stays on screen, since connecting is the fix.
+  const oauthConnectedNotice = oauthResult === 'connected' && (
+    <div className="rounded-md border border-border bg-accent-subtle text-accent px-3 py-2 text-[12.5px]">
+      {i18nT('pages.overview.wakatimeTab.oauth_result_connected')}
+    </div>
+  )
+  const oauthErrorNotice = oauthResult === 'error' && (
+    <ErrorNotice message={i18nT('pages.overview.wakatimeTab.oauth_result_error')} askAgent />
+  )
   if (queryErr) {
+    const rejected = parseErrorCode((queryErr as { body?: string }).body) === 'reconnect_required'
     return (
       <Card>
-        <ErrorNotice
-          title={i18nT('pages.overview.wakatimeTab.unreachable_title')}
-          message={i18nT('pages.overview.wakatimeTab.unreachable_body')}
-          report={findReport(queryErr instanceof Error ? queryErr.message : undefined)}
-          askAgent
-        />
+        <div className="flex flex-col gap-3">
+          {oauthErrorNotice}
+          <ErrorNotice
+            title={rejected
+              ? i18nT('pages.overview.wakatimeTab.reconnect_title')
+              : i18nT('pages.overview.wakatimeTab.unreachable_title')}
+            message={rejected
+              ? i18nT('pages.overview.wakatimeTab.reconnect_body')
+              : i18nT('pages.overview.wakatimeTab.unreachable_body')}
+            report={findReport(queryErr instanceof Error ? queryErr.message : undefined)}
+            askAgent
+          />
+          <WakaTimeConnect rejected={rejected} onDisconnect={() => setOauthResult(null)} />
+        </div>
       </Card>
     )
   }
@@ -98,6 +137,11 @@ export default function WakaTimeTab() {
           <PlugZap className="lucide-inline text-accent" />
           <div className="font-medium text-text-strong">{i18nT('pages.overview.wakatimeTab.connect_title')}</div>
           <div className="text-muted text-sm max-w-md">{i18nT('pages.overview.wakatimeTab.connect_body')}</div>
+          <div className="text-muted text-sm max-w-md">{i18nT('pages.overview.wakatimeTab.oauth_connect_lead')}</div>
+          {oauthErrorNotice}
+          {/* Connected but no API key yet: say it worked; the hint below names the key still needed. */}
+          {oauthConnectedNotice}
+          <WakaTimeConnect onDisconnect={() => setOauthResult(null)} />
           <div className="text-muted text-[12.5px] max-w-md">{i18nT('pages.overview.wakatimeTab.connect_hint')}</div>
         </div>
       </Card>
@@ -130,7 +174,12 @@ export default function WakaTimeTab() {
 
   return (
     <div className="space-y-4">
-      <p className="text-muted text-[12.5px] -mt-1">{i18nT('pages.overview.wakatimeTab.subtitle')}</p>
+      {oauthErrorNotice}
+      {oauthConnectedNotice}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-muted text-[12.5px] -mt-1">{i18nT('pages.overview.wakatimeTab.subtitle')}</p>
+        <WakaTimeConnect onDisconnect={() => setOauthResult(null)} />
+      </div>
       {/* Toolbar: range control + export */}
       <div className="flex flex-wrap items-center gap-2">
         <RadioChipGroup className="inline-flex rounded-md border border-border overflow-hidden"
@@ -207,6 +256,148 @@ export default function WakaTimeTab() {
           )}
         </>
       )}
+    </div>
+  )
+}
+
+// Connect/disconnect control. Reads the OAuth status so a connected account
+// shows Disconnect and an unconfigured app shows the setup hint instead of a
+// dead Connect button. Starting the flow navigates the browser to WakaTime.
+// `rejected`: WakaTime refused the last stats read, so a stored grant is dead
+// (revoked or failed refresh) and Connect is offered beside Disconnect.
+// The gateway refuses to start the flow (409 `wrong_host`) when the browser is
+// not on the address WakaTime redirects back to, for example a forwarded port,
+// and names the address to start from. Only an http(s) address becomes a link.
+function wrongAddressUrl(e: unknown): string | null {
+  if (!(e instanceof ApiError) || parseErrorCode(e.body) !== 'wrong_host') return null
+  const url = parseErrorField(e.body, 'dashboard_url')
+  if (!url || !URL.canParse(url)) return null
+  return ['http:', 'https:'].includes(new URL(url).protocol) ? url : null
+}
+
+function WakaTimeConnect({ rejected = false, onDisconnect }: { rejected?: boolean; onDisconnect: () => void }) {
+  const queryClient = useQueryClient()
+  const [busy, setBusy] = useState<'connect' | 'disconnect' | null>(null)
+  const [actionErr, setActionErr] = useState<string | null>(null)
+  const [desktopNotice, setDesktopNotice] = useState(false)
+  const [startUrl, setStartUrl] = useState<string | null>(null)
+  const { data: status, error: statusErr } = useQuery<WakaTimeOauthStatus>({
+    queryKey: ['wakatime-oauth-status'],
+    queryFn: () => api.wakatimeOauthStatus(),
+    // The OAuth app is set up outside this panel (config.json and Secrets), so
+    // read the status again each time the panel opens.
+    refetchOnMount: 'always',
+  })
+
+  const connect = async () => {
+    setActionErr(null)
+    setStartUrl(null)
+    if (isElectron) {
+      // The desktop blocks off-origin navigation. Start in a browser so the
+      // authorize request and callback share the same state cookie. Nothing
+      // failed, so this is status text, not an ErrorNotice.
+      setDesktopNotice(true)
+      return
+    }
+    setDesktopNotice(false)
+    setBusy('connect')
+    try {
+      const { authorize_url } = await api.wakatimeOauthAuthorize()
+      // Full navigation, not a fetch: WakaTime's authorize page must load in the
+      // browser so the user signs in and approves, then it redirects back.
+      window.location.assign(authorize_url)
+    } catch (e) {
+      const url = wrongAddressUrl(e)
+      if (url) setStartUrl(url)
+      else setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const disconnect = async () => {
+    setActionErr(null)
+    setStartUrl(null)
+    setDesktopNotice(false)
+    setBusy('disconnect')
+    try {
+      await api.wakatimeOauthDisconnect()
+      onDisconnect()
+      await queryClient.invalidateQueries({ queryKey: ['wakatime-oauth-status'] })
+      await queryClient.invalidateQueries({ queryKey: ['wakatime-stats'] })
+    } catch (e) {
+      setActionErr(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const notice = desktopNotice && (
+    <div role="status" className="text-muted text-[12.5px] max-w-md">
+      {i18nT('pages.overview.wakatimeTab.oauth_desktop_notice')}
+    </div>
+  )
+
+  const errNotice = startUrl ? (
+    <ErrorNotice
+      message={i18nT('pages.overview.wakatimeTab.oauth_wrong_address_body')}
+      askAgent
+      onDismiss={() => setStartUrl(null)}
+      footer={
+        <a href={startUrl} className="underline hover:text-accent transition-colors">
+          {i18nT('pages.overview.wakatimeTab.oauth_wrong_address_link')}
+        </a>
+      }
+    />
+  ) : (actionErr || statusErr) && (
+    <ErrorNotice
+      message={actionErr ?? (statusErr instanceof Error ? statusErr.message : String(statusErr))}
+      askAgent
+      onDismiss={actionErr ? () => setActionErr(null) : undefined}
+    />
+  )
+
+  if (status?.connected) {
+    return (
+      <div className="flex flex-col gap-2">
+        {rejected && status.client_configured && (
+          <Btn type="button" primary onClick={connect} disabled={busy !== null}>
+            {busy === 'connect'
+              ? i18nT('pages.overview.wakatimeTab.oauth_connecting')
+              : i18nT('pages.overview.wakatimeTab.oauth_connect_button')}
+          </Btn>
+        )}
+        <Btn type="button" onClick={disconnect} disabled={busy !== null}>
+          {busy === 'disconnect'
+            ? i18nT('pages.overview.wakatimeTab.oauth_disconnecting')
+            : i18nT('pages.overview.wakatimeTab.oauth_disconnect_button')}
+        </Btn>
+        {notice}
+        {errNotice}
+      </div>
+    )
+  }
+
+  if (status && !status.client_configured) {
+    return (
+      <div className="flex flex-col gap-2">
+        <div className="text-muted text-[12.5px] max-w-md">
+          {i18nT('pages.overview.wakatimeTab.oauth_setup_hint')}
+        </div>
+        {errNotice}
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <Btn type="button" primary onClick={connect} disabled={busy !== null}>
+        {busy === 'connect'
+          ? i18nT('pages.overview.wakatimeTab.oauth_connecting')
+          : i18nT('pages.overview.wakatimeTab.oauth_connect_button')}
+      </Btn>
+      {notice}
+      {errNotice}
     </div>
   )
 }
