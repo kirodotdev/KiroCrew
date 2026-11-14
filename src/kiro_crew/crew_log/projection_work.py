@@ -24,6 +24,7 @@ from kiro_crew.work_vocab import (
     WorkBoardItem,
     WorkBoardView,
     coerce_ask,
+    coerce_discussion,
     coerce_retired_bindings,
 )
 
@@ -127,6 +128,7 @@ _WORK_BASELINE_FIELDS: Final[tuple[str, ...]] = (
     "artifacts",
     "pr",
     "ask",
+    "discussion",
 )
 
 
@@ -394,9 +396,10 @@ def _work_step(state: dict[str, Any], entry: Entry) -> None:
         for name in _WORK_BASELINE_FIELDS:
             if name in data:
                 item[name] = _work_field(name, data[name])
-        if item.get("ask") is None:
-            # Held only while set, as the store's record holds it.
-            item.pop("ask", None)
+        for held in ("ask", "discussion"):
+            if item.get(held) is None:
+                # Held only while set, as the store's record holds it.
+                item.pop(held, None)
         # The committed stamps ride along: an item with a report or a close from
         # before the projection keeps them across a rebuild.
         for name in ("last_report_at", "closed_at", "decided_at", "pending_since"):
@@ -572,15 +575,16 @@ def _work_apply(item: dict[str, Any], data: Mapping[str, Any], stamp_ms: int) ->
         for name in _WORK_WORKER_FIELDS:
             if name in data:
                 item[name] = _work_field(name, data[name])
-        # Every report REPLACES the reason and the wake_at, so an absent one is a
-        # cleared one rather than "unchanged". wake_at is held only while set, as the
-        # store's record holds it.
+        # Every report REPLACES the reason, the wake_at and the discussion, so an
+        # absent one is a cleared one rather than "unchanged". wake_at and discussion
+        # are held only while set, as the store's record holds them.
         item["reason"] = _work_reason(data.get("reason"))
-        wake_at = _work_field("wake_at", data.get("wake_at"))
-        if wake_at:
-            item["wake_at"] = wake_at
-        else:
-            item.pop("wake_at", None)
+        for held in ("wake_at", "discussion"):
+            value = _work_field(held, data.get(held))
+            if value:
+                item[held] = value
+            else:
+                item.pop(held, None)
         item["last_report_at"] = _work_stamp(data.get("last_report_at"), stamp_ms)
     else:
         allowed = _WORK_CONDUCTOR_FIELDS.get(action)
@@ -666,6 +670,8 @@ def _work_field(name: str, value: Any) -> Any:
         return coerce_retired_bindings(value)
     if name == "ask":
         return coerce_ask(value)
+    if name == "discussion":
+        return coerce_discussion(value)
     if name == "reason":
         return _work_reason(value)
     if name == "wake_at":

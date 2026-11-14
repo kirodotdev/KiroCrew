@@ -1550,6 +1550,7 @@ the routes still read that cache.
 | `status` | string | optional | The worker's status, set by `report`. | `progress`, `done`, `blocked`, `question`, `reply` (closed) |
 | `reason` | string | optional | Why a `blocked` or `question` report waits on a person, set by `report`. A report without it clears the item's reason. | `approval`, `needs_human` (closed) |
 | `wake_at` | string | optional | When a `progress` report's worker will resume, set by `report`. A report without it clears the item's `wake_at`. | |
+| `discussion` | object | optional | Where a discussion the worker hosts stands, set by report: phase, round, minutes, direction, agreed, disputed, checking, recent and thread, checked for shape by the fold. A report without it clears the item's discussion. | |
 | `summary` | string | optional | The worker's summary, set by `report`. | |
 | `artifacts` | object | optional | String-to-string pointers replacing the item's map, set by `report`. The members are the worker's own keys and are checked for shape. | |
 | `pr` | int | optional | The pull request number, set by `report`. | |

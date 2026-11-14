@@ -579,6 +579,7 @@ def test_apply_worker_report_has_no_conductor_field_parameter():
         "pr",
         "reason",
         "wake_at",
+        "discussion",
     }
     assert not names & {"verdict", "state", "acceptance", "decision", "fails", "round_number"}
 

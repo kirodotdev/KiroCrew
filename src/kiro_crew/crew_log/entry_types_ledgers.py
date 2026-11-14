@@ -654,6 +654,16 @@ TYPES: tuple[EntryType, ...] = (
                     "without it clears the item's wake_at."
                 ),
             ),
+            Field(
+                "discussion",
+                JSON_OBJECT,
+                note=(
+                    "Where a discussion the worker hosts stands, set by report: phase, "
+                    "round, minutes, direction, agreed, disputed, checking, recent and "
+                    "thread, checked for shape by the fold. A report without it clears "
+                    "the item's discussion."
+                ),
+            ),
             Field("summary", JSON_STRING, note="The worker's summary, set by report."),
             Field(
                 "artifacts",

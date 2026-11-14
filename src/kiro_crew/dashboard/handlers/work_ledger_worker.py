@@ -140,8 +140,8 @@ _CODE_DONE_WITHOUT_EVIDENCE = "done_without_evidence"
 async def api_work_report(request: web.Request) -> web.Response:
     """POST /api/work-ledger/report — this worker's status against its own item.
 
-    ``status`` and ``summary`` are required; ``artifacts``, ``pr``, ``reason`` and
-    ``wake_at`` are optional. There is no ``item_id``, no ``session``, no ``acceptance``, no
+    ``status`` and ``summary`` are required; ``artifacts``, ``pr``, ``reason``,
+    ``wake_at`` and ``discussion`` are optional. There is no ``item_id``, no ``session``, no ``acceptance``, no
     ``verdict`` and no ``state``, so no round trip through here can write a
     conductor-owned field.
     """
@@ -190,6 +190,13 @@ async def api_work_report(request: web.Request) -> web.Response:
         cleaned = crew_log_emit.safe_work_fields(cleaned)
     except crew_log_emit.WorkFieldError as exc:
         return _refuse_400(work_ledger.CODE_INVALID_VALUE, str(exc))
+    # Checked here as well as in the store, so a bad part is refused by name before
+    # the fit probe, and the probe measures the complete object the store keeps.
+    try:
+        discussion = work_ledger._require_discussion(cleaned.get("discussion"))
+    except WorkLedgerError as exc:
+        _audit(key, "work_report", "denied", resources=item_id, error=exc.code)
+        return _refuse_store_error(exc)
     if cleaned.get("status") == "done" and not cleaned.get("artifacts") and not cleaned.get("pr"):
         # A ``done`` names what the conductor should check. One pointer is enough,
         # and a check that could not run is still a pointer when it says so.
@@ -232,6 +239,7 @@ async def api_work_report(request: web.Request) -> web.Response:
         wake_at=_WIDEST_STAMP if cleaned.get("wake_at") is not None else None,
         summary=cleaned.get("summary"),
         artifacts=cleaned.get("artifacts") or {},
+        discussion=discussion,
         pr=work_ledger.MAX_PR,
         last_report_at=_WIDEST_STAMP,
         event=_WIDEST_EVENT_TEXT,
@@ -296,6 +304,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                     cleaned.get("pr"),
                     cleaned.get("reason"),
                     cleaned.get("wake_at"),
+                    discussion,
                 )
             except WorkLedgerError as exc:
                 _audit(caller, "work_report", "denied", resources=item_id, error=exc.code)
@@ -329,6 +338,7 @@ async def api_work_report(request: web.Request) -> web.Response:
                 wake_at=item.wake_at,
                 summary=item.summary,
                 artifacts=item.artifacts,
+                discussion=item.discussion,
                 pr=item.pr,
                 last_report_at=item.last_report_at,
                 event=getattr(result.get("event"), "text", None),
@@ -451,6 +461,7 @@ _WORKER_REPORT_FIELDS: tuple[str, ...] = (
     "wake_at",
     "summary",
     "artifacts",
+    "discussion",
     "pr",
     "round",
     "last_report_at",
@@ -466,6 +477,7 @@ def _report(
     pr: Any,
     reason: Any = None,
     wake_at: Any = None,
+    discussion: Any = None,
 ) -> dict[str, Any]:
     return work_ledger.apply_worker_report(
         conductor_key,
@@ -476,6 +488,7 @@ def _report(
         pr=pr,
         reason=reason,
         wake_at=wake_at,
+        discussion=discussion,
     )
 
 

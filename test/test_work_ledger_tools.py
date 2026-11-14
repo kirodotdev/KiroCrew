@@ -1054,7 +1054,7 @@ def test_the_schema_caps_restate_the_stores_own():
 def test_the_worker_schema_has_no_conductor_field():
     """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
     names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
-    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
+    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at", "discussion"}
     for forbidden in (
         "item_id",
         "session",

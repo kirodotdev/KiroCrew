@@ -56,6 +56,7 @@ from kiro_crew.work_ledger_rules import (
     _require_artifacts,
     _require_choice,
     _require_count,
+    _require_discussion,
     _require_pr,
     _require_text,
     _require_wake_at,
@@ -751,14 +752,15 @@ def apply_worker_report(
     pr: Any = None,
     reason: Any = None,
     wake_at: Any = None,
+    discussion: Any = None,
 ) -> dict[str, Any]:
     """Write the fields the WORKER owns: ``status``, ``reason``, ``wake_at``,
-    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is
-    reachable from here.
+    ``summary``, ``artifacts``, ``pr``, ``discussion`` and ``last_report_at``.
+    Nothing else is reachable from here.
 
     ``reason`` rides only on ``blocked`` / ``question``, and ``wake_at`` (when the
-    worker will resume) only on ``progress``. Every report replaces both, so a later
-    report without one clears it.
+    worker will resume) only on ``progress``. Every report replaces those two and
+    ``discussion``, so a later report without one clears it.
 
     No ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round`` parameter,
     so a worker cannot accept itself or widen its bar; ``status: done`` only
@@ -790,6 +792,7 @@ def apply_worker_report(
                 field="reason",
             )
     checked_wake_at = _require_wake_at(wake_at, checked_status)
+    checked_discussion = _require_discussion(discussion)
     checked_id = _require_item_id(item_id)
 
     with item_lock(slot_key, checked_id, create=False):
@@ -803,6 +806,7 @@ def apply_worker_report(
         item.status = checked_status
         item.reason = checked_reason
         item.wake_at = checked_wake_at
+        item.discussion = checked_discussion
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:

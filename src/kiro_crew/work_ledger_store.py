@@ -737,6 +737,7 @@ def _copy_item(item: WorkItem, directory: Path) -> WorkItem:
     copied.acceptance = acceptance
     copied.artifacts = dict(item.artifacts)
     copied.retired_bindings = [dict(b) for b in item.retired_bindings]
+    copied.discussion = _json_copy(item.discussion)
     return copied
 
 

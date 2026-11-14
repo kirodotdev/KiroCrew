@@ -52,6 +52,7 @@ An item is the unit of dispatch. It holds:
 | `summary` | worker | the worker's own account, up to 500 chars |
 | `artifacts` | worker | pointers to what it produced |
 | `pr` | worker | a pull-request number it produced |
+| `discussion` | worker | only when it hosts a discussion: where it stands, shown on the goal board as a discussing row |
 
 The conductor writes its half with `work_ledger_record` (one action per call:
 `goal`, `create`, `bind`, `decide`, `verdict`, `accept`, `close`) and reads the
@@ -210,6 +211,8 @@ on any other status (`wake_at_requires_progress`): a longer wait is a `blocked`
 report. Every report replaces it. Nothing wakes the conductor at that time yet; a
 worker still idle one window after it is flagged `stale` like any other. A
 remote-dispatch report does not carry it to the hub's board yet.
+
+**`discussion` is where a discussion the worker hosts stands.** It is an object: `phase` (`talking`, `checking`, `asking` or `done`), `round`, `minutes`, `direction` (up to 200 chars), `agreed` (up to 8 lines), `disputed` (up to 5 `{point, sides}`), `checking` (up to 3 lines), `recent` (up to 6 `{who, text}`) and `thread` (up to 512 chars), an http(s) URL or an `/artifacts`, `/chat`, `/schedule`, `/capabilities` or `/settings` path to the full back-and-forth. The worker sends the whole object every time; each report replaces it, and one without it clears it. A part over its cap, malformed or unknown is refused whole (`field_too_long` or `invalid_value`), and the refusal's `field` names the part, such as `discussion.agreed[3]`: nothing is cut. It rides the `work/recorded` entry and the work fold, so `work_ledger_read` and the goal board read it. The goal board shows an open item that carries one as "Discussing", with its counts on the row and the rest behind a toggle. A question for the person still goes through `status: question` and the board's needs-you band.
 
 **A report is the only thing that wakes a conductor.** `blocked`, `question`
 and `done` (and `reply`, while `work_ledger.remote_dispatch` is on) pull its
