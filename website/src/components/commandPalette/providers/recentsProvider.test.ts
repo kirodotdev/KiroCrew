@@ -20,6 +20,9 @@ type MockState = {
   dashboard: { slots: ChatSlot[]; unreadSlots: string[] }
   chat: {
     slotStatusDetail: Record<string, { kind?: string; text?: string; toolName?: string; ts?: number }>
+    activeSlot?: string | null
+    slotState?: string
+    slotRun?: Record<string, { state: string }>
   }
 }
 
@@ -344,7 +347,7 @@ describe('useRecentsProvider — live status bridge', () => {
     vi.clearAllMocks()
     mocks.state.dashboard.slots = []
     mocks.state.dashboard.unreadSlots = []
-    mocks.state.chat.slotStatusDetail = {}
+    mocks.state.chat = { slotStatusDetail: {} }
     mocks.fetchQuery.mockImplementation(({ queryKey }: { queryKey: unknown[] }) =>
       Promise.resolve(queryKey[2] === 'history' ? { sessions: [] } : []),
     )
@@ -368,6 +371,30 @@ describe('useRecentsProvider — live status bridge', () => {
       statusPulse: true,
       statusLabel: 'Running: read /workspace/src/app.ts',
     })
+  })
+
+  it('says Compacting… for a compacting slot, active or not, as the chat footer does', async () => {
+    // The status detail still holds the pre-compaction thinking phase; only the
+    // slot's run state says a compaction is running.
+    mocks.state.dashboard.slots = [
+      slot({ key: 'active', running: true }),
+      slot({ key: 'background', running: true }),
+      slot({ key: 'thinking', running: true }),
+    ]
+    mocks.state.chat = {
+      slotStatusDetail: { active: { kind: 'thinking', ts: 1 }, background: { kind: 'thinking', ts: 1 } },
+      activeSlot: 'active',
+      slotState: 'compacting',
+      slotRun: { background: { state: 'compacting' }, thinking: { state: 'streaming' } },
+    }
+
+    const { result } = renderHook(() => useRecentsProvider())
+    const rows = await result.current.search('')
+    const labelFor = (key: string) => rows.find((row) => row.id === `recents:cur:${key}`)?.statusLabel
+
+    expect(labelFor('active')).toBe('Compacting…')
+    expect(labelFor('background')).toBe('Compacting…')
+    expect(labelFor('thinking')).toBe('Thinking…')
   })
 
   it('displays the newer last_ts when last_activity_ts is nonempty', async () => {

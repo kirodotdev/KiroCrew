@@ -36,6 +36,7 @@ const H = vi.hoisted(() => {
         string,
         { kind: string; purpose?: string; label?: string; ts: number; toolName?: string }
       >,
+      slotRun: {} as Record<string, { state: string }>,
     },
   }
   const onActivateRecent = vi.fn()
@@ -240,6 +241,7 @@ afterEach(() => {
   H.storeState.dashboard.unreadSlots = []
   H.sessionsOpenKeys.length = 0
   H.storeState.chat.slotStatusDetail = {}
+  H.storeState.chat.slotRun = {}
   // localStorage is file-scoped, not per-test: a chat-config write (e.g. the
   // simplifiedToolNames toggle test) would otherwise persist into siblings.
   localStorage.removeItem('mc-chat-config')
@@ -533,6 +535,22 @@ describe('CommandPalette — render', () => {
     }
     rerender(<CommandPalette open onClose={vi.fn()} />)
     await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(4))
+  })
+
+  it('refreshes recents when a running slot starts compacting under an unchanged status detail', async () => {
+    // A compaction moves only the slot's run state; the status detail keeps the
+    // phase from before it, so the row's "Compacting…" depends on the key reading it.
+    H.storeState.dashboard.slots = [
+      { key: 'chat-1', title: 'Live session', running: true, messages: 2 },
+    ]
+    H.storeState.chat.slotStatusDetail = { 'chat-1': { kind: 'thinking', ts: 1 } }
+    const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+    expect(H.recentsProvider.search).toHaveBeenCalledTimes(1)
+
+    H.storeState.chat.slotRun = { 'chat-1': { state: 'compacting' } }
+    rerender(<CommandPalette open onClose={vi.fn()} />)
+    await waitFor(() => expect(H.recentsProvider.search).toHaveBeenCalledTimes(2))
   })
 
   it('refreshes recents when last_ts advances beyond a nonempty activity timestamp', async () => {
