@@ -72,6 +72,7 @@ OPS: tuple[str, ...] = (
     "console",
     "screenshot",
     "tabs",
+    "dialog",
     "reflex",
     # Served by the gateway route itself (``dashboard/handlers/browser_ask.py``):
     # it needs the live card, which this module never sees. ``run_op`` refuses it.
@@ -131,6 +132,9 @@ WAIT_DEFAULT_S = 5.0
 WAIT_MAX_S = 30.0
 WAIT_POLL_S = 0.1
 CONSOLE_CAP = 500
+#: Longest dialog message passed on: the page writes it, and a long one is noise.
+DIALOG_MESSAGE_CAP = 1000
+_DIALOG_ACTIONS = {"accept": "accepted", "dismiss": "dismissed"}
 SCROLL_DEFAULT_PX = 300
 TEXT_CAP = 20_000
 _URL_MAX = 4096
@@ -1346,6 +1350,83 @@ async def _tabs(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     return refusal("bad_action", "tabs action must be one of: list, switch, new")
 
 
+def _dialog_view(raw: Any) -> dict[str, Any] | None:
+    """What the agent is told of an open dialog: its kind, text and default answer.
+
+    The page writes all three, so the text is capped, and the page's address is
+    left out (it can carry a token).
+    """
+    if not isinstance(raw, dict):
+        return None
+    view: dict[str, Any] = {
+        "type": str(raw.get("type") or "alert"),
+        "message": str(raw.get("message") or "")[:DIALOG_MESSAGE_CAP],
+    }
+    default = raw.get("defaultPrompt")
+    if isinstance(default, str) and default:
+        view["default"] = default[:DIALOG_MESSAGE_CAP]
+    return view
+
+
+async def _dialog(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    """Report the page's open JavaScript dialog, and answer it when asked.
+
+    A dialog (alert, confirm, prompt, leave-page) holds the page's script until it
+    is answered, so every other op fails while one is open. With no ``action`` the
+    dialog is only reported. A bad ``action`` or ``text`` is left out and named in
+    the ``warning``; it never makes the op fail.
+    """
+    notes: list[str] = []
+    action = args.get("action")
+    if action is not None and (not isinstance(action, str) or action not in _DIALOG_ACTIONS):
+        notes.append("`action` ignored: it must be accept or dismiss; the dialog is only reported")
+        action = None
+    text = args.get("text")
+    if text is not None and (not isinstance(text, str) or len(text) > TEXT_CAP):
+        notes.append(f"`text` ignored: it must be a string of at most {TEXT_CAP} characters")
+        text = None
+    if text is not None and action != "accept":
+        notes.append("`text` ignored: it is only used with action accept")
+        text = None
+    await _step(ctx, f"{action.capitalize()} a dialog" if action else "Check for a dialog")
+    kwargs: dict[str, Any] = {}
+    if action:
+        kwargs["action"] = action
+    if text is not None:
+        kwargs["text"] = text
+    reply = await ctx.helper("dialog", **kwargs)
+    shown = _dialog_view(reply.get("dialog") if isinstance(reply, dict) else None)
+    result: dict[str, Any] = {"ok": True, "dialog": shown}
+    if shown is not None and action and reply.get("answered") == action:
+        result["answered"] = _DIALOG_ACTIONS[action]
+        if text is not None and shown["type"] != "prompt":
+            notes.append("`text` ignored: the dialog is not a prompt")
+    if notes:
+        result["warning"] = "; ".join(notes)
+    return result
+
+
+def _dialog_open(shown: dict[str, Any]) -> dict[str, Any]:
+    """The refusal for an op the page could not answer because a dialog holds it."""
+    kind = shown["type"]
+    answer = " (and `text` for the prompt's answer)" if kind == "prompt" else ""
+    return refusal(
+        "dialog_open",
+        f"the page has an open {kind} dialog with the text {json.dumps(shown['message'])}, "
+        f"which blocks it until it is answered. Call `dialog` with action accept or dismiss"
+        f"{answer}; an op sent just before it may or may not have taken effect.",
+    )
+
+
+async def _open_dialog(ctx: OpContext) -> dict[str, Any] | None:
+    """The dialog the page holds open now, or ``None`` (also when it cannot be read)."""
+    try:
+        info = await ctx.helper("page_info")
+    except Exception:  # noqa: BLE001 - unreadable: the op's own error is the one to report
+        return None
+    return _dialog_view(info.get("dialog")) if isinstance(info, dict) else None
+
+
 async def _reflex(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     """The fast loop (``browser_harness.reflex``), resolved at call time: it imports
     this module, and it is only ever needed when the agent asks for it."""
@@ -1373,6 +1454,7 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "console": _console,
     "screenshot": _screenshot,
     "tabs": _tabs,
+    "dialog": _dialog,
     "reflex": _reflex,
     "ask": _ask_elsewhere,
 }
@@ -1430,3 +1512,16 @@ async def run_op(op: str, args: dict[str, Any], ctx: OpContext) -> dict[str, Any
         return result  # type: ignore[no-any-return]
     except _PageRefused as exc:
         return exc.result
+    except Exception as exc:
+        # Imported here: the MCP servers' tool listing imports this module, and the
+        # supervisor module loads the HTTP client stack.
+        from kiro_crew.browser_harness.supervisor import HelperError
+
+        if not isinstance(exc, HelperError) or op == "dialog":
+            raise
+        # A dialog holds the page's script, so an op the page cannot answer times out:
+        # say what holds it. With none open the helper's own error is kept.
+        shown = await _open_dialog(raw_ctx)
+        if shown is None:
+            raise
+        return _dialog_open(shown)

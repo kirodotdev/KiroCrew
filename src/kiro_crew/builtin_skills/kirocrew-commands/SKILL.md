@@ -134,7 +134,7 @@ type a reply to the agent instead. Anything else denies.
 ## Browsing (`browser` MCP tool)
 
 Browsing is not a `kirocrew` subcommand. It is the **`browser` MCP tool**:
-`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|reflex|ask`.
+`op=navigate|back|snapshot|click|drag|scroll|type|press_key|hover|select_option|wait_for|console|screenshot|tabs|dialog|reflex|ask`.
 It drives one browser the gateway owns (the user's own Chrome where there is
 one, Edge on Windows without Chrome, otherwise Kiro's headless Chromium), and the
 user watches the page live in the chat, where one click takes over. It opens
