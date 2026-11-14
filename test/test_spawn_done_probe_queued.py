@@ -66,3 +66,44 @@ def test_probe_tolerates_a_manager_without_is_queued() -> None:
 def test_probe_handles_no_manager_and_empty_id() -> None:
     assert build_done_probe(None)("x") is True
     assert build_done_probe(_subagents())("") is True
+
+
+@pytest.mark.parametrize(
+    ("record", "succeeded"),
+    [
+        pytest.param(SimpleNamespace(done=True, outcome="completed"), True, id="completed"),
+        pytest.param(SimpleNamespace(done=True, outcome="failed"), False, id="failed"),
+        pytest.param(SimpleNamespace(done=True, outcome="stopped"), False, id="stopped"),
+        pytest.param(SimpleNamespace(done=False, outcome="completed"), False, id="running"),
+        pytest.param(None, False, id="unknown_id"),
+    ],
+)
+def test_only_a_run_the_host_reports_completed_reads_as_a_success(record, succeeded) -> None:
+    """An app marks work done only on a success; a failed, stopped, still running
+    or forgotten run must read as no success so the app retries or reports it."""
+    from kiro_crew.apps import spawn_sdk
+
+    tracked = {} if record is None else {"r": record}
+    assert spawn_sdk.build_success_probe(_subagents(tracked=tracked))("r") is succeeded
+
+
+def test_the_success_probe_handles_no_manager_and_empty_id() -> None:
+    from kiro_crew.apps import spawn_sdk
+
+    assert spawn_sdk.build_success_probe(None)("x") is False
+    assert spawn_sdk.build_success_probe(_subagents(tracked={"": None}))("") is False
+
+
+def test_the_sdk_reads_a_success_from_its_probe_and_no_probe_as_none() -> None:
+    from kiro_crew.apps.spawn_sdk import SpawnSDK
+
+    def _impl(*_a: object) -> str:
+        return "r"
+
+    assert SpawnSDK("app", _impl, success_probe=lambda sid: sid == "r").succeeded("r") is True
+    assert SpawnSDK("app", _impl).succeeded("r") is False
+
+    def _broken(_sid: str) -> bool:
+        raise RuntimeError("probe broke")
+
+    assert SpawnSDK("app", _impl, success_probe=_broken).succeeded("r") is False

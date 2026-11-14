@@ -1341,6 +1341,7 @@ except SpawnError as exc:
 | `run(task, agent, *, silent=False, model="", keep=False)` | run id | Start a background agent. With no `model`, the user's `apps.<name>.model` setting applies unless the agent pins one. `keep=True` gives the run its own process and keeps its conversation for hours instead of about one |
 | `continue_(spawn_id, task, *, model="", silent=False)` | new run id | Send a follow-up task to a finished run's conversation, so the agent keeps the context of the earlier run |
 | `is_done(run_id)` | bool | True once the run has finished, whatever the outcome |
+| `succeeded(run_id)` | bool | True only when the host reports the run completed. `is_done` is also True for a failed run or an id the host does not know, so ask `succeeded` before you record the work as done. A failed, stopped, still running or unknown run returns False |
 
 `continue_` takes the id `run` returned. That id stays the conversation's id, so
 pass it again for every later follow-up; the new id is only for `is_done`. The

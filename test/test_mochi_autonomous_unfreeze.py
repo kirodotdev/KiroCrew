@@ -90,6 +90,24 @@ class TestSpawnCompletionWatcher:
         )
         assert released == ["id-1"]
 
+    @pytest.mark.parametrize("outcome", [True, False])
+    def test_the_poller_reads_a_run_outcome_from_the_spawn_capability(self, tmp_path, outcome):
+        ctx = _ctx(tmp_path)
+        asked: list[str] = []
+
+        class _Spawn:
+            def succeeded(self, spawn_id: str) -> bool:
+                asked.append(spawn_id)
+                return outcome
+
+        ctx.spawn = _Spawn()
+        callbacks = hooks._PollerCallbacks(hooks.MochiRuntime(ctx))
+        assert (callbacks.agent_succeeded("id-1"), asked) == (outcome, ["id-1"])
+
+    def test_without_a_spawn_capability_no_run_reads_as_a_success(self, tmp_path):
+        callbacks = hooks._PollerCallbacks(hooks.MochiRuntime(_ctx(tmp_path)))
+        assert callbacks.agent_succeeded("id-1") is False
+
     @pytest.mark.asyncio
     async def test_empty_spawn_id_starts_no_watcher(self, tmp_path):
         runtime = hooks.MochiRuntime(_ctx(tmp_path))
