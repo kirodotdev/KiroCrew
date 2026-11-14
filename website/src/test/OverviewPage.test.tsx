@@ -44,6 +44,8 @@ const usageToday = vi.hoisted(() => ({ sessions: 3, messages: 42, toolCalls: 5 }
 const todayKey = vi.hoisted(() => '2026-11-11')
 // Whether the provider reports usage; one test turns it off.
 const usageCaps = vi.hoisted(() => ({ usageBilling: true }))
+// The plan's used share; one test sets a nearly-full plan.
+const billingShare = vi.hoisted(() => ({ pct: 42 }))
 
 // Usage summary card goes through the provider seam.
 vi.mock('../providers', () => ({
@@ -60,7 +62,7 @@ vi.mock('../providers', () => ({
         avgMsgsPerSession: 12,
         dailyHistory: [],
       },
-      billing: { plan: 'Pro', percentUsed: 42, unit: 'tokens' },
+      billing: { plan: 'Pro', percentUsed: billingShare.pct, unit: 'tokens' },
       // 30-day totals; the Today line reads today's bucket below instead.
       tokens: { total: 900_000 },
       costUsd: 99,
@@ -322,6 +324,16 @@ describe('OverviewPage — whole-sentence lines', () => {
     await act(async () => { await i18next.changeLanguage('de') })
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(await screen.findByText(line('SPAN', '42\u00a0%'))).toBeInTheDocument()
+  })
+
+  it('does not round a nearly-full plan up to 100%', async () => {
+    billingShare.pct = 99.96
+    try {
+      renderWithProviders(<OverviewPage />, { store: statusStore() })
+      expect(await screen.findByText(line('SPAN', '99.9%'))).toBeInTheDocument()
+    } finally {
+      billingShare.pct = 42
+    }
   })
 
   it('keeps the WakaTime total styled inside its sentence', async () => {
