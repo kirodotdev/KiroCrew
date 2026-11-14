@@ -112,16 +112,15 @@ APPROVAL_INTERACTIVE = "interactive"
 #:
 #: A decider MAY also carry ``last_deny_cause``: set on every call, ``""`` for a
 #: human's own answer (or no answer worth explaining) and a ``DENY_CAUSE_*``
-#: name from ``kiro_crew.constants`` when the denial was the host's doing.
-#: Today that is :data:`DENY_CAUSE_APPROVAL_TIMEOUT`, recorded by every shipped
-#: decider when its prompt expires unanswered, or
-#: :data:`DENY_CAUSE_APPROVAL_UNDELIVERABLE`, recorded when the prompt never
-#: reached the channel (text-reply, Discord, Telegram and Teams deciders). The
-#: driver steers both, each with its own reason. The driver reads it after a
-#: denial and steers the cause into the running turn BEFORE it rejects, so the
-#: model is not left with kiro-cli's generic "User denied tool execution" for a
-#: call nobody answered. A plain callable without the attribute is a denial
-#: with no cause, exactly as before.
+#: name from ``kiro_crew.constants`` when the denial was the host's doing:
+#: :data:`DENY_CAUSE_APPROVAL_TIMEOUT`, recorded by every shipped decider when
+#: its prompt expires unanswered, or :data:`DENY_CAUSE_APPROVAL_UNDELIVERABLE`,
+#: recorded when the prompt never reached the channel (text-reply, Discord,
+#: Telegram and Teams deciders). After a denial the driver steers the cause into
+#: the running turn BEFORE it rejects, each with its own reason, so the model is
+#: not left with kiro-cli's generic "User denied tool execution" for a call
+#: nobody answered. A plain callable without the attribute is a denial with no
+#: cause.
 ApprovalDecider = Callable[[Any], Awaitable[bool]]
 
 #: Strong references to the teardown-time orphan rejects scheduled by
