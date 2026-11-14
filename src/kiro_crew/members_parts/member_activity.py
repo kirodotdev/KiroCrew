@@ -129,12 +129,11 @@ def record_activity(
         svc.append(slug, ACTIVITY_RECORD, entry)
         return True
     except Exception as exc:
-        # An ``already_owned`` refusal is a LOSS and is logged as a warning. The
-        # write lease is taken non-blocking, so a second process appending at the
-        # same instant (``kirocrew-core`` runs as its own subprocess) is refused
-        # and the entry is never written. ``crew_log.lease`` says the caller
-        # reports the loss rather than retrying; a debug line would make a dropped
-        # routing decision look like a member that was never routed.
+        # ``already_owned`` is a LOST entry, so warn. The write lease is
+        # non-blocking: a second process appending at the same instant
+        # (``kirocrew-core`` is its own subprocess) is refused and nothing is
+        # written. ``crew_log.lease`` says report the loss, do not retry; a
+        # debug line would hide a dropped routing decision.
         if getattr(exc, "code", "") == CODE_ALREADY_OWNED:
             logger.warning(
                 "member activity entry DROPPED for %r (session %r, via %r): another "
