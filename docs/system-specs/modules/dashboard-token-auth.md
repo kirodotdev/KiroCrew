@@ -350,10 +350,14 @@ def try_consume(token: str) -> bool: ...
 def revoke_all_sessions() -> None: ...
     # Clears all nonces, IP bindings, and consumed tokens AND bumps the
     # persisted revocation-generation counter, so every outstanding cookie
-    # (for all users) is rejected. Used by `kirocrew logout`. The counter is
-    # authoritative over BOTH cookie types: validate_token() AND
-    # validate_refresh_token() reject a token whose embedded gen is stale, so
-    # the bump ends established access cookies and refresh chains alike.
+    # (for all users) is rejected. The counter is authoritative over BOTH
+    # cookie types: validate_token() AND validate_refresh_token() reject a
+    # token whose embedded gen is stale, so the bump ends established access
+    # cookies and refresh chains alike.
+
+async def revoke_all_sessions_async() -> None: ...
+    # The same revocation for the event loop; `kirocrew logout` (POST
+    # /api/logout) awaits it. Only the counter write runs on a worker thread.
 
 def revoke_access_cookie(token: str) -> bool: ...
     # Per-session revocation (CWE-613). Validates the token, then adds ITS nonce
@@ -609,7 +613,7 @@ class TokenStateManager:
 
 `TokenStateManager` bounds concurrent link nonces and evicts the oldest through `OrderedDict.popitem(last=False)`; a successful nonce check refreshes that nonce's eviction position. This allows multiple browser tabs and `kirocrew token` invocations without unbounded link-state growth (`token_auth.TokenStateManager`).
 
-The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist + `kind=session` or a non-empty `app` claim — it never consults the in-memory link-nonce set. Identity-persistent `require_peer` cookies additionally prove the original device with their signed `peer_key` before the hot pin is reconstructed; the deliberately fail-closed exception is a legacy claimless `require_peer` cookie, which must re-scan once because its original device cannot be recovered safely. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. When `token_revoked_nonces.json` or `refresh_chains.json` exists but cannot be read (for example a Windows handle held without read sharing), the store does not read it as empty: access cookies or refresh rotations are refused, the file is not rewritten, a logout in that window answers 503 because its record is held in memory only, and the next check re-reads it, so the store recovers once the file reads again (`test_auth_store_unreadable.py`). A missing file still starts empty. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions()`, which bumps the generation both token kinds embed and check).
+The in-memory `TokenStateManager` (link nonces, IP bindings, consumed set) is cleared on restart, but this does **not** log users out: an established session cookie is validated on the cookie path (`use_session_exp=True`), which needs only a valid HMAC signature (persistent key) + unexpired `session_exp` + a current revocation generation + a nonce not on the persisted denylist + `kind=session` or a non-empty `app` claim — it never consults the in-memory link-nonce set. Identity-persistent `require_peer` cookies additionally prove the original device with their signed `peer_key` before the hot pin is reconstructed; the deliberately fail-closed exception is a legacy claimless `require_peer` cookie, which must re-scan once because its original device cannot be recovered safely. Revoked-session state is durable: `RevokedNonceStore` persists to `token_revoked_nonces.json` (mode `0600`) and the revocation generation persists to `token_revocation.gen`, so a logged-out cookie stays dead across restarts while a restart alone (generation reloaded unchanged) logs nobody out. When `token_revoked_nonces.json` or `refresh_chains.json` exists but cannot be read (for example a Windows handle held without read sharing), the store does not read it as empty: access cookies or refresh rotations are refused, the file is not rewritten, a logout in that window answers 503 because its record is held in memory only, and the next check re-reads it, so the store recovers once the file reads again (`test_auth_store_unreadable.py`). A missing file still starts empty. Users can revoke a single session via `POST /api/auth/logout` (`revoke_access_cookie()`) or all sessions — access cookies and refresh chains — via `kirocrew logout` (`revoke_all_sessions_async()`, which bumps the generation both token kinds embed and check).
 
 The denylist check never waits for the disk. `is_revoked` runs on the event loop
 for every cookie request, while `revoke` writes `token_revoked_nonces.json` on a
@@ -660,6 +664,31 @@ validators fail closed until the state is repaired. The gateway warning names
 the exact file and advises deleting only that file to reset revocation state;
 the warning also states the security consequence: resetting the counter can
 re-enable unexpired sessions previously revoked by `kirocrew logout`.
+
+A `kirocrew logout` never makes token validation wait for the disk.
+`POST /api/logout` awaits `revoke_all_sessions_async()`, and only
+`persist_next_revocation_gen()` (the base read, the temp-file write and the
+rename) runs on a worker thread, under `_bump_lock`, never under the `_gen_lock`
+every validation takes (`test_validation_reads_the_counter_while_a_bump_write_is_stuck`).
+Back on the loop, with no await between, `publish_revocation_gen()` makes the
+new value live (never lowering it) and the link, pin and consumed state is
+cleared, so no loop handler sees a half-done logout and every pre-logout pin
+still holds while the write is in flight
+(`test_a_pin_stays_in_force_while_the_logout_write_is_stuck`,
+`test_only_the_logout_write_leaves_the_event_loop`). A logout that resumes after a
+newer one has published (its publish does not advance the live value) leaves the
+state alone, so a pin bound since the newer logout stays in force
+(`test_a_superseded_logout_keeps_the_pins_bound_after_the_newer_one`). The state is
+cleared only when the logout advances the live value, so a failed write raises and
+changes nothing, in `revoke_all_sessions_async()` and `revoke_all_sessions()` alike: the
+live value and every pin stay as they were
+(`test_a_failed_logout_write_raises_and_changes_nothing`). Each write builds on the
+larger of the live value and the last value this process wrote, and reads the file
+only when neither is known (the process is its only writer), so a logout that overlaps
+another never writes at or below the value the first one has written but not yet
+published, even when the file cannot be read
+(`test_a_bump_builds_on_a_value_persisted_but_not_yet_published`,
+`test_a_bump_never_writes_below_its_own_unpublished_write_when_the_file_cannot_be_read`).
 
 #### App-token scope confinement (CWE-269)
 
