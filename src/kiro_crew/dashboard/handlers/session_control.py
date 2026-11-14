@@ -15,6 +15,7 @@ import asyncio
 import functools
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from aiohttp import web
 
@@ -37,6 +38,7 @@ from kiro_crew.metrics.session_control_calls import (
     record_session_control_call,
 )
 from kiro_crew.sel import sel
+from kiro_crew.tracing import workers as trace_workers
 from kiro_crew.validation import MAX_BROADCAST_TARGETS, MAX_SHORT_STRING
 
 logger = logging.getLogger(__name__)
@@ -531,6 +533,15 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if not dry_run and isinstance(result, dict):
+        # Before the first message: that starts the worker's first turn, which takes
+        # the link this registers.
+        trace_workers.created(
+            getattr(state, "sessions", None),
+            _read_session_key(request),
+            str(result.get("target") or ""),
+            trace_workers.OP_CREATE,
+        )
     if failover_from is not None and isinstance(result, dict):
         # Moved by agent.acp_failover, as a spawn is: the caller asked for one
         # harness and the session runs on another vendor's, so the reply says so.
@@ -634,6 +645,13 @@ async def api_session_control_fork(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    if isinstance(result, dict):
+        trace_workers.created(
+            getattr(state, "sessions", None),
+            _read_session_key(request),
+            str(result.get("target") or ""),
+            trace_workers.OP_FORK,
+        )
     return web.json_response(result)
 
 
@@ -1204,6 +1222,7 @@ async def api_session_control_adopt(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    _trace_manager_change(request, state, trace_workers.OP_ADOPT, result, "parent", "parent")
     return web.json_response(result)
 
 
@@ -1228,6 +1247,7 @@ async def api_session_control_handoff(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    _trace_manager_change(request, state, trace_workers.OP_HANDOFF, result, "manager", "manager")
     return web.json_response(result)
 
 
@@ -1248,7 +1268,24 @@ async def api_session_control_release(request: web.Request) -> web.Response:
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
+    _trace_manager_change(request, state, trace_workers.OP_RELEASE, result, "parent", "")
     return web.json_response(result)
+
+
+def _trace_manager_change(
+    request: web.Request, state: "DashboardState", op: str, result: Any, old: str, new: str
+) -> None:
+    """A committed adopt, handoff or release as a span; *old* and *new* name the result's
+    keys for the previous and the new manager (``previous_<old>``, ``<new>``)."""
+    if isinstance(result, dict):
+        trace_workers.manager_changed(
+            getattr(state, "sessions", None),
+            _read_session_key(request),
+            op,
+            str(result.get("target") or ""),
+            str(result.get(f"previous_{old}") or ""),
+            str(result.get(new) or "") if new else "",
+        )
 
 
 # ``read_message``, not ``read``: the op names the TOOL the agent called

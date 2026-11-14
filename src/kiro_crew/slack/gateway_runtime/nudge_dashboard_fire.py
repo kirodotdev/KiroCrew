@@ -392,6 +392,8 @@ async def _start_dashboard_wake_turn(
     if not await self._dashboard_mode_admits(loop, slot):
         await self._audit_fire_refused(loop, slot)
         return MonitorDispatchResult.UNAVAILABLE
+    # A turn of the conductor's work-ledger watch (tracing: its patrol turn).
+    patrol = self._work_ledger_wake_loop(loop, wake_message)
     # Asked again after the last await before the turn is spawned: a Pause all
     # that landed during the body's ledger read or the admission check holds it.
     # From here to the spawn nothing suspends, and a spawned turn is one Pause
@@ -574,13 +576,17 @@ async def _start_dashboard_wake_turn(
         # ``_caller_key`` -- which judges the containment and records the
         # admission itself, inside this very turn. The gate sits at the one
         # place that reads the board.
-        await _run_chat(
-            dashboard_state,
-            turn_slot,
-            tagged,
-            _directive_user_origin=False,
-            **run_kwargs,
-        )
+        from kiro_crew.tracing import work as trace_work
+
+        # A turn of the conductor's work-ledger watch links to the reports it answers.
+        with trace_work.patrol_turn(patrol):
+            await _run_chat(
+                dashboard_state,
+                turn_slot,
+                tagged,
+                _directive_user_origin=False,
+                **run_kwargs,
+            )
 
     async def _run_background_turn() -> None:
         try:

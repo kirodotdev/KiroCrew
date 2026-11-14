@@ -416,6 +416,61 @@ def test_with_the_chain_on_a_closed_conductor_hands_up_the_workers_it_created(
     assert _reaches(state, lead, own, "send")
 
 
+@pytest.mark.parametrize(
+    ("remove_override", "worker_open"),
+    [(False, True), (True, True), (True, False)],
+    ids=["handed-up", "returned-to-creator", "closed-worker"],
+)
+def test_a_hand_back_is_one_manager_change_span_per_session(
+    tmp_path, monkeypatch, remove_override, worker_open
+):
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from kiro_crew.tracing import correlation, provider
+
+    _chain_on(monkeypatch)
+    state = _make_state(tmp_path)
+    lead, conductor, worker = _team(state)
+    # A parentless ancestor taking the worker drops its override on hand-back.
+    departed = state.get_slot("chat-owner") if remove_override else conductor
+    _hand(state, departed if remove_override else lead, worker, departed)
+    state._slots.pop(departed.key)
+    if not worker_open:
+        state._slots.pop(worker.key)
+    exporter = InMemorySpanExporter()
+    hash_key = b"k" * 32
+    provider.install_for_testing(
+        provider.new_state(
+            SimpleSpanProcessor(exporter), "00112233445566778899aabbccddeeff", hash_key
+        )
+    )
+    try:
+        assert asyncio.run(sc.hand_back_on_close(state, departed)) == [worker.key]
+        (span,) = exporter.get_finished_spans()
+    finally:
+        provider.reset_for_testing()
+
+    if remove_override:
+        assert worker.key not in session_managers.load()
+    assert session_managers.holder(worker) == lead.key
+    assert span.name == "kirocrew.session.manager_change"
+    assert span.parent is None
+    assert span.attributes["kirocrew.session.op"] == "hand_back"
+    assert span.attributes["kirocrew.session.target_hash"] == correlation.keyed_hash(
+        hash_key, _key(worker)
+    )
+    assert span.attributes["kirocrew.session.previous_manager_hash"] == correlation.keyed_hash(
+        hash_key, _key(departed)
+    )
+    if worker_open:
+        assert span.attributes["kirocrew.session.manager_hash"] == correlation.keyed_hash(
+            hash_key, _key(lead)
+        )
+    else:
+        assert "kirocrew.session.manager_hash" not in span.attributes
+
+
 def test_with_the_chain_off_a_closed_conductor_hands_nothing_back(tmp_path):
     state = _make_state(tmp_path)
     lead, conductor, worker = _team(state)

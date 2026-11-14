@@ -2174,6 +2174,48 @@ carries ids, closed-vocabulary values and counts only: `kirocrew.work.action`,
 and on a report `status`, `reason` and the `pr` number. Never the goal, a title,
 acceptance, decision, summary or artifact text.
 
+**Reports, wakes and board health** (`tracing/work.py`). A worker report that never
+reached its item (`undelivered_call_watch.record_undelivered_call`) is a
+`kirocrew.work.report_undelivered` span under its item. A turn the conductor's
+work-ledger watch delivers runs inside `work.patrol_turn`
+(`slack/gateway_runtime/nudge_dashboard_fire.py`), which sets a one-shot mark the first
+turn to bind claims: the mark follows the turn into the task fair admission runs it in,
+and the turn's queue hand-off (`chat_turn/queue_cycle._hand_off_queue`) spends a mark it
+never claimed (refused or cancelled before binding, or bound with tracing off), so a
+queued turn it hands off to is not a patrol turn. `bind_turn` gives the patrol turn one link
+per report span and undelivered event written on its board since the last such turn
+(at most 64, the newest), so a wake that answers a batch names each report. The report
+and worker-creation links are taken after the awaited crew reads, immediately before
+root binding with no await between: a cancelled read leaves the links pending and the
+patrol mark unclaimed. An ordinary read failure still binds and takes the links.
+The worker report route queues its span's link after the authoritative record lands
+and before the worker mirror append, but the board copy's eager publication can
+still start a wake that binds during the trace call's thread hop and misses the link,
+leaving it for the next patrol turn until a post-append, pre-publication hook closes
+that window. A wake
+steered into a turn already running adds no links (a span's links are fixed at its
+start); those wait for the next patrol turn. A whole-board `work_ledger_read` puts
+counts on the reading turn's span: `kirocrew.work.open_items`, `stale_items`,
+`orphaned_items`, `pending_overdue_items` and `undelivered_items`, the read's own
+derived flags.
+
+**Sessions** (`tracing/workers.py`). A `session_create` or `session_fork` the dashboard
+serves (`work_dispatch` creates through the same route) is a `kirocrew.session.create`
+/ `kirocrew.session.fork` span in the calling turn, and the new session's first traced
+turn links to it once. A handoff is a `kirocrew.session.manager_change` span in the
+calling turn, and a close's hand-back (`session_handoff.hand_back_on_close`) one per
+session moved, each in a trace of its own. They carry `kirocrew.session.op` and keyed
+hashes of the target, previous and new manager session keys
+(`kirocrew.session.target_hash`, `previous_manager_hash`, `manager_hash`), never a title.
+An adopt or release changes only the tree edge, so it is a
+`kirocrew.session.parent_change` span with `kirocrew.session.op`,
+`kirocrew.session.target_hash`, `kirocrew.session.previous_parent_hash` and
+`kirocrew.session.parent_hash`, never the manager pair. A missing parent is omitted
+(release has no new parent). Both kinds sit in the calling turn when one is traced,
+otherwise in a trace of their own; they share one per-turn-attempt move counter.
+A create outside a traced turn records nothing, and pending first-turn links are in
+memory only.
+
 **Deterministic ids** (`tracing/ids.py`, vectors in
 `test/fixtures/tracing/id_conformance.json`):
 `H(kind, p1..pn) = sha256("kirocrew.v1|" + ns + "|" + kind + "|" + esc(p1) + ... )`,
@@ -2199,6 +2241,13 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `conductor_mode round N` | `conductor_mode, conductor, goal key, round, cont`; trace `trace.conductor_mode`, the same inputs |
 | `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
 | `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
+| `kirocrew.work.report_undelivered` | `work, conductor, item id, report_undelivered, at` |
+| `kirocrew.session.create` / `.fork` | `session.<op>, turn_id, attempt, target slot`, in the calling turn's trace |
+| `kirocrew.session.manager_change` (handoff / hand-back) | in a turn: `session.manager_change, turn_id, attempt, ordinal, op, target, previous, manager`; alone (a close's hand-back): `session.manager_change, op, target, previous, manager`, trace `trace.<the same>` |
+| `kirocrew.session.parent_change` (adopt / release) | in a turn: `session.parent_change, turn_id, attempt, ordinal, op, target, previous, parent`; alone: `session.parent_change, op, target, previous, parent`, trace `trace.<the same>` |
+
+Manager and parent changes share the ordinal, counting all moves in the turn attempt
+from 1. It is stored on the turn, so replaying the same moves re-derives the same ids.
 
 **Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook

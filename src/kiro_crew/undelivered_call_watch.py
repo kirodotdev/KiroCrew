@@ -154,7 +154,16 @@ async def record_undelivered_call(worker_session_key: str, tool: str) -> dict[st
             work_ledger.settle_undelivered(worker_session_key, seen)
         raise
     if noted is not None:
-        conductor_wake.wake_for_undelivered_report(noted["conductor_slot_key"], noted["item_id"])
+        from kiro_crew.tracing import work as trace_work
+
+        try:
+            # A span under the item, which the conductor's next patrol turn links to.
+            await trace_work.report_undelivered(noted)
+        finally:
+            # The wake is owed even when the trace is cancelled: the record committed.
+            conductor_wake.wake_for_undelivered_report(
+                noted["conductor_slot_key"], noted["item_id"]
+            )
     return noted
 
 
