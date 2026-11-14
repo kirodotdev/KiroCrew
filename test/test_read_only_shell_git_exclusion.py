@@ -178,6 +178,41 @@ async def test_a_git_read_is_refused_where_no_approver_exists(command: str) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    ["git blame --output x f", "git blame --output=x f", "git diff --output=x"],
+)
+async def test_a_git_output_file_write_is_refused_where_no_approver_exists(command: str) -> None:
+    """`--output` takes the command out of the read set; with no approver it must
+    still be refused rather than reach the default approve and write the file."""
+    provider = await _resolve_headless(command)
+    assert (provider.approved, provider.rejected) == ([], ["r1"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    ["git diff --output=report.diff -- '*'", "git -C . diff --output=x"],
+)
+async def test_an_earlier_reason_does_not_hide_the_output_write(command: str) -> None:
+    """A glob or a global option gives the classifier another reason first; the
+    `--output` write is still refused."""
+    provider = await _resolve_headless(command)
+    assert (provider.approved, provider.rejected) == ([], ["r1"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command", ["git commit -m msg", 'git commit -m "bump to $VERSION"', "git add *"]
+)
+async def test_a_git_write_without_an_output_flag_keeps_its_default(command: str) -> None:
+    """An ordinary git write that names no write flag keeps the default approve,
+    even when a value holds an expansion or a glob."""
+    provider = await _resolve_headless(command)
+    assert (provider.approved, provider.rejected) == (["r1"], [])
+
+
+@pytest.mark.asyncio
 async def test_a_git_read_still_reaches_an_approver_that_exists() -> None:
     async def _approve(_event: object) -> bool:
         return True

@@ -1618,3 +1618,21 @@ def writes_through_redirect(cmd: str) -> bool:
     or not, since telling a quoted ``>`` apart needs bash's full quoting rules.
     """
     return ">" in _DEVNULL_REDIR_RE.sub(" ", cmd)
+
+
+def may_write_through_git_flag(cmd: str) -> bool:
+    """Whether a word of ``cmd`` visibly supplies a git file-writing flag (``--output``).
+
+    Checked on every word, wherever it sits, so an earlier reason from
+    :func:`unsafe_bash_reason` cannot hide it. Quoting that will not parse counts as one.
+    shortcut: a flag built at run time (an expansion, a glob, ``xargs``) is not seen;
+    refusing every no-approver git command closes that, and is a separate decision.
+    """
+    try:
+        words = shlex.split(cmd)
+    except ValueError:
+        return True
+    git_flags = tuple(
+        {f for key, flags in _WRITE_FLAGS.items() if key[:4] == "git " for f in flags}
+    )
+    return bool(_matched_flag(words, git_flags))
