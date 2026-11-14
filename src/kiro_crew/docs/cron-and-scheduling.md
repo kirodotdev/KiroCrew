@@ -239,6 +239,8 @@ cron_add(
 
 It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
 
+On the Schedule page the switch is **Start each run in a new chat** in the job form. Turn it on when you create the job. A job that already starts a fresh session every run can turn it on or off when you edit it; a job that keeps one session cannot, so create a new job for it.
+
 ## Skipping Dates
 
 Jobs can skip specific dates — useful for holidays, vacation, or one-off exceptions. Two optional fields control this:
