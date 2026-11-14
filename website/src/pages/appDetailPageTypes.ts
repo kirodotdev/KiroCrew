@@ -124,6 +124,7 @@ interface AppPermissions {
   chatSlots?: boolean
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
+  webhookSource?: boolean
   [key: string]: unknown
 }
 

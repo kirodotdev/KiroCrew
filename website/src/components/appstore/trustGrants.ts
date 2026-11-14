@@ -9,9 +9,13 @@ export interface DisclosedPermissions {
   chatSlots?: boolean
   reachableByUserSessions?: string[]
   desktopCapabilities?: string[]
+  webhookSource?: boolean
 }
 
-type TrustGrants = Pick<TrustAppTarget, 'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api'>
+type TrustGrants = Pick<
+  TrustAppTarget,
+  'sessionApproval' | 'memberThreads' | 'workerAutoApprove' | 'chatSlots' | 'reachableByUserSessions' | 'desktopCapabilities' | 'api' | 'webhookSource'
+>
 
 /**
  * The declared grants a trust prompt shows, read off an app's manifest
@@ -28,5 +32,6 @@ export function trustGrants(permissions: DisclosedPermissions | undefined): Trus
     reachableByUserSessions: permissions?.reachableByUserSessions,
     desktopCapabilities: permissions?.desktopCapabilities,
     api: permissions?.api,
+    webhookSource: permissions?.webhookSource === true,
   }
 }

@@ -51,7 +51,8 @@
       "spawn_run",
       "learn_add",
       "ops_mission_control_api"
-    ]
+    ],
+    "webhookSource": true
   },
   "notifications": {
     "channels": [

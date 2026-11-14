@@ -2091,6 +2091,8 @@
         "host_api_heading": "It can also use parts of {{productName}} outside the app",
         "host_api_chat": "It can start its own chats with the agent and send messages in them.",
         "host_api_paths": "Paths it calls",
+        "webhook_source_heading": "This app also accepts requests from outside services",
+        "webhook_source_desc": "Other services can send it requests, and a request can start work. If you set up a security policy, it controls this app under the name {{source}}.",
         "session_approval_desc": "Sending messages or choosing response options in your chats, approving or denying tool prompts, and switching a chat's approval mode.",
         "session_approval_member_threads": "This includes your own chats with your Bots. The app can send your Bots messages in your name.",
         "session_approval_modes": "Chat approval modes it can set",

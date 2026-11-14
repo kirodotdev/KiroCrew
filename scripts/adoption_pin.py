@@ -65,6 +65,7 @@ _CONTEXT_SEAMS = {
     "app_token": 5,
     "gateway_origin": 5,
     "chat_slots": 7,
+    "webhook_source": 7,
 }
 
 #: A receiver whose last name says it is the app's context (``ctx``, ``self._ctx``,
@@ -129,12 +130,13 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
 
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
     ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
-    ``agentReadOnlyDirs``, an exact ``permissions.api`` entry and
-    ``permissions.chatSlots`` and ``permissions.desktopCapabilities`` at level 7, a
-    directory entry in ``credentialMasks`` at level 8), the context seams any non-test
-    ``.py`` file reaches, and the backend SDK package (level 7) any of them names. A miss
-    lets a pin adopt on a host without the seam, so the scan errs wide: a false hit only
-    asks for a higher ``--min-sdk-level``.
+    ``agentReadOnlyDirs``, an exact ``permissions.api`` entry,
+    ``permissions.chatSlots``, ``permissions.desktopCapabilities`` and
+    ``permissions.webhookSource`` at level 7, a directory entry in
+    ``credentialMasks`` at level 8), the context seams any non-test ``.py`` file
+    reaches, and the backend SDK package (level 7) any of them names. A miss lets
+    a pin adopt on a host without the seam, so the scan errs wide: a false hit
+    only asks for a higher ``--min-sdk-level``.
     """
     raw = json.loads((tree / "app.json").read_text(encoding="utf-8"))
     permissions = raw.get("permissions")
@@ -159,6 +161,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
         uses["app.json permissions.chatSlots"] = 7
     if permissions.get("desktopCapabilities"):
         uses["app.json permissions.desktopCapabilities"] = 7
+    if permissions.get("webhookSource") is True:
+        uses["app.json permissions.webhookSource"] = 7
     if isinstance(masks, list) and any(isinstance(m, str) and m.endswith("/") for m in masks):
         uses["app.json credentialMasks directory"] = 8
     for dirpath, dirnames, filenames in os.walk(tree):

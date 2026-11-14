@@ -369,6 +369,11 @@ def format_permissions_summary(manifest: AppManifest) -> str:
     if perms.desktopCapabilities:
         words = ", ".join(_DESKTOP_CAPABILITY_WORDS[c] for c in perms.desktopCapabilities)
         lines.append(f"  Desktop:   may {words}")
+    if perms.webhookSource:
+        lines.append(
+            f"  Webhooks:  accepts requests from outside services, which can start work"
+            f" (security-policy name {manifest.name!r})"
+        )
 
     if not lines:
         return "  No special permissions required"
