@@ -1064,6 +1064,28 @@ configuration before it is useful). The contract, end to end:
   found, and the manifest re-sync below never sends `enabled`/`user_paused` —
   a user-resumed cron survives gateway restart un-clobbered, and a manifest
   that later flips `enabled` is not a change (the key is outside the digest).
+- **A deleted job stays deleted**: a removal a person asks for
+  (`CronService.remove_job` / `remove_job_async` / `remove_job_if_async` /
+  `remove_jobs` / `remove_jobs_sync`, which the Schedule page, the CLI and the
+  chat `cron remove` command reach) of a job that carries a manifest stamp and
+  an `app:<name>` `created_by` records the job's name in
+  `member-records/app-crons-deleted/<app>.json` (`apps.protected_app_state`,
+  beside `app-disabled/<app>`). Registration skips a recorded name that has no
+  job, so the job does not come back on the next gateway start, app update or
+  Sync. Not recorded: a removal the app makes itself through `ctx.cron` (actor
+  `app:<name>`), a one-shot's own removal after it ran, a runtime job (no stamp)
+  and a removal of every app job (disable, uninstall, execution disarm). The
+  owner's disable (`disable_app`) and a committed uninstall drop the record, so
+  the next enable registers every declared job again. The record is written
+  after the delete has persisted; a write fault is logged and the delete still
+  succeeds (the job then returns on the next start), and an unreadable record
+  reads as empty. The Schedule REST delete routes pass an app token's caller as
+  `app:<name>`, so an app deleting its own job is not recorded. The removal
+  records the rows it took out of the store under its lock, after the reload,
+  so a job another process registered since the service last read the store
+  (a CLI app enable while the gateway runs) is recorded too. Dropping the
+  record holds the same per-app lock as a record write, so a write in flight
+  cannot put back the names a disable just dropped.
 - **Lifecycle caveat**: `on_app_disable` removes the app's jobs; re-enabling
   the app re-registers from the manifest, so a cron the user had resumed
   returns to **paused** (manifest is the sole source of truth on

@@ -495,6 +495,10 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         protected_app_state.set_owner_disabled(name, False)
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's disable record", exc_info=True)
+    try:
+        protected_app_state.forget_deleted_app_crons(name)
+    except (OSError, ValueError):
+        logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
     refresh_app_config_keys()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 

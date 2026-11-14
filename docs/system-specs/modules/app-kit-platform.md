@@ -3066,6 +3066,11 @@ the one-time import first, so the import's lock is the only lock needed.
   import itself so no importer re-records it; uninstall removes the approved set
   first and the disable only once the tree is gone, and a failed update, re-registration or uninstall puts it back as
   it was.
+- **The owner's deleted cron jobs stand outside the tree too.**
+  `member-records/app-crons-deleted/<app>.json` lists the manifest cron jobs the
+  owner deleted, and `register_app_crons_with_service` does not create them again.
+  `disable_app` and a committed uninstall remove it; the rules are under "A
+  deleted job stays deleted" in `learn-cron-dashboard.md`.
 
 `sessionApprovalConsentPending` keeps its own disable-until-consent shape: that
 grant is enforced through the enabled flag on several session routes rather

@@ -14,6 +14,13 @@ file tools refuse (:mod:`kiro_crew.member_records`):
   read of an app's ``installed.json`` reports the app disabled while it exists, whatever
   the file says; only the owner-authenticated enable and an uninstall remove it.
 
+A third record is a choice of the owner's that the app must not undo:
+
+* ``app-crons-deleted/<app>.json`` -- the names of the app's manifest cron jobs the
+  owner deleted. Registration skips them, so a deleted job stays deleted across
+  gateway starts and app updates. The owner's disable of the app, and an uninstall,
+  remove the record, so the next enable registers every declared job again.
+
 It also keeps one credential: ``app-secrets/<app>``, the app's gateway secret (the
 app-token exchange and the proxy signature both use it). Only the gateway writes it,
 and an app's backend receives it from the gateway at spawn, so no sandboxed process
@@ -30,6 +37,8 @@ call it.
 from __future__ import annotations
 
 import contextlib
+import json
+import logging
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -40,10 +49,13 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.owner_only_files import mkdirs_owner_only
 from kiro_crew.platform_lock_compat import acquire_lock, open_create_or_existing, release_lock
 
+logger = logging.getLogger(__name__)
+
 #: Record kinds under ``member-records/``; all are in ``member_records.RECORD_KINDS``.
 APP_GRANTS_KIND = "app-grants"
 APP_DISABLED_KIND = "app-disabled"
 APP_SECRETS_KIND = "app-secrets"
+APP_CRONS_DELETED_KIND = "app-crons-deleted"
 
 #: Written in ``app-grants/`` once every app's set has been carried over from the app
 #: tree. Once it exists a missing record means nothing is approved.
@@ -171,6 +183,63 @@ def set_owner_disabled(app_name: str, disabled: bool) -> None:
         atomic_write(path, "1\n")
     else:
         path.unlink(missing_ok=True)
+
+
+def _deleted_crons_path(app_name: str) -> Path:
+    return _record_path(APP_CRONS_DELETED_KIND, app_name, ".json")
+
+
+def _read_deleted_crons(path: Path) -> list[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    names = data.get("deleted") if isinstance(data, dict) else None
+    if not isinstance(names, list):
+        raise ValueError(f"{path} does not hold a list of deleted cron jobs")
+    return [n for n in names if isinstance(n, str)]
+
+
+def deleted_app_crons(app_name: str) -> frozenset[str]:
+    """The names of *app_name*'s manifest cron jobs the owner deleted.
+
+    A record that cannot be read is logged and reads as empty, so a fault brings
+    a deleted job back rather than losing one the owner still wants.
+    """
+    try:
+        return frozenset(_read_deleted_crons(_deleted_crons_path(app_name)))
+    except (OSError, ValueError):
+        logger.warning("could not read the deleted cron jobs of %s", app_name, exc_info=True)
+        return frozenset()
+
+
+def _deleted_crons_lock(app_name: str) -> contextlib.AbstractContextManager[None]:
+    """Serialize every write of *app_name*'s deleted-job record, in any thread or process."""
+    return _exclusive_lock(_record_path(APP_CRONS_DELETED_KIND, app_name, ".lock"))
+
+
+def remember_deleted_app_cron(app_name: str, job_name: str) -> None:
+    """Record that the owner deleted *app_name*'s manifest cron job *job_name*.
+
+    Raises ``OSError``/``ValueError`` when the record cannot be read or written.
+    """
+    path = _deleted_crons_path(app_name)
+    with _deleted_crons_lock(app_name):
+        names = _read_deleted_crons(path)
+        if job_name in names:
+            return
+        mkdirs_owner_only(path.parent)
+        atomic_write(path, json.dumps({"deleted": sorted([*names, job_name])}) + "\n")
+
+
+def forget_deleted_app_crons(app_name: str) -> None:
+    """Drop every deleted-job record of *app_name*, so its next enable registers them all.
+
+    Holds the lock :func:`remember_deleted_app_cron` holds, so a record write that
+    read the names before this drop cannot write them back after it.
+    """
+    with _deleted_crons_lock(app_name):
+        _deleted_crons_path(app_name).unlink(missing_ok=True)
 
 
 def snapshot_app(app_name: str) -> tuple[str | None, bool]:

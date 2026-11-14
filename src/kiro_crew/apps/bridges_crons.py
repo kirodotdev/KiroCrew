@@ -723,6 +723,12 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
 
     sdk = CronSDK(app_name, cron_service)
     existing_jobs = {j.name: j for j in sdk.list_jobs()}
+    # The owner deleted these; a missing one is not re-created until the app's
+    # disable or uninstall clears the record (``protected_app_state``).
+    # Imported here so the bridges facade does not serve the module itself.
+    from kiro_crew.apps import protected_app_state
+
+    deleted = await asyncio.to_thread(protected_app_state.deleted_app_crons, app_name)
 
     # circular import: mcp_cron → security → ... → hooks_integration → bridges
     from kiro_crew.mcp_cron import (
@@ -738,6 +744,8 @@ async def register_app_crons_with_service(app_name: str, cron_service: Any) -> l
         if not name:
             continue
         existing = existing_jobs.get(name)
+        if existing is None and name in deleted:
+            continue
         digest = app_cron_manifest_digest(d)
         if existing is not None and existing.app_manifest_digest == digest:
             # Built from the manifest entry on disk now, so nothing in it is
