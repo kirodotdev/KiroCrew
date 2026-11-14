@@ -228,7 +228,7 @@ def thinking_display_version_issue(backend: str, agent_version: str) -> str:
     still runs. Another backend, and an absent or unreadable version, gets none;
     parsed by :func:`_adapter_version_at_least`, as the steer floor is.
     """
-    if backend != ACP_BACKEND_CLAUDE or not _adapter_version_at_least(agent_version, (0, 0, 0)):
+    if not (backend == ACP_BACKEND_CLAUDE and _adapter_version_at_least(agent_version, (0, 0, 0))):
         return ""
     floor = CLAUDE_ACP_THINKING_DISPLAY_MIN_VERSION
     if _adapter_version_at_least(agent_version, floor):
