@@ -325,8 +325,8 @@ class TestRenderer:
         monkeypatch.setattr(r, "_limit", lambda: 60)
         await r.on_turn_start()
         # Blank code lines straddling the rotation cut, with more code AFTER
-        # them. The all-newline-tail case is already pinned above; this is the
-        # one the round-2 remainder deleted -- the cut lands on the run, the
+        # them. The all-newline-tail case is already pinned above; here the
+        # cut lands on the run, the
         # sealed side keeps the code, and the blank lines belong to the tail.
         await r.on_text_chunk("```py\n" + "x = 1\n" * 6 + "\n\n" + "y = 2\n" * 6)
         sealed = cli.sent[0][0]

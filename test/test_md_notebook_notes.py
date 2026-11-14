@@ -216,7 +216,7 @@ async def test_new_note_in_a_vault_reached_through_a_symlink_is_allowed(
         # the resolved directory against the staged temp's parent to catch an
         # in-vault link; both must be canonicalised so the legitimate ancestor
         # link above the vault (this alias) does not make them differ and 400
-        # every subfolder save with a bogus `folder_is_symlink` (Opus finding).
+        # every subfolder save with a bogus `folder_is_symlink`.
         status, body = await client.put(
             "/api/note", {"path": "sub/Deeper/Untitled.md", "content": "# edited\n"}
         )
@@ -228,7 +228,7 @@ async def test_new_note_in_a_vault_reached_through_a_symlink_is_allowed(
         # empty-folder branch of `resolve_write_dir_checked`, which must return a
         # realpath just like the folder branch — otherwise the non-canonical
         # stored `localPath` (this alias) differs from the realpath'd temp parent
-        # and every root save 400s `folder_is_symlink` (Opus finding).
+        # and every root save 400s `folder_is_symlink`.
         status, body = await client.put(
             "/api/note", {"path": "One.md", "content": "# root edited\n"}
         )
