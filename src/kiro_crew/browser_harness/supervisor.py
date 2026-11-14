@@ -132,6 +132,11 @@ CHROMIUM_START_TIMEOUT_SECS = 30.0
 _POLL_SECS = 0.1
 _IPC_TIMEOUT_SECS = 3.0
 _STOP_GRACE_SECS = 5.0
+#: The best-effort agent-tab close at teardown, all tabs together. They close in
+#: milliseconds on a live connection; a stalled one (each send waits up to
+#: ``relay.SEND_TIMEOUT_SECS``) must not spend the bound a caller gives the whole
+#: stop before the daemon, worker and browser are stopped.
+_TAB_CLOSE_SECS = 3.0
 
 #: Longest reply line the gateway reads from the worker's stdout. asyncio's default
 #: stream limit is 64 KiB, which an ordinary snapshot (hundreds of links with long
@@ -277,6 +282,9 @@ class HarnessSupervisor:
         #: navigation re-pulls when either differs.
         self._applied_key: tuple[str | None, credentials.CredentialSettings] | None = None
         self._handle: HarnessHandle | None = None
+        #: A handle whose teardown was cut before its last stop. It is never the
+        #: live handle again: the next teardown finishes stopping it.
+        self._cut_handle: HarnessHandle | None = None
         self._connection = DISCONNECTED
         self._detail = ""
         self._choice: discover.BrowserChoice | None = None
@@ -424,14 +432,19 @@ class HarnessSupervisor:
 
     @property
     def holds_browser(self) -> bool:
-        """Anything is up or coming up: a handle (even one whose daemon died) or a start.
+        """Anything is up or coming up: a handle (even one whose daemon died, or one
+        a cut stop left half-stopped) or a start.
 
         What a policy stop asks, rather than :attr:`connected`: a browser whose daemon
         exited still runs its pages, and a start parked on Chrome's Allow sheet would
         finish once Allow is clicked.
         """
         task = self._ensure_task
-        return self._handle is not None or (task is not None and not task.done())
+        return (
+            self._handle is not None
+            or self._cut_handle is not None
+            or (task is not None and not task.done())
+        )
 
     # ── lifecycle ──
 
@@ -757,21 +770,35 @@ class HarnessSupervisor:
         await _stop_process(browser_proc)
 
     async def _teardown(self) -> None:
-        handle = self._handle
-        self._handle = None
+        # Never both: a start runs only after a teardown that finished.
+        retry = self._handle is None and self._cut_handle is not None
+        handle = self._handle if self._handle is not None else self._cut_handle
+        self._handle = self._cut_handle = None
         if handle is None:
             await self._shutdown_stray_daemon()
             return
-        if not handle.relay.closed:
-            try:
-                await handle.relay.close_agent_targets()
-            except (RelayClosed, Exception):  # noqa: BLE001 - best effort at teardown
-                pass
-        await self._ipc_shutdown()
-        await _stop_process(handle.worker)
-        await _stop_process(handle.daemon)
-        await handle.relay.close()
-        await _stop_process(handle.browser)
+        # A retry skips the tab close the cut teardown already began: a stall
+        # there is what can cut a teardown, and it would cut this one too.
+        await self._stop_handle(handle, close_tabs=not retry)
+
+    async def _stop_handle(self, handle: HarnessHandle, *, close_tabs: bool) -> None:
+        try:
+            if close_tabs and not handle.relay.closed:
+                try:
+                    await asyncio.wait_for(handle.relay.close_agent_targets(), _TAB_CLOSE_SECS)
+                except (RelayClosed, Exception):  # noqa: BLE001 - best effort at teardown
+                    pass
+            await self._ipc_shutdown()
+            await _stop_process(handle.worker)
+            await _stop_process(handle.daemon)
+            await handle.relay.close()
+            await _stop_process(handle.browser)
+        except BaseException:
+            # Cut before its last stop: the next teardown (the gateway's exit
+            # path, the next stop or ensure) stops the children this one never
+            # got to, and skips the ones already stopped.
+            self._cut_handle = handle
+            raise
 
     async def _on_upstream_closed(self) -> None:
         if self._connection == CONNECTED:

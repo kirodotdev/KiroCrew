@@ -19,6 +19,8 @@ from pathlib import Path
 import pytest
 from instances_helpers import _FakeTunnel, _patch_port_probe
 
+from kiro_crew.testing.wait import await_until, finished
+
 # ── SshTunnelManager (mocked) ─────────────────────────────────────────────────
 
 
@@ -770,6 +772,33 @@ class TestSshTunnelManager:
         await mgr.shutdown()
         assert mgr.status_all() == {}
         assert reg.get("cd-1").was_connected is True
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_cut_mid_stop_leaves_the_tunnel_to_the_next_shutdown(self, tmp_path):
+        in_stop = asyncio.Event()
+        cut_once = [True]
+
+        class _CutTunnel(_FakeTunnel):
+            async def stop(self):
+                if cut_once[0]:
+                    cut_once[0] = False
+                    in_stop.set()
+                    await asyncio.Event().wait()  # held until the cancel below
+                await super().stop()
+
+        reg, mgr = self._mgr(tmp_path, factory=_CutTunnel)
+        reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
+        await mgr.connect("cd-1")
+        tunnel = mgr._tunnels["cd-1"]
+        first = asyncio.ensure_future(mgr.shutdown())
+        await await_until(in_stop, what="the tunnel stop starting")
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert mgr._tunnels.get("cd-1") is tunnel and tunnel.stopped is False
+
+        await finished(mgr.shutdown(), "the repeat shutdown")
+        assert tunnel.stopped is True and mgr.status_all() == {}
 
     @pytest.mark.asyncio
     async def test_disconnect_clears_local_port(self, tmp_path):

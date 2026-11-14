@@ -862,13 +862,16 @@ async def shutdown(self: SshTunnelManager) -> None:
             self._cancel_token_refresh(instance_id)
         ids = list(self._tunnels)
         for instance_id in ids:
-            tunnel = self._tunnels.pop(instance_id, None)
+            tunnel = self._tunnels.get(instance_id)
             self._tokens.pop(instance_id, None)
             self._peer_sessions.pop(instance_id, None)
             self._chained_far_end.pop(instance_id, None)
             if tunnel is not None:
                 with contextlib.suppress(Exception):
                     await tunnel.stop()
+            # Only once the stop has returned: a shutdown cut mid-stop leaves the
+            # tunnel here, so the next shutdown (the gateway's exit path) stops it.
+            self._tunnels.pop(instance_id, None)
         # Every lent hop port goes with the process, so nothing stays bound by a
         # guard whose gateway is gone. The LEASE survives this, and
         # `sync_hop_holds` at the next startup is what re-takes the ports.

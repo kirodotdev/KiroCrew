@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         persistence_lost_exit_code,
         platform_compat,
         registry,
+        run_pre_exec_stops,
         shutdown_event,
         shutdown_exit_code,
         subprocess_executor,
@@ -731,6 +732,15 @@ async def _shutdown_and_exit(
         await asyncio.wait_for(shutdown_cleanup(), timeout=6.0)
     except Exception:  # noqa: BLE001 - shutdown must not raise
         logger.debug("shared crew slice release at exit failed", exc_info=True)
+    # The supervised children a dashboard cleanup hook stops: the browser harness
+    # daemon with its browser and worker, the instance tunnels, the sleep
+    # inhibitor. A graceful shutdown that ran out of time never reached those
+    # hooks, and os._exit below would leave each child running under PID 1. Each
+    # owner registers the same stop with the pre-exec seam at startup and
+    # unregisters it once its cleanup hook has stopped the child, so after a
+    # shutdown that did reach the hooks only stops that are safe to repeat are
+    # left. Bounded inside the seam, which never raises.
+    await run_pre_exec_stops(occasion="exit")
     # The skill-usage ledgers debounce their writes to one per 60 s, and their
     # flush thread is a daemon: a hit accepted inside that window lives only in
     # memory, and os._exit below kills it. Flush them here, off-loop and
