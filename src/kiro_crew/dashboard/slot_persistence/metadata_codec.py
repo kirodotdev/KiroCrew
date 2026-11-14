@@ -785,6 +785,15 @@ def _read_project_hook_files_notice_shown(r: _Read) -> None:
         r.slot._project_hook_files_notice_shown = mark
 
 
+def _read_session_notice_marks(r: _Read) -> None:
+    from kiro_crew.dashboard.session_notice_marks import SESSION_NOTICE_MARKS
+
+    marks = r.meta.get("session_notice_marks")
+    if isinstance(marks, list):
+        kept = [m for m in marks if isinstance(m, str) and len(m) == 16 and set(m) <= _HEX]
+        r.slot._session_notice_marks = kept[-SESSION_NOTICE_MARKS:]
+
+
 def _read_deferred_notes(r: _Read) -> None:
     # Sanitized and bounded by the DURABLE CEILING; entries whose delivered row
     # is already committed are dropped by ``settle``, against the loaded rows.
@@ -1353,6 +1362,15 @@ FIELDS: tuple[Field, ...] = (
         merge=_truthy(lambda s: s._project_hook_files_notice_shown),
         read=_read_project_hook_files_notice_shown,
     ),
+    # The session-start spec notices the chat showed, as marks; kept the same way.
+    Field(
+        "session_notice_marks",
+        _ALL,
+        attr="_session_notice_marks",
+        line=_truthy(lambda s: s._session_notice_marks),
+        merge=_truthy(lambda s: s._session_notice_marks),
+        read=_read_session_notice_marks,
+    ),
     Field(
         "last_user_at",
         frozenset(),
@@ -1538,6 +1556,7 @@ LINE_ORDER: tuple[str, ...] = (
     "human_seen",
     "telemetry_notice_shown",
     "project_hook_files_notice_shown",
+    "session_notice_marks",
     "last_user_at",
     "deferred_notes",
     "queued_prompts",
@@ -1599,6 +1618,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "human_seen",
     "telemetry_notice_shown",
     "project_hook_files_notice_shown",
+    "session_notice_marks",
     "channel_folder_filed",
     "closed",
     "closed_at",
