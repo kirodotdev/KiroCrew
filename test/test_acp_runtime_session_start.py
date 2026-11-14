@@ -181,7 +181,7 @@ class TestServedDefaultAfterSetMode:
         assert rt._switched_models == {}
 
 
-# ── set_mode availableModes guard (regression: "Mode '<agent>' not found") ──
+# ── set_mode availableModes guard (avoids "Mode '<agent>' not found") ──
 
 
 def _new_resp(modes: dict | None) -> dict:

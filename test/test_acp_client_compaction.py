@@ -232,7 +232,8 @@ class TestCompactionFailureTurnBudget:
         client = AcpClient(work_dir=tmp_path)
         client._turn_done.clear()
         # Neither existing watchdog can save this turn: no text streamed and no
-        # tool dispatched, so only the 2h prompt ceiling applied before the fix.
+        # tool dispatched, so without this budget only the 2h prompt ceiling
+        # would apply.
         client._stale_eligible = False
         client._tool_dispatched = False
         client._is_process_alive = lambda: True
