@@ -177,12 +177,13 @@ export const batchedTextAboveFloor = (parts: BatchedChunkPart[], floor: number |
 type ChatFrame = TurnIdentityFields & { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] }
 
 /** A Stop card that settled as stopped ended the parent turn, which leaves
- *  any still-running subagent without its parent. A declined or failed Stop
- *  (`stop_declined_compacting`, `stop_failed_reset`) and the in-flight
- *  `stopping` card leave the parent as it was. */
+ *  any still-running subagent without its parent. `stop_failed_reset` ends it
+ *  too: the cooperative cancel timed out and the slot was hard-reset. A
+ *  declined Stop (`stop_declined_compacting`) and the in-flight `stopping`
+ *  card leave the parent as it was. */
 function stopCardStoppedTurn(meta: ChatFrame['meta']): boolean {
   const s = meta?.state
-  return s === 'stopped' || s === 'force_stopped'
+  return s === 'stopped' || s === 'force_stopped' || s === 'stop_failed_reset'
 }
 
 /**

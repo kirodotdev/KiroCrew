@@ -2092,11 +2092,12 @@ intent restated.
 Stop ends the parent turn but leaves its subagents running: Stop is a
 turn-level verb and **Stop all** is the process-level one. The frontend reads
 the existing `stop_event` card for this. When a slot's card settles as
-`stopped` or `force_stopped`, every active subagent card in that slot gets
-`parentStopped = true` and a dimmed "Parent stopped, still running" label, and
-the header histogram counts them. A `stopping`, `stop_declined_compacting` or
-`stop_failed_reset` card leaves the cards alone, because the parent was not
-stopped. A new parent turn on the slot lifts the mark, and a reconnect
+`stopped`, `force_stopped` or `stop_failed_reset` (the cancel timed out and
+the slot was hard-reset, which also ends the parent turn), every active
+subagent card in that slot gets `parentStopped = true` and a dimmed "Parent
+stopped, still running" label, and the header histogram counts them. A
+`stopping` or `stop_declined_compacting` card leaves the cards alone, because
+the parent was not stopped. A new parent turn on the slot lifts the mark, and a reconnect
 snapshot keeps it. Stop all stays reachable, so the user can still kill the
 processes.
 

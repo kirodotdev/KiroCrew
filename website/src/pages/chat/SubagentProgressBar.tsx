@@ -375,7 +375,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
             {counts.failed > 0 && <span className="inline-flex items-center gap-1 text-danger" data-testid="subagent-failed-count"><AlertCircle size={12} /> <HistogramCount n={counts.failed} label={i18nT('pages.chat.subagentProgressBar.chip_failed', { count: counts.failed })} /></span>}
             {counts.stopped > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-stopped-count"><Square size={12} /> <HistogramCount n={counts.stopped} label={i18nT('pages.chat.subagentProgressBar.chip_stopped', { count: counts.stopped })} /></span>}
             {counts.stalled > 0 && <span className="inline-flex items-center gap-1 text-warn" data-testid="subagent-stalled-count" title={i18nT('pages.chat.subagentProgressBar.no_activity_possibly_stalled')}><AlertTriangle size={12} /> <HistogramCount n={counts.stalled} label={i18nT('pages.chat.subagentProgressBar.chip_stalled', { count: counts.stalled })} /></span>}
-            {counts.orphaned > 0 && <span className="inline-flex items-center gap-1 text-muted/60" data-testid="subagent-parent-stopped-count" title={i18nT('pages.chat.subagentProgressBar.parent_turn_stopped')}><CircleSlash size={12} /> <HistogramCount n={counts.orphaned} label={i18nT('pages.chat.subagentProgressBar.chip_parent_stopped', { count: counts.orphaned })} /></span>}
+            {counts.orphaned > 0 && <span className="inline-flex items-center gap-1 text-muted" data-testid="subagent-parent-stopped-count" title={i18nT('pages.chat.subagentProgressBar.parent_turn_stopped')}><CircleSlash size={12} /> <HistogramCount n={counts.orphaned} label={i18nT('pages.chat.subagentProgressBar.chip_parent_stopped', { count: counts.orphaned })} /></span>}
           </span>
           <span className="ml-auto shrink-0 flex items-center gap-1.5">
             {failedIds.length > 0 && (
@@ -531,7 +531,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                         </span>
                       </span>
                     ) : a.parentStopped ? (
-                      <span className="text-muted/60 flex items-center gap-1">
+                      <span className="text-muted flex items-center gap-1">
                         <CircleSlash size={11} className="shrink-0" />
                         <span className="truncate">{i18nT('pages.chat.subagentProgressBar.parent_stopped_still_running')}</span>
                       </span>

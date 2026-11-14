@@ -11,15 +11,15 @@ const stopCard = (slot: string, state = 'stopped') => sseChatMessage({
 const initial = reducer(undefined, { type: '@@INIT' })
 
 describe('parent-stopped mark from the Stop card', () => {
-  it.each(['stopping', 'stop_declined_compacting', 'stop_failed_reset'])('leaves running agents alone on a %s card', cardState => {
+  it.each(['stopping', 'stop_declined_compacting'])('leaves running agents alone on a %s card', cardState => {
     let state = reducer(initial, sseSubagentSpawn({ slot: 'A', id: 'sa-1', agent: 'test-agent' }))
     state = reducer(state, stopCard('A', cardState))
     expect(state.slotActivity.A.subagents['sa-1'].parentStopped).toBeUndefined()
   })
 
-  it('marks running agents on a force_stopped card', () => {
+  it.each(['force_stopped', 'stop_failed_reset'])('marks running agents on a %s card', cardState => {
     let state = reducer(initial, sseSubagentSpawn({ slot: 'A', id: 'sa-1', agent: 'test-agent' }))
-    state = reducer(state, stopCard('A', 'force_stopped'))
+    state = reducer(state, stopCard('A', cardState))
     expect(state.slotActivity.A.subagents['sa-1'].parentStopped).toBe(true)
   })
 
