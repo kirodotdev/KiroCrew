@@ -644,10 +644,12 @@ export function useAppShell() {
 
   // Dynamic app nav items — all apps (builtin + installed) with UI pages
   const [appNavItems, setAppNavItems] = useState<Array<{ path: string; id: string; label: string; group: string; icon: React.ReactElement }>>([])
+  // A rail surface's `configSwitch` (Task Runner's on/off) is server state.
+  const { data: railConfig } = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const {
     advertisedNavItems, sortedAppGroup, activeAppDragId, appDndSensors,
     handleAppDragStart, handleAppDragEnd, handleAppDragCancel,
-  } = useAppRailOrder(appNavItems)
+  } = useAppRailOrder(appNavItems, railConfig)
   // Collapse a long Apps list behind a "N more" toggle so the nav can't grow
   // unbounded. Above APPS_NAV_LIMIT visible entries the overflow is hidden until
   // the user expands (persisted).

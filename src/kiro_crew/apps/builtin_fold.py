@@ -2,11 +2,11 @@
 
 A built-in whose feature moved into core is listed in
 ``builtins._MIGRATED_BUILTINS``, and the boot cleanup
-(``manager_builtins.cleanup_migrated_builtin``) removes its record. When the app's
-enabled state WAS the feature's switch, removing the record would lose the user's
-choice, so ``builtins._FOLDED_BUILTIN_SWITCHES`` names the ``dashboard`` key that
-holds the switch now and :func:`carry_folded_switch` writes the record's state there
-before the record goes. The record's state is read by the caller
+(``manager_builtins.cleanup_migrated_builtin``) retires its record. When the app's
+enabled state WAS the feature's switch, retiring the record would lose the user's
+choice, so ``builtins._FOLDED_BUILTIN_SWITCHES`` names the dotted ``config.json``
+path that holds the switch now and :func:`carry_folded_switch` writes the record's
+state there before the record goes. The record's state is read by the caller
 (``manager_builtins.folded_switch_state``).
 
 Every such setting defaults on, as the app did, so only an opt-out is written: a
@@ -27,19 +27,23 @@ def carry_folded_switch(name: str, on: bool) -> None:
     """
     from kiro_crew.apps.builtins import _FOLDED_BUILTIN_SWITCHES
 
-    key = _FOLDED_BUILTIN_SWITCHES.get(name)
-    if key is None or on:
+    path = _FOLDED_BUILTIN_SWITCHES.get(name)
+    if path is None or on:
         return
+    *parents, key = path.split(".")
     from kiro_crew.config.loader import update_config_locked
 
     def _mutate(data: dict) -> dict | None:
-        section = data.get("dashboard")
-        if isinstance(section, dict) and key in section:
+        section = data
+        for part in parents:
+            child = section.get(part)
+            if not isinstance(child, dict):
+                # A missing or malformed section carries no setting, the same
+                # recovery the dashboard's own config write makes.
+                child = section[part] = {}
+            section = child
+        if key in section:
             return None
-        if not isinstance(section, dict):
-            # A missing or malformed section carries no dashboard setting, the
-            # same recovery the dashboard's own config write makes.
-            section = data["dashboard"] = {}
         section[key] = False
         return data
 

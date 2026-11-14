@@ -9489,7 +9489,10 @@
         "remote_editor_host_saved": "Saved",
         "remote_editor_save_failed": "Couldn’t save the editor choice. Try again.",
         "remote_editor_host_save_failed": "Couldn’t save the SSH host. Use a hostname like dev-box or dev.example.com, with no port or path.",
-        "remote_editor_host_save_error": "Couldn’t save the SSH host."
+        "remote_editor_host_save_error": "Couldn’t save the SSH host.",
+        "task_runner": "Show Task Runner",
+        "task_runner_hint": "Off takes Task Runner off the left rail and out of Search Everywhere and stops new task runs. Nothing is deleted: your plans, past runs and runs already going are kept.",
+        "task_runner_save_failed": "Could not save the Task Runner setting. Try again."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote crew",

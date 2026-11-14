@@ -5002,20 +5002,6 @@
         "warnings": "警告"
       }
     },
-    "projects": {
-      "manifest": {
-        "use_case_1": "根据自然语言、现有规格或确定性 YAML 来规划并运行依赖感知的多代理任务。",
-        "configuration_1": "打开 Task Runner，选择 Compose、From Spec 或 From YAML，选择代理和可选的绝对工作区路径，然后用 Plan 审阅或用 Run 立即开始。",
-        "description": "把多步骤的活儿交出去，让它无人值守地跑到完成。用自然语言描述工作、粘贴写好的规格，或者上传 YAML 文件，然后可以先生成计划审查步骤，也可以直接开跑。每次运行都有自己的页面，逐步显示进度，你随时可以暂停、恢复、重试或停止。",
-        "display_name": "Task Runner",
-        "highlight_1": "三种入口：用自然语言描述工作、粘贴规格，或上传 YAML",
-        "highlight_2": "先生成计划、审查步骤，再决定是否真的运行",
-        "highlight_3": "运行无人值守地执行，进度逐步显示在这次运行自己的页面上",
-        "highlight_4": "随时暂停、恢复、重试或停止一次运行",
-        "highlight_5": "保留历次运行及其结果的记录",
-        "page_label": "Task Runner"
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "构建中",
@@ -19145,7 +19131,10 @@
         "show_topbar_search_desc": "在顶栏中间显示搜索框。关闭后，它的空间留给两侧的控件，窗口较窄时 CPU、MEM 和 DSK 读数也能留在顶栏上。搜索快捷键仍然可以打开搜索。快捷键关闭时，搜索框会一直显示。",
         "command_bar": "使用命令栏",
         "command_bar_desc": "Cmd+K 或 Ctrl+K 会打开命令栏：输入命令即可跳转到应用、设置或会话。关闭后，这个快捷键打开搜索面板，它还能搜索知识库、技能和提示词。",
-        "command_bar_save_failed": "无法保存命令栏设置。"
+        "command_bar_save_failed": "无法保存命令栏设置。",
+        "task_runner": "显示 Task Runner",
+        "task_runner_hint": "关闭后，Task Runner 会从左侧导航栏和“全局搜索”中移除，并停止新的任务运行。不会删除任何内容：你的计划、过往运行和正在进行的运行都会保留。",
+        "task_runner_save_failed": "无法保存 Task Runner 设置。请重试。"
       },
       "importPanel": {
         "agent_data": "代理数据",

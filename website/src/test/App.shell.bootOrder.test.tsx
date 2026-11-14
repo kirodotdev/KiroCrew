@@ -4,8 +4,10 @@
  * React runs a component's effects in declaration order, and a custom hook's
  * effects run where the hook is called. So the order below is the order of the
  * shell's own hook calls: the autolink rules, the global approvals, the
- * terminal restore probe, the phone-connection methods, the apps rail read,
- * the registry badge, the rail run state, the credit readout, the system
+ * terminal restore probe, the phone-connection methods, the rail's config read
+ * (a surface's `configSwitch`, which the credit readout's `['kirocrewConfig']`
+ * read later shares), the apps rail read, the registry badge, the rail run
+ * state, the credit readout, the system
  * metrics, then the boot effect (slots before status) and only then the
  * WebSocket. Two of those pairs are load-bearing on their own: the boot effect
  * arms the notifications fallback before the socket's first connect can own the
@@ -91,7 +93,8 @@ describe('shell boot order', () => {
       'api.approvals',
       'fetch:/api/terminal/sessions',
       'api.mobileConnectMethods',
-      // The Command Bar switch (`dashboard.command_bar_enabled`), read by the shell.
+      // The shell's switch reads (the Command Bar's `dashboard.command_bar_enabled`,
+      // a rail surface's `configSwitch`), one shared request.
       'api.kirocrewConfig',
       'api.listApps',
       'api.listRegistry',
@@ -105,5 +108,7 @@ describe('shell boot order', () => {
     // No restored terminal tab is suspect here, so the confirm look never runs.
     expect(H.log.filter(e => e === 'fetch:/api/terminal/sessions')).toHaveLength(1)
     expect(H.log.filter(e => e === 'api.listApps')).toHaveLength(1)
+    // The rail's config read and the credit readout share one ['kirocrewConfig'] request.
+    expect(H.log.filter(e => e === 'api.kirocrewConfig')).toHaveLength(1)
   })
 })

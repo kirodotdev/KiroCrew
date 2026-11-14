@@ -18,7 +18,7 @@ from kiro_crew import mcp_guide, ui_index
         ("uninstall Papyrus", "en"),
         ("remove the Papyrus app", "en"),
         ("卸载 Papyrus", "zh-CN"),
-        ("删除 Task Runner 应用", "zh-CN"),
+        ("删除 Research Lab 应用", "zh-CN"),
     ],
 )
 def test_uninstalling_a_named_app_reaches_the_uninstall_guide_with_that_app_as_pick(

@@ -2,6 +2,7 @@ import { hasBuiltinIcon } from './apps/builtinIcons'
 import { appPageLabel } from './components/appstore/appManifest'
 import type { AppAdoptionRow } from './components/appstore/types'
 import { classifyManifestArt, installedIcon } from './components/appstore/useHeroArt'
+import { SURFACE_FORMER_APPS } from './surfaces/surfaceData'
 
 /**
  * Where an installed app lives in the dashboard — one definition, shared by every
@@ -198,6 +199,9 @@ export function isAppNavigable(app: AppNavRecord): boolean {
  *     registered at the page's own route.
  */
 export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
+  // A built-in app that became a core surface is reached through that surface,
+  // even while its old record is still on disk.
+  if (app.origin === 'builtin' && SURFACE_FORMER_APPS.has(app.name)) return null
   const page = app.enabled && !app.unavailable ? firstUiPage(app) : null
   if (!page) return null
   const isBuiltin = app.origin === 'builtin'

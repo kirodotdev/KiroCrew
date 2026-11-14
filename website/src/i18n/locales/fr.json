@@ -5386,20 +5386,6 @@
         "warnings": "Avertissements"
       }
     },
-    "projects": {
-      "manifest": {
-        "description": "Confie une tâche en plusieurs étapes et laisse-la s’exécuter jusqu’au bout sans surveillance. Décris le travail en langage simple, colle une spécification écrite ou charge un fichier YAML, puis génère d’abord un plan pour relire les étapes, ou lance-la tout de suite. Chaque exécution obtient sa propre page qui montre la progression étape par étape, et tu peux la mettre en pause, la reprendre, la relancer ou l’arrêter à tout moment.",
-        "display_name": "Task Runner",
-        "highlight_1": "Trois points d’entrée : décrire le travail en langage simple, coller une spécification ou charger du YAML",
-        "highlight_2": "Génère un plan et relis les étapes avant de t’engager dans une exécution",
-        "highlight_3": "Les exécutions se déroulent sans surveillance, avec la progression étape par étape sur la page de l’exécution",
-        "highlight_4": "Mets en pause, reprends, relance ou arrête une exécution à tout moment",
-        "highlight_5": "Conserve un historique des exécutions passées et de leurs résultats",
-        "page_label": "Task Runner",
-        "use_case_1": "Planifie et exécute une tâche multi-agent avec dépendances depuis une demande en langage courant, une spécification existante ou un YAML déterministe.",
-        "configuration_1": "Ouvre Task Runner, choisis Compose, From Spec ou From YAML, sélectionne un agent et éventuellement un espace de travail absolu, puis vérifie avec Plan ou démarre immédiatement avec Run."
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "en construction",
@@ -20155,7 +20141,10 @@
         "show_topbar_search_desc": "Affiche le champ de recherche au centre de la barre supérieure. Désactivé, son espace revient aux commandes de chaque côté, et les valeurs CPU, MEM et DSK restent visibles dans les fenêtres plus étroites. Le raccourci de recherche ouvre toujours la recherche. Tant que les raccourcis sont désactivés, le champ reste affiché.",
         "command_bar": "Utiliser la Command Bar",
         "command_bar_desc": "Cmd+K ou Ctrl+K ouvre la Command Bar\u202f: saisis une commande pour aller à une application, un réglage ou une session. Désactivé, le raccourci ouvre la palette de recherche, qui cherche aussi dans les connaissances, les compétences et les prompts.",
-        "command_bar_save_failed": "Impossible d’enregistrer le réglage de la Command Bar."
+        "command_bar_save_failed": "Impossible d’enregistrer le réglage de la Command Bar.",
+        "task_runner": "Afficher Task Runner",
+        "task_runner_hint": "Désactivé, Task Runner disparaît de la barre latérale gauche et de Rechercher partout, et les nouvelles exécutions de tâches sont arrêtées. Rien n’est supprimé : tes plans, les exécutions passées et celles en cours sont conservés.",
+        "task_runner_save_failed": "Impossible d'enregistrer le réglage Task Runner. Réessaie."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

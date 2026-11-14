@@ -214,7 +214,7 @@ export default function BuiltinAppRoute() {
   }
 
   // Both boundaries below are keyed by `path`, and that key is load-bearing.
-  // `App.tsx` serves all 23 builtin pages from ONE unkeyed
+  // `App.tsx` serves all 22 builtin pages from ONE unkeyed
   // `<Route path="/:builtinApp/*">`, so a builtin→builtin move is a param
   // change on a mounted component, not a fresh mount. Both branches return
   // `ErrorBoundary` as their root, so without a key React updates the SAME

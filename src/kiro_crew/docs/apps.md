@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-three apps ship inside the Kiro Crew package (Meetings,
+backend process. Twenty-two apps ship inside the Kiro Crew package (Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -42,9 +42,10 @@ registry, or install a local directory from a path.
 - **Pin** and **Unpin**, in a Library tile's ⋯ menu, control whether an enabled app
   shows in the sidebar; the tile's caption says which. They do not disable anything.
 
-One shipped app is on from a fresh install: **Task Runner**. Everything else waits
-for you. The Command Bar that `Cmd+K` / `Ctrl+K` opens is part of the dashboard, not
-an app: turn it off or back on in **Settings → Display → View**.
+No shipped app is on from a fresh install: everything waits for you. Two parts of
+the dashboard used to be apps: the Command Bar that `Cmd+K` / `Ctrl+K` opens, and
+[Task Runner](task-runner.md). Turn either off or back on in
+**Settings → Display → View**.
 
 ## What ships
 
@@ -76,7 +77,6 @@ Each line below is drawn from the app's own manifest description.
 
 | App | What it does |
 |---|---|
-| **Task Runner** (`projects`) | Hand over a multi-step job and let it run to completion unattended. See [task-runner.md](task-runner.md). |
 | **Workflows** (`workflows`) | Author, run and watch multi-phase agent runs written from a plain-language goal. See [workflows.md](workflows.md). |
 | **Research Lab** (`auto-research`) | Multi-cycle research campaigns that keep working after you walk away. See [research-lab.md](research-lab.md). |
 | **Channels** (`channels`) | A shared room where several agents work one problem in the open, with no private agent-to-agent messaging. |

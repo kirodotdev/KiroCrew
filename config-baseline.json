@@ -2475,11 +2475,26 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
+        "enabled": true,
         "max_parallel_steps": 0,
         "workspace_dir": "",
         "test_command": [],
         "require_verification": false
       }
+    },
+    {
+      "path": "taskrunner.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Enabled",
+      "help": "Show Task Runner in the sidebar and let new runs start. Off hides the sidebar row and refuses every new start (the page, the task_run tool, the task run command and a saved task-plan workflow); runs already going keep going and their pages stay open.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "taskrunner.max_parallel_steps",

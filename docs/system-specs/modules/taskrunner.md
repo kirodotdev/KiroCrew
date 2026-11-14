@@ -853,10 +853,19 @@ screens it through `_validate_spec_path` (`hooks.validate_file_path`, off the ev
 loop): a traversal, a missing file or a UNC/laundered link answers
 `400 invalid_spec_path`, and a sensitive credential path answers `403 access_denied`.
 
-Starting is refused while the `projects` app (the Task Runner page) is
-switched off in Library: `POST /api/taskrunner` answers 409 `app_disabled`
-("Task Runner is disabled. Enable it in Library to start tasks.") before any
-inline spec is written. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
+Starting is refused while Task Runner is turned off (`taskrunner.enabled`,
+Settings > Display > View): `POST /api/taskrunner` answers 409 `app_disabled`
+("Task Runner is turned off. Turn it on in Settings > Display > View to start
+tasks.") before any inline spec is written. The code is still `app_disabled`, the
+answer these starts gave while Task Runner was the built-in app `projects`, whose
+record's off state the boot cleanup carried into the setting
+(app-kit-platform.md § Folding a built-in into core). Until that record is
+retired, and while neither `config.json` nor `config.local.json` holds
+`taskrunner.enabled` itself (a written key is the choice, as the carry treats it),
+the check reads it as well (the `builtin`-origin record only, never an app a user
+installed under the same name), so an off record (the owner's protected
+disable included) refuses the start on a gateway started without the dashboard,
+which never runs the cleanup, and after a cleanup whose write failed. `POST /api/taskrunner/plan`, `/from-chat`, `/refine`,
 `/{task_id}/execute` and `/{task_id}/retry` answer the same before a plan is
 made, a refine session started or a run admitted (`_task_runner_disabled`).
 The `task_run` MCP tool relays the start refusal, and
@@ -864,9 +873,11 @@ the chat command `task run <spec>` replies with that sentence. A saved
 `task-plan` workflow is refused the same way before it is planned:
 `POST /api/workflows/definitions/{ref}/run` answers 409 `app_disabled`,
 `/workflow <name>` replies with that sentence and the `workflow_run` MCP tool
-relays it. Saved Python workflows do not read the switch. Only an
-explicit `enabled: false` install record counts as disabled
-(`apps.manager.app_disabled`); a host with no record runs tasks.
+relays it. Saved Python workflows do not read the switch. Only a literal
+`false` turns it off, and every start reads it through
+`taskrunner_switch.task_runner_off`, so no restart is needed. The same check keeps
+the `apps` governance allowlist deciding Task Runner under its old app name: a
+policy that leaves `projects` out refuses every start with the policy's reason.
 
 ### Status Response
 

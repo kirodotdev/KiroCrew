@@ -5235,20 +5235,6 @@
         "warnings": "Warnungen"
       }
     },
-    "projects": {
-      "manifest": {
-        "description": "Übergib eine mehrstufige Aufgabe und lass sie unbeaufsichtigt bis zum Ende laufen. Beschreibe die Arbeit in normaler Sprache, füge eine schriftliche Spezifikation ein oder lade eine YAML-Datei hoch, und erstelle dann entweder zuerst einen Plan, um die Schritte zu prüfen, oder starte sofort. Jede Ausführung erhält ihre eigene Seite mit dem Schritt-für-Schritt-Fortschritt, und du kannst sie jederzeit pausieren, fortsetzen, wiederholen oder stoppen.",
-        "display_name": "Task Runner",
-        "highlight_1": "Drei Wege hinein: die Arbeit in normaler Sprache beschreiben, eine Spezifikation einfügen oder YAML hochladen",
-        "highlight_2": "Einen Plan erstellen und die Schritte prüfen, bevor du eine Ausführung startest",
-        "highlight_3": "Ausführungen laufen unbeaufsichtigt, mit Schritt-für-Schritt-Fortschritt auf der eigenen Seite der Ausführung",
-        "highlight_4": "Eine Ausführung jederzeit pausieren, fortsetzen, wiederholen oder stoppen",
-        "highlight_5": "Behält einen Verlauf früherer Ausführungen und ihrer Ergebnisse",
-        "page_label": "Task Runner",
-        "use_case_1": "Plane und starte einen abhängigen Multi-Agenten-Auftrag aus normaler Sprache, einer vorhandenen Spezifikation oder deterministischem YAML.",
-        "configuration_1": "Öffne Task Runner, wähle Compose, From Spec oder From YAML, einen Agenten und optional einen absoluten Arbeitsbereich und prüfe dann mit Plan oder starte sofort mit Run."
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "wird umgesetzt",
@@ -19650,7 +19636,10 @@
         "show_topbar_search_desc": "Zeigt das Suchfeld in der Mitte der oberen Leiste. Ausgeschaltet bekommen die Bedienelemente links und rechts seinen Platz, sodass die Werte für CPU, MEM und DSK auch in schmaleren Fenstern sichtbar bleiben. Das Tastenkürzel für die Suche öffnet sie weiterhin. Solange die Tastenkürzel ausgeschaltet sind, bleibt das Suchfeld sichtbar.",
         "command_bar": "Befehlsleiste verwenden",
         "command_bar_desc": "Cmd+K oder Ctrl+K öffnet die Befehlsleiste: Gib einen Befehl ein, um zu einer App, einer Einstellung oder einer Sitzung zu springen. Ausgeschaltet öffnet das Kürzel die Suchpalette, die auch Wissen, Skills und Prompts durchsucht.",
-        "command_bar_save_failed": "Die Einstellung für die Befehlsleiste konnte nicht gespeichert werden."
+        "command_bar_save_failed": "Die Einstellung für die Befehlsleiste konnte nicht gespeichert werden.",
+        "task_runner": "Task Runner anzeigen",
+        "task_runner_hint": "Ausgeschaltet verschwindet Task Runner aus der linken Leiste und aus „Überall suchen“, und neue Aufgabenläufe werden gestoppt. Nichts wird gelöscht: Deine Pläne, frühere Läufe und laufende Läufe bleiben erhalten.",
+        "task_runner_save_failed": "Die Einstellung für Task Runner konnte nicht gespeichert werden. Versuch es noch einmal."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

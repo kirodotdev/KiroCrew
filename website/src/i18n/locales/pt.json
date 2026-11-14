@@ -5302,20 +5302,6 @@
         "warnings": "Avisos"
       }
     },
-    "projects": {
-      "manifest": {
-        "description": "Entregue um trabalho de várias etapas e deixe que ele vá até o fim sem supervisão. Descreva o trabalho em linguagem simples, cole uma especificação escrita ou envie um arquivo YAML e, então, gere primeiro um plano para revisar as etapas ou comece na hora. Cada execução ganha uma página própria com o progresso passo a passo, e você pode pausar, retomar, tentar novamente ou parar a qualquer momento.",
-        "display_name": "Task Runner",
-        "highlight_1": "Três formas de começar: descreva o trabalho em linguagem simples, cole uma especificação ou envie um YAML",
-        "highlight_2": "Gere um plano e revise as etapas antes de se comprometer com uma execução",
-        "highlight_3": "As execuções acontecem sem supervisão, com o progresso passo a passo na página da própria execução",
-        "highlight_4": "Pause, retome, tente novamente ou pare uma execução a qualquer momento",
-        "highlight_5": "Mantém um histórico das execuções anteriores e dos resultados delas",
-        "page_label": "Task Runner",
-        "use_case_1": "Planeje e execute um trabalho multiagente com dependências a partir de linguagem natural, uma especificação existente ou YAML determinístico.",
-        "configuration_1": "Abra o Task Runner, escolha Compose, From Spec ou From YAML, selecione um agente e, se quiser, um workspace absoluto; depois revise com Plan ou inicie imediatamente com Run."
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "construindo",
@@ -20155,7 +20141,10 @@
         "show_topbar_search_desc": "Mostra a caixa de busca no meio da barra superior. Desligado, o espaço dela vai para os controles de cada lado, e as leituras de CPU, MEM e DSK continuam visíveis em janelas mais estreitas. O atalho de busca continua abrindo a busca. Enquanto os atalhos estiverem desligados, a caixa continua visível.",
         "command_bar": "Usar o Command Bar",
         "command_bar_desc": "Cmd+K ou Ctrl+K abre o Command Bar: digite um comando para ir a um aplicativo, uma configuração ou uma sessão. Desligado, o atalho abre a paleta de busca, que também busca em conhecimento, habilidades e prompts.",
-        "command_bar_save_failed": "Não foi possível salvar a configuração do Command Bar."
+        "command_bar_save_failed": "Não foi possível salvar a configuração do Command Bar.",
+        "task_runner": "Mostrar o Task Runner",
+        "task_runner_hint": "Desligado, o Task Runner sai da barra lateral esquerda e da Pesquisar em tudo, e as novas execuções de tarefas param. Nada é apagado: seus planos, as execuções anteriores e as que estão em andamento são mantidos.",
+        "task_runner_save_failed": "Não foi possível salvar a configuração do Task Runner. Tente de novo."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

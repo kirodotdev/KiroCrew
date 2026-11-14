@@ -2180,6 +2180,9 @@ are refused with `not_orphaned` (HTTP 400). It keeps `data/`, purges uninstall's
 generated dependency artifacts, skips the retired app's `onUninstall` script,
 and removes the rest of the app tree. All other uninstall preconditions and cleanup
 steps apply. Missing records and standalone successors return idempotent success.
+A retired builtin listed in `_FOLDED_BUILTIN_SWITCHES` has its off state carried
+into that row's core setting first, as the boot cleanup does (§ Folding a built-in
+into core); a failed write refuses the removal with `io_error`.
 Pointer flush failures and teardown warnings return a redacted `notice` on success;
 the migration page shows it above the completion card and retains the Install from
 Apps handoff. Without a notice, that handoff uses replacement navigation. Orphan
@@ -2513,7 +2516,8 @@ stamp instead of running pip twice.
 ## 12. Store visibility is a manifest flag, not a code removal
 
 Built-in apps ship default-DISABLED. `manager._DEFAULT_ON_BUILTINS` is the single
-source of truth for the exemption (`projects`, the Task Runner),
+source of truth for the exemption (empty today: `command-bar` and `projects`,
+the Task Runner, are core settings now),
 read by the policy tests over both the hardcoded list and the file-based
 manifests, so a builtin cannot become default-on through one registration path
 while the other path's test still forbids it. A default-enabled builtin is
@@ -2536,14 +2540,13 @@ disabled row in Library as the only trace of an app the user never heard of.
 the separation is load-bearing rather than bookkeeping: `_DEFAULT_ON_BUILTINS`
 answers "what does a fresh install enable", while this one answers "which
 promotion has not yet reached installs that predate it". Reading the first for the
-second question reverses deliberate opt-outs — `projects` has shipped
-`defaultEnabled: true` since it was aligned with the other builtins, long before
-the allowlist existed, so it has been enabled and visible in the sidebar on every
-existing install and a disabled record for it is a user who found it and turned it
-off. A name qualifies only when a fresh install enables it AND existing installs
+second question reverses deliberate opt-outs: an app that shipped
+`defaultEnabled: true` long before the allowlist existed has been enabled and
+visible in the sidebar on every existing install, so a disabled record for it is a
+user who found it and turned it off. A name qualifies only when a fresh install enables it AND existing installs
 were never in a position to choose; a ratchet test pins both halves. The set is
 empty today: the one app it promoted, `command-bar`, is the core setting
-`dashboard.command_bar_enabled` now, and the boot cleanup that removes its record
+`dashboard.command_bar_enabled` now, and the boot cleanup that retires its record
 reads a record still owed the promotion as on (`apps/builtin_fold.py`, see
 [command-bar](command-bar.md)).
 
@@ -6408,7 +6411,7 @@ which module owns which part, so a change lands in its owner.
 | `manager_builtins.py` | `register_builtin_apps` and the definitions it reads, the default-on backfill, `resolve_mcp_backend_url`, orphan detection with its cache, and the migrated-builtin cleanup |
 | `manager_external.py` | `register_external_app`, the record of a self-managed app |
 | `manager_uninstall.py` | `uninstall_app` and the `agent.apps_trusted` grant it drops and restores (`trust_grant_removal_blocked`, `_drop_trust_grant`, `_restore_trust_grant`) |
-| `manager_lookup.py` | `list_apps`, `get_app`, the enablement reads (`app_enabled_state`, `is_app_enabled`, `app_disabled`), the source and provenance setters, and which installed app owns an agent (`owning_app_for_agent`, `app_command_agent_refusal`, `missing_agent_reason`) |
+| `manager_lookup.py` | `list_apps`, `get_app`, the enablement reads (`app_enabled_state`, `is_app_enabled`), the source and provenance setters, and which installed app owns an agent (`owning_app_for_agent`, `app_command_agent_refusal`, `missing_agent_reason`) |
 | `manager_adopt.py` | `adopt_builtin_record`, `recover_interrupted_adoption`, and the sweep of what a killed update left (`sweep_interrupted_updates`, `sweep_completed_swap_leftovers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: records, tree, install,
@@ -7559,6 +7562,64 @@ Writers (dashboard side): `website/src/appNav.ts`, `website/src/apps/builtinIcon
 `website/src/apps/BuiltinAppRoute.tsx`, `website/src/hooks/panelTabRegistry.ts`,
 `website/src/components/InstalledAppSurface.tsx`, `website/src/components/appstore/types.ts`,
 `website/src/pages/AppDetailAdoptionNotice.tsx`, `website/src/pages/AppDetailPage.tsx`.
+
+### Folding a built-in into core
+
+A built-in that is a core feature dressed as an app does not move to a repository:
+it stops being an app. Its manifest leaves `apps/builtins/`, so the App Store no
+longer lists it and nothing registers it, and its name joins `_MIGRATED_BUILTINS`,
+so the boot cleanup (`cleanup_migrated_builtin`, after `register_builtin_apps`)
+retires the record a gateway that still shipped it left behind.
+
+Retiring keeps everything the user had. `data/` stays where it is. `installed.json`
+and `app.json` are renamed to `<file>.retired` beside it rather than deleted, so the
+record stays on disk as its backup, and nothing reads a `.retired` file as an
+installed app; `installed.json` goes last, because its absence is what makes the
+next start a no-op. The owner's records under `member-records/` are left as they are.
+
+When the app's enabled state was the feature's switch, `_FOLDED_BUILTIN_SWITCHES`
+maps the name to the dotted `config.json` path that is the switch now, and
+`apps/builtin_fold.carry_folded_switch` writes the record's off state there before
+the record is retired. The state is `manager_builtins.folded_switch_state`: a record
+of an app that reached installs as a default-on promotion (`_FOLDED_PROMOTED_BUILTINS`,
+the Command Bar) still owed that promotion reads as on unless the owner's protected
+disable or the `apps` allowlist held it off; any other folded app's off record is the
+user's opt-out. Only an off state is written, because every such
+setting defaults on as the app did, and a key already in the file is kept, because
+only Settings writes it. A failed write keeps the record, so
+the next start tries again instead of dropping the opt-out, and until the record is
+retired, and while no config file holds the setting itself, the feature's own check
+reads its off state too (`task_runner_off` for Task Runner, the `builtin`-origin
+record only), since a gateway started without the dashboard never runs the cleanup.
+The Migrate page's
+removal of the same record carries the switch the same way.
+
+| Former app | Switch | Where it is turned on and off |
+|---|---|---|
+| `command-bar` (Command Bar) | `dashboard.command_bar_enabled` | Settings > Display > View ([command-bar](command-bar.md)) |
+| `projects` (Task Runner) | `taskrunner.enabled` | Settings > Display > View; every start reads it through `taskrunner_switch.task_runner_off`, which also keeps the `apps` governance allowlist deciding it under the old name |
+
+On the dashboard the page becomes an ordinary surface (`surfaces/surfaceData.ts`)
+and keeps what its app row had: the nav id (the app's bare name, so the rail's saved
+order and unpinned set still find it), its icon, its place in the Apps group until
+the user drags the group (`formerApp`, `naturalAppGroupOrder`), and its pop-out
+window (`pages/corePopoutPages.tsx`). The surface's `configSwitch` takes it off the
+rail and out of Search Everywhere while its setting is off; its route stays. The
+setting's own row shows the gateway's value alone; Library no longer lists the row,
+so turning the setting on also pins back a row Library had unpinned in a browser. A
+built-in record the former app left behind (its cleanup could not retire it yet)
+gets no rail row or palette result of its own (`appNav.appNavTarget` skips a
+built-in record named in `SURFACE_FORMER_APPS`), and the old `/apps/<name>` URL
+opens the surface (`AppPage`, for that record or for no record at all). An app a
+user installs under the same name is its own app on both, and only the built-in
+record is read by the feature's own check.
+
+Tests: `test/test_task_runner_fold.py`, `test/test_taskrunner_switch.py`,
+`website/src/shell/nav/appRail.formerApp.test.tsx`,
+`website/src/pages/settings/TaskRunnerSetting.test.tsx`,
+`website/src/pages/corePopoutPages.test.ts`,
+`website/src/components/commandPalette/providers/pagesProvider.configSwitch.test.ts`,
+`website/src/appNav.test.ts`.
 
 ## 34. What a built-in asks of the host is the built-in's own data
 
