@@ -805,6 +805,11 @@ it. Details: [browser module spec](../system-specs/modules/browser.md).
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
 
+Every `kirocrew` command reads `KIROCREW_HOME`, so set it in your shell profile,
+not for the install command alone: a shell without it uses `~/.kiro/crew`. When
+it is set, the installers' Next steps name the data home and print the
+`export KIROCREW_HOME="..."` line to add.
+
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned
 ephemeral port). Without either, the port in the `dashboard.url` config key is
