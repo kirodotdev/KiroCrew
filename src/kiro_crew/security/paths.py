@@ -391,9 +391,9 @@ def is_sensitive_resolved_path(resolved: str) -> bool:
     such an input is the same string back, since a canonical path has no link
     left to follow. Handing this an unresolved spelling is a link bypass, and
     calling it from the event loop forfeits the bound the pool exists to give
-    that loop -- so it is for exactly one shape of caller: a bulk WALK on a
-    worker thread that already resolves every entry to detect symlink loops and
-    prove containment, and only then asks whether the entry is fenced.
+    that loop. Its callers are bulk WALKs that pass only paths they resolved, readers that
+    just canonicalised, and two callers that must not resolve (they follow no link and expand
+    no 8.3 name, and a miss cannot admit); every shape: ``docs/system-specs/modules/security.md``.
 
     Why a separate entry point rather than "just call the pool anyway": the pool
     is sized for the event loop (two workers by default --
