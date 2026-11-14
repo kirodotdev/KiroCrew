@@ -581,7 +581,16 @@ class TestAGeneratedColumnCannotCarryACredentialOffHost:
     def test_a_generated_column_with_nothing_sensitive_is_not_refused(self, tmp_path):
         """The discrimination half: refusing every generated column would be an outage."""
         stage = self._staged(tmp_path, self._GEN, [(1, "hello", "world")])
-        snapshot_redact.redact_bundle_for_egress(stage)
+        report = snapshot_redact.redact_bundle_for_egress(stage)
+        # Nothing was redacted or dropped, and the harmless row is still there to upload.
+        assert (report.total, report.dropped) == (0, [])
+        conn = snap.sqlite3.connect(str(stage / "memory.db"))
+        try:
+            assert conn.execute("SELECT a, b, joined FROM t").fetchall() == [
+                ("hello", "world", "helloworld")
+            ]
+        finally:
+            conn.close()
 
     def test_a_bytes_valued_generated_column_is_scanned_too(self, tmp_path):
         """`isinstance(value, str)` alone would walk straight past this one.
