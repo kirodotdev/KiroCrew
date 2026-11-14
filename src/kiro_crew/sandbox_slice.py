@@ -463,7 +463,9 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     descendants are bounded as one cgroup and the kernel kills the scope on
     breach. ``--scope`` execs into the target (it does NOT fork a wrapper), so
     the returned argv's eventual PID is the real child — parent PID tracking,
-    ``killpg``, and descendant scans are unaffected.
+    ``killpg``, and descendant scans are unaffected. ``--collect`` makes the
+    manager drop the unit once the scope ends, a failed scope included, so no
+    caller leaves a failed unit behind for ``reset-failed`` to clear.
 
     Every scope is parented under a per-instance child of
     :data:`_CGROUP_AGENTS_SLICE` (see :func:`_agents_slice_name`, which explains
@@ -569,6 +571,15 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         systemd_run,
         "--user",
         "--scope",
+        # CollectMode=inactive-or-failed. Without it the manager keeps every
+        # FAILED scope loaded until someone runs ``reset-failed``, and a scope
+        # fails whenever its process is gone before the manager attaches it
+        # (``Result=resources``: the wrapper was killed while it still waited
+        # for admission) or the kernel OOM-kills it. Each retained unit is more
+        # state the user manager walks, so a slow manager whose callers time out
+        # and kill the wrapper grows that state on every call. Collecting it
+        # changes no limit: it only frees the unit record once the scope ends.
+        "--collect",
         "-q",
         f"--slice={parent_slice}",
         *props,
