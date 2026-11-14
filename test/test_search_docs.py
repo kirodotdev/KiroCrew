@@ -268,3 +268,21 @@ def test_search_docs_drops_question_words_unless_nothing_else_is_left(tmp_path, 
     assert [r["page"] for r in mcp_guide.search_docs("how do I use slack")["results"]] == ["beta"]
     # Only question words: they are searched rather than refused.
     assert [r["page"] for r in mcp_guide.search_docs("how")["results"]] == ["alpha"]
+
+
+def test_search_docs_a_page_missing_a_rare_query_word_loses_to_one_that_has_it(
+    tmp_path, monkeypatch
+):
+    """A page named after two query words must not beat the page that
+    says all three when the word it lacks ("background") is rare. Without the
+    missing-word cost the name bonus wins by a few points."""
+    pages = {
+        "task-runner": "# Task Runner\nrun a task\n",
+        "helpers": "# Helpers\nrun a task in the background\n",
+        "one": "# One\nrun a task\n",
+    }
+    pages |= {f"bg{i}": f"# Bg{i}\nbackground\n" for i in range(3)}
+    pages |= {f"other{i}": f"# Other{i}\nnothing\n" for i in range(4)}
+    _docs(tmp_path, monkeypatch, pages)
+    results = mcp_guide.search_docs("run a task in the background")["results"]
+    assert results[0]["page"] == "helpers"

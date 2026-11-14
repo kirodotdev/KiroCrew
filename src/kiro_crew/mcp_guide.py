@@ -699,6 +699,10 @@ def search_docs(query: str = "", page: str = "", offset: int = 0) -> dict[str, A
             n_whole = len(w.findall(lower))
             count += rarity[t] * (n_whole + 0.5 * (len(t.findall(lower)) - n_whole))
         score = round(score) + min(round(count), 99)
+        # A query word the page never says costs the rarity part saying it once
+        # would earn, so a page missing a telling word ("background") loses to
+        # one that has it. A word on nearly every page ("use") costs about 0.
+        score -= round(sum(80 * rarity[t] for t in terms if t not in hits))
         lines = [
             ln.strip()[:_DOCS_LINE_CHARS]
             for ln in text.splitlines()
