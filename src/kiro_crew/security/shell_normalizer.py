@@ -57,6 +57,7 @@ from .shell_normalizer_redirects import (  # noqa: F401  (also re-exported for i
     _REDIRECT_START_RE,
     _SHELL_COMMAND_FLAG_RE,
     _array_assignments,
+    _array_element_indices,
     _glued_shell_command_payload,
     _here_string_payload,
     _heredoc_marker,

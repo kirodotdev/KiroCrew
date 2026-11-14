@@ -95,8 +95,8 @@ _SYSTEM_DIRS = ("/usr", "/etc", "/sbin", "/boot", "/lib", "/lib64")
 _CHMOD_DASH_MODE = re.compile(r"^-[rwxXst]+(?:,[ugoa]*[-+=][rwxXst]*)*$")
 
 
-def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
-    """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
+def _program_index(tokens: "list[str]") -> "int | None":
+    """Index in *tokens* of the program a command runs, wrappers and ``VAR=x`` stepped over."""
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -110,7 +110,7 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
         program = _shell._program_basename(token)
         wrapper = _WRAPPERS.get(program)
         if wrapper is None:
-            return program, tokens[i + 1 :]
+            return i
         value_opts, positionals = wrapper
         i += 1
         while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
@@ -122,20 +122,32 @@ def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     return None
 
 
-def _split_commands(tokens: "list[str]") -> "list[list[str]]":
-    """*tokens* (one frame's flat argv) cut into one argv per command.
+def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
+    """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
+    i = _program_index(tokens)
+    if i is None:
+        return None
+    return _shell._program_basename(tokens[i]), tokens[i + 1 :]
 
-    A comment runs to the next separator; a ``find -exec`` command is its own argv.
+
+def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]":
+    """*tokens* cut into one command per argv, each word kept with its index.
+
+    The one place comment and separator boundaries are decided; callers that
+    need the original token index (the ssh floor's execute-position walk) read
+    it here rather than re-deriving the boundaries. A comment runs to the next
+    separator. ``find -exec`` subcommands are NOT included (they are appended by
+    :func:`_split_commands`, which has no index to preserve).
     """
-    out: list[list[str]] = []
-    current: list[str] = []
+    out: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
     in_comment = False
-    for token in tokens:
+    for i, token in enumerate(tokens):
         if in_comment:
             in_comment = token != ";"
             continue
         if not token:  # an empty word (``chmod "" 777 x``) is an argument, not a separator
-            current.append(token)
+            current.append((i, token))
             continue
         if token.startswith("#"):
             in_comment = True
@@ -143,15 +155,24 @@ def _split_commands(tokens: "list[str]") -> "list[list[str]]":
             # A separator glued to a word (``https://x;``) keeps the word.
             word = token.rstrip(";|&")
             if word and word not in _SEPARATORS and not word.endswith("{"):
-                current.append(word)
+                current.append((i, word))
         else:
-            current.append(token)
+            current.append((i, token))
             continue
         if current:
             out.append(current)
         current = []
     if current:
         out.append(current)
+    return out
+
+
+def _split_commands(tokens: "list[str]") -> "list[list[str]]":
+    """*tokens* (one frame's flat argv) cut into one argv per command.
+
+    A comment runs to the next separator; a ``find -exec`` command is its own argv.
+    """
+    out = [[word for _, word in command] for command in _split_commands_indexed(tokens)]
     return [*out, *(sub for argv in out for sub in _find_exec_argvs(argv))]
 
 

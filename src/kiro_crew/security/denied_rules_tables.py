@@ -270,7 +270,15 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "port is part of the target, so a forwarded port on a loopback address (a container "
         "or VM behind `ssh -p 2222 localhost`) is denied like the host, since sshd here "
         "could listen on that port too. Operator recourse for container/VM workflows is "
-        "the per-rule toggle in Settings until a port-scoped exemption ships."
+        "the per-rule toggle in Settings until a port-scoped exemption ships. (4) GLOB "
+        "words: a wildcard word that could name ssh, scp, sftp or rsync (such as `s*` or "
+        "`r*`) followed by a wildcard word that could name this machine (such as `l*` or "
+        "`*.*`) is refused where the shell could run the first word as a program, because "
+        "files with those names can be created. Retrying does not help. This covers such a "
+        "pair shown inside backticks in a quoted message, and in a heredoc body that is not "
+        "plainly data. Write the pair without backticks or pass the text from a file "
+        "(`-F file`, `--body-file file`), quote the heredoc tag (`<<'EOF'`), or name the files literally. "
+        "For file patterns, use one that cannot name ssh, scp, sftp or rsync."
     ),
 }
 

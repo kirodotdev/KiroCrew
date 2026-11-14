@@ -1525,3 +1525,35 @@ class TestOneDecisionWalksEachTextOnce:
         modes.clear()
         assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
         assert modes == [False, True]
+
+
+class TestSshSelfFloorNestedValueCost:
+    """Perf gate for the ssh-to-self floor on nested remote-shell values.
+
+    ``rsync -e <value>`` runs its value as a command line, so the floor scans the
+    value as one, and a value can itself be an ``rsync -e`` line.  Each level is
+    scanned once.  Ratcheted on STRUCTURE, never timing: the number of floor calls
+    grows by one per level.  Reading a level more than once (a glob read once per
+    program it can name was tried) multiplies the calls at every level.
+    """
+
+    @pytest.mark.parametrize("depth", [1, 4, 8])
+    def test_each_nested_remote_shell_value_is_scanned_once(self, monkeypatch, depth):
+        import shlex
+
+        from kiro_crew.security import argv_floor_ssh
+
+        value = "s?h localhost"
+        for _ in range(depth):
+            value = "rsync -e " + shlex.quote(value) + " a b"
+        calls = {"n": 0}
+        real = argv_floor_ssh._is_ssh_to_self
+
+        def spy(*args, **kwargs):
+            calls["n"] += 1
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(argv_floor_ssh, "_is_ssh_to_self", spy)
+        # The innermost value names the loopback, as the other cost tests do.
+        assert argv_floor_ssh._is_ssh_to_self(value) is True
+        assert calls["n"] == depth + 1
