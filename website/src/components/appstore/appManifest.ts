@@ -293,6 +293,21 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.mochi.manifest.use_case_1'],
     configuration: ['apps.mochi.manifest.configuration_1'],
   },
+  'mood-music': {
+    displayName: 'apps.moodMusic.manifest.display_name',
+    description: 'apps.moodMusic.manifest.description',
+    pageLabel: 'apps.moodMusic.manifest.page_label',
+    highlights: [
+      'apps.moodMusic.manifest.highlight_1',
+      'apps.moodMusic.manifest.highlight_2',
+      'apps.moodMusic.manifest.highlight_3',
+      'apps.moodMusic.manifest.highlight_4',
+      'apps.moodMusic.manifest.highlight_5',
+      'apps.moodMusic.manifest.highlight_6',
+    ],
+    useCases: ['apps.moodMusic.manifest.use_case_1'],
+    configuration: ['apps.moodMusic.manifest.configuration_1'],
+  },
   'ops-mission-control': {
     displayName: 'apps.opsMissionControl.manifest.display_name',
     description: 'apps.opsMissionControl.manifest.description',

@@ -1,0 +1,68 @@
+{
+  "name": "mood-music",
+  "version": "0.1.0",
+  "displayName": "Mood Music",
+  "description": "Tell it how you feel, or name a song that moved you. A DJ agent finds songs with the same feeling and plays them: YouTube inside the page, bilibili in a new browser tab. Like or skip, and the next picks follow.",
+  "author": "kirocrew",
+  "tags": [
+    "music",
+    "mood",
+    "personal",
+    "recommendations",
+    "lifestyle"
+  ],
+  "highlights": [
+    "Say how you feel, or name a song that moved you — it finds more with the same feeling",
+    "Every pick says why it fits the mood",
+    "YouTube plays inside the page through the privacy-enhanced embed",
+    "bilibili songs open in a new tab of your own browser; the agent never touches your account",
+    "Like or skip a song, and the next picks use it",
+    "The background and motion follow the mood, in light and dark"
+  ],
+  "defaultEnabled": false,
+  "platform": {
+    "os": [
+      "macos",
+      "linux",
+      "windows"
+    ]
+  },
+  "iconUrl": "/app-assets/mood-music/icon.svg",
+  "heroImage": "/app-assets/mood-music/hero-light.svg",
+  "heroImageDark": "/app-assets/mood-music/hero-dark.svg",
+  "permissions": {
+    "api": [
+      "/api/apps/mood-music",
+      "/api/apps/mood-music/*"
+    ],
+    "storage": true,
+    "network": true
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/mood-music",
+        "label": "Mood Music",
+        "icon": "Music"
+      }
+    ]
+  },
+  "agents": [
+    "agents/dj.json"
+  ],
+  "skills": [
+    "skills/mood-music"
+  ],
+  "backend": {
+    "routes": "backend.routes:register_routes"
+  },
+  "useCases": [
+    "Find and play songs that match how you feel right now, and keep a history of the moments that moved you."
+  ],
+  "configuration": [
+    "No account is needed. YouTube plays in the page; bilibili opens in your own browser, signed in or not, as you choose."
+  ],
+  "screenshots": [
+    "/app-assets/mood-music/screenshot-main.png"
+  ]
+}

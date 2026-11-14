@@ -619,7 +619,13 @@ _BASE_CSP = (
     # The panel isolates the preview host from the dashboard host
     # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
     # the framed server. The *.localhost tunnel wildcard stays instances-gated.
-    "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
+    # https://www.youtube-nocookie.com/embed/: the Mood Music app plays a song in
+    # YouTube's privacy-enhanced embed. Path-scoped to /embed/ and this one host;
+    # the page builds the URL itself from a checked 11-char video id
+    # (website/src/apps/mood-music/links.ts) and frames it sandboxed. It opens no
+    # new way out: img-src already admits any https host.
+    "frame-src 'self' blob: https://*.cloudfront.net "
+    "https://www.youtube-nocookie.com/embed/{frame_src_extra}; "
     # form-action does not fall back to default-src, so without it an injected
     # <form> could post to any host. Every dashboard form posts to its own origin.
     "object-src 'none'; base-uri 'self'; form-action 'self'; "

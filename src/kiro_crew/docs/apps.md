@@ -2,7 +2,7 @@
 
 An **app** is a feature that ships as its own unit: it brings its own pages in the
 dashboard, and it may also bring agents, skills, MCP tools, scheduled jobs and a
-backend process. Twenty-two apps ship inside the Kiro Crew package (Meetings,
+backend process. Twenty-three apps ship inside the Kiro Crew package (Meetings,
 Papyrus, Mochi, Dev Fleet, Notes and the rest), and almost all of them are **off
 until you turn them on**. The App Store is where you turn them on, and where you
 install apps that did not ship with your build.
@@ -97,6 +97,7 @@ Each line below is drawn from the app's own manifest description.
 | **Crew Companion** (`crew-companion`) | Paces your day: break nudges, plain-language reminders, a short breathing exercise, and session-finished alerts. Reminders are understood in English, Chinese and Korean (picked from the text's script, not the UI language); an unclear time gets a "when?" prompt instead of a guess. |
 | **Agent Worlds** (`agent-worlds`) | Turns your running agents into characters in an animated pixel-art scene, so a glance tells you how busy Kiro Crew is. |
 | **Personal Shopper** (`personal-shopper`) | A personal advisor that researches real stores. It never buys anything — you do. |
+| **Mood Music** (`mood-music`) | Tell it how you feel, or name a song that moved you. A DJ agent finds songs with the same feeling and plays them: YouTube inside the page, bilibili in a new browser tab. Like or skip, and the next picks follow. |
 
 Mochi and Crew Companion need the Kiro Crew **desktop app** for their own windows;
 enabling them from a browser works, but the window does not appear. Channels and
@@ -116,11 +117,11 @@ may ship its own. Registration happens on enable and is undone on disable.
 
 - **Agents.** Meetings ships three (a note taker, a sketch artist, a task
   extractor), PPTX Maker four, Mochi two, Auto-Improvement four, Personal Shopper
-  one. They are registered under the app's own namespace, so two apps can ship an
-  agent with the same name without colliding.
+  one, Mood Music one. They are registered under the app's own namespace, so two
+  apps can ship an agent with the same name without colliding.
 - **Skills.** Code Review Sage, Design Critique, Design Tweak, Spec Builder,
-  Personal Shopper, Auto-Improvement, Dev Fleet and Mochi each add one or more. They
-  behave exactly like the skills in [skills.md](skills.md).
+  Personal Shopper, Mood Music, Auto-Improvement, Dev Fleet and Mochi each add one
+  or more. They behave exactly like the skills in [skills.md](skills.md).
 - **MCP tools.** Mochi and Auto-Improvement each run their own MCP server, and its
   tools are merged into the agents that are allowed them.
 - **Scheduled jobs.** Ops Mission Control declares crons, which are registered on

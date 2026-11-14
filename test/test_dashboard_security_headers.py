@@ -344,6 +344,19 @@ class TestApplySecurityHeaders:
             assert "http://*.cloudfront.net" not in frame_src
             assert "https://*" + " " not in frame_src  # no bare https wildcard
 
+    def test_csp_frame_src_admits_only_the_nocookie_youtube_embed(self) -> None:
+        """Mood Music frames YouTube's privacy-enhanced embed, path-scoped to /embed/.
+        No other YouTube host and no wildcard on it is framable."""
+        for with_instances in (False, True):
+            resp = _make_response()
+            _apply_security_headers(resp, _make_app(with_instances=with_instances))
+            csp = resp.headers["Content-Security-Policy"]
+            frame_src = next(d for d in csp.split(";") if d.strip().startswith("frame-src"))
+            youtube = [s for s in frame_src.split() if "youtube" in s]
+            assert youtube == ["https://www.youtube-nocookie.com/embed/"]
+            other = [d for d in csp.split(";") if not d.strip().startswith("frame-src")]
+            assert not any("youtube" in d for d in other)
+
     def test_csp_names_no_font_host_origin(self) -> None:
         """The brand faces are served from the dashboard's own origin, so
         style-src and font-src admit no dedicated font host."""
