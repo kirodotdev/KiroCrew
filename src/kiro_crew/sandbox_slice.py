@@ -168,7 +168,8 @@ def _ensure_agent_slice_memory_high() -> None:
             "SECURITY: could not apply MemoryHigh=%s to %s (%s); the AGGREGATE "
             "agent memory ceiling is NOT enforced on this host — per-scope "
             "MemoryMax still applies. See "
-            "docs/architecture/resource-protection.md.",
+            "https://github.com/kirodotdev/KiroCrew/blob/main/"
+            "docs/architecture/resource-protection.md",
             desired,
             _CGROUP_AGENTS_SLICE,
             exc,
@@ -256,7 +257,8 @@ def _check_slice_memory_pressure() -> None:
         "aggregate agent memory crossed the slice MemoryHigh ceiling and the "
         "kernel is throttling the whole agent subtree; agents run slowly "
         "(not hung) until aggregate memory drops. See "
-        "docs/architecture/resource-protection.md.",
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         _CGROUP_AGENTS_SLICE,
         previous,
         current,
@@ -1355,7 +1357,8 @@ def _disarm_slice_reclaim(reason: object, *, level: int = logging.WARNING) -> No
         level,
         "agent slice %s: proactive page-cache reclaim is off for this process (%s); "
         "the slice MemoryHigh ceiling still applies. See "
-        "docs/architecture/resource-protection.md.",
+        "https://github.com/kirodotdev/KiroCrew/blob/main/"
+        "docs/architecture/resource-protection.md",
         _CGROUP_AGENTS_SLICE,
         reason,
     )
