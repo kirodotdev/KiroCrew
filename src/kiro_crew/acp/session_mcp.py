@@ -88,7 +88,7 @@ from kiro_crew import mcp_provenance
 from kiro_crew.acp.claude_mcp_names import claude_mcp_tool_name
 from kiro_crew.acp.mcp_session_report import sanitize_sink_text
 from kiro_crew.acp.session_label import SESSION_LABEL_MARKER
-from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec
+from kiro_crew.acp.session_mcp_crewmate import _crewmate_worker_spec, worker_session_stubs
 from kiro_crew.acp.session_mcp_env_refs import expand_entry_env
 from kiro_crew.acp.session_mcp_restricted import session_mcp_restricted_servers
 from kiro_crew.acp.session_mcp_settings_read import (  # noqa: F401 -- re-exported
@@ -1028,6 +1028,7 @@ class SessionMcpProjection(NamedTuple):
     #: ``AcpClient._spec_zero_tools``.
     zero_tools: bool = False
     agent_spec: dict[str, Any] | None = None
+    worker_stubs: tuple[dict[str, Any], ...] = ()
 
 
 def session_mcp_projection(
@@ -1040,6 +1041,9 @@ def session_mcp_projection(
     spec_policy_honoured: bool = False,
     worker_mcp_tool_limits_honoured: bool = False,
     worker_native_tool_limits_honoured: bool = False,
+    worker_overlay_dir: str | Path | None = None,
+    session_token: str = "",
+    channel_id: str = "",
 ) -> SessionMcpProjection:
     """The array, the withhold set AND the per-tool restrictions, from ONE parse.
 
@@ -1072,6 +1076,9 @@ def session_mcp_projection(
         mcp_tool_limits_honoured=worker_mcp_tool_limits_honoured,
         native_tool_limits_honoured=worker_native_tool_limits_honoured,
     )
+    worker_stubs = worker_session_stubs(
+        agent, spec, session_key, worker_overlay_dir, session_token, channel_id
+    )
     settings = _global_settings()
     disabled_tools = session_mcp_disabled_tools(
         agent, work_dir=work_dir, spec=spec, settings=settings
@@ -1081,7 +1088,7 @@ def session_mcp_projection(
     return SessionMcpProjection(
         servers=session_mcp_servers(
             agent,
-            stub_server_names=stub_server_names,
+            stub_server_names=(*stub_server_names, *(s["name"] for s in worker_stubs)),
             work_dir=work_dir,
             spec=spec,
             muted=disabled_servers,
@@ -1093,6 +1100,7 @@ def session_mcp_projection(
         derived_spec_snapshot=snapshot,
         zero_tools=isinstance(spec_tools, list) and not spec_tools,
         agent_spec=spec,
+        worker_stubs=worker_stubs,
     )
 
 

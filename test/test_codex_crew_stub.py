@@ -17,6 +17,7 @@ nothing fails these tests as surely as one that admits too much.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import codex_session_mcp_helpers
 import pytest
@@ -24,7 +25,7 @@ from codex_session_mcp_helpers import _by_name, _write_spec
 
 from kiro_crew import mcp_discovery_managed, mcp_work
 from kiro_crew.config import paths
-from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.mcp_gateway.hashing import STUB_FLAGS_FLAG, encode_target_args, expand_stub_flags
@@ -259,5 +260,55 @@ def test_a_crewmate_chat_mounts_kirocrew_mate_from_its_conductor_overlay(agents_
     mounted = by_name[mate]
     flags = expand_stub_flags(mounted["args"])
     assert flags[flags.index("--agent") + 1] == MATE_CONDUCTOR_AGENT
+    env = {p["name"]: p["value"] for p in mounted["env"]}
+    assert env[STUB_SESSION_TOKEN_ENV] == _TOKEN
+
+
+def test_a_crewmate_worker_mounts_kirocrew_work_from_its_worker_overlay(
+    agents_dir, tmp_path, monkeypatch
+):
+    """A Bot's worker session on codex reaches ``work_report`` once ``kirocrew-work`` is routed.
+
+    The session projection binds the stock worker overlay to its own worker record.
+    """
+    # The worker projection reads the session's execution record for its Bot; the
+    # isolated home has none, so bind one the way ``session_create`` files it.
+    monkeypatch.setattr(
+        "kiro_crew.execution_context.read_session_execution",
+        lambda key: SimpleNamespace(
+            selection_kind="template", template_id=MATE_WORKER_AGENT, member_id="m-1"
+        ),
+    )
+    worker = {
+        "name": MATE_WORKER_AGENT,
+        "mcpServers": {_WORK: {"command": "/opt/kirocrew", "args": ["mcp-work"]}},
+        "tools": [f"@{_WORK}/work_report"],
+    }
+    mates = paths.mate_agents_dir()
+    mates.mkdir(parents=True, exist_ok=True)
+    (mates / f"{MATE_WORKER_AGENT}.json").write_text(json.dumps(worker))
+    user_agents = tmp_path / "user-agents"
+    user_agents.mkdir()
+    overlay = tmp_path / "overlay" / "agents"
+    rewrite_agents(
+        source_dir=user_agents,
+        overlay_dir=overlay,
+        socket_path=tmp_path / "gw.sock",
+        work_dir=tmp_path / "work",
+        stub_servers=frozenset({_WORK}),
+        mate_source_dir=mates,
+    )
+    assert pooled_session_servers(overlay, MATE_WORKER_AGENT) == []
+    projection = codex_projection(
+        MATE_WORKER_AGENT,
+        session_key="worker:one",
+        session_token=_TOKEN,
+        worker_overlay_dir=overlay,
+    )
+    by_name = _by_name(projection.params["mcpServers"])
+    assert _WORK in by_name
+    mounted = by_name[_WORK]
+    flags = expand_stub_flags(mounted["args"])
+    assert flags[flags.index("--agent") + 1] == MATE_WORKER_AGENT
     env = {p["name"]: p["value"] for p in mounted["env"]}
     assert env[STUB_SESSION_TOKEN_ENV] == _TOKEN

@@ -756,6 +756,7 @@ async def _mirrored_session_mcp(
             active_agent,
             stub_server_names=stubbed,
             stub_elements=stubs,
+            worker_overlay_dir=self._mcp_gateway_overlay,
             permission_surface_owned=permission_surface_owned,
             work_dir=work_dir,
             session_key=session_key,

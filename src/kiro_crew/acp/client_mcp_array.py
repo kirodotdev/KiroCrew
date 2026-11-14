@@ -354,6 +354,7 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         # so one withhold rule covers both halves of the array (codex). A mirror
         # that leaves them to the shared append ignores them.
         stub_elements=self._pooled_broker_stubs(),
+        worker_overlay_dir=self._mcp_gateway_overlay,
         permission_surface_owned=self._permission_surface_governed,
         work_dir=self._work_dir,
         # A codex stdio child starts from env_clear() plus an allowlist, so

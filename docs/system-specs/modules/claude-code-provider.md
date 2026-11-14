@@ -338,7 +338,11 @@ and effort selection, the full `session/request_permission` flow) works. So
   copy of that server. A stub
   for a spec-narrowed server stays mounted, unlike codex: the narrowing rides
   `permissions.deny` in `settings.local.json`, which matches the stub because it
-  registers under the same server name.
+  registers under the same server name. A Bot worker's stock-overlay stubs are
+  resolved inside `session_mcp_projection` using its own session key and stub
+  token, after its merged spec is resolved. They pass the same allowlist and
+  permission-surface checks as the translated servers; the by-name worker lookup
+  returns no stubs. The settings-lag check below covers this array too.
 - **Crew's control plane is re-derived, not copied.** `kirocrew-core` and
   `kirocrew-cron` come from `agent.managed_mcp_spec_entry`, so a stale hand-edited
   command in the spec cannot cost a session the tools it needs to report back at

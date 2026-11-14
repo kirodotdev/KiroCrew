@@ -223,6 +223,10 @@ class ClaudeCodeMirror(AgentConfigMirror):
             stub_elements=stubs if isinstance(stubs, (list, tuple)) else (),
             permission_surface_owned=permission_surface_owned,
             work_dir=work_dir,
+            session_key=kwargs.get("session_key"),
+            session_token=kwargs.get("session_token"),
+            channel_id=kwargs.get("channel_id"),
+            worker_overlay_dir=kwargs.get("worker_overlay_dir"),
         ).params
 
     def session_projection(
@@ -278,6 +282,9 @@ class ClaudeCodeMirror(AgentConfigMirror):
             # MCP tool limits ride the seed's deny rules
             # (``session_mcp_crewmate.crewmate_worker_deny_rules``).
             session_key=str(kwargs.get("session_key") or ""),
+            worker_overlay_dir=kwargs.get("worker_overlay_dir"),  # type: ignore[arg-type]
+            session_token=str(kwargs.get("session_token") or ""),
+            channel_id=str(kwargs.get("channel_id") or ""),
             worker_mcp_tool_limits_honoured=self.backend
             in ACP_BACKENDS_MATE_WORKER_MCP_TOOL_LIMITS,
             worker_native_tool_limits_honoured=self.backend
@@ -310,7 +317,7 @@ class ClaudeCodeMirror(AgentConfigMirror):
                 builtin_tools=builtin_tools,
             )
         out: list[dict[str, Any]] = list(projection.servers)
-        for stub in stub_elements:
+        for stub in (*stub_elements, *projection.worker_stubs):
             if not isinstance(stub, Mapping):
                 continue
             name = stub.get("name")

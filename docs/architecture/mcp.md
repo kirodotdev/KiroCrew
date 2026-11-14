@@ -2056,7 +2056,7 @@ in any state is a claim on the name, keeps refusing.
 
 A Bot's worker runs on `kirocrew-mate-worker`, and both that base spec and
 the Bot's own file live in `~/.kiro/mates/agents/`, which the agents loop
-above reads for one file only (the conductor, below). So the gateway start
+above reads for two files only (the service specs, below). So the gateway start
 passes that folder to the same pass (`rewrite_kwargs`' `mate_source_dir`), and
 `mcp_gateway/mate_overlays.py` writes one overlay per Bot file to
 `<overlay_dir>/mates/<id>.json`. That subdirectory
@@ -2065,16 +2065,21 @@ an `~/.kiro/agents` agent of the same name, or the reverse.
 
 A Bot's chat runs the stock conductor spec, `kirocrew-mate-conductor.json` in
 that same folder, one file shared by every Bot, and its session looks its stubs
-up by that agent name. So the agents loop rewrites that one file as if it sat in
-`~/.kiro/agents/` (`mate_overlays.with_conductor_source`): its overlay is
-`<overlay_dir>/kirocrew-mate-conductor.json`, its stubs carry
-`--agent kirocrew-mate-conductor` whatever `name` the file declares (that
-folder is outside the sandbox's read-only seal), and its signature joins the fingerprint's
-`sources`. It takes the place of an `~/.kiro/agents` file with the same stem,
-which no Bot chat runs. A symlinked or non-folder `~/.kiro/mates/agents`, or a
-conductor file that is not a plain file, leaves the loop as it was. Without this
-overlay a Bot's chat would get no stub at all, so on Codex, which mounts Crew's
-own servers only as stubs, a routed `kirocrew-mate` would never reach the chat
+up by that agent name. A Bot's worker sessions run the stock worker spec,
+`kirocrew-mate-worker.json`; Codex and Claude resolve its stubs through
+`session_mcp_projection`, keyed by the worker's own session, never by name alone.
+The agents loop rewrites those two plain service specs as if they sat in
+`~/.kiro/agents/` (`mate_overlays.with_service_sources`): the conductor's overlay
+is `<overlay_dir>/kirocrew-mate-conductor.json` and the worker's
+`<overlay_dir>/kirocrew-mate-worker.json`, their stubs carry
+`--agent <that name>` whatever `name` the file declares (that folder is outside
+the sandbox's read-only seal), and their signatures join the fingerprint's
+`sources`. Each takes the place of an `~/.kiro/agents` file with the same stem,
+which no Bot session runs. A symlinked or non-folder `~/.kiro/mates/agents`, or
+a service file that is not a plain file, leaves that file out of the loop. Without
+this overlay a Bot's chat or worker would get no stub at all, so on Codex, which
+mounts Crew's own servers only as stubs, a routed `kirocrew-mate` would never
+reach the chat and `kirocrew-work` would never reach a worker
 ([providers](../system-specs/modules/providers.md#codex-dashboard-session-mount)).
 
 What the pass does with a Bot file is what it does with an agent spec: the
@@ -2125,7 +2130,7 @@ name, and only on KAS: `_pooled_session_servers_and_ref_spec` passes the session
 key on a positive `backend == kas` check, and `session_servers` answers
 `kirocrew-mate-worker` with that key only through
 `mate_overlays.worker_overlay_spec(overlay_dir, session_key)`. Every other host
-passes no key and keeps the by-name lookup it had. The record must be a
+passes no KAS key and gets no worker stub by name. The KAS record must be a
 Bot's worker, its Bot must own its file (`mate_file_for_member`), and
 the overlay must carry that Bot's identity. Only a wrapped server the
 Bot ADDS is returned (a base server wins the merge), and only one the
@@ -2145,8 +2150,21 @@ KAS subtracts from its projection the names of exactly the entries it returned
 after those stubs were picked, so a stub whose server that later read drops,
 mutes or marks registry-governed is withdrawn (`SessionExtras.withdrawn_stub_names`)
 and both session start paths remove it from the session-level array before the
-hoist: a mute or a `type: registry` saved while a worker starts still takes effect. claude's mirrored worker path is
-unchanged.
+hoist: a mute or a `type: registry` saved while a worker starts still takes effect.
+
+Codex and Claude pass the overlay directory and the worker's own session key and
+stub token into `session_mcp_projection`. Its `worker_session_stubs` read accepts
+only an attested Bot worker record and the stock worker overlay with the matching
+identity. The already-merged worker spec supplies the mounted server set and
+restrictions; it is not read again for the stubs. An absent key, token or overlay,
+an unrelated session, or an unreadable overlay supplies no worker stubs. Every
+stub drops `autoApprove`, takes the merged `disabledTools`, and passes the common
+registry, unpoolable-server and shared-template governance filters. The names of
+those exact entries are withheld from direct translation, so each server mounts
+once. Both mirrors then apply the same projection's allowlist and switch-offs:
+Codex withholds a restricted server; Claude carries its tool limits in the seeded
+deny rules and withholds the whole array if those settings are not governed or
+lag the worker's spec. The existing unsupported-worker-kit refusals still apply.
 
 An app callback from a Bot's stub is governed as that worker's tool calls
 are. The spool record carries the stub identity `crewmate:<id>`, which no profile

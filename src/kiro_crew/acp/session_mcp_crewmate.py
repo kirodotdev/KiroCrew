@@ -11,6 +11,57 @@ from pathlib import Path
 from typing import Any
 
 
+def worker_session_stubs(
+    agent: str | None,
+    spec: dict[str, Any] | None,
+    session_key: str,
+    overlay_dir: str | Path | None,
+    session_token: str,
+    channel_id: str,
+) -> tuple[dict[str, Any], ...]:
+    """Base-server stubs bound to an attested worker and its already-resolved spec.
+
+    No spec is re-read: the mirror's grants and denies must describe the same
+    generation as these mounts. The overlay supplies approved launches only;
+    the worker's merged spec supplies restrictions, never its shared base file.
+    """
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.mate_worker import MATE_WORKER_AGENT, is_own_worker_execution
+    from kiro_crew.mcp_cleanup import mcp_entry_is_muted, mcp_entry_is_registry_governed
+    from kiro_crew.mcp_gateway.mate_overlays import _read_mate_overlay, _servers
+    from kiro_crew.mcp_gateway.session_servers import (
+        attach_stub_session_token,
+        pooled_servers_from_spec,
+    )
+
+    if agent != MATE_WORKER_AGENT or not (session_key and session_token and overlay_dir and spec):
+        return ()
+    if not is_own_worker_execution(read_session_execution(session_key)):
+        return ()
+    overlay = _read_mate_overlay(Path(overlay_dir) / f"{MATE_WORKER_AGENT}.json")
+    if overlay is None or overlay.get("name") != MATE_WORKER_AGENT:
+        return ()
+    governed = _servers(spec.get("mcpServers"))
+    stubs: dict[str, Any] = {}
+    for name, entry in _servers(overlay.get("mcpServers")).items():
+        mounted = governed.get(name)
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(mounted, dict)
+            or mcp_entry_is_muted(mounted)
+            or mcp_entry_is_registry_governed(mounted)
+        ):
+            continue
+        shaped = dict(entry)
+        shaped.pop("autoApprove", None)
+        shaped.pop("disabledTools", None)
+        if isinstance(mounted.get("disabledTools"), list):
+            shaped["disabledTools"] = list(mounted["disabledTools"])
+        stubs[name] = shaped
+    entries = pooled_servers_from_spec({"mcpServers": stubs}, agent, channel_id)
+    return tuple(attach_stub_session_token(entries, session_token))
+
+
 def _crewmate_worker_spec(
     agent: str | None,
     spec: dict[str, Any] | None,

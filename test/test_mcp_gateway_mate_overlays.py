@@ -25,6 +25,7 @@ from kiro_crew.mcp_gateway.launch_approval import LaunchApprovals
 from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER, env_sidecar_dir, env_sidecar_name
 
 SERVER = "jira"
+OTHER = "slack"
 WORKER = mate_overlays.MATE_WORKER_AGENT
 
 
@@ -62,13 +63,13 @@ def home(tmp_path, monkeypatch):
     )
 
 
-def _rewrite(home, *, mates=True, pooling=True, approvals=None):
+def _rewrite(home, *, mates=True, pooling=True, approvals=None, stubs=frozenset({SERVER})):
     return rewriter.rewrite_agents(
         source_dir=home.agents,
         overlay_dir=home.overlay,
         socket_path=home.tmp / "gw.sock",
         work_dir=home.tmp / "work",
-        stub_servers=frozenset({SERVER}),
+        stub_servers=stubs,
         pooling_enabled=pooling,
         approvals=approvals,
         mate_source_dir=home.mates if mates else None,
@@ -132,6 +133,38 @@ class TestTheRewritePass:
         assert path.is_file()
         entry = json.loads(path.read_text())["mcpServers"][SERVER]
         assert _agent_flag(entry) == conductor
+
+    def test_the_worker_overlay_is_written_but_never_injected_by_name(self, home):
+        """The shared overlay is an input to the worker's session projection only."""
+        launch = {"command": sys.executable, "args": ["-V"]}
+        _write(
+            home.mates / f"{WORKER}.json",
+            {"name": WORKER, "tools": ["*"], "mcpServers": {SERVER: launch, OTHER: launch}},
+        )
+        # A same-named file in ~/.kiro/agents is not the spec the worker runs.
+        _write(home.agents / f"{WORKER}.json", {"name": WORKER, "mcpServers": {}})
+        _rewrite(home, stubs=frozenset({SERVER, OTHER}))
+        path = home.overlay / f"{WORKER}.json"
+        assert path.is_file()
+        servers = json.loads(path.read_text())["mcpServers"]
+        assert set(servers) == {SERVER, OTHER}
+        assert _agent_flag(servers[SERVER]) == WORKER
+        injected = session_servers.pooled_session_servers(home.overlay, WORKER)
+        assert injected == []
+        assert session_servers.injection_server_names(home.overlay, WORKER) == frozenset()
+
+    def test_the_worker_files_own_name_is_not_its_identity(self, home):
+        """The crewmate folder is outside the sandbox seal, so the file cannot pick its identity."""
+        launch = {"command": sys.executable, "args": ["-V"]}
+        _write(
+            home.mates / f"{WORKER}.json",
+            {"name": "kirocrew", "tools": ["*"], "mcpServers": {SERVER: launch}},
+        )
+        _rewrite(home)
+        path = home.overlay / f"{WORKER}.json"
+        assert path.is_file()
+        entry = json.loads(path.read_text())["mcpServers"][SERVER]
+        assert _agent_flag(entry) == WORKER
 
     def test_a_credential_env_lands_in_a_sidecar_named_for_the_crewmate(self, home):
         _write(
@@ -303,19 +336,17 @@ class TestTheWorkerLookup:
         assert [e["name"] for e in injected] == [SERVER]
         assert all("autoApprove" not in json.dumps(e) for e in injected)
 
-    def test_without_a_kas_session_key_the_lookup_is_the_by_name_one(self, home, monkeypatch):
-        """Every host but KAS passes no key, and keeps the lookup it had on main."""
+    def test_without_a_kas_session_key_no_worker_stub_is_injected_by_name(self, home, monkeypatch):
+        """A shared worker name cannot carry a worker session's restrictions."""
         _rewrite(home)
         _worker_session(monkeypatch, home, merged_servers={SERVER: {"command": "x"}})
-        # No leftover copy under the shared name: nothing, as on main.
+        # The fixture's stock worker spec declares no servers, so the by-name
+        # overlay written for it injects nothing, and the crewmate's is not read.
         assert session_servers.pooled_session_servers(home.overlay, WORKER) == []
-        # A leftover ``~/.kiro/agents/kirocrew-mate-worker.json`` overlay still
-        # answers the by-name lookup, as on main.
+        # Even an overlay containing a valid stub cannot answer by name.
         _write(home.overlay / f"{WORKER}.json", _mate_overlay(home) | {"name": WORKER})
-        assert [
-            e["name"] for e in session_servers.pooled_session_servers(home.overlay, WORKER)
-        ] == [SERVER]
-        assert session_servers.injection_server_names(home.overlay, WORKER) == frozenset({SERVER})
+        assert session_servers.pooled_session_servers(home.overlay, WORKER) == []
+        assert session_servers.injection_server_names(home.overlay, WORKER) == frozenset()
 
     def test_a_server_the_merged_spec_drops_or_mutes_is_not_injected(self, home, monkeypatch):
         _rewrite(home)

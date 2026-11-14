@@ -62,6 +62,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Collection
+from pathlib import Path
 from typing import Any, Mapping
 
 from kiro_crew.acp import session_mcp
@@ -419,6 +420,7 @@ def codex_projection(
     session_key: str = "",
     channel_id: str = "",
     session_token: str = "",
+    worker_overlay_dir: str | Path | None = None,
 ) -> SessionProjection:
     """The whole codex array -- spec translation AND pooled stubs -- plus the deny set.
 
@@ -462,6 +464,9 @@ def codex_projection(
         work_dir=work_dir,  # type: ignore[arg-type]
         # A crewmate's worker reads its own spec by its session's record.
         session_key=session_key,
+        worker_overlay_dir=worker_overlay_dir,
+        session_token=session_token,
+        channel_id=channel_id,
     )
     withheld = codex_withheld_servers(projection.restricted)
     kept: list[dict[str, Any]] = []
@@ -491,7 +496,7 @@ def codex_projection(
         kept, session_key=session_key, channel_id=channel_id, session_token=session_token
     )
     instance_env: dict[str, str] | None = None
-    for stub in stub_elements:
+    for stub in (*stub_elements, *projection.worker_stubs):
         if not isinstance(stub, Mapping):
             continue
         name = stub.get("name")
@@ -738,6 +743,7 @@ class CodexMirror(AgentConfigMirror):
         session_key: str = "",
         channel_id: str = "",
         session_token: str = "",
+        worker_overlay_dir: str | Path | None = None,
         **kwargs: object,
     ) -> dict[str, object]:
         """The wire face: the ``mcpServers`` array for this codex session.
@@ -787,6 +793,7 @@ class CodexMirror(AgentConfigMirror):
             session_key=session_key,
             channel_id=channel_id,
             session_token=session_token,
+            worker_overlay_dir=worker_overlay_dir,
         ).params
 
     def session_projection(
@@ -799,6 +806,7 @@ class CodexMirror(AgentConfigMirror):
         session_key: str = "",
         channel_id: str = "",
         session_token: str = "",
+        worker_overlay_dir: str | Path | None = None,
         **kwargs: object,
     ) -> SessionProjection:
         """The structured face: :func:`codex_projection`, with ``kwargs`` ignored as
@@ -812,4 +820,5 @@ class CodexMirror(AgentConfigMirror):
             session_key=session_key,
             channel_id=channel_id,
             session_token=session_token,
+            worker_overlay_dir=worker_overlay_dir,
         )

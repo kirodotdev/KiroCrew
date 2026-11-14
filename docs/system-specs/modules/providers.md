@@ -1766,8 +1766,14 @@ gatewayd injects (`managed_server_is_session_bound` is false for it). The same
 restriction, `disabled` and `tools` checks apply. A spec-described entry for one
 of these servers, and an unbound or foreign stub, stay withheld. So a Codex user
 gets Crew's tools by listing those servers in `mcp_gateway.stub_servers`; without
-that setting nothing changes. A Bot's chat gets them the same way: its stock
-conductor spec has an overlay of its own, under its own name
+that setting nothing changes. A Bot's chat and worker sessions get them the same
+way: their stock conductor and worker specs each have an overlay of their own.
+The conductor resolves by name; a worker resolves through `session_mcp_projection`
+using its own session key and stub token. Both the Codex runtime and Claude client
+pass the overlay directory into that projection. Worker stubs and their direct
+translation exclusions come from one resolved worker spec; the mirror applies
+its grants, switch-offs and tool restrictions to both halves. A by-name worker
+lookup returns no stub, including when the stock overlay exists
 ([mcp: Bot overlays](../../architecture/mcp.md#bot-overlays)).
 
 On an enforced sandbox, credential-bearing host readers need the broker route:

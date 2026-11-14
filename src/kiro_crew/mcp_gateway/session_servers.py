@@ -373,7 +373,10 @@ def _load_overlay_for_agent(
     Fail-soft: an unreadable/malformed overlay yields ``None`` (unpooled), never
     an exception.
     """
-    if kas_worker_session_key and agent == MATE_WORKER_AGENT:
+    if agent == MATE_WORKER_AGENT:
+        # A shared worker name cannot attest to a session's merged restrictions.
+        if not kas_worker_session_key:
+            return None
         return worker_overlay_spec(overlay_dir, kas_worker_session_key)
     project = _project_spec_for_agent(agent, work_dir, markdown_specs, dispatchable_only)
     if project is not None:
@@ -545,6 +548,13 @@ def pooled_session_servers(
     )
     if not isinstance(spec, dict):
         return []
+    return pooled_servers_from_spec(spec, agent, channel_id)
+
+
+def pooled_servers_from_spec(
+    spec: dict[str, Any], agent: str, channel_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Shape trusted overlay stubs, applying the common registry and governance ceilings."""
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return []
