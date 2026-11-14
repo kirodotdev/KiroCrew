@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import urllib.error
@@ -85,7 +86,17 @@ def trigger_cron_job_status(
         # data=b"" is required by urllib to send a POST (not GET)
         req = urllib.request.Request(url, method="POST", data=b"", headers=headers)
         with loopback_urlopen(req, timeout=_TIMEOUT_SECS) as resp:
-            body = json.loads(resp.read())
+            try:
+                body = json.loads(resp.read())
+            except (ValueError, http.client.HTTPException):
+                body = None
+            if not isinstance(body, dict):
+                # The POST was taken, so the job may have started: no retry hint.
+                return (
+                    False,
+                    "Error: gateway returned an unreadable answer; the trigger may have run",
+                    None,
+                )
             if body.get("ok"):
                 name = body.get("name", job_id)
                 return True, f"Triggered job: {name} ({job_id})", None
