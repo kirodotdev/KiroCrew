@@ -6,7 +6,8 @@ notifies a consumed envelope when pi starts that message. These cases load the
 SHIPPED file and drive its handlers the way pi does, with files sealed by the host's
 own :class:`~kiro_crew.acp.harness.pi_steer.PiSteerChannel`, and pin each guard: the
 key, the nonce, the session, the sequence in the name, replay, a turn that aborted
-or failed, an idle agent, and a steer retired when its run settled.
+or failed, an idle agent, and a steer retired when its run settled. The same rig
+drives the extension's report of a failed model call at settle.
 
 Marked ``real_adapter`` like ``test_pi_gate_extension_mcp.py``: the lane that installs
 Node 24 runs it, and fails rather than skips when Node is absent there.
@@ -81,7 +82,13 @@ for (const step of steps) {
       {
         type: "turn_end",
         outcome: step.outcome ?? "completed",
-        message: { role: "assistant", stopReason: step.stopReason ?? "stop" },
+        message: {
+          role: "assistant",
+          stopReason: step.stopReason ?? "stop",
+          provider: step.provider,
+          model: step.model,
+          errorMessage: step.errorMessage,
+        },
       },
       ctx(step),
     );
@@ -95,7 +102,10 @@ for (const step of steps) {
       : { role: "user", content: [{ type: "text", text: step.message_start }] };
     await handlers.message_start({ type: "message_start", message }, ctx(step));
   } else if (step.settled) {
-    await handlers.agent_settled({ type: "agent_settled", aborted: false }, ctx(step));
+    await handlers.agent_settled(
+      { type: "agent_settled", aborted: Boolean(step.aborted) },
+      ctx(step),
+    );
   }
 }
 console.log(JSON.stringify({ sent, notes }));
@@ -148,8 +158,8 @@ class _Rig:
     def message_start(self, text: str) -> None:
         self.steps.append({"message_start": text})
 
-    def settled(self) -> None:
-        self.steps.append({"settled": True})
+    def settled(self, **kw: Any) -> None:
+        self.steps.append({"settled": True, **kw})
 
     def run(self, node_argv: list[str]) -> dict[str, Any]:
         harness = self.tmp / "harness.mjs"
@@ -303,3 +313,59 @@ def test_an_echo_is_not_sent_for_a_message_the_extension_did_not_deliver(node, t
     out = rig.run(node)
     assert _sent(out) == ["use blue"]
     assert _echoes(out) == []
+
+
+# ── a failed model call, reported when the run settles ───────────────────────
+
+_FAILED = {
+    "stopReason": "error",
+    "provider": "amazon-bedrock",
+    "model": "amazon.nova-micro-v1:0",
+    "errorMessage": "Could not load credentials from any providers",
+}
+
+
+def _failures(out: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (n["level"], json.loads(n["message"]))
+        for n in out["notes"]
+        if "kiro-crew-model-error" in n["message"]
+    ]
+
+
+def test_a_run_that_settles_on_a_failed_model_call_reports_it_once(node, tmp_path) -> None:
+    rig = _Rig(tmp_path)
+    rig.turn_end(**_FAILED)
+    rig.settled()
+    rig.settled()
+    out = rig.run(node)
+    assert _failures(out) == [
+        (
+            "error",
+            {
+                "kiro-crew-model-error": 1,
+                "nonce": _NONCE,
+                "provider": "amazon-bedrock",
+                "model": "amazon.nova-micro-v1:0",
+                "error": "Could not load credentials from any providers",
+            },
+        )
+    ]
+
+
+def test_a_failure_pi_retried_successfully_reports_nothing(node, tmp_path) -> None:
+    rig = _Rig(tmp_path)
+    rig.turn_end(**_FAILED)
+    rig.turn_end()
+    rig.settled()
+    out = rig.run(node)
+    assert _failures(out) == []
+
+
+def test_an_aborted_run_reports_no_failure_and_clears_it(node, tmp_path) -> None:
+    rig = _Rig(tmp_path)
+    rig.turn_end(**_FAILED)
+    rig.settled(aborted=True)
+    rig.settled()
+    out = rig.run(node)
+    assert _failures(out) == []

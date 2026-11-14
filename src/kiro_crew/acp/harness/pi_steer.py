@@ -30,6 +30,9 @@ So the host hands each steer to the extension directly, bypassing the adapter:
   envelope carrying the gate nonce and the sequence number, which pi-acp forwards as
   an ``agent_message_chunk``; :func:`steer_echo_seq` reads it back.
 
+The same notify route carries the extension's report of a failed model call, which
+pi-acp itself never forwards: :func:`model_error_line` reads it back.
+
 Leaf module: no import of the client or the dashboard.
 """
 
@@ -43,6 +46,7 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "PiSteerChannel",
+    "model_error_line",
     "new_pi_steer_channel",
     "steer_echo_seq",
 ]
@@ -53,6 +57,9 @@ _ENV_PI_STEER_KEY = "KIROCREW_PI_STEER_KEY"
 
 # The marker a steer file and its consumed notification carry.
 _PI_STEER_MARKER = "kiro-crew-steer"
+
+# The marker of the extension's failed-model-call notification.
+_PI_MODEL_ERROR_MARKER = "kiro-crew-model-error"
 
 # Ten digits, zero-padded, so the extension parses one fixed spelling.
 _SEQ_WIDTH = 10
@@ -179,3 +186,29 @@ def steer_echo_seq(text: str, nonce: str) -> int | None:
     if not isinstance(seq, int) or isinstance(seq, bool) or seq <= 0:
         return None
     return seq
+
+
+def model_error_line(text: str, nonce: str) -> str | None:
+    """The failure line a failed-model-call notification for *nonce* names, else ``None``.
+
+    Exactly the extension's spelling: a JSON object with the marker, the nonce and the
+    string ``provider``, ``model`` and ``error``, and nothing else. Anything that merely
+    resembles it -- another nonce, extra keys, model text -- is not one.
+    """
+    if not nonce or not text.startswith("{"):
+        return None
+    try:
+        body = json.loads(text)
+    except ValueError:
+        return None
+    keys = {_PI_MODEL_ERROR_MARKER, "nonce", "provider", "model", "error"}
+    if not isinstance(body, dict) or set(body) != keys:
+        return None
+    marker = body.get(_PI_MODEL_ERROR_MARKER)
+    if type(marker) is not int or marker != 1 or body.get("nonce") != nonce:
+        return None
+    provider, model, error = body["provider"], body["model"], body["error"]
+    if not all(isinstance(v, str) for v in (provider, model, error)):
+        return None
+    where = f" ({provider}/{model})" if provider or model else ""
+    return f"pi's model call failed{where}: {error}"

@@ -801,8 +801,12 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # kas is not a member: a provider failure ends its prompt with a JSON-RPC error.
 # claude is not a member: claude-agent-acp ends a failed turn with a JSON-RPC
 # error rather than with text.
-# opencode, goose, pi and deepseek are not members: none of them was read writing a
+# opencode, goose and deepseek are not members: none of them was read writing a
 # provider failure as message text.
+# pi is not a member: pi-acp writes nothing of a failed model call and ends it
+# ``end_turn``; Crew's gate extension reports the failure as a nonce-bound notify
+# envelope instead, which ``AcpClient``'s read loop fails the turn on
+# (``acp.pi_steer_turn.model_error``).
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
