@@ -6,6 +6,7 @@ import argparse
 import base64
 import errno
 import json
+import math
 import os
 import re
 import sys
@@ -181,6 +182,34 @@ def _warn_if_bot_name_altered(key: str, parsed: object) -> None:
 
 
 _ADDRESS_SPACE_KEY = "resource_limits.max_address_space_mb"
+
+
+def _non_finite_paths(key: str, parsed: object) -> list[str]:
+    """Each dotted path under *key* whose value is a NaN or infinite float."""
+    if isinstance(parsed, float) and not math.isfinite(parsed):
+        return [key]
+    if isinstance(parsed, dict):
+        return [p for k, v in parsed.items() for p in _non_finite_paths(f"{key}.{k}", v)]
+    if isinstance(parsed, list):
+        return [p for i, v in enumerate(parsed) for p in _non_finite_paths(f"{key}[{i}]", v)]
+    return []
+
+
+def _warn_if_not_finite(key: str, parsed: object) -> None:
+    """Warn when a write stores ``NaN`` or ``Infinity``, which the setting never uses.
+
+    ``nan``, ``inf`` and an overflowing ``1e999`` parse as floats, pass the declared
+    number type, and are written as the non-standard JSON tokens ``NaN`` and
+    ``Infinity``. The loader's number reader (``config.fields._safe_float`` / ``_safe_int``) then
+    replaces a non-finite value with the key's default, so the ``✅`` line names a
+    value that never takes effect. Advice only: the write itself already succeeded.
+    """
+    for path in _non_finite_paths(key, parsed):
+        print(
+            f"⚠️  {path} is not a finite number: it is saved, but a number setting "
+            "loads it as its default, so it will not take effect.",
+            file=sys.stderr,
+        )
 
 
 def _warn_if_address_space_capped(key: str, parsed: object) -> None:
@@ -564,6 +593,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                 _warn_if_bot_name_altered(key, parsed)
                 _warn_if_address_space_capped(key, parsed)
                 _warn_unapproved_share_names(key, parsed)
+                _warn_if_not_finite(key, parsed)
             else:
 
                 def _mutate_base(existing: dict) -> dict:
@@ -610,6 +640,7 @@ def _run_config_cmd(args: argparse.Namespace) -> None:
                     _warn_if_bot_name_altered(key, parsed)
                 _warn_if_address_space_capped(key, parsed)
                 _warn_unapproved_share_names(key, parsed)
+                _warn_if_not_finite(key, parsed)
     elif action == "edit":
 
         p = config_path()
