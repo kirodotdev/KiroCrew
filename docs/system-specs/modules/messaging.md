@@ -1666,7 +1666,9 @@ Five properties are load-bearing:
   were signed is refused until it is re-bound — the user's next message in that same
   conversation (the origin bind re-signs a row that already points there, keeping its
   inbound flag, and never one aimed elsewhere), the channel's link command, a
-  `!sessions` pick, or a re-link from the dashboard. A caller that
+  `!sessions` pick, or a re-link from the dashboard. When the refused send is a
+  dashboard turn's reply, the chat also shows one notice row naming that re-link
+  (`chat_runner._notice_unsigned_mirror_refusal`), once per linked conversation. A caller that
   supplies its own principal (the drop notice, from in-memory entry metadata) is not
   held to the row rule.
 
