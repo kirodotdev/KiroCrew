@@ -1219,6 +1219,12 @@ class AcpEvent:
     #: denies (``AcpSessionHandle.kas_spec_denies``, a
     #: ``platform.spec_denied_grant.SpecDeniedGrant``); ``None`` everywhere else.
     spec_denied_grant: Any = None
+    #: spec_unjudged_denies: on the same requests, a Bot worker's ``deniedCommands``
+    #: entries neither KAS nor the gate can judge
+    #: (``AcpSessionHandle.kas_spec_unjudged_denies``). The gate's
+    #: ``spec-unjudged-denies`` tier then refuses a shell call that is not read-only.
+    #: Empty everywhere else, which refuses nothing.
+    spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = ()
     #: spec_shell_readonly: on the same requests, whether the agent's spec sets
     #: ``autoAllowReadonly: true`` beside ``denyByDefault``
     #: (``AcpSessionHandle.kas_spec_shell_readonly``). The gate's

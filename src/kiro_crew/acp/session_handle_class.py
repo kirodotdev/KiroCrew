@@ -792,6 +792,10 @@ class AcpSessionHandle:
         # it does not. The gate refuses every other file write.
         self.kas_spec_write_allowlist: tuple[str, ...] | None = None
         self.kas_spec_denies: Any = None
+        # A Bot worker's `deniedCommands` entries neither KAS nor the gate can judge
+        # (``kas_spec_denies.projected_unjudged_denies``); the gate then refuses this
+        # agent's shell calls that are not read-only.
+        self.kas_spec_unjudged_denies: tuple[dict[str, Any] | str, ...] = ()
         # Whether that shell allowlist lets a read-only command past, as kiro-cli
         # does for `autoAllowReadonly: true` (``kas_agents.projected_shell_readonly``).
         self.kas_spec_shell_readonly: bool = False

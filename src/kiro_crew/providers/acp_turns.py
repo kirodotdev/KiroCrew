@@ -115,6 +115,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         spec_write_cwd=e.spec_write_cwd,
         # Same row as spec_granted_builtins, with the denies it is checked against.
         spec_denied_grant=e.spec_denied_grant,
+        # Dropping this would let a Bot worker run a command its spec's unjudged
+        # denies hold: the gate's spec-unjudged-denies row reads it.
+        spec_unjudged_denies=e.spec_unjudged_denies,
         # Dropping this would refuse a read-only command an `autoAllowReadonly`
         # spec runs under `denyByDefault`: the spec-shell-allowlist row reads it.
         spec_shell_readonly=e.spec_shell_readonly,

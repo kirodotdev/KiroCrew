@@ -211,6 +211,10 @@ CREW_ANSWERED_HOOK_HELD_KEY = "_crewAnsweredHookHeld"
 #: (:mod:`kiro_crew.acp.kas_spec_denies`).
 CREW_SPEC_DENIES_KEY = "_crewSpecDenies"
 
+#: The key of a Bot worker's ``deniedCommands`` entries that neither KAS nor the
+#: gate can judge (:func:`kiro_crew.acp.kas_spec_denies.with_unjudged_denies`).
+CREW_UNJUDGED_DENIES_KEY = "_crewShellUnjudgedDenies"
+
 #: Keys of a projected ``customAgents`` entry that never reach the engine.
 CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
     {
@@ -219,6 +223,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_ANSWERED_HOOK_HELD_KEY,
         CREW_ANSWERED_WRITES_KEY,
         CREW_SPEC_DENIES_KEY,
+        CREW_UNJUDGED_DENIES_KEY,
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
