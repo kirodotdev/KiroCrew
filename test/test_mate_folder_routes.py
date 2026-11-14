@@ -110,16 +110,39 @@ class TestAPersonIsKeptOutOfAMateHome:
                 assert (await resp.json())["code"] == "mate_home_locked"
         assert state._folders == _folders()
 
-    @pytest.mark.parametrize("fid", [HOME, INSIDE])
-    async def test_collapse_and_order_still_apply(self, fid: str) -> None:
+    @pytest.mark.parametrize(
+        "fid, body",
+        [
+            # The home is placed after a top-level sibling the way a drag places it.
+            (HOME, {"collapsed": True, "after": PERSON, "expected_parent": ""}),
+            # The folder inside has no sibling to sit beside, so only collapse.
+            (INSIDE, {"collapsed": True}),
+        ],
+    )
+    async def test_collapse_and_reposition_still_apply(self, fid: str, body: dict) -> None:
+        state = _state()
+        async with TestClient(TestServer(_app(state))) as client:
+            resp = await client.patch(f"/api/chat/folders/{fid}", json=body, headers=HEADERS)
+            assert resp.status == 200
+        assert _row(state, fid)["collapsed"] is True
+        if "after" in body:
+            top = sorted(
+                (f for f in state._folders if not f.get("parent_id")),
+                key=lambda f: str(f.get("rank") or ""),
+            )
+            ids = [f["id"] for f in top]
+            assert ids.index(fid) == ids.index(PERSON) + 1
+
+    async def test_a_stale_integer_order_is_retired_not_locked(self) -> None:
+        """An old tab's ``order`` write gets the same answer as on any folder."""
         state = _state()
         async with TestClient(TestServer(_app(state))) as client:
             resp = await client.patch(
-                f"/api/chat/folders/{fid}", json={"collapsed": True, "order": 3}, headers=HEADERS
+                f"/api/chat/folders/{HOME}", json={"order": 3}, headers=HEADERS
             )
-            assert resp.status == 200
-        assert _row(state, fid)["collapsed"] is True
-        assert _row(state, fid)["order"] == 3
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "order_retired"
+        assert state._folders == _folders()
 
 
 @pytest.mark.asyncio

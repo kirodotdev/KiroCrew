@@ -1,4 +1,5 @@
 import type { ChatFolder } from '../types'
+import { compareRanks } from './folderRank'
 
 /** Breadcrumb separator — matches the server-side folder_breadcrumb (U+203A). */
 export const FOLDER_PATH_SEP = ' › '
@@ -14,9 +15,12 @@ export interface OrderedFolder {
 }
 
 /**
- * The one order siblings are drawn in: stored `order`, then name as a tie-break
- * (the store permits duplicate order values, so a comparator without the second
- * key would leave the sequence to array position and shuffle on refetch).
+ * The one order siblings are drawn in. A folder with a valid `rank` sorts by
+ * rank, then id (`compareRanks`), ahead of every unranked sibling. Unranked
+ * folders, which nobody has positioned since ranks existed, keep the order older
+ * builds drew: stored `order`, then name as a tie-break (the store permits
+ * duplicate order values, so a comparator without the second key would leave
+ * the sequence to array position and shuffle on refetch).
  *
  * Both halves exist to agree with the Python reader, because `chat_folder_tree`
  * is what an agent picks a `before`/`after` anchor from and a sequence that
@@ -45,6 +49,8 @@ export interface OrderedFolder {
  * a sequence the person never chose.
  */
 export const bySidebarOrder = (a: ChatFolder, b: ChatFolder): number => {
+  const byRank = compareRanks(a, b)
+  if (byRank !== null) return byRank
   const byOrder = folderOrder(a) - folderOrder(b)
   if (byOrder !== 0) return byOrder
   const an = folderName(a)

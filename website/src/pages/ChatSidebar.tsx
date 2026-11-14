@@ -82,6 +82,7 @@ import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
 import { useLineageAvailable, useConductorLane } from './chat-sidebar/conductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
 import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNativeSessionDrag } from './chat-sidebar/dnd/useSidebarDrag'
+import type { FolderUndoAnchorGone } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
 import { useHoldPinnedHeaderOnCollapse } from './chat-sidebar/stickyCollapse'
 import { useFolderChatCreate, useSessionCreate } from './chat-sidebar/create'
@@ -184,6 +185,13 @@ function ChatSidebar({
   // update already rolls the cache back, but a rolled-back rename with no message
   // reads as a dead click.
   const [folderActionError, setFolderActionError] = useState('')
+  // The name of a folder whose drag-move Undo LANDED, but at the end of its old
+  // section rather than where it sat: the sibling it was anchored to had moved,
+  // so the gateway refused the anchor and the parent-only retry seated it last.
+  // Status, not error -- the write succeeded -- so it is kept apart from
+  // `folderActionError`, whose surface is titled "Folder update failed". null
+  // when there is nothing to say.
+  const [folderUndoAnchorGone, setFolderUndoAnchorGone] = useState<FolderUndoAnchorGone>(null)
   // Kept apart from the error above because nothing was sent: an offline refusal
   // is status text, and routing it through the danger surface would claim a failure.
   const [folderOfflineNotice, setFolderOfflineNotice] = useState('')
@@ -751,9 +759,12 @@ function ChatSidebar({
     setDerivedHintCol(null)
     startNativeSessionDrag(key)
   }, [startNativeSessionDrag])
+  // The store-held reveal request the Command Bar and the folder chip raise;
+  // `useSidebarReveal` below consumes it against the rendered folder list.
+  const revealFolder = useCallback((folderId: string) => { dispatch(requestFolderReveal(folderId)) }, [dispatch])
   const {
     reorderFolders, moveFolderTo,
-  } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, setFolderOfflineNotice, updateFolderMutation, connected })
+  } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, setFolderOfflineNotice, setFolderUndoAnchorGone, revealFolder, updateFolderMutation, connected })
   const { folderSubtrees, expandFolderAncestors } = useFolderTree({ folders, updateFolderMutation, clearBoardCollapse })
 
   const {
@@ -1014,7 +1025,7 @@ function ChatSidebar({
     creatingSlot, crewEnable, cycleLane, defaultAgent, deleteColumnWithConfirm,
     deleteFolderWithConfirm, deleteHistorySessionWithConfirm, derivedHintCol, disarmHold, dismissSortError, dismissUnfiledAboveFoldersError, dispatch,
     dndSensors, dropSlotMutation, editingId, editName, editScope, filterCounts, filterHiddenFolders,
-    filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice,
+    filterSortOpen, filtersPaused, pausedFilters, flatLaneActive, flatSlots, flatView, folderActionError, folderCleanupOpen, folderOfflineNotice, folderUndoAnchorGone,
     folderCompare, folderConductorPin, countSubfolderContents, folderCreateError, folderDragWithheld, folderEditInputRef, folderCancelEscapeRef,
     folderFilterRows, folderModeCompare, folderNameMatchIds, folderReorderable, folderReorderHint, folderReorderHintRef,
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
@@ -1035,7 +1046,7 @@ function ChatSidebar({
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused, toggleFilterPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
-    setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderCreateError, setFolderModal, setFoldersShelved,
+    setFolderActionError, setFolderCleanupOpen, setFolderCleanupRoot, setFolderOfflineNotice, refuseCreateOffline, setFolderUndoAnchorGone, setFolderCreateError, setFolderModal, setFoldersShelved,
     setHistoryFilter, setHistoryOpen, setLaneScrollEl, setBroadcastOpen, setManageTagsOpen, setModelFilterExcluded,
     setNewChatError, setNewChatMenuOpen, setPinnedOrderError, setPrStatusRefreshError, setRecentAmountDraft, setRemoteCrewError, setRenameError,
     setSeedError, setSlotFilter, setSortKey: pickSort, setStaleCollapseMs, setStaleExpanded, setToggleSaveFailed,

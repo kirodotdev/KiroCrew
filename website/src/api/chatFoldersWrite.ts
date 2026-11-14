@@ -2,14 +2,10 @@ import type { QueryClient } from '@tanstack/react-query'
 import type { ChatFolder } from '../types'
 
 /** Mutation key carried by the folder-tree optimistic writes the idle gate
- *  covers — the `useFolderMutations` update/create/delete writes.
- *
- *  One optimistic writer deliberately does NOT carry it: the drag-reorder in
- *  `dnd/useSidebarDrag.ts` writes `['chat-folders']` through `setQueryData`
- *  outside any mutation, so `isMutating` cannot see it and a refetch can still
- *  land inside a reorder's window. Reorder is out of this PR's goal (it is
- *  being rewritten by #15041); a future writer that wants the gate's protection
- *  must run as a mutation carrying this key.
+ *  covers — the `useFolderMutations` update/create/delete writes, and the
+ *  sibling reorder and anchored Undo in `dnd/useSidebarDrag.ts`, which build
+ *  their mutation on the cache directly. Any new optimistic folder writer must
+ *  run as a mutation carrying this key, or a refetch can land inside its window.
  *
  *  While a keyed write is pending, the cache holds a value the server may not
  *  have yet, and a refetch that resolves inside that window paints the older
