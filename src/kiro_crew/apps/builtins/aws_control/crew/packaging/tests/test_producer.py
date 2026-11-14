@@ -33,6 +33,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import types
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,31 @@ _posix_only = pytest.mark.skipif(
     os.name != "posix",
     reason="the crew bundle builder is POSIX-only; guarded off on platforms without an "
     "atomic no-follow primitive (Windows). See the POSIX-only entry guard.",
+)
+
+
+def _can_create_symlink() -> bool:
+    """Whether this host may plant the links the refusal tests are about.
+
+    The same probe as ``test/conftest.py::_can_create_symlink``, which this package is
+    outside the reach of. Creating a symlink on Windows needs
+    ``SeCreateSymbolicLinkPrivilege``: GitHub's runners hold it, an ordinary shell does
+    not (WinError 1314). Probing keeps these tests running wherever the privilege exists;
+    only staging the plant is privileged, not the guard under test.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "target")
+        os.mkdir(target)
+        try:
+            os.symlink(target, os.path.join(tmp, "link"))
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return True
+
+
+requires_symlinks = pytest.mark.skipif(
+    not _can_create_symlink(),
+    reason="creating a symlink needs SeCreateSymbolicLinkPrivilege on Windows",
 )
 
 # The crew root: the directory `python -m packaging.build` must run in.

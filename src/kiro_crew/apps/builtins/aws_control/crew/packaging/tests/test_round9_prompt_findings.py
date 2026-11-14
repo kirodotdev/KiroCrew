@@ -26,12 +26,13 @@ import pathlib
 
 import pytest
 
-from .test_producer import load_build, make_crew
+from .test_producer import load_build, make_crew, requires_symlinks
 
 
 # ---------------------------------------------------------------------------
 # V1
 # ---------------------------------------------------------------------------
+@requires_symlinks
 def test_a_symlinked_persona_outside_the_agents_dir_still_works(tmp_path: pathlib.Path) -> None:
     """The supported case, pinned again here because a fix already broke it once.
 
@@ -51,6 +52,7 @@ def test_a_symlinked_persona_outside_the_agents_dir_still_works(tmp_path: pathli
     assert mod._resolve_prompt_path(f"file://{link}", agents_dir) == link
 
 
+@requires_symlinks
 def test_the_absolute_branch_refuses_a_redirect_naming_a_share(tmp_path: pathlib.Path) -> None:
     """The gap the walk was added for, tested through the nt branch.
 
@@ -72,6 +74,7 @@ def test_the_absolute_branch_refuses_a_redirect_naming_a_share(tmp_path: pathlib
     assert "attacker-host" in str(caught.value)
 
 
+@requires_symlinks
 def test_an_ordinary_absolute_link_is_not_refused_by_that_check(tmp_path: pathlib.Path) -> None:
     """Non-vacuity: on the same branch, a link to a local file must pass.
 
@@ -229,6 +232,7 @@ def test_MUTATION_without_the_nul_guard_the_reference_raises_valueerror(
 
 
 @pytest.mark.parametrize("label,raw", [("relative", "file://persona.md"), ("absolute", None)])
+@requires_symlinks
 def test_a_cycle_at_the_agents_directory_is_refused_not_raised(
     tmp_path: pathlib.Path, label: str, raw: str | None
 ) -> None:
