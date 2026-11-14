@@ -15,7 +15,13 @@ import time
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from test_subagent_scratch_tree_index import (  # noqa: F401 -- fixtures requested by name
+    isolated_tree_bindings,
+    scratch_root_fixture,
+)
 
+from kiro_crew import agent_scratch as sc
+from kiro_crew import agent_scratch_trees as trees
 from kiro_crew.acp import kas_memory
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
@@ -884,6 +890,87 @@ class TestAllocationRecordsTheActualSessionMode:
             assert started_modes == [(kas_memory.MODE_DISABLED, kas_memory.MODE_READ_ONLY)]
             assert provider.kas_memory_mode == kas_memory.MODE_DISABLED
             assert manager._session_map.get_kas_memory(OWNER_CHAT) == kas_memory.MODE_DISABLED
+            manager.release(OWNER_CHAT)
+        finally:
+            await manager.close_all()
+
+    @staticmethod
+    def _provider_per_build(starts: list, *, join_fails: bool) -> MagicMock:
+        """A factory building a new provider each call, recording what each start was asked."""
+
+        def build(*_args, **kwargs):
+            provider, _ = _resumable_provider("fresh-sid")
+            joins = kwargs.get("shared_scratch")
+            provider.work_scratch_dir = joins
+            start_session = provider.start.side_effect
+
+            async def start() -> None:
+                starts.append((joins, provider.kas_memory_mode, provider.kas_memory_new_mode))
+                if joins is not None and join_fails:
+                    raise sc.SharedScratchJoinError("cannot join")
+                await start_session()
+
+            provider.start = AsyncMock(side_effect=start)
+            return provider
+
+        return MagicMock(side_effect=build)
+
+    @pytest.mark.parametrize("join_fails", [False, True], ids=["rejoined", "join-retry"])
+    @pytest.mark.asyncio
+    async def test_a_resume_rebuilt_for_its_scratch_tree_keeps_the_memory_plan(
+        self, scratch_root, monkeypatch, join_fails
+    ):
+        # Given: recall is on, and the saved session was created disabled in a recorded tree.
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        assert trees.record_tree(OWNER_CHAT, tree)
+        starts: list = []
+        factory = self._provider_per_build(starts, join_fails=join_fails)
+        manager = SessionManager(self._config(enabled=True), provider_factory=factory)
+        kill = MagicMock()
+        monkeypatch.setattr(manager, "_dispatch_hard_kill", kill)
+        manager._session_map.set(
+            OWNER_CHAT, "sid-disabled-memory", provider="kas", kas_memory=kas_memory.MODE_DISABLED
+        )
+        try:
+            # When: the chat is reopened.
+            provider, _, resumed = await manager.get_or_create(OWNER_CHAT)
+            # Then: every provider that starts loads the saved session disabled
+            # and falls back to a fresh session with the requested mode.
+            saved_then_fresh = (kas_memory.MODE_DISABLED, kas_memory.MODE_READ_ONLY)
+            expected = [(tree, *saved_then_fresh)]
+            if join_fails:
+                expected.append((None, *saved_then_fresh))
+            assert starts == expected
+            assert kill.call_count == int(join_fails)
+            assert resumed is True
+            assert provider.client.set_resume_session_id.call_args.args == ("sid-disabled-memory",)
+            assert manager._session_map.get_kas_memory(OWNER_CHAT) == kas_memory.MODE_DISABLED
+            manager.release(OWNER_CHAT)
+        finally:
+            await manager.close_all()
+
+    @pytest.mark.asyncio
+    async def test_withdrawing_recall_from_a_session_with_a_scratch_tree_starts_fresh(
+        self, scratch_root
+    ):
+        scratch_root.mkdir(parents=True)
+        tree = scratch_root / "dashboard-chat-1-abcdef01"
+        tree.mkdir()
+        assert trees.record_tree(OWNER_CHAT, tree)
+        starts: list = []
+        factory = self._provider_per_build(starts, join_fails=False)
+        manager = SessionManager(self._config(enabled=False), provider_factory=factory)
+        manager._session_map.set(
+            OWNER_CHAT, "sid-reading-memory", provider="kas", kas_memory=kas_memory.MODE_READ_ONLY
+        )
+        try:
+            provider, _, resumed = await manager.get_or_create(OWNER_CHAT)
+            assert resumed is False
+            assert starts == [(None, "", "")]
+            provider.client.set_resume_session_id.assert_not_called()
+            assert manager._sessions[OWNER_CHAT].provider_switch_replay is True
             manager.release(OWNER_CHAT)
         finally:
             await manager.close_all()

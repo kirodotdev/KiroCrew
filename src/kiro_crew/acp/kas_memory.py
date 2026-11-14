@@ -129,14 +129,14 @@ async def runtime_memory_mode(backend: str, requested: str | None) -> str:
     its own request (:func:`without_memory_settings`), so a cloud session states
     no policy.
     """
-    if backend != ACP_BACKEND_KAS:
-        return ""
-    if requested is not None:
-        if requested not in {"", MODE_DISABLED, MODE_READ_ONLY}:
-            raise ValueError("Unsupported native Kiro memory mode")
-        return requested
-    enabled = await asyncio.to_thread(orchestrator_memory_enabled)
-    return MODE_DISABLED if enabled else ""
+    if backend == ACP_BACKEND_KAS:
+        if requested is not None:
+            if requested not in {"", MODE_DISABLED, MODE_READ_ONLY}:
+                raise ValueError("Unsupported native Kiro memory mode")
+            return requested
+        enabled = await asyncio.to_thread(orchestrator_memory_enabled)
+        return MODE_DISABLED if enabled else ""
+    return ""
 
 
 def memory_settings(mode: str) -> dict[str, Any]:
