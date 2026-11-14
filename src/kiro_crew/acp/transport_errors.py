@@ -56,6 +56,7 @@ from kiro_crew.acp.runtime_models import (
     model_is_unusable,
     resolve_pin_spelling_on,
 )
+from kiro_crew.acp.sign_in_required_errors import is_sign_in_required
 from kiro_crew.acp.structured_error_data import (
     OVERSIZE_REPLY_DATA,
     _error_kind_from_frame,
@@ -1611,14 +1612,16 @@ def _format_acp_error_worded(
                 "Bedrock InvokeModel access."
                 f"{req_id_suffix}"
             )
-        elif _is_session_expired(haystack):
-            # Session expiry (401/403, or prose saying as much) — distinct from
-            # the Bedrock credential errors above. Switching models cannot
+        elif _is_session_expired(haystack) or is_sign_in_required(error.get("data")):
+            # Session expiry (401/403, or prose saying as much), or the engine's
+            # structured SignInRequiredError — distinct from the Bedrock
+            # credential errors above. Switching models cannot
             # succeed, so the message must not suggest it.
             #
             # The sign-in half comes from the harness's own declaration: which
             # command re-authenticates is a per-harness fact. This arm HAS
-            # evidence -- a 401/403 or prose saying the session expired -- so it
+            # evidence -- a 401/403, prose saying the session expired, or the
+            # engine's structured SignInRequiredError -- so it
             # takes the signed-out message, which is allowed to assert the state;
             # the standing caveat the panel renders unprobed is not.
             #
@@ -1940,7 +1943,8 @@ def _raise_acp_error(
     if rejected:
         err.rejected_model = rejected
         err.advertised = list(available_models or [])
-    # Tag a session-expiry / rejected-credential answer so the dashboard can offer
+    # Tag a session-expiry / rejected-credential answer, or the engine's structured
+    # SignInRequiredError (sign_in_required_errors), so the dashboard can offer
     # the fix -- the Kiro sign-in card -- instead of a Continue that hits the same
     # wall. Decided from the raw frame, never from the prose, and only when the
     # formatter would have reached its sign-in branch: a Bedrock-named credential
@@ -1949,9 +1953,10 @@ def _raise_acp_error(
     # harness signing in through Crew's own identity (harness parity H6): for a
     # harness with its own credential store the card would sign in the wrong
     # thing, so its 401 carries only ``sign_in_needed`` and that harness's remedy.
+    raw_data_value = error.get("data") if isinstance(error, dict) else None
     err.sign_in_needed = (
         not rejected
-        and _is_session_expired(raw_data)
+        and (_is_session_expired(raw_data) or is_sign_in_required(raw_data_value))
         and not _RE_AUTH.search(raw_data)
         and not _RE_USAGE_LIMIT.search(raw_data)
     )

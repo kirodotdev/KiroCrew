@@ -24,6 +24,7 @@ error chains and tracebacks still name the path callers import it from.
 | `acp/transport_errors.py` | the `AcpError` family and the reading of a harness failure: the stderr, auth, throttle and sandbox classifiers, `classify_provider_error`, and the text and retry verdict `_format_acp_error` / `_raise_acp_error` produce, with the `auth_error_code` tag (the AWS exception name of a credential rejection, read from the raw frame through `classify_provider_error`, so a caller compares a code instead of the prose) |
 | `acp/oversized_request_errors.py` | the three refusals of a request too large to send (`_RE_OVERSIZED_REQUEST`, `_RE_ADAPTER_INPUT_TOO_LONG`, `_RE_REQUEST_SIZE_EXCEEDED`), read by `transport_errors` |
 | `acp/model_registry_errors.py` | the engine's model-list refusal (`ModelRegistryUnavailableError`) and its wording, read by `transport_errors` so it is never worded as an HTTP 5xx |
+| `acp/sign_in_required_errors.py` | the engine's sign-in refusal (`SignInRequiredError` in `data.errorType`), read by `transport_errors` so it gets the signed-out message and the `sign_in_needed` / `auth_required` tags |
 | `acp/thinking_binding_errors.py` | the preserved-thinking signature refusal (`_is_thinking_binding_mismatch`) and its changed-`tools`-list reason (`_is_tools_list_refusal`), read by `transport_errors` |
 | `acp/error_frames.py` | `raw_error_detail`, the redacted, bounded one-line rendering of the raw error frame kept on `AcpError.raw_detail` |
 | `acp/runtime_models.py` | the advertised model catalog: `DEFAULT_MODEL`, `model_is_unusable`, `resolve_usable_model`, `resolve_pin_spelling`, `resolve_pin_spelling_on`, `pick_served_default`, the model-substitution advisory |
@@ -5254,7 +5255,9 @@ after a bundle failure would make a bundle problem look like a kiro-cli one. The
 minus kiro-cli. There is no `--auth-method` on this route, so the plan carries
 `host_auth=True` unconditionally: Crew's vault is the only credential
 ([kas-auth.md](kas-auth.md)), and an empty vault surfaces as the engine's own
-"not signed in" prompt failure, which maps to a sign-in prompt as on the relay.
+prompt failure. Engine 0.66.104 (measured) sends it as `data.errorType ==
+"SignInRequiredError"`, and `acp/sign_in_required_errors.py` maps that field to
+the sign-in prompt.
 The spawn is labelled `kas-bundle` (a Node program names no engine). Every seam
 after the spawn is unchanged — measured: `initialize`, the
 `_kiro/auth/getAccessToken` callback answered from the vault, and the

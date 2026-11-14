@@ -549,8 +549,15 @@ engine instead ([aws-control.md](aws-control.md)).
   first refusal of each reason at WARNING and the repeats at DEBUG until a callback
   is served, `_kas_host_auth_failure_logged`), and `session/prompt` fails `-32000` with its
   own "not signed in … Please sign in and retry" (`ModelRegistryUnauthenticatedError`
-  / `TokenExpiredError`), which `acp/transport_errors.py`'s auth-failure vocabulary now
+  / `TokenExpiredError`), which `acp/transport_errors.py`'s auth-failure vocabulary
   recognizes so the dashboard renders the sign-in prompt rather than a raw error.
+  Engine 0.66.104 (measured) words that refusal differently: `-32000 "Sign in to
+  Kiro to send a prompt."` with `data.errorType == "SignInRequiredError"` and no
+  status or expiry wording (`test/fixtures/acp_frames/kas/sign-in-required-live.jsonl`).
+  The prose vocabulary does not see it, so `acp/sign_in_required_errors.py` reads that
+  structured field, compared exactly, and `_raise_acp_error` gives it the same
+  signed-out message and `sign_in_needed` / `auth_required` tags; its verdict is
+  terminal because it carries no retry wording.
 - A Crew sign-out deletes the vault entry under the identity's refresh lock and
   retires running identity-store processes (`dashboard/handlers/kas_login.py`), so
   neither a refresh in flight nor a process holding the old access token in memory
