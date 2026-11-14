@@ -73,6 +73,28 @@ def is_custom_agent(agent: str | None, spec: object) -> bool:
     return owning_app_for_agent(agent) is None
 
 
+def crew_added_servers(agent: str | None, spec: object) -> tuple[str, ...]:
+    """The :data:`DEFAULT_CREW_SERVERS` Crew added to *spec*, the spec a session runs.
+
+    A server counts only when *agent* is a custom agent and the spec's entry for it
+    is exactly the managed launch :func:`with_default_crew_servers` adds. An entry
+    the author wrote (a mute, a ``disabledTools`` list, any other shape) is theirs
+    and is not counted. Blocking file I/O, as :func:`is_custom_agent`.
+    """
+    if not isinstance(spec, dict) or not is_custom_agent(agent, spec):
+        return ()
+    declared = spec.get("mcpServers")
+    if not isinstance(declared, dict):
+        return ()
+    from kiro_crew.agent import managed_mcp_spec_entry
+
+    return tuple(
+        server
+        for server in DEFAULT_CREW_SERVERS
+        if server in declared and declared[server] == managed_mcp_spec_entry(server)
+    )
+
+
 def opted_out(spec: dict[str, Any], server: str) -> bool:
     """Whether *spec* withholds *server* whole.
 
