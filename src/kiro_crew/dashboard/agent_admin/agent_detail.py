@@ -590,8 +590,18 @@ async def api_agent_detail(request: web.Request) -> web.Response:
             # The spec is otherwise passed through verbatim, so mask the one
             # value in it that is a credential (a pre-registered Connections
             # client's projected secret); this read is not owner-gated.
+            from kiro_crew.acp_backends import ACP_BACKEND_KAS
+            from kiro_crew.config import KiroCrewConfig
+            from kiro_crew.dashboard.agent_no_tools_notice import (
+                session_spec_lists_tools,
+                spec_lists_tools,
+            )
             from kiro_crew.mcp_utils import redact_oauth_client_secrets
 
+            cfg = await asyncio.to_thread(KiroCrewConfig.load)
+            session_lists_tools = spec_lists_tools(data)
+            if cfg.agent.acp_backend == ACP_BACKEND_KAS:
+                session_lists_tools = await asyncio.to_thread(session_spec_lists_tools, name, data)
             return web.json_response(
                 {
                     **redact_oauth_client_secrets(data),
@@ -605,6 +615,7 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     "model": spec_model(data),
                     "skills": keys,
                     "unmanaged_skills": unmanaged_uris,
+                    "session_lists_tools": session_lists_tools,
                 }
             )
         except (json.JSONDecodeError, OSError):

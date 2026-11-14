@@ -18364,6 +18364,7 @@
         "add_tool_placeholder": "es. fs_write o @github/…",
         "spawn_tool_hint": "Consenti a questo agente di eseguire altri agenti in background, ognuno con un riquadro attività e Interrompi nella chat.",
         "spawn_tool_add": "Consenti agenti in background",
+        "no_tools_added_servers_hint": "Il file di questo agente non elenca strumenti propri. Le sue sessioni ricevono comunque gli strumenti dei server MCP aggiunti.",
         "no_tools_hint": "Questo agente non elenca alcuno strumento, quindi non può eseguire comandi né lavorare con i file.",
         "all_tools_add": "Consenti tutti gli strumenti",
         "tool_state_wildcard": "senza approvazione automatica",

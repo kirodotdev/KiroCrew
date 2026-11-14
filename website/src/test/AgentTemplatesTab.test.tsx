@@ -730,15 +730,18 @@ describe('AgentTemplatesTab actions', () => {
     expect(screen.queryByRole('button', { name: /Allow background agents/ })).toBeNull()
   })
 
-  it('offers every tool without marking the wildcard auto-approved', async () => {
+  it.each([false, true])('offers every tool without auto-approval when session_lists_tools is %s', async (session_lists_tools) => {
     mockApi.agentDetail.mockImplementation(async (name: string) => ({
       name, description: '', model: '', prompt: '', tools: [], allowedTools: [],
-      resources: [], mcpServers: {}, skills: [],
+      resources: [], mcpServers: {}, skills: [], session_lists_tools,
     }))
     renderTab()
     const add = await screen.findByTestId('tpl-allow-every-tool', {}, EDITOR_CHAIN)
     expect(add).toHaveTextContent(/^Allow every tool$/)
-    expect(screen.getByText("This agent lists no tools, so it can't run commands or work with files.")).toBeInTheDocument()
+    const noToolsHint = "This agent lists no tools, so it can't run commands or work with files."
+    const addedToolsHint = 'This agent file lists no tools of its own. Its sessions still get tools from added MCP servers.'
+    expect(screen.getByText(session_lists_tools ? addedToolsHint : noToolsHint)).toBeInTheDocument()
+    expect(screen.queryByText(session_lists_tools ? noToolsHint : addedToolsHint)).toBeNull()
     fireEvent.click(add)
     const toggle = screen.getByRole('button', { name: '*: not auto-approved', pressed: false })
     expect(toggle).toHaveTextContent('not auto-approved')

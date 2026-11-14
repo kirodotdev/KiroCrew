@@ -18364,6 +18364,7 @@
         "add_tool_placeholder": "p. ex. fs_write ou @github/…",
         "spawn_tool_hint": "Permets à cet agent de lancer d’autres agents en arrière-plan, chacun avec un encadré de tâche et Arrêter dans le chat.",
         "spawn_tool_add": "Autoriser les agents en arrière-plan",
+        "no_tools_added_servers_hint": "Le fichier de cet agent ne liste aucun outil propre. Ses sessions reçoivent tout de même les outils des serveurs MCP ajoutés.",
         "no_tools_hint": "Cet agent ne liste aucun outil : il ne peut donc ni exécuter de commandes, ni travailler sur des fichiers.",
         "all_tools_add": "Autoriser tous les outils",
         "tool_state_wildcard": "sans approbation automatique",
