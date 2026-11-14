@@ -2,6 +2,7 @@
 
 ``resolve`` (one item, ``policy ∩ profile``), ``resolve_ordinal`` (the strictest of the
 two levels), ``gate_decision`` (the gate's verdict for one tool call),
+``command_chain_refusal`` (the ``command_chains: each`` check of one shell command)
 and ``resolve_pinned_commands`` (the ``commands`` force-pins). Pure functions over the
 carriers; a new query goes here.
 
@@ -28,7 +29,11 @@ from kiro_crew.platform.governance_parts.archetypes import (
 )
 from kiro_crew.platform.governance_parts.baseline import BASELINE_UNGATED
 from kiro_crew.platform.governance_parts.carriers import GovernanceCeiling, Profile
-from kiro_crew.platform.governance_parts.catalog import _SCOPE_ALIASES, COMMANDS_SCOPE
+from kiro_crew.platform.governance_parts.catalog import (
+    _SCOPE_ALIASES,
+    COMMAND_CHAINS_SCOPE,
+    COMMANDS_SCOPE,
+)
 from kiro_crew.platform.governance_parts.parsing import baseline_controls, with_inner_baseline
 from kiro_crew.platform.governance_parts.tool_calls import (
     _NO_TARGET_ITEM,
@@ -341,7 +346,9 @@ def gate_decision(
     command only when every chained part is listed too; a command that does not
     split is asked about ``_UNSPLITTABLE_COMMAND_ITEM``, which no allow list holds.
     Every other ``commands`` pair (the display title, a tool name) may refuse the
-    call only by an explicit deny.
+    call only by an explicit deny. ``command_chains: each`` adds a per-command check
+    of every shell call at the gate, after this decision permits it
+    (:func:`command_chain_refusal`).
     """
     builtin = "tools" in own_scopes
     if (builtin and not (extra_titles or alias_groups)) or ("mcp" in own_scopes and not mcp_ref):
@@ -558,6 +565,38 @@ def gate_decision(
         if refusal is not None:
             return refusal
     return Decision(True, "permitted by all mapped scopes", rule="rule2-intersect")
+
+
+def command_chain_refusal(
+    ceiling: Optional[GovernanceCeiling],
+    profile: Optional[Profile],
+    command: str,
+) -> Optional[Decision]:
+    """The ``command_chains: each`` refusal of a shell *command*, or None.
+
+    None unless the strictest of the two levels' ``command_chains`` is ``each``.
+    Then the whole command and each command of its chain (``chain_commands``) are
+    asked ``commands`` (:func:`resolve`); a command that does not split is asked
+    about ``_UNSPLITTABLE_COMMAND_ITEM``, which no allow pattern matches. The first
+    refusal is returned, naming the refusing item. A caller asks this only after its
+    own ``commands`` decision permitted the command, so ``each`` admits nothing
+    ``whole`` refuses.
+    """
+    chains = resolve_ordinal(ceiling, profile, COMMAND_CHAINS_SCOPE)
+    if chains is None or chains.value != "each":
+        return None
+    from kiro_crew.platform.allowed_commands import chain_commands
+
+    parts = chain_commands(command)
+    if parts is None:
+        items = [command, _UNSPLITTABLE_COMMAND_ITEM]
+    else:
+        items = [command, *(part for part in parts if part != command)]
+    for item in items:
+        decision = resolve(ceiling, profile, COMMANDS_SCOPE, item)
+        if not decision.permitted:
+            return replace(decision, item=item)
+    return None
 
 
 def resolve_pinned_commands(
