@@ -218,8 +218,22 @@ class SessionControlGrant(NamedTuple):
 NO_SESSION_CONTROL = SessionControlGrant(granted=False, member_threads=False)
 
 
-def app_can_manage_session_approvals(app_name: str, *, manifest: AppManifest | None = None) -> bool:
-    """Return whether an enabled app holds the user-session control grant.
+#: Why an app does not hold the user-session control grant, as
+#: :func:`session_approval_denial_cause` names it.
+SESSION_APPROVAL_NOT_DECLARED = "not_declared"
+SESSION_APPROVAL_CONSENT_PENDING = "consent_pending"
+SESSION_APPROVAL_DISABLED = "disabled"
+SESSION_APPROVAL_UNAVAILABLE = "unavailable"
+
+
+def session_approval_denial_cause(app_name: str, *, manifest: AppManifest | None = None) -> str:
+    """Why *app_name* does not hold the user-session control grant, ``""`` when it does.
+
+    The one decision behind :func:`app_can_manage_session_approvals`. The cause
+    names who can clear it: ``not_declared`` (the manifest lacks
+    ``permissions.sessionApproval``), ``consent_pending`` (declared, but the owner
+    has not allowed it), ``disabled`` (the app is off), ``unavailable`` (nothing
+    could be read, or the state moved between reads).
 
     Read the live manifest on every decision. App tokens can outlive an enable
     cycle, so a cached grant must not survive a disable or manifest edit.
@@ -237,12 +251,14 @@ def app_can_manage_session_approvals(app_name: str, *, manifest: AppManifest | N
     at least as new and cannot pair a widened grant with the pre-update state.
     """
     if not app_name:
-        return False
+        return SESSION_APPROVAL_UNAVAILABLE
     try:
         if manifest is None:
             manifest = get_app_manifest(app_name)
-        if not (manifest and manifest.permissions.sessionApproval):
-            return False
+        if manifest is None:
+            return SESSION_APPROVAL_UNAVAILABLE
+        if not manifest.permissions.sessionApproval:
+            return SESSION_APPROVAL_NOT_DECLARED
         # One record read, judged against the manifest read above, decides
         # consent and enablement together. A grant still waiting for its
         # consent moment is not held: a record written before the consent
@@ -250,16 +266,31 @@ def app_can_manage_session_approvals(app_name: str, *, manifest: AppManifest | N
         # An unreadable record is not evidence of consent either. The later
         # enablement read can only refuse, never grant.
         meta = _read_installed(app_name, manifest=manifest)
-        if meta is None or meta.sessionApprovalConsentPending or not meta.enabled:
-            return False
-        return is_app_enabled(app_name)
+        if meta is None:
+            return SESSION_APPROVAL_UNAVAILABLE
+        if meta.sessionApprovalConsentPending:
+            return SESSION_APPROVAL_CONSENT_PENDING
+        if not meta.enabled:
+            return SESSION_APPROVAL_DISABLED
+        # The record said enabled and this read says not: the state moved under
+        # the two reads, so name no cause a retry would not confirm.
+        return "" if is_app_enabled(app_name) else SESSION_APPROVAL_UNAVAILABLE
     except Exception:
         logger.warning(
             "Could not resolve user-session control permission for app %s",
             app_name,
             exc_info=True,
         )
-        return False
+        return SESSION_APPROVAL_UNAVAILABLE
+
+
+def app_can_manage_session_approvals(app_name: str, *, manifest: AppManifest | None = None) -> bool:
+    """Return whether an enabled app holds the user-session control grant.
+
+    Granted only when :func:`session_approval_denial_cause` names no cause.
+    *manifest* is passed through to it unchanged.
+    """
+    return session_approval_denial_cause(app_name, manifest=manifest) == ""
 
 
 def app_session_control_grant(app_name: str) -> SessionControlGrant:
