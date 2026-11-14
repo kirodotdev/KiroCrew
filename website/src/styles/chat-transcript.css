@@ -128,6 +128,273 @@
 .typing-dots>span:nth-child(3){animation-delay:.36s}
 @keyframes typing-dot{0%,60%,100%{transform:translateY(0);opacity:.6}30%{transform:translateY(-3px);opacity:1}}
 
+/* ── Ghost games (components/GhostGames) ──
+   The ghost-game loader variants, drawn from the Kiro ghost mark with no
+   mouth: the motion does the eating. Ghosts sit in a 14px box, matching a .csb4
+   slot, and the mark's body spans about 1.5px-12.5px of it (centre 7px). A
+   pellet's keyframe flips at the exact fraction of the cycle where the ghost
+   reaches that pellet's centre (3px pellets, so centre = left + 1.5px), so
+   moving a pellet means recomputing its keyframe. Anything that wraps around (a
+   ghost leaving the track) fades rather than popping. The ghost sits above its
+   pellets, so a pellet it passes over is hidden by it.
+
+   Every bite lands on the ghost. `.gg-ghost` carries the scene's motion and
+   `.gg-body` inside it reacts: a gulp (a small squash from the bottom centre,
+   about .18s) on each bite and an accent glow (about .4s) on the last one. Its
+   `.gg-tint` layer fills the body with the accent colour a step per bite,
+   through a body-only mask (ghost-body.svg, the same viewBox as ghost.svg) and
+   multiply blending, so the outline and eyes stay black. The tint resets to
+   white while the ghost is out of sight, or fades out first where it stays in
+   view (inhale, volley, ellipsis). In volley a bite is a touch of the ball,
+   which is never eaten. The gg-gulp-*, gg-fill-* and gg-full-* keyframes
+   are built from each scene's bite fractions; a moved bite moves all three. */
+.gg{position:relative;display:block;flex:none;width:96px;height:18px}
+.gg-ghost{display:block;width:14px;height:14px}
+.gg-body{position:relative;display:block;width:100%;height:100%;isolation:isolate;transform-origin:50% 100%}
+.gg-art{display:block;width:100%;height:100%;object-fit:contain}
+.gg-tint{position:absolute;inset:0;opacity:0;background:var(--accent);mix-blend-mode:multiply;-webkit-mask:url('../assets/ghost-games/ghost-body.svg') center/contain no-repeat;mask:url('../assets/ghost-games/ghost-body.svg') center/contain no-repeat}
+.gg-mover{position:absolute;left:0;top:2px;width:14px;height:14px;z-index:1}
+.gg-dot{position:absolute;top:7.5px;width:3px;height:3px;border-radius:9999px;background:var(--accent)}
+@keyframes gg-run{0%{transform:translateX(0);opacity:0}6%,94%{opacity:1}100%{transform:translateX(75px);opacity:0}}
+@keyframes gg-fade{0%{opacity:0}5%,92%{opacity:1}100%{opacity:0}}
+
+/* Phase through: the ghost glides over the pellets and they are gone behind it. */
+.gg-phase .gg-mover{animation:gg-run 2.1s linear infinite}
+.gg-phase .gg-body{animation:gg-gulp-phase 2.1s linear infinite,gg-full-phase 2.1s linear infinite}
+.gg-phase .gg-tint{animation:gg-fill-phase 2.1s linear infinite}
+@keyframes gg-gulp-phase{0%,26.5%,35.1%,47.5%,56.1%,69%,77.6%,86.5%,95.1%,100%{transform:scale(1)}29.4%,50.4%,71.9%,89.4%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-phase{0%,26.5%{opacity:0}30.8%,47.5%{opacity:.25}51.8%,69%{opacity:.5}73.3%,86.5%{opacity:.75}90.8%,100%{opacity:.95}}
+@keyframes gg-full-phase{0%,86.5%,100%{filter:drop-shadow(0 0 0 transparent)}90.5%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-phase .gg-p1{left:25px;animation:gg-a1 2.1s linear infinite}
+.gg-phase .gg-p2{left:41px;animation:gg-a2 2.1s linear infinite}
+.gg-phase .gg-p3{left:57px;animation:gg-a3 2.1s linear infinite}
+.gg-phase .gg-p4{left:70px;animation:gg-a4 2.1s linear infinite}
+@keyframes gg-a1{0%,26%{opacity:1}27%,100%{opacity:0}}
+@keyframes gg-a2{0%,47%{opacity:1}48%,100%{opacity:0}}
+@keyframes gg-a3{0%,68.5%{opacity:1}69.5%,100%{opacity:0}}
+@keyframes gg-a4{0%,86%{opacity:1}87%,100%{opacity:0}}
+
+/* Pull in: a pellet is drawn into the ghost as it nears and shrinks away; the
+   ghost gulps on each arrival (19.3%, 42%, 63.3%, 86%). */
+.gg-pull .gg-mover{animation:gg-run 2.1s linear infinite}
+.gg-pull .gg-body{animation:gg-gulp-pull 2.1s linear infinite,gg-full-pull 2.1s linear infinite}
+.gg-pull .gg-tint{animation:gg-fill-pull 2.1s linear infinite}
+@keyframes gg-gulp-pull{0%,19.3%,27.9%,42%,50.6%,63.3%,71.9%,86%,94.6%,100%{transform:scale(1)}22.2%,44.9%,66.2%,88.9%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-pull{0%,19.3%{opacity:0}23.6%,42%{opacity:.25}46.3%,63.3%{opacity:.5}67.6%,86%{opacity:.75}90.3%,100%{opacity:.95}}
+@keyframes gg-full-pull{0%,86%,100%{filter:drop-shadow(0 0 0 transparent)}90.2%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-pull .gg-p1{left:28px;animation:gg-b1 2.1s infinite}
+.gg-pull .gg-p2{left:45px;animation:gg-b2 2.1s infinite}
+.gg-pull .gg-p3{left:61px;animation:gg-b3 2.1s infinite}
+.gg-pull .gg-p4{left:78px;animation:gg-b4 2.1s infinite}
+@keyframes gg-b1{0%,13.3%{transform:none;opacity:1;animation-timing-function:ease-in}19.3%,100%{transform:translateX(-4.5px) scale(.2);opacity:0}}
+@keyframes gg-b2{0%,36%{transform:none;opacity:1;animation-timing-function:ease-in}42%,100%{transform:translateX(-4.5px) scale(.2);opacity:0}}
+@keyframes gg-b3{0%,57.3%{transform:none;opacity:1;animation-timing-function:ease-in}63.3%,100%{transform:translateX(-4.5px) scale(.2);opacity:0}}
+@keyframes gg-b4{0%,80%{transform:none;opacity:1;animation-timing-function:ease-in}86%,100%{transform:translateX(-4.5px) scale(.2);opacity:0}}
+
+/* Glow pop: each pellet bursts into a ring as the ghost passes, and the ghost
+   glows in the accent colour for a beat. The last bite's glow is the shared
+   gg-full-pop one, so gg-glow covers only the first three. */
+.gg-pop .gg-mover{animation:gg-run 2.1s linear infinite}
+.gg-pop .gg-ghost{animation:gg-glow 2.1s linear infinite}
+@keyframes gg-glow{0%,22%,32%,43%,53%,64%,75%,100%{filter:drop-shadow(0 0 0 transparent)}26%,47.3%,68.7%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-pop .gg-body{animation:gg-gulp-pop 2.1s linear infinite,gg-full-pop 2.1s linear infinite}
+.gg-pop .gg-tint{animation:gg-fill-pop 2.1s linear infinite}
+@keyframes gg-gulp-pop{0%,26%,34.6%,47.3%,55.9%,68.7%,77.3%,86%,94.6%,100%{transform:scale(1)}28.9%,50.2%,71.6%,88.9%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-pop{0%,26%{opacity:0}30.3%,47.3%{opacity:.25}51.6%,68.7%{opacity:.5}73%,86%{opacity:.75}90.3%,100%{opacity:.95}}
+@keyframes gg-full-pop{0%,86%,100%{filter:drop-shadow(0 0 0 transparent)}90.2%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-pop .gg-p1{left:25px;animation:gg-c1 2.1s ease-out infinite}
+.gg-pop .gg-p2{left:41px;animation:gg-c2 2.1s ease-out infinite}
+.gg-pop .gg-p3{left:57px;animation:gg-c3 2.1s ease-out infinite}
+.gg-pop .gg-p4{left:70px;animation:gg-c4 2.1s ease-out infinite}
+@keyframes gg-c1{0%,26%{transform:scale(1);opacity:1}32%,100%{transform:scale(2.8);opacity:0}}
+@keyframes gg-c2{0%,47.3%{transform:scale(1);opacity:1}53.3%,100%{transform:scale(2.8);opacity:0}}
+@keyframes gg-c3{0%,68.7%{transform:scale(1);opacity:1}74.7%,100%{transform:scale(2.8);opacity:0}}
+@keyframes gg-c4{0%,86%{transform:scale(1);opacity:1}92%,100%{transform:scale(2.8);opacity:0}}
+
+/* Hop along: the ghost hops from pellet to pellet and its landing on each one
+   (16%, 40%, 62%, 84%) is the bite, so the gulp is the landing squash. */
+.gg-hop .gg-mover{animation:gg-fade 2.4s linear infinite}
+.gg-hop .gg-ghost{animation:gg-hops 2.4s infinite}
+@keyframes gg-hops{
+  0%{transform:translate(0,0);animation-timing-function:ease-out}
+  8%{transform:translate(11px,-6px);animation-timing-function:ease-in}
+  16%,24%{transform:translate(22.5px,0);animation-timing-function:ease-out}
+  32%{transform:translate(31px,-6px);animation-timing-function:ease-in}
+  40%,46%{transform:translate(39.5px,0);animation-timing-function:ease-out}
+  54%{transform:translate(47.5px,-6px);animation-timing-function:ease-in}
+  62%,68%{transform:translate(55.5px,0);animation-timing-function:ease-out}
+  76%{transform:translate(64px,-6px);animation-timing-function:ease-in}
+  84%,100%{transform:translate(72.5px,0)}}
+.gg-hop .gg-body{animation:gg-gulp-hop 2.4s linear infinite,gg-full-hop 2.4s linear infinite}
+.gg-hop .gg-tint{animation:gg-fill-hop 2.4s linear infinite}
+@keyframes gg-gulp-hop{0%,16%,23.5%,40%,47.5%,62%,69.5%,84%,91.5%,100%{transform:scale(1)}18.5%,42.5%,64.5%,86.5%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-hop{0%,16%{opacity:0}19.8%,40%{opacity:.25}43.8%,62%{opacity:.5}65.8%,84%{opacity:.75}87.8%,100%{opacity:.95}}
+@keyframes gg-full-hop{0%,84%,100%{filter:drop-shadow(0 0 0 transparent)}88.8%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-hop .gg-p1{left:28px;animation:gg-h1 2.4s linear infinite}
+.gg-hop .gg-p2{left:45px;animation:gg-h2 2.4s linear infinite}
+.gg-hop .gg-p3{left:61px;animation:gg-h3 2.4s linear infinite}
+.gg-hop .gg-p4{left:78px;animation:gg-h4 2.4s linear infinite}
+@keyframes gg-h1{0%,15.5%{opacity:1}16%,100%{opacity:0}}
+@keyframes gg-h2{0%,39.5%{opacity:1}40%,100%{opacity:0}}
+@keyframes gg-h3{0%,61.5%{opacity:1}62%,100%{opacity:0}}
+@keyframes gg-h4{0%,83.5%{opacity:1}84%,100%{opacity:0}}
+
+/* Inhale: the ghost hovers while pellets drift in every .375s and dissolve
+   into it, and it gulps each one as the pellet's flow ends. The first pellet
+   lands at 1.5s, so the bite loops wait that long; from then on the bites fall
+   at 0%, 25%, 50% and 75% of each 1.5s loop and the tint fades out before the
+   wrap, where the ghost is still in view. */
+.gg-inhale .gg-mover{animation:gg-hover 1.2s ease-in-out infinite}
+@keyframes gg-hover{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.5px)}}
+.gg-inhale .gg-body{animation:gg-gulp-inhale 1.5s linear 1.5s infinite,gg-full-inhale 1.5s linear 1.5s infinite}
+.gg-inhale .gg-tint{animation:gg-fill-inhale 1.5s linear 1.5s infinite}
+@keyframes gg-gulp-inhale{0%,12%,25%,37%,50%,62%,75%,87%,100%{transform:scale(1)}4%,29%,54%,79%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-inhale{0%,98%,100%{opacity:0}6%,25%{opacity:.25}31%,50%{opacity:.5}56%,75%{opacity:.75}81%,88%{opacity:.95}}
+@keyframes gg-full-inhale{0%,75%,100%{filter:drop-shadow(0 0 0 transparent)}82.5%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-inhale .gg-dot{left:0;animation:gg-flow 1.5s linear infinite both}
+.gg-inhale .gg-p2{animation-delay:.375s}
+.gg-inhale .gg-p3{animation-delay:.75s}
+.gg-inhale .gg-p4{animation-delay:1.125s}
+@keyframes gg-flow{0%{transform:translateX(85px) scale(1);opacity:0}10%{opacity:1}72%{transform:translateX(20px) scale(1);opacity:1}100%{transform:translateX(6px) scale(.2);opacity:0}}
+
+/* Collector: pellets the ghost passes fall in behind it as a trail of
+   followers. The whole scene fades out together at the end of the run. */
+.gg-collector .gg-scene{position:absolute;inset:0;animation:gg-fade 2.4s linear infinite}
+.gg-collector .gg-mover{animation:gg-glide 2.4s linear infinite}
+@keyframes gg-glide{from{transform:translateX(0)}to{transform:translateX(75px)}}
+.gg-collector .gg-body{animation:gg-gulp-collector 2.4s linear infinite,gg-full-collector 2.4s linear infinite}
+.gg-collector .gg-tint{animation:gg-fill-collector 2.4s linear infinite}
+@keyframes gg-gulp-collector{0%,19.3%,26.8%,36.7%,44.2%,54%,61.5%,71.3%,78.8%,100%{transform:scale(1)}21.8%,39.2%,56.5%,73.8%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-collector{0%,19.3%{opacity:0}23.1%,36.7%{opacity:.25}40.5%,54%{opacity:.5}57.8%,71.3%{opacity:.75}75%,100%{opacity:.95}}
+@keyframes gg-full-collector{0%,71.3%,88%,100%{filter:drop-shadow(0 0 0 transparent)}76.3%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-collector .gg-p1{left:20px;animation:gg-t1 2.4s linear infinite}
+.gg-collector .gg-p2{left:33px;animation:gg-t2 2.4s linear infinite}
+.gg-collector .gg-p3{left:46px;animation:gg-t3 2.4s linear infinite}
+.gg-collector .gg-p4{left:59px;animation:gg-t4 2.4s linear infinite}
+@keyframes gg-t1{0%,19.3%{transform:translateX(0) scale(1)}100%{transform:translateX(37px) scale(.75)}}
+@keyframes gg-t2{0%,36.7%{transform:translateX(0) scale(1)}100%{transform:translateX(28.5px) scale(.75)}}
+@keyframes gg-t3{0%,54%{transform:translateX(0) scale(1)}100%{transform:translateX(20px) scale(.75)}}
+@keyframes gg-t4{0%,71.3%{transform:translateX(0) scale(1)}100%{transform:translateX(11.5px) scale(.75)}}
+
+/* Volley: two ghosts, the right one mirrored, bump the accent dot back and
+   forth over the gap: four crossings a loop (0-25-50-75%), nothing eaten. Each
+   touch is a small hop that meets the ball, a gulp and one step of fill (about
+   half), and each ghost glows on its second touch; both fade back to white at
+   the end of the loop, where the left one touches again. The ball's arc rises
+   above the row, so the scene's box is 38px tall: a -16px top margin gives the
+   arc room above and a -4px bottom margin gives the glow room below (the edge
+   mask clips at the box), which keeps its layout height at the row's 18px, so
+   the footer row does not move. The ghosts sit 18px down the box, where the
+   other scenes put theirs (2px down an 18px box). Ball: x runs linear and y
+   follows exact parabola halves (the two cubic-beziers below are 1-(1-u)^2 and
+   u^2), so the arc rises 11px over the contact point and the ball's bottom
+   edge clears a resting head by about 14px. The track's edges fade like the
+   other scenes. */
+.gg-volley{width:127px;height:38px;margin:-16px 0 -4px;-webkit-mask-image:linear-gradient(90deg,transparent,#000 18px,#000 calc(100% - 18px),transparent);mask-image:linear-gradient(90deg,transparent,#000 18px,#000 calc(100% - 18px),transparent)}
+.gg-player{position:absolute;top:18px;width:14px;height:14px}
+.gg-left{left:20px}
+.gg-right{left:93px;transform:scaleX(-1)}
+.gg-ball{position:absolute;left:25.5px;top:13px;z-index:2;animation:gg-serve 2.7s linear infinite}
+.gg-volley .gg-dot{position:static;display:block;animation:gg-arc 2.7s infinite}
+@keyframes gg-serve{0%,50%,100%{transform:translateX(0)}25%,75%{transform:translateX(73px)}}
+@keyframes gg-arc{
+  0%,25%,50%,75%{transform:translateY(0);animation-timing-function:cubic-bezier(.33,.67,.67,1)}
+  12.5%,37.5%,62.5%,87.5%{transform:translateY(-11px);animation-timing-function:cubic-bezier(.33,0,.67,.33)}
+  100%{transform:translateY(0)}}
+.gg-left .gg-ghost{animation:gg-hop-volley-l 2.7s infinite}
+.gg-right .gg-ghost{animation:gg-hop-volley-r 2.7s infinite}
+@keyframes gg-hop-volley-l{
+  0%{transform:translateY(-2.85px);animation-timing-function:ease-out}
+  .9%{transform:translateY(-3px);animation-timing-function:ease-in}
+  5.6%,46.3%{transform:translateY(0);animation-timing-function:ease-out}
+  50.9%{transform:translateY(-3px);animation-timing-function:ease-in}
+  55.6%,96.3%{transform:translateY(0);animation-timing-function:ease-out}
+  100%{transform:translateY(-2.85px)}}
+@keyframes gg-hop-volley-r{
+  0%,21.3%{transform:translateY(0);animation-timing-function:ease-out}
+  25.9%{transform:translateY(-3px);animation-timing-function:ease-in}
+  30.6%,71.3%{transform:translateY(0);animation-timing-function:ease-out}
+  75.9%{transform:translateY(-3px);animation-timing-function:ease-in}
+  80.6%,100%{transform:translateY(0)}}
+.gg-left .gg-body{animation:gg-gulp-volley-l 2.7s linear infinite,gg-full-volley-l 2.7s linear infinite}
+.gg-left .gg-tint{animation:gg-fill-volley-l 2.7s linear infinite}
+.gg-right .gg-body{animation:gg-gulp-volley-r 2.7s linear infinite,gg-full-volley-r 2.7s linear infinite}
+.gg-right .gg-tint{animation:gg-fill-volley-r 2.7s linear infinite}
+@keyframes gg-gulp-volley-l{0%,6.7%,50%,56.7%,100%{transform:scale(1)}2.2%,52.2%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-volley-l{0%,100%{opacity:0}3.3%,50%{opacity:.475}53.3%,94.4%{opacity:.95}}
+@keyframes gg-full-volley-l{0%,50%,64.8%,100%{filter:drop-shadow(0 0 0 transparent)}54.4%{filter:drop-shadow(0 0 3px var(--accent))}}
+@keyframes gg-gulp-volley-r{0%,25%,31.7%,75%,81.7%,100%{transform:scale(1)}27.2%,77.2%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-volley-r{0%,25%,100%{opacity:0}28.3%,75%{opacity:.475}78.3%,94.4%{opacity:.95}}
+@keyframes gg-full-volley-r{0%,75%,89.8%,100%{filter:drop-shadow(0 0 0 transparent)}79.4%{filter:drop-shadow(0 0 3px var(--accent))}}
+
+/* Sits right after the label's stem (the footer drops the label's own "…").
+   The ghost, facing back toward the word, drifts left and pulls in the three
+   crumbs that stand in for the ellipsis, nearest first, then backs off while
+   they grow back. The drift is linear so each crumb's pull starts as the
+   ghost's leading edge comes within 5px of it. Negative margin cancels most
+   of the row's 8px gap so the crumbs hug the word; crumbs take the label's
+   muted colour; the ghost still fills with the accent colour, a third per
+   crumb, and fades back to white while it backs off. */
+.gg-ellipsis{width:34px;margin-left:-6px}
+.gg-ellipsis>.gg-ghost{position:absolute;left:0;top:2px;z-index:1;animation:gg-eat 2.25s infinite}
+@keyframes gg-eat{0%,10%{transform:translateX(19px) scaleX(-1);animation-timing-function:linear}70%{transform:translateX(-1px) scaleX(-1);animation-timing-function:ease-in-out}100%{transform:translateX(19px) scaleX(-1)}}
+.gg-ellipsis .gg-body{animation:gg-gulp-ellipsis 2.25s linear infinite,gg-full-ellipsis 2.25s linear infinite}
+.gg-ellipsis .gg-tint{animation:gg-fill-ellipsis 2.25s linear infinite}
+@keyframes gg-gulp-ellipsis{0%,29.5%,37.5%,44.5%,52.5%,59.5%,67.5%,100%{transform:scale(1)}32.2%,47.2%,62.2%{transform:scale(1.12,.9)}}
+@keyframes gg-fill-ellipsis{0%,29.5%,94%,100%{opacity:0}33.5%,44.5%{opacity:.32}48.5%,59.5%{opacity:.64}63.5%,82%{opacity:.95}}
+@keyframes gg-full-ellipsis{0%,59.5%,77.3%,100%{filter:drop-shadow(0 0 0 transparent)}64.8%{filter:drop-shadow(0 0 3px var(--accent))}}
+.gg-crumb{position:absolute;top:12px;width:2px;height:2px;border-radius:9999px;background:currentColor}
+.gg-ellipsis .gg-p1{left:1px;animation:gg-f1 2.25s infinite}
+.gg-ellipsis .gg-p2{left:6px;animation:gg-f2 2.25s infinite}
+.gg-ellipsis .gg-p3{left:11px;animation:gg-f3 2.25s infinite}
+@keyframes gg-f1{0%,50.5%{transform:none;opacity:1;animation-timing-function:ease-in}59.5%,96%{transform:translateX(2px) scale(.2);opacity:0}100%{transform:none;opacity:1}}
+@keyframes gg-f2{0%,35.5%{transform:none;opacity:1;animation-timing-function:ease-in}44.5%,96%{transform:translateX(2px) scale(.2);opacity:0}100%{transform:none;opacity:1}}
+@keyframes gg-f3{0%,20.5%{transform:none;opacity:1;animation-timing-function:ease-in}29.5%,96%{transform:translateX(2px) scale(.2);opacity:0}100%{transform:none;opacity:1}}
+
+/* ── Thinking label shimmer (chat/ChatFooter) ──
+   A soft highlight sweeps across the visible "Thinking…" label once per 2.8s,
+   slower than the ghost scenes so the label stays calm beside them. The text is painted by the gradient
+   (background-clip:text), so it falls back to plain muted text where that is
+   unsupported. Under reduced motion the global index.css rule runs the sweep
+   once to its last frame, where the highlight sits past the right edge and the
+   label reads as plain muted text. */
+.thinking-shimmer{color:var(--muted)}
+@supports ((-webkit-background-clip:text) or (background-clip:text)){
+  .thinking-shimmer{background:linear-gradient(90deg,var(--muted) 40%,var(--text-strong) 50%,var(--muted) 60%) 0 0/300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;animation:thinking-shimmer 2.8s linear infinite}
+}
+@keyframes thinking-shimmer{from{background-position:100% 0}to{background-position:0 0}}
+
+/* ── Theme icon motions (components/IconLoaderMotions) ──
+   Alternatives to the .csb4 cross-fade for a theme's own icon pool. Same 14px
+   slots and 5px gap as .csb4 (a 19px pitch, which every translate below is a
+   multiple of), and the motion is on the `.ilm-slot` wrapper, never the icon,
+   so any icon component a theme registers moves the same way. */
+.ilm{position:relative;display:flex;gap:5px;padding:2px 0}
+.ilm-slot{position:relative;display:block;width:14px;height:14px;flex:none;color:var(--accent)}
+.ilm-slot>svg,.ilm-slot>img,.ilm-slot>canvas{display:block;width:100%;height:100%;overflow:visible;object-fit:contain}
+
+/* One icon at a time lifts into full strength while a dot slides under it. The
+   negative delay puts slot N's active window at N * .6s from the start. */
+.ilm-spotlight .ilm-slot{opacity:.35;animation:ilm-act 2.4s ease-in-out infinite both;animation-delay:calc(var(--i) * .6s - 2.4s)}
+@keyframes ilm-act{0%,20%{opacity:1;transform:translateY(-2px) scale(1.1)}28%,100%{opacity:.35;transform:none}}
+.ilm-dot{position:absolute;left:-1.5px;top:18px;width:3px;height:3px;border-radius:9999px;background:var(--accent);animation:ilm-hop 2.4s ease-in-out infinite}
+@keyframes ilm-hop{0%,20%{transform:translateX(7px)}25%,45%{transform:translateX(26px)}50%,70%{transform:translateX(45px)}75%,95%{transform:translateX(64px)}100%{transform:translateX(7px)}}
+
+/* Pairs trade places with a hop, like cups being shuffled: 1<->2, then 3<->4,
+   then each pair swaps back. One slot arcs over, its partner under. */
+.ilm-shuffle .ilm-slot:nth-child(1){animation:ilm-s0 3.6s ease-in-out infinite}
+.ilm-shuffle .ilm-slot:nth-child(2){animation:ilm-s1 3.6s ease-in-out infinite}
+.ilm-shuffle .ilm-slot:nth-child(3){animation:ilm-s2 3.6s ease-in-out infinite}
+.ilm-shuffle .ilm-slot:nth-child(4){animation:ilm-s3 3.6s ease-in-out infinite}
+@keyframes ilm-s0{0%,10%{transform:translate(0,0)}17%{transform:translate(9.5px,-5px)}25%,55%{transform:translate(19px,0)}62%{transform:translate(9.5px,-5px)}70%,100%{transform:translate(0,0)}}
+@keyframes ilm-s1{0%,10%{transform:translate(0,0)}17%{transform:translate(-9.5px,5px)}25%,55%{transform:translate(-19px,0)}62%{transform:translate(-9.5px,5px)}70%,100%{transform:translate(0,0)}}
+@keyframes ilm-s2{0%,30%{transform:translate(0,0)}37%{transform:translate(9.5px,-5px)}45%,75%{transform:translate(19px,0)}82%{transform:translate(9.5px,-5px)}90%,100%{transform:translate(0,0)}}
+@keyframes ilm-s3{0%,30%{transform:translate(0,0)}37%{transform:translate(-9.5px,5px)}45%,75%{transform:translate(-19px,0)}82%{transform:translate(-9.5px,5px)}90%,100%{transform:translate(0,0)}}
+
+/* Icons drop in one by one with a small bounce, rest, then sink away. */
+.ilm-drop .ilm-slot{animation:ilm-drop 3s infinite both;animation-delay:calc(var(--i) * .15s)}
+@keyframes ilm-drop{0%{transform:translateY(-12px);opacity:0;animation-timing-function:ease-in}10%{transform:translateY(0);opacity:1;animation-timing-function:ease-out}14%{transform:translateY(-3px);animation-timing-function:ease-in}18%,78%{transform:translateY(0);opacity:1}90%,100%{transform:translateY(4px);opacity:0}}
+
 /* ── The ghost-pose loader icons ──
    These are the DEFAULT loader artwork for every theme (see ChatFooter's
    DEFAULT_ICONS); a theme replaces them through the themeBranding `loaderIcons`
