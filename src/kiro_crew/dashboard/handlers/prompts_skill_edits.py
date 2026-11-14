@@ -38,6 +38,7 @@ from ._shared import (
     _read_session_key,
     _resolve_skill_root,
     read_skill_file,
+    split_package_key,
 )
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.prompts")
@@ -250,9 +251,17 @@ def _match_package_row(
     returns ``None`` (the caller 404s) and logs, because a reader who opened one
     skill and silently got another has no way to notice.
     """
-    for row in rows:
-        if row.get("key") == name:
-            return row
+    exact = [row for row in rows if row.get("key") == name]
+    if len({str(row.get("path") or "") for row in exact}) == 1:
+        return exact[0]
+    if exact:
+        logger.warning(
+            "skill key %r names %d package rows with different files; "
+            "refusing to guess which SKILL.md was meant",
+            name,
+            len(exact),
+        )
+        return None
     leaf_matches = [row for row in rows if row.get("name") == pkg_name]
     if len(leaf_matches) == 1:
         return leaf_matches[0]
@@ -511,7 +520,14 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
                 _audit_unread(
                     "api_skill_detail", "skill", refusal, {"name": name, "path": str(row["path"])}
                 )
-    if content is None and (name.startswith("kiro-user/") or name.startswith("kiro-workspace/")):
+    if content is None and (
+        name.startswith("kiro-user/")
+        or name.startswith("kiro-workspace/")
+        or (
+            name.startswith("package/")
+            and split_package_key(name[len("package/") :])[0] is not None
+        )
+    ):
         # Open-standard kiro-cli skills are read-only here — load via the
         # same path-resolution logic used by the tree/file endpoints so the
         # detail modal can fetch SKILL.md regardless of which root the

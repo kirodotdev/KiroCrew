@@ -9,7 +9,9 @@ import and patch; this module never imports it."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 from pathlib import Path
 from typing import Iterable
 
@@ -143,6 +145,69 @@ def _dedupe_resolved(paths: list[Path]) -> list[Path]:
     return out
 
 
+_PACKAGE_QUALIFIER_BYTES = 8
+_HEX = frozenset("0123456789abcdef")
+
+
+def package_root_qualifier(root: Path) -> str | None:
+    """A stable token naming *root*, for ``package/<qualifier>:<rel>`` keys.
+
+    Two package roots can bundle the same relative path, and ``package/<rel>``
+    then names two files. The qualifier picks one root. It is a digest of the
+    root's canonical path, so an alias of a root shares its token, the token
+    survives restarts and unrelated installs, and it never carries ``:``, ``/``
+    or a glob character. ``None`` when the root cannot be canonicalised.
+    """
+    try:
+        basis = os.fsencode(str(root.resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return hashlib.blake2b(basis, digest_size=_PACKAGE_QUALIFIER_BYTES).hexdigest()
+
+
+def split_package_key(pkg_rel: str) -> tuple[str | None, str]:
+    """Split a ``package/`` key remainder into ``(qualifier, rel)``.
+
+    Only the exact shape :func:`package_root_qualifier` mints counts, so a skill
+    directory whose own name contains ``:`` still resolves unqualified.
+    """
+    qualifier, sep, rel = pkg_rel.partition(":")
+    if sep and rel and len(qualifier) == _PACKAGE_QUALIFIER_BYTES * 2 and set(qualifier) <= _HEX:
+        return qualifier, rel
+    return None, pkg_rel
+
+
+def fold_package_keys(per_root: list[tuple[Path, dict[str, Path]]]) -> dict[str, Path]:
+    """Merge per-root ``package/<rel>`` catalogs, qualifying keys that collide.
+
+    A key one distinct file claims stays as it is. A key two or more distinct
+    files claim is replaced by one ``package/<qualifier>:<rel>`` key per copy,
+    because :func:`_resolve_package_skill_path` refuses the bare key for it. A
+    root with no qualifier drops its colliding copy rather than share a key.
+    """
+    claims: dict[str, list[tuple[Path, Path]]] = {}
+    for root, entries in per_root:
+        for key, skill_md in entries.items():
+            claims.setdefault(key, []).append((root, skill_md))
+    out: dict[str, Path] = {}
+    for key, copies in claims.items():
+        distinct: dict[Path, tuple[Path, Path]] = {}
+        for root, skill_md in copies:
+            try:
+                distinct.setdefault(skill_md.resolve(), (root, skill_md))
+            except (OSError, RuntimeError):
+                continue
+        if len(distinct) == 1:
+            out[key] = next(iter(distinct.values()))[1]
+            continue
+        rel = key[len("package/") :]
+        for root, skill_md in distinct.values():
+            qualifier = package_root_qualifier(root)
+            if qualifier is not None:
+                out.setdefault(f"package/{qualifier}:{rel}", skill_md)
+    return out
+
+
 def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -> Path | None:
     """Find SKILL.md for an edition-contributed skill by its key remainder.
 
@@ -162,14 +227,20 @@ def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -
 
     An exact relative-path hit wins over a nested leaf hit. Within a tier, two
     DISTINCT files matching is a genuine ambiguity — the same relative path
-    bundled by two packages, which this key grammar cannot tell apart — so it
-    returns ``None`` and logs instead of picking one. Serving an arbitrary one of
-    the two looks completely successful and shows the wrong skill's content,
-    which is the failure mode worth being loud about.
+    bundled by two packages — so an unqualified *name* returns ``None`` and logs
+    instead of picking one. Serving an arbitrary one of the two looks completely
+    successful and shows the wrong skill's content, which is the failure mode
+    worth being loud about. ``<qualifier>:<rel>`` (see
+    :func:`package_root_qualifier`) searches only the root that qualifier names,
+    which is how each colliding copy stays addressable.
     """
+    qualifier, name = split_package_key(name)
+    roots = _edition_package_roots(canonical)
+    if qualifier is not None:
+        roots = [r for r in roots if package_root_qualifier(r) == qualifier]
     exact: list[Path] = []
     nested: list[Path] = []
-    for root in _edition_package_roots(canonical):
+    for root in roots:
         exact.extend(root.glob(f"{name}/SKILL.md"))
         nested.extend(root.glob(f"*/{name}/SKILL.md"))
     for tier, label in ((exact, "relative path"), (nested, "leaf name")):
@@ -179,7 +250,7 @@ def _resolve_package_skill_path(name: str, canonical: set[Path] | None = None) -
         if candidates:
             logger.warning(
                 "edition skill %r matches %d distinct files by %s (%s); refusing "
-                "to guess — the package/<path> key cannot address more than one",
+                "to guess — address one copy as package/<qualifier>:<path>",
                 name,
                 len(candidates),
                 label,

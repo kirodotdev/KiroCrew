@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers._shared_skill_roots import (
     _leaf_is_contained,
     _path_at_or_under,
     _resolved_set,
+    fold_package_keys,
 )
 from kiro_crew.dashboard.handlers._shared_workspace import active_project_dir
 from kiro_crew.dashboard.state import DashboardState
@@ -214,6 +215,7 @@ def walk_skill_catalog(state: DashboardState, session_key: str = "") -> SkillCat
     (``test/skill_catalog_walk_bench.py`` measures both).
     """
     catalog: dict[str, Path] = {}
+    package_catalogs: list[tuple[Path, dict[str, Path]]] = []
     mtimes: dict[Path, int | None] = {}
     walked_at_ns = time.time_ns()
     for prefix, root in _skill_key_roots(state, session_key):
@@ -228,16 +230,23 @@ def walk_skill_catalog(state: DashboardState, session_key: str = "") -> SkillCat
         except OSError:
             mtimes[root] = None
             continue
+        target = catalog
+        if prefix == "package/":
+            # Collected per root: a relative path two package roots both bundle
+            # is one key per copy, which only the fold below can decide.
+            target = {}
+            package_catalogs.append((root, target))
         _collect_skills_under(
             root,
             root,
             root_resolved,
             prefix,
-            catalog,
+            target,
             _SKILL_NEST_DEPTH,
             prefix == LEAF_SYMLINK_PREFIX,
             mtimes,
         )
+    catalog.update(fold_package_keys(package_catalogs))
     return SkillCatalogSnapshot(catalog, mtimes, walked_at_ns)
 
 
