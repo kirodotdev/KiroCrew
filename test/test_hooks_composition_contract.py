@@ -217,6 +217,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: callers fit too.
 #: ``safe_read_file`` and ``_opened_file_matches_validated_path`` take a keyword-only
 #: ``canonical_gate=False`` (the agent snapshot scan's inline gate), so theirs fit as well.
+#: ``permission_pre_tool_block`` takes a keyword-only ``event_tool_params=None`` (the
+#: call's structured params, the hook's ``tool_input`` when the rendering is a diff),
+#: so its callers fit too.
 #: ``safe_read_file_bytes_nolink`` and ``validate_file_path`` take the same keyword (the
 #: member start's spec read), so their callers fit too.
 #: ``safe_read_prefix`` takes a keyword-only ``refuse=None`` (a caller's fence on
@@ -227,7 +230,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: ``session_key=None`` keyword (the channel session governance judges a bot turn
 #: by), so every existing caller still fits. ``fire_tool_hooks`` also takes a
 #: trailing ``tool_match_names=None`` keyword (``None`` keeps title matching).
-_BASE_SHAPE_DIGEST = "99a8550367a8fe7af43162aedfa9cbe5c47b961e41df01ef8ed89e68a4f72342"
+_BASE_SHAPE_DIGEST = "ae3a0bf595ff072eeb3f462660f0840671c3721bede263d6696aa556cfdd225c"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
