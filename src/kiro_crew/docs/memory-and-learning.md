@@ -239,7 +239,9 @@ semantic search as soon as the model is ready — no restart needed. Requires
 ~610MB disk for the model and ~700MB RAM once the model is loaded. The model
 loads when something first needs a vector and unloads after 60 minutes without
 one (`memory.embedding_idle_evict_secs`, `0` keeps it loaded); the first search
-after that waits a few seconds for it to load again.
+after that waits a few seconds for it to load again. Background work (filling in
+missing vectors, consolidation) never holds up your message: your search runs
+first and the background text starts over.
 
 The bundled model is `qwen3-embedding:0.6b` (1024 dimensions). `KIROCREW_EMBED_MODEL_URL` overrides `memory.embed_model_url` for the download URL; `KIROCREW_EMBED_MODEL_PATH` or `memory.embed_model_path` selects a local GGUF instead of the bundled model.
 

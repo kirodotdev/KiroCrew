@@ -405,7 +405,7 @@ class TestReembedSweepDefersTheModelLoad:
         src = inspect.getsource(emb.make_sync_embed_fn)
         assert "_kick_background_load" not in src
         assert "wait_ready" not in src
-        # The kick lives on the embed path instead.
-        assert "_kick_background_load()" in inspect.getsource(emb.LlamaCppEmbedder.embed_batch)
+        # The kick lives on the embed path instead (embed_batch's body, past its in-flight count).
+        assert "_kick_background_load()" in inspect.getsource(emb.LlamaCppEmbedder._embed_batch)
         # And wait_ready() is what makes the sweep's question expensive.
         assert "_kick_background_load()" in inspect.getsource(emb.LlamaCppEmbedder.wait_ready)

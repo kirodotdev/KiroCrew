@@ -237,6 +237,10 @@ cached reads it at once, and one that finds it still running joins it and waits
 `memory.startup_recall_timeout_secs` (one second) instead. On that same cold start
 the build's memory reads start early too (`prefetch_session_memory`); the build
 takes them only when none of their inputs moved, and reads for itself otherwise.
+A background embed already inside the model does not hold these waits: the
+build's query embed stops it at the model's next step and runs first
+(`embeddings_preempt.py`; see
+[memory-skills-hooks](../system-specs/modules/memory-skills-hooks.md)).
 
 - **Admission is by whole block, never by slicing the joined prompt.** Protected
   blocks (rules, preferences, identity, steering, pinned skill bodies) go first and

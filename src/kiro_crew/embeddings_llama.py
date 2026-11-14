@@ -36,6 +36,7 @@ from kiro_crew.embeddings_model import (
     model_pooling_type,
 )
 from kiro_crew.embeddings_native import _load_llama_class
+from kiro_crew.embeddings_preempt import PreemptFlag, install_preempt_flag
 from kiro_crew.embeddings_settings import (
     _COLD_LOAD_WAIT_SECS,
     _DEFAULT_DIM,
@@ -45,6 +46,7 @@ from kiro_crew.embeddings_settings import (
     _INFER_STOP_TIMEOUT_SECS,
     _INTERACTIVE_QUEUE_RESERVE,
     _LLM_LOAD_RETRY_SECS,
+    _MAX_BULK_PREEMPTS,
     _MAX_EMBED_BATCH_TEXTS,
     _MAX_EMBED_CHARS,
     _MAX_PENDING_EMBEDS,
@@ -53,6 +55,7 @@ from kiro_crew.embeddings_settings import (
     _POOLING_TYPE_LAST,
     _PRIORITY_SENTINEL,
     PRIORITY_BULK,
+    PRIORITY_INTERACTIVE,
     PRIORITY_NORMAL,
     EmbeddingWork,
     _embed_threads,
@@ -375,6 +378,55 @@ class _InferJob:
         self.started: float = 0.0
 
 
+class _Preemptible:
+    """A background text running on the model, and whether a person asked it to stop."""
+
+    __slots__ = ("jobs", "flag", "work", "armed")
+
+    def __init__(
+        self,
+        jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]",
+        flag: PreemptFlag,
+        work: EmbeddingWork,
+    ) -> None:
+        self.jobs = jobs
+        self.flag = flag
+        self.work = work
+        # Set with the flag and never cleared by a disarm: a decode that saw the
+        # byte before a disarm still ended aborted, and must be run again.
+        self.armed = False
+
+    def arm(self) -> None:
+        self.armed = True
+        self.flag.arm()
+
+
+#: What :meth:`LlamaCppEmbedder._infer_bulk_text` returns for a text a person's embed
+#: stopped. A sentinel rather than None, which a backend may return as a result.
+_STOPPED = object()
+
+
+def _person_waiting(jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]") -> bool:
+    """Whether an interactive job is queued. Caller holds the dispatch lock."""
+    with jobs.mutex:
+        return any(
+            job is not None and prio <= PRIORITY_INTERACTIVE for prio, _seq, job in jobs.queue
+        )
+
+
+def _retry_class(prio: int, stops: int) -> int:
+    """The thread class a bulk text runs at: its own, or the interactive one once stopped.
+
+    A text a person stopped starts over while people are active, so its new start
+    runs on the interactive pool (``memory.embedding_threads``): it is done in a
+    fraction of the time, which shortens the window another person's embed can
+    land in and the work a further stop throws away. The thread count does not
+    change the vector: each output of a CPU matmul is summed by one thread in the
+    same order whatever the count.
+    """
+    return PRIORITY_NORMAL if stops and prio >= PRIORITY_BULK else prio
+
+
 class LlamaCppEmbedder(EmbeddingBackend):
     """Serialized in-process embedder over the vendored llama.cpp runtime.
 
@@ -473,6 +525,14 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._last_used = time.monotonic()
         self._evict_thread: threading.Thread | None = None
         self._evict_wake = threading.Event()
+        # The background text inside the model right now, while a person's embed
+        # may stop it (kiro_crew.embeddings_preempt). Read and written under
+        # _dispatch_lock only.
+        self._preemptible: _Preemptible | None = None
+        # Calls inside embed_batch right now. The evictor never unloads under one,
+        # so a build or a recall waiting on its vector cannot lose the model.
+        self._inflight = 0
+        self._inflight_lock = threading.Lock()
 
     def _next_seq(self) -> int:
         with self._seq_lock:
@@ -677,6 +737,7 @@ class LlamaCppEmbedder(EmbeddingBackend):
             llm = _construct_llama(llama_cls, llama_kwargs, stamp)
             _install_metadata_kv_clear(llm)
             _install_bounded_decode(llm)
+            install_preempt_flag(llm)
             try:
                 unchanged = _model_file_stamp(self._model_path) == stamp
             except OSError:
@@ -844,24 +905,50 @@ class LlamaCppEmbedder(EmbeddingBackend):
             if prio >= PRIORITY_BULK and len(job.texts) > 1:
                 self._run_bulk_yielding(jobs, prio, job)
             else:
-                self._run_job(prio, job)
+                self._run_job(prio, job, jobs if prio >= PRIORITY_BULK else None)
 
-    def _run_job(self, prio: int, job: "_InferJob") -> None:
-        """Run one queued job to the end on this worker and complete it."""
+    def _run_job(
+        self,
+        prio: int,
+        job: "_InferJob",
+        jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]] | None" = None,
+    ) -> None:
+        """Run one queued job to the end on this worker and complete it.
+
+        ``jobs`` is passed for a one-text bulk job only: a person's embed may then
+        stop it inside the model (:meth:`_infer_bulk_text`), run first, and the
+        text starts over.
+        """
+        busy = 0.0
         try:
-            with self._lock:
-                if job.work.expired():
-                    job.error = TimeoutError("embedding work expired before inference")
+            stops = 0
+            while True:
+                with self._lock:
+                    if job.work.expired():
+                        job.error = TimeoutError("embedding work expired before inference")
+                        return
+                    self._apply_thread_class(job.llm, _retry_class(prio, stops))
+                    started = time.monotonic()
+                    job.started = job.started or started
+                    if jobs is None:
+                        job.result = self._infer(job.llm, job.texts, job.work)
+                        return
+                    if stops and job.llm is not self._llm:
+                        raise RuntimeError("embedding backend retired during a bulk job")
+                    out = self._infer_bulk_text(jobs, job, job.texts[0], stops)
+                    busy += time.monotonic() - started
+                if out is not _STOPPED:
+                    job.result = out
                     return
-                self._apply_thread_class(job.llm, prio)
-                job.started = time.monotonic()
-                job.result = self._infer(job.llm, job.texts, job.work)
+                stops += 1
+                self._serve_waiting(jobs)
         except BaseException as exc:  # noqa: BLE001 - relayed to the caller verbatim
             job.error = exc
         finally:
             if prio >= PRIORITY_BULK and job.started:
+                # A stopped job paces on its own model time, not the time it lent.
                 self._bulk_ready_at = time.monotonic() + bulk_pace_delay(
-                    time.monotonic() - job.started
+                    busy or time.monotonic() - job.started
                 )
             job.done.set()
             # job.error's traceback holds this finished frame; without this the
@@ -886,14 +973,16 @@ class LlamaCppEmbedder(EmbeddingBackend):
     ) -> None:
         """Run a bulk batch one text at a time, serving waiting callers in between.
 
-        A started native call cannot be stopped, so a chat-turn embed that lands
-        just after a bulk batch starts would otherwise wait for every text in it.
-        Between texts, any queued interactive or normal job runs first; the wait
-        is then at most one text. Each text is embedded exactly once and the
-        result keeps input order. ``_lock`` is released between texts, so the
-        model is re-checked each time: a close() or idle unload in that gap fails
-        the batch (the caller gets None and its rows stay pending) rather than
-        touching a retired model.
+        A chat-turn embed that lands while a bulk batch runs waits for no more
+        than the text inside the model, and not even that: a person's embed
+        arriving while a text is in the native call stops it at the next graph
+        node (:meth:`_infer_bulk_text`), runs first, and the text starts over.
+        Between texts, any queued interactive or normal job runs first. Each text
+        is embedded to completion once and the result keeps input order. ``_lock``
+        is released between texts and between a stopped text and its new start,
+        so the model is re-checked each time: a close() or idle unload in that
+        gap fails the batch (the caller gets None and its rows stay pending)
+        rather than touching a retired model.
         """
         data: list[object] = []
         busy = 0.0
@@ -903,16 +992,23 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # now waits on it, so it stops yielding to other callers.
                 if index and job.work.priority >= PRIORITY_BULK:
                     self._serve_waiting(jobs)
-                with self._lock:
-                    if job.work.expired():
-                        raise TimeoutError("embedding work expired before inference")
-                    if job.llm is not self._llm:
-                        raise RuntimeError("embedding backend retired during a bulk batch")
-                    self._apply_thread_class(job.llm, prio)
-                    started = time.monotonic()
-                    job.started = job.started or started
-                    out = self._infer(job.llm, [text], job.work)
-                    busy += time.monotonic() - started
+                stops = 0
+                while True:
+                    with self._lock:
+                        if job.work.expired():
+                            raise TimeoutError("embedding work expired before inference")
+                        if job.llm is not self._llm:
+                            raise RuntimeError("embedding backend retired during a bulk batch")
+                        self._apply_thread_class(job.llm, _retry_class(prio, stops))
+                        started = time.monotonic()
+                        job.started = job.started or started
+                        out = self._infer_bulk_text(jobs, job, text, stops)
+                        # The stopped attempt counts too: it is model time all the same.
+                        busy += time.monotonic() - started
+                    if out is not _STOPPED:
+                        break
+                    stops += 1
+                    self._serve_waiting(jobs)
                 item = dict(out["data"][0])  # type: ignore[index]
                 item["index"] = index
                 data.append(item)
@@ -925,6 +1021,53 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 self._bulk_ready_at = time.monotonic() + bulk_pace_delay(busy)
             job.done.set()
             del job  # same traceback cycle as _run_job
+
+    def _infer_bulk_text(
+        self,
+        jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]",
+        job: "_InferJob",
+        text: str,
+        stops: int,
+    ) -> object:
+        """Run one bulk text so a person's embed can stop it; :data:`_STOPPED` when it was.
+
+        Called under ``_lock``. The text is stoppable while it is still background
+        work: not once ``promote_pending`` lifted it (a person waits on this very
+        text), not after :data:`_MAX_BULK_PREEMPTS` stops (so a steady stream of
+        people's embeds cannot keep it from finishing), and not on a model with no
+        :class:`PreemptFlag`. A person's job queued before the text starts asks it
+        to stop at once, since :meth:`_submit_infer` only reaches a text it can see.
+        A stopped decode has left no state behind (see
+        :mod:`kiro_crew.embeddings_preempt`), so the next attempt returns the
+        vector one uninterrupted call returns.
+        """
+        flag = getattr(job.llm, "kiro_crew_preempt", None)
+        if not isinstance(flag, PreemptFlag) or stops >= _MAX_BULK_PREEMPTS:
+            return self._infer(job.llm, [text], job.work)
+        with self._dispatch_lock:
+            if job.work.priority < PRIORITY_BULK:
+                running = None
+            else:
+                flag.clear()
+                running = _Preemptible(jobs, flag, job.work)
+                self._preemptible = running
+                if _person_waiting(jobs):
+                    running.arm()
+        if running is None:
+            return self._infer(job.llm, [text], job.work)
+        try:
+            return self._infer(job.llm, [text], job.work)
+        except RuntimeError:
+            # llama_decode returns 2 when the callback stopped it, which the
+            # binding raises as RuntimeError. Any other failure is re-raised.
+            if running.armed:
+                return _STOPPED
+            raise
+        finally:
+            with self._dispatch_lock:
+                if self._preemptible is running:
+                    self._preemptible = None
+                flag.clear()
 
     def _serve_waiting(
         self, jobs: "queue.PriorityQueue[tuple[int, int, _InferJob | None]]"
@@ -1055,6 +1198,15 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 return job
             self._jobs.put((priority, self._next_seq(), job))
             self._jobs_changed.set()
+            running = self._preemptible
+            if (
+                priority <= PRIORITY_INTERACTIVE
+                and running is not None
+                and running.jobs is self._jobs
+            ):
+                # A person waits on this job: stop the background text inside
+                # the model at its next graph node (see _infer_bulk_text).
+                running.arm()
         while not job.done.wait(0.05):
             if job.work.expired():
                 with self._dispatch_lock, self._jobs.mutex:
@@ -1074,10 +1226,27 @@ class LlamaCppEmbedder(EmbeddingBackend):
         """Upgrade an identical queued bulk request when a human starts waiting."""
         with self._dispatch_lock, self._jobs.mutex:
             work.priority = min(work.priority, priority)
+            promoted = False
             for index, (old, seq, job) in enumerate(self._jobs.queue):
                 if job is not None and job.work is work and old > priority:
                     self._jobs.queue[index] = (priority, seq, job)
+                    promoted = True
             heapq.heapify(self._jobs.queue)
+            running = self._preemptible
+            if running is not None and running.work is work and work.priority < PRIORITY_BULK:
+                # The person now waits on the text inside the model: let it finish.
+                # A decode that already saw the flag still stops, and is run again.
+                self._preemptible = None
+                running.flag.clear()
+            elif (
+                running is not None
+                and promoted
+                and priority <= PRIORITY_INTERACTIVE
+                and running.jobs is self._jobs
+            ):
+                # A person now waits on a QUEUED text, behind another background
+                # text inside the model: stop that one, as a new person's job would.
+                running.arm()
             self._jobs_changed.set()
 
     def _create_embedding(
@@ -1105,8 +1274,20 @@ class LlamaCppEmbedder(EmbeddingBackend):
         :meth:`_wait_for_cold_load`), so the first query after an idle unload
         still gets vectors. Inference is serialized onto one owned thread;
         *priority* decides the order that single model serves competing callers
-        (see ``PRIORITY_*``).
+        (see ``PRIORITY_*``). The idle evictor never unloads while a call is in here.
         """
+        with self._inflight_lock:
+            self._inflight += 1
+        try:
+            return self._embed_batch(texts, priority=priority)
+        finally:
+            with self._inflight_lock:
+                self._inflight -= 1
+
+    def _embed_batch(
+        self, texts: list[str], *, priority: int = PRIORITY_NORMAL
+    ) -> list[list[float]] | None:
+        """:meth:`embed_batch` without the in-flight count."""
         if not texts or not any(t.strip() for t in texts):
             return None
         if len(texts) > _MAX_EMBED_BATCH_TEXTS:
@@ -1273,6 +1454,11 @@ class LlamaCppEmbedder(EmbeddingBackend):
         if llm is None or self._closed:
             return False
         if time.monotonic() - self._last_used < idle_secs or self._jobs.qsize():
+            return False
+        if self._inflight or time.monotonic() < self._bulk_ready_at:
+            # An embed is between its entry and its vector (a build or a recall
+            # waiting on the model, a load it is waiting for), or a background
+            # sweep is pausing between two texts and will be back.
             return False
         if not self._lock.acquire(blocking=False):
             return False  # inference running right now

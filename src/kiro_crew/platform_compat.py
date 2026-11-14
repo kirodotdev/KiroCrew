@@ -533,6 +533,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _SidAndAttributes,
         _ThreadEntry32,
         _windows_last_error,
+        c_strlen_address,
     )
     from kiro_crew.platform_compat_ports import (  # noqa: F401
         _LOOPBACK_COVERING_ADDRESSES,
