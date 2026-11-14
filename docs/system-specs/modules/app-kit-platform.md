@@ -6951,8 +6951,10 @@ drops are kept in `L10nConfig.warnings`, logged by the install validation
 `signing_payload`: it is content, not authority. The dashboard
 (`components/appstore/appManifest.ts`) reads it only when no catalog key covers the
 app, so a catalog-keyed built-in keeps its own copy. It looks up the exact locale,
-then the base language, then the English field, with own-property lookups and the
-parser's length caps.
+then the base language (each without case, an exact key winning over a case variant),
+then, when neither exists, the first listed regional key for the same language unless
+that could switch the script (a Chinese region, a script subtag), then the English
+field, with own-property lookups and the parser's length caps.
 
 **Dashboard SDK.** `openChat` gains `memoryMode` (`'persistent'`, `'incognito'`,
 `'temporary'`; anything else is dropped) and `sessionFolder: false`. Both apply only
