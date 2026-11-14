@@ -591,7 +591,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 
     async with _MCP_GATEWAY_APPLY_LOCK:
-        overlay = _local_overlay_section()
+        overlay = await asyncio.to_thread(_local_overlay_section)
         # BOTH keys this handler can write. The decision lands in
         # ``stub_overrides``, and ``config.local.json`` wins the deep merge
         # per-key, so an overlay that names it would shadow the base write: the
