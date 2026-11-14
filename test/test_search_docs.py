@@ -103,6 +103,25 @@ def test_search_docs_reads_each_page_once_until_it_changes(tmp_path, monkeypatch
     assert reads == ["beta.md"]
 
 
+def test_search_docs_ranks_a_page_with_every_rare_word_over_a_name_match(tmp_path, monkeypatch):
+    """A page whose name holds some query words must not outrank the page that
+    holds all of them: "task-runner" lacks "background", "subagents" has it."""
+    docs = {
+        "task-runner": "# Task Runner\nRun a task from a spec. Each task runs in order.\n",
+        "subagents": "# Subagents\nRun a task in the background.\n",
+        "apps": "# Apps\nRun an app as one task.\n",
+        "other0": "# Other\nRun it.\n",
+        "other1": "# Other\nRun it.\n",
+    }
+    docs.update({f"page{i}": "# Page\nRun it in the background.\n" for i in range(4)})
+    for name, text in docs.items():
+        (tmp_path / f"{name}.md").write_text(text, encoding="utf-8")
+    monkeypatch.setattr(mcp_guide, "_DOCS_DIR", tmp_path)
+    mcp_guide._read_doc.cache_clear()
+    pages = [r["page"] for r in mcp_guide.search_docs("run a task in the background")["results"]]
+    assert pages[:2] == ["subagents", "task-runner"]
+
+
 def _named(prefix, rows):
     return [pytest.param(query, top, id=f"{prefix}-{query}") for query, top in rows]
 

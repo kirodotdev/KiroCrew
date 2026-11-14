@@ -2851,7 +2851,11 @@ as `how`, `do` and `I` (kept when nothing else is left) and one common ending
 `max_cycles`). A page ranks by the query words it holds, each worth more the
 fewer pages hold it, twice as much in the page name and half again in its
 opening lines, then by how often it says them; a word found on nearly every page
-(`use`, `set`) counts for little. The word itself, with a common ending
+(`use`, `set`) counts for little. A page that misses some query words keeps
+only the share of that word score its held words carry, each word's share being
+its rarity, so a name holding `task` and the start of `run` (`task-runner`)
+cannot outrank a page holding every word of "run a task in the background",
+while a missed common word costs almost nothing. The word itself, with a common ending
 (`updat` + `e`, `automatic` + `ally`), counts full; only the start of a longer
 word (`mode` in `model`, `run` in `runner`) counts half. A tie goes to the
 shorter page name. It calls no
