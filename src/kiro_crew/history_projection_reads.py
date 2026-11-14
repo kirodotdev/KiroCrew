@@ -704,6 +704,42 @@ class TranscriptReadProjection:
 
         return history_page_index.relocate(handle, base)
 
+    def transient_free_prefix(self, key: str) -> int:
+        """Bytes at the head of *key*'s file known to hold no transient-role row. BLOCKING."""
+        base = self._log._page_index_base.get(key)
+        if base is None or not base.clean_end:
+            return 0
+        try:
+            with open(self._log._path(key), "rb") as handle:
+                held = self._handle_extends_base(handle, base)
+        except OSError:
+            return 0
+        return 0 if held is None else held.clean_end
+
+    def mark_transient_free(self, key: str, end: int) -> None:
+        """Record that the file's first *end* bytes hold no transient-role row. BLOCKING.
+
+        Kept only up to the index base's last record boundary, and only while the
+        file still holds the base's rows; otherwise nothing is recorded.
+        """
+        from kiro_crew import history_page_index
+
+        base = self._log._page_index_base.get(key)
+        path = self._log._path(key)
+        if base is None:
+            return
+        try:
+            with open(path, "rb") as handle:
+                held = self._handle_extends_base(handle, base)
+        except OSError:
+            return
+        end = 0 if held is None else min(end, held.scanned_end)
+        if held is None or end <= held.clean_end:
+            return
+        marked = held._replace(clean_end=end)
+        self._log._page_index_base[key] = marked
+        history_page_index.persist(path, marked, force=True)
+
     def _row_index(self, key: str) -> _TranscriptRowIndexEntry:
         """Return a sparse valid-message-row index for one file revision."""
         from kiro_crew import history_page_index
@@ -776,7 +812,14 @@ class TranscriptReadProjection:
                     else history_page_index.body_digest(handle, head_len, scanned_end, frozen)
                 )
                 if head_len is not None and digest is not None:
-                    saved = _TranscriptIndexBase(head_len, scanned_end, digest, row_count, frozen)
+                    saved = _TranscriptIndexBase(
+                        head_len,
+                        scanned_end,
+                        digest,
+                        row_count,
+                        frozen,
+                        0 if base is None else base.clean_end,
+                    )
                     self._log._page_index_base[key] = saved
                     history_page_index.persist(path, saved, force=False)
 

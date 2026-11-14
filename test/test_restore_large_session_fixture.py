@@ -37,6 +37,7 @@ from kiro_crew.crew_log import projection as crew_log
 from kiro_crew.crew_log.projection_budget import _SLOT_FOLD_ROW_BYTES
 from kiro_crew.dashboard import chat_persistence
 from kiro_crew.dashboard.chat_persistence_parts import restore_drivers
+from kiro_crew.dashboard.slot_window_tail import WindowTail
 from kiro_crew.history import ConversationLog
 
 #: The transcript threshold and the tail window proposed above it.
@@ -154,11 +155,7 @@ def test_a_sidebar_tab_reads_only_the_lazy_tail_at_the_threshold(large_home, par
 
 
 def test_an_eager_tab_parses_the_whole_transcript_once(large_home, parsed_rows):
-    """CEILING: an eager tab at the threshold reads its rows in full, once.
-
-    A tail window is the target; short of it, a second full read of the same transcript in
-    one restore is a regression.
-    """
+    """CEILING: an eager tab reads its rows at most once, whatever path serves it."""
     log, rows = large_home
     _prefetch(log, lazy=False)
     assert parsed_rows["full"] <= rows
@@ -196,14 +193,171 @@ def test_the_focused_large_tab_is_built_first_of_the_whole_open_set(
     assert built[0] == keys[0]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="target: an eager tab above the threshold reads a tail window, not every row",
-)
-def test_an_eager_tab_reads_only_a_tail_window_target(large_home, parsed_rows):
+def test_an_eager_tab_reads_only_a_tail_window(large_home, parsed_rows):
     log, _ = large_home
-    _prefetch(log, lazy=False)
-    assert parsed_rows["full"] + parsed_rows["tail"] <= TAIL_WINDOW_ROWS
+    key = chat_persistence.slot_transcript_key(BIG_KEY.removeprefix("dashboard:"))
+    window = chat_persistence._prefetch_open_slot_inputs(log, key, kiro_model_map={}, lazy=False)[2]
+    assert parsed_rows["full"] + parsed_rows["tail"] == 0
+    assert len(window.rows) <= TAIL_WINDOW_ROWS
+
+
+def test_an_eager_tab_over_the_threshold_pages_in_the_full_history(large_home):
+    """The window holds the newest rows; paging back returns every older row, unchanged."""
+    log, rows = large_home
+    key = chat_persistence.slot_transcript_key(BIG_KEY.removeprefix("dashboard:"))
+    inputs = chat_persistence._prefetch_open_slot_inputs(log, key, kiro_model_map={}, lazy=False)
+    window = inputs[2]
+    assert len(window.rows) == chat_persistence._WINDOW_ROWS
+    assert window.total == rows
+    assert window.older_durable == rows - len(window.rows)
+    full = log.read_messages_chained(key)
+    assert window.rows == full[-len(window.rows) :]
+    older = log.read_messages_chained_page(key, limit=rows, before=window.total - len(window.rows))
+    assert older.messages == full[: rows - len(window.rows)]
+
+
+def test_a_transcript_below_the_threshold_is_read_in_full(tmp_path, parsed_rows):
+    log = ConversationLog(tmp_path / "small")
+    key = chat_persistence.slot_transcript_key("chat-1-small")
+    for i in range(TAIL_WINDOW_ROWS + 20):
+        log.append(key, "user", f"row {i}")
+    inputs = chat_persistence._prefetch_open_slot_inputs(log, key, kiro_model_map={}, lazy=False)
+    assert isinstance(inputs[2], list)
+    assert len(inputs[2]) == TAIL_WINDOW_ROWS + 20
+
+
+# --------------------------------------------------------------------------- #
+# settle-sensitive tabs read in full
+# --------------------------------------------------------------------------- #
+
+_OLD_ROWS = chat_persistence._WINDOW_ROWS + 20
+
+
+def _seeded_tab(tmp_path, first_row_kwargs: dict, meta: dict):
+    """A slot's transcript whose first row sits past the window, plus *meta* on its line."""
+    from chat_test_helpers import _make_state
+
+    state = _make_state(tmp_path)
+    log = state.conversation_log
+    key = chat_persistence.slot_transcript_key("chat-1")
+    log.append(key, "user", "first", **first_row_kwargs)
+    for i in range(_OLD_ROWS):
+        log.append(key, "assistant" if i % 2 == 0 else "user", f"row {i}")
+    log.update_metadata(key, meta)
+    return state, log, key
+
+
+def _rehydrate_with_tail_window(state, log, key):
+    meta, readable, messages, model_map, member, agent, effort = (
+        chat_persistence._prefetch_rehydrate_inputs(
+            log, key, kiro_model_map={}, with_status=True, tail_window_above=0
+        )
+    )
+    return messages, chat_persistence._rehydrate_slot_from_history(
+        state,
+        "chat-1",
+        kiro_model_map=model_map,
+        _prefetched_meta=meta,
+        _prefetched_messages=messages,
+        _prefetched_member_identity=member,
+        _prefetched_agent=agent,
+        _prefetched_effort_marker=effort,
+    )
+
+
+def test_a_tab_with_a_turn_marker_reads_in_full_so_its_opener_is_not_duplicated(tmp_path):
+    prompt = {"role": "user", "content": "first", "ts": "", "meta": {"mid": "m-first"}}
+    state, log, key = _seeded_tab(
+        tmp_path,
+        {"mid": "m-first"},
+        {"turn_in_flight_generation": 3, "turn_in_flight_prompt": prompt},
+    )
+    messages, slot = _rehydrate_with_tail_window(state, log, key)
+    assert isinstance(messages, list)
+    assert not [m for m in slot.messages if m["content"] == "first"]
+
+
+def test_a_tab_with_a_held_note_reads_in_full_so_a_delivered_note_is_not_held_again(tmp_path):
+    note = {"id": "n1", "content": "hello", "session": "s", "cls": "reconcile-note"}
+    state, log, key = _seeded_tab(
+        tmp_path, {"extra_meta": {"noteId": "n1"}}, {"deferred_notes": [note]}
+    )
+    messages, slot = _rehydrate_with_tail_window(state, log, key)
+    assert isinstance(messages, list)
+    assert slot._deferred_notes == []
+
+
+def test_a_tab_without_either_still_takes_the_tail_window(tmp_path):
+    state, log, key = _seeded_tab(tmp_path, {}, {})
+    messages, _slot = _rehydrate_with_tail_window(state, log, key)
+    assert isinstance(messages, WindowTail)
+    assert len(messages.rows) == chat_persistence._WINDOW_ROWS
+
+
+# --------------------------------------------------------------------------- #
+# the transient-role guard
+# --------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def guarded_tab(tmp_path):
+    """A 1 MiB transcript (past the sidecar floor) and the key to read it by."""
+    sessions = tmp_path / "guarded"
+    sessions.mkdir()
+    log = ConversationLog(sessions)
+    key = chat_persistence.slot_transcript_key("chat-1")
+    _write_transcript(log._path(key), 1024 * 1024)
+    return sessions, log, key
+
+
+def test_the_guard_searches_only_past_the_proven_clear_prefix(guarded_tab, monkeypatch):
+    from kiro_crew.dashboard import slot_window_tail
+
+    sessions, log, key = guarded_tab
+    starts: list[int] = []
+    real = slot_window_tail._TRANSIENT_ROLE
+
+    class _Spy:
+        def search(self, view, pos=0):
+            starts.append(pos)
+            return real.search(view, pos)
+
+    monkeypatch.setattr(slot_window_tail, "_TRANSIENT_ROLE", _Spy())
+    assert slot_window_tail.read_window_tail(log, key, 50) is not None
+    # A new ConversationLog stands for a restarted process: only the sidecar carries over.
+    again = ConversationLog(sessions)
+    assert slot_window_tail.read_window_tail(again, key, 50) is not None
+    assert starts[0] == 0
+    assert starts[1] >= log._path(key).stat().st_size - 1
+    assert starts[1] > 0
+
+
+def test_a_transient_row_appended_past_the_clear_prefix_is_still_found(guarded_tab):
+    from kiro_crew.dashboard import slot_window_tail
+    from kiro_crew.dashboard.state import _TRANSIENT_ROLES
+
+    sessions, log, key = guarded_tab
+    assert slot_window_tail.read_window_tail(log, key, 50) is not None
+    again = ConversationLog(sessions)
+    assert slot_window_tail.read_window_tail(again, key, 50) is not None
+    role = sorted(_TRANSIENT_ROLES)[0]
+    with log._path(key).open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"role": role, "content": "x", "ts": "t"}) + "\n")
+    later = ConversationLog(sessions)
+    assert slot_window_tail.read_window_tail(later, key, 50) is None
+
+
+def test_a_version_two_sidecar_is_ignored(guarded_tab):
+    from kiro_crew import history_page_index
+
+    sessions, log, key = guarded_tab
+    log.read_messages_chained_page(key, limit=10)
+    sidecar = history_page_index.sidecar_path(log._path(key))
+    stored = json.loads(sidecar.read_text(encoding="utf-8"))
+    stored.pop("clean", None)
+    stored["v"] = 2
+    sidecar.write_text(json.dumps(stored), encoding="utf-8")
+    assert history_page_index.load(log._path(key)) is None
 
 
 # --------------------------------------------------------------------------- #
