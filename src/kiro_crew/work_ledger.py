@@ -542,6 +542,13 @@ def _rebuild_locked(
             record = dataclasses.replace(record, created_at=existing.created_at)
         if not record.generation and existing.generation:
             record = dataclasses.replace(record, generation=existing.generation)
+        if not record.goal_id and existing.goal_id:
+            # No entry carries it, so the cache's id is kept whatever the trust check
+            # below says. shortcut: after a failed undo (a dirty cache) that can be a
+            # refused new_goal's id; it only keys traces, so a rebuild accepts that.
+            record = dataclasses.replace(record, goal_id=existing.goal_id)
+        if not record.round_started_at and existing.round_started_at:
+            record = dataclasses.replace(record, round_started_at=existing.round_started_at)
         if existing.recorded_at:
             record = dataclasses.replace(record, recorded_at=existing.recorded_at)
         # The goal's concurrency cap and where its count starts ride no crew-log

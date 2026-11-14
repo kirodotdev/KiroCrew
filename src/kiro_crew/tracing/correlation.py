@@ -50,6 +50,8 @@ ID_KEYS = frozenset(
         "kirocrew.crew.dispatcher",
         "kirocrew.work.conductor_hash",
         "kirocrew.work.item_id",
+        "kirocrew.work.goal_id",
+        "kirocrew.work.generation",
         "kirocrew.cron.job_id",
     }
 )
@@ -86,6 +88,14 @@ ALLOWED_KEYS = ID_KEYS | frozenset(
         "kirocrew.cron.job_kind",
         "kirocrew.crew.root_kind",
         "kirocrew.work.round",
+        "kirocrew.work.action",
+        "kirocrew.work.actor",
+        "kirocrew.work.state",
+        "kirocrew.work.verdict",
+        "kirocrew.work.fails",
+        "kirocrew.work.status",
+        "kirocrew.work.reason",
+        "kirocrew.work.pr",
         "langfuse.observation.type",
         "langfuse.observation.usage_details",
         "langfuse.observation.cost_details",

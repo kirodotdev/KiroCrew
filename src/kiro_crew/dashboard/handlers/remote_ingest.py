@@ -43,6 +43,7 @@ from aiohttp import web
 
 from kiro_crew import platform_compat, work_ledger
 from kiro_crew.crew_log import emit as crew_log_emit
+from kiro_crew.dashboard import trace_binding
 from kiro_crew.dashboard.handlers.work_ledger import (
     _WIDEST_EVENT_TEXT,
     _WIDEST_HEX_ID,
@@ -59,6 +60,7 @@ from kiro_crew.dashboard.handlers.work_ledger import (
     _refuse_if_dirty,
     _refuse_unrecorded,
 )
+from kiro_crew.tracing import work as trace_work
 from kiro_crew.validation import (
     WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
     ValidationError,
@@ -952,6 +954,17 @@ async def _file_one(
         return "crew_log_unrecorded"
     await asyncio.to_thread(_mark_recorded, board, item.item_id)
     _audit(board, "work_ledger_read.ingest", "ok", resources=f"{item_id} status={item.status}")
+    # A peer's worker reported: no turn here made it, so it sits under its item.
+    await trace_work.recorded(
+        "",
+        board,
+        "report",
+        actor="worker",
+        item=item,
+        header=header,
+        event_id=event.id,
+        root_kind=lambda: trace_binding.root_kind(state, board),
+    )
     return None
 
 

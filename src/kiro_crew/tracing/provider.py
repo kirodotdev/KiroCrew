@@ -124,7 +124,20 @@ def _inputs(cfg: Any) -> tuple[object, ...]:
         getattr(cfg, "traces_otlp_endpoint", ""),
         _pairs(getattr(cfg, "traces_otlp_headers_secret", None)),
         _pairs(getattr(cfg, "traces_otlp_headers_env", None)),
+        getattr(cfg, "traces_ultra_mode", ULTRA_RUN),
     )
+
+
+#: ``telemetry.traces_ultra_mode``: an Ultra Mode round is one trace (``run``), or
+#: every turn its own (``turn``). Read with the switch, served by :func:`ultra_mode`.
+ULTRA_RUN = "run"
+ULTRA_TURN = "turn"
+_ultra_mode = ULTRA_RUN
+
+
+def ultra_mode() -> str:
+    """The Ultra Mode trace shape the last read of the switch resolved; never reads."""
+    return _ultra_mode
 
 
 #: ``_inputs`` of the last resolution, or ``None`` when it could not read config.
@@ -165,7 +178,8 @@ def _build() -> TraceState | None:
         _built_inputs = None
         return None
     _built_inputs = _inputs(cfg)
-    global _built
+    global _built, _ultra_mode
+    _ultra_mode = ULTRA_TURN if getattr(cfg, "traces_ultra_mode", "") == ULTRA_TURN else ULTRA_RUN
     # Today's caps reach the kept tracer whatever the switch says: a turn still
     # open on it keeps exporting (and pruning), so with tracing just switched off
     # a cap the operator set to 0 must stop deletions too.
@@ -389,7 +403,9 @@ async def flush_for_exit() -> None:
 
 def reset_for_testing() -> None:
     """Shut down and forget the tracer, so a test starts from the switch."""
+    global _ultra_mode
     shutdown()
+    _ultra_mode = ULTRA_RUN
     with _counts_lock:
         _span_counts.clear()
 

@@ -21,6 +21,7 @@ from aiohttp import web
 from kiro_crew import work_ledger, work_preview
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.resolve import unit_for_session_key
+from kiro_crew.dashboard import trace_binding
 from kiro_crew.dashboard.handlers.work_ledger_caller import (
     _caller_key,
     _contained_channel_caller,
@@ -59,6 +60,7 @@ from kiro_crew.dashboard.handlers.work_ledger_refusals import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
+from kiro_crew.tracing import work as trace_work
 from kiro_crew.validation import (
     WORK_REPORT_REMOTE_DISPATCH_SCHEMA,
     WORK_REPORT_SCHEMA,
@@ -392,6 +394,16 @@ async def api_work_report(request: web.Request) -> web.Response:
             # report -- an unknown or closed item, a ``done`` with no evidence, a
             # status outside the worker's vocabulary -- returned long before here.
             work_metrics.record_report(item.status, item.reason)
+            await trace_work.recorded(
+                own_unit,
+                conductor_key,
+                "report",
+                actor="worker",
+                item=item,
+                header=board,
+                event_id=getattr(result.get("event"), "id", None),
+                root_kind=lambda: trace_binding.root_kind(state, conductor_key),
+            )
             from kiro_crew.metrics import crew_mode as crew_mode_metrics
 
             if crew_mode_metrics.board_is_crew_mode(state, conductor_key):
@@ -639,6 +651,17 @@ async def record_person_steer_result(
                 return "", STEER_NOT_RECORDED
             await asyncio.to_thread(_mark_recorded, board_key, item.item_id)
             _audit(board_key, "crew_mode.steer", "ok", resources=item.item_id)
+            # The person's write: no turn of theirs is streaming, so it sits under the item.
+            await trace_work.recorded(
+                "",
+                board_key,
+                "steer",
+                actor="person",
+                item=item,
+                header=board,
+                event_id=event.id,
+                root_kind=lambda: trace_binding.root_kind(state, board_key),
+            )
             return item.item_id, ""
 
         return await _drain_before_cancelling(_commit_and_record())

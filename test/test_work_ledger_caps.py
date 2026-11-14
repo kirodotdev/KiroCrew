@@ -610,7 +610,7 @@ def test_acceptance_must_be_json_serialisable():
 def test_an_oversized_acceptance_is_refused(monkeypatch):
     wl.ensure_conductor(CONDUCTOR)
     # Above the header's own size (the header must still read back), below the blob's.
-    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 360)
+    monkeypatch.setattr(wl, "MAX_RECORD_BYTES", 440)
     with pytest.raises(wl.WorkLedgerError) as caught:
         wl.apply_conductor_action(CONDUCTOR, "create", title="t", acceptance={"blob": "x" * 400})
     assert caught.value.code == wl.CODE_FIELD_TOO_LONG
