@@ -733,7 +733,7 @@ class InstancesRegistry:
         if not self._path.exists():
             return _RegistryDoc()
         try:
-            raw = json.loads(self._path.read_bytes())
+            raw = json.loads(read_bytes_with_retry(self._path))
         except (ValueError, OSError) as e:
             logger.warning("Failed to read %s: %s — treating as empty", self._path, e)
             return _RegistryDoc()
