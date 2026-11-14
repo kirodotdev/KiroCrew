@@ -786,6 +786,12 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "covers only those providers: a server that registers its own client "
         "signs in on every backend that serves remote MCP at all"
     ),
+    "ACP_BACKENDS_NO_MCP_INIT_FRAMES": (
+        "whether the drain after session/new folds only the frames already "
+        "buffered, because the harness reports no MCP server state over ACP. A "
+        "start-path timing detail, not a capability a reader choosing a harness "
+        "gains or loses: the servers and their tools are the same either way"
+    ),
     "ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP": (
         "whether a session/new stdio element whose command cannot be found is left "
         "out and reported as a failed server, rather than handed to a harness that "

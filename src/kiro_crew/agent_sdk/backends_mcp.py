@@ -527,6 +527,17 @@ ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset(
     {ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK, ACP_BACKEND_COPILOT}
 )
 
+# Backends that send no MCP init frame over ACP: no server-initialized, init-failure
+# or sign-in notification follows ``session/new``. claude-agent-acp is one: Claude
+# Code connects the session's servers inside its own process and waits for them in
+# the first prompt, and a server that needs sign-in is offered as a URL elicitation,
+# a request the turn reader answers. So the drain after ``session/new`` has nothing
+# to wait for on these backends: it folds what was buffered while the start's own
+# requests were answered and ends, instead of idling ``_DRAIN_IDLE_EXIT`` (0.5 s) on
+# a quiet pipe before every new chat's first prompt. A frame that arrives later is
+# not lost: the idle reader holds it and the first turn's reader reads it.
+ACP_BACKENDS_NO_MCP_INIT_FRAMES = frozenset({ACP_BACKEND_CLAUDE})
+
 # Backends that read reasoning effort from the workspace ``cli.json`` overlay
 # (``chat.modelDefaults.<model>.<key>.effort``) at spawn. Only kiro-cli's Rust engine
 # does. The file's scope is the WORK DIRECTORY, so every session in one project
