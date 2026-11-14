@@ -189,7 +189,7 @@ class TestNativeSubagentSync:
 
     def test_done_result_keeps_newest_tail_with_marker(self):
         # Over the cap, keep the NEWEST 8000 chars and prefix an explicit
-        # truncation marker so the dropped head is signalled (finding 3).
+        # truncation marker so the dropped head is signalled.
         state = _make_state()
         slot = _make_slot()
         tracker: dict = {}
@@ -761,7 +761,7 @@ class TestNativeTerminalHydration:
         # terminal (done) cards (dropping running cards + output buffers) so a
         # reconnect in the idle gap after the parent turn exits still replays
         # them. A fresh tracker at the next turn start clears them — no
-        # cross-turn leak (finding 2).
+        # cross-turn leak.
         slot._native_subagent_tracker = _retain_terminal_native(tracker)
         slot._native_subagent_output = {}
         after = DashboardState.native_subagent_snapshots(state)

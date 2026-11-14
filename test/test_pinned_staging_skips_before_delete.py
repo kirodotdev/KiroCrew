@@ -504,10 +504,10 @@ def test_a_root_created_between_the_check_and_the_mkdir_is_not_restamped(
 
     def _recreate_the_root_first(*a, **k):
         fd = real_pin(*a, **k)
-        # Only in the DESTINATION's window. An earlier version fired on the SOURCE root's
-        # pin, which happens first, so the root already existed by the time the old
-        # name-based check sampled it -- and the mutation that restored the bug passed.
-        # A fixture that fires outside the window under test proves nothing.
+        # Only in the DESTINATION's window. Firing on the SOURCE root's pin, which
+        # happens first, would let the root exist before a name-based check samples
+        # it, so a mutation that restores the bug would pass. A fixture that fires
+        # outside the window under test proves nothing.
         if "destination" in str(k.get("what", "")) and not dst.exists():
             dst.mkdir()  # the gateway, in the window a name check leaves open
             # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions
@@ -555,8 +555,8 @@ def test_no_name_based_filesystem_question_where_a_descriptor_is_held() -> None:
     #
     # `chmod`/`utime`/`unlink` are deliberately NOT here: those have legitimate by-name
     # fallbacks for platforms without `os.fchmod`, and separating them needs the helper-split
-    # refactor applied to the metadata appliers. Measured, that is 5 sites -- worth doing, and
-    # not worth dragging into this change. They stay outside the ratchet, stated rather than
+    # refactor applied to the metadata appliers. Measured, that is 5 sites -- worth doing
+    # separately. They stay outside the ratchet, stated rather than
     # silently omitted.
     banned_attrs = {
         "is_file",
