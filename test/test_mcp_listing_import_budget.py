@@ -70,11 +70,15 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: Raised by 1 for each server: the rule table reads headers and encoded credentials in
 #: two modules of its own (``redaction_structured.headers`` and ``.encoded``) where
 #: ``.protection`` was one.
+#: Raised by 1 for each server: the line-cap split of ``security.argv_floor_ssh`` moved
+#: the ssh verb gate into the owner ``security.argv_floor_ssh_gate``, which the floor
+#: imports with the rest of its owners; the module count rose by that one file and nothing
+#: new loads.
 PACKAGE_MODULE_CEILING = {
-    "mcp-core": 488,
-    "mcp-cron": 358,
-    "mcp-guide": 352,
-    "mcp-mate": 353,
+    "mcp-core": 489,
+    "mcp-cron": 359,
+    "mcp-guide": 353,
+    "mcp-mate": 354,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are
