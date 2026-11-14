@@ -53,6 +53,7 @@ from kiro_crew.acp.client import (
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
 )
+from kiro_crew.acp.default_crew_servers import crew_added_servers
 from kiro_crew.acp.harness import SpawnContext, SpawnPlan
 from kiro_crew.acp.harness._common import operator_mandatory_mcps
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
@@ -70,6 +71,7 @@ from kiro_crew.agent import ensure_agent_materialized
 from kiro_crew.agent_sdk.backends import spawn_delegates_to_internal_sandbox
 from kiro_crew.agent_sdk.drivers import acp as acp_driver
 from kiro_crew.agent_sdk.tool_search import (
+    custom_agent_never_defer_ids,
     job_tool_ids,
     kas_client_meta_settings,
     kas_never_defer_ids,
@@ -1322,7 +1324,21 @@ async def _handshake_client_capabilities(self: AcpRuntime) -> dict[str, Any]:
     loader_granted = spec_grants_tool_search(spec)
     never_defer: list[str] = []
     if not loader_granted:
-        never_defer = await asyncio.to_thread(kas_never_defer_ids, spec, _known_server_tool_names)
+        # Only KAS reads this channel. There the Crew servers a custom agent was
+        # given, not its author's, stay behind KAS's loader (``crew_added_servers``).
+        added = (
+            await asyncio.to_thread(crew_added_servers, self._agent, spec)
+            if self._harness.client_meta_settings
+            else ()
+        )
+        if added:
+            never_defer = await asyncio.to_thread(
+                custom_agent_never_defer_ids, spec, _known_server_tool_names, added
+            )
+        else:
+            never_defer = await asyncio.to_thread(
+                kas_never_defer_ids, spec, _known_server_tool_names
+            )
     elif operator_mandatory_mcps() is None:
         never_defer = job_tool_ids(self._agent, spec)
     settings = kas_client_meta_settings(

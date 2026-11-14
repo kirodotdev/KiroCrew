@@ -4950,6 +4950,16 @@ the agent's spec mounts on `toolSearch.neverDefer` for a spec that grants
 | `kirocrew-worker`, `kirocrew-mate-worker` | `work_brief`, `work_report`, `mcp_server_wait` | 1,200 |
 | `kirocrew-pipeline-conductor`, `kirocrew-security-conductor` | `work_dispatch`, `session_create`, `session_send`, `session_read_message`, `session_close`, `work_ledger_read`, `work_ledger_record`, `accept_eval`, `monitor_start`, `wait`, `mcp_server_wait` | 7,700 |
 | `kirocrew-conductor`, `kirocrew-ledger-conductor`, `kirocrew-team-lead` | the eleven above and `work_brief` | 7,850 |
+| a custom agent (`CUSTOM_AGENT_JOB_TOOLS`) | `mcp_server_wait` | none: one tool of 63 tokens |
+
+A custom agent grants no loader, so every MCP tool it can call is on
+`neverDefer`, except the tools of the Kiro Crew servers Crew itself added to it
+(`acp/default_crew_servers.crew_added_servers`: the managed entry, byte for byte).
+Those are left behind KAS's loader, as on the default agent, so Crew's own tool
+specs (about 137 K characters, measured on an agent with no server of its own) no
+longer ride in each of its requests; its
+`CUSTOM_AGENT_JOB_TOOLS` and any added-server tool its author named one by one stay
+direct (`custom_agent_never_defer_ids`).
 
 `mcp_server_wait` is in every row because every shipped agent's turn can be told a
 server is still starting (the `[MCP SERVERS]` block), and a load in front of the
