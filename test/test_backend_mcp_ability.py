@@ -353,8 +353,12 @@ def test_an_unreadable_rulings_read_is_told_apart_from_a_kind_with_no_rulings() 
     for backend, declared in PROJECTIONS.items():
         if declared.kind is ProjectionKind.MIRROR:
             continue
-        # A broker-only harness is handed no spec, so its one ruling is hooks.
-        expected = {"hooks": "withheld"} if declared.kind is ProjectionKind.BROKER_ONLY else {}
+        # A broker-only harness is handed no spec, so it rules autoApprove and hooks.
+        expected = (
+            {"auto_approve": "withheld", "hooks": "withheld"}
+            if declared.kind is ProjectionKind.BROKER_ONLY
+            else {}
+        )
         assert mcp_mod._dispositions(backend) == expected, backend
         # ... and the card still renders, because nothing about it is unknown.
         assert mcp_mod.ability_for(backend).projection == declared.kind.value, backend
@@ -554,14 +558,15 @@ def test_a_kind_with_no_mirror_carries_no_per_concern_ruling() -> None:
     A ``native`` harness reads the spec itself and an ``external`` projection lives
     outside this folder; neither has rulings to read, and inventing a list for them
     would be the card claiming a loss where there is none. A ``broker-only``
-    harness is the one exception, and only for ``hooks``: it is handed no spec, so
-    that loss is a fact (see the broker-only test below).
+    harness is the one exception, for ``autoApprove`` and ``hooks``: it is handed no
+    spec, so those losses are facts (see the broker-only test below).
     """
     for backend, declared in PROJECTIONS.items():
         if declared.kind is ProjectionKind.MIRROR:
             continue
         ability = mcp_mod.ability_for(backend)
-        expected = ("hooks",) if declared.kind is ProjectionKind.BROKER_ONLY else ()
+        broker_only = declared.kind is ProjectionKind.BROKER_ONLY
+        expected = ("auto_approve", "hooks") if broker_only else ()
         assert ability.withheld == expected, backend
         assert ability.no_channel == (), backend
         assert ability.per_tool_deny == "", backend
@@ -688,12 +693,16 @@ def test_the_reason_prose_never_reaches_the_wire() -> None:
         assert declared.reason[:40] not in blob, backend
 
 
-def test_a_broker_only_harness_lists_spec_hooks_as_not_applied() -> None:
-    """pi gets no spec, and Crew does not fire its hooks, so the card must say so."""
+def test_a_broker_only_harness_lists_spec_auto_approve_and_hooks_as_not_applied() -> None:
+    """pi gets no spec: no auto-approval reaches it and Crew does not fire its hooks.
+
+    pi's gate extension asks Crew for every call and no approval value is projected,
+    so a saved ``autoApprove`` does not take effect there -- the card must say so.
+    """
     from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
 
-    assert mcp_mod.ability_for(ACP_BACKEND_PI).withheld == ("hooks",)
-    assert mcp_mod.ability_payload(ACP_BACKEND_PI)["ineffective"] == ["hooks"]
+    assert mcp_mod.ability_for(ACP_BACKEND_PI).withheld == ("auto_approve", "hooks")
+    assert mcp_mod.ability_payload(ACP_BACKEND_PI)["ineffective"] == ["auto_approve", "hooks"]
     for backend, declared in PROJECTIONS.items():
         if declared.kind in (ProjectionKind.NATIVE, ProjectionKind.EXTERNAL):
             assert mcp_mod.ability_payload(backend)["ineffective"] == [], backend
