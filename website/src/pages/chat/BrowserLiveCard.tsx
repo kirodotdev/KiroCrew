@@ -56,14 +56,18 @@ const GROW_SETTLE_MS = 400
  * The tool is a managed-MCP tool, so a real row reads `🔧 @kirocrew-core/browser`
  * (the `@server/tool` form every MCP call arrives in) and a stamped name may carry
  * the server too. Both spellings are the one tool; a bare `browser` is kept for the
- * built-in shape and the fixtures. */
+ * built-in shape and the fixtures. opencode has no `_meta` identity and fuses the
+ * title as `kirocrew-core_browser`, so Crew's own server is accepted fused as well
+ * (issue #36264). The server half is spelled out, not a wildcard: another server's
+ * `open_browser` must never anchor this card. */
 const BROWSER_ROW_RE = /^🔧\s*(?:@(?:[\w.-]+\/)?)?browser(?:\s|$)/
+const FUSED_BROWSER_ROW_RE = /^🔧\s*kirocrew-core_+browser(?:\s|$)/
 const NAMESPACED_BROWSER_RE = /(?:^|\/|::|___)browser$/
 export function isBrowserToolMessage(msg: ChatMessage): boolean {
   if (msg.role !== 'tool') return false
   const trusted = msg.meta?.tool_name
   if (typeof trusted === 'string' && trusted) return NAMESPACED_BROWSER_RE.test(trusted)
-  return BROWSER_ROW_RE.test(msg.content)
+  return BROWSER_ROW_RE.test(msg.content) || FUSED_BROWSER_ROW_RE.test(msg.content)
 }
 
 /** What a turn's card anchors on: the first browser row's call id, else its timestamp. */

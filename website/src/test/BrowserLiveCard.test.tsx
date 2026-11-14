@@ -257,6 +257,12 @@ describe('anchors and the tool-row test', () => {
     // (regression: the card never mounted for a live turn because this read false).
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/browser', cls: '', meta: { mcp_server: 'kirocrew-core' } })).toBe(true)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/browser', cls: '', meta: { tool_name: 'kirocrew-core___browser' } })).toBe(true)
+    // opencode has no _meta identity and fuses the title; Crew's own server is accepted.
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core_browser', cls: '' })).toBe(true)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core___browser', cls: '' })).toBe(true)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core_browser_history', cls: '' })).toBe(false)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 kirocrew-core_open_browser', cls: '' })).toBe(false)
+    expect(isBrowserToolMessage({ role: 'tool', content: '🔧 other-server_browser', cls: '' })).toBe(false)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/browser_history', cls: '' })).toBe(false)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 @kirocrew-core/open_browser', cls: '' })).toBe(false)
     expect(isBrowserToolMessage({ role: 'tool', content: '🔧 browser_harness_x', cls: '' })).toBe(false)
@@ -284,6 +290,13 @@ describe('TurnBlock mounts the card', () => {
     expect(cards).toHaveLength(1)
     const order = Array.from(container.querySelectorAll('[data-testid^="row-"], [data-testid="browser-live-card"]')).map(e => e.getAttribute('data-testid'))
     expect(order).toEqual(['row-tc-1', 'row-tc-2', 'row-tc-3', 'browser-live-card', 'row-tc-4'])
+  })
+
+  it('mounts on an opencode fused row, which carries no trusted name', () => {
+    act(() => browserLiveStore.applyEvent(ev()))
+    const fused: TurnItem = { kind: 'single', msg: { role: 'tool', content: '🔧 kirocrew-core_browser', cls: '', ts: String(Math.floor(Date.now() / 1000)), meta: { tool_call_id: 'tc-fused' } }, idx: 0 }
+    render(<TurnBlock turn={turn([fused])} renderItem={renderItem} browserLiveSessionKey={S} />)
+    expect(screen.getAllByTestId('browser-live-card')).toHaveLength(1)
   })
 
   it('not at all without a session key, nor for a turn with no browser call', () => {
