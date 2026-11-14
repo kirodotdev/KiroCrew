@@ -3443,7 +3443,7 @@ change card, and the server is written to the template's additions record
 ### A `kirocrew-core` tool has two halves
 
 Each tool is declared twice in the same per-domain module under
-`kiro_crew/mcp_tools/` (`learn.py`, `artifacts.py`, `workflows.py`, …), and
+`kiro_crew/mcp_tools/` (`learn.py`, `artifacts.py`, `workflows.py`, `github_projects.py`, …), and
 nothing at runtime notices when only one half lands:
 
 - Its **descriptor** — name, model-facing description, JSON Schema — is returned

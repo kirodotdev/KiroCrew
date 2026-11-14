@@ -1190,3 +1190,51 @@ def register_acceptance_check_parser(sub: _Commands) -> None:
     )
     check_parser.add_argument("check", help="Name of the edition's check")
     check_parser.add_argument("ref", help="The item the check is about")
+
+
+def register_project_tasks_parser(sub: _Commands) -> None:
+    task_parser = cli_help.add_command(
+        sub,
+        "project-tasks",
+        epilog="""
+Examples:
+  kirocrew project-tasks list
+  kirocrew project-tasks list --status "In Progress"
+  kirocrew project-tasks list --owner myorg --project 2
+  kirocrew project-tasks create --title "Implement login page"
+  kirocrew project-tasks create --title "Fix footer alignment" --body "Check 390px mobile view"
+  kirocrew project-tasks complete PVTI_lAHOCM7jCs4...
+""",
+        formatter_class=_fmt,
+    )
+    task_sub = task_parser.add_subparsers(dest="project_tasks_action")
+
+    # list
+    t_list = task_sub.add_parser("list", help="List tasks in the GitHub Project")
+    t_list.add_argument("--owner", help="GitHub owner (user or organization)")
+    t_list.add_argument("--repo", help="GitHub repository name")
+    t_list.add_argument("--project", type=int, help="GitHub Project number")
+    t_list.add_argument("--status", help="Filter tasks by status name (e.g. 'Todo', 'Done')")
+    t_list.add_argument("--limit", type=int, default=50, help="Maximum number of tasks to return")
+    t_list.add_argument("--json", action="store_true", help="Print output as JSON")
+
+    # create
+    t_create = task_sub.add_parser("create", help="Create a new task in the GitHub Project")
+    t_create.add_argument("--title", required=True, help="Title of the task")
+    t_create.add_argument("--body", default="", help="Description/body of the task")
+    t_create.add_argument("--owner", help="GitHub owner (user or organization)")
+    t_create.add_argument("--repo", help="GitHub repository name")
+    t_create.add_argument("--project", type=int, help="GitHub Project number")
+    t_create.add_argument("--status", help="Initial status name (e.g. 'Todo', 'In Progress')")
+    t_create.add_argument("--json", action="store_true", help="Print output as JSON")
+
+    # complete
+    t_complete = task_sub.add_parser(
+        "complete", help="Mark a task as completed in the GitHub Project"
+    )
+    t_complete.add_argument("task_id", help="The ProjectV2Item ID (e.g. PVTI_...)")
+    t_complete.add_argument("--owner", help="GitHub owner (user or organization)")
+    t_complete.add_argument("--repo", help="GitHub repository name")
+    t_complete.add_argument("--project", type=int, help="GitHub Project number")
+    t_complete.add_argument("--status", default="Done", help="Status name to set (default: Done)")
+    t_complete.add_argument("--json", action="store_true", help="Print output as JSON")

@@ -580,3 +580,81 @@ def _agent_reset_model(args: argparse.Namespace) -> None:
     else:
         print(f"✅ {name} had no pinned model in {str(spec_path)!r}")
     print("   It now tracks the shipped default; restart the gateway to apply.")
+
+
+def _project_tasks(args: argparse.Namespace) -> None:
+    """Manage GitHub Projects tasks (list, create, complete)."""
+    import json
+
+    from kiro_crew import github_projects
+
+    action = getattr(args, "project_tasks_action", None) or "list"
+    owner = getattr(args, "owner", None) or ""
+    repo = getattr(args, "repo", None) or ""
+    project_number = getattr(args, "project", None)
+    as_json = getattr(args, "json", False)
+
+    try:
+        if action == "list":
+            status_filter = getattr(args, "status", None)
+            limit = getattr(args, "limit", 50)
+            tasks = github_projects.list_project_tasks(
+                owner=owner,
+                repo=repo,
+                project_number=project_number,
+                status_filter=status_filter,
+                limit=limit,
+            )
+            if as_json:
+                print(json.dumps(tasks, indent=2))
+                return
+            if not tasks:
+                print("No tasks found.")
+                return
+            for t in tasks:
+                num = f"#{t['number']}" if t.get("number") else "-"
+                print(f"[{t['status']}] {t['title']} ({num}, id: {t['id']})")
+                if t.get("url"):
+                    print(f"  URL: {t['url']}")
+
+        elif action == "create":
+            title = args.title
+            body = getattr(args, "body", "")
+            status = getattr(args, "status", None)
+            created = github_projects.create_project_task(
+                title=title,
+                body=body,
+                owner=owner,
+                repo=repo,
+                project_number=project_number,
+                status=status,
+            )
+            if as_json:
+                print(json.dumps(created, indent=2))
+            else:
+                print(
+                    f"Created task: {created['title']} "
+                    f"(status: {created['status']}, id: {created['id']})"
+                )
+
+        elif action == "complete":
+            task_id = args.task_id
+            status_name = getattr(args, "status", "Done") or "Done"
+            completed = github_projects.complete_project_task(
+                task_id=task_id,
+                owner=owner,
+                repo=repo,
+                project_number=project_number,
+                status_name=status_name,
+            )
+            if as_json:
+                print(json.dumps(completed, indent=2))
+            else:
+                print(f"Completed task {completed['id']} (status: {completed['status']})")
+
+    except Exception as exc:
+        if as_json:
+            print(json.dumps({"error": str(exc)}, indent=2))
+        else:
+            print(f"❌ {exc}", file=sys.stderr)
+        sys.exit(1)
