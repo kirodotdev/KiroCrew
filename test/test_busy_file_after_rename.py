@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import platform_compat
+from kiro_crew import atomic_write, platform_compat
 from kiro_crew.hooks import verified_replace_file_nolink
 
 # ── the descriptor-pinned replace ──
@@ -141,3 +141,10 @@ def test_the_fleet_probe_writer_retries_a_held_file_on_windows(tmp_path, monkeyp
 
     assert target.read_text(encoding="utf-8") == "new"
     assert refusals == [0]
+
+
+def test_the_fleet_probe_retry_window_matches_the_shared_helper():
+    mod = _load_fleet_probe_sessions()
+
+    assert mod._REPLACE_ATTEMPTS == atomic_write._REPLACE_MAX_ATTEMPTS
+    assert mod._REPLACE_BACKOFF_SECONDS == atomic_write._REPLACE_BACKOFF_SECONDS
