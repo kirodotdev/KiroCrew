@@ -335,6 +335,24 @@ shutdown budget) for an in-flight renewal to finish
 (`drain_sign_in_refresher`), so a rotated refresh token is persisted rather
 than consumed at the issuer and lost to the hard exit.
 
+### Proxy
+
+Every request this module sends to the sign-in service (device authorization and
+its polls, the portal and external IdP code exchanges, SSO-OIDC registration,
+device authorization and token polls, the control-plane profile lookup, and all
+three refresh paths) passes `proxy=resolve_proxy(url)` from `kiro_crew.http_proxy`.
+So `HTTPS_PROXY` / `HTTP_PROXY` and `NO_PROXY` apply as they do for kiro-cli, while
+the sessions keep aiohttp's `trust_env` off and never pick up `~/.netrc`
+credentials. Every session that sends them is bounded by `refresh.HTTP_TIMEOUT`
+(30s total, 10s connect): the login service's shared session, the temporary
+session `KasAuthProvider` opens for an engine callback, and the gateway tick's
+own 8s cap. A proxy's own refusal on the engine's side (a line naming the proxy,
+its tunnel or the `CONNECT` request, with a 401/403/407 or a tunnel failure) is a
+network error, not a sign-out: `acp/transport_errors._is_proxy_refusal` keeps it
+out of the signed-out latch and the chat says the proxy blocked the request. A
+bare `status code 403` cannot be told from Kiro's own rejection and still reads as
+signed out.
+
 ## Storage
 
 Context: kiro-cli does **not** encrypt its tokens — they live plaintext in a SQLite
