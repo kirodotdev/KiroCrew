@@ -127,7 +127,7 @@ class _FakeSession:
     def __init__(self, responses):
         self._responses = list(responses)
 
-    def post(self, url, *, json=None, data=None, headers=None):  # noqa: A002
+    def post(self, url, *, json=None, data=None, headers=None, proxy=None):  # noqa: A002
         return self._responses.pop(0)
 
 

@@ -189,3 +189,55 @@ def test_noise_lines_are_not_flagged_individually():
 
     for line in HEALTHY_STDERR:
         assert is_auth_failure_output(line) is False, f"false positive on {line!r}"
+
+
+# A proxy's own refusal, worded the way the HTTP stacks in front of the engine word
+# it. The 407 line is reqwest's status display with the http crate's reason phrase
+# ("Proxy Authentication Required" ships in the kiro-cli binary); the CONNECT line is
+# curl's. Each names the proxy, so it says nothing about the Kiro sign-in.
+PROXY_REFUSAL_LINES = [
+    "HTTP status client error (407 Proxy Authentication Required) for url (https://q.example/)",
+    "Received HTTP code 403 from proxy after CONNECT",
+    "proxy returned HTTP 403 Forbidden",
+]
+
+
+@pytest.mark.parametrize("line", PROXY_REFUSAL_LINES)
+def test_a_proxy_refusal_is_a_network_error_not_a_sign_in_failure(line):
+    from kiro_crew.acp.transport_errors import (
+        PROVIDER_ERROR_CONNECTION,
+        classify_provider_error,
+        is_auth_failure_output,
+    )
+
+    assert is_auth_failure_output(line) is False
+    assert classify_provider_error(line).kind == PROVIDER_ERROR_CONNECTION
+
+
+@pytest.mark.asyncio
+async def test_a_proxy_refusal_does_not_set_the_signed_out_latch():
+    runtime = _runtime(PROXY_REFUSAL_LINES)
+    await runtime._drain_stderr()
+    assert runtime.saw_not_logged_in() is False
+
+
+def test_a_kiro_refusal_still_reads_as_signed_out():
+    """Only lines that name the proxy move; a Kiro 403 keeps its sign-in verdict."""
+    from kiro_crew.acp.transport_errors import is_auth_failure_output
+
+    # Without a proxy word the line cannot be told from Kiro's own 403.
+    assert is_auth_failure_output("Request failed with status code 403") is True
+    # A named service exception is Kiro's answer even when the line mentions a proxy.
+    assert is_auth_failure_output("AccessDeniedException: Invalid token (via proxy)") is True
+    # A real sign-in line beside a proxy line still counts.
+    assert is_auth_failure_output(f"{PROXY_REFUSAL_LINES[1]}\nnot logged in") is True
+
+
+def test_a_proxy_refusal_frame_names_the_proxy_not_the_sign_in():
+    from kiro_crew.acp.transport_errors import _format_acp_error_worded
+
+    err = {"code": -32603, "message": "Internal error", "data": PROXY_REFUSAL_LINES[0]}
+    text, worded = _format_acp_error_worded(err, backend="kas")
+    assert worded
+    assert "proxy" in text.lower()
+    assert "signed in" not in text.lower() and "sign in" not in text.lower()

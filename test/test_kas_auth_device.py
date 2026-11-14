@@ -46,7 +46,7 @@ class _FakeSession:
         self._responses = responses
         self.calls: list[tuple[str, dict]] = []
 
-    def post(self, url, *, json=None, headers=None):  # noqa: A002
+    def post(self, url, *, json=None, headers=None, proxy=None):  # noqa: A002
         self.calls.append((url, json or {}))
         return self._responses.pop(0)
 
