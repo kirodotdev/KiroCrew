@@ -2885,7 +2885,7 @@
             "unit_hours_many": "ore",
             "unit_hours_one": "ora",
             "unit_hours_other": "ore",
-            "wake_new_work_hint": "Una squadra inizia un turno appena un issue riceve una delle sue etichette oppure, per una squadra senza etichette, appena viene aperto un nuovo issue. Disattivato: le squadre controllano solo con il loro timer di inattività.",
+            "wake_new_work_hint": "Una squadra inizia un turno appena un issue riceve una delle sue etichette oppure, per una squadra senza etichette, appena viene aperto un nuovo issue. Disattivato: una squadra si sveglia comunque quando ha un posto libero e qualcosa di nuovo da prendere; altrimenti aspetta il suo timer di inattività.",
             "wake_new_work_label": "Sveglia le squadre quando arriva nuovo lavoro"
           },
           "editor": {
@@ -2898,7 +2898,7 @@
             "aria_edit": "Modifica la crew {{name}}",
             "automerge_hint": "Esegue il merge nel momento in cui una persona approva. La protezione del branch continua comunque a fare da filtro.",
             "automerge_label": "Attiva il merge automatico quando è verde",
-            "backstop_fixed": "Fisso: ogni {{seconds}}s se nient’altro la sveglia.",
+            "backstop_fixed": "Fisso: ogni {{active}}s mentre lavora su un issue, altrimenti ogni {{seconds}}s, se nient’altro la sveglia.",
             "backstop_label": "Risveglio da inattività",
             "cancel": "Annulla",
             "conflicts_hint": "Solo file a chiavi o in sola aggiunta. Un conflitto in un hunk .py o .tsx passa invece in escalation.",

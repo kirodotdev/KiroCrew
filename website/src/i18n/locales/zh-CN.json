@@ -2681,7 +2681,7 @@
             "trailer_label": "提交尾注（trailer）",
             "trailer_required": "请输入提交尾注。",
             "unit_hours_other": "小时",
-            "wake_new_work_hint": "一旦某个议题被加上团队的标签，或者对没有标签的团队来说一旦有新议题被创建，团队就会立即开始一轮工作。关闭时：团队只按空闲计时器查看。",
+            "wake_new_work_hint": "一旦某个议题被加上团队的标签，或者对没有标签的团队来说一旦有新议题被创建，团队就会立即开始一轮工作。关闭时：团队有空闲名额且有新的可领取工作时仍会被唤醒；否则等待空闲计时器。",
             "wake_new_work_label": "有新工作时唤醒团队"
           },
           "editor": {
@@ -2694,7 +2694,7 @@
             "aria_edit": "编辑小队 {{name}}",
             "automerge_hint": "人工批准后立即合并。分支保护规则依然生效。",
             "automerge_label": "CI 全绿后启用自动合并",
-            "backstop_fixed": "固定值：没有其他事件唤醒时，每 {{seconds}} 秒一次。",
+            "backstop_fixed": "固定值：处理议题时每 {{active}} 秒一次，否则每 {{seconds}} 秒一次，除非有其他事件唤醒它。",
             "backstop_label": "空闲唤醒",
             "cancel": "取消",
             "conflicts_hint": "仅限键值型或仅追加的文件。如果冲突出现在 .py 或 .tsx 代码块中，则改为上报。",

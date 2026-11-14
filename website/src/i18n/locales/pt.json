@@ -2885,7 +2885,7 @@
             "unit_hours_many": "horas",
             "unit_hours_one": "hora",
             "unit_hours_other": "horas",
-            "wake_new_work_hint": "Uma equipe começa um turno assim que uma issue recebe uma de suas etiquetas ou, para uma equipe sem etiquetas, assim que uma nova issue é aberta. Desligado: as equipes só verificam pelo próprio temporizador de inatividade.",
+            "wake_new_work_hint": "Uma equipe começa um turno assim que uma issue recebe uma de suas etiquetas ou, para uma equipe sem etiquetas, assim que uma nova issue é aberta. Desligado: uma equipe ainda acorda quando tem uma vaga livre e algo novo para pegar; senão, espera pelo próprio temporizador de inatividade.",
             "wake_new_work_label": "Acordar as equipes quando surgir trabalho novo"
           },
           "editor": {
@@ -2898,7 +2898,7 @@
             "aria_edit": "Editar o crew {{name}}",
             "automerge_hint": "Mescla no momento em que um humano aprova. A proteção de branch continua valendo.",
             "automerge_label": "Armar o merge automático quando estiver verde",
-            "backstop_fixed": "Fixo: a cada {{seconds}}s se nada mais o acordar.",
+            "backstop_fixed": "Fixo: a cada {{active}}s enquanto trabalha em uma issue, senão a cada {{seconds}}s, a menos que algo mais o acorde.",
             "backstop_label": "Despertar por inatividade",
             "cancel": "Cancelar",
             "conflicts_hint": "Só em arquivos indexados por chave ou de somente acréscimo. Um conflito em um hunk .py ou .tsx é escalonado em vez disso.",

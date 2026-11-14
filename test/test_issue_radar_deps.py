@@ -1468,6 +1468,24 @@ class SweepDepUnblockTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(woken, {crew["id"]: [cr.SIG_DEP_UNBLOCKED]})
         wake.assert_awaited_once()
 
+        # The woken turn records a step on the item, so the signal reached it. The held
+        # signal's time is set back so the step is newer whatever the clock does.
+        stored = cr.read_signals(OWNER, REPO, self.root)
+        stored[f"{crew['id']}:2201"]["pending"]["at"] = 0
+        cr.write_signals(OWNER, REPO, stored, self.root)
+        off_loop(
+            cs.commit_work_progress,
+            OWNER,
+            REPO,
+            crew["id"],
+            2201,
+            {},
+            "reply",
+            "looked at the unblocked dependency",
+            root=self.root,
+            session_id=f"acp-{crew['id']}",
+        )
+
         # A THIRD sweep with the blocker still closed must NOT re-fire.
         stored = cr.read_signals(OWNER, REPO, self.root)
         stored[f"{crew['id']}:2201"]["checked_at"] = 0

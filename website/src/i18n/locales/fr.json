@@ -2969,7 +2969,7 @@
             "unit_hours_many": "heures",
             "unit_hours_one": "heure",
             "unit_hours_other": "heures",
-            "wake_new_work_hint": "Une équipe démarre un tour dès qu’un ticket reçoit l’une de ses étiquettes ou, pour une équipe sans étiquette, dès qu’un nouveau ticket est ouvert. Désactivé : les équipes ne regardent qu’au rythme de leur minuteur d’inactivité.",
+            "wake_new_work_hint": "Une équipe démarre un tour dès qu’un ticket reçoit l’une de ses étiquettes ou, pour une équipe sans étiquette, dès qu’un nouveau ticket est ouvert. Désactivé : une équipe se réveille quand même si elle a une place libre et quelque chose de nouveau à prendre ; sinon, elle attend son minuteur d’inactivité.",
             "wake_new_work_label": "Réveiller les équipes quand du nouveau travail arrive"
           },
           "editor": {
@@ -2982,7 +2982,7 @@
             "aria_edit": "Modifier l’équipe {{name}}",
             "automerge_hint": "Fusionne dès qu’un humain approuve. La protection de branche continue de s’appliquer.",
             "automerge_label": "Armer la fusion automatique au vert",
-            "backstop_fixed": "Fixe : toutes les {{seconds}} s si rien d’autre ne la réveille.",
+            "backstop_fixed": "Fixe : toutes les {{active}} s tant qu’elle travaille sur un ticket, sinon toutes les {{seconds}} s, sauf si autre chose la réveille.",
             "backstop_label": "Réveil en inactivité",
             "cancel": "Annuler",
             "conflicts_hint": "Uniquement les fichiers à clés ou en ajout seul. Un conflit dans un bloc .py ou .tsx déclenche une escalade à la place.",
