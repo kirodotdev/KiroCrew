@@ -70,6 +70,7 @@ from kiro_crew.config.memory_sections import (
     _coerce_embedding_provider,
     _read_auto_add_documents,
     dream_mode_from,
+    extraction_instructions_from,
     kind_routing_mode_from,
     lesson_fold_mode_from,
     lesson_origin_gate_mode_from,
@@ -362,6 +363,9 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         writes_enabled=section.read("writes_enabled", _safe_bool),
         lesson_extraction_enabled=section.read("lesson_extraction_enabled", _safe_bool),
         kind_routing=kind_routing_mode_from(section.get("kind_routing")),
+        extraction_instructions=extraction_instructions_from(
+            section.get("extraction_instructions")
+        ),
         lesson_fold=lesson_fold_mode_from(section.get("lesson_fold")),
         lesson_origin_gate=lesson_origin_gate_mode_from(section.get("lesson_origin_gate")),
         lesson_tier_policy=lesson_tier_policy_mode_from(section.get("lesson_tier_policy")),
