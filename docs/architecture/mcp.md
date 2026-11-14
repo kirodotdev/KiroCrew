@@ -3976,8 +3976,13 @@ are resolved whole and in dependency order, whatever order the descriptors are
 declared in: a child picks the parent placement on its surface whose viewport
 does not conflict with its own, inherits that placement's chain, route and
 requirements, and must name `parentPlacement` when two compatible parent
-placements differ. The index's `input_digest` is a digest of
-the committed index's own content (never a clock or a git hash), so an edit to an
+placements differ. The committed file does not carry its own `input_digest`
+or per-kind counts: both changed on almost every UI edit, so two PRs on
+different pages conflicted on the same lines. The reader computes the digest
+as sha256 of the file's text (`parse_index_text` in `ui_index_load.py`), the
+same value the generator stamps on the auto tier; the counts are printed by the
+generator and the `--report`. The digest is over the committed index's own
+content (never a clock or a git hash), so an edit to an
 input that changes nothing in the index, such as a label no location uses, leaves
 the committed file byte-identical and does not stale it. `npm run gen:ui -- --check` regenerates in memory and
 byte-compares the COMMITTED index (generated and curated tiers only; the auto
@@ -4392,7 +4397,8 @@ everywhere, and `--auto-out` refuses `src/kiro_crew/docs/`.
 
 The artifact (`buildAutoArtifact` in `scripts/lib/ui-index.mjs`) holds only the
 auto locations and the labels they use, plus `base_input_digest`, the
-`input_digest` of the committed index it hangs off, and the build-time core
+`input_digest` of the committed index it hangs off (sha256 of that file's text,
+computed by the reader since the file does not carry it), and the build-time core
 coverage numbers. The committed index's digest no longer carries anything the
 auto tier derived. `ui_index_load.py` merges the artifact at load only after checking
 all of it: schema, `artifact: "auto"`, `base_input_digest` equal to the

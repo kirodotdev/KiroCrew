@@ -14,6 +14,7 @@ here, and this module logs under that name. It imports only
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -58,6 +59,22 @@ IndexUnavailable.__module__ = "kiro_crew.ui_index"
 
 class AutoTierUnavailable(Exception):
     """The auto-tier artifact cannot be used; the committed index still answers."""
+
+
+def parse_index_text(text: str) -> Any:
+    """The committed index parsed from *text*, with its ``input_digest`` filled in.
+
+    The file does not carry its own digest (it changed on almost every UI
+    edit, so unrelated PRs conflicted on that line). It is sha256 of the text
+    as written, the same value ``website/scripts/gen-ui-index.mjs`` stamps on
+    the auto tier as ``base_input_digest``. ``read_text`` turns CRLF into LF,
+    so a Windows checkout reads the same digest. A file that still names one
+    (an older build, a test fixture) keeps it.
+    """
+    raw = json.loads(text)
+    if isinstance(raw, dict) and "input_digest" not in raw:
+        raw["input_digest"] = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return raw
 
 
 # Tracebacks and logs name it by the import path its callers use.
@@ -385,7 +402,7 @@ def load_index(path: Path | None = None, auto_path: Path | None = None) -> _Inde
     if key[2] > MAX_INDEX_BYTES:
         raise IndexUnavailable("index file is too large")
     try:
-        raw = json.loads(target.read_text(encoding="utf-8"))
+        raw = parse_index_text(target.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise IndexUnavailable("index file is unreadable") from exc
     idx = _parse(raw)
