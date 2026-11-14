@@ -526,7 +526,7 @@ class QueuePoller:
                             # rest. The other poller callbacks were audited and
                             # left inline deliberately: `on_agent_spawn_start` is
                             # a no-op, `on_agent_spawn_end` clears an in-memory
-                            # lock, and `mark_watch_items_notified` only enqueues
+                            # lock, and `mark_items_notified` only enqueues
                             # — its file write already happens on a worker.
                             await asyncio.to_thread(
                                 on_exhausted, self._watch_window_start + window_ms

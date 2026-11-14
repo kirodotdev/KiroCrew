@@ -221,8 +221,8 @@ def test_group_kill_alone_cannot_reach_an_escaped_worker(tmp_path):
 # ``terminate`` has three return paths and two of them swept the group with SIGKILL. The
 # one that did not was the first: the leader had already exited before ``terminate`` was
 # called. That is the CRASH case, and it is where the sweep matters most, because the
-# caller's next act is ``_final_backup_cycle`` -- so a worker that survived is still
-# writing while its own transcript is uploaded.
+# caller's next act is the sidecar's final backup cycle (``_teardown``) -- so a worker
+# that survived is still writing while its own transcript is uploaded.
 #
 # The asymmetry was visible inside the function. The drain path carried the comment
 # "Leader drained; sweep the group in case a grandchild lingers", which is the same state
