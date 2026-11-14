@@ -197,3 +197,43 @@ The owner's rulings after the pilot, verbatim (2026-11-13), one per gap:
 5. "这一点还要斟酌，可以先delay" (R5: deferred.)
 6. "系统允许的6个上限，有其他chat在改。我也不觉得说要一定要多个worker一个PR，关键是如何拆解才能让任务进行更好。"
    (R6: no width change here; decomposition guidance instead.)
+
+## 10. Addendum: a debate's self-set budget (A-M9)
+
+Added 2026-11-14. The owner split this part out of #37030 so it is recorded
+here before `src/kiro_crew/builtin_skills/goal-conductor/references/worker-debate.md`
+changes; that change lands in its own PR once this addendum is on main.
+
+**Problem.** Rule 4 of the debate checkpoint
+(`worker-debate.md`, "`hard_rounds` reached or budget spent → ask the human")
+treats every budget the same. A wall-clock or round budget the debate
+conductor picked for itself, as an anchor default, then stops the debate to ask
+the owner even when the open points are small fixes the conductor can rule on.
+In the `conduct-flex` debate this paused the run at its self-set 2-hour mark
+and re-asked on each patrol while the workers sat idle.
+
+**Change.** Rule 4 splits in two:
+
+- `hard_rounds` reached → ask the human. No round starts without their answer.
+  (Unchanged.)
+- A wall-clock or round budget the conductor set itself is spent → the
+  conductor's call. When the open points are small fixes, wrap up as in rule 3.
+  An open blocking objection still goes to the human (rules 6-7). The rest the
+  conductor rules on and records why.
+- Quota or credit spend past an owner-set or unstated bound stays an ask.
+
+**What stays.** `hard_rounds`, an owner-set budget, spend past a bound and every
+open blocking objection are still asks. Rules 1-3 and 5-8 are unchanged. The
+debate's critics reviewed this rule over three rounds (debate note rows
+cause-1-5, cost-1-4, safety-1-4, safety-2-3, measure-1-7, measure-2-4,
+measure-3-4, all fixed and verified).
+
+**Cost.** None added; it removes owner turns. A conductor that wraps up a
+debate it should have asked about is bounded by the blocking-objection rule.
+
+**Measure.** The conduct-kit G4 case: a debate whose self-set budget runs out
+with small fixes open (expect wrap-up, no ask), its negative twin with an
+owner-set round limit (expect an ask), and a third with one open blocking
+point (expect an ask).
+
+**Rollback.** Revert the rule 4 text in `worker-debate.md`.
