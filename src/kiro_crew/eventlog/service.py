@@ -901,8 +901,9 @@ class MemberEventLogService:
         or interrupted read RETURNS short rather than raising.
 
         The whole fold holds the unit's CROSS-PROCESS lease. Per-append leases would
-        let the gateway and ``kirocrew-core`` both fold between appends and duplicate
-        every row permanently. A refused lease does nothing and retires nothing; the
+        let two processes both fold between appends and duplicate every row
+        permanently. The gateway is the only ordinary writer, but nothing in the
+        store stops a second process from folding the same member. A refused lease does nothing and retires nothing; the
         counted dedupe makes the next re-read safe.
         """
         if slug in self._legacy_folded:

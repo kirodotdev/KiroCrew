@@ -229,9 +229,9 @@ class MemberLog:
     def refresh_if_changed(self) -> bool:
         """Reload when the file changed under us; answer whether it did.
 
-        This process is not the log's only writer -- ``kirocrew-core`` runs as its
-        own stdio subprocess and records member activity through the same service
-        -- so a held instance can be arbitrarily behind the file. Reads went
+        The gateway is the log's only ordinary writer, but the store takes no
+        single-process lock, so another process can append and a held instance can
+        be arbitrarily behind the file. Reads went
         through :meth:`_ensure_loaded`, which returns the cached events as soon as
         ``_loaded`` is set, so another process's commits stayed invisible until a
         local append or a restart.
@@ -252,7 +252,7 @@ class MemberLog:
         if self._loaded:
             return
         # Sampled BEFORE the read and compared with a fresh sample after it. The log
-        # has two writers, so a stat taken only after the parse can stamp a later
+        # can be appended to by another process, so a stat taken only after the parse can stamp a later
         # commit onto older events, and `refresh_if_changed` would then keep them
         # stale. When the samples differ the stamp is withheld (None), so the next
         # read reloads.
@@ -434,9 +434,9 @@ class MemberLog:
 
         ``crew_log.lease`` takes write ownership non-blocking, so of two processes
         appending at once the second is refused ``already_owned`` and writes
-        nothing. The member log has two ordinary writers (the gateway and
-        ``kirocrew-core``), so the collision is routine and a lost event is a
-        transition missing from history for good.
+        nothing. The gateway is the member log's only ordinary writer, but another
+        process can append, and a lost event is a transition missing from history
+        for good.
 
         The lease module advises reporting rather than retrying, which is right
         for a long-lived holder. Here the holder is momentary: this class releases
