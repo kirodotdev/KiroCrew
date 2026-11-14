@@ -381,7 +381,7 @@ def native_subagent_snapshots(
         output = slot._native_subagent_output
         for info in list(slot._native_subagent_tracker.values()):
             card_id = str(info.get("id") or "")
-            if not card_id:
+            if not card_id or info.get("dismissed"):
                 continue
             base: dict[str, object] = {
                 "id": card_id,
@@ -430,6 +430,25 @@ def native_subagent_snapshots(
         done.sort(key=snapshot_done_at, reverse=True)
         done = done[:terminal_limit]
     return running + done
+
+
+def dismiss_native_subagent(self: DashboardState, card_id: str) -> bool:
+    """Mark a finished native card dismissed, so reconnect replay stops drawing it.
+
+    Every completion path unregisters a native card from ``_native_cards``, but
+    the slot that ran it keeps the terminal record :func:`native_subagent_snapshots`
+    replays. The record is marked, not removed: while the parent turn runs, the
+    tracker is the roster reconciler's own dict, and a removed record would read
+    as a new sub-agent if a later ``list_update`` still lists it.
+
+    False when no slot holds a finished card with this id.
+    """
+    for slot in list(self._slots.values()):
+        for info in list(slot._native_subagent_tracker.values()):
+            if info.get("id") == card_id and info.get("done"):
+                info["dismissed"] = True
+                return True
+    return False
 
 
 def has_slot(self: DashboardState, name: str) -> bool:

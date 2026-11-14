@@ -364,6 +364,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, payload: 'bytes') -> 'int'",
     ),
     "disable_yolo": ("function", False, False, "(self) -> 'None'"),
+    "dismiss_native_subagent": ("function", False, False, "(self, card_id: 'str') -> 'bool'"),
     "dismiss_notification": (
         "function",
         True,

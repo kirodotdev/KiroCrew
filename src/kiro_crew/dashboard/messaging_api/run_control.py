@@ -924,7 +924,42 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
                 },
             )
             return web.json_response({"ok": True, "cancelled": True})
-        return web.json_response({"error": "not found"}, status=404)
+        # Every completion path unregisters a card from ``_native_cards``, but
+        # its slot still holds the record reconnect replay draws it from.
+        # Dismissing marks that record, so a finished card stays cleared instead
+        # of answering 404 and coming back on the next reconnect. As in the
+        # persisted-run dismissal below, only a dashboard session passes: an app
+        # token's claim names its app, and an internal caller's claim is absent
+        # or names its app.
+        request_app = request.get("app", "")
+        if "app" not in request or request_app:
+            _sel().log_api_access(
+                caller=request_app or "unknown",
+                operation="spawn.dismiss",
+                outcome="denied",
+                source="app_isolation",
+                resources="dashboard-only dismissal of a native subagent card",
+                error="app tokens cannot dismiss native subagent cards",
+            )
+            return app_token_refusal(
+                "dismiss a finished native subagent card",
+                "Dismiss the card from the dashboard instead.",
+            )
+        if not state.dismiss_native_subagent(agent_id):
+            return web.json_response({"error": "not found"}, status=404)
+        # The card is already cleared, so an audit failure must not turn the
+        # answer into an error the panel would report as a failed dismissal.
+        try:
+            _sel().log_api_access(
+                caller="dashboard",
+                operation="spawn.dismiss",
+                outcome="allowed",
+                source="subagent",
+                resources=f"native card {agent_id}",
+            )
+        except Exception:
+            logger.debug("SEL audit failed for native dismissal %s", agent_id, exc_info=True)
+        return web.json_response({"ok": True, "cancelled": False, "dismissed": True})
     manager = state.subagents
     info = manager.get(agent_id) if manager is not None else None
     if manager is not None and info is None:

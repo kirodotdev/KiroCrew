@@ -63,6 +63,32 @@ def _sub(session_id, name, role, query, status_type, message=""):
     }
 
 
+def _native_card_state(*statuses):
+    """A state double with one slot whose card ``native:s1`` went through
+    *statuses* on the real roster sync, and the real dismissal bound."""
+    state = _make_state()
+    state._native_cards = {}
+    slot = _make_slot()
+    state._slots = {slot.key: slot}
+    state.get_slot = MagicMock(return_value=slot)
+    state.dismiss_native_subagent = lambda card_id: DashboardState.dismiss_native_subagent(
+        state, card_id
+    )
+    for status in statuses:
+        _roster_update(state, slot, status)
+    return state, slot
+
+
+def _roster_update(state, slot, status):
+    _native_subagent_sync(
+        state,
+        slot,
+        [_sub("s1", "readme", "worker", "summarize README", status)],
+        slot._native_subagent_tracker,
+        slot._native_subagent_output,
+    )
+
+
 class TestNativeSubagentSync:
     def test_ignores_non_list(self):
         state = _make_state()
@@ -519,12 +545,18 @@ class TestNativeCardFeedRedaction:
 class TestNativeCancelHandler:
     """DELETE /api/spawn/{id} handles native:* card IDs."""
 
-    def _request(self, state, agent_id):
+    def _request(self, state, agent_id, *, app=""):
+        """The dashboard owner's request: the auth middleware set an empty app
+        claim. ``app="name"`` is an app token's; ``app=None`` drops the claim, as
+        on a request that never passed the middleware."""
         from unittest.mock import MagicMock
 
         request = MagicMock()
         request.app = {"state": state}
         request.match_info = {"agent_id": agent_id}
+        claims = {} if app is None else {"app": app}
+        request.__contains__.side_effect = claims.__contains__
+        request.get.side_effect = claims.get
         return request
 
     @pytest.mark.asyncio
@@ -594,10 +626,106 @@ class TestNativeCancelHandler:
     async def test_cancel_unknown_native_card_404(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
 
-        state = _make_state()
-        state._native_cards = {}
+        state, _slot = _native_card_state()
         resp = await api_spawn_delete(self._request(state, "native:unknown"))
         assert resp.status == 404
+
+    async def _delete(self, state, agent_id, *, app=""):
+        """DELETE as the given caller, with the audit log captured."""
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
+
+        with patch("kiro_crew.dashboard.handlers.messaging._sel") as m_sel:
+            resp = await api_spawn_delete(self._request(state, agent_id, app=app))
+        audits = [c.kwargs for c in m_sel.return_value.log_api_access.call_args_list]
+        return resp, audits
+
+    @pytest.mark.asyncio
+    async def test_dismissing_a_finished_card_ends_its_replay(self):
+        """A finished card has left ``_native_cards``, so "Dismiss done" reaches
+        it through the slot's terminal record: the DELETE answers ok, the
+        dismissal is audited, and reconnect replay stops drawing the card."""
+        import json
+
+        state, _slot = _native_card_state("working", "terminated")
+        assert "native:s1" not in state._native_cards
+        assert len(DashboardState.native_subagent_snapshots(state)) == 1
+
+        resp, audits = await self._delete(state, "native:s1")
+
+        assert resp.status == 200
+        assert json.loads(resp.text) == {"ok": True, "cancelled": False, "dismissed": True}
+        assert DashboardState.native_subagent_snapshots(state) == []
+        assert [(a["operation"], a["outcome"]) for a in audits] == [("spawn.dismiss", "allowed")]
+
+    @pytest.mark.asyncio
+    async def test_a_card_the_user_stopped_can_then_be_dismissed(self):
+        import json
+
+        state, _slot = _native_card_state("working")
+        stop, _audits = await self._delete(state, "native:s1")
+        assert json.loads(stop.text) == {"ok": True, "cancelled": True}
+
+        resp, _audits = await self._delete(state, "native:s1")
+
+        assert json.loads(resp.text) == {"ok": True, "cancelled": False, "dismissed": True}
+        assert DashboardState.native_subagent_snapshots(state) == []
+
+    @pytest.mark.asyncio
+    async def test_a_dismissed_card_is_not_drawn_again_by_a_later_roster_update(self):
+        """The record is marked, not removed: a later ``list_update`` that still
+        lists the finished sub-agent must not read it as a new card."""
+        state, slot = _native_card_state("working", "terminated")
+        await self._delete(state, "native:s1")
+        state.broadcast_ws.reset_mock()
+
+        _roster_update(state, slot, "terminated")
+
+        state.broadcast_ws.assert_not_called()
+        assert DashboardState.native_subagent_snapshots(state) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("app", ["appA", None], ids=["app_token", "absent_claim"])
+    async def test_an_app_token_or_a_claimless_request_cannot_dismiss_a_finished_card(self, app):
+        """Same terms as the persisted-run dismissal: an app token is refused, and
+        an absent claim means the request never passed the auth middleware."""
+        import json
+
+        state, _slot = _native_card_state("working", "terminated")
+
+        resp, audits = await self._delete(state, "native:s1", app=app)
+
+        assert (resp.status, json.loads(resp.text)["code"]) == (403, "app_token_forbidden")
+        assert len(DashboardState.native_subagent_snapshots(state)) == 1
+        assert [(a["operation"], a["outcome"]) for a in audits] == [("spawn.dismiss", "denied")]
+
+    @pytest.mark.asyncio
+    async def test_a_dismissal_is_kept_when_its_audit_fails(self):
+        """The card is cleared before the audit, so a failing audit store must not
+        turn the answer into the error the panel reports as a failed clear."""
+        import json
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_delete
+
+        state, _slot = _native_card_state("working", "terminated")
+        with patch(
+            "kiro_crew.dashboard.handlers.messaging._sel",
+            side_effect=RuntimeError("sel down"),
+        ):
+            resp = await api_spawn_delete(self._request(state, "native:s1"))
+
+        assert json.loads(resp.text) == {"ok": True, "cancelled": False, "dismissed": True}
+        assert DashboardState.native_subagent_snapshots(state) == []
+
+    def test_a_running_card_is_never_dismissed(self):
+        state, slot = _native_card_state("working")
+
+        assert DashboardState.dismiss_native_subagent(state, "native:s1") is False
+        [snapshot] = DashboardState.native_subagent_snapshots(state)
+        assert snapshot["done"] is False
+        assert "dismissed" not in slot._native_subagent_tracker["s1"]
 
     @pytest.mark.asyncio
     async def test_cancel_native_card_survives_sel_failure(self):
