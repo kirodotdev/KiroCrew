@@ -289,8 +289,8 @@ function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, d
   const stalledForMs = longest ? Date.now() - longest.since : 0
   const stalledName = member?.title || member?.agent || longestSlot || i18nT('commandCenter.worker_untitled')
   const title = crewRowTooltip(total, rowCounts, stall.stalled, needsYou)
-  // Finished only when the main chat itself is settled too.
-  const allDone = total > 0 && done === total && !own
+  // Finished only when the main chat is settled too, and, with a ledger, the gateway's run verdict says done.
+  const allDone = (work?.run ? work.run.settled === 'done' : total > 0 && done === total) && !own
   // An interrupted turn or a stalled goal loop of the main chat is said first.
   const ownFirst = !paused && own && (own.kind === 'paused' || own.kind === 'stalled') ? own : null
   // Nothing needs attention and the crew is not finished (or paused): the row's usual line.

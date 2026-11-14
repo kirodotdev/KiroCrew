@@ -104,6 +104,7 @@ export type {
   CrewPause,
   CrewWorkFacts,
   CrewWorkItemFacts,
+  ConductorModeRun,
   CrewTimeline,
   CrewTimelineHandoff,
   CrewTimelineLane,

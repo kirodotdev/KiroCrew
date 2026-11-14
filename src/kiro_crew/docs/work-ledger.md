@@ -413,6 +413,21 @@ which cancels the worker's running turn and keeps its session, branch and
 reports. There is no take-over. To ask where a goal stands, you can still ask the
 conductor session — it answers from the record.
 
+### When a run is done
+
+A conductor ends its run by sending you one final report and then stopping its
+patrol loop. The board reads that: once it has items and no loop is active on the
+conductor's session, the run is **done** when every item is closed and **stopped**
+when some are still open. A rejected or abandoned item counts as closed but not
+done. Nothing is stored for this, so a new goal, a re-armed patrol or a new item
+puts the run back to working on the next read; the board read also waits for a
+new goal's first item before it calls anything settled. The board read
+(`GET /api/crew-board`) and the conductor mode chat's Sessions row both carry this
+as `run` (`settled`, `open`, `accepted`, `not_done`, `at_limit`; the row only once
+the board has an item); the code is `dashboard/conductor_mode_run.py`. A stop the
+conductor made and one you made look the same to the board, so it never says who
+stopped the run. `at_limit` marks a patrol that ended at its time or budget bound.
+
 ## Cleaning up finished ledgers
 
 Nothing reclaims the ledger store automatically — not on tab close, not at

@@ -7,7 +7,9 @@ conductor holding for the person, or from a crew that has gone quiet. This is th
 ledger half of that answer, kept small: how many items are open, how many wait on a
 person (a ``blocked`` / ``question`` whose ``reason`` is ``approval`` or
 ``needs_human`` and that the conductor has not answered), and for every other open
-item its worker and the moment it goes stale if that worker stays idle.
+item its worker and the moment it goes stale if that worker stays idle. It also
+carries ``run``, the board's settled verdict (:mod:`kiro_crew.dashboard.conductor_mode_run`),
+which is why the closed items' counts are kept beside the open items.
 
 That moment is the ledger's own rule: :func:`kiro_crew.work_ledger.is_stale` with the
 worker's closed and looping liveness read the way the side board reads them
@@ -51,6 +53,9 @@ _FAR: Final[timedelta] = timedelta(days=3650)
 _lock = threading.Lock()
 #: Open items per board slot key, as the fold rendered them.
 _items: dict[str, list[dict[str, Any]]] = {}
+#: Closed items per board slot key as ``(accepted, not_done)``, the fold's forgotten
+#: closes included: the run's settled verdict (``conductor_mode_run``) needs them.
+_closed: dict[str, tuple[int, int]] = {}
 _primed: set[str] = set()
 #: The newest fold revision kept per board slot key: an older publish (a prime that
 #: read before a newer warm fold landed) never replaces what a newer one kept.
@@ -177,6 +182,7 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
     """*slot*'s summary against *state*'s live slots, or ``None`` when not folded yet."""
     with _lock:
         items = _items.get(slot)
+        accepted, not_done = _closed.get(slot, (0, 0))
     if items is None:
         return None
     from kiro_crew import ledger_wake
@@ -206,6 +212,17 @@ def summary_for_state(slot: str, state: Any) -> dict[str, Any] | None:
         conductor_wake.work_ledger_loop_id(nudge, key) and ledger_wake.worker_looping(nudge, key)
         for key in dict.fromkeys(keys)
     )
+    from kiro_crew.dashboard import conductor_mode_run
+
+    # A board with no item yet (a root whose ledger was never opened folds empty)
+    # has no run to call done, so the row keeps its every-crew-member-done rule.
+    if summary["open"] + accepted + not_done:
+        summary["run"] = conductor_mode_run.run_facts(
+            open_items=summary["open"],
+            accepted=accepted,
+            not_done=not_done,
+            patrol=conductor_mode_run.patrol_of(nudge, keys),
+        )
     return summary
 
 
@@ -226,14 +243,21 @@ def remember(board: str, value: Any, revision: int = 0) -> str | None:
     items = _open_items(value)
     if not slot or items is None:
         return None
+    from kiro_crew.dashboard.conductor_mode_run import item_counts
+
+    raw_items = value.get("items") or []
+    _open, accepted, not_done = item_counts(
+        (raw.get("state") for raw in raw_items if isinstance(raw, dict)), value.get("forgotten")
+    )
     with _lock:
         if revision and revision < _revisions.get(slot, 0):
             return None
         if revision:
             _revisions[slot] = revision
-        if _items.get(slot) == items:
+        if _items.get(slot) == items and _closed.get(slot) == (accepted, not_done):
             return None
         _items[slot] = items
+        _closed[slot] = (accepted, not_done)
     return slot
 
 
@@ -344,6 +368,7 @@ def retain(live_roots: Iterable[str]) -> None:
         disposers = [d for slot in gone for d in _followed.pop(slot)]
         for slot in gone:
             _items.pop(slot, None)
+            _closed.pop(slot, None)
             _revisions.pop(slot, None)
             _primed.discard(slot)
         for board in [b for b, s in _slot_of_board.items() if s in gone]:
@@ -363,6 +388,7 @@ def forget_for_tests() -> None:
     set_listener(None)
     with _lock:
         _items.clear()
+        _closed.clear()
         _revisions.clear()
         _primed.clear()
         _slot_of_board.clear()
