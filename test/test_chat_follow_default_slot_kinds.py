@@ -57,6 +57,10 @@ SLOT_CREATORS: dict[tuple[str, str], str] = {
     ("apps/builtins/spec_builder/backend/runtime.py", "_ensure_worker_slot"): (
         "excluded: app=APP_NAME ('spec-builder') at birth"
     ),
+    ("apps/chat_slot_sdk.py", "open"): (
+        "excluded: app=self._app at birth, non-empty because ChatSlotSDK refuses an empty "
+        "app name"
+    ),
     ("apps/worker_slots.py", "acquire_worker_slot"): (
         "excluded: app=app at birth, non-empty by _require_app(app)"
     ),

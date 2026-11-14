@@ -65,7 +65,8 @@ import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetai
 import { actionGrant } from '../composerActions/composerActionRegistry'
 import { memoryAccessLabel } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
-import { UserSessionReachBox, UserSessionReachStaged, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
+import { ChatSlotsBox, UserSessionReachBox, UserSessionReachStaged, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
+import { trustGrants } from '../components/appstore/trustGrants'
 // The page's parts live in sibling owners that never import this module:
 // `AppDetailPageArt.tsx` (the hero banner and the screenshot gallery, each with
 // its local-art second chance), `appDetailPageTypes.ts` (the page's view
@@ -733,10 +734,7 @@ export default function AppDetailPage() {
         displayName: app.displayName,
         trustRepository: app.trustRepository,
         origin: app.origin,
-        sessionApproval: app.manifest?.permissions?.sessionApproval === true,
-        memberThreads: app.manifest?.permissions?.memberThreads === true,
-        workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
-        reachableByUserSessions: app.manifest?.permissions?.reachableByUserSessions,
+        ...trustGrants(app.manifest?.permissions),
         desktop: desktopRequestOf(app.manifest),
         retryInstalls: true,
         // The Update buttons funnel here too, over an app that is already there.
@@ -872,10 +870,7 @@ export default function AppDetailPage() {
           displayName: app.displayName,
           trustRepository: app.trustRepository,
           origin: app.origin,
-          sessionApproval: app.manifest?.permissions?.sessionApproval === true,
-          memberThreads: app.manifest?.permissions?.memberThreads === true,
-          workerAutoApprove: app.manifest?.permissions?.workerAutoApprove === true,
-          reachableByUserSessions: app.manifest?.permissions?.reachableByUserSessions,
+          ...trustGrants(app.manifest?.permissions),
           desktop: desktopRequestOf(app.manifest),
         })
       } else if (action === 'enable' && isSessionApprovalConsentRequiredError(e)) {
@@ -1817,6 +1812,7 @@ export default function AppDetailPage() {
                   </div>
                 )}
                 {app.manifest.permissions.workerAutoApprove && <WorkerAutoApproveBox staged={stagedWorkerAutoApprove} />}
+                {app.manifest.permissions.chatSlots === true && <ChatSlotsBox />}
                 <UserSessionReachBox declared={reachVerbs(app.manifest.permissions.reachableByUserSessions)} staged={stagedUserSessionReach} />
                 <div className="flex flex-wrap gap-3 text-[12px] text-muted mt-1">
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}

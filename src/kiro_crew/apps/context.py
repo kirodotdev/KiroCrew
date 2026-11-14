@@ -19,6 +19,7 @@ from kiro_crew.apps.agent_turn_sdk import AgentTurnSDK
 from kiro_crew.apps.app_sdk_level import APP_SDK_LEVEL
 from kiro_crew.apps.app_storage import AppStorage
 from kiro_crew.apps.audit_sdk import AuditSDK
+from kiro_crew.apps.chat_slot_sdk import ChatSlotSDK
 from kiro_crew.apps.crewmate_sdk import CrewmateSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.embed_sdk import EmbedSDK
@@ -136,6 +137,11 @@ class AppContext:
     # A capability like ``spawn``: None unless the manifest declares
     # ``permissions.agentTurns`` and the gateway's Application was wired in.
     turns: AgentTurnSDK | None = None
+    # This app's own dashboard chat slots: open, restore, turns and queue, stop,
+    # archive, transcript and AutoNudge loops, under its key prefix
+    # (``chat_slot_sdk``). None unless the manifest declares
+    # ``permissions.chatSlots``.
+    chat_slots: ChatSlotSDK | None = None
     # The gateway's untrusted-text screen, neutralizer and fences. Unconditional,
     # like `scrub`, and built from `name` so its audit rows name this app.
     untrusted: UntrustedTextSDK = field(init=False)
@@ -323,6 +329,10 @@ def build_app_context(
     if perms.get("agentTurns") is True and turn_host is not None:
         turns = AgentTurnSDK.for_http_app(app_name, turn_host)
 
+    chat_slots = (
+        ChatSlotSDK(app_name, http_app=http_app) if perms.get("chatSlots") is True else None
+    )
+
     auto_approve = None
     if perms.get("workerAutoApprove") is True:
         try:
@@ -348,4 +358,5 @@ def build_app_context(
         lifecycle=AppLifecycleSDK(app_name),
         http_app=http_app,
         turns=turns,
+        chat_slots=chat_slots,
     )

@@ -1617,6 +1617,65 @@ Every turn is admitted as Crew
 automation; a refused one raises `TurnRefused` and never runs. No session manager (a bare test host) raises
 `RuntimeError`.
 
+### Chat slots (`ctx.chat_slots`)
+
+Present when the manifest declares `permissions.chatSlots` and `None` otherwise. A
+host without this seam has no `chat_slots` attribute at all, so read it with
+`getattr(ctx, "chat_slots", None)`. It is a level-7 seam, and level 7 is shared by
+several seams that land separately, so a host reporting level 7 can still lack it:
+test for the attribute, never for the level alone. It opens and drives dashboard chat slots your app
+owns: a visible conversation, listed under your app in the sidebar and shown by
+[`ChatEmbed`](#embedded-chat), whose turns run through the host's own chat runner.
+Every call takes the dashboard state the Gateway hands each route as
+`request.app["state"]`:
+
+```python
+slots = ctx.chat_slots
+state = request.app["state"]
+key = f"{ctx.name}-{job_id}"
+if slots.get(state, key) is None:
+    await slots.restore(state, key, adopt_closed=True)
+slot, created = await slots.open(state, key)
+slot.project = project_dir
+slots.set_title(state, slot, f"Job {job_id}", only_untitled=True)
+slots.send(state, slot, "Start with the README.")
+```
+
+| Call | Returns | What it does |
+|------|---------|--------------|
+| `get(state, key)` | slot or `None` | The live slot under *key* when it is yours |
+| `restore(state, key, *, adopt_closed)` | slot or `None` | Bring *key*'s saved transcript back into a cold slot (async). Pass `adopt_closed=True` for a slot whose lifecycle you own, never for a key you are creating anew. The slot is returned only when it is yours; a saved transcript another app or a person owns is never brought back |
+| `open(state, key)` | `(slot, created)` | Your slot under *key*, created when absent, with a restored sidebar row's rows read in off the event loop (async). A slot under *key* that is not yours, or a saved transcript under it that records another owner, raises `ChatSlotRefused` and is left untouched. Read the key back from `slot.key`: the Gateway folds it to its session-file charset |
+| `set_title(state, slot, title, *, only_untitled=False)` | bool | Title the slot, redacted, push it to the sidebar and mark it for the next save. Withheld (`False`) when redaction fails |
+| `send(state, slot, message, *, meta=None, append_user=True, user_origin=False, typed=True, on_consumed=None, on_irreversibly_consumed=None, reservation=None)` | task or `None` | Start a turn under the operator's unattended-turn cap, or queue *message* behind the running one (`None`, and the consumption callbacks are not attached). `user_origin` says a person sent the text, `typed` that they typed it; both default to the cautious answer, and a queued message keeps `user_origin` only when `typed` is true. Pass the task `reserve` returned as `reservation` to start the turn in its place. A slot that did not come through `open` or `restore` and still has its rows unread raises `RuntimeError` |
+| `reserve(state, slot)` | task or `None` | Mark an idle slot busy for the calling task while it validates, so other starters queue. Released when the task ends, and anything queued meanwhile is started |
+| `discard_queued(slot)` | `None` | Drop queued messages, unconsumed steers and a pending synthesis |
+| `stop_turn(state, slot)` | bool | Drop queued work, stop the running turn cooperatively (not while the session compacts), then cancel it (async). Whether a turn was running |
+| `archive(state, slot)` | bool | Close the slot the way a tab's close button does (async): its AutoNudge loop retired, its turn ended, its transcript saved as closed and its session torn down, by the Gateway's own close. `False` when that close did not commit; the Gateway has then put the slot back where it could. A slot-close hook your app registered runs |
+| `transcript(state, key)` | list | The live slot's rows, else the saved ones when the saved transcript records your app as its owner (async). Raw: redact them (`ctx.scrub`) before you serve them |
+| `track(state, task)` | `None` | Hold a follow-up task with the Gateway's background work, so shutdown cancels and awaits it |
+| `nudges(state=None)` | view or `None` | The AutoNudge loops on live slots you own (`get_by_slot`, `list_all`, `remove`, `remove_on_slot`, `deactivate_and_wait`); `None` when AutoNudge is not running. Non-blocking |
+| `nudge_maintenance(state=None)` | async context manager | The same view over the AutoNudge store, serialized with startup, for recovery; it also lists loops whose slot is not live when the saved transcript records your app. A loop you pause there stays paused until you remove it or the block ends |
+| `arm_nudge(state, slot, *, message, idle_secs, max_cycles, stop_sentinel_path="", caller="")` | `(loop, error, status)` | Arm a loop through the same authorization `POST /api/autonudge` uses, with source `app:<your app>` (async). Armed only when `error` is `None` |
+
+A key is `<app>-<id>`, where *id* is 1 to 400 of `A-Z a-z 0-9 . _ -`, as for
+`ctx.turns`, and the whole key is at most 193 characters, the length the Gateway folds a
+long slot key to, so it is kept as spelled and its transcript file names fit; any other
+key raises `ValueError`. A slot is yours when it carries your
+app's name (the key prefix alone proves nothing: another app's name can extend
+yours), and every call that acts on a slot raises
+`ChatSlotRefused` (a `PermissionError`) for any other slot: a person's chat, a core
+session, another app's slot, or an unscoped chat someone opened under your key.
+`send`, `reserve`, `set_title`, `stop_turn` and `arm_nudge` also refuse a slot object
+that is not the live slot under its key, such as one kept after `archive`. A
+turn runs under your app's name, recorded and admitted as the app's (actor `app`, as an
+app's own `/api/chat` send), so the operator's profile for your app applies to
+its tools, and through the same admission, approval and stop paths a typed message
+takes. A queued message carries the containment stamp the queue drain re-checks, and
+the `queued` row it adds is redacted (withheld when redaction fails), because every
+connected dashboard receives it. The AutoNudge view never shows or touches a loop on
+a slot you do not own. `state` for the AutoNudge calls defaults to the Gateway's own.
+
 ### Untrusted text (`ctx.untrusted`)
 
 Always present on a level-2 host, like `ctx.scrub`. An older host has no
@@ -1727,8 +1786,9 @@ and level 7 adds the manifest's `agentReadOnlyDirs` (see
 [manifest-reference.md](manifest-reference.md#agent-read-only-directories)), the
 [backend SDK](#backend-sdk-kiro_crewappsbackend_sdk), the `desktop` block's
 `displays: "all"`, `background` kind and `gutter` (see
-[manifest-reference.md](manifest-reference.md#desktop-windows)) and the exact
-`permissions.api` entry (`=/api/example`, see the path matcher above); each level
+[manifest-reference.md](manifest-reference.md#desktop-windows)), the exact
+`permissions.api` entry (`=/api/example`, see the path matcher above) and
+[`ctx.chat_slots`](#chat-slots-ctxchat_slots); each level
 includes every level below it. Several seams share level 7, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call

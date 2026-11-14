@@ -320,6 +320,8 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append(f"  Memory:    {perms.memory}")
     if perms.cron:
         lines.append("  Cron:      scheduled agent jobs")
+    if perms.chatSlots:
+        lines.append("  Chat:      runs its own chat sessions, listed under the app")
     if perms.workerAutoApprove:
         lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
     if perms.reachableByUserSessions:
