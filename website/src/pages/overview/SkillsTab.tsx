@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useId, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
@@ -6,7 +6,7 @@ import { api, ApiError, type SkillScriptValidation } from '../../api/client'
 import ProjectSkillsPlatformHint from '../../components/ProjectSkillsPlatformHint'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
-import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
+import { Badge, Card, Btn, Checkbox, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import HoverTip from '../../components/HoverTip'
 import Modal from '../../components/Modal'
@@ -22,7 +22,7 @@ import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { useProvider } from '../../providers'
 import type { Skill } from '../../types'
 import SkillContextBudget from './SkillContextBudget'
-import { SKILL_SORTS, pendingCreatedAt, sortByCreated, sortSkills, type SkillSort } from './skillSort'
+import { SKILL_SORTS, pendingCreatedAt, siblingUpdates, sortByCreated, sortSkills, type SkillSort } from './skillSort'
 import { bestFilterMatch } from '../../utils/filterSelection'
 import SimpleSelect from '../../components/SimpleSelect'
 import { useConfirm } from '../../components/ConfirmDialog'
@@ -942,7 +942,7 @@ function ValidationFindings({ report }: { report: Record<string, string[]> }) {
   )
 }
 
-function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, olderUpdates = [], hasNewer, onApprove, onDismiss }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
@@ -951,11 +951,20 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
   /** True when the queue holds a flagged candidate — the only shape where the
       disabled fade can be misread as a validation state. */
   mixedQueue?: boolean
-  onApprove: (slug: string, contentSha256: string) => void
+  /** Updates to the same live skill staged before this one. Approving this
+      one moves the live skill past their base, so none of them can be
+      approved afterwards; the row offers to dismiss them with the approval. */
+  olderUpdates?: PendingSkill[]
+  /** True when a later update to the same live skill is queued. */
+  hasNewer?: boolean
+  onApprove: (slug: string, contentSha256: string, alsoDismiss: string[]) => void
   onDismiss: (slug: string, contentSha256?: string) => void
 }) {
   const { confirm, confirmDialog } = useConfirm()
   const [open, setOpen] = useState(false)
+  // Off by default: Approve on its own does exactly what it always did.
+  const [dismissOlder, setDismissOlder] = useState(false)
+  const dismissOlderId = useId()
   const rowRef = useRef<HTMLDivElement>(null)
   // Deliberately an effect and not a `useState(autoOpen)` initializer: the panel
   // latches the deep-linked slug in an effect of its own, so `autoOpen` can flip
@@ -993,6 +1002,12 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
             {p.name}
             {isUpdate && (
               <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent font-bold">{i18nT('pages.overview.skillsTab.update')}</span>
+            )}
+            {isUpdate && hasNewer && (
+              /* Text, not a tooltip: it is the reason this card's Approve will
+                 stop working once the newer one is approved, so it must be
+                 visible on touch and to a screen reader as part of the name. */
+              <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-bg-elevated text-muted border border-border font-bold">{i18nT('pages.overview.skillsTab.newer_update_exists')}</span>
             )}
             {!isUpdate && (
               /* A generated skill that does not exist yet: approving it adds a
@@ -1053,7 +1068,10 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
               aria-disabled={!open || undefined}
               disabled={open && approveDisabled}
               className="aria-disabled:bg-bg-hover aria-disabled:text-muted aria-disabled:border-transparent aria-disabled:shadow-none aria-disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:active:scale-100"
-              onClick={() => { if (!approveDisabled && detail?.content_sha256) onApprove(p.slug, detail.content_sha256) }}
+              onClick={() => {
+                if (approveDisabled || !detail?.content_sha256) return
+                onApprove(p.slug, detail.content_sha256, dismissOlder ? olderUpdates.map(o => o.slug) : [])
+              }}
             >{i18nT('pages.overview.skillsTab.approve')}</Btn>
           )
           return open ? approve : <HoverTip label={i18nT('pages.overview.skillsTab.approve_review_first')}>{approve}</HoverTip>
@@ -1081,6 +1099,14 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
            same order twice. */
         <div className="mt-1 text-[11px] text-muted">
           {i18nT('pages.overview.skillsTab.approve_flagged_hint')}
+        </div>
+      )}
+      {isUpdate && hasNewer && p.target && (
+        /* Why this card stops being approvable: approving the newer update
+           moves the live skill past the version this one was merged from,
+           and the server then refuses it. Visible text, beside the label. */
+        <div className="mt-1 text-[11px] text-muted" style={{ overflowWrap: 'anywhere' }}>
+          {i18nT('pages.overview.skillsTab.newer_update_hint', { target: p.target })}
         </div>
       )}
       {!open && mixedQueue && (
@@ -1148,6 +1174,26 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
       )}
       {open && detail && (
         <div className="mt-2 space-y-2">
+          {isUpdate && olderUpdates.length > 0 && !!detail.diff && !detail.stale_base && (
+            /* Approving this update moves the live skill past the base every
+               older update was merged from, so the server refuses each of them
+               afterwards and they would sit in the queue until dismissed one by
+               one. The offer names them, is off by default, and runs only after
+               the approval succeeds, through the same dismiss the cards use. */
+            <div className="text-[11px] p-2 rounded bg-bg-elevated border border-border">
+              <label htmlFor={dismissOlderId} className="flex items-center gap-2 cursor-pointer text-text">
+                <Checkbox
+                  id={dismissOlderId}
+                  checked={dismissOlder}
+                  onChange={e => setDismissOlder(e.target.checked)}
+                />
+                {i18nT('pages.overview.skillsTab.also_dismiss_older_updates', { count: olderUpdates.length, target: p.target ?? '' })}
+              </label>
+              <div className="mt-1 ml-6 text-muted" style={{ overflowWrap: 'anywhere' }}>
+                {i18nT('pages.overview.skillsTab.older_updates_removed', { names: fmtList(olderUpdates.map(o => o.name)) })}
+              </div>
+            </div>
+          )}
           {(detail.script_validation?.ok === false || p.script_validation?.ok === false)
             && approveRefusal?.code !== 'script_validation_failed' && (
             /* Pre-approval PREDICTION: the server will refuse this candidate
@@ -1372,8 +1418,34 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       return null
     })
   }, [pending, isSuccess])
+  // The approve card's "Also dismiss N older updates": runs after the approval
+  // succeeds, through the same endpoint Dismiss all uses, scoped to the slugs
+  // the card named when it was clicked so a later arrival is never included.
+  const dismissOlder = useMutation({
+    mutationFn: (slugs: string[]) => api.dismissAllPendingSkills(slugs),
+    onError: (err) => {
+      setPanelError({
+        message: i18nT('pages.overview.skillsTab.dismiss_failed_generic', {
+          reason: i18nT('pages.overview.skillsTab.dismiss_failed_reason_uncoded'),
+        }),
+        journal: findReport(err instanceof Error ? err.message : undefined),
+      })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+    },
+    onSuccess: (_data, slugs) => {
+      setApproveRefusals(prev => {
+        if (!slugs.some(s => s in prev)) return prev
+        const next = { ...prev }
+        for (const s of slugs) delete next[s]
+        return next
+      })
+      if (reviewSlug && slugs.includes(reviewSlug)) setReviewSlug(null)
+      for (const s of slugs) qc.removeQueries({ queryKey: ['skills-pending-detail', s] })
+      qc.invalidateQueries({ queryKey: ['skills-pending'] })
+    },
+  })
   const approve = useMutation({
-    mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256: string }) =>
+    mutationFn: ({ slug, contentSha256 }: { slug: string; contentSha256: string; alsoDismiss?: string[] }) =>
       api.approvePendingSkill(slug, contentSha256),
     onMutate: ({ slug }) => {
       // A retry starts clean; a stale refusal must not outlive the click that
@@ -1487,7 +1559,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
         qc.invalidateQueries({ queryKey: ['skills'] })
       }
     },
-    onSuccess: (_data, { slug }) => {
+    onSuccess: (_data, { slug, alsoDismiss }) => {
       setApproveRefusals(prev => {
         if (!(slug in prev)) return prev
         const next = { ...prev }
@@ -1511,6 +1583,7 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       qc.invalidateQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
       qc.invalidateQueries({ queryKey: ['skills'] })
+      if (alsoDismiss && alsoDismiss.length > 0) dismissOlder.mutate(alsoDismiss)
     },
   })
   const dismiss = useMutation({
@@ -1723,17 +1796,22 @@ function PendingSkillsPanel({ sort = 'default' }: { sort?: SkillSort }) {
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
-            {shownPending.map(p => (
-              <PendingCandidateRow
-                key={p.slug}
-                p={p}
-                autoOpen={p.slug === reviewSlug}
-                approveRefusal={approveRefusals[p.slug]}
-                mixedQueue={pending.some(c => c.script_validation?.ok === false)}
-                onApprove={(slug, contentSha256) => approve.mutate({ slug, contentSha256 })}
-                onDismiss={(s, contentSha256) => dismiss.mutate({ slug: s, contentSha256 })}
-              />
-            ))}
+            {shownPending.map(p => {
+              const siblings = siblingUpdates(pending, p)
+              return (
+                <PendingCandidateRow
+                  key={p.slug}
+                  p={p}
+                  autoOpen={p.slug === reviewSlug}
+                  approveRefusal={approveRefusals[p.slug]}
+                  mixedQueue={pending.some(c => c.script_validation?.ok === false)}
+                  olderUpdates={siblings.older}
+                  hasNewer={siblings.hasNewer}
+                  onApprove={(slug, contentSha256, alsoDismiss) => approve.mutate({ slug, contentSha256, alsoDismiss })}
+                  onDismiss={(s, contentSha256) => dismiss.mutate({ slug: s, contentSha256 })}
+                />
+              )
+            })}
           </div>
         </Card>
       )}

@@ -30,6 +30,27 @@ export function sortByCreated<T>(rows: T[], createdAt: (row: T) => number | null
 /** A pending candidate's `.meta.json` `created_at` (ISO 8601) as epoch ms. */
 export const pendingCreatedAt = (p: { created_at?: string }) => (p.created_at ? Date.parse(p.created_at) : null)
 
+type PendingUpdateRow = { slug: string; kind?: string; target?: string | null; created_at?: string }
+
+/** The other pending updates to `p`'s live skill, oldest first, split into
+ *  those staged before `p` and whether any was staged after it.
+ *
+ *  Only updates with a readable staging time take part: one that cannot be
+ *  ordered is never called older or newer, so no card offers to dismiss it. */
+export function siblingUpdates<T extends PendingUpdateRow>(pending: T[], p: T): { older: T[]; hasNewer: boolean } {
+  const at = pendingCreatedAt(p) ?? NaN
+  if (p.kind !== 'update' || !p.target || !Number.isFinite(at)) return { older: [], hasNewer: false }
+  const rows = sortByCreated(
+    pending.filter(o => o.kind === 'update' && o.target === p.target && o.slug !== p.slug
+      && Number.isFinite(pendingCreatedAt(o) ?? NaN)),
+    pendingCreatedAt,
+  ).reverse()
+  return {
+    older: rows.filter(o => pendingCreatedAt(o)! < at),
+    hasNewer: rows.some(o => pendingCreatedAt(o)! > at),
+  }
+}
+
 /** Order one group of Skills-list rows by usage or creation time.
  *
  *  `Array.prototype.sort` is stable, so ties (every never-used skill, for one)
