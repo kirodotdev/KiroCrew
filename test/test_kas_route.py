@@ -46,6 +46,12 @@ def _ctx(
     )
 
 
+def _executable_file(path: Path) -> Path:
+    path.write_text("#!/bin/sh\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
 def _installed(tmp_path: Path) -> kas_bundle.InstalledKasBundle:
     return kas_bundle.InstalledKasBundle(
         version=kas_bundle.KAS_PIN_VERSION,
@@ -281,7 +287,75 @@ class TestCrewEntrySkipsLauncher:
     def test_a_launcher_without_a_sibling_does_not(self, monkeypatch):
         monkeypatch.setattr(kas_route.sys, "platform", "linux")
         monkeypatch.setattr("kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: None)
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolved_kiro_cli_version", lambda b: (2, 35, 2))
         assert kas_route.crew_entry_skips_launcher("/opt/kiro/kiro-cli", {}) is False
+
+    def test_a_launcher_with_a_sibling_skips_it_without_a_version_probe(self, monkeypatch):
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: "/opt/kiro/kiro-cli-chat"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.resolved_kiro_cli_version",
+            lambda b: pytest.fail("the sibling already answers"),
+        )
+        assert kas_route.crew_entry_skips_launcher("/opt/kiro/kiro-cli", {}) is True
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [((3, 0, 0), True), ((3, 1, 4), True), (None, False)],
+        ids=["3.0.0", "3.1.4", "unknown"],
+    )
+    def test_a_standalone_kiro_cli_is_the_chat_binary_itself(self, monkeypatch, version, expected):
+        """From 3.0.0 ``kiro-cli`` has no launcher in front of it; an unread version
+        keeps today's answer."""
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr("kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: None)
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolved_kiro_cli_version", lambda b: version)
+        assert kas_route.crew_entry_skips_launcher("/opt/kiro/kiro-cli", {}) is expected
+
+    def test_a_path_only_kiro_cli_is_read_inside_the_sandbox_not_by_the_pins_probe(
+        self, monkeypatch
+    ):
+        """A ``kiro-cli`` that is not the pin can be a file the agent planted in a
+        ``PATH`` directory, so its version comes only from the sandboxed probe."""
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr("kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: None)
+        monkeypatch.setattr("kiro_crew.kiro_cli.pin_kiro_cli", lambda: (None, True))
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.kiro_cli_version_at",
+            lambda b: pytest.fail("the pin's own read never runs a PATH-only file"),
+        )
+        seen: list[str] = []
+
+        def _sandboxed(binary: str) -> tuple[int, int, int]:
+            seen.append(binary)
+            return (3, 0, 0)
+
+        monkeypatch.setattr("kiro_crew.kiro_cli_path_probe.version_if_known", _sandboxed)
+        venv_bin = "/work/.venv/bin/kiro-cli"
+        assert kas_route.crew_entry_skips_launcher(venv_bin, {}) is True
+        assert seen == [venv_bin]
+
+    def test_the_pinned_kiro_cli_keeps_the_pins_own_read(self, tmp_path, monkeypatch):
+        pinned = _executable_file(tmp_path / "kiro-cli")
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr("kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: None)
+        monkeypatch.setattr("kiro_crew.kiro_cli.pin_kiro_cli", lambda: (str(pinned), False))
+        monkeypatch.setattr("kiro_crew.kiro_cli.kiro_cli_version_at", lambda b: (3, 0, 0))
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli_path_probe.version_if_known",
+            lambda b: pytest.fail("the pin is read by its own probe"),
+        )
+        assert kas_route.crew_entry_skips_launcher(str(pinned), {}) is True
+
+    def test_a_wrapper_with_another_name_is_never_probed(self, monkeypatch):
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.resolved_kiro_cli_version",
+            lambda b: pytest.fail("only kiro-cli is read for its version"),
+        )
+        assert kas_route.crew_entry_skips_launcher("/opt/kiro/my-kiro", {}) is False
 
 
 class TestCrewSignInStartsSpawn:
@@ -406,6 +480,48 @@ class TestHarnessRoute:
             plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
         assert plan.argv[0] == str(installed.node_bin)
         assert kas_route.last_spawn_route().reason == kas_route.REASON_KIRO_CLI_SIGNED_OUT
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("version", "sibling", "relay_entry"),
+        [
+            ((3, 0, 0), None, "/opt/kiro/kiro-cli"),
+            ((2, 35, 2), "/opt/kiro/kiro-cli-chat", "/opt/kiro/kiro-cli-chat"),
+            ((2, 35, 2), None, None),
+        ],
+        ids=["3.x-standalone", "2.x-with-sibling", "2.x-launcher-alone"],
+    )
+    async def test_a_signed_out_kiro_cli_keeps_the_relay_where_crews_sign_in_reaches_it(
+        self, tmp_path, switch_open, monkeypatch, version, sibling, relay_entry
+    ):
+        """kiro-cli signed out, the user signed in through Kiro Crew. From 3.0.0
+        ``kiro-cli`` is the chat binary itself, so the relay asks Crew for the
+        credential as a ``kiro-cli-chat`` sibling does on 2.x; a 2.x launcher with no
+        sibling would refuse, so that host takes Crew's own engine."""
+        installed = _installed(tmp_path)
+        monkeypatch.setattr(kas_route.sys, "platform", "linux")
+        monkeypatch.setattr(kas_route, "kiro_cli_signed_out", lambda **k: True)
+        monkeypatch.setattr("kiro_crew.kiro_cli.chat_sibling", lambda *a, **k: sibling)
+        monkeypatch.setattr("kiro_crew.acp.harness.kas.chat_sibling", lambda *a, **k: sibling)
+        monkeypatch.setattr("kiro_crew.kiro_cli.resolved_kiro_cli_version", lambda b: version)
+        monkeypatch.setattr(
+            "kiro_crew.acp.harness.kas.resolved_kiro_cli_version", lambda b: version
+        )
+        with (
+            patch("kiro_crew.acp.harness.kas._bundle_route_selected", return_value=False),
+            patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", _a_bin),
+            patch("kiro_crew.acp.harness.kas.vault_holds_identity_off_loop", return_value=True),
+            patch("kiro_crew.acp.harness.kas.installed_kiro_cli_version", return_value=version),
+            patch("kiro_crew.acp.harness.kas._kiro_cli_sandbox_owns_relay", return_value=False),
+            patch.object(kas_bundle, "installed_bundle", return_value=installed),
+        ):
+            plan = await KasHarness().resolve_spawn(_ctx(tmp_path))
+        if relay_entry is None:
+            assert plan.argv[0] == str(installed.node_bin)
+            assert kas_route.last_spawn_route().reason == kas_route.REASON_KIRO_CLI_SIGNED_OUT
+        else:
+            assert plan.argv == build_kas_argv(relay_entry, host_auth=True, client_flag=True)
+            assert kas_route.last_spawn_route() == kas_route.RELAY
 
     @pytest.mark.asyncio
     async def test_a_working_kiro_cli_keeps_the_relay(self, tmp_path, switch_open, monkeypatch):

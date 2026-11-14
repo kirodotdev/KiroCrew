@@ -249,9 +249,11 @@ def _chat_delegate_target(kiro: str) -> str | None:
     launcher_dir = os.path.dirname(kiro)
     if sys.platform == "darwin" and launcher_dir.endswith(".app/Contents/MacOS"):
         return os.path.join(launcher_dir, "kiro-cli-chat")
-    from kiro_crew.kiro_cli import kiro_cli_version_at, standalone_kiro_cli
+    from kiro_crew.kiro_cli import resolved_kiro_cli_version, standalone_kiro_cli
 
-    if standalone_kiro_cli(kiro_cli_version_at(kiro)):
+    # wait: this process never warms the PATH probe's cache, so a cold read
+    # would call a PATH-only 3.x install a launcher with no chat binary.
+    if standalone_kiro_cli(resolved_kiro_cli_version(kiro, wait=True)):
         return kiro
     local_chat = os.path.join(os.path.expanduser("~"), ".local", "bin", "kiro-cli-chat")
     if os.path.lexists(local_chat):
@@ -275,8 +277,10 @@ def kas_relay_entry(kiro: str | None) -> str | None:
     resolved launcher (:func:`kiro_cli.chat_sibling`) rather than through the
     launcher, so the launcher's ``~/.local/bin`` delegate is not on that path.
     ``None`` whenever the spawn keeps the launcher: no usable vault identity,
-    the operator's own ``KIROCREW_KIRO_BIN`` (never swapped), or no executable
-    sibling. A plain read of the vault and a ``stat``; never raises.
+    the operator's own ``KIROCREW_KIRO_BIN`` (never swapped), no executable
+    sibling, or a standalone ``kiro-cli`` 3.0.0 or later, which is the chat
+    binary itself (:func:`kiro_cli.resolved_kiro_cli_version`, the spawn's own
+    read). A plain read of the vault, a ``stat`` and that version; never raises.
     """
     if not kiro:
         return None
@@ -286,12 +290,18 @@ def kas_relay_entry(kiro: str | None) -> str | None:
         # harness's own, so the two cannot drift.
         from kiro_crew.agent_sdk.kas_bundle import kas_operator_override
         from kiro_crew.auth.bridge import vault_holds_identity
-        from kiro_crew.kiro_cli import chat_sibling
+        from kiro_crew.kiro_cli import (
+            chat_sibling,
+            resolved_kiro_cli_version,
+            standalone_kiro_cli,
+        )
 
         if kas_operator_override(kiro, os.environ):
             return None
         sibling = chat_sibling(kiro)
         if not sibling or not vault_holds_identity(warn=False):
+            return None
+        if standalone_kiro_cli(resolved_kiro_cli_version(kiro, wait=True)):
             return None
     except Exception:  # noqa: BLE001 - a diagnostic probe must not fail doctor
         return None

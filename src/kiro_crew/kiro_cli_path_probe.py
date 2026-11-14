@@ -20,8 +20,9 @@ sandbox, so the rule here is that the probe never has more reach than that launc
 * Windows has no OS sandbox backend, so nothing runs there.
 
 Every failure is "unknown", which the caller reads as "keep the full tool list".
-The answer is never waited for: :func:`version_if_known` reads a cache and, on a
-miss, starts the probe in the background. One answer per file identity (path and
+The gateway never waits for the answer: :func:`version_if_known` reads a cache
+and, on a miss, starts the probe in the background. ``kirocrew doctor``, one
+blocking run, reads a miss inline through :func:`version_now`. One answer per file identity (path and
 mtime), so a replaced file is read again. Only the file's own answer is kept: a
 read that did not run, or that was cut off, is asked again by the next caller.
 """
@@ -79,6 +80,25 @@ def version_if_known(binary: str) -> _Version | None:
         with _lock:
             _in_flight.discard(key)
     return None
+
+
+def version_now(binary: str) -> _Version | None:
+    """The version of *binary*, read inline on a miss. Blocking.
+
+    For a one-shot caller whose process never warms the cache (``kirocrew
+    doctor``): a cached answer is returned as is, otherwise the same sandboxed
+    read :func:`version_if_known` starts in the background runs on this thread
+    and is kept the same way. The gateway's spawn and route never call this.
+    """
+    key = _identity(binary)
+    if key is None:
+        return None
+    with _lock:
+        if key in _versions:
+            return _versions[key]
+    _probe_and_record(key)
+    with _lock:
+        return _versions.get(key)
 
 
 def warm() -> None:
