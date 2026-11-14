@@ -759,6 +759,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         _note_member_fallback,
         _note_member_remap,
         _otlp_endpoint_rows,
+        _percent_list,
         _read_backend_choice,
         _registry_entry,
         _resolved_kas_bundle,

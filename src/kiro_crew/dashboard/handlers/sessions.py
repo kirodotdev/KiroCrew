@@ -259,7 +259,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
-from kiro_crew.dashboard.handlers import kiro_usage_api
+from kiro_crew.dashboard.handlers import kiro_usage_api, plan_credit_alerts
 from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
 )
@@ -1741,6 +1741,42 @@ async def _fetch_usage_bg(*, vault_owned: bool = False) -> str | None:
                 pass
 
 
+async def _fetch_usage_then_alert(state: DashboardState, *, vault_owned: bool) -> str | None:
+    """One refresh (:func:`_fetch_usage_bg`), then the plan-credit alert check on its reading.
+
+    Only a refresh that runs is checked: :func:`_fetch_usage_bg` tests ``_usage_fetching``
+    before its first await, so the flag read here, with no await between, says whether the
+    call refreshes or returns at once because another refresh is running, which checks its
+    own reading. The check never raises, so the refresh's outcome is what the caller gets.
+    """
+    ran = not _usage_fetching
+    outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    if ran:
+        await _alert_on_cached_reading(state)
+    return outcome
+
+
+async def _alert_on_cached_reading(state: DashboardState) -> None:
+    """Run :func:`plan_credit_alerts.notify_if_crossed` on the reading the GET would serve.
+
+    The reading and the identity it was published under are taken in one step, as the GET
+    takes them, and judged by the GET's rule (:func:`_reading_not_servable`) on a fresh
+    :func:`_vault_owns_usage` verdict: a reading the GET would not serve is not checked.
+    That identity names the account the alert record is kept for. Off, with no identity
+    read, while ``telemetry.plan_alert_pcts`` is empty. Never raises.
+    """
+    usage, vault_fp, user_id = _usage_cache, _usage_cache_vault_fp, _usage_cache_user_id
+    try:
+        if not await plan_credit_alerts.enabled():
+            return
+        if await _reading_not_servable(await _vault_owns_usage(), usage, vault_fp):
+            return
+    except Exception:  # noqa: BLE001 - an alert miss must not break the usage refresh
+        logger.warning("Plan credit alert: could not check the reading's account", exc_info=True)
+        return
+    await plan_credit_alerts.notify_if_crossed(state, usage, vault_fp=vault_fp, user_id=user_id)
+
+
 async def api_sessions_usage(request: web.Request) -> web.Response:
     """GET /api/sessions/usage — cached kiro credit usage (background refresh)."""
     # Same browser-storm guard as api_models: the /usage scrape shells out to
@@ -1799,7 +1835,7 @@ async def api_sessions_usage(request: web.Request) -> web.Response:
         # text scrape, a minute-scale kiro-cli subprocess. A faster readout is
         # not worth that churn; a profile switch is picked up on the next interval.
         state: DashboardState = request.app["state"]
-        task = asyncio.create_task(_fetch_usage_bg(vault_owned=vault_owned))
+        task = asyncio.create_task(_fetch_usage_then_alert(state, vault_owned=vault_owned))
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
     return web.json_response({"usage": served})
@@ -1846,7 +1882,7 @@ async def api_sessions_usage_refresh(request: web.Request) -> web.Response:
             {"error": "A refresh is already running", "code": "refresh_in_flight"},
             status=409,
         )
-    outcome = await _fetch_usage_bg(vault_owned=vault_owned)
+    outcome = await _fetch_usage_then_alert(request.app["state"], vault_owned=vault_owned)
     if outcome == _SKIPPED_SCRAPE_PARKED:
         parked_for = max(1, int(_usage_scrape_backoff_until - time.monotonic() + 0.999))
         return web.json_response(

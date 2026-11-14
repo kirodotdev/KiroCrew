@@ -1232,6 +1232,23 @@ def _otlp_endpoint_rows(value: object, default: list) -> list:
     return [dict(row) if isinstance(row, dict) else row for row in value]
 
 
+def _percent_list(value: object, default: list) -> list:
+    """``telemetry.plan_alert_pcts`` as sorted distinct numbers in (0, 1000], else *default*.
+
+    A non-list reads as *default* (off). Inside a list, a bool, a non-number, a
+    non-finite number and anything outside the range is dropped, so one typo does
+    not discard the percentages beside it.
+    """
+    if not isinstance(value, list):
+        return default
+    kept = {
+        float(v)
+        for v in value
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 1000
+    }
+    return sorted(kept)
+
+
 def _dict_or_default(value: object, default: dict) -> dict:
     """A copy of *value* when it is a dict, else *default*."""
     return dict(value) if isinstance(value, dict) else default
@@ -1271,6 +1288,7 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         traces_ultra_mode=str(section.get("traces_ultra_mode")),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
+        plan_alert_pcts=section.read("plan_alert_pcts", _percent_list),
     )
 
 
