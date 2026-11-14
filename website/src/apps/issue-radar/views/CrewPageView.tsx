@@ -356,29 +356,34 @@ export default function CrewPageView({ crewId, onEdit }: CrewPageViewProps) {
 
   if (detail.isPending) {
     return (
-      <div className="px-4 md:px-6 pt-4 pb-6 text-[13px] text-muted" data-testid="crew-page-loading">
-        {t('apps.issueRadar.views.crews.page.loading')}
-      </div>
+      <>
+        <div className="px-4 md:px-6 pt-4 pb-6 text-[13px] text-muted" data-testid="crew-page-loading">
+          {t('apps.issueRadar.views.crews.page.loading')}
+        </div>
+        {confirmDialog}
+      </>
     )
   }
   if (detail.isError || !crew) {
     return (
-      <div className="px-4 md:px-6 pt-4 pb-6" data-testid="crew-page-error">
-        {detail.isError ? (
-          // A failed read is an error, not an empty state; the page holds no
-          // draft, so the hand-off is offered.
-          <ErrorNotice
-            title={t('apps.issueRadar.views.crews.page.load_failed')}
-            message={detail.error instanceof Error ? detail.error.message : String(detail.error)}
-            askAgent
-          />
-        ) : (
-          <EmptyState
-            icon={<Inbox className="lucide-inline" />}
-            title={t('apps.issueRadar.views.crews.page.load_failed')}
-          />
-        )}
-      </div>
+      <>
+        <div className="px-4 md:px-6 pt-4 pb-6" data-testid="crew-page-error">
+          {detail.isError ? (
+            // No draft can be lost through the agent hand-off.
+            <ErrorNotice
+              title={t('apps.issueRadar.views.crews.page.load_failed')}
+              message={detail.error instanceof Error ? detail.error.message : String(detail.error)}
+              askAgent
+            />
+          ) : (
+            <EmptyState
+              icon={<Inbox className="lucide-inline" />}
+              title={t('apps.issueRadar.views.crews.page.load_failed')}
+            />
+          )}
+        </div>
+        {confirmDialog}
+      </>
     )
   }
 
