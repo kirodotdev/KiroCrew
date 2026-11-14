@@ -2,9 +2,9 @@ name: Build
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "release/**"]
   # The merge queue tests each PR against the main it will actually land on.
   merge_group:
     types: [checks_requested]
