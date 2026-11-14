@@ -1672,7 +1672,7 @@ per run and route the outcome through one shared verdict with three arms:
 | Every attempted call **security-blocked**, none approved | `error`, reason names the refused calls | `record_failure()` — the job's `auto_pause_limit()` applies (default 5, `0` = never) | unchanged |
 | Failure due to credential/auth expiry: an `AcpAuthRequired`, or an `AcpError` whose `auth_required` tag is `True` or whose `auth_error_code` is an expired token (typed data, not error text) | `error`, error text preserved | counted like any failure, but `record_failure(auth_expiry=True)` never auto-pauses; past the default threshold the never-pause backoff applies | unchanged; the alert skips the "run at the pause limit alerts" rule, so only `alert_after_failures` decides |
 | **Some** call security-blocked (another ran, or another refusal left capability unknown) | `error`, reason names the refused calls | neither counter moves | result prefixed with the same reason |
-| No security block at all | `ok` | `record_success()` | unchanged |
+| No security block at all | `ok` | `record_success()` | unchanged, except that an unresolved call is named (below) |
 
 The middle arm exists because the model's prose is its own account of the run:
 a turn whose final write was refused still reports the write as done. Without
@@ -1710,6 +1710,17 @@ same **Partial** badge (#24616). The record keeps `status: "failure"`;
 `last_error` when the run ended; only the tool gate writes it, so a script or
 command job's run does not carry it. The `summary` is not read: a run that
 wrote a result stores that result, refusal banner first, as its summary.
+
+A call that arrived unapproved but not security-blocked (an approval request
+nobody answered, a governance denial, a person's rejection) is **unresolved**.
+It moves neither `last_status` nor the failure budget, because it describes an
+absent approver or the policy state rather than the job. It still did not run,
+and the model's reply can read as though it did (an unattended job's first read
+of its own instructions was declined and the run read as a plain success). So the delivered result is prefixed with
+`⚠ N tool call(s) not approved (no approver answered, or refused by policy): <titles> — that work did not happen.`
+(`_GateTally.unapproved_summary()`, through `display_safe`, at most three
+titles), after the partial-block line when both apply. A run with no unresolved
+call carries no such line.
 
 The tally does not separate the gate's tiers: a title-tier refusal (`rm -rf /`
 as a command) and an input-tier one (a document body the scanner read as a
