@@ -260,25 +260,16 @@ def build_session_context(
         _marks.append((label, time.monotonic()))
 
     # Critical rules (diff rendering, OPTIONS buttons, absolute-path file
-    # links). These are the built-in kirocrew assistant's dashboard/Slack UI
-    # contracts and apply to ALL providers — including Claude Code. The
-    # dashboard renders clickable input-box options only from the
-    # [OPTIONS: ...] text tag (see dashboard/state_parts/slot_transcript.py and the frontend
-    # AssistantMessage), so CC must be told to emit it too or the options
-    # never render.
+    # links): the built-in assistant's dashboard/Slack UI contracts, for ALL
+    # providers including Claude Code. The dashboard renders input-box options
+    # only from the [OPTIONS: ...] tag (dashboard/state_parts/slot_transcript.py
+    # and the frontend AssistantMessage), so every backend must be told to emit it.
     #
-    # A CUSTOM app agent can OPT OUT: it ships its own system prompt that
-    # defines its own output contract (e.g. an agent that writes prose
-    # through its own MCP tools, with no diff block or [OPTIONS:] footer),
-    # and injecting the kirocrew assistant's mandates on top both
-    # conflicts with that contract and — on a safety-tuned model — reads as
-    # an attempt to override the agent's identity, which the model then
-    # refuses as prompt injection. The opt-out is per-agent via
-    # ``includeCrewContext: false``; DEFAULT is to inject (a plain custom
-    # agent with no flag still gets the rules, same as the built-in). The
-    # tags still RENDER for any agent that emits them (the dashboard parses
-    # them regardless); this only stops the host from MANDATING them where an
-    # agent has declared it does not want them.
+    # A CUSTOM app agent can OPT OUT with ``includeCrewContext: false``: its own
+    # system prompt defines its output contract, and these mandates on top
+    # conflict with it and, on a safety-tuned model, read as prompt injection.
+    # DEFAULT is to inject, even for a custom agent with no flag. The tags still
+    # RENDER for any agent that emits them; the opt-out only stops MANDATING them.
     held = native_documents or {}
     if ctx._agent_includes_crew_context(agent):
         rules = ctx._critical_rules_for(session_key, runtime_source)

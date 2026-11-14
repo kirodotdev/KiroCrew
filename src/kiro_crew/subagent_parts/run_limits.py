@@ -303,23 +303,19 @@ _SUPPRESS_CEILING = 4
 # Wave-digest HOLD DEADLINE: the maximum time a COMPLETED wave member's result
 # may sit undelivered while the gateway waits for the digest chunk to fill.
 #
-# The chunk-size trigger alone (``SUBAGENT_DIGEST_CHUNK_SIZE``, default 10) is
-# a COUNT trigger, and the concurrency cap makes typical waves 2-5 members —
-# so the count can never be reached and the only flush that ever fires is the
-# wave-close one. Every sibling's result is then withheld for the SLOWEST
-# member's entire remaining runtime; a member that HANGS rather than fails
-# withholds them for the full ``_TIMEOUT_SECS`` reap, which is
-# indistinguishable from a dead session.
+# The chunk-size trigger (``SUBAGENT_DIGEST_CHUNK_SIZE``, default 10) counts,
+# and the concurrency cap keeps typical waves at 2-5 members, so on its own only
+# the wave-close flush fires. Every result would then wait for the SLOWEST
+# member; one that HANGS holds them for the full ``_TIMEOUT_SECS`` reap, which
+# looks like a dead session.
 #
-# This deadline is the latency half of that one-knob-two-jobs split: the count
-# trigger keeps bounding digest SIZE for large waves, while the deadline caps
-# worst-case delivery LATENCY for every wave size. A wave whose members all
-# finish within the deadline of each other still delivers ONE consolidated
-# digest — the deliberate small-wave behavior is unchanged.
+# So the count trigger bounds digest SIZE for large waves, and this deadline
+# bounds delivery LATENCY for every wave. Members that all finish within the
+# deadline of each other still get ONE consolidated digest.
 #
 # Tunable via ``KIROCREW_SUBAGENT_DIGEST_HOLD_SECS``; 0/negative disables the
-# deadline (count-trigger-only, i.e. pre-fix behavior). Guarded parse: a
-# malformed value must never crash import.
+# deadline (count trigger only). Guarded parse: a malformed value must never
+# crash import.
 _DEFAULT_DIGEST_HOLD_SECS = 120.0
 
 
