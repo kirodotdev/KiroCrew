@@ -1427,6 +1427,23 @@ every field; the field itself is written on at most `SAMPLES_PER_DAY` lines a da
 restarts the window and the sample budget. Past a cap, or when the log cannot be
 read or replaced, the line is written without the field.
 
+A stage field may also carry `control`: up to 20 ids of the block the stage keeps
+(`lessons` for `rule_authority_order` and `lesson_fold`; `findings` plus the
+task facts both policies keep, passed as `record_stage(kept=...)`, for
+`relevance_rule`; `kept` itself is never written), picked when the first 4 bytes of SHA-256 over the session tag and
+key, read as an integer, are below 10 modulo 100 (`memory_shadow_trace.control_keys`), so every render
+of one session picks the same rows. While any memory stage flag is on, two outcome
+lines join the shards (`injection_receipts.OUTCOME_KINDS`): `phase: "recall"` with
+the memory keys a tool `memory_recall` delivered (the lessons its lesson block
+rendered, named through a private collection, then its facts), and `phase:
+"learn_add"` with the stored lessons within cosine 0.85 of a person's `learn_add`
+(read before the write). Each is `{ts, sk, phase, memory_store, <phase>: {mode:
+"trace", policy, ids}}`, at most 20 ids, `sk` the first 12 hex characters of
+SHA-256 over the session key; never the query, the rule or the session key. They
+take the stage-field per-day, total and byte caps, each kind its own budget,
+counted over a rolling 14 days rather than a window that closes, so a stage turned
+on later still sees outcomes; a capped outcome line is not written. Incognito and temporary sessions write none.
+
 **Current-request recency boundary.** Injected blocks are not the only proof that a
 turn is contextual. A keyed warm provider session (`is_new_session=False`) carries
 native conversation history even when this turn emits no Kiro Crew context block,

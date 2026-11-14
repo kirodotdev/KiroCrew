@@ -134,7 +134,19 @@ session starts), and how many items the new policy would change. It shows
 counts only, never memory text, and writes nothing. `--stage <name>` adds counts
 by day, `--since 7d` or `--since YYYY-MM-DD` moves the start, `--store <name>`
 reads another store, and `--json` prints the same data as JSON. Only `shadow`
-counters and sampled fields count; Dreaming keeps `propose`. If a window starts
+counters and sampled fields count; Dreaming keeps `propose`.
+
+Each stage also gets a miss rate and a verdict. A row a stage would drop counts
+as missed when something later shows it was needed: a `memory_recall` that
+returned it, or a `learn_add` close to it (cosine above 0.85). A render stage
+counts only that session's later events; a write stage counts any later one. A
+small hashed sample of rows the stage keeps is scored the same way, as a control.
+The verdict is `wait` until 14 days, 200 session starts, a control sample and at
+least one outcome line exist,
+then `pass` when the miss rate is at most 1 in 100 and no higher than the
+control's, else `fail`. While any stage flag is on, recalls and `learn_add`s write
+small outcome lines with memory keys and a session hash only, never the query or
+the rule; incognito and temporary sessions write none. If a window starts
 partway through a UTC day, the report excludes that day from counters, samples
 and session starts and reports the next UTC midnight as `window_start`. This
 conservatively undercounts readiness by at most one day, avoiding counters that

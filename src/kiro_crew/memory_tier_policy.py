@@ -39,7 +39,10 @@ table, keys and counts only, never text, under the kind-routing caps:
   :data:`IDS_PER_DAY` a day and the kind-routing totals (``SAMPLES_TOTAL`` rows,
   ``SAMPLE_BYTES_CAP`` bytes), oldest day dropped first; ids stop
   ``SHADOW_SAMPLE_WINDOW_SECS`` after shadow first logged in the store, and that
-  window restarts when :data:`RULES_VERSION` changes.
+  window restarts when :data:`RULES_VERSION` changes. Each entry carries the session
+  tag and time (:func:`kiro_crew.memory_shadow_trace.stamp`);
+* control rows (``memory_tier_log:control:<day>``), shadow mode only: a hashed
+  sample of the lessons the policy keeps in their tier.
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 from kiro_crew import memory_kind_routing as _kind_log
+from kiro_crew import memory_shadow_trace as _trace
 from kiro_crew.config.memory_sections import lesson_tier_policy_mode_from
 from kiro_crew.crew_log.projection_workers import _RELAY_PREFIX
 from kiro_crew.lesson_validation import (
@@ -175,6 +179,8 @@ class TierPolicy(NamedTuple):
     demoted: int = 0
     #: The keys of those lessons, where derivable.
     demoted_keys: tuple[str, ...] = ()
+    #: The keys of the lessons the policy keeps in their tier, where derivable.
+    kept_keys: tuple[str, ...] = ()
 
     @property
     def loggable(self) -> bool:
@@ -221,6 +227,10 @@ def apply_tier_policy(
         if mode == MODE_SHADOW or outcome != QUOTE_PASS:
             demote.append(item)
     keys = tuple(dict.fromkeys(k for i in demote for k in _stored_keys(i)))
+    demoted_ids = {id(i) for i in demote}
+    kept = tuple(
+        dict.fromkeys(k for i in lessons if id(i) not in demoted_ids for k in _stored_keys(i))
+    )
     policy = TierPolicy(
         result,
         mode,
@@ -232,16 +242,16 @@ def apply_tier_policy(
         present - passed,
         len(demote),
         keys,
+        kept,
     )
     if mode == MODE_SHADOW or not lessons:
         return policy
     # Every lesson that is not a quoted standing rule is written as a finding with
     # no NOT-clause, one the model already tagged ``on_topic`` included: its clause
     # could otherwise enrich a stored standing row with the same rule.
-    demoted_ids = {id(i) for i in demote}
     fenced = {id(i) for i in lessons if id(i) in demoted_ids or not _is_always(i)}
-    kept = [_demoted(i) if id(i) in fenced else i for i in window]
-    return policy._replace(result={**result, "lessons": kept})
+    written = [_demoted(i) if id(i) in fenced else i for i in window]
+    return policy._replace(result={**result, "lessons": written})
 
 
 def _is_always(item: dict) -> bool:
@@ -288,7 +298,9 @@ def _bump(db: "sqlite3.Connection", mode: str, path: str, fields: dict, now: dat
     )
 
 
-def _add_ids(db: "sqlite3.Connection", path: str, keys: tuple[str, ...], now: datetime) -> None:
+def _add_ids(
+    db: "sqlite3.Connection", path: str, keys: tuple[str, ...], now: datetime, session_key: str
+) -> None:
     """Append *keys* to today's id row, within every cap."""
     if not keys:
         return
@@ -307,7 +319,10 @@ def _add_ids(db: "sqlite3.Connection", path: str, keys: tuple[str, ...], now: da
     room = IDS_PER_DAY - len(today)
     if room <= 0:
         return
-    today += [{"key": k, "path": path, "rules": RULES_VERSION} for k in keys[:room]]
+    today += [
+        {"key": k, "path": path, "rules": RULES_VERSION, **_trace.stamp(session_key, now)}
+        for k in keys[:room]
+    ]
     rows: dict[str, list] = {
         str(key): _kind_log._loads_list(raw)
         for key, raw in db.execute(
@@ -338,9 +353,16 @@ def _write_log(store: "VectorMemoryStore", write) -> bool:
 
 
 def record_tier_policy(
-    store: "VectorMemoryStore", policy: TierPolicy, *, now: datetime | None = None
+    store: "VectorMemoryStore",
+    policy: TierPolicy,
+    *,
+    now: datetime | None = None,
+    session_key: str = "",
 ) -> bool:
-    """Write *policy*'s counters (and, under ``shadow``, its ids); return whether it committed."""
+    """Write *policy*'s counters (and, under ``shadow``, its ids); return whether it committed.
+
+    *session_key* is the chat the lessons came from; only its tag is written.
+    """
     if not policy.loggable:
         return False
     instant = now or _kind_log._utcnow()
@@ -358,7 +380,15 @@ def record_tier_policy(
     def write(db: "sqlite3.Connection") -> None:
         _bump(db, policy.mode, PATH_CONSOLIDATION, fields, instant)
         if policy.mode == MODE_SHADOW:
-            _add_ids(db, PATH_CONSOLIDATION, policy.demoted_keys, instant)
+            _add_ids(db, PATH_CONSOLIDATION, policy.demoted_keys, instant, session_key)
+            _trace.add_control(
+                db,
+                _META_PREFIX,
+                policy.kept_keys,
+                session_key=session_key,
+                rules=RULES_VERSION,
+                now=instant,
+            )
 
     return _write_log(store, write)
 
@@ -410,6 +440,7 @@ def record_reteach(
     mode: str,
     *,
     now: datetime | None = None,
+    session_key: str = "",
 ) -> bool:
     """Count one ``learn_add`` under ``shadow``, and whether it re-teaches a would-be demotion.
 
@@ -429,6 +460,6 @@ def record_reteach(
     def write(db: "sqlite3.Connection") -> None:
         _bump(db, MODE_SHADOW, PATH_RETEACH, {"checked": 1, "matched": int(bool(matched))}, instant)
         if matched:
-            _add_ids(db, PATH_RETEACH, (matched,), instant)
+            _add_ids(db, PATH_RETEACH, (matched,), instant, session_key)
 
     return _write_log(store, write)

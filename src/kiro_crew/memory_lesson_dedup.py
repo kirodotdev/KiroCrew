@@ -51,6 +51,9 @@ bounded:
 * id rows (``memory_dedup_log:ids:<day>``), shadow mode only: at most
   :data:`IDS_PER_DAY` a day and the kind-routing sample caps in all
   (``SAMPLES_TOTAL`` rows, ``SAMPLE_BYTES_CAP`` bytes), oldest day dropped first;
+  each entry carries the session tag and time (:func:`kiro_crew.memory_shadow_trace.stamp`);
+* control rows (``memory_dedup_log:control:<day>``), shadow mode only: a hashed
+  sample of the new lessons a pass wrote unfolded;
 * ids stop ``SHADOW_SAMPLE_WINDOW_SECS`` after shadow first logged in the store,
   and that window restarts when :data:`RULES_VERSION` changes.
 
@@ -68,6 +71,7 @@ from typing import TYPE_CHECKING, Final, Iterable
 
 from kiro_crew import jsonl_util
 from kiro_crew import memory_kind_routing as _kind_log
+from kiro_crew import memory_shadow_trace as _trace
 from kiro_crew.config.memory_sections import member_lesson_dedup_mode_from
 from kiro_crew.lesson_validation import LESSON_APPLIES_ON_TOPIC, authored_lesson_applies
 from kiro_crew.memory_item_identity import (
@@ -299,7 +303,7 @@ def _bump_counts(db: "sqlite3.Connection", log: DedupLog, now: datetime) -> None
     )
 
 
-def _add_ids(db: "sqlite3.Connection", log: DedupLog, now: datetime) -> None:
+def _add_ids(db: "sqlite3.Connection", log: DedupLog, now: datetime, session_key: str) -> None:
     """Append *log*'s ids to today's id row, within every cap."""
     if not log.ids:
         return
@@ -318,7 +322,7 @@ def _add_ids(db: "sqlite3.Connection", log: DedupLog, now: datetime) -> None:
     room = IDS_PER_DAY - len(today)
     if room <= 0:
         return
-    today += log.ids[:room]
+    today += [{**entry, **_trace.stamp(session_key, now)} for entry in log.ids[:room]]
     rows: dict[str, list] = {
         str(key): _kind_log._loads_list(raw)
         for key, raw in db.execute(
@@ -331,11 +335,19 @@ def _add_ids(db: "sqlite3.Connection", log: DedupLog, now: datetime) -> None:
 
 
 def record_in_transaction(
-    db: "sqlite3.Connection", log: DedupLog, *, now: datetime | None = None
+    db: "sqlite3.Connection",
+    log: DedupLog,
+    *,
+    now: datetime | None = None,
+    session_key: str = "",
+    kept: Iterable[str] = (),
 ) -> bool:
     """Write *log* inside the caller's open transaction, under its own savepoint.
 
-    Never raises: a log that cannot be written leaves the caller's writes as they were.
+    *session_key* is the chat the lessons came from (only its tag is written);
+    *kept* are the new lesson keys the pass wrote unfolded, sampled into the
+    control rows under ``shadow``. Never raises: a log that cannot be written
+    leaves the caller's writes as they were.
     """
     if not log.loggable:
         return False
@@ -344,7 +356,10 @@ def record_in_transaction(
     try:
         _bump_counts(db, log, instant)
         if log.mode == MODE_SHADOW:
-            _add_ids(db, log, instant)
+            _add_ids(db, log, instant, session_key)
+            _trace.add_control(
+                db, _META_PREFIX, kept, session_key=session_key, rules=RULES_VERSION, now=instant
+            )
     except Exception:
         db.execute("ROLLBACK TO memory_dedup_log")
         logger.warning("Could not record the lesson dedup log", exc_info=True)

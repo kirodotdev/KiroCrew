@@ -45,6 +45,9 @@ never text, and is bounded:
 * id rows (``memory_origin_log:ids:<day>``), shadow mode only: at most
   :data:`IDS_PER_DAY` a day and the kind-routing sample caps in all
   (``SAMPLES_TOTAL`` rows, ``SAMPLE_BYTES_CAP`` bytes), oldest day dropped first;
+  each entry carries the session tag and time (:func:`kiro_crew.memory_shadow_trace.stamp`);
+* control rows (``memory_origin_log:control:<day>``), shadow mode only: a hashed
+  sample of the lessons the gate keeps (:func:`kiro_crew.memory_shadow_trace.add_control`);
 * ids stop ``SHADOW_SAMPLE_WINDOW_SECS`` after shadow first logged in the store,
   and that window restarts when :data:`RULES_VERSION` changes.
 """
@@ -57,6 +60,7 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 from kiro_crew import memory_kind_routing as _kind_log
+from kiro_crew import memory_shadow_trace as _trace
 from kiro_crew.config.memory_sections import lesson_origin_gate_mode_from
 from kiro_crew.crew_log.projection_workers import _RELAY_PREFIX
 from kiro_crew.history_schema import HUMAN_TURN_META_KEY
@@ -194,6 +198,8 @@ class OriginGate(NamedTuple):
     demoted: int = 0
     #: The keys of those lessons, where derivable.
     demoted_keys: tuple[str, ...] = ()
+    #: The keys of the lessons the gate keeps as submitted, where derivable.
+    kept_keys: tuple[str, ...] = ()
 
     @property
     def loggable(self) -> bool:
@@ -227,8 +233,18 @@ def gate_consolidation_lessons(
     no_human = not has_human_turn(rows)
     demote = standing if no_human else []
     keys = tuple(k for k in (_candidate_key(i) for i in demote) if k)
+    demoted_ids = {id(i) for i in demote}
+    kept = tuple(k for k in (_candidate_key(i) for i in lessons if id(i) not in demoted_ids) if k)
     gate = OriginGate(
-        result, mode, PATH_CONSOLIDATION, len(lessons), len(standing), no_human, len(demote), keys
+        result,
+        mode,
+        PATH_CONSOLIDATION,
+        len(lessons),
+        len(standing),
+        no_human,
+        len(demote),
+        keys,
+        kept,
     )
     if mode == MODE_SHADOW or not no_human or not lessons:
         return gate
@@ -236,8 +252,8 @@ def gate_consolidation_lessons(
     # NOT-clause, including one the model already tagged ``on_topic``: its clause
     # could otherwise enrich a standing row with the same rule (see ``_demoted``).
     fenced = {id(i) for i in lessons}
-    kept = [_demoted(i) if id(i) in fenced else i for i in window]
-    return gate._replace(result={**result, "lessons": kept})
+    kept_window = [_demoted(i) if id(i) in fenced else i for i in window]
+    return gate._replace(result={**result, "lessons": kept_window})
 
 
 def _demoted(item: dict) -> dict:
@@ -302,8 +318,18 @@ def gate_learn_add_turn(
     standing = _is_standing(item)
     no_human = trigger != TURN_HUMAN
     demoted = int(standing and no_human)
-    key = _candidate_key(item) if demoted else None
-    gate = OriginGate({}, mode, path, 1, int(standing), no_human, demoted, (key,) if key else ())
+    key = _candidate_key(item)
+    gate = OriginGate(
+        {},
+        mode,
+        path,
+        1,
+        int(standing),
+        no_human,
+        demoted,
+        (key,) if key and demoted else (),
+        (key,) if key and not demoted else (),
+    )
     if mode == MODE_ENFORCE and no_human:
         return LearnAddGate(LESSON_APPLIES_ON_TOPIC, LESSON_SOURCE_AGENT_LEARN_ADD, gate, True)
     return LearnAddGate(applies, "user_explicit", gate)
@@ -338,7 +364,7 @@ def _bump_counts(db: "sqlite3.Connection", gate: OriginGate, now: datetime) -> N
     )
 
 
-def _add_ids(db: "sqlite3.Connection", gate: OriginGate, now: datetime) -> None:
+def _add_ids(db: "sqlite3.Connection", gate: OriginGate, now: datetime, session_key: str) -> None:
     """Append the demoted keys to today's id row, within every cap."""
     if not gate.demoted_keys:
         return
@@ -358,7 +384,8 @@ def _add_ids(db: "sqlite3.Connection", gate: OriginGate, now: datetime) -> None:
     if room <= 0:
         return
     today += [
-        {"key": k, "path": gate.path, "rules": RULES_VERSION} for k in gate.demoted_keys[:room]
+        {"key": k, "path": gate.path, "rules": RULES_VERSION, **_trace.stamp(session_key, now)}
+        for k in gate.demoted_keys[:room]
     ]
     rows: dict[str, list] = {
         str(key): _kind_log._loads_list(raw)
@@ -372,12 +399,17 @@ def _add_ids(db: "sqlite3.Connection", gate: OriginGate, now: datetime) -> None:
 
 
 def record_origin_gate(
-    store: "VectorMemoryStore", gate: OriginGate, *, now: datetime | None = None
+    store: "VectorMemoryStore",
+    gate: OriginGate,
+    *,
+    now: datetime | None = None,
+    session_key: str = "",
 ) -> bool:
     """Write *gate*'s counters (and, under ``shadow``, its ids); return whether it committed.
 
-    Its own transaction under the store's lock. Never raises: a log is not worth
-    a pass or a ``learn_add``.
+    *session_key* is the chat the lessons came from; only its tag is written. Its
+    own transaction under the store's lock. Never raises: a log is not worth a
+    pass or a ``learn_add``.
     """
     if not gate.loggable:
         return False
@@ -389,7 +421,15 @@ def record_origin_gate(
             try:
                 _bump_counts(db, gate, instant)
                 if gate.mode == MODE_SHADOW:
-                    _add_ids(db, gate, instant)
+                    _add_ids(db, gate, instant, session_key)
+                    _trace.add_control(
+                        db,
+                        _META_PREFIX,
+                        gate.kept_keys,
+                        session_key=session_key,
+                        rules=RULES_VERSION,
+                        now=instant,
+                    )
                 db.commit()
             except BaseException:
                 db.rollback()

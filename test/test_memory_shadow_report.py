@@ -202,7 +202,7 @@ def test_each_meta_family_is_parsed(home, capsys, stage, counts, base, changed) 
         assert card["detail"] == {**counts, "proposals": 5}
         out = _run(capsys, stage=stage)
         row = next(line for line in out.splitlines() if line.startswith("dream "))
-        assert row.split()[6:10] == ["200", "-", "-", "waiting"]
+        assert row.split()[6:12] == ["200", "-", "-", "-", "-", "wait"]
     else:
         assert card["rate"] == round(changed / base, 4)
 
@@ -423,8 +423,9 @@ def test_unreadable_sources_are_no_data(home: Path, capsys) -> None:
 
 def test_json_shape(home: Path, capsys) -> None:
     data = json.loads(_run(capsys, json=True))
-    assert set(data) == {"store", "since", "bar", "stages"}
-    assert data["bar"] == {"days": 14, "sessions": 200}
+    assert set(data) == {"store", "since", "bar", "outcomes", "stages"}
+    assert data["bar"] == {"days": 14, "sessions": 200, "miss": 0.01}
+    assert data["outcomes"] == {"recall": 0, "learn_add": 0}
     assert [c["stage"] for c in data["stages"]] == list(msr.STAGE_NAMES)
     assert set(data["stages"][0]) == {
         "stage",
@@ -442,6 +443,10 @@ def test_json_shape(home: Path, capsys) -> None:
         "data",
         "bias",
         "status",
+        "miss",
+        "control",
+        "verdict",
+        "verdict_reason",
     }
 
 
