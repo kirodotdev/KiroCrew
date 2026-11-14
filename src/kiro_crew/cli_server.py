@@ -547,19 +547,31 @@ async def _run_task(args: argparse.Namespace) -> None:
     else:
         print(f"👻 Running spec: {spec_path}")
     task_name = getattr(args, "name", "")
-    result = await runner.run(spec_path, name=task_name)
+    # Local: this module's top-level imports are a frozen facade inventory.
+    from kiro_crew.hooks import FileTooLargeError
 
-    label = result.name or result.task_id
-    if result.status == "completed":
-        print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
-    elif result.status == "failed":
-        print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
-        sys.exit(1)
-    elif result.status == "cancelled":
-        print("\n⚠️  Task cancelled")
-        sys.exit(1)
+    try:
+        try:
+            result = await runner.run(spec_path, name=task_name)
+        except (ValueError, OSError, FileTooLargeError) as exc:
+            # The runner's own spec checks (an empty spec, one the file gate
+            # refuses, one that is not UTF-8 or too large) and its workspace
+            # writes. Reported like the missing-spec case above, not as a
+            # traceback; the reason names which.
+            print(f"❌ Could not run {spec_path}: {exc}", file=sys.stderr)
+            sys.exit(1)
 
-    await sessions.close_all()
+        label = result.name or result.task_id
+        if result.status == "completed":
+            print(f"\n✅ Task completed — {label} ({len(result.tasks)} steps)")
+        elif result.status == "failed":
+            print(f"\n❌ Task failed ({label}): {result.error}", file=sys.stderr)
+            sys.exit(1)
+        elif result.status == "cancelled":
+            print("\n⚠️  Task cancelled")
+            sys.exit(1)
+    finally:
+        await sessions.close_all()
 
 
 def _service_cmd(args: argparse.Namespace) -> int:
