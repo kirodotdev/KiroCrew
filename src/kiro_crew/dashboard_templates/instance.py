@@ -44,6 +44,7 @@ to see, not a shape this module will write.
 from __future__ import annotations
 
 import contextvars
+import errno
 import hashlib
 import json
 import logging
@@ -602,14 +603,129 @@ def _read_once(fd: int, names: tuple[str, ...]) -> bytes:
             os.close(descriptor)
 
 
-def _read_file(slug: str, *names: str) -> bytes:
-    """Read ``names`` under *slug*'s page folder, through the pinned descriptor when held.
+#: Whether the current context holds a page lock. A read with neither a lock nor a pinned
+#: descriptor is a reader of its own (:func:`_reads_unlocked`).
+_LOCK_HELD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "dashboard_instance_lock_held", default=False
+)
 
-    Reads inside the lock come from the folder the writes go to, so a level replaced
-    after the open cannot hand the next version number a record from somewhere else. The
-    descriptor read runs inside the same sharing-violation retry as a by-name read.
+
+class _LinkedLevel(FileNotFoundError):
+    """A level of a member's page folder is a link. A ``FileNotFoundError``, so a reader
+    answers "not set" exactly as it does for a page nobody adopted."""
+
+
+def _reads_unlocked(slug: str) -> bool:
+    """Whether a read of *slug* is a member page reader outside :func:`_locked`."""
+    return _PINNED_DIR.get() is None and not _LOCK_HELD.get() and not is_session_key(slug)
+
+
+def _can_pin() -> bool:
+    return pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported()
+
+
+def _open_page_dir(slug: str) -> int:
+    """Open an EXISTING member page folder one ``O_NOFOLLOW`` level at a time.
+
+    The open :func:`_pinned_session_dir` does for a writer, minus the creating: a reader
+    never makes a level. Each level is opened relative to the one before it, so a level
+    swapped for a link afterwards cannot move where the next one lands. An absent level
+    raises :class:`FileNotFoundError`, a link :class:`_LinkedLevel`; the caller closes
+    the descriptor it gets.
+    """
+    first, *rest = instance_dir(slug).relative_to(data_home()).parts
+    fd = -1
+    try:
+        fd = pinned_fs.open_dir_pinned(
+            data_home() / first, what="dashboard pages", refusal=InstanceError
+        )
+        for name in rest:
+            child = os.open(name, pinned_fs.dir_flags(), dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except (InstanceError, OSError) as exc:
+        if fd >= 0:
+            os.close(fd)
+        if isinstance(exc, InstanceError) or exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise _LinkedLevel("no dashboard page here") from None
+        raise
+    return fd
+
+
+def _refuse_linked_for_read(directory: Path, leaf: str | None = None) -> None:
+    """The ``lstat`` walk for a reader where the platform cannot pin.
+
+    Covers *directory*'s levels and, when *leaf* names a file in it, the file itself.
+    """
+    try:
+        refuse_linked_parent(directory / _LOCK_FILE)
+    except OSError:
+        raise _LinkedLevel("no dashboard page here") from None
+    if leaf is not None and (directory / leaf).is_symlink():
+        raise _LinkedLevel("no dashboard page here")
+
+
+def _without_links(directory: Path | int, names: list[str]) -> list[str]:
+    """*names* minus the entries of *directory* (a path, or a held descriptor) that are links."""
+    kept: list[str] = []
+    for name in names:
+        try:
+            if isinstance(directory, int):
+                mode = os.lstat(name, dir_fd=directory).st_mode
+            else:
+                mode = os.lstat(directory / name).st_mode
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISLNK(mode):
+            kept.append(name)
+    return kept
+
+
+def _open_for_read(slug: str, path: Path) -> int:
+    """The page folder's descriptor for a reader, or the "not set" a missing level answers.
+
+    An absent level is answered by the ordinary read of the file (one attempt, creating
+    nothing) so a page nobody adopted reads as it always did; the file is never handed
+    back from there.
+    """
+    try:
+        return _open_page_dir(slug)
+    except _LinkedLevel:
+        raise
+    except FileNotFoundError:
+        read_bytes_with_retry(path)
+        raise _LinkedLevel("no dashboard page here") from None
+
+
+def _read_file(slug: str, *names: str) -> bytes:
+    """Read ``names`` under *slug*'s page folder, through a pinned descriptor.
+
+    Inside the lock that is the descriptor the lock holds, so a level replaced after the
+    open cannot hand the next version number a record from somewhere else. A reader with
+    no lock opens the folder itself, creating nothing, and answers "not set" for a link
+    at any level. The descriptor read runs inside the same sharing-violation retry as a
+    by-name read.
     """
     path = instance_dir(slug).joinpath(*names)
+    if _reads_unlocked(slug):
+        if not _can_pin():
+            _refuse_linked_for_read(path.parent, names[-1])
+            return read_bytes_with_retry(path)
+        opened = _open_for_read(slug, path)
+        try:
+            return retry_read_sharing_window(lambda: _read_once(opened, names), path)
+        except OSError as exc:
+            # A link at the file itself fails the ``O_NOFOLLOW`` open with ELOOP, and
+            # answers "not set" like a link at any folder level. A link at ``versions``
+            # fails the folder open (``O_DIRECTORY``) with ENOTDIR instead; no reader
+            # without the lock reaches that open through here, so it is not caught. Any
+            # other error (a folder where the file should be, a denied read) is raised
+            # as before.
+            if exc.errno == errno.ELOOP:
+                raise _LinkedLevel("no dashboard page here") from None
+            raise
+        finally:
+            os.close(opened)
     fd = _PINNED_DIR.get()
     if fd is None:
         return read_bytes_with_retry(path)
@@ -618,6 +734,20 @@ def _read_file(slug: str, *names: str) -> bytes:
 
 def _list_versions(slug: str) -> list[str]:
     """The names in *slug*'s ``versions`` folder, through the pinned descriptor when held."""
+    if _reads_unlocked(slug):
+        versions_dir = instance_dir(slug) / _VERSIONS_SUBDIR
+        if not _can_pin():
+            _refuse_linked_for_read(versions_dir)
+            return _without_links(versions_dir, os.listdir(versions_dir))
+        opened = _open_for_read(slug, versions_dir)
+        try:
+            versions_fd = os.open(_VERSIONS_SUBDIR, pinned_fs.dir_flags(), dir_fd=opened)
+            try:
+                return _without_links(versions_fd, os.listdir(versions_fd))
+            finally:
+                os.close(versions_fd)
+        finally:
+            os.close(opened)
     fd = _PINNED_DIR.get()
     if fd is None:
         return os.listdir(instance_dir(slug) / _VERSIONS_SUBDIR)
@@ -671,6 +801,7 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
             os.close(pinned)
         raise
     token = _PINNED_DIR.set(pinned)
+    held = _LOCK_HELD.set(True)
     try:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
         while not try_acquire_lock(fd, exclusive=True):
@@ -684,6 +815,7 @@ def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
         finally:
             release_lock(fd)
     finally:
+        _LOCK_HELD.reset(held)
         _PINNED_DIR.reset(token)
         os.close(fd)
         if pinned is not None:
