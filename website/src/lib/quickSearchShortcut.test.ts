@@ -7,6 +7,7 @@ import {
   eventKeyToken,
   formatChordKeys,
   formatQuickSearchKeys,
+  formatQuickSearchShortcut,
   hasCustomChord,
   isModKEvent,
   isValidChord,
@@ -263,6 +264,16 @@ describe('formatters', () => {
 
   it('returns no caps for a custom mode without a recorded chord', () => {
     expect(formatQuickSearchKeys({ mode: 'custom' }, false)).toEqual([])
+  })
+
+  it('spells the gesture inline for a sentence: ⌘K on macOS, Ctrl+K elsewhere', () => {
+    expect(formatQuickSearchShortcut({ mode: 'mod-k' }, true)).toBe('⌘K')
+    expect(formatQuickSearchShortcut({ mode: 'mod-k' }, false)).toBe('Ctrl+K')
+    const config = { mode: 'custom', custom: { key: 'j', mod: true, shift: true } } as const
+    expect(formatQuickSearchShortcut(config, true)).toBe('⌘⇧J')
+    expect(formatQuickSearchShortcut(config, false)).toBe('Ctrl+Shift+J')
+    expect(formatQuickSearchShortcut({ mode: 'double-shift' }, false)).toBe('Double Shift')
+    expect(formatQuickSearchShortcut({ mode: 'custom' }, false)).toBe('')
   })
 
   it('formatChordKeys and displayKeyCap render the key legibly', () => {

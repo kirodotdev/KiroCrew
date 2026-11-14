@@ -4470,7 +4470,10 @@ mapping for a page that no longer redirects.
 
 Labels are the 12 shipped catalogs (no `en-XA`; English is `en.json` under
 `en.manual.json`), referenced keys only, deduplicated per locale; a product name
-such as a channel brand is stored as a `literal:` key. A location stores
+such as a channel brand is stored as a `literal:` key. A placeholder other than
+`{{productName}}` in an alias or caution value (the top-bar search button's
+`{{shortcut}}` alias) is stored without it, so find_ui searches the words around
+it; a location's own label that interpolates is still refused. A location stores
 `label_key`, never copy. Placements are alternatives, each with the full
 `parent_ids` chain, a canonical `route`, `entry_kind` and structured `requires`
 (`viewport`, `shown_by` another location, `preview_flag` with the Settings
