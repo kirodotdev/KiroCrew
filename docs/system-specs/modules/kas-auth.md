@@ -635,7 +635,25 @@ engine instead ([aws-control.md](aws-control.md)).
   whose `highlight` rings the card through the `useSettingHighlight` hook
   SettingsPage mounts; the card's older home, `/developer?tab=agent-backend`,
   is forwarded there by the `/developer` redirect with the `highlight` kept) and from the KAS remedy
-  strings in `agent_sdk/host_auth.py`. Its intro sentence names the backend
+  strings in `agent_sdk/host_auth.py`. Once the sign-in works (`/api/kas-login`
+  reads authenticated, not `expired` and not `signInLapsed`, from a read taken
+  after the row appeared), the chat page's newest error row, when it names this
+  sign-in (notice `kas_signed_out`; the launcher form naming `kiro-cli login`
+  does not) and its turn can be resumed, keeps that button and offers Resume
+  beside it ("Signed in to Kiro — resume to send your message again."), so the
+  failed turn reruns in the same chat instead of being typed again; a later read
+  that fails withdraws Resume, so the row returns to its signed-out shape. The row
+  re-reads the status every minute while it stands, so a frame signed in from
+  another window gains Resume too. The button
+  stays because the status can read signed in while the engine still refuses the
+  token (a revoked session). Embed and popout, which carry no button, offer
+  Resume alone; a pane's row is unchanged. When that read fails, embed and popout,
+  which mount no app-level sign-in notice, show it on the row (an `ErrorNotice`
+  with no agent hand-off, since the agent runs as the sign-in the row says
+  failed), except a failure while the dashboard is offline, which the offline
+  state already reports (`useOutageFailure`, as the app-level notice does); the
+  dashboard leaves it to that app-level notice, which reads the same endpoint.
+  The card's intro sentence names the backend
   ("Used only by the Kiro Agent backend") and says Kiro CLI keeps its own
   kiro-cli login, because the card sits under a switch that also lists Kiro
   CLI. It is deliberately NOT on Settings > Overview and not indexed into

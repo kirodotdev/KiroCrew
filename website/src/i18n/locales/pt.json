@@ -13041,6 +13041,7 @@
         "retry_tool_stalled": "A ferramenta parece travada — retome para continuar de onde parou.",
         "retry_tools_not_ready": "O agente não conseguiu iniciar porque suas ferramentas integradas não ficaram prontas a tempo. Sua mensagem continua aqui — retome para tentar de novo. Se continuar acontecendo, o log do gateway tem os detalhes.",
         "retry_backend_hiccup": "O agente teve um problema momentâneo — retome para continuar de onde parou.",
+        "retry_kas_signed_in": "Você entrou no Kiro — retome para enviar sua mensagem de novo.",
         "default_model": "Alterar o modelo padrão",
         "default_model_hint": "Abra Configurações → Chat → Modelo padrão. Novas sessões começam com este valor.",
         "turn_limit": "Alterar o tempo máximo por turno",

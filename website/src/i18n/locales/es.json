@@ -13041,6 +13041,7 @@
         "retry_tool_stalled": "La herramienta parece detenida — reanuda para seguir desde donde se detuvo.",
         "retry_tools_not_ready": "El agente no pudo iniciarse porque sus herramientas integradas no estuvieron listas a tiempo. Tu mensaje sigue aquí — reanuda para volver a intentarlo. Si sigue pasando, el registro de la pasarela tiene los detalles.",
         "retry_backend_hiccup": "El agente tuvo un problema momentáneo — reanuda para seguir desde donde se detuvo.",
+        "retry_kas_signed_in": "Sesión iniciada en Kiro — reanuda para enviar tu mensaje de nuevo.",
         "default_model": "Cambiar el modelo predeterminado",
         "default_model_hint": "Abre Configuración → Chat → Modelo predeterminado. Las sesiones nuevas empiezan con este valor.",
         "turn_limit": "Cambiar el límite de tiempo por turno",

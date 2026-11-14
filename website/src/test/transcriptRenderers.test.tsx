@@ -19,6 +19,7 @@
  * own guarantee. Both are pinned below.
  */
 import { describe, it, expect } from 'vitest'
+import { cleanup, render as renderDom, screen } from '@testing-library/react'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ReactElement } from 'react'
@@ -28,6 +29,8 @@ import { appAgentRefusalIsNewest, authRequiredIsNewest, contextOverflowIsNewest,
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { i18nT } from '../i18n/t'
+import type { KasLoginStatus } from '../api/client'
+import { signedInNow } from '../pages/developer/kiroSignInState'
 import { FEATURE_REQUEST_FORM_URL, FEATURE_REQUEST_ROW_META_KEY } from '../prompts/featureRequest'
 import { isWorkflowRunTool } from '../pages/chat/WorkflowRunCard'
 import { isSpawnRunTool } from '../pages/chat/SubagentRunCard'
@@ -240,6 +243,58 @@ describe('the error row offers Continue only where the single-chat surface does'
   it('withholds it on a surface that cannot continue a turn', () => {
     const el = render(errs[2], { slot: 's1' }, { index: 2, messages: errs }) as ReactElement
     expect(el.props.onContinue).toBeUndefined()
+  })
+})
+
+describe('a signed-out row offers Resume once the Kiro sign-in works again (#34690)', () => {
+  const signedOut = msg('error', { content: 'Not signed in to Kiro.', meta: { kind: 'auth_required', notice: 'kas_signed_out' } })
+  const rows = [msg('user', { content: 'What can you do for me today?' }), signedOut]
+  const opts = { slot: 's1', continuable: true, interrupted: true, onContinue: () => undefined, onOpenSignIn: () => undefined }
+
+  it('adds Resume beside the kept sign-in button, worded for it, only while signed in', () => {
+    const out = render(signedOut, opts, { index: 1, messages: rows }) as ReactElement
+    expect(out.props.onOpenSignIn).toBeTypeOf('function')
+    expect(out.props.onContinue).toBeUndefined()
+    expect(out.props.signInWorks).toBe(false)
+
+    const back = render(signedOut, { ...opts, kiroSignedIn: true }, { index: 1, messages: rows }) as ReactElement
+    expect(back.props.onContinue).toBe(opts.onContinue)
+    expect(back.props.onOpenSignIn).toBe(opts.onOpenSignIn)
+    expect(back.props.signInWorks).toBe(true)
+    expect(back.props.resumeContent).toBe(i18nT('pages.chat.errorCard.retry_kas_signed_in'))
+  })
+
+  it('reads an expired token as not signed in, even one a stored refresh token keeps usable', () => {
+    const live: KasLoginStatus = {
+      authenticated: true, provider: 'Google', identity: 'social', transport: 'device',
+      expires_at: '2099-01-01T00:00:00Z', expired: false, has_refresh_token: true, refresh_rejected: false, usable: true,
+    }
+    expect(signedInNow(live)).toBe(true)
+    expect(signedInNow({ ...live, expires_at: '2000-01-01T00:00:00Z', expired: true })).toBe(false)
+    expect(signedInNow({ ...live, refresh_rejected: true })).toBe(false)
+  })
+
+  it('shows a failed sign-in check on the row where no sign-in button or app notice reports it', () => {
+    const failed = new Error('token_store_failed: could not read the stored sign-in')
+    const frame = { ...opts, onOpenSignIn: undefined, kiroSignInCheckError: failed }
+    const el = render(signedOut, frame, { index: 1, messages: rows }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    renderDom(el)
+    const notice = screen.getByTestId('error-card-sign-in-check-failed')
+    expect(notice).toHaveTextContent(i18nT('components.kasLogin.sign_in_status_unavailable'))
+    expect(notice).toHaveTextContent(failed.message)
+    expect(notice).not.toHaveTextContent(i18nT('components.askAgent.ask_the_agent'))
+    cleanup()
+  })
+
+  it("keeps the sign-in card on a row whose fix is kiro-cli's login, which Kiro's sign-in cannot clear", () => {
+    const launcher = msg('error', {
+      content: "KAS runs through kiro-cli's launcher. Run `kiro-cli login` in your terminal, then send your message again.",
+      meta: { kind: 'auth_required' },
+    })
+    const el = render(launcher, { ...opts, kiroSignedIn: true }, { index: 1, messages: [rows[0], launcher] }) as ReactElement
+    expect(el.props.onContinue).toBeUndefined()
+    expect(el.props.onOpenSignIn).toBeTypeOf('function')
   })
 })
 

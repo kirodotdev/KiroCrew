@@ -12763,6 +12763,7 @@
         "retry_tool_stalled": "Werkzeug scheint zu hängen – wieder aufnehmen, um an der Unterbrechung weiterzumachen.",
         "retry_tools_not_ready": "Der Agent konnte nicht starten, weil seine integrierten Tools nicht rechtzeitig bereit waren. Deine Nachricht ist noch da – wieder aufnehmen, um es erneut zu versuchen. Wenn das wieder passiert, stehen die Details im Gateway-Protokoll.",
         "retry_backend_hiccup": "Der Agent hatte ein kurzes Problem – wieder aufnehmen, um an der Unterbrechung weiterzumachen.",
+        "retry_kas_signed_in": "Bei Kiro angemeldet – wieder aufnehmen, um deine Nachricht erneut zu senden.",
         "default_model": "Standardmodell ändern",
         "default_model_hint": "Einstellungen → Chat → Standardmodell öffnen. Neue Sitzungen starten mit diesem Wert.",
         "turn_limit": "Zeitlimit pro Durchlauf ändern",
