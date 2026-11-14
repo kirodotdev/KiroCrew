@@ -7305,6 +7305,7 @@
       "following_agent_default": "По значению агента <agent/> ({{pct}} %)",
       "agent_default_source": "Задаётся для каждого агента в config.json (agents.{{agent}}.autocompact_pct). Ползунок переопределяет это значение для этой сессии.",
       "harness_managed_note": "Этот чат работает на {{backend}}, который сжимает контекст сам. Задай здесь порог, чтобы сжимать контекст раньше.",
+      "harness_managed_value": "Решает {{backend}}",
       "sketch": "Эскиз",
       "sketch_desc": "Нарисуй на доске и отправь как изображение",
       "optimize_failed": "Не удалось оптимизировать промпт. Исходный текст восстановлен.",
