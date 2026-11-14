@@ -352,6 +352,10 @@ with no row here.
    * - ``ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP``
      - driver-internal (whether a ``session/new`` stdio element whose command
        cannot be found is left out and reported as failed before the request)
+   * - ``ACP_BACKENDS_NO_MCP_INIT_FRAMES``
+     - driver-internal (whether the drain after ``session/new`` folds only the
+       frames already buffered, because the harness sends no MCP init frame over
+       ACP)
    * - ``ACP_BACKENDS_ACP_CLIENT_SPAWNABLE``
      - semantic question (``SessionCapabilities.acp_client_spawnable``)
    * - ``ACP_BACKENDS_REMOTE_MCP_OAUTH``
@@ -1314,6 +1318,7 @@ from kiro_crew.agent_sdk.backends_mcp import (  # noqa: E402,F401 - re-exported 
     ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD,
     ACP_BACKENDS_MCP_RELAUNCH_RELOAD,
     ACP_BACKENDS_MCP_WIRE_REINJECT,
+    ACP_BACKENDS_NO_MCP_INIT_FRAMES,
     ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
     ACP_BACKENDS_SESSION_MCP_ARRAY,

@@ -111,6 +111,7 @@ from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_LAUNCH,
+    ACP_BACKENDS_NO_MCP_INIT_FRAMES,
     launch_for,
 )
 from kiro_crew.config.paths import kiro_sessions_dir
@@ -1267,8 +1268,12 @@ async def _initialize_session(self: AcpClient) -> None:
     # replayed, and everything the drain reads after it is checked below.
     if self.backend in ACP_BACKEND_FORBIDDEN_MODES:
         self._drop_superseded_config_frames()
-    # Drain MCP server init notifications
-    await self._drain_notifications()
+    # Drain MCP server init notifications. A harness that sends none folds what was
+    # buffered and goes straight to the prompt (ACP_BACKENDS_NO_MCP_INIT_FRAMES).
+    if self.backend in ACP_BACKENDS_NO_MCP_INIT_FRAMES:
+        await self._drain_notifications(idle_exit=0.0)
+    else:
+        await self._drain_notifications()
     if self.backend in ACP_BACKEND_FORBIDDEN_MODES:
         await self._refuse_session_config_drift()
 

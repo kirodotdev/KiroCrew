@@ -2554,6 +2554,16 @@ does not depend on which servers the probe process happens to start.
 Step 5 drains MCP server init notifications (both after `session/load` and
 `session/new` — loading a session triggers MCP re-initialization).
 
+A harness in `ACP_BACKENDS_NO_MCP_INIT_FRAMES` (claude-agent-acp) sends no MCP init
+frame over ACP. Claude Code connects the servers inside its own process and waits
+for them in the first prompt, and it offers a server that needs sign-in as a URL
+elicitation, a request the turn reader answers. So on that harness step 5, and the
+same drain after a fresh conversation's `session/new`, pass `idle_exit=0.0`. The
+drain folds what was buffered while the start's own requests were answered, then
+returns without waiting the 0.5 s `_DRAIN_IDLE_EXIT` on a quiet pipe. A frame that
+arrives later stays unread on the pipe: the idle reader holds it and the first
+turn's reader reads it. Pinned by `test/test_acp_post_session_new_drain.py`.
+
 ### Notification Buffering
 
 `AcpClient._wait_for_response()` buffers all JSON-RPC notifications in
