@@ -4949,7 +4949,12 @@ per install at a few milliseconds on the synchronous body read that asks for it.
 The digests are cached per process under the site dir's stamp and each candidate
 `RECORD`'s (inode, mtime, size), taken before and after its parse, so the steady
 state costs a few `stat` calls; a `dist-info` added or removed, a `RECORD`
-rewritten, or one replaced mid-read is read again on the next call.
+rewritten, or one replaced mid-read is read again on the next call. The same lookup
+also keeps the `RECORD` rows for `.json` files under `kiro_crew/apps/builtins/<app>/`,
+which `_installed_builtin_app_file_match` checks for a shipped built-in app's
+`app.json` and the agent specs its manifest declares, never another `.json` the
+`RECORD` lists ([security](security.md)); `_installed_package_bytes_match` admits only
+a path named `SKILL.md`.
 Rewriting `RECORD` takes write access to the tree holding the package code, which
 already decides what the gateway runs. Project reads retain descriptor confinement
 and their byte cap.
