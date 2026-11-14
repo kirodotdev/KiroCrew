@@ -29,11 +29,10 @@ from kiro_crew.doctor_checks import render
 #
 # It is the projection's own hard ceiling
 # (:data:`kiro_crew.acp.skill_projection.SKILL_VIEW_PROJECTION_CEILING`), so a host
-# the doctor warns about already falls back to the authored agent. Read through the
-# ``cli_doctor`` facade: this family binds no project module
-# (test_cli_doctor_refactor_family_reads).
-# It is the floor: ``cli_doctor.skill_view_ceiling`` raises it with the authored
-# agent count, exactly as the projection does.
+# the doctor warns about already falls back to the authored agent. It is a floor:
+# ``cli_doctor.skill_view_ceiling`` raises it with the authored agent count, as the
+# projection does. Read through the ``cli_doctor`` facade, since this family binds
+# no project module (test_cli_doctor_refactor_family_reads).
 _SKILL_VIEW_BACKLOG_WARN = cli_doctor.SKILL_VIEW_PROJECTION_CEILING
 
 

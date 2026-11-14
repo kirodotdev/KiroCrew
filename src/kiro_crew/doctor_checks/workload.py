@@ -518,23 +518,16 @@ def _doctor_crash_dumps(issues: list[str]) -> None:
         if _latest is not None:
             _age_s = cli_doctor.dump_age_seconds(_latest)
             # Every gateway start pre-creates its own dump file, so a dump WITH
-            # stacks that a later local session's header file sits after was
-            # written by a session another one has already replaced without
-            # wedging. That is a past incident: counting it as something to fix
-            # makes `doctor` report a fault for a week after one stall, on a
-            # gateway that has been healthy the whole time — and the real
-            # finding in that run gets read as one more line of the same noise.
+            # stacks followed by a later session's header file came from a
+            # session since replaced without wedging: a past stall. Counting it
+            # would make `doctor` report a fault for a week after one stall and
+            # bury the real finding in noise.
             #
-            # Ordering alone is not enough to conclude it, though. Under the
-            # shipped `Restart=always` unit a wedged gateway is replaced within
-            # seconds, so the successor supersedes the stall almost at once and
-            # a gateway wedging hourly would downgrade every stall forever —
-            # under-reporting exactly the chronic case an operator needs. Two
-            # further terms keep that case visible: a stall inside
-            # `_STALL_CURRENT_SECS` is still current news whatever restarted
-            # since, and two or more stalls on record is a gateway wedging
-            # repeatedly, which no amount of successful restarting makes
-            # historical.
+            # Ordering alone is not enough. Under the shipped `Restart=always`
+            # unit a wedged gateway is replaced in seconds, so an hourly wedge
+            # would always look past. Two terms keep that chronic case visible:
+            # a stall inside `_STALL_CURRENT_SECS` is still current, and two or
+            # more stalls on record mean a gateway that keeps wedging.
             #
             # The stacks are printed either way, because they are what anyone
             # investigating that stall needs; only the issue verdict changes.

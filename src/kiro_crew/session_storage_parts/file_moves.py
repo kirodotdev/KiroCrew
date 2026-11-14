@@ -587,11 +587,11 @@ def _unlisted_files(batch: Path) -> list[Path]:
     # chain-open, and removal passes; the guard is otherwise the one name-based
     # walk.
     #
-    # CPython defines fwalk only where ``{open, stat} <= os.supports_dir_fd``
-    # — on native Windows it does not exist, mirroring pinned_delete's
-    # ``_FD_SAFE_DELETE`` coarse path. There the ORIGINAL name-based walk is
-    # used: Windows has no macOS 1024-byte wedge, and an unconditional fwalk
-    # would crash every Empty-Trash with an AttributeError no caller catches.
+    # CPython defines fwalk only where ``{open, stat} <= os.supports_dir_fd``,
+    # so native Windows lacks it (like pinned_delete's ``_FD_SAFE_DELETE``
+    # coarse path) and uses the name-based walk: Windows has no 1024-byte wedge,
+    # and an unconditional fwalk would crash every Empty-Trash with an uncaught
+    # AttributeError.
     fwalk = getattr(os, "fwalk", None)
     if fwalk is not None:
         # Unlike os.walk, fwalk RAISES when the top itself cannot be statted or
