@@ -38,9 +38,11 @@ from auto_research_handlers_coverage_helpers import (
 )
 from dashboard_owner_helpers import as_owner
 
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.apps.builtins.auto_research import handlers as h
 from kiro_crew.apps.builtins.auto_research.campaign import LOGGER_NAME, publication
 from kiro_crew.autonudge import AutoNudgeService
+from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.testing.wait import await_until
 
 
@@ -530,6 +532,54 @@ class TestKnowledgeRoutes:
         resp = await h._handle_to_knowledge(_mk("POST", "k", app=app, match={"id": cid}))
         assert resp.status == 409
         assert _body(resp) == {"error": "Already in Knowledge Library", "id": 3}
+
+    @pytest.mark.asyncio
+    async def test_ingest_that_loses_the_insert_race_is_a_409(
+        self, _isolate: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A concurrent export inserted the same URI between this request's dedup
+        check and its insert: answer the route's 409, not a 500, and do not
+        schedule a second ingestion."""
+
+        class DriverIntegrityError(Exception):
+            pass
+
+        monkeypatch.setattr(
+            kh,
+            "sqlite3",
+            SimpleNamespace(IntegrityError=DriverIntegrityError),
+        )
+        cid = _campaign()
+        (h._campaign_dir(cid) / "FINDINGS.md").write_text("findings")
+        store = MagicMock()
+        # The dedup check misses; the re-read after the failed insert sees the winner.
+        store.get_source_by_uri.side_effect = [None, {"id": "winner"}]
+        store.add_source.side_effect = DriverIntegrityError("UNIQUE constraint failed: sources.uri")
+        pipeline = SimpleNamespace(ingest_file=AsyncMock())
+        app = _app(state=SimpleNamespace(knowledge_store=store), knowledge_pipeline=pipeline)
+        (outcome,) = await asyncio.gather(
+            h._handle_to_knowledge(_mk("POST", "k", app=app, match={"id": cid})),
+            return_exceptions=True,
+        )
+        assert not isinstance(outcome, BaseException), f"escaped as a 500: {outcome!r}"
+        assert outcome.status == 409
+        assert _body(outcome) == {
+            "error": "Already in Knowledge Library",
+            "code": "knowledge_source_exists",
+            "id": "winner",
+        }
+        assert not app.get("_bg_tasks")
+        pipeline.ingest_file.assert_not_awaited()
+        store.db.execute.assert_not_called()
+
+    def test_add_source_reraises_when_the_winning_source_is_gone(self):
+        store = MagicMock()
+        store.add_source.side_effect = sqlite3.IntegrityError(
+            "UNIQUE constraint failed: sources.uri"
+        )
+        store.get_source_by_uri.return_value = None
+        with pytest.raises(sqlite3.IntegrityError):
+            publication._add_source_marked_syncing(store, "n", "/u")
 
     @pytest.mark.asyncio
     async def test_ingest_writes_a_sanitized_copy_and_marks_it_synced(self, _isolate: Path):
