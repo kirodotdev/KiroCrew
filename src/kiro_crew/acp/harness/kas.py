@@ -893,6 +893,7 @@ class KasHarness(MembershipHarness):
             argv=build_kas_argv(kas_bin, host_auth=host_auth, client_flag=client_flag),
             host_auth=host_auth,
             kiro_cli_internal_sandbox=kiro_cli_sandbox,
+            engine_is_child=True,
         )
 
     async def _bundle_spawn_plan(
