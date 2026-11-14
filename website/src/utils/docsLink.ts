@@ -14,8 +14,9 @@
  *  settings panels link to. */
 const DOCS_BASE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs'
 
-/** A plain docs filename and nothing else. */
-const DOC_FILENAME_RE = /^[a-z0-9][a-z0-9._-]*\.md$/i
+/** A plain docs filename, optionally with one heading anchor (`file.md#section`),
+ *  and nothing else: no scheme, no path separator, no query. */
+const DOC_FILENAME_RE = /^[a-z0-9][a-z0-9._-]*\.md(?:#[a-z0-9]+(?:-[a-z0-9]+)*)?$/i
 
 /** The guide to passing secrets to MCP servers, including `secret://` values
  *  and routing a server through the MCP gateway. It lives in the repository's
@@ -44,15 +45,4 @@ export const OAUTH_ENDPOINT_ALLOWLIST_GUIDE_URL =
 export function tipDocHref(doc: string | undefined): string | null {
   if (!doc || !DOC_FILENAME_RE.test(doc)) return null
   return `${DOCS_BASE}/${doc}`
-}
-
-/** A shipped docs file and one heading anchor in it: the registry's
- *  `org_admin_guide` shape, which the backend validator enforces too. */
-const DOC_SECTION_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md#[a-z0-9]+(?:-[a-z0-9]+)*$/
-
-/** The public URL for a `<file>.md#<anchor>` docs section, or `null` for any
- *  other shape, on the same refuse-rather-than-render terms as `tipDocHref`. */
-export function docSectionHref(section: string | undefined): string | null {
-  if (!section || !DOC_SECTION_RE.test(section)) return null
-  return `${DOCS_BASE}/${section}`
 }

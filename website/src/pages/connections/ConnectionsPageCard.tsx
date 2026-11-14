@@ -13,12 +13,17 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { OverlayPortal } from '../../components/overlayRoot'
+import { useCopyAck } from '../../components/FilePathMenu'
+import { copyToClipboard } from '../../utils/clipboard'
+import { tipDocHref } from '../../utils/docsLink'
 import { useTranslation } from 'react-i18next'
 import { motion, useReducedMotion } from 'framer-motion'
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   CircleDashed,
+  Copy,
   ExternalLink,
   KeyRound,
   Link2,
@@ -42,7 +47,7 @@ import { isGoogleSlug } from './connectionsLinks'
 // the chat banner's relay affordance).
 import { isValidLoopbackReturnAddress, normalizeLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
 import { isElectron } from '../../lib/electron'
-import { useImeGuard } from '../../hooks/useImeGuard'
+import { useDocumentImeLatch, useImeGuard } from '../../hooks/useImeGuard'
 import {
   errorIndicatesProviderRejection,
   type ConnectionAction,
@@ -182,21 +187,34 @@ const PREREQUISITE_KEYS = {
  * needs attention) or carry a form (the remote return-address relay) -- copy
  * about what an action will do or needs is neither, and goes here.
  */
-function PrerequisiteTip({ label, heading, text, redirect }: {
+function PrerequisiteTip({ label, heading, text, redirect, link }: {
   label: string
   heading: string
   text: string
-  /** Where this card's sign-in returns, shown as selectable lines an org admin
-   *  can be handed (`signInRedirect` on the status row). */
+  /** Where this card's sign-in returns, each value with its own copy control, so
+   *  an org admin can be handed the whole address (`signInRedirect` on the
+   *  status row). */
   redirect?: { caption: string; values: string[] }
+  /** A docs page the caveat points at, opened in a new tab. */
+  link?: { href: string; label: string }
 }) {
   const [pinned, setPinned] = useState(false)
   const [hovered, setHovered] = useState(false)
   const btnRef = useRef<HTMLButtonElement>(null)
   const tipRef = useRef<HTMLDivElement>(null)
   const hoverOff = useRef<number | undefined>(undefined)
+  // Set while focus leaves the bubble back to the icon, so that one focus does
+  // not reopen it and the next Tab moves on past the icon.
+  const leaving = useRef(false)
   const tipId = useId()
+  const headingId = useId()
   const open = pinned || hovered
+  // A bubble with a link or a copy control is something to operate, not just
+  // read, so it is a non-modal dialog the icon's Tab moves into.
+  const interactive = !!(link || redirect)
+  // IMEs cycle candidates with Tab, so a Tab the bubble re-aims is claimed
+  // first: one the IME owns keeps its composition (see useDocumentImeLatch).
+  const tipImeLatch = useDocumentImeLatch(open && interactive)
 
   // WCAG 1.4.13 hoverable: the pointer must be able to travel from the icon
   // into the bubble, so hover-off waits a short grace instead of dismissing
@@ -210,6 +228,15 @@ function PrerequisiteTip({ label, heading, text, redirect }: {
     hoverOff.current = window.setTimeout(() => setHovered(false), 120)
   }
   useEffect(() => () => window.clearTimeout(hoverOff.current), [])
+
+  const focusables = () =>
+    Array.from(tipRef.current?.querySelectorAll<HTMLElement>('a[href], button') ?? [])
+  const backToIcon = () => {
+    leaving.current = true
+    setPinned(false)
+    setHovered(false)
+    btnRef.current?.focus()
+  }
 
   useEffect(() => {
     // Gated on `open`, not `pinned`: a tip opened by keyboard focus alone must
@@ -227,15 +254,17 @@ function PrerequisiteTip({ label, heading, text, redirect }: {
       setHovered(false)
     }
     const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setPinned(false)
-        setHovered(false)
-      }
+      if (e.key !== 'Escape') return
+      if (tipRef.current?.contains(document.activeElement)) backToIcon()
+      setPinned(false)
+      setHovered(false)
     }
     // The bubble is position:fixed and computed once, so scrolling the gallery
     // would detach it from its icon — dismiss instead (capture phase, so any
-    // scrolling ancestor counts, not just the window).
-    const onScroll = () => {
+    // scrolling ancestor counts, not just the window). Scrolling the bubble's
+    // own capped content is not a gallery scroll.
+    const onScroll = (e: Event) => {
+      if (tipRef.current?.contains(e.target as Node)) return
       setPinned(false)
       setHovered(false)
     }
@@ -251,15 +280,21 @@ function PrerequisiteTip({ label, heading, text, redirect }: {
 
   // Bottom-anchored above the icon so bubble height never matters; clamped to
   // the viewport the same way InfoTip clamps, falling below only when the icon
-  // sits within bubble reach of the top edge.
+  // sits within bubble reach of the top edge. A bubble with controls is capped
+  // to the room on the chosen side and scrolls inside that cap, so it never runs
+  // off the screen; Tab into it moves focus, and so the scroll, to each control.
+  // A text-only bubble has no focus stop to scroll with, so it stays uncapped.
   const pos = () => {
     if (!btnRef.current) return { top: 0, left: 0 }
     const r = btnRef.current.getBoundingClientRect()
     const tipW = 300
     let left = r.left + r.width / 2 - tipW / 2
     left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8))
-    if (r.top > 132) return { bottom: window.innerHeight - r.top + 6, left }
-    return { top: r.bottom + 6, left }
+    const above = r.top > 132
+    const room = above ? r.top - 14 : window.innerHeight - r.bottom - 14
+    const cap = interactive ? { maxHeight: room } : {}
+    if (above) return { bottom: window.innerHeight - r.top + 6, left, ...cap }
+    return { top: r.bottom + 6, left, ...cap }
   }
 
   return (
@@ -270,38 +305,118 @@ function PrerequisiteTip({ label, heading, text, redirect }: {
         aria-label={label}
         aria-expanded={open}
         aria-describedby={open ? tipId : undefined}
+        aria-controls={open && interactive ? tipId : undefined}
         onClick={e => { e.stopPropagation(); setPinned(p => !p) }}
+        onKeyDown={e => {
+          // The bubble renders in a portal at the end of the document, so Tab
+          // would skip it: carry focus into its first control instead.
+          if (e.key !== 'Tab' || e.shiftKey || !open) return
+          const first = focusables()[0]
+          if (!first) return
+          if (!tipImeLatch.claimSyntheticKey(e)) return
+          e.preventDefault()
+          setPinned(true)
+          first.focus()
+        }}
         onMouseEnter={holdHover}
         onMouseLeave={releaseHover}
-        onFocus={holdHover}
+        onFocus={() => { if (leaving.current) leaving.current = false; else holdHover() }}
         onBlur={releaseHover}
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-warn transition-colors hover:text-warn-text hover:bg-warn-subtle"
       >
         <AlertTriangle className="h-4 w-4" aria-hidden="true" />
       </button>
       {open && <OverlayPortal>{
-        /* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the mouse listeners implement WCAG 1.4.13 "hoverable" (pointer may cross into the tooltip without it dismissing); keyboard users have their own complete path on the button (focus opens, Escape dismisses), so there is no keyboard operation to mirror here */
+        /* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the role is set per render (dialog or tooltip), which the rule cannot read; the mouse listeners implement WCAG 1.4.13 "hoverable" (pointer may cross into the tooltip without it dismissing); the keyboard path is the icon's Tab into the bubble and Tab / Shift+Tab / Escape back out */
         <div
           ref={tipRef}
           id={tipId}
-          role="tooltip"
+          role={interactive ? 'dialog' : 'tooltip'}
+          aria-labelledby={interactive ? headingId : undefined}
           onMouseEnter={holdHover}
           onMouseLeave={releaseHover}
-          className="fixed z-[9999] max-w-[300px] whitespace-normal rounded-lg border border-warn/30 p-2.5 text-[12px] leading-relaxed text-text"
+          // Focus inside the bubble (a click on a copy button, or Tab) pins it,
+          // so the pointer leaving does not unmount the control that holds focus.
+          onFocus={() => setPinned(true)}
+          onKeyDown={e => {
+            if (e.key !== 'Tab') return
+            const items = focusables()
+            const at = items.indexOf(document.activeElement as HTMLElement)
+            // Out past either end goes back to the icon, closing the bubble.
+            if ((e.shiftKey && at === 0) || (!e.shiftKey && at === items.length - 1)) {
+              if (!tipImeLatch.claimSyntheticKey(e)) return
+              e.preventDefault()
+              backToIcon()
+            }
+          }}
+          className={`fixed z-[9999] max-w-[300px] ${interactive ? 'overflow-y-auto' : ''} whitespace-normal rounded-lg border border-warn/30 p-2.5 text-[12px] leading-relaxed text-text`}
           style={{ ...pos(), backgroundColor: 'var(--card)', boxShadow: 'var(--shadow-lg)' }}
         >
-          <span className="block font-medium text-text-strong">{heading}</span>
+          <span id={headingId} className="block font-medium text-text-strong">{heading}</span>
           {text && <span className="mt-0.5 block">{text}</span>}
           {redirect && (
             <>
               <span className="mt-1.5 block text-muted">{redirect.caption}</span>
-              {redirect.values.map(value => (
-                <code key={value} className="mt-0.5 block select-all break-all font-mono text-[11px] text-text-strong">{value}</code>
-              ))}
+              {redirect.values.map(value => <RedirectValue key={value} value={value} />)}
             </>
+          )}
+          {link && (
+            <a href={link.href} target="_blank" rel="noopener noreferrer" className="mt-1.5 inline-flex items-center gap-1 font-medium text-accent hover:text-accent-hover">
+              {link.label} <ExternalLink className="lucide-inline" aria-hidden="true" />
+            </a>
           )}
         </div>
       }</OverlayPortal>}
+    </>
+  )
+}
+
+/** One redirect address with a button that copies exactly that value. The
+ *  confirmation is a text swap with no animation, so it reads the same with
+ *  reduced motion, and it is announced through a polite live region. A copy the
+ *  browser refuses says so and asks the user to select the text instead; it
+ *  offers no agent hand-off, which would navigate to chat and drop a return
+ *  address typed on a waiting card. */
+function RedirectValue({ value }: { value: string }) {
+  const { t } = useTranslation()
+  // A refusal stays on screen until a later copy succeeds or the user dismisses
+  // it, not only for the acknowledgment's moment. It is set from each attempt's
+  // own result, so a repeated failure shows again after a dismiss.
+  const [failed, setFailed] = useState(false)
+  const copyRef = useRef<HTMLButtonElement>(null)
+  // The shared acknowledgment: `copied` / `failed`, reset after a moment.
+  const { copyStatus, copyPath } = useCopyAck(value, async () => {
+    const ok = await copyToClipboard(value)
+    setFailed(!ok)
+    return ok
+  })
+  const copied = copyStatus === 'copied'
+  return (
+    <>
+      <span className="mt-0.5 flex items-start gap-1.5">
+        <code className="min-w-0 flex-1 select-all break-all font-mono text-[11px] text-text-strong">{value}</code>
+        <button
+          ref={copyRef}
+          type="button"
+          onClick={() => void copyPath()}
+          aria-label={t('pages.connectionsPage.copy_redirect_address', { address: value })}
+          className="inline-flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-text hover:bg-bg-hover hover:text-text-strong"
+        >
+          {copied ? <Check className="h-3.5 w-3.5 text-ok" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
+          <span aria-live="polite">{copied ? t('pages.connectionsPage.redirect_address_copied') : ''}</span>
+        </button>
+      </span>
+      {failed && (
+        <ErrorNotice
+          variant="inline"
+          message={t('pages.connectionsPage.redirect_address_copy_failed')}
+          askAgent={false}
+          // Focus goes back to this address's copy button, not the page body,
+          // so the bubble keeps its keyboard path (Tab, Escape) after dismissal.
+          onDismiss={() => { copyRef.current?.focus(); setFailed(false) }}
+          className="mt-0.5"
+        />
+      )}
     </>
   )
 }
@@ -693,12 +808,17 @@ function ConnectionCard({
         values: redirectValues,
       }
     : undefined
+  // The provider's org-admin checklist, when the registry names one, is a link
+  // in the same tip as the caveat that sends the user there.
+  const adminGuide = tipDocHref(provider.org_admin_guide)
+  const link = adminGuide ? { href: adminGuide, label: t('pages.connectionsPage.org_admin_checklist_link') } : undefined
   const prerequisiteTip = prerequisiteText || redirect ? (
     <PrerequisiteTip
       label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
       heading={t('pages.connectionsPage.before_you_connect')}
       text={prerequisiteText}
       redirect={redirect}
+      link={link}
     />
   ) : null
   const runRelay = async () => {
