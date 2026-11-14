@@ -21,7 +21,8 @@
   "permissions": {
     "api": [
       "/apps/design-tweak/api",
-      "/apps/design-tweak/api/*"
+      "/apps/design-tweak/api/*",
+      "/api/chat"
     ],
     "storage": true
   },
