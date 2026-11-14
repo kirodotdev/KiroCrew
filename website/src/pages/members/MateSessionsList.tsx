@@ -10,9 +10,12 @@
  * A click expands the row IN PLACE and shows its recap: no navigation, no side
  * panel, no drawer (rfc-mate-sessions-folder-or-lineage.md, "Owner decision: a
  * click shows the recap in place"). The recap is read from records only, with no
- * model call (`GET .../crew-workers/{worker}/recap`).
+ * model call (`GET .../crew-workers/{worker}/recap`). Its one action is the
+ * Open session button, which leaves for the chat view; a closed session is
+ * reopened from its saved conversation first
+ * (docs/decisions/2026-11-12-a-bots-sessions-tab-opens-a-session-and-shows-the-task-it-was-last-given.md).
  */
-import { useId, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight } from 'lucide-react'
@@ -30,7 +33,8 @@ import {
   mergeCrewWorkers,
   type CrewWorkerGroup,
 } from '../../lib/crewWorkers'
-import { crewWorkersQueryKey } from '../chat/command-center/CrewWorkerList'
+import { crewWorkersQueryKey, reopenCrewSession } from '../chat/command-center/CrewWorkerList'
+import { useAppDispatch, useAppStore } from '../../store'
 import { crewWorkersGapMs, readCrewWorkers } from '../../lib/crewWorkersPoll'
 import { timeAgo } from '../../utils/timeAgo'
 import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
@@ -86,11 +90,15 @@ export interface MateSessionsListProps {
   /** The mate's open sessions from the store. */
   liveSlots: readonly ChatSlot[]
   slotsLoaded: boolean
+  /** Asks about unsaved edits on the page before a session is opened; true to go on. */
+  confirmLeave: () => Promise<boolean>
+  /** Opens a session in the chat view, with no question of its own. */
+  openOnChatPage: (key: string) => void
   /** What the tab shows when the mate has no session at all. */
   empty: ReactNode
 }
 
-export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, empty }: MateSessionsListProps) {
+export default function MateSessionsList({ root, mateName, liveSlots, slotsLoaded, confirmLeave, openOnChatPage, empty }: MateSessionsListProps) {
   const { t } = useTranslation()
   const listed = useQuery({
     queryKey: crewWorkersQueryKey(root),
@@ -137,7 +145,8 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
         const list = (
           <ul className="list-none m-0 p-0 rounded-2xl border border-border bg-bg overflow-hidden">
             {rows.map(w => (
-              <MateSessionRow key={w.key} root={root} worker={w} open={expanded === w.key} onToggle={() => toggle(w.key)} />
+              <MateSessionRow key={w.key} root={root} worker={w} open={expanded === w.key} onToggle={() => toggle(w.key)}
+                confirmLeave={confirmLeave} openOnChatPage={openOnChatPage} />
             ))}
           </ul>
         )
@@ -167,7 +176,10 @@ export default function MateSessionsList({ root, mateName, liveSlots, slotsLoade
   )
 }
 
-function MateSessionRow({ root, worker, open, onToggle }: { root: string; worker: CrewWorker; open: boolean; onToggle: () => void }) {
+function MateSessionRow({ root, worker, open, onToggle, confirmLeave, openOnChatPage }: {
+  root: string; worker: CrewWorker; open: boolean; onToggle: () => void
+  confirmLeave: () => Promise<boolean>; openOnChatPage: (key: string) => void
+}) {
   const { t } = useTranslation()
   const regionId = useId()
   const title = sessionDisplayTitle({ key: worker.key, title: worker.title })
@@ -193,9 +205,72 @@ function MateSessionRow({ root, worker, open, onToggle }: { root: string; worker
       {open && (
         <div id={regionId} role="region" aria-label={title} className="px-3.5 pt-2 pb-3">
           <MateSessionRecap root={root} worker={worker.key} rowTitle={title} />
+          <OpenSessionAction worker={worker} title={title} confirmLeave={confirmLeave} openOnChatPage={openOnChatPage} />
         </div>
       )}
     </li>
+  )
+}
+
+/** The recap's one action: open the session in the chat view, after the page's
+ *  unsaved-edits question. A closed session is reopened from its saved
+ *  conversation first, as the chat page's Workers list does; when that fails the
+ *  person stays here and the line under the button says so. A session on another
+ *  crew names no local session, so it gets a line instead of a button. */
+function OpenSessionAction({ worker, title, confirmLeave, openOnChatPage }: {
+  worker: CrewWorker; title: string; confirmLeave: () => Promise<boolean>; openOnChatPage: (key: string) => void
+}) {
+  const { t } = useTranslation()
+  const dispatch = useAppDispatch()
+  const store = useAppStore()
+  const [opening, setOpening] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const mounted = useRef(true)
+  // Set in the setup half too: StrictMode runs cleanup then setup again in development.
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  if (worker.remote_crew) {
+    return <p className="m-0 mt-2.5 text-[12px] text-muted" data-testid="mate-session-remote">
+      {t('pages.membersPage.recap_open_remote', { crew: worker.remote_crew })}
+    </p>
+  }
+  const closed = worker.status === 'closed'
+  const open = async () => {
+    if (opening) return
+    setFailed(false)
+    // shortcut: the question comes before the reopen, as the decision asks, so a
+    // discard the person agreed to stays discarded when the reopen then fails.
+    if (!(await confirmLeave()) || !mounted.current) return
+    if (!closed) { openOnChatPage(worker.key); return }
+    setOpening(true)
+    // keepPanel false: the session lands as a live one opened from here does,
+    // without the Workers panel the conductor's own list keeps open beside it.
+    const reopened = await reopenCrewSession(dispatch, store.getState, worker.key, worker.title, false)
+    if (!mounted.current) return
+    setOpening(false)
+    if (!reopened.ok) { setFailed(true); return }
+    // Not activated: the person picked another session while this one was
+    // reopening, and that newer pick wins.
+    if (reopened.activated) openOnChatPage(reopened.key)
+  }
+  const label = closed ? t('pages.membersPage.recap_reopen_session') : t('pages.membersPage.recap_open_session')
+  const name = opening
+    ? t('pages.membersPage.recap_reopening_named', { title })
+    : closed ? t('pages.membersPage.recap_reopen_session_named', { title }) : t('pages.membersPage.recap_open_session_named', { title })
+  return (
+    <div className="mt-2.5 flex flex-col items-start gap-2">
+      {/* Says the session is closed and that a reopen runs nothing, so the
+          button does not read as restarting the work. */}
+      {closed && <p className="m-0 text-[12px] text-muted" data-testid="mate-session-closed-note">{t('pages.membersPage.recap_closed_note')}</p>}
+      {/* aria-disabled, not disabled: focus stays on the button while it works. */}
+      <button type="button" onClick={() => { void open() }} aria-disabled={opening || undefined} aria-busy={opening || undefined}
+        data-testid="mate-session-open" aria-label={name}
+        className="min-h-9 inline-flex items-center rounded-lg border border-border bg-bg-elevated px-3 py-1.5 text-[12.5px] font-medium text-text hover:bg-bg-hover transition-colors cursor-pointer aria-disabled:opacity-60 aria-disabled:cursor-default">
+        {opening ? t('pages.membersPage.recap_reopening') : label}
+      </button>
+      {/* No hand-off: the Members page holds unsaved Profile, schedule and
+          crew-editor drafts, and Ask the agent navigates away from them. */}
+      {failed && <ErrorNotice variant="inline" message={t('commandCenter.worker_reopen_failed')} testId="mate-session-reopen-failed" />}
+    </div>
   )
 }
 

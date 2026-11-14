@@ -429,6 +429,12 @@ export function useMembersPageSidePanel({
     if (!schedAtStakeRef.current()) { openSessionOnChatPage(key); return }
     void schedGuardRef.current().then((ok) => { if (ok) openSessionOnChatPage(key) })
   }, [openSessionOnChatPage, schedAtStakeRef, schedGuardRef])
+  // The same question on its own, for an exit with a step between the answer and
+  // the navigation: the Sessions tab reopens a closed session only after it.
+  const confirmSessionLeave = useCallback(
+    (): Promise<boolean> => (schedAtStakeRef.current() ? schedGuardRef.current() : Promise.resolve(true)),
+    [schedAtStakeRef, schedGuardRef],
+  )
   const drivingSessions = useMemo(() => {
     if (!activeMemberKey) return []
     // Every session in the mate's tree, by the server's own `mate_root` stamp: an
@@ -498,7 +504,7 @@ export function useMembersPageSidePanel({
     dashboardVisitedFor, closeOverlay, sidePanelOnScreen,
     sidePanelHiddenNow, actionError, setActionError, actionInfo, showActionError, revealPanelAfterOpen, openArtifact,
     openFile, openWorkingTreeDiff, saveFile, submitComments, runInTerminalScope, openFileGuarded, openFolderGuarded, openArtifactGuarded,
-    openSessionGuarded, drivingSessions,
+    openSessionGuarded, confirmSessionLeave, openSessionOnChatPage, drivingSessions,
     dashboardPreviewLink, focusPanelTab, leaveDashboardPreview, requestCloseOverlay, activeTabId,
   }
 }

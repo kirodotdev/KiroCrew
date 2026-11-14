@@ -1,7 +1,8 @@
 /**
  * The Profile card's Sessions tab names an untitled driving session
  * "Untitled session", never by its internal slot key (#20908), and a click on a
- * row expands it in place: it never opens the session or leaves the page.
+ * row expands it in place: only the recap's Open session button leaves the page,
+ * through the side panel's unsaved-edits question.
  *
  * The card is rendered for real; only its heavy siblings are stubbed, and the
  * panel stub mounts the `sessionsBody` it is handed, which is the list under test.
@@ -10,6 +11,8 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
+import { Provider } from 'react-redux'
+import { createTestStore } from '../../test/helpers'
 
 const crewWorkerRecap = vi.fn()
 vi.mock('../../api/client', async (orig) => {
@@ -40,6 +43,8 @@ type Slot = { key: string; title: string; created_by: string; mate_root?: string
 
 function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
   const ref = { current: () => false }
+  const confirmSessionLeave = vi.fn(() => Promise.resolve(true))
+  const openSessionOnChatPage = vi.fn()
   const member = { name: 'mate', slot_key: 'chat-mate' }
   const props = {
     crewEditing: { profileRegistryQuery: { data: undefined, isError: false } },
@@ -48,7 +53,7 @@ function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
     thread: { activeSlot: '', freshStart: { isPending: false }, askFreshStart: vi.fn(), confirmedSlot: '' },
     sidePanel: {
       profileCardW: 400, activeMemberKey: 'mate', openCrewView: vi.fn(), openSessionGuarded,
-      drivingSessions: slots,
+      drivingSessions: slots, confirmSessionLeave, openSessionOnChatPage,
     },
     schedules: {
       schedAgentField: '', profileGoalsQuery: { data: undefined, isError: false },
@@ -71,8 +76,12 @@ function mountCard(slots: Slot[], openSessionGuarded = vi.fn()) {
     onGoalsDraftChange: vi.fn(),
   } as unknown as MembersPageProfileCardProps
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  render(<QueryClientProvider client={qc}><MembersPageProfileCard {...props} /></QueryClientProvider>)
-  return { openSessionGuarded, navigate: props.navigate as unknown as ReturnType<typeof vi.fn> }
+  render(
+    <Provider store={createTestStore({ dashboard: { slots: [] } } as never)}>
+      <QueryClientProvider client={qc}><MembersPageProfileCard {...props} /></QueryClientProvider>
+    </Provider>,
+  )
+  return { openSessionGuarded, confirmSessionLeave, openSessionOnChatPage, navigate: props.navigate as unknown as ReturnType<typeof vi.fn> }
 }
 
 describe('MembersPageProfileCard Sessions tab rows', () => {
@@ -88,17 +97,21 @@ describe('MembersPageProfileCard Sessions tab rows', () => {
     expect(named.textContent).toContain('Fix the parser')
   })
 
-  it('expands the clicked row in place and never opens the session', async () => {
+  it('expands the clicked row in place, and only its Open session button opens it', async () => {
     crewWorkerRecap.mockResolvedValue({
       key: 'chat-named', root: 'mate', title: 'Fix the parser', ledger_item: '', status: '', reason: '',
       state: '', summary: '', decision: '', pr: null, pr_url: '', artifacts: {}, last_update: '',
       open_approvals: 0, approvals: [], open_questions: 0, live: true,
     })
-    const { openSessionGuarded, navigate } = mountCard([{ key: 'chat-named', title: 'Fix the parser', created_by: 'mate', mate_root: 'mate' }])
+    const { openSessionGuarded, confirmSessionLeave, openSessionOnChatPage, navigate } = mountCard([{ key: 'chat-named', title: 'Fix the parser', created_by: 'mate', mate_root: 'mate' }])
     fireEvent.click(await screen.findByTestId('mate-session-toggle'))
     expect((await screen.findByTestId('mate-recap-empty')).textContent).toBe('No report yet')
     expect(crewWorkerRecap).toHaveBeenCalledWith('mate', 'chat-named')
     expect(openSessionGuarded).not.toHaveBeenCalled()
     expect(navigate).not.toHaveBeenCalled()
+    expect(openSessionOnChatPage).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Open session: Fix the parser' }))
+    await vi.waitFor(() => expect(openSessionOnChatPage).toHaveBeenCalledWith('chat-named'))
+    expect(confirmSessionLeave).toHaveBeenCalledTimes(1)
   })
 })

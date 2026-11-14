@@ -2809,7 +2809,22 @@ else a reported artifact that `urlsplit` parses as a GitHub pull-request page), 
 requests of its `approvals` fold and the count of open `ask_question` calls in
 its `tools` fold. With none of the report lines it says "No report yet"; open
 approvals and questions still show. The full transcript is not reached from
-this click.
+the row click. Under the recap sits its one action
+(`2026-11-12-a-bots-sessions-tab-opens-a-session-and-shows-the-task-it-was-last-given.md`):
+**Open session**, named with the session's title for screen readers, asks the
+page's unsaved-edits question (`confirmSessionLeave`, the Schedules guard
+`openSessionGuarded` runs) and then opens `/chat?sid=<key>`. A closed session's recap carries a line above the button saying the session
+is closed and that reopening reruns nothing (the row's group does not say
+"closed"); its button reads **Reopen session**: after the same question it
+reopens the session
+from its saved conversation with `reopenCrewSession`, the call the Crew panel's
+Workers list makes (with `keepPanel` false, so it lands as a live one does, with
+no Workers panel held open), and opens it only when that reopen took the view;
+while it runs the button stays focusable (`aria-disabled`) and its name says
+"Reopening <title>…"; a failed
+reopen keeps the person on the page and says so under the button. A row with
+`remote_crew` names no local session, so it shows a line naming that crew and no
+button.
 Child subagent runs remain presence for the roster but are not dashboard
 sessions. Every page-level request to open Profile — including a second use of
 the quiet-chat Sessions link after the reader changed card tabs or pushed a

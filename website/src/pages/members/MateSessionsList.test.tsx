@@ -2,11 +2,16 @@
  * A crewmate's Sessions tab: the mate's sessions in the Crew panel's groups, and a
  * click that expands the row IN PLACE with a records-only recap
  * (rfc-mate-sessions-folder-or-lineage.md, "Owner decision: a click shows the recap
- * in place"). No navigation, no side panel, no model-written summary.
+ * in place"). No navigation, no side panel, no model-written summary. The recap's
+ * one action, Open session, leaves for the chat view after the page's
+ * unsaved-edits question, reopening a closed session first.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { StrictMode } from 'react'
+import { act, cleanup, render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { createTestStore } from '../../test/helpers'
 import type { ChatSlot, CrewWorker, CrewWorkerRecap } from '../../types'
 
 const crewWorkers = vi.fn()
@@ -20,6 +25,12 @@ vi.mock('../../api/client', () => ({
     sessionSummary: (slot: string) => sessionSummary(slot),
     generateSessionSummary: (slot: string) => generateSessionSummary(slot),
   },
+}))
+
+const reopenCrewSession = vi.hoisted(() => vi.fn())
+vi.mock('../chat/command-center/CrewWorkerList', async importOriginal => ({
+  ...(await importOriginal<typeof import('../chat/command-center/CrewWorkerList')>()),
+  reopenCrewSession,
 }))
 
 import MateSessionsList, { RecapBody } from './MateSessionsList'
@@ -40,13 +51,19 @@ const RECAP: CrewWorkerRecap = {
   open_approvals: 1, approvals: [{ tool: 'Shell', requested_at: '' }], open_questions: 2, live: true,
 }
 
+const confirmLeave = vi.fn<() => Promise<boolean>>()
+const openOnChatPage = vi.fn<(key: string) => void>()
+
 function mount(live: Partial<ChatSlot>[] = []) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
-      <MateSessionsList root={MATE} mateName="Ada" liveSlots={live as ChatSlot[]} slotsLoaded
-        empty={<p data-testid="empty">empty</p>} />
-    </QueryClientProvider>,
+    <Provider store={createTestStore({ dashboard: { slots: [] } } as never)}>
+      <QueryClientProvider client={qc}>
+        <MateSessionsList root={MATE} mateName="Ada" liveSlots={live as ChatSlot[]} slotsLoaded
+          confirmLeave={confirmLeave} openOnChatPage={openOnChatPage}
+          empty={<p data-testid="empty">empty</p>} />
+      </QueryClientProvider>
+    </Provider>,
   )
 }
 
@@ -55,6 +72,9 @@ beforeEach(() => {
   crewWorkerRecap.mockReset()
   sessionSummary.mockReset()
   generateSessionSummary.mockReset()
+  reopenCrewSession.mockReset()
+  confirmLeave.mockReset().mockResolvedValue(true)
+  openOnChatPage.mockReset()
 })
 
 describe('MateSessionsList', () => {
@@ -97,7 +117,8 @@ describe('MateSessionsList', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={qc}>
-        <MateSessionsList root="" mateName="Ada" liveSlots={[]} slotsLoaded empty={<p data-testid="empty">empty</p>} />
+        <MateSessionsList root="" mateName="Ada" liveSlots={[]} slotsLoaded confirmLeave={confirmLeave}
+          openOnChatPage={openOnChatPage} empty={<p data-testid="empty">empty</p>} />
       </QueryClientProvider>,
     )
     expect(screen.getByTestId('empty')).toBeTruthy()
@@ -126,6 +147,9 @@ describe('MateSessionsList', () => {
     // Records only: neither summary route is read or generated.
     expect(sessionSummary).not.toHaveBeenCalled()
     expect(generateSessionSummary).not.toHaveBeenCalled()
+    // Expanding is not opening: only the recap's button leaves the page.
+    expect(confirmLeave).not.toHaveBeenCalled()
+    expect(openOnChatPage).not.toHaveBeenCalled()
     // A second click folds it again.
     fireEvent.click(toggle)
     await waitFor(() => expect(screen.queryByTestId('mate-recap')).toBeNull())
@@ -148,6 +172,118 @@ describe('MateSessionsList', () => {
     expect(recapClasses).toContain('border-l-2')
     // And a top gap, so the hovered header's edge never touches the text.
     expect(screen.getByRole('region', { name: 'Release notes' }).className.split(/\s+/)).toContain('pt-2')
+  })
+})
+
+describe('MateSessionsList Open session', () => {
+  async function openRecap(w: CrewWorker) {
+    crewWorkers.mockResolvedValue({ root: MATE, workers: [w] })
+    crewWorkerRecap.mockResolvedValue(RECAP)
+    mount()
+    fireEvent.click(await screen.findByTestId('mate-session-toggle'))
+    await screen.findByTestId('mate-recap')
+  }
+
+  it('opens a live session in the chat view after the unsaved-edits question', async () => {
+    await openRecap(worker('m1', { title: 'Release notes' }))
+    const open = screen.getByRole('button', { name: 'Open session: Release notes' })
+    expect(open.textContent).toBe('Open session')
+    expect(screen.getByRole('region', { name: 'Release notes' }).contains(open)).toBe(true)
+    fireEvent.click(open)
+    await waitFor(() => expect(openOnChatPage).toHaveBeenCalledWith('m1'))
+    expect(confirmLeave).toHaveBeenCalledTimes(1)
+    expect(reopenCrewSession).not.toHaveBeenCalled()
+  })
+
+  it('stays on the page when the person keeps their unsaved edits', async () => {
+    confirmLeave.mockResolvedValue(false)
+    await openRecap(worker('m3', { title: 'Old task', group: 'done', status: 'closed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen session: Old task' }))
+    await waitFor(() => expect(confirmLeave).toHaveBeenCalledTimes(1))
+    expect(reopenCrewSession).not.toHaveBeenCalled()
+    expect(openOnChatPage).not.toHaveBeenCalled()
+  })
+
+  it('reopens a closed session from its saved conversation, then opens it', async () => {
+    let land: (r: { ok: boolean; activated: boolean; key: string }) => void = () => {}
+    reopenCrewSession.mockImplementationOnce(() => new Promise(r => { land = r }))
+    await openRecap(worker('m3', { title: 'Old task', group: 'done', status: 'closed' }))
+    // The row's group does not say "closed", so the recap says it, and that a
+    // reopen runs nothing, before the button that reads "Reopen".
+    expect(screen.getByTestId('mate-session-closed-note').textContent).toContain('closed')
+    const reopen = screen.getByRole('button', { name: 'Reopen session: Old task' })
+    fireEvent.click(reopen)
+    await waitFor(() => expect(reopenCrewSession).toHaveBeenCalledTimes(1))
+    expect(reopenCrewSession.mock.calls[0][2]).toBe('m3')
+    expect(reopenCrewSession.mock.calls[0][3]).toBe('Old task')
+    // Lands as a live open does: no Workers panel held open beside it.
+    expect(reopenCrewSession.mock.calls[0][4]).toBe(false)
+    // One reopen at a time: the button holds, keeps focus, and says what it is doing.
+    expect(reopen.getAttribute('aria-disabled')).toBe('true')
+    expect(reopen).not.toBeDisabled()
+    expect(reopen.getAttribute('aria-label')).toBe('Reopening Old task…')
+    expect(reopen.textContent).toBe('Reopening…')
+    fireEvent.click(reopen)
+    await act(async () => {})
+    expect(confirmLeave).toHaveBeenCalledTimes(1)
+    expect(openOnChatPage).not.toHaveBeenCalled()
+    await act(async () => { land({ ok: true, activated: true, key: 'm3-reopened' }) })
+    expect(openOnChatPage).toHaveBeenCalledWith('m3-reopened')
+  })
+
+  it('stays on the page and says so when the reopen fails', async () => {
+    reopenCrewSession.mockResolvedValueOnce({ ok: false, activated: false, key: 'm3' })
+    await openRecap(worker('m3', { title: 'Old task', group: 'done', status: 'closed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen session: Old task' }))
+    expect((await screen.findByTestId('mate-session-reopen-failed')).textContent).toContain('Could not reopen that session. Try again.')
+    expect(openOnChatPage).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Reopen session: Old task' }).getAttribute('aria-disabled')).toBeNull()
+  })
+
+  it('does not move the person when the reopen lands after they left the tab', async () => {
+    let land: (r: { ok: boolean; activated: boolean; key: string }) => void = () => {}
+    reopenCrewSession.mockImplementationOnce(() => new Promise(r => { land = r }))
+    await openRecap(worker('m3', { title: 'Old task', group: 'done', status: 'closed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen session: Old task' }))
+    await waitFor(() => expect(reopenCrewSession).toHaveBeenCalledTimes(1))
+    cleanup()
+    await act(async () => { land({ ok: true, activated: true, key: 'm3' }) })
+    expect(openOnChatPage).not.toHaveBeenCalled()
+  })
+
+  it('still opens under StrictMode, which re-runs effects in development', async () => {
+    crewWorkers.mockResolvedValue({ root: MATE, workers: [worker('m1', { title: 'Release notes' })] })
+    crewWorkerRecap.mockResolvedValue(RECAP)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(
+      <StrictMode>
+        <Provider store={createTestStore({ dashboard: { slots: [] } } as never)}>
+          <QueryClientProvider client={qc}>
+            <MateSessionsList root={MATE} mateName="Ada" liveSlots={[]} slotsLoaded
+              confirmLeave={confirmLeave} openOnChatPage={openOnChatPage} empty={<p>empty</p>} />
+          </QueryClientProvider>
+        </Provider>
+      </StrictMode>,
+    )
+    fireEvent.click(await screen.findByTestId('mate-session-toggle'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Open session: Release notes' }))
+    await waitFor(() => expect(openOnChatPage).toHaveBeenCalledWith('m1'))
+  })
+
+  it('leaves the view alone when the person picked another session during the reopen', async () => {
+    reopenCrewSession.mockResolvedValueOnce({ ok: true, activated: false, key: 'm3' })
+    await openRecap(worker('m3', { title: 'Old task', group: 'done', status: 'closed' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reopen session: Old task' }))
+    await waitFor(() => expect(reopenCrewSession).toHaveBeenCalledTimes(1))
+    await act(async () => {})
+    expect(openOnChatPage).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('mate-session-reopen-failed')).toBeNull()
+  })
+
+  it('offers no button for a session on another crew and says why', async () => {
+    await openRecap(worker('r1', { title: 'Remote task', remote_crew: 'Build farm' }))
+    expect(screen.queryByTestId('mate-session-open')).toBeNull()
+    expect(screen.getByTestId('mate-session-remote').textContent).toBe('This session runs on Build farm. Open it from that crew.')
   })
 })
 
