@@ -260,6 +260,37 @@ def resolve_kas_route(
     return KasRoute(bundle=True, reason=reason) if reason else RELAY
 
 
+def relay_runs_on_kiro_cli_sign_in(*, environ: Mapping[str, str], home: Path) -> bool:
+    """Would a KAS session with no Kiro Crew sign-in run on kiro-cli's own sign-in?
+
+    For a surface that tells a person which sign-in their sessions use, before or
+    after Kiro Crew's own is removed. True only when the bundle is not configured,
+    kiro-cli is found, and the relay could run without a vault identity
+    (:func:`relay_unusable_reason`). Every failed check answers False, so nothing is
+    promised that a spawn might not do. Blocking; never raises.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        if KiroCrewConfig.load().agent.kas_bundle:
+            return False
+        from kiro_crew.acp.client import _resolve_kiro_bin
+
+        kiro_bin = _resolve_kiro_bin(environ=environ, home=home)
+        if not kiro_bin:
+            return False
+        return not relay_unusable_reason(
+            kiro_bin=kiro_bin,
+            environ=environ,
+            home=home,
+            vault_identity=False,
+            crew_entry_skips_launcher=False,
+        )
+    except Exception:  # noqa: BLE001 - an unknown route promises nothing
+        logger.debug("could not tell whether the relay runs on kiro-cli's sign-in", exc_info=True)
+        return False
+
+
 def is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
     """Is *binary* the operator's own ``KIROCREW_KIRO_BIN`` choice?
 
