@@ -73,6 +73,7 @@ import ChatSidebar from '../pages/ChatSidebar'
 import type { RootState } from '../store'
 import { crewModePreviewOn } from './crewModePreview'
 import { PREVIEW_CREW_MODE, setPreviewFlag } from '../utils/previewFlags'
+import { RECENT_WINDOW_PRESETS } from '../pages/recentWindow'
 
 const CREW_ONLY = 'mc-session-crew-only'
 const RUNNING_ONLY = 'mc-session-running-only'
@@ -156,6 +157,17 @@ describe('a conductor mode root\'s crew members', () => {
 })
 
 describe('the conductor mode filter offer', () => {
+  it('builds the filter menu only once it opens', async () => {
+    // The menu sits closed on every render of the sidebar, including the first
+    // render of the chat page, so its rows must cost nothing until it opens.
+    const label = vi.spyOn(RECENT_WINDOW_PRESETS[0], 'label', 'get')
+    renderSidebar(PLAIN_SLOTS)
+    await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
+    expect(label).not.toHaveBeenCalled()
+    await openFilterMenu()
+    expect(screen.getAllByRole('menuitem').some(el => el.textContent?.startsWith('In progress'))).toBe(true)
+    label.mockRestore()
+  })
   it('is absent, hint included, while no chat runs on the conductor', async () => {
     renderSidebar(PLAIN_SLOTS)
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())

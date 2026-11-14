@@ -293,6 +293,12 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                 />
               </DropdownMenuTrigger>
               <FilterMenuContent align="end">
+                {/* Built only while the menu is open: Radix mounts the content
+                    on open, and this closure runs then. Built inline it ran on
+                    every render of the sidebar, menu closed, and its labels (the
+                    window presets' number formatting among them) were part of the
+                    longest task of opening the chat page. */}
+                <RenderWhenOpen render={() => (<>
                 <FilterMenuLabel>{i18nT('pages.chatSidebar.filter')}</FilterMenuLabel>
                 {SESSION_FILTERS.map(filterDef => {
                   const active = activeFilters.has(filterDef.key)
@@ -1077,6 +1083,7 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                     included) when no session carries an unlinkable change chip,
                     so the menu is unchanged for a list with none. */}
                 <RemoveMergedCrChips />
+                </>)} />
               </FilterMenuContent>
             </DropdownMenu>
           </>
@@ -1532,4 +1539,10 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
         </>
   )
   return { field, shelf }
+}
+
+/** Runs `render` when React renders this element, which for a child of a closed
+ *  Radix menu content is only once the menu opens. */
+function RenderWhenOpen({ render }: { render: () => React.ReactNode }) {
+  return <>{render()}</>
 }
