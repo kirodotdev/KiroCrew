@@ -5,8 +5,8 @@ enterprise signing service (CDSigner), Apple notarization and stapling, and
 rotation of the notary credential.
 
 The pipeline lives in `.github/workflows/sign-and-notarize.yml`, a reusable
-workflow called by `nightly.yml` (channel `nightly`) and `release.yml` (channels
-`insider` and `stable`). The scripts it drives are in `packaging/signing/`.
+workflow called by `nightly.yml` (channel `nightly`), `release.yml` (channels
+`insider` and `stable`) and `release-lts.yml` (channel `lts`). The scripts it drives are in `packaging/signing/`.
 Release mechanics as a whole live in [release.md](release.md); desktop packaging
 in [desktop-app.md](desktop-app.md).
 
@@ -104,8 +104,7 @@ latest-DMG permalink (`desktop/<channel>/latest/KiroCrew.dmg`) are a public
 contract, so deriving filenames from the bundle name would silently rename keys
 and break the permalink. The DMG's **volume** name does follow the bundle.
 
-The single-arch legs (`mac_variant: arm64 | x64`, on nightly and on both release
-channels) run the same three jobs once more per DMG and append the arch to every
+The single-arch legs (`mac_variant: arm64 | x64`, on nightly and on every release channel) run the same three jobs once more per DMG and append the arch to every
 name the legs would otherwise share: the signing-bucket keys (`SIGN_KEY_SUFFIX`, read by
 `sign.sh`), `notarized/…/KiroCrew-<arch>.zip`, the gated artifact
 `KiroCrew-notarized-<channel>-<version>-<arch>`, the public

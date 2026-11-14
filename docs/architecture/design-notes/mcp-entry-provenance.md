@@ -97,7 +97,7 @@ fix.
 **Re-establishing management on a legacy entry: Disconnect, then Connect.** The
 delete path removes the name from the shared file outright
 (`handlers/mcp.py`, `api_mcp_remove` / `api_mcp_server_detail`, both
-`data["mcpServers"].pop(name)` then `_write_mcp_json`). That file is the kiro-global
+`data.get("mcpServers", {}).pop(name, None)` then `_write_mcp_json`). That file is the kiro-global
 `~/.kiro/settings/mcp.json`: nothing in Crew removes an entry from the Claude Code
 sidecar `~/.mcp.json` (its registration only adds), so a legacy sidecar entry
 rejoins management only after the user deletes it from that file by hand. The name

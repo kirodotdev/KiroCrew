@@ -2074,7 +2074,7 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   apply. The handler therefore holds every quit that arrives while the apply is
   in progress (`event.preventDefault()` and a re-arm), and the apply's own
   `app.exit` is the only exit. The feed lane holds quits for its gateway stop
-  the same way. Pinned by `test/update-second-quit-keeps-apply.test.js`.
+  the same way. Pinned by `website/electron/test/update-second-quit-keeps-apply.test.js`.
 - **An apply the quit left behind is finished at the next app start.** If the
   quit-time apply was interrupted or failed, the arm stays. The next start runs
   it in Electron main (`startup-apply.js`) before the gateway spawns and before
