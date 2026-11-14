@@ -467,7 +467,10 @@ def test_shim_routes_find_setting(monkeypatch):
     )
     out = json.loads(mcp_guide._call_tool_inner("find_setting", {"query": "shorter replies"}))
     assert sent == ["/api/cards/agent/settings?q=shorter+replies"]
-    assert out == {"settings": [{"a": 1}]}
+    assert out["settings"] == [{"a": 1}]
+    # Not every answer is a setting: the result points at search_docs, so a
+    # question like "stop asking for this MCP tool" reaches the docs page.
+    assert "search_docs" in out["next"]
 
 
 # ── settings diagnosis ──
