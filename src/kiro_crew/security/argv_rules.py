@@ -28,57 +28,12 @@ from collections.abc import Callable
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import rm_floor as _rm
 from . import shell_normalizer as _shell
+from . import shell_normalizer_walk as _walk
 from .denied_rules import BUILTIN_DENIED_RULES
 
-#: Programs that run another command from their arguments, as
-#: ``wrapper -> (options that take a value, positional words before the command)``:
-#: ``timeout 5 chown ...`` has one positional (the duration), ``chroot / chmod ...``
-#: one (the new root). Long options are listed in their ``--opt value`` form; the
-#: ``--opt=value`` form is one word and needs no entry. An unlisted option that
-#: takes a value leaves the value read as the program, which only misses.
-_WRAPPERS: dict[str, tuple[frozenset[str], int]] = {
-    "sudo": (
-        frozenset(
-            {
-                *("-u", "-g", "-C", "-h", "-p", "-U", "-r", "-t", "-D", "-R"),
-                *("--user", "--group", "--close-from", "--host", "--prompt"),
-                *("--other-user", "--role", "--type", "--chdir", "--chroot"),
-            }
-        ),
-        0,
-    ),
-    "doas": (frozenset({"-u", "-C"}), 0),
-    "pkexec": (frozenset({"--user"}), 0),
-    "runuser": (frozenset({"-u", "-g", "-G", "--user", "--group"}), 0),
-    "env": (frozenset({"-u", "-C", "--unset", "--chdir"}), 0),
-    "command": (frozenset(), 0),
-    "builtin": (frozenset(), 0),
-    "exec": (frozenset({"-a"}), 0),
-    "nohup": (frozenset(), 0),
-    "setsid": (frozenset(), 0),
-    "time": (frozenset({"-f", "-o", "--format", "--output"}), 0),
-    "nice": (frozenset({"-n", "--adjustment"}), 0),
-    "ionice": (frozenset({"-c", "-n", "-p", "--class", "--classdata"}), 0),
-    "stdbuf": (frozenset({"-i", "-o", "-e", "--input", "--output", "--error"}), 0),
-    "timeout": (frozenset({"-s", "-k", "--signal", "--kill-after"}), 1),
-    "chroot": (frozenset({"--userspec", "--groups"}), 1),
-    "nsenter": (frozenset({"-t", "--target", "-S", "--setuid", "-G", "--setgid"}), 0),
-    "unshare": (frozenset({"--propagation", "--setgroups"}), 0),
-    "flock": (frozenset({"-w", "--timeout", "-E", "--conflict-exit-code"}), 1),
-    "taskset": (frozenset(), 1),
-    "chrt": (frozenset(), 1),
-    "xargs": (
-        frozenset(
-            {
-                *("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a"),
-                *("--max-args", "--max-procs", "--max-lines", "--max-chars"),
-                *("--delimiter", "--arg-file", "--process-slot-var"),
-            }
-        ),
-        0,
-    ),
-    "systemd-run": (frozenset({"-p", "-u", "-E", "--unit", "--property", "--setenv"}), 0),
-}
+#: Programs that run another command from their arguments. The wrapper table and the
+#: wrapper/keyword skip itself live in ``shell_normalizer_walk`` (``_WRAPPERS``,
+#: ``_program_index``), shared with ``_program_positions`` so there is one definition.
 
 #: ``find`` options whose following words, up to ``;`` or ``+``, are a command.
 _FIND_EXEC = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
@@ -159,48 +114,12 @@ _SYSTEM_DIRS = ("/usr", "/etc", "/sbin", "/boot", "/lib", "/lib64")
 _CHMOD_DASH_MODE = re.compile(r"^-[rwxXst]+(?:,[ugoa]*[-+=][rwxXst]*)*$")
 
 
-def _program_index(tokens: "list[str]", options: "list[str] | None" = None) -> "int | None":
-    """Index in *tokens* of the program a command runs, wrappers and ``VAR=x`` stepped over.
-
-    *options* is *tokens* in the case they were written in, when the caller has
-    it: a wrapper's option words are read from it (``sudo -H`` takes no value,
-    ``sudo -h`` does), and ``sudo -e`` / ``--edit`` runs no program at all.
-    Without it the option words are read from *tokens* as they are.
-    """
-    opts = tokens if options is None else options
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        # An empty word is stepped over too, as the other deny views elide it.
-        # ``time`` keeps command position but takes options (``time -p``): read it
-        # as a wrapper so ``-p`` is not taken for the program.
-        keyword = token in _shell._KEEPS_COMMAND_POSITION and token not in _WRAPPERS
-        if not token or ENV_ASSIGNMENT_RE.match(token) or keyword:
-            i += 1
-            continue
-        program = _shell._program_basename(token)
-        wrapper = _WRAPPERS.get(program)
-        if wrapper is None:
-            return i
-        value_opts, positionals = wrapper
-        i += 1
-        while i < len(tokens) and opts[i].startswith("-") and opts[i] != "-":
-            if opts[i] == "--":
-                i += 1
-                break
-            if options is not None and program == "sudo" and opts[i] in ("-e", "--edit"):
-                return None  # sudoedit: every later word is a file it edits
-            i += 2 if opts[i] in value_opts else 1
-        i += positionals
-    return None
-
-
 def _program_args(tokens: "list[str]") -> "tuple[str, list[str]] | None":
     """The program a command runs and its arguments, wrappers and ``VAR=x`` stepped over."""
-    i = _program_index(tokens)
+    i = _walk._program_index(tokens)
     if i is None:
         return None
-    return _shell._program_basename(tokens[i]), tokens[i + 1 :]
+    return _walk._program_basename(tokens[i]), tokens[i + 1 :]
 
 
 def _split_commands_indexed(tokens: "list[str]") -> "list[list[tuple[int, str]]]":
@@ -276,7 +195,9 @@ def _executed_program_indices(tokens: "list[str]", cased: "list[str] | None" = N
             if arm_bodies.intersection(range(command[k - 1][0] + 1, command[k][0] + 1))
         ]
         for start in [0] + bodies:
-            found = _program_index(words[start:], None if options is None else options[start:])
+            found = _walk._program_index(
+                words[start:], None if options is None else options[start:]
+            )
             if found is None or words[start + found].endswith(")"):
                 continue
             idx = start + found

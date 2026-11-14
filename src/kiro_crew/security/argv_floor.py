@@ -262,6 +262,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PYTHON_INERT_CTORS,
         _PYTHON_WRITE_METHODS,
         _RAW_ASSIGNMENT_RE,
+        _REDIRECT_OP_PREFIX,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
         _SELF_FLOOR_NAME_HINT_RE,
@@ -413,6 +414,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
     from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
+    from kiro_crew.security import shell_normalizer_walk as _walk  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,
     )

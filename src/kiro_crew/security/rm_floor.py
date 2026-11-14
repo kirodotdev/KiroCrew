@@ -12,6 +12,7 @@ import re
 from ..trust_patterns import ENV_ASSIGNMENT_RE
 from . import shell_commands as _commands
 from . import shell_normalizer as _shell
+from . import shell_normalizer_walk as _walk
 from .denied_rules import BUILTIN_DENIED_RULES
 from .shell_normalizer_escapes import _ANSI_C_QUOTE_RE
 
@@ -215,13 +216,13 @@ def _rm_wipe_targets(command: str) -> "set[str]":
                 words = [bare, *words[1:]] if bare else words[1:]
                 continue
             bare = _PARAM_RE.sub("", words[0])
-            if bare != words[0] and _shell._program_basename(words[0]) != "rm":
+            if bare != words[0] and _walk._program_basename(words[0]) != "rm":
                 # ``${x}rm`` runs ``rm`` when ``x`` is unset; a word already read
                 # as ``rm`` keeps that reading, so this only adds refusals
                 words = [bare, *words[1:]] if bare else words[1:]
                 continue
             break
-        name = _shell._program_basename(words[0]) if words else ""
+        name = _walk._program_basename(words[0]) if words else ""
         if name not in _RM_WORDS and name.lower() not in _RM_WORDS - {"rm"}:  # Windows: any case
             continue
         recursive = force = done = False
@@ -250,7 +251,7 @@ def _after_shell_verb(tokens: "list[str]", programs: "list[str]", index: int) ->
     if before < 0 or programs[before] != tokens[before]:
         return False  # a redirect target named ``eval`` is a file, not the verb
     verbs = _shell._NESTED_SHELL_VERBS
-    return tokens[before] in verbs or _shell._program_basename(tokens[before]) in verbs
+    return tokens[before] in verbs or _walk._program_basename(tokens[before]) in verbs
 
 
 def _command_lines(text: str) -> "list[str]":
@@ -375,7 +376,7 @@ def _runs_shell(cmd: "_commands.ShellCommand") -> bool:
     words = _shell._shell_tokens(" ".join(word.raw for word in cmd.argv))
     program, args = argv_rules._program_args(words) or ("", [])
     if program == "busybox" and args:  # busybox's next word is the applet
-        program, args = _shell._program_basename(args[0]), args[1:]
+        program, args = _walk._program_basename(args[0]), args[1:]
     if program not in _LITERAL_SHELLS:
         return False
     rest, from_stdin = iter(args), False
@@ -431,7 +432,7 @@ def _literal_shell_script(tokens: "list[str]") -> "str | None":
     (``bash``, ``sh`` …, never ``busybox``). Only that script, in a command that
     :func:`_expands_nothing`, keeps its ``\\$`` literal; any other payload (a forwarded
     ``sed …/e``, ``env -S``, ``xargs``) may be unescaped, so it keeps the fail-closed view."""
-    if len(tokens) != 3 or _shell._program_basename(tokens[0]) not in _LITERAL_SHELLS:
+    if len(tokens) != 3 or _walk._program_basename(tokens[0]) not in _LITERAL_SHELLS:
         return None
     if tokens[1] != "<<<" and not _shell._is_shell_command_flag(tokens[1]):
         return None

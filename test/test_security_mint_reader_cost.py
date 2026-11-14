@@ -42,12 +42,13 @@ def test_never_closing_substitutions_are_read_in_quadratic_work(
     assert seen[0] <= len(command) ** 2 // 4, (reps, len(command), seen[0])
 
 
-# Each command with the verdict ``main`` gave it before the memo: True is a refusal.
+# Each command with the verdict the memoized reader must give, the same one the reader
+# gives without the memo, refusals included: True is a refusal.
 _VERDICTS = (
     ("a=$(: #); a=$(: #); kirocrew doctor", False),
-    ("F=$(: # )\nprintf kirocrew); $F token", False),
-    ("T=$(: ${x:-(}; printf kirocre[w]); $T token", False),
-    ("T=$(cat <<E\n(\nE\nprintf kirocre[w]); $T token", False),
+    ("F=$(: # )\nprintf kirocrew); $F token", True),
+    ("T=$(: ${x:-(}; printf kirocre[w]); $T token", True),
+    ("T=$(cat <<E\n(\nE\nprintf kirocre[w]); $T token", True),
     ("T=$(printf token); kirocrew $T", True),
     ("T=$(echo hi); kirocrew $T", False),
     ("a=$(: #); T=$(printf token); kirocrew $T", True),

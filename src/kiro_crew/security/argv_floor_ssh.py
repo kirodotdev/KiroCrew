@@ -1229,17 +1229,43 @@ def _judge_ssh_to_self(text_lower: str, own_line: bool, raw_text: "str | None" =
     # one spelling), that frame keeps today's lowered reading; so does every
     # line the floor reaches by recursion, which has no submitted text.
     cased_frames: "list[list[str] | None]" = [tokens if same_case else None for tokens in frames]
+    # Each entry judges one lowered frame under one cased twin; an ambiguous lowered
+    # frame (several DISTINCT cased twins) contributes one entry per twin, so the floor
+    # judges it under each and refuses if any refuses.
+    judged_pairs: "list[tuple[list[str], list[str] | None]]" = list(zip(frames, cased_frames))
     if cased_text is not None:
         cased_text = _mask_quoted_separators(
             _ssh_floor_unmasked_text(cased_text), blank_bodies=True
         )
         cased_all = _self_token_frames(cased_text, literal)
-        if len(cased_all) == len(frames):
-            cased_frames = [
-                cased if [t.lower() for t in cased] == tokens else None
-                for cased, tokens in zip(cased_all, frames)
-            ]
-    for tokens, cased_tokens in zip(frames, cased_frames):
+        # Pair each lowercased frame with the cased frame(s) that lowercase to it, rather
+        # than zipping on equal length. The lowercased walk gains an ALTERNATIVE frame
+        # wherever the (case-sensitive) baseline substitution reader bound a name, so the
+        # two walks can differ in length. A length-gated positional zip then dropped EVERY
+        # cased frame to None, so a case-sensitive option (`sudo -H`, no value) was read as
+        # its lowercase twin (`-h`, takes a value), the program word shifted, and an ssh
+        # self-connection was allowed (opus). When DISTINCT cased frames lowercase to one
+        # lowered frame (the lowered walk de-dups `sudo -E`/`-e`, or `sudo -h`/`-H`), the
+        # command runs BOTH, so judge the frame under each distinct twin and refuse if any
+        # refuses -- leaving it None was fail-OPEN where the lowercase option takes a value
+        # (`-h`), not fail-closed (opus).
+        remaining = list(cased_all)
+        judged_pairs = []
+        for lowered in frames:
+            idxs = [i for i, cased in enumerate(remaining) if [t.lower() for t in cased] == lowered]
+            if not idxs:
+                judged_pairs.append((lowered, None))
+                continue
+            chosen = [remaining[i] for i in idxs]
+            for i in reversed(idxs):
+                remaining.pop(i)
+            distinct: "list[list[str]]" = []
+            for twin in chosen:
+                if twin not in distinct:
+                    distinct.append(twin)
+            for twin in distinct:
+                judged_pairs.append((lowered, twin))
+    for tokens, cased_tokens in judged_pairs:
         programs = _argv_programs(tokens)
         executed = _argv_rules._executed_program_indices(tokens, cased_tokens)
         # Only a submitted line that is one simple ``git add`` gets this reading.
