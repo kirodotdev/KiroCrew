@@ -223,6 +223,19 @@ itself is not read back; the floor is the evidence. Whether it forwards a `PreTo
 in this repository, and that is the prerequisite for Crew gating *every* Claude tool
 call rather than every call Claude asks about.
 
+A session that cannot run without the session options is refused below the floor:
+one that leaves the project tier out, a Side Chat, a zero-tool session such as the
+background session, or a worker with narrowed built-ins
+(`_claude_session_needs_options`). When the installed package's version is a known
+version below the floor, `ClaudeLaunch.resolve_spawn` refuses it before any process
+starts (`_refuse_claude_session_below_floor_before_spawn`). A version that cannot be
+read, such as a wrapper or an override, leaves the decision to the handshake check in
+`_pin_claude_starting_mode`. Both refusals are `AcpToolGateUnroutable`, worded for the
+person with the upgrade command (`user_worded`), so a chat surface shows them, and
+`ensure_ready` does not retry them with a fresh process: a respawn reads the same
+version. A chat that needs none of the options still starts on such an adapter,
+without Crew's MCP tools. Pinned by `test/test_claude_below_floor_before_spawn.py`.
+
 ### The agent spec's own hooks
 
 The harness is handed no agent spec, so nothing in it runs the spec's `hooks`. Crew's

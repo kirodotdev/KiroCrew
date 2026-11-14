@@ -39,7 +39,7 @@ from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness_tool_names import CLAUDE_READ_ONLY_BUILTINS
 from kiro_crew.acp.spec_tools_allowlists import claude_ask_rules_for_allowlists
-from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError
+from kiro_crew.acp.transport_errors import AcpError, AcpTimeoutError, AcpToolGateUnroutable
 from kiro_crew.acp.types import METHOD_SET_MODE
 from kiro_crew.agent_sdk.backends import resolve_cc_pin_inherited_mode
 from kiro_crew.security import sandbox_credential_targets
@@ -412,6 +412,52 @@ def _claude_adapter_below_setting_sources_floor(self: AcpClient) -> bool:
     return not _claude_adapter_honours_setting_sources(version)
 
 
+def _claude_session_needs_options(self: AcpClient) -> bool:
+    """Whether this session is only safe on an adapter that honours the session options.
+
+    Its project tier is left out, it is a Side Chat, its spec declares
+    ``"tools": []``, or its worker's built-in tools are narrowed: each of those
+    rides ``_meta.claudeCode.options``, which an adapter below the floor may ignore.
+    """
+    return bool(
+        self._claude_session_excludes_local()
+        or getattr(self, "_side_read_only", False)
+        or getattr(self, "_spec_zero_tools", False)
+        or getattr(self, "_claude_worker_builtin_tools", None) is not None
+    )
+
+
+def _refuse_claude_session_below_floor_before_spawn(self: AcpClient) -> None:
+    """Refuse such a session before its process starts, when the installed adapter is too old.
+
+    ``ClaudeLaunch.resolve_spawn`` reads the installed package's own version before
+    the spawn. When that is a known version below
+    :data:`CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, the handshake check in
+    :meth:`_pin_claude_starting_mode` would stop the session anyway, but only after
+    an adapter and a Claude Code process had started for nothing. A version that
+    could not be read (a wrapper, an override) keeps that handshake check.
+
+    :class:`AcpToolGateUnroutable`, so ``ensure_ready`` does not retry it with a
+    fresh process: a respawn reads the same version and refuses again.
+    """
+    version = getattr(self, "_claude_adapter_disk_version", "")
+    if not version or _claude_adapter_honours_setting_sources(version):
+        return
+    if not self._claude_session_needs_options():
+        return
+    floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
+    # Two sentences, for the person reading it in a chat: what happened, then the
+    # command that fixes it.
+    raise AcpToolGateUnroutable(
+        f"claude-agent-acp {_scrub_observed(version)} is not verified to honour "
+        f"settingSources or the other session options this chat needs ({floor} or newer "
+        "is), so the chat was not started. Upgrade it, then start a new chat: "
+        f"npm i -g {claude_mod.CLAUDE_ACP_NPM_PKG}",
+        transient=False,
+        user_worded=True,
+    )
+
+
 def _log_claude_adapter_below_floor(self: AcpClient, local_settings: Path, whose: str) -> None:
     floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
     logger.warning(
@@ -749,14 +795,20 @@ async def _pin_claude_starting_mode(self: AcpClient, resp: dict) -> None:
     if not (depends_on_options or narrowed or pin_inherited):
         return
     below_floor = self._claude_adapter_below_setting_sources_floor()
-    if below_floor and (depends_on_options or narrowed):
+    if below_floor and self._claude_session_needs_options():
         # The adapter that answered the handshake is below the floor, or named no
-        # version: it may have ignored the session's options.
+        # version: it may have ignored the session's options. A fresh process
+        # answers the same, so the refusal is not retried.
         await self._kill_process(force=True)
-        raise AcpError(
-            "the claude-agent-acp that answered the handshake is not verified to "
-            "honour settingSources or the other session options, so a session "
-            "that depends on them was stopped before its first prompt"
+        floor = ".".join(str(part) for part in CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION)
+        raise AcpToolGateUnroutable(
+            "The claude-agent-acp that answered is not verified to honour settingSources "
+            f"or the other session options this chat needs ({floor} or newer is), so "
+            "the chat was stopped before its first prompt. Upgrade it, then start a new "
+            "chat: "
+            f"npm i -g {claude_mod.CLAUDE_ACP_NPM_PKG}",
+            transient=False,
+            user_worded=True,
         )
     # The array this start sent. The re-seed after the capture cleared the
     # projection cache, so deriving it again here would read the spec and the
