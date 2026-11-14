@@ -310,6 +310,105 @@ def test_missing_recorded_archive_digest_aborts_promotion(
         )
 
 
+def _mock_empty_listing_api(
+    monkeypatch: pytest.MonkeyPatch,
+    archive: Path,
+    artifact: dict[str, object],
+    *,
+    readable_run: bool = True,
+) -> list[str]:
+    """The runs listing answers empty while the commit's check-runs name the
+    release run (and an unrelated ci.yml run on the same commit)."""
+    repo = "kirodotdev/KiroCrew"
+    other_run_id = RUN_ID + 1
+    release_run = {
+        "id": RUN_ID,
+        "path": ".github/workflows/release.yml",
+        "event": "push",
+        "conclusion": "success",
+        "head_sha": SOURCE_SHA,
+        "head_branch": SOURCE_TAG,
+        "run_started_at": "2026-07-01T03:00:00Z",
+    }
+    ci_run = {**release_run, "id": other_run_id, "path": ".github/workflows/ci.yml"}
+    calls: list[str] = []
+
+    def fake_gh_json(endpoint: str) -> dict[str, object]:
+        calls.append(endpoint)
+        if "/actions/workflows/release.yml/runs?" in endpoint:
+            return {"total_count": 0, "workflow_runs": []}
+        if f"/commits/{SOURCE_SHA}/check-runs?" in endpoint:
+            return {
+                "check_runs": [
+                    {"details_url": f"https://github.com/{repo}/actions/runs/{RUN_ID}/job/7"},
+                    {"details_url": f"https://github.com/{repo}/actions/runs/{RUN_ID}/job/8"},
+                    {"details_url": f"https://github.com/{repo}/actions/runs/{other_run_id}/job/9"},
+                    {"details_url": "https://example.test/an-api-posted-check"},
+                ]
+            }
+        if endpoint.endswith(f"/actions/runs/{RUN_ID}"):
+            if not readable_run:
+                raise promotion.PromotionError(f"GitHub API request failed for {endpoint}: 502")
+            return release_run
+        if endpoint.endswith(f"/actions/runs/{other_run_id}"):
+            return ci_run
+        if endpoint.endswith(f"/actions/runs/{RUN_ID}/artifacts?per_page=100"):
+            return {"artifacts": [artifact]}
+        raise AssertionError(f"unexpected GitHub API endpoint: {endpoint}")
+
+    def fake_download(repository: str, artifact_id: int, destination: Path) -> None:
+        destination.write_bytes(archive.read_bytes())
+
+    monkeypatch.setattr(promotion, "_gh_json", fake_gh_json)
+    monkeypatch.setattr(promotion, "_download_artifact", fake_download)
+    return calls
+
+
+def test_an_empty_runs_listing_is_read_through_the_commits_check_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    source_archive = tmp_path / "source.zip"
+    digest = _archive(bundle, source_archive)
+    artifact = _candidate_artifact(source_archive, digest)
+    calls = _mock_empty_listing_api(monkeypatch, source_archive, artifact)
+
+    manifest, selected = promotion.resolve_candidate(
+        repository="kirodotdev/KiroCrew",
+        source_sha=SOURCE_SHA,
+        base_version=BASE_VERSION,
+        output_dir=tmp_path / "resolved",
+        archive_path=tmp_path / "downloaded.zip",
+    )
+
+    assert manifest["source"]["workflow_run_id"] == RUN_ID
+    assert selected["digest"] == digest
+    check_runs_reads = [c for c in calls if "/check-runs?" in c]
+    assert len(check_runs_reads) == 1 and "filter=all" in check_runs_reads[0]
+    # Each named run is fetched once, and only the release run's artifacts are read.
+    assert sum(c.endswith(f"/actions/runs/{RUN_ID}") for c in calls) == 1
+    assert not any(c.endswith(f"/actions/runs/{RUN_ID + 1}/artifacts?per_page=100") for c in calls)
+
+
+def test_a_named_run_that_cannot_be_read_is_a_read_failure_not_an_absent_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _bundle(tmp_path / "bundle")
+    source_archive = tmp_path / "source.zip"
+    digest = _archive(bundle, source_archive)
+    artifact = _candidate_artifact(source_archive, digest)
+    _mock_empty_listing_api(monkeypatch, source_archive, artifact, readable_run=False)
+
+    with pytest.raises(promotion.PromotionError, match="GitHub API request failed"):
+        promotion.resolve_candidate(
+            repository="kirodotdev/KiroCrew",
+            source_sha=SOURCE_SHA,
+            base_version=BASE_VERSION,
+            output_dir=tmp_path / "resolved",
+            archive_path=tmp_path / "downloaded.zip",
+        )
+
+
 def test_archive_digest_is_verified_before_safe_extraction(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path / "bundle")
     archive = tmp_path / "candidate.zip"

@@ -4898,9 +4898,10 @@ Two subtleties:
   publish step's success re-check read runs through it, and
   `ai-review-human-override.yml`, `republish_withheld_verdict.py`,
   `pr-size-override.yml` (the PR Policy run it re-runs after an approval),
-  `sensitive-change-review-comment.yml` (the Sensitive Change Review run it re-runs)
-  and `merge-queue-readiness.yml` (each tick's `merge_group` listing) apply the same
-  rule to their run lookups.
+  `sensitive-change-review-comment.yml` (the Sensitive Change Review run it re-runs),
+  `merge-queue-readiness.yml` (each tick's `merge_group` listing) and
+  `scripts/release_promotion.py resolve` (the same-commit prerelease `release.yml`
+  run a stable promotion reuses) apply the same rule to their run lookups.
 - **A transport error during evaluation is non-terminal.** Every read-only `gh`
   call goes through a bounded retry helper (3 attempts with backoff, 120s cap per
   attempt); a non-429 HTTP 4xx is treated as permanent misconfiguration and fails
