@@ -12,6 +12,13 @@
  * the full shelf, a compact shelf (the badge is a clock followed by the picked
  * folder's name), and the chip locked by attached sub-agents.
  *
+ * #20352: the same page also mounts the chip as a reload mid-reply does
+ * (`reload=1`: the chat's project is already the pick and the server names the
+ * running reply's own project) and on a hidden-scratch fallback (`fallback=1`).
+ * CAPTURE_EXPECT=main checks the frames against main, where the composer has no
+ * server reading: after a reload the chip names the pick as the reply's project
+ * and shows no badge. The default (head) expects the server's reading.
+ *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6833 --strictPort   # in another shell
  *   node scripts/capture-project-chip-pending.mjs http://127.0.0.1:6833 ../temp-screenshots/project-chip-pending
@@ -68,6 +75,40 @@ for (const theme of ['dark', 'light']) {
     console.log(`${theme} ${v.name} after pick: ${okAfter ? 'OK' : 'MISMATCH'} badge=${JSON.stringify(badgeText)} label=${JSON.stringify(after)}`)
     if (!okAfter) failed = true
     else await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/project-chip-${v.name}-${theme}.png` })
+    await page.close()
+  }
+}
+
+const onMain = process.env.CAPTURE_EXPECT === 'main'
+const RELOADS = [
+  { name: 'reload', query: '&reload=1', viewport: 760, finishes: onMain ? 'OtherRepo' : 'KiroCrew', badge: onMain ? null : 'Starts next message' }, // brand-ok: KiroCrew is the fixture folder name
+  { name: 'reload-compact', query: '&reload=1&width=360', viewport: 400, finishes: onMain ? 'OtherRepo' : 'KiroCrew', badge: onMain ? null : 'OtherRepo' }, // brand-ok: KiroCrew is the fixture folder name
+  // A fallback is no pick: no badge on either tree once main's chip names no pending switch.
+  { name: 'fallback', query: '&fallback=1', viewport: 760, finishes: onMain ? 'old-session' : 'KiroCrew', badge: null }, // brand-ok: KiroCrew is the fixture folder name
+]
+for (const theme of ['dark', 'light']) {
+  for (const v of RELOADS) {
+    const page = await browser.newPage({ viewport: { width: v.viewport, height: 420 }, deviceScaleFactor: 2, hasTouch: true })
+    await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+      const path = new URL(route.request().url()).pathname
+      const isList = /commands|skills|agents|sessions|files|history|models/.test(path)
+      return route.fulfill({ status: 200, contentType: 'application/json', body: isList ? '[]' : '{}' })
+    })
+    // Not bare: a native tooltip cannot be painted, so the page prints the chip's accessible name under it.
+    await page.goto(`${BASE}/capture/project-chip-mid-turn.html?theme=${theme}${v.query}`, { timeout: 180000 })
+    await page.waitForSelector('[data-capture-root]', { timeout: 180000 })
+    const project = page.getByTestId('composer-project-chip')
+    await project.waitFor()
+    await page.mouse.move(0, 0)
+    const label = (await project.getAttribute('aria-label')) || ''
+    const badge = page.getByTestId('composer-project-pending')
+    const badgeText = (await badge.count()) ? ((await badge.textContent()) || '').trim() : null
+    const ok = badgeText === v.badge && label.includes(`This reply finishes in ${v.finishes}.`) &&
+      (v.badge === null || (await badge.isVisible())) &&
+      (v.name !== 'reload-compact' || onMain || (await page.getByTestId('composer-project-pending-clock').isVisible()))
+    console.log(`${theme} ${v.name} (${onMain ? 'main' : 'head'}): ${ok ? 'OK' : 'MISMATCH'} badge=${JSON.stringify(badgeText)} label=${JSON.stringify(label)}`)
+    if (!ok) failed = true
+    else await page.locator('[data-capture-root]').screenshot({ path: `${OUT}/project-chip-${v.name}-${onMain ? 'main' : 'head'}-${theme}.png` })
     await page.close()
   }
 }

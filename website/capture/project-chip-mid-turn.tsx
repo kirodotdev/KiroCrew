@@ -14,6 +14,13 @@
  *   ?bare=1          leave out the printed accessible name (product UI only)
  *   ?lockAfterPick=1 attach sub-agents after the first pick (chip locks)
  *   ?width=N         narrow the composer so its shelf goes compact
+ *   ?reload=1        mount as a page reload mid-reply does: the chat's project is
+ *                    already the pick (OtherRepo) and the server reports the
+ *                    running reply's own project (`turnProject`)
+ *   ?fallback=1      mount a chat whose stored project is a hidden scratch
+ *                    folder, so the reply runs in the default folder: the
+ *                    server reports it with `turnProjectFallback`, and no pick
+ *                    is pending
  */
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -34,6 +41,9 @@ const locked = params.get('locked') === '1'
 const bare = params.get('bare') === '1'
 const lockAfterPick = params.get('lockAfterPick') === '1'
 const width = Number(params.get('width')) || 760
+const reload = params.get('reload') === '1'
+const fallback = params.get('fallback') === '1'
+const SCRATCH = '/home/user/.kiro/scratch/old-session'
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 initI18n(params.get('lang') || 'en')
 
@@ -44,7 +54,7 @@ function Scene() {
   const [value, setValue] = useState('')
   const [label, setLabel] = useState('')
   const [clicks, setClicks] = useState(0)
-  const [project, setProject] = useState('/home/user/work/KiroCrew')
+  const [project, setProject] = useState(fallback ? SCRATCH : reload ? '/home/user/work/OtherRepo' : '/home/user/work/KiroCrew')
   useEffect(() => {
     const chip = document.querySelector('[data-capture-root] button[aria-label^="Project: "]')
     setLabel(chip?.getAttribute('aria-label') || '(chip not found)')
@@ -61,6 +71,8 @@ function Scene() {
         projectLocked={locked || (lockAfterPick && clicks > 0)}
         onStop={() => {}}
         project={project}
+        turnProject={reload || fallback ? '/home/user/work/KiroCrew' : undefined}
+        turnProjectFallback={fallback || undefined}
         projectBranch="main"
         onProjectClick={() => {
           setClicks(c => c + 1)
@@ -72,7 +84,7 @@ function Scene() {
         onModelClick={() => {}}
       />
       <pre data-capture-label hidden={bare} style={{ marginTop: 14, fontSize: 12, opacity: 0.75, whiteSpace: 'pre-wrap' }}>
-        {`${locked ? 'Sub-agents attached' : clicks ? 'After picking OtherRepo mid-reply' : 'Before a pick'}, the project chip tooltip / accessible name while a response runs:\n${label}\nPicker opened: ${clicks}`}
+        {`${locked ? 'Sub-agents attached' : reload ? 'After a reload onto a staged pick' : fallback ? 'After a reload on a hidden-scratch fallback' : clicks ? 'After picking OtherRepo mid-reply' : 'Before a pick'}, the project chip tooltip / accessible name while a response runs:\n${label}\nPicker opened: ${clicks}`}
       </pre>
     </div>
   )

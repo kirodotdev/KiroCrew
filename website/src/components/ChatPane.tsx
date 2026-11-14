@@ -1420,6 +1420,8 @@ export default function ChatPane({
           }}
           onFollowUpSend={(text?: string) => { if (!paneCrewRootClosed) doSend(text) }}
           project={paneSlot?.project ?? ''}
+          turnProject={paneSlot?.turn_project}
+          turnProjectFallback={paneSlot?.turn_project_fallback}
           // A crewmate's chat is a DM with one named crewmate, so the composer
           // addresses it by name rather than the product ("Message Kiro Crew…")
           // and carries no sigil hint: next to a person's name the shortcut list

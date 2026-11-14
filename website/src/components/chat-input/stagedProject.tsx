@@ -50,7 +50,11 @@ export function stagedProjectTurnKey(messages: readonly ChatMessage[]): string {
   return ''
 }
 
-interface Baseline { start: string; turnKey: string | undefined }
+/** `start` is the directory the running reply works in, which the tooltip
+ *  names. `pendingStart` is the project the pending comparison reads: the same
+ *  directory, except on a scratch fallback, where the chat still stores a
+ *  folder the reply could not use and no pick is waiting. */
+interface Baseline { start: string; pendingStart: string; turnKey: string | undefined }
 
 export function useStagedProject(
   projectProp: string | undefined,
@@ -58,6 +62,8 @@ export function useStagedProject(
   slotId: string | null | undefined,
   turnKey?: string,
   projectLocked = false,
+  turnProject?: string | null,
+  turnProjectFallback = false,
 ): StagedProject {
   const project = projectProp || ''
   // The start project of each busy chat, keyed by slot. The composer is not
@@ -73,16 +79,32 @@ export function useStagedProject(
   const baselines = useRef(new Map<string, Baseline>())
   const key = slotId ?? ''
   let start = project
+  let pendingStart = project
   if (!isRunning) {
     baselines.current.delete(key)
   } else {
-    const held = baselines.current.get(key)
-    if (held && (held.turnKey === turnKey || projectLocked)) {
-      start = held.start
-      held.turnKey = turnKey
-    } else baselines.current.set(key, { start: project, turnKey })
+    let held = baselines.current.get(key)
+    if (!held || (held.turnKey !== turnKey && !projectLocked)) {
+      held = { start: project, pendingStart: project, turnKey }
+      baselines.current.set(key, held)
+    } else held.turnKey = turnKey
+    // The server's own reading of the running turn's directory wins once the
+    // turn has claimed its session (#20352): a composer mounted after a
+    // reload would otherwise capture the already-picked project as the start.
+    // It is kept for the rest of the busy window, because the server stops
+    // naming it when the reply ends while attached sub-agents keep the
+    // composer busy and the old directory in use.
+    if (typeof turnProject === 'string') {
+      held.start = turnProject
+      // A fallback names the directory the reply runs in without any pick, so
+      // the stored project (back on the scratch folder after a pick and a pick
+      // back) is not compared against it.
+      held.pendingStart = turnProjectFallback ? project : turnProject
+    }
+    start = held.start
+    pendingStart = held.pendingStart
   }
-  const pending = isRunning && !!project && stripTrailingSeparators(project) !== stripTrailingSeparators(start || '')
+  const pending = isRunning && !!project && stripTrailingSeparators(project) !== stripTrailingSeparators(pendingStart)
   if (!isRunning) return { turnStartProject: start, pending: false, midTurnNote: '', pendingNote: '' }
   const startName = start ? folderName(start) : i18nT('components.chatInput.project')
   const pendingNote = pending ? i18nT('components.chatInput.project_switch_pending', { project: folderName(project) }) : ''

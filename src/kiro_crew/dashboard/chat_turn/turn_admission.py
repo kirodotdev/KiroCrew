@@ -1134,6 +1134,9 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # directory kiro-cli is running in.
     _turn_project = selected_binding[1] or ""
     turn._turn_project = _turn_project
+    # Published for the summary, so a reload mid-reply names this directory
+    # rather than the chip's live pick.
+    slot._turn_project_pin = (slot._turn_generation, _turn_project, "")
     # The pre-claim reset is declined for a session another turn holds, and
     # this claim may have waited for exactly that turn. So the decision is made
     # again on the session this turn now holds, under its lease, before any of
@@ -1162,9 +1165,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     except BaseException:
         state.sessions.release(session_key)
         raise
+    _fell_back_from = ""
     if _fallback:
+        # The stored hidden scratch folder, kept on the pin so the summary can
+        # tell this fallback from a pick made over it later.
+        _fell_back_from = _turn_project
         _turn_project = _fallback
         turn._turn_project = _turn_project
+        slot._turn_project_pin = (slot._turn_generation, _turn_project, _fell_back_from)
     if not is_new and slot._pending_reset_history_key == session_key and client.cwd:
         # The deferred project reset is still armed for the session this
         # turn holds (attached sub-agents keep the process alive), so the
@@ -1172,6 +1180,7 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         # pick. The turn describes that directory.
         _turn_project = client.cwd
         turn._turn_project = _turn_project
+        slot._turn_project_pin = (slot._turn_generation, _turn_project, _fell_back_from)
     if is_new and not resumed:
         # An observation this call CONSUMED, which is not the same as an
         # allocation this call made: a prewarmed session arms
