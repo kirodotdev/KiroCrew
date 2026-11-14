@@ -589,6 +589,12 @@ async def apply_deferred_model_switch(
         key = slot._deferred_model_switch_key
         model = slot.model or "auto"
         provider = state.sessions.get_provider(session_key)
+        # The traced session a live switch would land on, read before its RPCs.
+        from kiro_crew.dashboard.trace_binding import registry_key
+        from kiro_crew.tracing import sessions as trace_sessions
+
+        traced_key = registry_key(state.sessions, session_key)
+        live_generation = trace_sessions.current(traced_key)
         try:
             went_live = await _try_live_model_switch(slot.key, slot, provider, model)
         except AcpModelUnavailable as exc:
@@ -643,6 +649,7 @@ async def apply_deferred_model_switch(
         # safe to clear the marker, past the last await where a cancellation or
         # a newer pick could otherwise be lost.
         slot._deferred_model_switch_key = ""
+        trace_sessions.switched(traced_key, "model", generation=live_generation)
         _sync_served_model(slot, provider)
         _broadcast_context_reset(state, slot.key, provider)
         state.push_slots_update()

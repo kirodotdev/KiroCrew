@@ -91,3 +91,63 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
     return trace_turns.bind_turn_root(
         turn_id, join=join, links=links, attrs=attrs, rollup_key=rollup_key
     )
+
+
+def slot_session_key(state: Any, slot_key: str) -> str:
+    """The registry session key dashboard slot *slot_key* runs on, for lifecycle spans.
+
+    ``tracing.sessions`` keys a session by the key the session registry holds
+    (``dashboard:<slot>``, or a linked slot's channel key), while lineage stamps and
+    the session tree name bare slot keys. No I/O; ``""`` for an empty key.
+    shortcut: a slot missing from this dashboard falls back to its dashboard key,
+    which misses a closed channel-linked parent; resolve from the session map if that
+    matters.
+    """
+    if not slot_key:
+        return ""
+    from kiro_crew.dashboard.chat_utils_slots import _history_key_for, effective_session_key
+
+    try:
+        slot = state.get_slot(slot_key)
+    except Exception:
+        slot = None
+    return effective_session_key(slot) if slot is not None else _history_key_for(slot_key)
+
+
+def note_slot_lineage(state: Any, slot: Any, session_key: str, *, creator: str) -> None:
+    """Note the parent *slot*'s next session open names, before an allocation claims it.
+
+    Called by both dashboard allocation sites, the first turn's claim and the eager
+    spawn's prefetch, so whichever registers the session first already has it.
+    *creator* is the slot key ``_crew_log_lineage`` gives (a worker's creator, only
+    when this process minted the lineage); then a fork's source, then the dashboard
+    slot a channel session is linked to. No I/O, and nothing at all while tracing is
+    off.
+    """
+    if trace_provider.peek() is None:
+        return
+    from kiro_crew.dashboard.chat_utils_slots import _history_key_for
+    from kiro_crew.tracing import sessions as trace_sessions
+
+    try:
+        trace_sessions.note_lineage(
+            session_key,
+            creator=slot_session_key(state, creator),
+            forked_from=str(getattr(slot, "forked_from", "") or ""),
+            slot_key=_history_key_for(str(slot.key)),
+        )
+    except Exception:
+        logger.debug("trace lineage note failed", exc_info=True)
+
+
+def registry_key(sessions: Any, session_key: str) -> str:
+    """*session_key* as the session registry folds it, the key lifecycle spans carry.
+
+    A switch records its span under this key, so an alias spelling (a bare channel
+    timestamp for ``slack:<ts>``) still lands in the session's own trace. Never raises.
+    """
+    fold = getattr(sessions, "_fold_key", None)
+    try:
+        return str(fold(session_key)) if callable(fold) else session_key
+    except Exception:  # tracing must never cost the switch
+        return session_key

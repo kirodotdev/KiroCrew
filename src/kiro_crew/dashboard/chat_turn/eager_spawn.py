@@ -42,7 +42,10 @@ if TYPE_CHECKING:
         _recover_app_agent_binding,
         app_agent_binding_applies,
     )
-    from kiro_crew.dashboard.chat_turn.crew_log_attribution import _slot_predecessor_store
+    from kiro_crew.dashboard.chat_turn.crew_log_attribution import (
+        _crew_log_lineage,
+        _slot_predecessor_store,
+    )
     from kiro_crew.dashboard.chat_turn.model_fallback import (
         _app_allocation_kwargs,
         _slot_backend_allocation_kwargs,
@@ -993,6 +996,11 @@ async def _spawn_admitted_prefetch(
         # allocation resolves the default-model ladder itself, exactly as it
         # will for the first real turn.
         _requested_model = slot.model or agent_model or ""
+        # The parent this session's lifecycle span names (tracing): this
+        # prefetch can register the session before the first turn's claim.
+        from kiro_crew.dashboard.trace_binding import note_slot_lineage
+
+        note_slot_lineage(state, slot, session_key, creator=_crew_log_lineage(slot)[0])
         try:
             _, is_new, resumed = await sessions.get_or_create(
                 session_key,

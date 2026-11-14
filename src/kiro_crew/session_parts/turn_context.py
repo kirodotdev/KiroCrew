@@ -344,8 +344,14 @@ async def _compact_session(self: SessionManager, key: str, pct: float) -> str:
 
     The trigger is not a parameter here: the coordinator records it when it
     commits the compaction and reads it back, so this seam keeps its shape.
+    Both automatic entry points reach it, so it is where a between-turn
+    compaction becomes a ``kirocrew.session.compaction`` span.
     """
-    return await self._compaction._compact_session(key, pct)
+    from kiro_crew.tracing import sessions as trace_sessions
+
+    with trace_sessions.compaction(key) as traced:
+        traced.outcome = await self._compaction._compact_session(key, pct)
+    return traced.outcome
 
 
 async def _recycle_held(
