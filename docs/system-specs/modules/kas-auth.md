@@ -266,7 +266,9 @@ An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 missing `https://` and a missing `/start` are added and a `#/...` fragment is dropped,
 because SSO-OIDC answers `Invalid start url provided` to `<org>.awsapps.com/start`
 and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a query,
-a port, shell characters) is refused with `invalid_start_url` before AWS is called.
+a port, shell characters) is refused with `invalid_start_url` before AWS is called;
+the message says what is wrong in plain words ("That does not look like a web
+address."), then shows the access portal URL's shape.
 A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
 `StartUrlRejectedError` (HTTP 400, not the 502 of an auth-service failure): its
 message says to use the access portal URL when AWS names the start URL
