@@ -262,6 +262,7 @@ from kiro_crew.dashboard.chat_api.slot_approval import (  # noqa: F401
     _is_deny_override_card,
     _pending_elicitation_ids,
     _shared_crew_teammate,
+    _state_approval_pending,
     _still_owning,
     _strict_native_owner,
     _sweep_pending_approvals,
