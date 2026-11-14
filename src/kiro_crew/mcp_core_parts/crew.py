@@ -160,16 +160,14 @@ def _do_select_crew(crew: str) -> str:
             {"crew": crew, "error": _crew_memory_unavailable_reason(exc)},
             ensure_ascii=False,
         )
-    # Records the routing DECISION (intent), which trigger generation wants; the
-    # run itself is recorded as `via="spawn"` by the sub-agent run turn.
+    # Logs the routing DECISION (intent) for trigger generation; the run itself
+    # is logged as `via="spawn"` by the sub-agent turn.
     #
-    # The caller's memory mode is resolved HERE rather than defaulted: this log
-    # outlives session pruning, so recording a no-trace session's key would
-    # durably defeat the mode. An unreadable session degrades to the private
-    # spelling so the failure mode is "skip the entry", never "log a private
-    # session". No try/except around the write itself: record_activity is total
-    # and reports failure by returning False, which matters because this module
-    # keeps no logger.
+    # Resolve the memory mode, never default it: this log outlives session
+    # pruning, so logging a no-trace session would defeat its mode. An
+    # unreadable session falls back to "incognito", which skips the entry.
+    # No try/except on the write: record_activity never raises (it returns
+    # False), and this module has no logger.
     _sk = _resolve_session_key()
     try:
         _mode = str(ConversationLog().get_metadata(_sk).get("memory_mode", "") or "")
