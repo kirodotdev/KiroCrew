@@ -767,6 +767,22 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         exports = egress_host and (effective is None or outbound_consented(cfg))
     except Exception:  # noqa: BLE001 - unknown posture is treated as egress
         egress_host = exports = True
+    # Names only, never an endpoint (it can carry credentials). A build's own
+    # destination is marked so, since config cannot remove it.
+    sends_to = ""
+    try:
+        from kiro_crew.metrics.provider import otlp_egress_listing
+
+        sends_to = ", ".join(
+            (
+                f"{row.destination.name} (included by this build)"
+                if row.locked
+                else row.destination.name
+            )
+            for row in otlp_egress_listing(cfg.telemetry)
+        )
+    except Exception:  # noqa: BLE001 - the line is informational; the posture above stands
+        sends_to = ""
     lines = [
         "Local metric recording"
         + (
@@ -788,6 +804,8 @@ def _format_recording_status(cfg: KiroCrewConfig) -> str:
         ),
         f"  Config:      telemetry.enabled is {'true' if cfg.telemetry.enabled else 'false'}",
     ]
+    if sends_to:
+        lines.append(f"  Collectors:  {sends_to}")
     if pin is not None and env_pin_is_soft():
         remedy = (
             "in the config file, where the export destination is configured"

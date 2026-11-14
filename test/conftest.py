@@ -610,6 +610,20 @@ def _fresh_mcp_oauth_provenance(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_kiro_telemetry_destination(_floor_monkeypatch):
+    """Keep the built-in Kiro telemetry destination out of every test.
+
+    The public provider returns it next to the configured entries, and it posts to
+    a real endpoint. Off here, so a test that builds a live recorder never reaches
+    the network and every existing destination count stays what it was. The tests
+    of the destination turn it back on with their own ``monkeypatch``.
+    """
+    from kiro_crew.metrics import kiro_export
+
+    _floor_monkeypatch.setattr(kiro_export, "_suppressed_for_tests", True)
+
+
+@pytest.fixture(autouse=True)
 def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
     """Start every test with KAS's automatic bundle switch closed and no install state.
 

@@ -1297,7 +1297,8 @@ def _otlp_destinations(
     the views, batching); an edition owns only WHERE it goes, which it declares
     through ``TelemetryProvider.otlp_destinations``. The public default turns
     ``telemetry.otlp_endpoint`` into exactly one destination, so a standalone
-    build behaves as it did when this module constructed that exporter itself.
+    build behaves as it did when this module constructed that exporter itself
+    (then each list entry, then ``metrics/kiro_export.py``'s destination).
 
     Lenient by design, unlike :func:`otlp_egress_active`: on this path an
     unresolvable provider must not export, so it contributes nothing and
@@ -1426,8 +1427,8 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
     """Build one OTLP/HTTP metric reader for *dest*, or None when unavailable.
 
     Egress is OFF by default: reaching here at all means an edition named a
-    destination (the public default does so only when ``telemetry.otlp_endpoint``
-    is a non-empty string). The OTLP exporter lives in the separate
+    destination AND recording was explicitly opted in (``outbound_consented``).
+    The OTLP exporter lives in the separate
     ``otlp`` package extra (install its exporter directly -- see
     :mod:`kiro_crew.extras`), not the hard dependency set. If a host opts in without
     installing it, we log a warning and degrade to local-only rather than
