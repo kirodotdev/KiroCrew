@@ -5,7 +5,9 @@
 ``trace`` with string scanners. A history line whose text field holds a number,
 a list or an object (a hand edit, another writer) raised there, so one such row
 turned the whole page into a 500. The readers skip that row, as they skip a line
-that is not JSON, and serve the rest; the row stays on disk.
+that is not JSON, and serve the rest; the row stays on disk. A row whose
+``job_id`` or ``run_id`` is not a string is left out of a job-filtered
+``GET /api/crons/history`` the same way.
 """
 
 from __future__ import annotations
@@ -83,6 +85,25 @@ async def test_a_non_string_text_row_is_skipped_and_the_rest_served(
 
     lines = Path(crons.get_history()._job_path(job.id)).read_text(encoding="utf-8")
     assert '"bad"' in lines
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row",
+    [{"run_id": ["r"], "summary": "bad"}, {"job_id": ["j"], "run_id": "bad", "summary": "bad"}],
+    ids=["run_id", "job_id"],
+)
+async def test_a_non_string_id_row_is_left_out_of_the_job_filtered_history(
+    tmp_path, row: dict[str, Any]
+) -> None:
+    crons = CronService(base_dir=tmp_path)
+    job = crons.add_job(name="n", message="m", every_secs=3600)
+    await _seed_with_bad_row(crons, job.id, row)
+
+    status, body = await _get(crons, f"/api/crons/history?job_id={job.id}")
+    assert status == 200, body
+    assert [r["run_id"] for r in body["runs"]] == ["seed"]
+    assert body["total"] == 1
 
 
 @pytest.mark.asyncio
