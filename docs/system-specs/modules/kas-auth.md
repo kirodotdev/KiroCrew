@@ -640,8 +640,17 @@ engine instead ([aws-control.md](aws-control.md)).
   kiro-cli login, because the card sits under a switch that also lists Kiro
   CLI. It is deliberately NOT on Settings > Overview and not indexed into
   Settings search: a provider chooser on the landing page read as a required
-  step to every user, first-run installs included, and Overview carries no
-  signpost to it. The
+  step to every user, first-run installs included. Overview links to it from
+  its health line only, and only while the main agent runs on KAS and cannot
+  reply for want of a working sign-in (`kasAgentsSignedOut` in
+  `pages/OverviewPage.tsx`: a stored sign-in that is not `usable`, or refused
+  and `expired`; or none stored while the last KAS spawn's route, from
+  `GET /api/kas-bundle`, is `bundle`, since on the relay an empty vault leaves
+  kiro-cli's own login in charge; the gateway reports no route before its
+  first KAS spawn, so until then nothing is claimed). The line then reads
+  "Kiro sign-in needed: agents can't reply" beside a warning dot, with an
+  "Open sign-in settings" link to `KIRO_SIGN_IN_PATH`, instead of "All systems
+  running". The
   switch and card are a Settings tab of their own because first-run setup
   offers agents other than Kiro CLI, so a user who set up with one of those can
   switch agents later. `KasLoginGate` itself is still not mounted at the app
