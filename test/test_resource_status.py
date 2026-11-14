@@ -7,6 +7,7 @@ disable switch, fail-open) and the ``resource_status`` pull tool wired into
 
 from __future__ import annotations
 
+import re
 import shutil
 from types import SimpleNamespace
 
@@ -1371,10 +1372,41 @@ def test_a_floor_above_the_gate_figure_is_blocked(monkeypatch) -> None:
     reading = rs.spawn_floor_reading(_spawn_cfg(4.0))
     assert reading.blocked
     assert "BLOCKED: new top-level subagents wait in the queue" in reading.summary_line()
-    assert "the gate reads 3.3 GB" in reading.blocked_sentence()
+    assert "the gate reads 3.30 GB" in reading.blocked_sentence()
     # Scoped to top-level starts: a running subagent's shared nested start
     # skips its own start charge, so it can clear a lower bar.
     assert "new top-level subagents cannot start now" in reading.blocked_sentence()
+
+
+@pytest.mark.parametrize("short_by", [0.01, 0.004, 0.0001])
+def test_a_blocked_line_shows_a_gate_figure_below_the_bar(monkeypatch, short_by: float) -> None:
+    """A figure just short of an uneven learned bar must print below that bar."""
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": 0.82})
+    bar = 2.0 + _shared_start_price_gb(0.82)
+    _gate_figure(monkeypatch, bar - short_by)
+    reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+    assert reading.blocked
+    for text in (reading.summary_line(), reading.blocked_sentence()):
+        m = re.search(r"gate reads ([0-9.]+) GB.*?at least ([0-9.]+) GB", text)
+        assert m, text
+        assert float(m.group(1)) < float(m.group(2)), text
+
+
+def test_an_unblocked_line_never_shows_a_gate_figure_below_the_bar(monkeypatch) -> None:
+    from kiro_crew.subagent import _shared_start_price_gb
+
+    monkeypatch.setattr(rs, "_read_learned_settled", lambda: {"kirocrew": 0.82})
+    bar = 2.0 + _shared_start_price_gb(0.82)
+    for figure in (bar, bar + 0.004, bar + 0.03):
+        _gate_figure(monkeypatch, figure)
+        reading = rs.spawn_floor_reading(_spawn_cfg(2.0))
+        assert not reading.blocked
+        text = reading.summary_line()
+        m = re.search(r"gate reads ([0-9.]+) GB.*?at least ([0-9.]+) GB", text)
+        assert m, text
+        assert float(m.group(1)) >= float(m.group(2)), text
 
 
 def test_a_remote_caller_takes_no_reading_and_is_never_blocked(monkeypatch) -> None:

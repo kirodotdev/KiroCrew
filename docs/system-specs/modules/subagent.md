@@ -388,7 +388,9 @@ unlearned price and any local bucket's learned settled figure, never under
 `subagent_cost_gb`), a lower bound since the warming reserve lives in the
 gateway's manager. When that bar is not met the tool says
 new top-level subagents cannot start and that they wait in the queue, in place
-of the AMPLE guidance. For a session bound to a remote workspace no reading is
+of the AMPLE guidance. Both numbers print at two decimals; a blocked line
+rounds the figure down and the bar up, so the figure shown is always below the
+bar shown. For a session bound to a remote workspace no reading is
 taken and nothing is reported blocked, since the gate prices that session's
 children without the floor.
 
