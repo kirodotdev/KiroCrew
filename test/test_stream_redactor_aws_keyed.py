@@ -191,7 +191,11 @@ def test_a_key_name_ending_another_credentials_value_does_not_split_it(
         out = _stream(text, chunk)
     assert out == redact(text)
     assert body not in out
-    assert tail_key not in out
+    # The structured engine keeps the value's own label and removes the value,
+    # so the label is not part of what may stream raw; the legacy plan keeps no
+    # label here and this is the whole output.
+    rest = out[len(label) :] if out.startswith(label) else out
+    assert tail_key not in rest
 
 
 @pytest.mark.parametrize("tail_key", ["AccessKeyId", "SessionToken", "SecretAccessKey"])

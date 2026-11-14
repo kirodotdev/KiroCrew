@@ -3253,7 +3253,13 @@ profile does not take part), and an unreadable ceiling keeps redaction on. A
 folded ceiling (`lower_tier_folded`) also keeps it on, even when the top tier
 named the row itself, because the fold does not say which tier did. What
 the switch then does is in [security](security.md), "Owner's credential-redaction
-switch").
+switch"), and `capabilities.credential_redaction_seams_off` (the same opt-in rule,
+a row of its own: only a policy that names it `enabled: true` lets the owner turn
+credential redaction off for the conversation replayed into the agent's prompt and
+for server log lines; `owner_may_disable_seams` reads it the same way. The Files-view
+row does not grant it, because those sinks reach the external model provider and the
+logs, which the Files-view opt-in never covered; see [security](security.md),
+"Owner's output-seams switch").
 Only the live `approval_mode` clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in

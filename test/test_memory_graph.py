@@ -8,8 +8,11 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from redaction_structured_cases import github_classic
 
 from kiro_crew.dashboard.state import DashboardState
+
+SECRET = github_classic(seed=141)
 
 
 def _get_handler():
@@ -284,7 +287,7 @@ class TestMemoryGraphNodeExtraction:
         state = self._make_state(tmp_path)
         vs = MagicMock()
         vs.get_all_semantic.return_value = [
-            {"key": "secret.key", "value_json": "AKIAIOSFODNN7EXAMPLE"},
+            {"key": "secret.key", "value_json": SECRET},
         ]
         vs.get_lessons.return_value = []
         state.context_builder.memory.vector_store = vs
@@ -296,7 +299,7 @@ class TestMemoryGraphNodeExtraction:
 
         sem_nodes = [n for n in data["nodes"] if n["group"] == "semantic"]
         assert len(sem_nodes) == 1
-        assert "AKIAIOSFODNN7EXAMPLE" not in sem_nodes[0]["title"]
+        assert SECRET not in sem_nodes[0]["title"]
 
 
 class TestMemoryEndpointRedaction:
@@ -308,7 +311,7 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         vs = MagicMock()
         vs.get_all_semantic.return_value = [
-            {"key": "AKIAIOSFODNN7EXAMPLE", "value_json": "ok"},
+            {"key": SECRET, "value_json": "ok"},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -316,7 +319,7 @@ class TestMemoryEndpointRedaction:
         req.app = {"state": state}
         resp = await mod.api_memory_semantic(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["key"]
+        assert SECRET not in data["entries"][0]["key"]
 
     @pytest.mark.asyncio
     async def test_semantic_redacts_credential_in_value_json(self, tmp_path, monkeypatch):
@@ -324,7 +327,7 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         vs = MagicMock()
         vs.get_all_semantic.return_value = [
-            {"key": "k1", "value_json": "AKIAIOSFODNN7EXAMPLE"},
+            {"key": "k1", "value_json": SECRET},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -332,7 +335,7 @@ class TestMemoryEndpointRedaction:
         req.app = {"state": state}
         resp = await mod.api_memory_semantic(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["value_json"]
+        assert SECRET not in data["entries"][0]["value_json"]
 
     @pytest.mark.asyncio
     async def test_semantic_redacts_tags_as_list(self, tmp_path, monkeypatch):
@@ -340,7 +343,7 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         vs = MagicMock()
         vs.get_all_semantic.return_value = [
-            {"key": "k1", "value_json": "ok", "tags": ["safe", "AKIAIOSFODNN7EXAMPLE"]},
+            {"key": "k1", "value_json": "ok", "tags": ["safe", SECRET]},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -350,7 +353,7 @@ class TestMemoryEndpointRedaction:
         data = json.loads(resp.body)
         tags = data["entries"][0]["tags"]
         assert "safe" in tags[0]
-        assert "AKIAIOSFODNN7EXAMPLE" not in tags[1]
+        assert SECRET not in tags[1]
 
     @pytest.mark.asyncio
     async def test_episodic_search_redacts_text(self, tmp_path, monkeypatch):
@@ -359,7 +362,7 @@ class TestMemoryEndpointRedaction:
         vs = MagicMock()
         vs.embed_fn = None
         vs.search_episodic.return_value = [
-            {"id": "1", "text": "secret AKIAIOSFODNN7EXAMPLE here", "tags": "t"},
+            {"id": "1", "text": f"secret {SECRET} here", "tags": "t"},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -368,7 +371,7 @@ class TestMemoryEndpointRedaction:
         req.query = {"q": "test", "limit": "10", "tags": ""}
         resp = await mod.api_memory_episodic_search(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["results"][0]["text"]
+        assert SECRET not in data["results"][0]["text"]
 
     @pytest.mark.asyncio
     async def test_episodic_list_redacts_tags_list(self, tmp_path, monkeypatch):
@@ -376,7 +379,7 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         vs = MagicMock()
         vs.get_episodic_list.return_value = [
-            {"id": "1", "text": "ok", "tags": ["AKIAIOSFODNN7EXAMPLE"]},
+            {"id": "1", "text": "ok", "tags": [SECRET]},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -385,7 +388,7 @@ class TestMemoryEndpointRedaction:
         req.query = {"limit": "10", "offset": "0", "tags": ""}
         resp = await mod.api_memory_episodic_list(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["tags"][0]
+        assert SECRET not in data["entries"][0]["tags"][0]
 
     @pytest.mark.asyncio
     async def test_semantic_redacts_all_string_fields(self, tmp_path, monkeypatch):
@@ -394,7 +397,7 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         vs = MagicMock()
         vs.get_all_semantic.return_value = [
-            {"key": "k1", "value_json": "ok", "source": "AKIAIOSFODNN7EXAMPLE"},
+            {"key": "k1", "value_json": "ok", "source": SECRET},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -402,7 +405,7 @@ class TestMemoryEndpointRedaction:
         req.app = {"state": state}
         resp = await mod.api_memory_semantic(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["source"]
+        assert SECRET not in data["entries"][0]["source"]
 
     @pytest.mark.asyncio
     async def test_episodic_search_redacts_all_string_fields(self, tmp_path, monkeypatch):
@@ -412,7 +415,7 @@ class TestMemoryEndpointRedaction:
         vs = MagicMock()
         vs.embed_fn = None
         vs.search_episodic.return_value = [
-            {"id": "1", "text": "ok", "conversation_id": "AKIAIOSFODNN7EXAMPLE"},
+            {"id": "1", "text": "ok", "conversation_id": SECRET},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -421,7 +424,7 @@ class TestMemoryEndpointRedaction:
         req.query = {"q": "test", "limit": "10", "tags": ""}
         resp = await mod.api_memory_episodic_search(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["results"][0]["conversation_id"]
+        assert SECRET not in data["results"][0]["conversation_id"]
 
     @pytest.mark.asyncio
     async def test_episodic_list_redacts_all_string_fields(self, tmp_path, monkeypatch):
@@ -430,7 +433,7 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         vs = MagicMock()
         vs.get_episodic_list.return_value = [
-            {"id": "1", "text": "ok", "conversation_id": "AKIAIOSFODNN7EXAMPLE"},
+            {"id": "1", "text": "ok", "conversation_id": SECRET},
         ]
         state = MagicMock()
         state.context_builder.memory.vector_store = vs
@@ -439,7 +442,7 @@ class TestMemoryEndpointRedaction:
         req.query = {"limit": "10", "offset": "0", "tags": ""}
         resp = await mod.api_memory_episodic_list(req)
         data = json.loads(resp.body)
-        assert "AKIAIOSFODNN7EXAMPLE" not in data["entries"][0]["conversation_id"]
+        assert SECRET not in data["entries"][0]["conversation_id"]
 
     @pytest.mark.asyncio
     async def test_redaction_preserves_non_string_fields(self, tmp_path, monkeypatch):
@@ -466,8 +469,8 @@ class TestMemoryEndpointRedaction:
         mod = importlib.import_module("kiro_crew.dashboard.handlers")
         original = {
             "key": "k1",
-            "value_json": "AKIAIOSFODNN7EXAMPLE",
-            "tags": ["AKIAIOSFODNN7EXAMPLE"],
+            "value_json": SECRET,
+            "tags": [SECRET],
         }
         vs = MagicMock()
         vs.get_all_semantic.return_value = [original]
@@ -477,8 +480,8 @@ class TestMemoryEndpointRedaction:
         req.app = {"state": state}
         await mod.api_memory_semantic(req)
         # Original dict must be untouched
-        assert original["value_json"] == "AKIAIOSFODNN7EXAMPLE"
-        assert original["tags"] == ["AKIAIOSFODNN7EXAMPLE"]
+        assert original["value_json"] == SECRET
+        assert original["tags"] == [SECRET]
 
 
 class TestMemoryGraphEdgeDetection:

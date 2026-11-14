@@ -34,6 +34,7 @@ from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE, _render_session_queue
 from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
 from kiro_crew.mcp_tools.table import Caller, ToolContext
+from kiro_crew.testing.synthetic_credentials import github_classic
 from kiro_crew.validation import SESSION_QUEUE_SCHEMA, ValidationError, validate_tool_args
 
 _VERIFIED = "dashboard:chat-verified"
@@ -119,7 +120,8 @@ def test_list_marks_who_queued_each_entry(tmp_path):
 def test_list_redacts_and_cuts_every_excerpt(tmp_path):
     """A person's words reach an agent reader redacted, like any non-human surface."""
     state, caller, _peer_slot, target = _setup(tmp_path)
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    # A credential the structured engine removes (it keeps AWS key IDs readable).
+    secret = github_classic(seed=118)
     _person(target, f"key {secret}")
     _mine(state, target, "x" * 5000)
     out = _call(state, caller)
@@ -275,7 +277,7 @@ def test_a_restored_id_is_redacted_before_it_is_cut(tmp_path):
     """Mutation guard: an id read off a hand-edited transcript reaches the agent raw."""
     state, caller, _peer_slot, target = _setup(tmp_path)
     _mine(state, target, "a")
-    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    secret = github_classic(seed=119)
     target._queue[0]["id"] = secret
     out = _call(state, caller)
     assert secret not in json.dumps(out)

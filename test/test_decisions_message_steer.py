@@ -17,17 +17,18 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from redaction_structured_cases import aws_secret, github_classic, session_token
 
-from kiro_crew import credential_patterns as _cred
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.points import message_steer as ms
 from kiro_crew.decisions.types import Answer
 
-#: An AWS key id assembled from the prefix list rather than written out, for the
-#: reason ``test_decisions_gate`` gives: a contiguous key-shaped literal is refused
-#: by the repo's own secret scanners, correctly, since neither they nor Semgrep can
-#: tell a test vector from a leak.
-_AWS_KEY = _cred.AWS_KEY_ID_PREFIXES.split("|")[0] + "A2B3C4D5E6F7G8H9"
+#: A GitHub token with a valid checksum, built at run time rather than written out,
+#: for the reason ``test_decisions_gate`` gives: a contiguous key-shaped literal is
+#: refused by the repo's own secret scanners, correctly, since neither they nor
+#: Semgrep can tell a test vector from a leak. AWS key IDs are kept visible as
+#: identifiers, so the redaction cases here use a secret the plan removes.
+_SECRET = github_classic(seed=27)
 
 
 @pytest.fixture
@@ -253,16 +254,16 @@ class TestTheRunningTurnIsSpentOutOfTheConsentedCeiling:
 class TestTheTurnTextIsRedacted:
     def test_a_credential_in_the_activity_does_not_reach_the_state(self):
         _request, activity = ms.running_turn_excerpts(
-            _rows(("user", "go"), ("chunk", f"AWS_ACCESS_KEY_ID={_AWS_KEY}")), budget=2000
+            _rows(("user", "go"), ("chunk", f"AWS_ACCESS_KEY_ID={_SECRET}")), budget=2000
         )
-        assert _AWS_KEY not in activity
+        assert _SECRET not in activity
         assert activity, "cleaned, not refused: a reply that quoted an env file still decides"
 
     def test_a_credential_in_the_running_request_does_not_reach_the_state(self):
         request, _activity = ms.running_turn_excerpts(
-            _rows(("user", f"deploy with {_AWS_KEY}")), budget=2000
+            _rows(("user", f"deploy with {_SECRET}")), budget=2000
         )
-        assert _AWS_KEY not in request
+        assert _SECRET not in request
 
     def test_a_credential_across_the_clip_boundary_leaves_no_fragment(self):
         """Every clip is taken AFTER redaction, so no cut can halve a secret.
@@ -275,14 +276,14 @@ class TestTheTurnTextIsRedacted:
         through ``running_turn_excerpts`` rather than ``redacted`` alone, because
         the boundary is chosen by the caller's budget arithmetic.
         """
-        # 7 + 20 + 4 characters, and a budget of 12 puts the cut eight characters
+        # 7 + 40 + 4 characters, and a budget of 12 puts the cut eight characters
         # from the end of the key.
         budget = 12
         request, _activity = ms.running_turn_excerpts(
-            _rows(("user", f"deploy {_AWS_KEY} now")), budget=budget
+            _rows(("user", f"deploy {_SECRET} now")), budget=budget
         )
-        assert _AWS_KEY not in request
-        tail_fragment = _AWS_KEY[-8:]
+        assert _SECRET not in request
+        tail_fragment = _SECRET[-8:]
         assert tail_fragment not in request, (
             f"a {len(tail_fragment)}-character tail of the key survived the request "
             "clip: the cut ran before the redactor and left a fragment no pattern "
@@ -292,13 +293,13 @@ class TestTheTurnTextIsRedacted:
         assert len(request) <= budget
 
         # The same boundary on the ACTIVITY half, whose rows were clipped per row
-        # before being joined: 4 + 20 + 4 characters against the same budget puts
+        # before being joined: 4 + 40 + 4 characters against the same budget puts
         # the cut eight characters INTO the key.
         _empty, activity = ms.running_turn_excerpts(
-            _rows(("user", ""), ("chunk", f"log {_AWS_KEY} end")), budget=budget
+            _rows(("user", ""), ("chunk", f"log {_SECRET} end")), budget=budget
         )
-        assert _AWS_KEY not in activity
-        head_fragment = _AWS_KEY[:8]
+        assert _SECRET not in activity
+        head_fragment = _SECRET[:8]
         assert head_fragment not in activity, (
             f"a {len(head_fragment)}-character head of the key survived the activity "
             "clip: the row was cut before the redactor saw it"
@@ -379,7 +380,7 @@ class TestNoSingleRowDecidesHowMuchTextIsScanned:
         cut inside that body strips the only anchor and the surviving base64 lines
         match no branch at all. :func:`ms.redacted` cleans such a row instead.
         """
-        # Assembled from pieces, not written out, for the reason `_AWS_KEY` above
+        # Assembled from pieces, not written out, for the reason `_SECRET` above
         # is: a contiguous key-shaped literal is refused by the repo's own secret
         # scanners, correctly, since they cannot tell a test vector from a leak.
         fence = "-" * 5
@@ -406,7 +407,8 @@ class TestNoSingleRowDecidesHowMuchTextIsScanned:
         [
             ("Authorization: Bearer " + "8Fq2mKpRzXvN4tLwYbCdEeGhJk", "8Fq2mKpRzXvN4tLwYbCdEeGhJk"),
             ("aws_secret_access_key = " + "b" * 40, "b" * 40),
-            ("SessionToken: " + "c" * 44, "c" * 44),
+            # A session token is a long base64 run; a short one is not that shape.
+            ("SessionToken: " + session_token(length=120), session_token(length=120)),
         ],
         ids=["bearer", "aws-secret", "session-token"],
     )
@@ -529,7 +531,9 @@ class TestAnOverLongCrossingRowIsSkippedNotScanned:
         "extra, kept", [(0, True), (1, False)], ids=["at-the-limit", "one-over"]
     )
     def test_the_limit_is_exact(self, extra, kept):
-        secret = "aws_secret_access_key = " + "b" * 40
+        # A 40-character value of the AWS secret alphabet, the shape the plan redacts.
+        value = aws_secret(seed=28)
+        secret = "aws_secret_access_key = " + value
         filler = ("w " * ms.MAX_ROW_SCAN_CHARS)[: ms.MAX_ROW_SCAN_CHARS - len(secret) - 6 + extra]
         row = filler + " " + secret + " tail"
         assert len(row) == ms.MAX_ROW_SCAN_CHARS + extra
@@ -538,7 +542,7 @@ class TestAnOverLongCrossingRowIsSkippedNotScanned:
         )
         if kept:
             assert activity.endswith(" tail"), "a row within the limit is still excerpted"
-            assert "b" * 40 not in activity, "and still redacted before the clip"
+            assert value not in activity, "and still redacted before the clip"
             assert len(activity) <= ms.MAX_ACTIVITY_CHARS + ms.SCAN_MARGIN_CHARS
         else:
             assert activity == ""

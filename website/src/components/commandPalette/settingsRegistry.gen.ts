@@ -3285,6 +3285,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Governance Policy"
   },
   {
+    "id": "security.hide-credentials-from-the-ai-model-and-server-logs",
+    "labelKey": "pages.settings.securityPanel.credential_redaction_seams_toggle",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "redaction"
+    },
+    "label": "Hide credentials from the AI model and server logs",
+    "description": "Off lets credentials reach the AI model and appear in server logs. Chats, Slack and values on the Secrets page stay protected either way."
+  },
+  {
     "id": "security.how-long-auto-approve-stays-on",
     "labelKey": "pages.settings.securityPanel.yolo_duration_title",
     "tab": "security",
@@ -3295,6 +3307,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     },
     "configKey": "agent.yolo_duration",
     "label": "How long auto-approve stays on"
+  },
+  {
+    "id": "security.keep-ids-readable",
+    "labelKey": "pages.settings.securityPanel.credential_redaction_engine_toggle",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "redaction"
+    },
+    "label": "Keep IDs readable",
+    "description": "On: keeps IDs readable, such as an AWS key ID (AKIA…) or a 40-character commit hash. Off: goes back to the earlier redaction, which hides them too. This setting doesn't change whether secrets are hidden."
   },
   {
     "id": "security.live-security-posture",

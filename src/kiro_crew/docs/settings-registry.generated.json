@@ -1925,11 +1925,25 @@
       "route": "/settings/security/governance?highlight=security.governance-policy"
     },
     {
+      "id": "security.hide-credentials-from-the-ai-model-and-server-logs",
+      "label": "Hide credentials from the AI model and server logs",
+      "tab": "security",
+      "route": "/settings/security/redaction?highlight=security.hide-credentials-from-the-ai-model-and-server-logs",
+      "description": "Off lets credentials reach the AI model and appear in server logs. Chats, Slack and values on the Secrets page stay protected either way."
+    },
+    {
       "id": "security.how-long-auto-approve-stays-on",
       "label": "How long auto-approve stays on",
       "tab": "security",
       "route": "/settings/security/approval?highlight=key%3Aagent.yolo_duration",
       "configKey": "agent.yolo_duration"
+    },
+    {
+      "id": "security.keep-ids-readable",
+      "label": "Keep IDs readable",
+      "tab": "security",
+      "route": "/settings/security/redaction?highlight=security.keep-ids-readable",
+      "description": "On: keeps IDs readable, such as an AWS key ID (AKIA…) or a 40-character commit hash. Off: goes back to the earlier redaction, which hides them too. This setting doesn't change whether secrets are hidden."
     },
     {
       "id": "security.live-security-posture",

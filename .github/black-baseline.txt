@@ -572,7 +572,6 @@ test/test_pptx_maker_routes.py
 test/test_prepare_pr_local_review.py
 test/test_process_tree_kill.py
 test/test_project_alias.py
-test/test_project_git.py
 test/test_project_git_status_log.py
 test/test_provider_dispatch.py
 test/test_publish_providers.py
@@ -630,7 +629,6 @@ test/test_slack_dashboard_live_sync.py
 test/test_slack_linked_approval.py
 test/test_slack_mirror_unlink.py
 test/test_slack_pins_reactions.py
-test/test_slack_render_pipeline.py
 test/test_slack_scope_probe.py
 test/test_slack_sessions_view.py
 test/test_slack_thread_session_binding.py
@@ -649,7 +647,6 @@ test/test_steering_api.py
 test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py
 test/test_stt_config_atomic.py
-test/test_stt_stream_cov80.py
 test/test_stuck_turn_watchdog.py
 test/test_subagent_cost.py
 test/test_subagent_stall.py
