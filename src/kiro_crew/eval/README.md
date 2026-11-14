@@ -222,6 +222,49 @@ Scenarios are JSON files in `src/kiro_crew/eval/scenarios/`. Each defines sessio
 
 String-matching assertions are case-insensitive by default. Add `case_sensitive: true` to override.
 
+### Tool-use assertions
+
+Three more types score the tools a turn called instead of its reply text, so a
+scenario can tell an agent that looked something up from one that guessed right:
+
+| Type | Behavior |
+|------|----------|
+| `tool_called` | The turn called the tool named in `value`. Optional `args` (a mapping) narrows it to a call that also carries those arguments |
+| `tool_not_called` | The turn made no call to the tool named in `value`; with `args`, no call to it with those arguments |
+| `tool_order` | `tools` (a list of names) were called in that order, other calls allowed between them; `exact: true` allows no other call at all |
+
+```yaml
+assertions:
+  - type: tool_called
+    value: read_file
+    args: {path: config.yaml}
+  - type: tool_not_called
+    value: write_file
+  - type: tool_order
+    tools: [grep, read_file]
+```
+
+A tool is named as the backend names it in its own frames, never by the call's display
+title: `read_file` on one backend, `Read` on another, or `server/tool` (`@server/tool`
+also works) for a tool an MCP server provides. A backend that names a call only when it
+asks permission is named from that request. A string in `args` matches when the argument
+contains it (case-insensitive unless `case_sensitive: true`), so `path: config.yaml`
+matches `/work/config.yaml`; any other value must equal the argument. Arguments are the
+call's own input as its last update states it, with an MCP call's transport wrapper
+removed. Only top-level arguments are compared.
+
+A call no frame names, or one whose arguments no frame states, is never guessed at. While
+such a call could be the one a `tool_not_called` forbids, that assertion fails; a
+`tool_called` or `tool_order` that only such a call could satisfy fails too. The report
+prints the reason beside the assertion and lists the call as `(unnamed tool)`. Tool names
+are printed with credentials and exfiltration URLs redacted.
+
+The calls counted are the ones the agent made, whether or not the harness ran them.
+The harness still refuses every tool that is not read-only (see Tool Safety), so a
+`tool_not_called` on a write tool checks that the agent did not try one. A scenario
+file that uses these types must give each a name or `tools` list; one that does not
+is refused by name, as an unknown type is, and nothing runs.
+
 ## Tool Safety
 
 During eval, tool approval uses a name-based allowlist (`_SAFE_TOOL_EXACT` for exact matches, plus `_SAFE_TOOL_PREFIXES_FS` and `_SAFE_TOOL_PREFIXES_API` for prefix matches). Filesystem-prefix tools must expose a path and pass `is_sensitive_path()`; exact and read-only API entries do not take the filesystem path branch. All other tools are rejected. The permission gate (`refusal_for`) runs before the allowlist, and every rejection is preceded by an in-band `[Kiro Crew host notice]` deny steer (`_steer_host_deny`, see [injected messages](../../../docs/system-specs/common/injected-messages.md#turn-recovery-continuations)) so the model knows the host refused the call. The judge session refuses every tool. This keeps eval runs side-effect-free while allowing the agent to use read-only tools.
