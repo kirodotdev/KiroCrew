@@ -20,7 +20,10 @@
  * in-memory: main.js scans once per app session, so a new launch with no new
  * crash produces `newCount: 0` and nothing renders anyway.
  *
- * The renderer is told a COUNT and nothing else — not even a timestamp. Paths,
+ * The renderer is told a COUNT and nothing else — not even a timestamp — except,
+ * on a launch whose Chromium file log is off, a cause code from a closed set (see
+ * `initNativeLogging` in electron/native-logging.js). The banner turns it into a
+ * translated sentence saying chromium.log is from an earlier session. Paths,
  * filenames and exception codes stay in the main process (see `crashNoticeSummary` in
  * electron/crash-collector.js) — the reveal action is a main-process gesture
  * that names no path, so this component never holds one.
@@ -42,6 +45,7 @@ const crashReportsAPI = (): CrashReportsAPI | undefined => window.crashReportsAP
 
 export default function CrashReportNotice() {
   const [count, setCount] = useState(0)
+  const [nativeLogOff, setNativeLogOff] = useState<NativeLogOffCause | null>(null)
   const [dismissed, setDismissed] = useState(false)
   const [revealError, setRevealError] = useState<string | null>(null)
   const [reportOpen, setReportOpen] = useState(false)
@@ -76,12 +80,18 @@ export default function CrashReportNotice() {
     // gateway shares this preload), and that is a correct outcome, not an error
     // worth putting on screen.
     void api.get()
-      .then(summary => { if (alive) setCount(summary.newCount) })
+      .then(summary => {
+        if (!alive) return
+        setCount(summary.newCount)
+        setNativeLogOff(isNativeLogOffCause(summary.nativeLogOff) ? summary.nativeLogOff : null)
+      })
       .catch(() => {})
     return () => { alive = false }
   }, [])
 
   if (dismissed || count < 1) return null
+
+  const nativeLogOffMessage = nativeLogOff ? nativeLogOffText(nativeLogOff) : null
 
   // Two rows, so each holds at most two controls (the two-buttons-per-row
   // cap counts the icon-only dismiss too). Row one is the message: icon, text,
@@ -109,6 +119,20 @@ export default function CrashReportNotice() {
                 which only exist for keys registered in i18n/pluralKeys.json. */}
             {i18nT('components.crashNotice.diagnostics_were_saved_locally', { n: count })}
           </div>
+          {/* Status about the attachment, not an error: the crash already
+              happened and was recorded, and nothing the user asked for failed.
+              The line only says the chromium.log they attach is from an earlier
+              session, which is what a crash report needs to know; for most
+              causes (`in_use`, `no_access`, `unreadable`, `other`) the user
+              cannot act on it, so it informs in the muted register instead of
+              raising an error with a hand-off. That is the "status text about
+              something that has not failed" case `errors-use-error-notice`
+              does not cover. */}
+          {nativeLogOffMessage && (
+            <div className="text-[12px] text-muted mt-1" data-testid="crash-notice-native-log-off">
+              {nativeLogOffMessage}
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -156,8 +180,32 @@ export default function CrashReportNotice() {
       <ReportProblemModal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        initialNote={i18nT('components.crashNotice.report_note', { n: count })}
+        initialNote={
+          nativeLogOffMessage
+            ? `${i18nT('components.crashNotice.report_note', { n: count })} ${nativeLogOffMessage}`
+            : i18nT('components.crashNotice.report_note', { n: count })
+        }
       />
     </div>
   )
+}
+
+type NativeLogOffCause = 'disk_full' | 'no_access' | 'in_use' | 'unreadable' | 'other'
+
+const NATIVE_LOG_OFF_CAUSES: readonly NativeLogOffCause[] = ['disk_full', 'no_access', 'in_use', 'unreadable', 'other']
+
+function isNativeLogOffCause(value: unknown): value is NativeLogOffCause {
+  return typeof value === 'string' && (NATIVE_LOG_OFF_CAUSES as readonly string[]).includes(value)
+}
+
+// One whole sentence per cause, so each catalog phrases the cause in its own
+// grammar instead of splicing a fragment into a frame.
+function nativeLogOffText(cause: NativeLogOffCause): string {
+  switch (cause) {
+    case 'disk_full': return i18nT('components.crashNotice.native_log_off_disk_full')
+    case 'no_access': return i18nT('components.crashNotice.native_log_off_no_access')
+    case 'in_use': return i18nT('components.crashNotice.native_log_off_in_use')
+    case 'unreadable': return i18nT('components.crashNotice.native_log_off_unreadable')
+    default: return i18nT('components.crashNotice.native_log_off_other')
+  }
 }
