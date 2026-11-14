@@ -60,7 +60,7 @@ def _plain_report(monkeypatch):
     )
 
 
-# ── Finding 1: the report stem must not compose outside --out-dir ────────────
+# ── the report stem must not compose outside --out-dir ───────────────────────
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,7 @@ def test_a_symlink_at_the_report_name_is_not_followed(tmp_path: Path) -> None:
     assert victim.read_text(encoding="utf-8") == "do not overwrite me"
 
 
-# ── Finding 2: a NULL query embedding must refuse ────────────────────────────
+# ── a NULL query embedding must refuse ───────────────────────────────────────
 
 
 class _Store:

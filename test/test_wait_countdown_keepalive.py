@@ -230,10 +230,10 @@ class TestWaitStateRecording:
             assert slot._end_wait_request is None
 
             # The latch does NOT expire on a timer, and this is the whole point.
-            # An earlier revision released it after one window; both sleeps were
-            # still pinging, so whichever pinged first re-minted its own state and
-            # published its deadline onto the other's pill for up to one interval,
-            # with a live button that would end the wrong sleep. Advancing far past
+            # Releasing it after one window while both sleeps still ping lets
+            # whichever pings first re-mint its own state and publish its deadline
+            # onto the other's pill for up to one interval, with a live button that
+            # would end the wrong sleep. Advancing far past
             # any plausible window must change nothing.
             # Assert after EVERY INDIVIDUAL ping, never after a pair. The defect a
             # self-expiring window reintroduces is transient by nature: the first

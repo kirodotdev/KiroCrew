@@ -115,7 +115,7 @@ class TestAttachTurnStats:
         assert "model" not in slot.messages[-1]["meta"]["turn_stats"]
 
     def test_error_only_turn_does_not_overwrite_previous_turn(self):
-        # Regression (Codex HIGH): turn 1 completes with an assistant message
+        # Turn 1 completes with an assistant message
         # and stats; turn 2 fails producing only an error message. Without the
         # boundary, the reverse scan would walk into turn 1's assistant message
         # and overwrite its stats with turn 2's numbers.
@@ -148,7 +148,7 @@ class TestAttachTurnStats:
         assert slot.messages[1]["meta"]["turn_stats"]["credits"] == 0.5
 
     def test_boundary_reset_after_clear_attaches_to_confirmation(self):
-        # Regression (Codex MEDIUM): a clear-conversation turn empties
+        # A clear-conversation turn empties
         # slot.messages then appends a "Conversation cleared" confirmation.
         # The clear handler resets the turn boundary to 0; simulate that here
         # and confirm the completed turn's stats still land on the

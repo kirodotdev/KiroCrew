@@ -142,7 +142,7 @@ class TestTriggerSpellings:
         set, so a NEW turn-lifecycle event still has to be added to the map.
         """
         # Body-scope import, as the sibling gates in this tree use: naming it in
-        # the module block puts this change's only new import beside another, and
+        # the module block puts this import beside another, and
         # two additions to one import region conflict on every rebase.
         from kiro_crew.hooks import HOOK_EVENT_SESSION_LANE_CHANGED
 

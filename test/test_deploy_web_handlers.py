@@ -396,7 +396,7 @@ def test_mutating_handlers_deny_restricted_session(handler_fn, kwargs):
 def test_teardown_persistent_manifest_unreachable_returns_502(monkeypatch):
     """If manifest expiry fails and the deploy is persistent, return 502 without
     tombstoning (card retains Tear down button for retry)."""
-    # F2 (r4): teardown validates metadata profile against the registry —
+    # Teardown validates metadata profile against the registry —
     # register the fake profile so these tests exercise the paths under test.
     from kiro_crew.deploy import profiles as _profiles_mod
     monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
@@ -630,7 +630,7 @@ def test_deploy_rejects_on_windows(monkeypatch):
 
 def test_teardown_reaper_present_tombstones(monkeypatch):
     """Teardown proceeds (tombstones) when the reaper stack exists."""
-    # F2 (r4): teardown validates metadata profile against the registry —
+    # Teardown validates metadata profile against the registry —
     # register the fake profile so these tests exercise the paths under test.
     from kiro_crew.deploy import profiles as _profiles_mod
     monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
@@ -675,7 +675,7 @@ def test_teardown_reaper_present_tombstones(monkeypatch):
 
 def test_teardown_reaper_absent_returns_409(monkeypatch):
     """Teardown returns 409 when the reaper stack is not installed."""
-    # F2 (r4): teardown validates metadata profile against the registry —
+    # Teardown validates metadata profile against the registry —
     # register the fake profile so these tests exercise the paths under test.
     from kiro_crew.deploy import profiles as _profiles_mod
     monkeypatch.setattr(_profiles_mod, "load_registry", lambda: {
@@ -1254,7 +1254,7 @@ def test_allowed_local_roots_no_bare_tmp(monkeypatch, tmp_path):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# F1 (R11): NUL-prepended file still scanned for credentials
+# NUL-prepended file still scanned for credentials
 # ══════════════════════════════════════════════════════════════════════════════
 
 
