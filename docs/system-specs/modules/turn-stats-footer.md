@@ -43,6 +43,15 @@ When `EVENT_COMPLETE` already billed the turn (`_turn_usage_persisted`) and the 
 
 `chat_turn.turn_stats.turn_stats_meta` builds the same `turn_stats` dict for both writers. The single-agent cron run in `slack/gateway_runtime/cron_turn.py` builds it from the run's `provider_last_turn_usage` and `read_turn_model`, and `cron_inject.inject_cron_result_to_dashboard` passes it as `meta` on the result row's `slot.append`, so the live broadcast and the slot window both carry it. It also passes it (as `row_meta`) to the durable `cron:{id}` append, so a restart before the slot save keeps the footer. Cron results have no `chat_done`; the broadcast is what an open tab renders. `test/test_cron_turn_stats_footer.py` pins all three — the broadcast row, the durable `cron:{id}` row (`test_durable_cron_row_carries_turn_stats`), and that an inject with no stats stamps nothing.
 
+A footer records `reasoning_effort` only from the harness's reported effort option.
+It never treats a configured level or a model selection's bracketed suffix as
+proof of what ran. On a pair-id harness such as Codex, the displayed model uses
+that confirmed level (`model[xhigh]`); without a report it shows the bare model.
+Context-window suffixes such as `[1m]` stay intact. The selected model id and
+usage records keep their own identity. A completed dashboard turn captures the
+effort before its asynchronous usage write, so a later picker change cannot
+rewrite that turn's footer, including a cancellation after completion.
+
 ### Regenerated replies
 
 A Regenerate keeps each reply as a variant, and the stats go with the reply's text. `variant_from_row` (`dashboard/chat_utils_display.py`) copies the row's `turn_stats` into the stashed variant, through the same `_redact_value` the row's meta gets when it is saved. The new reply's variant is stashed by `settle_regenerate` after the turn's attach has run, so it carries the new reply's stats. On a switch, `adopt_variant_text` gives the row the chosen variant's stats, or removes them when that variant has none. It does this only when the newest variant carries stats, because only then is the row the one its turn stamped, and the page reads a stamp as the end of the turn. A reply that ran tools keeps its variants on its first row and its stats on its last, so its first row stays unstamped. A variant list saved before variants carried stats leaves the row's stats as they were. Variants go to the page without `turn_stats` (`_variant_for_emit`): the page reads a reply's stats from its row, which the switch's slot refresh brings. `test_turn_stats_lands_only_on_the_row_the_two_selectors_chose` lists both functions as the variant moves. `test/test_regenerate_swap.py` (`test_switching_regenerated_replies_shows_each_ones_turn_stats`) drives a regenerate through the real runner and switches back and forth. `test/test_dashboard_chat_regenerate.py` (`test_switch_variant_stamps_no_row_its_turn_did_not_stamp`) pins the unstamped first row.
