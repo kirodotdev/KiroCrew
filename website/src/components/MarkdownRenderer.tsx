@@ -1345,7 +1345,7 @@ export default memo(function MarkdownRenderer({ content, streaming = false, onFi
   // A host allowed from a card still open keeps that card's records here:
   // the reloaded reply shows the host's links as plain links and no longer
   // carries them.
-  const replyKey = slotKey && messageTs ? `${slotKey}|${messageTs}` : undefined
+  const replyKey = (redactionSlot ?? slotKey) && messageTs ? `${redactionSlot ?? slotKey}|${messageTs}` : undefined
   const holds = useAllowHolds(replyKey)
   const ownBlocked = useMemo(() => normalizeBlockedLinks(blockedLinks), [blockedLinks])
   const heldDomains = useMemo(() => {

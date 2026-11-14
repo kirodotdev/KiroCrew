@@ -4133,6 +4133,23 @@ Bot / steer-only user row (through `renderUserContent`), and the sub-agent / wor
 completion cards. A pane host that passes none of it — a side chat, an embedded
 chat — renders those links plainly, as before.
 
+**Blocked links draw as on the chat page.** A Bot's reply that had a link
+removed as a suspicious URL shows the Blocked link chip and its card (Copy URL,
+Open once, Allow for this host), not the raw placeholder text:
+`renderAssistantBubble` hands the row's `meta.blocked_links` to the markdown
+renderer on the same rule as its lock tags, so only a host that names its
+LOCAL slot (`revealSlot`, which `ChatPane` sets to its own slot) gets them, and
+a window drawing another gateway's rows keeps the plain text. *Allow* saves the
+host for that slot through the same owner-only route as the chat page, and the
+pane re-reads its rows afterwards (`useRedactionHostsReload`: `refreshSlot` for
+the active slot, `warmSlotCache` otherwise) so the restored link replaces the
+chip; the chat page's own listener only reaches the slot it shows. Both
+re-reads pass the reply's timestamp (`reachTs`), so a background pane that paged
+back past its newest rows still re-serves that reply. The card keeps its
+"Allowed" and Undo across the re-read: its hold is keyed by the local slot
+(`redactionSlot`, else `slotKey`) and the row timestamp, which every Bot and
+split-pane bubble forwards.
+
 What the Members page supplies is deliberate on all three counts. `sessions` is
 built by `utils/sessionRoster.sessionTitleRoster` from the WS `slots` frame the
 page already subscribes to, narrowed to the slots the DESTINATION can render
