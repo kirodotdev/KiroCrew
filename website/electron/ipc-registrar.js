@@ -189,6 +189,17 @@ function createIpcRegistrar({
   const REJECTION_LOG_WINDOW_MS = 60_000;
   const rejectionLogState = new WeakMap();
 
+  // A renderer-supplied value headed for a log line. `String(value)` runs the
+  // sender's own `toString`, which a hostile page can make throw, and a throw
+  // there skips the rejection throttle. Render by type instead: a string is
+  // cut to 64 characters, a finite number prints as itself, anything else
+  // shows only its type.
+  function boundedMenuArg(value) {
+    if (typeof value === "string") return value.slice(0, 64);
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    return `<${typeof value}>`;
+  }
+
   // Keyed per WebContents so one flooding sender cannot spend another
   // window's diagnostic budget and blind an investigator to its rejects.
   function logGateRejection(wc, line) {
@@ -760,7 +771,7 @@ function createIpcRegistrar({
           // bounded rendering of them. GPT 6.1 lane finding on 8d4ba61bf6.
           logGateRejection(
             event.sender,
-            `app-menu:execute refused ${String(id).slice(0, 64)}[${Number(index)}]: focus moved while the `
+            `app-menu:execute refused ${boundedMenuArg(id)}[${boundedMenuArg(index)}]: focus moved while the `
             + "ownership probe ran, so the dispatch target is no longer the requester",
           );
           return false;
@@ -779,7 +790,13 @@ function createIpcRegistrar({
         // used to be, an unhandled rejection was process-fatal — Spock
         // ERR-01). Log and answer fail-closed: "could not dispatch" is
         // exactly what the refetch is the right response to.
-        log(`app-menu:execute dispatch failed: ${(err && err.stack) || err}`);
+        // Through the per-sender budget: a page can queue many invokes behind
+        // one probe, and an error each of them hits would otherwise write one
+        // synchronous line per call.
+        logGateRejection(
+          event.sender,
+          `app-menu:execute dispatch failed: ${(err && err.stack) || err}`,
+        );
         return false;
       }
     });

@@ -1424,3 +1424,40 @@ test("focus-moved refusals spend the per-sender rejection-log budget", async () 
     "the renderer-supplied id must be bounded in the log line",
   );
 });
+
+// A page can pass an id whose own `toString` throws. Building the focus-moved
+// log line used to call it, so the throw skipped the per-sender budget and every
+// queued invoke wrote its own dispatch-failed line. GPT 6.1 lane finding on
+// 2141a17e41 (UPHOLD-FENCED).
+test("a hostile id cannot take the focus-moved refusal past the log budget", async () => {
+  const h = harness({ storeValues: { runLocalGateway: true } });
+  h.registrar.registerShell();
+  const event = localSenderEvent("hostile-id-flood");
+
+  const windowAtRequestTime = { id: "the-requesting-window" };
+  h.windows.focusedDashboardWindow = () => windowAtRequestTime;
+  h.windows.menu.execute = () => true;
+
+  let releaseProbe;
+  h.gateway.probePrimaryPortOwner = () => new Promise((resolve) => {
+    releaseProbe = resolve;
+  });
+
+  const hostile = { toString: 0 };
+  const pending = [];
+  for (let i = 0; i < 200; i += 1) {
+    pending.push(h.handlers.get("app-menu:execute")(event, hostile, hostile));
+  }
+  h.windows.focusedDashboardWindow = () => ({ id: "a-different-window" });
+  releaseProbe("kirocrew");
+  const answers = await Promise.all(pending);
+
+  assert.ok(answers.every((a) => a === false), "every queued dispatch must be refused");
+  const lines = h.logs.filter((line) => line.includes("app-menu:execute"));
+  assert.ok(lines.length >= 1, "the refusal must still be logged");
+  assert.ok(lines.length <= 5, `200 hostile calls must not write 200 lines -- got ${lines.length}`);
+  assert.ok(
+    lines.every((line) => !line.includes("dispatch failed")),
+    "a hostile id must reach the bounded refusal line, not the dispatch-error path",
+  );
+});
