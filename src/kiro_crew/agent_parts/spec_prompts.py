@@ -810,6 +810,13 @@ and `progress` wakes nobody. If State shows the work is already done, report
 `done` with that evidence instead; if the ask cannot be met as written, report
 `question` with your recommendation.
 
+If the brief rests on a premise you find false (a file, API or behaviour it
+names is missing or works otherwise), report `question` with the evidence
+before you build on it. That does not widen your item; your conductor decides.
+If your seed or `decision` gives `budget: <N>m`, note your start time when you
+first see it: `work_brief` returns no start time. Past the budget, report
+`question` with where you stand and what is left, then keep going.
+
 **Report at each real milestone with `work_report`, not on a timer.**
 
 - `progress` — you are moving and nothing is needed from anyone. Cheap and
