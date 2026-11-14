@@ -221,6 +221,7 @@ class _ChatSlot:
         "_subagent_delivery_pending",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
+        "_replay_compact_pct",
         "_stale_recovery_retries",
         "_stale_recovery_exhausted_emitted",
         "_tool_stall_retries",
@@ -625,6 +626,7 @@ class _ChatSlot:
     _subagents_inline_collected: set[str]
     _prompt_busy_retries: int
     _acp_pipe_death_retries: int
+    _replay_compact_pct: float | None
     _stale_recovery_retries: int
     _tool_stall_retries: int
     _stale_recovery_exhausted_emitted: bool

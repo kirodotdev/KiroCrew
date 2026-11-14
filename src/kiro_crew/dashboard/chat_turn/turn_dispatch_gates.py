@@ -73,6 +73,81 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire, _on_kas
 
 
+async def _compact_replay_before_prompt(turn: _ChatTurn) -> None:
+    """Compact an interrupted turn's session before its prompt is rebuilt.
+
+    A turn the watchdog killed is replayed verbatim (``_on_process_died`` ->
+    ``_queue_recovery``). When the turn that died had measured its context at
+    or above this session's auto-compact threshold, replaying it hands the
+    backend the same oversized prompt that stalled, and the kill/replay cycle
+    repeats. The replay's own session meter starts empty, so the death handler
+    leaves that reading on the slot; this is the one site that both sees it and
+    already holds the session's turn permit — the coordinator's own permit wait
+    would deadlock against this turn, so the compaction is driven here.
+
+    Bounded and best-effort: a compaction that fails, stalls or times out must
+    not block the replay it exists to make cheaper.
+    """
+    slot = turn.slot
+    pct = getattr(slot, "_replay_compact_pct", None)
+    if pct is None:
+        return
+    # Taken once, whatever happens: a compaction that could not run for this
+    # replay must never fire on a later, unrelated turn.
+    slot._replay_compact_pct = None
+    state = turn.state
+    session_key = turn.session_key
+    try:
+        threshold = state.sessions.effective_autocompact_pct(session_key)
+    except Exception:
+        threshold = 0.0
+    if pct < threshold:
+        return
+    provider = getattr(turn.client, "provider", turn.client)
+    stream_command = getattr(provider, "stream_command", None)
+    if stream_command is None:
+        return
+    try:
+        if state.sessions.is_compacting(session_key):
+            return
+        budget = state.sessions.compact_wait_budget_secs()
+    except Exception:
+        return
+    logger.warning(
+        "Session %s replaying an interrupted turn at %.0f%% context "
+        "(threshold %.0f%%) — compacting before the prompt",
+        session_key,
+        pct,
+        threshold,
+    )
+    try:
+        await asyncio.wait_for(
+            _drain_replay_compaction(
+                stream_command,
+                getattr(provider, "wait_for_compaction", None),
+                state.sessions,
+            ),
+            timeout=budget,
+        )
+    except Exception:
+        logger.warning("Pre-replay compaction failed for session %s", session_key, exc_info=True)
+
+
+async def _drain_replay_compaction(stream_command, wait_for_compaction, sessions) -> None:
+    """Send ``/compact`` and hold until the harness reports a terminal status."""
+    from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
+
+    status: str | None = None
+    async for event in stream_command("/compact"):
+        if event.kind == EVENT_COMPACTION_STATUS and event.text in ("completed", "failed"):
+            status = event.text
+    if status is None and wait_for_compaction is not None:
+        result = await wait_for_compaction(timeout=sessions.compact_wait_budget_secs())
+        status = result.get("type") if isinstance(result, dict) else None
+    if status != "completed":
+        raise RuntimeError("compaction reported %s" % (status or "no result"))
+
+
 async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     """Load a person's recovery context, expand the input's skill mentions and settle the replay before the prompt is built."""
     slot_ctx_blocks: dict[str, int]
@@ -98,6 +173,11 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
     # into one (the recovery context, a change card's or an undo's report) may be
     # taken by it: the next prompt still owes them.
     _sends_prompt = not turn._agent_started
+    # Before anything reads the transcript into this turn's prompt: a replay of
+    # a turn that died at high context shrinks the session first, so the prompt
+    # it re-sends is not the one that stalled.
+    if _sends_prompt and not is_slash:
+        await _compact_replay_before_prompt(turn)
     if _sends_prompt and not is_slash and (_responsive_human or _responsive_recovery):
         _request_prefix_context = await asyncio.to_thread(
             responsive_chat.prompt_context, _responsive_recovery

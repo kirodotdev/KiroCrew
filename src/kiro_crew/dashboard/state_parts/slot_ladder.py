@@ -100,6 +100,11 @@ def init_ladder_fields(self: _ChatSlot) -> None:
     self._subagents_inline_collected = set()
     self._prompt_busy_retries = 0
     self._acp_pipe_death_retries = 0
+    # The context reading of the turn a process death interrupted, carried to
+    # the replay turn that follows it (the replay's own session meter starts
+    # empty). ``None`` until a death records one; consumed by
+    # ``_compact_replay_before_prompt``.
+    self._replay_compact_pct = None
     # Auto-recovery of a genuinely-wedged (stale) turn: bumped when the ACP
     # layer signals STOP_REASON_STALE_RECOVER; bounded (3) so a permanently
     # broken session surfaces "start a new chat" instead of looping. Reset on

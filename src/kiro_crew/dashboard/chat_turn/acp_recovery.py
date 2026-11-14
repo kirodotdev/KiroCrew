@@ -275,6 +275,22 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
     client = turn.client
 
     logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)
+    # The last context reading of the turn about to be replayed. The replay
+    # cold-starts a session whose own meter reads nothing, so this is the only
+    # surviving measurement of how large the prompt it re-sends already was;
+    # ``_turn_dispatch_prep`` compacts on it before the prompt is rebuilt
+    # (``_compact_replay_before_prompt``). Only a real reading is kept: an
+    # unknown one must not be mistaken for a measured high watermark.
+    _ctx_reader = getattr(client, "context_usage_pct", None)
+    _ctx_unknown_reader = getattr(client, "context_usage_unknown", None)
+    if _ctx_reader is not None:
+        try:
+            _ctx_pct = float(_ctx_reader())
+            _ctx_unknown = bool(_ctx_unknown_reader()) if _ctx_unknown_reader else False
+        except Exception:
+            _ctx_pct, _ctx_unknown = 0.0, True
+        if not _ctx_unknown and _ctx_pct > 0.0:
+            slot._replay_compact_pct = _ctx_pct
     # The class this handler caught is a fact only this site holds, and the
     # closer in `_turn_close_crew_log` (chat_turn/crew_log_attribution.py), from `_run_chat`'s
     # `finally`, reads `_crew_log_error` for it, so naming it here is what keeps
