@@ -184,8 +184,21 @@ your work pool — Issue Radar crews label issues `claimed`, humans assign
 themselves. A candidate someone else already owns is excluded, listed in the
 plan as skipped with the reason, never dispatched over.
 
-Keep concurrency small and constant — two or three items per round. More rounds
-beats more parallelism: every open item is a session the user may have to read.
+**Capacity decides the wave, not your plan.** Dispatch every ready,
+independent item at once, up to the ledger's concurrency cap. Call
+`resource_status` before every wave, and again before a reseed wave — a reseed
+stands up as many sessions as a first dispatch. Its posture is one of four
+words — `ample`, `tight`, `critical`, `unknown` — and on `ample` dispatch the
+wave; on `tight` or `unknown` dispatch one item and queue the rest; on
+`critical` dispatch none. Say what you queued in the plan. **`unknown` is the
+posture of a reading that FAILED, and it queues like `tight`.** Each time an
+in-flight item lands, read `resource_status` again and dispatch from the queue
+the same way. Keep the patrol loop armed while anything is queued; the
+patrol tick resumes you. If a wave dispatched nothing and no patrol is armed
+yet, arm `monitor_start(watch="work-ledger")` yourself, since no create or
+bind reply will arm one. Carry no number of your own: the
+ledger's cap and the server's slot limits are the real ceiling, and a count in
+your head is a second ceiling that disagrees with them.
 
 ### Dispatch a round
 
@@ -702,6 +715,8 @@ Never reset when:
 - a question to the user is unanswered — the answer would arrive in a chat
   that no longer holds the question;
 - the round is still running — reset only at a round close;
+- anything is queued — a queued item has no ledger row yet, so the chat is
+  its only copy;
 - the session ledger write failed — the reset would drop the only copy.
 
 The gateway refuses a reset from a loop it cannot vouch for, or while a
@@ -868,7 +883,7 @@ means flatten, not retry.
 
 Patrol ends on exactly two signals:
 
-1. **Every ledger item is terminal** — accepted, rejected or abandoned.
+1. **Every ledger item is terminal** — accepted, rejected or abandoned — and nothing is queued.
 2. **The user says stop** — in words, or by a round or time budget they set
    that is now spent.
 

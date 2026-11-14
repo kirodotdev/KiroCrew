@@ -147,21 +147,12 @@ mechanism that already exists, so none of them is a judgement you make from
 feel. Where a rule above already says WHAT to do, the paragraph here names only
 the mechanism that decides it.
 
-**Capacity decides the wave, not your plan.** `resource_status` before every
-wave, and again before a reseed wave -- a reseed stands up as many sessions as
-a first dispatch. Its posture is one of four words -- `ample`, `tight`,
-`critical`, `unknown` -- and on any of the last three, queue the rest of the
-wave instead of
-dispatching it and say so in the plan. **`unknown` is the posture of a reading
-that FAILED, and it queues like `tight`** -- a probe that could not answer is
-the one place where a lead decides from feel, which is the thing this section
-exists to stop. Then give the capacity back: `work_ledger_record`
-`action=close` the item once it is terminal and its result is read, and
-`session_close` the child. Carry no number of your own -- the server's
-`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` in
-`dashboard/state_parts/slot_directory.py` are the
-real ceiling, and a count in your head is a second ceiling that disagrees with
-it.
+**Size waves by capacity, then give it back.** Size every wave, reseed waves
+included, by `resource_status` as goal-conductor's "Capacity decides the wave"
+says; that rule owns the per-posture counts. Then give the capacity back:
+`work_ledger_record` `action=close` the item once it is terminal and its result
+is read, and `session_close` the child, so the server's
+`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` ceiling frees a seat.
 
 **What refuses a conducting level past the cap is `MAX_DEPTH` in
 `work_ledger_records.py`, which is the default of the `work_ledger.max_depth`
