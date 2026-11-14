@@ -149,9 +149,12 @@ async def test_a_page_with_only_readable_frames_and_no_inspector_still_gets_its_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("children", [0, 1])
-async def test_the_live_view_does_not_lift_the_frame_rule(tmp_path: Path, children: int) -> None:
-    # The live stream's frame inspector does not prove it checked every frame yet,
-    # so an unreadable frame refuses with the live view open too.
+async def test_an_inspector_that_cannot_prove_coverage_does_not_lift_the_frame_rule(
+    tmp_path: Path, children: int
+) -> None:
+    # This inspector answers counts but has no coverage proof, so an unreadable
+    # frame still refuses with the live view open (test_browser_frame_coverage.py
+    # covers an inspector that proves it).
     ctx, calls = _ctx(tmp_path, main=0, isolated=0, unreadable=1, frames=_Frames(children))
     out = await ops.run_op("screenshot", {}, ctx)
     assert out.get("code") == "unreadable_frame_on_page", out

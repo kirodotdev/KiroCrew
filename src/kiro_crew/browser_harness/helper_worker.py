@@ -37,7 +37,7 @@ from typing import Any, Callable
 #: the mouse moves Harness has no helper for.
 _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "goto": ("goto_url", ("url",)),
-    "click": ("click_at_xy", ("x", "y", "button", "clicks")),
+    "click": ("_local_click", ("x", "y", "button", "clicks")),
     "mouse_move": ("_local_mouse_move", ("x", "y")),
     "drag": ("_local_drag", ("x", "y", "to_x", "to_y")),
     "type_text": ("type_text", ("text",)),
@@ -83,6 +83,46 @@ def _local_mouse_move(helpers: Any, x: float, y: float) -> dict[str, float]:
     """Move the pointer to a viewport point (hover) on the daemon's current tab."""
     helpers.cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
     return {"x": x, "y": y}
+
+
+#: ``buttons`` bit for each ``button`` (the DOM MouseEvent.buttons mask).
+_BUTTON_BITS = {"left": 1, "right": 2, "middle": 4, "back": 8, "forward": 16}
+
+
+def _local_click(
+    helpers: Any, x: float, y: float, button: str = "left", clicks: int = 1
+) -> dict[str, Any]:
+    """Click a viewport point the way a real pointer does: move there first, then
+    press and release, with ``buttons`` set while the button is down.
+
+    A press with no move before it reaches the page at a point the pointer never
+    entered: editors that place the caret from their own pointer tracking (Word
+    on the web) keep the caret where it was, so the keys that follow land
+    elsewhere or nowhere. A double click repeats the press/release pair with a
+    rising ``clickCount``, as Chrome does for a real one.
+    """
+    bit = _BUTTON_BITS.get(button, 0)
+    helpers.cdp("Input.dispatchMouseEvent", type="mouseMoved", x=x, y=y)
+    for count in range(1, max(1, int(clicks)) + 1):
+        helpers.cdp(
+            "Input.dispatchMouseEvent",
+            type="mousePressed",
+            x=x,
+            y=y,
+            button=button,
+            buttons=bit,
+            clickCount=count,
+        )
+        helpers.cdp(
+            "Input.dispatchMouseEvent",
+            type="mouseReleased",
+            x=x,
+            y=y,
+            button=button,
+            buttons=0,
+            clickCount=count,
+        )
+    return {"x": x, "y": y, "button": button, "clicks": clicks}
 
 
 def _local_drag(helpers: Any, x: float, y: float, to_x: float, to_y: float) -> dict[str, Any]:
@@ -349,6 +389,7 @@ def _split_camel(text: str) -> str:
 
 _LOCAL: dict[str, Callable[..., Any]] = {
     "_local_mouse_move": _local_mouse_move,
+    "_local_click": _local_click,
     "_local_drag": _local_drag,
     "_local_page_clock": _local_page_clock,
     "_local_screenshot_clip": _local_screenshot_clip,

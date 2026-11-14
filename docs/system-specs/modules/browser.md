@@ -1006,11 +1006,23 @@ name, so the stream's session reads the refs the helper made (the quick ask's
 targets, the frame slots). A count
 that cannot be taken refuses: `screenshot` answers `secret_check_failed`, and a
 decision-hook capture is skipped. Any frame, `object` or `embed` the top
-document cannot read (`unreadableFrames`), hidden or not, refuses too, with or
-without the live view: `screenshot` answers `unreadable_frame_on_page`. The live
-stream's frame inspector (`FrameOps.count`) still adds its child-frame counts,
-but it does not yet prove it checked every frame, so it is not trusted to lift
-the refusal. A hidden frame counts because a page can show it for the moment the
+document cannot read (`unreadableFrames`), hidden or not, refuses too when no live
+view holds the tab: `screenshot` answers `unreadable_frame_on_page`. With the live
+view, the stream attaches every out-of-process frame at every depth (auto-attach
+is turned on inside each attached frame's session), and the refusal is lifted only
+when `FrameOps.coverage` proves every unreadable frame was checked: at the top and
+inside each attached frame, the frames its walk cannot read (plus any frame owner
+the walk missed) must equal the frames attached directly under that document, with
+no secret-looking field or uninspected frame in a closed shadow root. A same-site
+frame with no session of its own, a count that cannot be taken, or more than
+`frames.FRAME_COVERAGE_CAP` (32) attached frames leave the refusal standing, and
+it names what was not checked, by frame host only. Once covered, the inspector
+(`FrameOps.count`) adds every attached frame's counts, nested ones included, so a
+value in a nested frame still refuses the capture; the decision hooks read the
+same counts, so a covered page can also reach the decision model. The live view
+and the recorder mask a secret field in a nested frame by painting the whole
+top-level frame that holds it, since a nested viewport cannot be placed exactly in
+page pixels. A hidden frame counts because a page can show it for the moment the
 image is taken. An `object` or `embed` always counts: the field counts walk only
 into iframe and frame documents, so a PDF opened in the tab refuses too. A frame
 in a closed shadow root is out of the walk's reach, so the browser's own count
@@ -1018,9 +1030,9 @@ of `iframe`/`frame`/`object`/`embed` elements (`frame_owner_count`:
 `DOM.getDocument` with `pierce`, read by the helper worker, which also sees
 out-of-process frames) is compared with the ones the walk reached
 (`framesSeen`); any it missed count, and more seen than the browser holds means
-the page changed between the reads and refuses as well. The cost: a page that
-embeds a frame from another site (a video, a map, an ad, a sign-in widget)
-refuses screenshots for now, live view or not; snapshot still works. A secret-looking field (a password, one-time-code or quick-ask field, or one
+the page changed between the reads and refuses as well. The cost: with no live
+view, a page that embeds a frame from another site (a video, a map, an ad, a
+sign-in widget) refuses screenshots; snapshot still works. A secret-looking field (a password, one-time-code or quick-ask field, or one
 the walker's `secretish` names) inside a closed shadow root is out of every
 page-side walk, so the browser's own DOM is asked (`closed_secret_count`, and
 the live stream's replay mask asks the same through its session): any such
@@ -1061,7 +1073,7 @@ the last navigate or snapshot.
 | `snapshot` | the accessibility walker, run in the page; refs are per snapshot |
 | `click` | a ref or `x`,`y`; `clicks: 2` is a double click. A ref is scrolled into view once, then re-measured without scrolling every 0.1 s until two reads in a row agree within 1 px (at most 6 re-reads), so a page that moves its layout on scroll is clicked where the target settled; a ref that measures empty to the end is refused `ref_stale` |
 | `drag`, `hover`, `scroll` | ref or coordinates (`mouse_move` / `drag` helpers); a ref settles as for `click` |
-| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land |
+| `type` | refuses a password field twice: by the ref's type and by whatever holds focus when the text would land. When focus is in a rich editor (`isContentEditable`) holding a non-empty selection inside it (`activeField().selected`), a Delete key clears the selection before `Input.insertText`: Word on the web keeps only as many inserted characters as the selection held. A `\t` in the text inserts a tab character, not the Tab key |
 | `press_key`, `select_option`, `wait_for` (text / textGone / time / load), `console` | as named |
 | `screenshot` | writes a PNG under the screenshot directory below and returns its absolute path |
 | `tabs` | lists and switches `relay.agent_targets()` only |
@@ -1102,6 +1114,9 @@ under the tab and named `f<tag>e<n>`. Before reading a child's outline or acting
 on one of its refs, the op applies the same `OpContext.url_allowed` predicate to
 the child's current URL. Refused children stay marked unread; a refused frame-ref
 action answers `redirect_refused` through the existing blank-tab refusal path.
+A frame still loading or attaching reads as unread too, so the snapshot's note
+tells the agent to wait for the load and snapshot again before working by
+coordinates.
 The quick ask's hit test at a field in a
 frame passes when the browser's topmost node there is the frame's `<iframe>`, or,
 for a same-process frame, a node of that same frame.

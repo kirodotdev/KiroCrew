@@ -742,6 +742,9 @@ class LiveStream:
         #: The tab's cross-origin iframes, each on a child session of ours
         #: (``browser_harness.frames``): the mask, the snapshot and quick asks read them.
         self.frames = FrameRegistry()
+        #: Auto-attach calls in child frame sessions still in flight (held so the
+        #: loop keeps them; each drops itself when done).
+        self._attach_tasks: set[asyncio.Task[None]] = set()
         #: Names this stream on every frame header; the card scopes acks to it.
         self.stream_id = secrets.token_hex(4)
         #: Frame pixels per viewport CSS pixel of the last frame (1.0 until one lands).
@@ -862,6 +865,11 @@ class LiveStream:
         task, self._control_task = self._control_task, None
         if task is not None:
             task.cancel()
+        for pending in list(self._attach_tasks):
+            # Their sessions detach below: an auto-attach left running would only
+            # fail against a gone session.
+            pending.cancel()
+        self._attach_tasks.clear()
         try:
             if self.casting:
                 await self._stop_cast()
@@ -976,8 +984,26 @@ class LiveStream:
 
     # ── frames ─────────────────────────────────────────────────────────────
 
+    def _attach_nested(self, child: str) -> None:
+        """Turn on auto-attach in the child frame session *child*, off the event
+        path: the event callback runs on the relay's reader, which a reply to a
+        call awaited here would have to come through."""
+
+        async def run() -> None:
+            try:
+                await enable_auto_attach(self.relay, child)
+            except Exception:  # noqa: BLE001 - its nested frames stay unchecked
+                logger.debug("live stream: nested frame auto-attach failed", exc_info=True)
+
+        task = asyncio.ensure_future(run())
+        self._attach_tasks.add(task)
+        task.add_done_callback(self._attach_tasks.discard)
+
     async def _on_event(self, msg: dict[str, Any]) -> None:
-        self.frames.handle(msg)
+        child = self.frames.handle(msg)
+        if child:
+            # Frames nested inside this frame attach to its session in turn.
+            self._attach_nested(child)
         if msg.get("method") != "Page.screencastFrame" or not self.running:
             return
         if msg.get("sessionId") not in (None, self.session_id):
@@ -1391,6 +1417,45 @@ class LiveStream:
                 out.append(
                     [float(nums[0]) + at[0], float(nums[1]) + at[1], float(nums[2]), float(nums[3])]
                 )
+        out += await self._nested_frame_boxes(place)
+        return out
+
+    async def _nested_frame_boxes(self, place: FrameOps) -> list[Any]:
+        """The whole box of each frame directly under the tab that holds a nested
+        cross-origin frame with a secret field, in page CSS pixels.
+
+        A nested frame's boxes are in its own viewport, which sits at an offset
+        inside another frame the browser does not hand back in page pixels, so the
+        field cannot be placed exactly; the top-level frame that holds it is masked
+        whole instead: at its exact viewport when it can be placed, otherwise over
+        its owner's bounds. A frame whose owner is gone adds none.
+        """
+        out: list[Any] = []
+        masked: set[str] = set()
+        for _frame_id, sid, parent in self.frames.all_sessions():
+            if parent == self.session_id:
+                continue
+            top = self.frames.top_frame_of(sid)
+            if not top or top in masked:
+                continue
+            try:
+                reply = await self._mask_query(sid)
+            except Exception:  # noqa: BLE001 - the frame went away
+                continue
+            value = (reply.get("result") or {}).get("value") if isinstance(reply, dict) else None
+            boxes = value.get("boxes") if isinstance(value, dict) else None
+            if not isinstance(boxes, list) or not boxes:
+                continue
+            top_sid = self.frames.session_of(top)
+            box = await place.frame_box(top, (top_sid, None))
+            if box is None:
+                # A scaled or transformed frame cannot be placed exactly, but the
+                # whole frame can still be painted over: its owner's bounds.
+                box = await place.owner_bounds(top)
+            if box is None:
+                continue
+            out.append(box)
+            masked.add(top)
         return out
 
     # ── control ────────────────────────────────────────────────────────────
