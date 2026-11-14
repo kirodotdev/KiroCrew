@@ -137,7 +137,7 @@ def _assert_written_where_members_points(site: Site, outside: Path) -> None:
     The folder the write made and the file are owner-only; the folder the link names
     keeps the mode it had.
     """
-    assert _members().is_symlink(), "the link at members was replaced"
+    assert pinned_fs.is_reparse_point(_members()), "the link at members was replaced"
     folder = outside / members.member_slug(SLUG)
     assert (folder / site.leaf).is_file()
     if sys.platform != "win32":
@@ -153,6 +153,29 @@ def test_a_link_at_members_leads_to_the_folder_it_points_to(site: Site, tmp_path
     result = _run(site)
     assert not isinstance(result, Exception), result
     _assert_written_where_members_points(site, outside)
+
+
+@requires_symlinks
+@pytest.mark.parametrize("site", SITES, ids=IDS)
+def test_a_junction_at_members_leads_to_the_folder_it_points_to(
+    site: Site, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Windows junction is a reparse point that ``Path.is_symlink`` does not report."""
+    outside = _empty_folder(tmp_path)
+    named = _members()
+    named.parent.mkdir(parents=True, exist_ok=True)
+    os.symlink(outside, named)
+    real_is_symlink = Path.is_symlink
+    real_is_junction = Path.is_junction
+    monkeypatch.setattr(
+        Path, "is_symlink", lambda self: False if self == named else real_is_symlink(self)
+    )
+    monkeypatch.setattr(
+        Path, "is_junction", lambda self: True if self == named else real_is_junction(self)
+    )
+    result = _run(site)
+    assert not isinstance(result, Exception), result
+    assert (outside / members.member_slug(SLUG) / site.leaf).is_file()
 
 
 @pytest.mark.parametrize("site", SITES, ids=IDS)
@@ -775,7 +798,16 @@ NEEDS_A_USER_WHO_CAN_BE_REFUSED = (
 )
 
 
+WINDOWS_CANNOT_MAKE = (
+    "invalid_text_dangling",
+    "invalid_text_folder",
+    "data_home_relative_and_cwd_removed",
+)
+
+
 def _skip_what_this_platform_cannot_make(kind: str, pinned: bool = True) -> None:
+    if sys.platform == "win32" and kind in WINDOWS_CANNOT_MAKE:
+        pytest.skip("Windows has no names that are not text, and cannot remove the working folder")
     for system_folder, name in (
         ("/usr/share", "link_to_a_root_owned_folder"),
         ("/proc", "link_to_proc"),
@@ -1064,6 +1096,7 @@ def test_what_the_callers_body_raises_inside_the_with_reaches_the_caller_unchang
 
 
 @requires_symlinks
+@needs_pinned_walk
 @pytest.mark.parametrize("site", SITES, ids=IDS)
 def test_the_slug_folder_swapped_for_a_loop_before_it_is_opened_is_refused(
     site: Site, monkeypatch: pytest.MonkeyPatch
@@ -1122,9 +1155,10 @@ def test_a_link_to_a_folder_that_exists_is_followed_once(
         assert not isinstance(_run(site), Exception)
     folder = target / members.member_slug(SLUG)
     assert (folder / SITES[1].leaf).is_file()
-    assert stat.S_IMODE(target.stat().st_mode) == mode
-    assert stat.S_IMODE(folder.stat().st_mode) == 0o700
-    assert stat.S_IMODE((folder / SITES[1].leaf).stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE(target.stat().st_mode) == mode
+        assert stat.S_IMODE(folder.stat().st_mode) == 0o700
+        assert stat.S_IMODE((folder / SITES[1].leaf).stat().st_mode) == 0o600
 
 
 @requires_symlinks
