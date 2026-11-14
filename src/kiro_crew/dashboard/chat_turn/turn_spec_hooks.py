@@ -335,6 +335,11 @@ async def _prepare_spec_hooks(
         if is_kas:
             await _surface_withheld_project_hook_files(state, slot, client)
             await _surface_kas_project_hooks(state, slot, client, agent)
+            # The user's own agent file that lists no tools runs with none on KAS;
+            # the chat says so once, with a link to where its tools are chosen.
+            from kiro_crew.dashboard.agent_no_tools_notice import surface_agent_no_tools
+
+            await surface_agent_no_tools(state, slot, by_session.get("session_key", ""), agent)
     return hooks, False, work_dir
 
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FileCode2, MessageSquare, UserPlus, Copy, Trash2, Lock, Plus, X, MoreHorizontal, ToggleLeft, ToggleRight, Star } from 'lucide-react'
 import { useAppDispatch } from '../../store'
@@ -26,6 +26,7 @@ import { queryReadFailed } from '../../utils/queryReadFailed'
 import { i18nT } from '../../i18n/t'
 import UnlistedSpecFiles, { type UnlistedSpec } from './UnlistedSpecFiles'
 import EnrollAsBotDialog from './EnrollAsBotDialog'
+import { TEMPLATE_PARAM } from './agentTemplateLink'
 
 /** One row of `GET /api/agents/templates`: the discovery record plus the two
  *  facts a management page needs — whether it may be edited here, and what
@@ -89,11 +90,20 @@ const PANE_SHELL_CLASS = 'flex gap-3 -mx-2 md:mx-0 h-[calc(100vh-212px)] support
 
 const strList = (v: unknown): string[] => Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
 
+/** `tools` as an editable list. `"*"` as the whole value means every tool, the
+ *  same as `["*"]` (agent-spec-fields.md), so it is read as that list: the editor
+ *  shows it, and an edit to the list keeps it instead of dropping it. */
+const toolList = (v: unknown): string[] => v === '*' ? ['*'] : strList(v)
+
+/** Whether a tool list names any tool, read as the backend's `spec_lists_tools`
+ *  reads it, so this page and the chat's no-tools notice agree. */
+const listsTools = (tools: readonly string[]) => tools.some(t => t !== '')
+
 const draftFrom = (d: TemplateDetail): Draft => ({
   description: typeof d.description === 'string' ? d.description : '',
   model: typeof d.model === 'string' ? d.model : '',
   prompt: typeof d.prompt === 'string' ? d.prompt : '',
-  tools: strList(d.tools),
+  tools: toolList(d.tools),
   allowed: strList(d.allowedTools),
 })
 
@@ -254,7 +264,9 @@ function ChipList({ items, onRemove, onToggle, marked, addLabel, addPlaceholder,
     <div className="flex flex-wrap gap-1.5">
       {items.map(item => {
         const isMarked = marked?.has(item)
-        const stateLabel = isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_state_auto') : i18nT('pages.overview.agentTemplatesTab.tool_state_asks')
+        const stateLabel = isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_state_auto')
+          : item === '*' ? i18nT('pages.overview.agentTemplatesTab.tool_state_wildcard')
+          : i18nT('pages.overview.agentTemplatesTab.tool_state_asks')
         // Two separate affordances, legible without the caption: the tool's name,
         // a worded state tag that IS the toggle, and a remove control set apart
         // by a divider so neither click can be mistaken for the other.
@@ -265,7 +277,7 @@ function ChipList({ items, onRemove, onToggle, marked, addLabel, addPlaceholder,
               <button
                 type="button"
                 className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border font-body text-[10.5px] cursor-pointer shadow-sm transition-all active:scale-[0.97] active:duration-75 ${isMarked ? 'bg-accent-subtle text-accent border-accent/40 hover:border-accent hover:bg-bg-hover' : 'bg-bg text-text border-border-strong hover:border-accent/40 hover:bg-bg-hover'}`}
-                title={isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_auto_approved') : i18nT('pages.overview.agentTemplatesTab.tool_asks_first')}
+                title={isMarked ? i18nT('pages.overview.agentTemplatesTab.tool_auto_approved') : item === '*' ? stateLabel : i18nT('pages.overview.agentTemplatesTab.tool_asks_first')}
                 aria-label={`${item}: ${stateLabel}`}
                 aria-pressed={!!isMarked}
                 onClick={() => onToggle(item)}
@@ -644,6 +656,22 @@ export default function AgentTemplatesTab() {
     if (allFiltered.length === 0) return
     if (!selectedName || !rows.some(r => r.name === selectedName)) setSelectedName(allFiltered[0].name)
   }, [allFiltered, rows, selectedName, dirty])
+
+  // A link that names one agent (`agentTemplateHref`, e.g. a chat's no-tools
+  // notice) opens that agent's page, once per link. Declared after the default
+  // selection above so it wins on the render both run in; never over a dirty
+  // editor, like every other selection change here.
+  const [searchParams] = useSearchParams()
+  const linkedName = searchParams.get(TEMPLATE_PARAM)
+  const openedLink = useRef<string | null>(null)
+  useEffect(() => {
+    if (!linkedName || openedLink.current === linkedName || dirty) return
+    if (!rows.some(r => r.name === linkedName)) return
+    openedLink.current = linkedName
+    setDraft(null); setBaseline(null)
+    setSelectedName(linkedName)
+    openDetail()
+  }, [linkedName, rows, dirty, openDetail])
 
   const groupLabel = (k: GroupKey) => {
     switch (k) {
@@ -1063,6 +1091,24 @@ export default function AgentTemplatesTab() {
                           addPlaceholder={i18nT('pages.overview.agentTemplatesTab.add_tool_placeholder')}
                           suggestions={toolSuggestions}
                         />
+                        {/* An agent that lists no tools cannot run commands or work with
+                            files. One click allows all of them, so nobody has to know a
+                            tool's name to get started. Existing auto-approvals stay unchanged.
+                            Saved with the Save bar, like any edit. */}
+                        {!detailReadOnly && !listsTools(detailDraft.tools) && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
+                            <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.no_tools_hint')}</span>
+                            <Btn
+                              type="button"
+                              data-testid="tpl-allow-every-tool"
+                              className="inline-flex items-center gap-1.5 border-dashed"
+                              onClick={() => setD({ tools: ['*'] })}
+                            >
+                              <Plus className="lucide-inline" aria-hidden />
+                              {i18nT('pages.overview.agentTemplatesTab.all_tools_add')}
+                            </Btn>
+                          </div>
+                        )}
                         {!detailReadOnly && spawnRefsToAdd.length > 0 && (
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
                             <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.spawn_tool_hint')}</span>
