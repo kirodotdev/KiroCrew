@@ -74,6 +74,7 @@ import { i18nT } from '../../../i18n/t'
 import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
 import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
+import { stagedProjectTurnKey } from '../../../components/chat-input/stagedProject'
 
 /**
  * The main composer, with its callback props held at stable identities. This
@@ -356,6 +357,9 @@ export default function ComposerDockView({
   const [followupStartSends] = usePersistedBool(FOLLOWUP_START_SENDS_KEY, false)
   // App composer actions: rows in "+" whose apps insert plain text.
   const composerActions = useComposerActionItems()
+  // A queued turn opens without the composer going idle; the staged-pick badge
+  // re-takes its start project from this (#20350).
+  const projectTurnKey = useMemo(() => stagedProjectTurnKey(messages), [messages])
   // Someone else holds the typing lock: no dictation may start into the draft.
   const voiceOptions = useMemo(
     () => (typingLock ? { ...composerVoiceOptions, startBlocked: true } : composerVoiceOptions),
@@ -760,6 +764,7 @@ export default function ComposerDockView({
               showContextTokens={chatConfig.showContextTokens}
               environmentSlot={activeSlot}
               isRunning={composerBusy}
+              projectTurnKey={projectTurnKey}
               projectLocked={projectLocked}
               projectSwitching={projectSwitching}
               /* Composed with `interrupted`, matching the ErrorCard gate above.
