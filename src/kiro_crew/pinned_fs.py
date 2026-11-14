@@ -74,6 +74,7 @@ from kiro_crew.pinned_fs_primitives import (
     SKIP_TOO_LARGE,
     SKIP_UNREADABLE_ENTRY,
     SKIP_VANISHED,
+    FileReplacedError,
     PinnedPathRefusal,
     SkipReporter,
     _noop_skip,
@@ -91,6 +92,7 @@ from kiro_crew.pinned_fs_primitives import (
 from kiro_crew.platform_compat import open_file_no_reparse, pin_directory
 
 __all__ = [
+    "FileReplacedError",
     "PUT_BACK_FAILED",
     "PUT_BACK_NAME_TAKEN",
     "PinnedPathRefusal",

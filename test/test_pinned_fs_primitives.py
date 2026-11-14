@@ -7,6 +7,10 @@ the suite exercises for real. These tests drive the other two routes on any host
 prefixes, and ``fcntl.F_GETPATH`` on macOS. They stand in only the platform calls,
 through ``sys.modules`` and the facade's ``os`` binding, so the function body runs as
 written. Every failure must come back as ``None`` and never as a guessed path.
+
+The last tests cover the link-count check of ``open_fenced_for_read``: a name that
+another writer replaced after the open leaves an inode with no link, which is not a
+hardlink, while a real second link is still refused.
 """
 
 from __future__ import annotations
@@ -182,3 +186,49 @@ def test_a_posix_host_with_no_route_that_answers_gets_none(
 def test_the_default_skip_reporter_records_nothing() -> None:
     """The reporter a caller gets when it passes none: a skip is accepted and dropped."""
     assert pinned_fs._noop_skip("symlink", "/srv/data/link") is None
+
+
+def _never_fenced(_fd_real: str) -> bool:
+    return False
+
+
+def test_a_name_replaced_after_the_open_is_reported_as_replaced(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rename onto the name between open and ``fstat`` leaves the inode with no link.
+
+    That is a replaced file, so it is reported as a missing name the caller can open
+    again, not refused as a hardlink.
+    """
+    import errno
+
+    from kiro_crew import pinned_fs_primitives
+
+    target = tmp_path / "spec.json"
+    target.write_text("{}", encoding="utf-8")
+    real_open = pinned_fs_primitives.open_file_no_reparse
+
+    def open_then_replace(path, **kwargs):
+        fd = real_open(path, **kwargs)
+        tmp = tmp_path / "spec.json.tmp"
+        tmp.write_text("{}", encoding="utf-8")
+        os.replace(tmp, target)
+        return fd
+
+    monkeypatch.setattr(pinned_fs_primitives, "open_file_no_reparse", open_then_replace)
+
+    with pytest.raises(OSError) as raised:
+        pinned_fs.open_fenced_for_read(target, fence=_never_fenced, refusal=PermissionError)
+
+    assert isinstance(raised.value, FileNotFoundError), raised.value
+    assert type(raised.value).__name__ == "FileReplacedError"
+    assert raised.value.errno == errno.ENOENT
+
+
+def test_a_second_link_is_still_refused(tmp_path) -> None:
+    target = tmp_path / "spec.json"
+    target.write_text("{}", encoding="utf-8")
+    os.link(target, tmp_path / "alias.json")
+
+    with pytest.raises(PermissionError, match="hardlinked"):
+        pinned_fs.open_fenced_for_read(target, fence=_never_fenced, refusal=PermissionError)

@@ -33,6 +33,20 @@ class PinnedPathRefusal(Exception):
 PinnedPathRefusal.__module__ = "kiro_crew.pinned_fs"
 
 
+class FileReplacedError(FileNotFoundError):
+    """The name was replaced after the open, so the opened inode has no name left.
+
+    A writer that replaces a file by a temp file and a rename, between the open
+    and the ``fstat``, leaves the descriptor on an inode whose link count is 0.
+    That is not a hardlink, and the current file is at the name again, so a
+    caller can open it again. A subclass of ``FileNotFoundError``, so a caller
+    that only handles a missing file treats it as one.
+    """
+
+
+FileReplacedError.__module__ = "kiro_crew.pinned_fs"
+
+
 #: Reason codes handed to an ``on_skip`` reporter. The primitive classifies; the
 #: caller words the message, so user-facing output stays the caller's own.
 SKIP_SYMLINK = "symlink"
@@ -400,7 +414,9 @@ def open_fenced_for_read(
 
     The caller owns the returned descriptor. Every refusal closes it first and
     raises *refusal*; a missing file surfaces as the ordinary
-    ``FileNotFoundError`` from the open.
+    ``FileNotFoundError`` from the open. An opened inode with no link left, because
+    another writer renamed a new file onto the name after the open, raises
+    :class:`FileReplacedError` instead of the hardlink refusal.
     """
     resolved_str = os.fspath(resolved)
     try:
@@ -414,6 +430,10 @@ def open_fenced_for_read(
         opened = os.fstat(fd)
         if not _stat.S_ISREG(opened.st_mode):
             raise refusal(f"refusing to read a non-regular file: {resolved_str}")
+        if opened.st_nlink == 0:
+            raise FileReplacedError(
+                errno.ENOENT, "file was replaced while it was opened", resolved_str
+            )
         if opened.st_nlink != 1:
             raise refusal(f"refusing to read a hardlinked file: {resolved_str}")
         fd_real = fd_real_path(fd)
