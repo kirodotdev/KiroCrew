@@ -261,7 +261,7 @@ class TestGovernanceFloorOverridesTheOptIn:
         # plain missing-opt-in refusal.
         error = sel_instance.log_tool_invocation.call_args.kwargs["error"]
         assert "sandbox.min_level" in error
-        assert "overridden" in error
+        assert "powerless" in error
 
     def test_ungoverned_host_with_the_opt_in_is_unchanged(self, monkeypatch):
         """REGRESSION GUARD. Only governed hosts change; this is the population
@@ -271,11 +271,12 @@ class TestGovernanceFloorOverridesTheOptIn:
         with patch("kiro_crew.sel.sel", return_value=MagicMock()):
             assert wrap_argv(_ARGV, mode="strict") == (_ARGV, None)
 
-    def test_governed_host_without_the_opt_in_keeps_its_original_message(
-        self, monkeypatch
-    ):
-        """A governed host that never set the flag is refused for the ordinary
-        reason, so the policy wording must not leak into that case."""
+    def test_governed_host_without_the_opt_in_still_names_the_floor(self, monkeypatch):
+        """A governed host that never set the flag is refused by the floor, not by
+        the missing opt-in, so the refusal names the floor rather than telling the
+        operator to set a key the floor makes powerless. Only the wording differs
+        from the opt-in-set case; the refuse verdict is identical.
+        """
         monkeypatch.setattr(sandbox_mod, "detect_backend", lambda config_mode="auto": "none")
         monkeypatch.setattr(sandbox_mod, "_allow_unsandboxed_exec", lambda: False)
         monkeypatch.setattr(
@@ -285,7 +286,10 @@ class TestGovernanceFloorOverridesTheOptIn:
         with patch("kiro_crew.sel.sel", return_value=MagicMock()):
             with pytest.raises(SandboxUnavailableError) as exc_info:
                 wrap_argv(_ARGV, mode="strict")
-        assert "allow_unsandboxed_exec is not set" in str(exc_info.value)
+        message = str(exc_info.value)
+        assert "sandbox.min_level" in message
+        assert "governance policy forbids" in message
+        assert "allow_unsandboxed_exec is not set" not in message
 
     def test_a_floor_of_the_loosest_tier_does_not_deny(self, monkeypatch):
         """REGRESSION GUARD. ``sandbox.min_level: off`` is a governed floor that
@@ -327,7 +331,7 @@ class TestGovernanceFloorOverridesTheOptIn:
                 wrap_argv(_ARGV, mode="strict")
         message = str(exc_info.value)
         assert "withholds the first-party carve-out" in message
-        assert "runs no agent subprocess" in message
+        assert "built-in spawns are refused here too" in message
 
 
 class TestFlagIsOtherwiseInert:
