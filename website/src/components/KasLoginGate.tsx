@@ -968,12 +968,14 @@ function KasLoginFlow({
   // sign-in is confirmed: the poll answering 'authorized', and a cancel whose
   // fresh status read finds the credential already stored (the poll is detached
   // by then and never reports 'authorized' for it).
-  const forgetModelList = useCallback(() => {
+  const invalidateSignInCaches = useCallback(() => {
     clearCachedModels()
     void queryClient.resetQueries({ queryKey: ['available-models'] })
     // The usage reading names the previous account too (the Kiro sign-in card
     // shows its e-mail): drop it rather than show that name until the next poll.
     void queryClient.resetQueries({ queryKey: ['kiro-usage'] })
+    // A switch can keep every status field unchanged while replacing the account.
+    void queryClient.invalidateQueries({ queryKey: ['kas-login-sources'] })
   }, [queryClient])
 
   const authorized = pollQuery.data?.status === 'authorized'
@@ -981,7 +983,7 @@ function KasLoginFlow({
   useEffect(() => {
     if (!authorized) return
     void queryClient.invalidateQueries({ queryKey: QUERY_KEY })
-    forgetModelList()
+    invalidateSignInCaches()
     // A switch whose old slot could not be removed is a sign-in that landed AND
     // a failure the user has to act on: the previous account still wins by slot
     // priority, so the re-read status will keep showing it. Kept as a notice
@@ -991,7 +993,7 @@ function KasLoginFlow({
     setSession(null)
     setFellBack(false)
     setReauth(false)
-  }, [authorized, authorizedCode, forgetModelList, queryClient])
+  }, [authorized, authorizedCode, invalidateSignInCaches, queryClient])
 
   // Loopback degradation: a listener nobody reached (timeout — the browser is
   // not on this machine) or that failed before persisting a token restarts the
@@ -1046,7 +1048,7 @@ function KasLoginFlow({
       // A sign-in that landed under the cancel is still a sign-in: the model
       // list is the new account's now, and the poll that would have dropped the
       // old one is already detached.
-      if (landed) forgetModelList()
+      if (landed) invalidateSignInCaches()
       return landed ? 'signed_in' : 'signed_out'
     } catch {
       return 'unknown'

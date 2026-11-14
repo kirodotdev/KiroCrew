@@ -273,6 +273,20 @@ def crew_sign_in_starts_spawn() -> bool:
     return starts()
 
 
+def relay_runs_on_kiro_cli_sign_in() -> bool:
+    """Whether a KAS session with no Kiro Crew sign-in would run on kiro-cli's own.
+
+    ``acp.kas_route.relay_runs_on_kiro_cli_sign_in`` on this process's environment,
+    for the dashboard. Blocking (config and kiro-cli reads); never raises.
+    """
+    import os
+    from pathlib import Path
+
+    from kiro_crew.acp.kas_route import relay_runs_on_kiro_cli_sign_in as runs
+
+    return runs(environ=os.environ, home=Path.home())
+
+
 def last_kas_route() -> dict[str, Any] | None:
     """The route the last KAS spawn in this process took, as plain data, or ``None``."""
     from kiro_crew.acp.kas_route import last_spawn_route

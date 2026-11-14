@@ -101,6 +101,8 @@ export type {
   KiroPrerequisiteStatus,
   KasBundleStatus,
   KasLoginStatus,
+  KasLoginSourceAccount,
+  KasLoginSources,
   KasLoginDeviceSession,
   KasLoginPollResult,
   KasLoginLoopbackSession,
