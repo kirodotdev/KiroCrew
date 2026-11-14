@@ -6,7 +6,7 @@
 import { createAction, createAsyncThunk, type ActionReducerMapBuilder } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
 import type { ChatMessage } from '../../types'
-import { emitSlotRead } from '../../lib/slotReadRelay'
+import { emitSlotRead, newerTs, newestServerRowTs } from '../../lib/slotReadRelay'
 import { devLog, inspectorOn } from '../../dev/scrollInspector'
 import { armConfirmedCloseHold, markSlotRead, confirmOrphanUnread, removeSlotOptimistic } from '../dashboardSlice'
 import { slotLastTsOf } from '../slotLastTs'
@@ -275,10 +275,10 @@ export const switchSlot = createAsyncThunk<
         // badges for messages nobody displayed. `pending` assigns activeSlot
         // atomically before this thunk body runs, so a superseded request
         // observes someone else's key here.
-        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+        if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(walked.messages)))
         return { ...walked, comparableTotal: first.total }
       }
-      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, _newestSlotTs())
+      if ((getState() as { chat: ChatState }).chat.activeSlot === key) emitSlotRead(key, newerTs(_newestSlotTs(), newestServerRowTs(first.messages)))
       return first
     } catch (e) {
       // A thrown error crosses the thunk boundary as `miniSerializeError(e)`,

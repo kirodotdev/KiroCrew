@@ -4716,7 +4716,8 @@ keeps it for the next load. Settle-time invalidation draws the stored value.
 
 `manual` is the person's own order. The order itself is not config: it lives in
 the pinned order's store (`dashboard/pinned_session_order.py`), as a second file,
-`chat_manual_order.json`, in the same fenced `pinned-order` directory, and reaches
+`chat_manual_order.json`, in the same fenced `pinned-order` directory (which also holds
+the session read times, `chat_read_state.json`), and reaches
 the browser on every slot row as `manual_rank` / `manual_rev`. Under `manual`,
 pinned rows stay on top in their own order, unpinned rows show a drag handle in
 the row's left pad, outside the text column, so the agent name, title and folder
