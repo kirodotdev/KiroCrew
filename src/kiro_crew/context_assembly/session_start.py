@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.context_assembly import budget as _budgets
@@ -118,6 +119,7 @@ def build_session_context(
     member_dispatch_mounted: bool | None = None,
     served_model: str = "",
     conversation_reset: bool = False,
+    native_documents: Mapping[str, str] | None = None,
 ) -> str:
     """Build context for a new session (memory + skills + history).
 
@@ -141,6 +143,11 @@ def build_session_context(
     kiro-cli loads an agent's ``resources`` itself when spawned with
     ``--agent`` (acp/client_start.py ``_spawn``), claude-agent-acp does not.
 
+    *native_documents* is the live session's launch record, passed only on a
+    fresh session start. ``[CRITICAL RULES]`` and ``[TOOL NAMES]`` are left out
+    when the session head (:mod:`kiro_crew.session_head`) holds
+    that exact text; otherwise they are sent as always.
+
     *served_model* is the model id the live session reports serving, passed only
     for a harness whose own system prompt names no model
     (:func:`kiro_crew.agent_sdk.served_model_identity.crew_states_served_model`);
@@ -160,6 +167,7 @@ def build_session_context(
     sets ``includeCrewContext: false``. Memory, lessons and hooks go to all.
     """
     from kiro_crew import context as ctx  # circular import: the facade imports this owner
+    from kiro_crew import session_head as _session_head
     from kiro_crew.agent_files import is_kirocrew_default_agent
 
     execution_context, desk_member, member, memory_store, blocks_reads = _member.resolve_turn_owner(
@@ -271,8 +279,13 @@ def build_session_context(
     # tags still RENDER for any agent that emits them (the dashboard parses
     # them regardless); this only stops the host from MANDATING them where an
     # agent has declared it does not want them.
+    held = native_documents or {}
     if ctx._agent_includes_crew_context(agent):
-        append_required(ctx._critical_rules_for(session_key, runtime_source))
+        rules = ctx._critical_rules_for(session_key, runtime_source)
+        if _session_head.holds(held, _session_head.RULES_KEY, rules):
+            blocks.charge_held(rules)
+        else:
+            append_required(rules)
 
     # Date/time for ALL agents, in KiroCrewConfig.timezone: the gateway host
     # is often UTC, which would make "today" wrong for the user.
@@ -292,7 +305,9 @@ def build_session_context(
     # names (KAS). Required, not budgeted: without it a worker's first
     # ``work_brief`` call fails and it never reports.
     tool_names = _tool_names.tool_names_block(provider_type)
-    if tool_names:
+    if tool_names and _session_head.holds(held, _session_head.TOOL_NAMES_KEY, tool_names):
+        blocks.charge_held(tool_names)
+    elif tool_names:
         append_required(tool_names)
 
     # The model serving the session, on a harness whose own prompt names none.

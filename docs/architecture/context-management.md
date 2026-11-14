@@ -48,11 +48,11 @@ begin on its own line; the assembly newline-terminates the caller's
 
 | # | Block | Fed by | Condition |
 |--:|---|---|---|
-| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume, and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) |
-| 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false` |
+| 1 | `[AGENT SYSTEM PROMPT]` | `config/prompt.md` (on the Claude Code backend with `kiro-cli` respelled `claude code`, nothing else renamed); `_load_agent_prompt` for a custom agent | skipped on a slim resume (unless the chat started with a session head its resumed session no longer holds), and at a session start on a KAS known to apply that exact text as the agent's prompt (`template://<agent>#prompt`, recorded through kiro-cli 2.33.1 or later) or holding it in its session head (`session_head.py`) |
+| 2 | `[CRITICAL RULES]` | `_critical_rules_for` (runtime-conditional) | unless the agent sets `includeCrewContext: false`, or the session head holds this exact text |
 | 3 | `[CURRENT DATE]` | `get_local_tz` + `KiroCrewConfig.timezone` | always |
 | 4 | `[CURRENT AGENT]` / `[RUNTIME]` | `_runtime_display_name`, trusted `runtime_source` from the dispatcher | when a session key exists |
-| 4a | `[TOOL NAMES]` | `context_assembly/tool_names.py` → `tool_names_block` | Selected by `provider_type`; also in a minimal start and re-sent after compaction. Direct calls use active definitions, with qualified-name examples and recovery for legacy loaders that return only bare names. Loader inputs copy exact catalogue IDs; executor calls preserve the returned ID and never use the direct-call fallback |
+| 4a | `[TOOL NAMES]` | `context_assembly/tool_names.py` → `tool_names_block` | Selected by `provider_type`; also in a minimal start and re-sent after compaction; left out of a full session start when the session head holds this exact text. Direct calls use active definitions, with qualified-name examples and recovery for legacy loaders that return only bare names. Loader inputs copy exact catalogue IDs; executor calls preserve the returned ID and never use the direct-call fallback |
 | 4b | `[ACTIVE MODEL]` | `context_assembly/sections.py` → `active_model_block`, from the live provider's `served_model` (the accessor the dashboard's model label reads); the harness gate in `agent_sdk/served_model_identity.py` | goose sessions only (`crew_states_served_model`: goose's own system prompt names no model, kiro-cli's does), when the session reports a model; also in a minimal start and a slim resume, and restated every follow-up (§2). Without it a model asked which model it is answers from training priors |
 | 5 | `[CREW MEMBER OPERATING MODE]` | constant prose | member DM slot, and `_member_dispatch_held`: the live session's `member_dispatch_mounted` (whether its composer actually appended the session-control entry), falling back to `_member_backend_can_dispatch` only when no provider evidence reached the build |
 | 6 | `[MEMBER IDENTITY]` … | `_build_member_section` (see §5) | V1 member sessions |
@@ -71,6 +71,17 @@ begin on its own line; the assembly newline-terminates the caller's
 | 19 | `[FOLDER STEERING …]` | `context_assembly/inclusion.py` → `_render_folder_steering_section`, bounded by the steering share | every provider; non-member chat, `project` group, not a minimal or slim run (a member's envelope carries it instead) |
 | 20 | `[RESPONSE PREFERENCES]` | `_build_response_preferences_section` | reply-style level set |
 | 21 | `[CONVERSATION HISTORY …]` | outer replay, `build_session_replay`; its header names what a text replay omits (tool calls, their results, unwritten reasoning) | compressed history passed |
+
+**The session head moves rows 1, 2 and 4a out of the message on KAS.** For a
+dashboard chat of the default agent with the managed prompt stub, on a KAS known to
+apply a client prompt, those three blocks ride in the agent's prompt, the engine's
+first message, so its prompt cache serves them on every later chat; every other row
+stays in the message (`session_head.py`; decision
+`docs/request-for-change/rfc-kas-session-head-in-agent-prompt.md`; wire and records:
+[providers](../system-specs/modules/providers.md)). A block whose record differs
+from the render by one byte is sent here as before. A held block keeps its protected
+charge (`ContextParts.charge_held`), so memory admission is the same as when it was
+in the message.
 
 **A Memory V2 member is the one exception to this order.** Its essentials
 envelope (`_build_v2_essentials`) is not a row in the table: the last step of

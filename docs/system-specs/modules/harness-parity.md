@@ -587,6 +587,17 @@ without the release verb is the one request it always was
 (`test_kas_reopen_parking.py::TestEveryOtherResume`). A Kiro CLI harness choice
 that runs on the KAS path is a KAS session and is parked like any other.
 
+### KAS session head
+
+A dashboard chat of the default agent sends its session-stable blocks as the KAS
+agent's prompt instead of in the first message (`session_head.py`,
+[providers.md](providers.md)). The gate is positive (H5): `KasHarness` builds the head
+only while its own `agent_prompt_applied` holds (a relay at or above
+`KAS_AGENT_PROMPT_MIN_KIRO_CLI`), so Crew's bundled engine and every other harness
+build none and their first message is unchanged. The records
+it writes are read by an exact match, so a harness that writes none keeps every
+block in its message (`test_session_head.py`).
+
 ### KAS skill scope
 
 A KAS session loads the skill set its kiro-cli twin loads under Crew. kiro-cli

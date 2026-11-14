@@ -285,6 +285,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "mirror_link_nonce": ("function", False, "f1d40e624ae4", "links"),
     "mirror_opt_out": ("function", False, "1eda252b53bd", "links"),
     "note_provider_switch_replay_delivered": ("function", False, "721800ecea8c", "turn_context"),
+    "note_session_head": ("function", False, "54494f94259c", "turn_context"),
     "note_stop": ("function", False, "1eda252b53bd", "teardown"),
     "note_turn_landed": ("function", False, "958babeb61c8", "claims"),
     "open_replay_gap": ("function", False, "958babeb61c8", "teardown"),

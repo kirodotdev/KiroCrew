@@ -7493,6 +7493,15 @@ rebind on `kiro_crew.context` through it at call time, so a patch there still
 reaches the moved code; `test/test_context_composition_contract_facade.py` derives that set
 from the tests and pins it.
 
+`src/kiro_crew/session_head.py` is not an owner: it is the seam between the KAS
+harness and the builder (decision
+`docs/request-for-change/rfc-kas-session-head-in-agent-prompt.md`). It renders a new
+chat's session head through the builder's own renderers (`agent_spec._render_contract`,
+the one renderer of the agent prompt that `_resolve_agent_prompt` also calls, with
+live readings; `_critical_rules_for`; `tool_names_block`), and `session_start.py` and
+`turn_message.py` import it function-locally to leave out a block the session's head
+holds byte for byte (`holds`), or to re-send the agent prompt on a resume that lost it.
+
 Assembles all sources into prompts:
 - New session: `_CRITICAL_RULES` (runtime-conditional diff blocks + OPTIONS buttons) + agent prompt + static preference/project anchors + activity index + budgeted `[Memory activity]` block (projects, daily history (14 full days, then decayed summaries and counts to day 180), task facts, relevant episodes; `memory.inject_activity`, default on) + memory tool guidance + skills + scoped lessons + conversation history (last 20 messages, thread history at TOP with explicit framing)
 - Every message: channel history, hook transforms, triggered skills, context rules, OPTIONS hint (interactive sessions only). Memory search is an explicit MCP operation; a fresh first turn with `memory.inject_activity` on embeds the request once to rank the activity block's facts and episodes and the lessons block (three embed calls on the same text, one shared inference), and a warm follow-up generates no query embedding.
