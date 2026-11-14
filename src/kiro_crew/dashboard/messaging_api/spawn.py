@@ -842,32 +842,34 @@ async def api_spawn(request: web.Request) -> web.Response:
     # Reporting only, like the effort verdict. Read from the run's own sharing
     # plan, the one decision the start and admission take, so the note can
     # never follow a copy of the pin rule. The plan reads config (file I/O),
-    # so off the loop; a crew spawn already loaded it above.
+    # so off the loop; a crew spawn already loaded it above. The run's AWS
+    # binding is resolved as the run resolves it: without it a possible
+    # profile split reads as dedicated and the pin is blamed for it.
+    try:
+        child_aws_profile = await state.subagents._run_events._resolve_child_aws_profile(info)
+    except Exception:
+        child_aws_profile = None
+
     def _runtime_note() -> str:
         manager = state.subagents
         if manager is None:
             return ""
-        import copy
-
         from kiro_crew.subagent import _selection_kind
 
         try:
             # Only a template run can ever take the shared arm.
             if _selection_kind(info) != "template":
                 return ""
-            plan = manager._sharing_plan(info, cfg=config)
+            plan = manager._sharing_plan(info, cfg=config, child_aws_profile=child_aws_profile)
             pins = (getattr(plan, "eff_model", ""), getattr(plan, "eff_effort", ""))
             if not any(isinstance(p, str) and p for p in pins):
                 return ""
             if getattr(plan, "shared", None) is not False or getattr(info, "keep", False):
                 return ""
             # Name the pin only when it is what took the share away: the same
-            # run without its own model would take the shared arm. A backend
-            # or setting that never shares gets no note.
-            unpinned = copy.copy(info)
-            unpinned.model = ""
-            unpinned.routed_model = ""
-            if manager._should_use_session_sharing(unpinned) is not True:
+            # run would take the shared arm without it. A backend or setting
+            # that never shares gets no note.
+            if manager._should_use_session_sharing(info) is not True:
                 return ""
         except Exception:
             return ""

@@ -62,6 +62,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
+    ACP_BACKENDS_MODEL_PER_SESSION,
     ACP_BACKENDS_NATIVE_TODOS,
     ACP_BACKENDS_NATIVE_WORKFLOWS,
     ACP_BACKENDS_REMOTE_MCP_OAUTH,
@@ -125,6 +126,16 @@ class SessionCapabilities:
     #: stored id against a differently-spelled advertised list manufactures false
     #: "model unavailable" withholds.
     resolves_model_from_advertised_list: bool
+
+    #: Whether one process can run each of its sessions on its own model
+    #: (:data:`ACP_BACKENDS_MODEL_PER_SESSION`).
+    #:
+    #: True where the model request names the session it is for. A sub-agent
+    #: started on a model of its own can then take a session on its parent's
+    #: process; False sends it to a process of its own, where the model is applied
+    #: at that process's start. Unknown and newly registered backends stay False
+    #: until they opt in.
+    takes_model_per_session: bool
 
     #: Whether a reasoning-effort change goes through
     #: ``session/set_config_option("effort", …)`` rather than the kiro-native
@@ -244,6 +255,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         provider_seam=(PROVIDER_CLAUDE_CODE if is_claude_backend_name(backend) else PROVIDER_ACP),
         model_id_namespace=model_registry_namespace(backend),
         resolves_model_from_advertised_list=backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+        takes_model_per_session=backend in ACP_BACKENDS_MODEL_PER_SESSION,
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
         # The two effort channels are disjoint sets, so a harness is told to use
         # at most one. KAS is in neither the command set nor this answer: it
@@ -280,6 +292,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     provider_seam=PROVIDER_ACP,
     model_id_namespace=MODEL_NAMESPACE_ACP,
     resolves_model_from_advertised_list=False,
+    takes_model_per_session=False,
     effort_via_config_option=False,
     effort_via_slash_command=False,
     compacts_inline=False,

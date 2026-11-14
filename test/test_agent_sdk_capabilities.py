@@ -75,6 +75,7 @@ CAPABILITY_FIELDS = (
     "provider_seam",
     "model_id_namespace",
     "resolves_model_from_advertised_list",
+    "takes_model_per_session",
     "effort_via_config_option",
     "effort_via_slash_command",
     "compacts_inline",

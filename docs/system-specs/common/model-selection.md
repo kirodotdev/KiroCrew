@@ -314,6 +314,37 @@ decides first whether the pin applies to the session at all.
 Its labels read `<provider>/<model> (<variant>)`; the picker shows them without
 `<provider>/` unless two rows would then read alike (`mimocode_model_rows`).
 
+### One function applies a starting session's model
+
+A session on an `AcpRuntime` is put on its configured model by ONE function,
+`apply_configured_model(handle, configured_model, backend=...)` in
+`acp/session_handle_model_selection.py`. Two starts call it: the runtime's own
+first session (`_start_kiro_runtime_impl` in `providers/acp_runtime_start.py`,
+which records the write as its `set_model` phase) and a sub-agent's session on
+its parent's runtime (`_apply_shared_start_model` in
+`subagent_parts/model_choice.py`, reached from `subagent_manager/run_start.py`,
+through the SDK's thin delegation in `agent_sdk/drivers/acp.py`). So the steps
+cannot differ between a dedicated process and a shared one:
+
+1. `""` or `auto` sends nothing: the harness picks.
+2. A pin another harness's catalog owns (`model_scope.pin_applies`, judged with
+   the session's own advertised list) is not sent, logs at INFO, and is no refusal.
+3. A pin the session did not advertise is folded onto the advertised spelling
+   (`resolve_pin_spelling_on`). One the fold cannot place earns ONE forced
+   revalidation (`refresh_available_models(force=True)`) before it is withheld; a
+   withheld pin logs a warning and is recorded in `model_pin_refused`.
+4. Anything else goes to `AcpSessionHandle.set_model`. A write that fails is
+   logged and never fails the start.
+
+Whether a model-pinned sub-agent takes the shared runtime at all is a separate,
+earlier question, answered by a named capability and not by which harness it is:
+`SessionCapabilities.takes_model_per_session` (`ACP_BACKENDS_MODEL_PER_SESSION`),
+true where the model request names the session it is for. The rule and its other
+terms are in [subagent](../modules/subagent.md#session-sharing-shared-acpruntime).
+What the shared session is handed is the model the dedicated start would hand the
+provider factory, after the same `acp_effective_model` selection, so the role and
+routed tiers resolve identically on both.
+
 ### Scoping is a read, and every tier takes it
 
 Nothing on disk is rewritten. The stored pin stays as the user picked it and is
@@ -473,8 +504,8 @@ model rather than the registry's versioned id. With a cold cache, or a backend t
 advertises only versioned ids, the registry fold applies.
 
 Three more sites apply the same rule on the wire, and one on the picker:
-`AcpClient._apply_startup_model`, the shared-runtime cold start in
-`providers/acp_runtime_start.py`, the warm-pool post-claim switch in `session_allocation.py`
+`AcpClient._apply_startup_model`, `apply_configured_model` for a session on a
+shared runtime (below), the warm-pool post-claim switch in `session_allocation.py`
 (through the injected `model_pin_applies` dep), and `_scoped_default` behind
 `GET /api/models`. A harness-scope refusal logs at INFO on wire paths and at
 DEBUG on display paths, and MUST NOT take the entitlement warning path: harness
@@ -839,8 +870,8 @@ its own once the cache refreshes with a list that carries it.
   so the dashboard pick answers 4xx instead of resetting. No reply within the wait
   is read as accepted and the model is recorded, as it was before the wait existed.
   A startup pin that a kiro session withholds because the account does not serve
-  it (`AcpClient._apply_startup_model` on the dedicated runtime, the kiro start in
-  `providers/acp_runtime_start.py` on the shared one) is recorded in `model_pin_refused` the same
+  it (`AcpClient._apply_startup_model` on the dedicated runtime,
+  `apply_configured_model` on the shared one) is recorded in `model_pin_refused` the same
   way, so the cron acquire step in `slack/gateway_runtime/cron_fire.py` annotates the result and
   blanks the pinned model on the usage row instead of billing a model that never ran.
   Both refusals carry `advertised_but_refused` from the same verdict, which selects
