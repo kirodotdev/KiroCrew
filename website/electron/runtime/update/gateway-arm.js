@@ -27,16 +27,37 @@ function createGatewayArm({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   log = console,
 }) {
-  async function request(method, path, body) {
-    if (!backendUrl || typeof fetchImpl !== "function") return { reached: false };
+  // The arm poll runs every 30s, and every lookup of the credential chain is a
+  // fresh mint (a local-secret link, or `ssh <host> kirocrew token` for a remote
+  // crew) that takes one of the gateway's 50 link-nonce slots. One credential is
+  // reused until the gateway refuses it, as crew-companion and mochi already do.
+  let cachedAuth = null;
+  async function resolveAuth(force) {
+    if (!force && cachedAuth) return cachedAuth;
     let auth = null;
     try { auth = fetchGatewayAuth ? await fetchGatewayAuth() : null; } catch { auth = null; }
+    cachedAuth = auth && auth.value ? auth : null;
+    return cachedAuth;
+  }
+
+  async function request(method, path, body) {
+    if (!backendUrl || typeof fetchImpl !== "function") return { reached: false };
+    const res = await send(method, path, body, await resolveAuth(false));
+    if (!res.reached || (res.status !== 401 && res.status !== 403)) return res;
+    // A link token lapses after its short expiry: re-resolve once, never loop.
+    return send(method, path, body, await resolveAuth(true));
+  }
+
+  async function send(method, path, body, auth) {
     if (!auth || !auth.value) return { reached: false };
     const headers = {};
     let url = `${backendUrl}${path}`;
     if (auth.viaCookie) {
       const cookie = cookieHeader ? cookieHeader(backendUrl, auth.value) : "";
-      if (!cookie) return { reached: false };
+      if (!cookie) {
+        cachedAuth = null;
+        return { reached: false };
+      }
       headers.Cookie = cookie;
     } else {
       url += `${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(auth.value)}`;
