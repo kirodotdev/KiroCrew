@@ -67,6 +67,12 @@ describe('UsageTab Billing card number format', () => {
     expect(screen.getByText('12.3%')).toBeInTheDocument()
   })
 
+  it('never shows a line the share has not reached', async () => {
+    current = usage({ plan: 'Pro', used: 8996, limit: 10000, unit: 'credits', percentUsed: 89.96 })
+    mount()
+    expect(await screen.findByText('89.9%')).toBeInTheDocument()
+  })
+
   it('writes a dollar plan as money and a token plan as a whole count', async () => {
     current = usage({ plan: 'Team', used: 3.456, limit: 50, unit: 'usd' })
     mount()

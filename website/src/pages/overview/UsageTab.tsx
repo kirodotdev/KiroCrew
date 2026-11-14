@@ -111,7 +111,9 @@ export default function UsageTab() {
                 ? `${fmtBillingAmount(b.unit, b.used ?? 0)} / ${fmtBillingAmount(b.unit, b.limit)}`
                 : fmtBillingAmount(b.unit, b.used ?? 0)}
               badge={pct != null ? (pct >= 90 ? 'err' : pct >= 70 ? 'warn' : 'ok') : undefined}
-              badgeText={pct != null ? fmtPercent(pct / 100, { maximumFractionDigits: 1 }) : undefined} />
+              // Truncated, not rounded: the colour compares the exact share, so
+              // the text never shows a line (90%, 100%) the share has not reached.
+              badgeText={pct != null ? fmtPercent(pct / 100, { maximumFractionDigits: 1, roundingMode: 'trunc' }) : undefined} />
             {b.resets && <Row label={i18nT('pages.overview.usageTab.resets')} value={b.resets} />}
           </div>
         </Card>
