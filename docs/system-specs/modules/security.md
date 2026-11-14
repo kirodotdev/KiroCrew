@@ -1907,7 +1907,21 @@ when the caller's callback accepts the exact bytes read. Its single caller is th
 global skill-body reader, which accepts an installed package `SKILL.md` whose bytes
 match the distribution `RECORD` digest
 ([memory-skills-hooks](memory-skills-hooks.md)); every other caller, and every
-agent-writable root, keeps the plain refusal. The kernel may name ANY link of a
+agent-writable root, keeps the plain refusal. The agent-spec reader
+(`agent_discovery._read_agent_spec`) carries the same opt-in, passed through to
+`pinned_fs.open_fenced_for_read(allow_hardlinked=True)`, which then skips only the
+link-count check: the bytes are read whole under the cap and returned only when the
+callback accepts them. Its two callers read a shipped built-in app's own files from
+its package root, the app-owner lookup (`apps.manager_lookup._owner_json`) and the
+command-agent containment (`apps.manifest_containment._declared_agent_names`). Each
+builds its callback per app with `skills_discovery._builtin_app_file_admission`, which
+admits only that app's own `app.json` and the agent specs its manifest declares and
+the path screen accepts, each resolved as the reader resolves it. The file must also
+pass `skills_discovery._installed_builtin_app_file_match`: the `RECORD` lists it under
+`kiro_crew/apps/builtins/<app>/`, and its bytes hash to the recorded sha256 or
+stronger digest. A `RECORD`-listed `.json` the manifest does not declare, a
+hardlinked spec in the agents directory, an installed third-party app, a released
+builtin's data-home tree or a project stays refused. The kernel may name ANY link of a
 multi-link inode (macOS `F_GETPATH` returns a sibling about one read in a hundred),
 so for `st_nlink > 1` a name that differs from the validated path is not on its own a
 swap: `_hardlink_alias_matches` walks the validated name through a pinned parent with

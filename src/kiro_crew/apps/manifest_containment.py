@@ -174,6 +174,17 @@ def _app_path_refusal(
 _AGENT_TEMPLATE_PLACEHOLDER_RE = re.compile(r"\{[A-Z][A-Z0-9_]*\}")
 
 
+def _is_shipped_builtin_root(app_root: Path) -> bool:
+    """Whether *app_root* is a shipped builtin's package root (False when unsure)."""
+    from kiro_crew.apps.execution import shipped_builtin_app_name_at
+
+    try:
+        resolved = app_root.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return shipped_builtin_app_name_at(resolved) is not None
+
+
 def _declared_agent_names(
     agent_paths: list[str],
     app_root: Path | None,
@@ -205,6 +216,7 @@ def _declared_agent_names(
     screened_root: str | Containment | None = None
     if app_root is not None and any(str(rel) not in known for rel in agent_paths):
         screened_root = screen_app_path(app_root)
+    accepted: list[str] = []
     for rel in agent_paths:
         rel = str(rel)
         if not rel:
@@ -216,6 +228,16 @@ def _declared_agent_names(
             if refusal == PATH_UNVERIFIED_REFUSAL and unchecked is not None:
                 unchecked.append(rel)
             continue
+        accepted.append(rel)
+    extra: dict[str, Any] = {}
+    if app_root is not None and accepted and _is_shipped_builtin_root(app_root):
+        # A hardlinking installer leaves a shipped builtin's package files with a
+        # second link; a declared spec is read when its bytes match the installed
+        # RECORD digest.
+        from kiro_crew.skills_discovery import _builtin_app_file_admission
+
+        extra["admit_hardlinked"] = _builtin_app_file_admission(app_root, ["app.json", *accepted])
+    for rel in accepted:
         name: Any = PurePosixPath(rel.replace("\\", "/")).stem
         if app_root is not None:
             # The hardened, audited reader: it authorizes the descriptor it actually
@@ -224,7 +246,7 @@ def _declared_agent_names(
             from kiro_crew.agent_discovery import _read_agent_spec
 
             data = _read_agent_spec(
-                app_root / rel, operation="app_manifest_agent_names", source="unknown"
+                app_root / rel, operation="app_manifest_agent_names", source="unknown", **extra
             )
             if not isinstance(data, dict):
                 continue

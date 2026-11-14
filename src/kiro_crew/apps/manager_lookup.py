@@ -17,7 +17,7 @@ import logging
 import stat
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.apps.composer_action_grants import composer_action_grant_row
 from kiro_crew.apps.execution import shipped_builtin_app_root
@@ -235,7 +235,9 @@ class AgentOwner:
     enabled: bool
 
 
-def _owner_json(path: Path) -> dict[str, Any] | None:
+def _owner_json(
+    path: Path, *, admit_hardlinked: Callable[[str, bytes], bool] | None = None
+) -> dict[str, Any] | None:
     """*path* parsed as a JSON object for the owner lookup, or None when refused.
 
     Every file the lookup reads -- an app's ``installed.json``, its ``app.json``
@@ -243,17 +245,29 @@ def _owner_json(path: Path) -> dict[str, Any] | None:
     before anything follows a link (:func:`_screened_spec_path`) and read through
     the hardened, audited agent-spec reader. A link into a protected location, an
     oversized file and a document that is not an object all read as None.
+
+    *admit_hardlinked* is given only for a file under a shipped builtin's package
+    root. An installer that hardlinks package files leaves those with a second
+    link, so such a file is admitted when it is the app's ``app.json`` or a
+    declared agent spec and its bytes match the installed RECORD digest
+    (:func:`kiro_crew.skills_discovery._builtin_app_file_admission`). A
+    hardlinked file anywhere else stays refused.
     """
     from kiro_crew.agent_discovery import _read_agent_spec
 
     screened = _screened_spec_path(path)
     if screened is None:
         return None
-    data = _read_agent_spec(screened, operation="app_agent_owner", source="unknown")
+    extra: dict[str, Any] = {}
+    if admit_hardlinked is not None:
+        extra["admit_hardlinked"] = admit_hardlinked
+    data = _read_agent_spec(screened, operation="app_agent_owner", source="unknown", **extra)
     return data if isinstance(data, dict) else None
 
 
-def _app_agent_names(app_name: str, manifest: AppManifest, app_root: Path) -> set[str]:
+def _app_agent_names(
+    app_name: str, manifest: AppManifest, app_root: Path, *, shipped: bool = False
+) -> set[str]:
     """Every name *app_name*'s own agents are selected by, for attributing a binding.
 
     Each agent's declared ``name`` (its file stem when it declares none), plus the
@@ -261,18 +275,27 @@ def _app_agent_names(app_name: str, manifest: AppManifest, app_root: Path) -> se
     names either is recognised. Attribution only, never an authorization: a
     templated spec still names its agent here, unlike the command-agent check in
     :mod:`kiro_crew.apps.manifest`. A path escaping the app root, and a spec the
-    screened read refuses (:func:`_owner_json`), contribute nothing.
+    screened read refuses (:func:`_owner_json`), contribute nothing. *shipped*
+    marks a shipped builtin's package root: its hardlinked ``app.json`` and the
+    specs that pass the path screen are admitted by their RECORD digest.
     """
     from kiro_crew.apps import bridges  # bridges imports this module
     from kiro_crew.apps.manifest import _app_path_refusal, screen_app_path
 
     names: set[str] = set()
     screened_root = screen_app_path(app_root) if manifest.agents else None
-    for rel in manifest.agents:
-        rel = str(rel)
-        if not rel or _app_path_refusal(rel, app_root, screened_root):
-            continue
-        data = _owner_json(app_root / rel)
+    accepted = [
+        rel
+        for rel in map(str, manifest.agents)
+        if rel and not _app_path_refusal(rel, app_root, screened_root)
+    ]
+    admit = None
+    if shipped:
+        from kiro_crew.skills_discovery import _builtin_app_file_admission
+
+        admit = _builtin_app_file_admission(app_root, [APP_MANIFEST_FILENAME, *accepted])
+    for rel in accepted:
+        data = _owner_json(app_root / rel, admit_hardlinked=admit)
         if data is None:
             continue
         name = data.get("name", Path(rel.replace("\\", "/")).stem)
@@ -312,12 +335,21 @@ def owning_app_for_agent(agent: str) -> AgentOwner | None:
             raw_meta = _owner_json(entry / INSTALLED_META_FILENAME)
             if raw_meta is None:
                 continue
-            root = shipped_builtin_app_root(entry.name) or entry
-            raw_manifest = _owner_json(root / APP_MANIFEST_FILENAME)
+            shipped_root = shipped_builtin_app_root(entry.name)
+            root = shipped_root or entry
+            shipped = shipped_root is not None
+            admit = None
+            if shipped:
+                from kiro_crew.skills_discovery import _builtin_app_file_admission
+
+                admit = _builtin_app_file_admission(root, [APP_MANIFEST_FILENAME])
+            raw_manifest = _owner_json(root / APP_MANIFEST_FILENAME, admit_hardlinked=admit)
             if raw_manifest is None:
                 continue
             manifest = AppManifest.from_dict(raw_manifest)
-            if not manifest.agents or agent not in _app_agent_names(entry.name, manifest, root):
+            if not manifest.agents or agent not in _app_agent_names(
+                entry.name, manifest, root, shipped=shipped
+            ):
                 continue
             label = manifest.displayName.strip() or entry.name
             enabled = bool(InstalledApp.from_dict(raw_meta).enabled)
