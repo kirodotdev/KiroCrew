@@ -6438,15 +6438,16 @@
       "starting_session": "세션 시작 중…"
     },
     "artifactFolderDeleteDialog": {
-      "artifact_other": "아티팩트 {{count}}개",
+      "contains_artifacts_other": "이 폴더에는 아티팩트 {{count}}개가 있습니다.",
+      "contains_artifacts_across_other": "이 폴더에는 {{subfolders}}에 걸쳐 아티팩트 {{count}}개가 있습니다.",
       "cancel": "취소",
-      "contents_move_up_to": "콘텐츠가 다음 위치로 이동합니다",
+      "contents_move_up_to_parent": "콘텐츠가 상위 폴더로 이동합니다.",
+      "contents_move_up_to_root": "콘텐츠가 라이브러리 루트로 이동합니다.",
       "delete_folder": "‘{{name}}’ 폴더를 삭제하시겠습니까?",
       "delete_folder_and_all_contents": "폴더와 모든 콘텐츠 삭제",
       "delete_folder_only_keep_artifacts": "폴더만 삭제하고 아티팩트는 유지",
       "permanently_deletes_every_artifact_and_subfolder": "내부의 모든 아티팩트와 하위 폴더를 영구히 삭제합니다. 되돌릴 수 없습니다.",
-      "subfolder_other": "하위 폴더 {{count}}개",
-      "this_folder_contains": "이 폴더에 포함된 항목"
+      "subfolder_other": "하위 폴더 {{count}}개"
     },
     "artifactPanel": {
       "add_instruction": "전체 지시 추가",
@@ -6925,11 +6926,10 @@
       "add_instruction": "전체 지시 추가",
       "additional_prompt": "전체 지시",
       "close": "닫기",
-      "comment_other": "댓글 {{count}}개",
+      "comments_pending_other": "대기 중인 댓글 {{count}}개",
       "edit": "편집",
       "optional_overall_feedback_or_an_extra_instructio": "선택 사항: 이 댓글과 함께 보낼 전체 피드백 또는 추가 지시…",
       "overall_instruction_hint": "대기 중인 모든 댓글에 적용할 지시를 하나 추가하세요",
-      "pending": "대기 중",
       "remove": "제거",
       "save": "저장",
       "submit_all": "모두 제출",
@@ -7177,7 +7177,7 @@
     "fileChangeChips": {
       "additions_other": "추가 {{count}}건",
       "artifact": "아티팩트",
-      "changed": "변경됨",
+      "files_changed_other": "파일 {{count}}개 변경됨",
       "diff_unavailable_file_exceeds_snapshot_limit": "차이를 표시할 수 없습니다. 파일이 너무 커서 비교할 수 없습니다({{limit}}자 초과).",
       "file_only": "파일만",
       "diff_unavailable_turn_snapshot_budget": "이번 턴의 변경이 너무 커서 모든 파일의 차이를 보관하지 못했습니다(합계 {{limit}}자 초과).",
@@ -7185,7 +7185,6 @@
       "diff_unavailable_unverified_write": "차이를 표시할 수 없습니다. 쓰기에 실패했고 그 이전의 파일을 알 수 없습니다.",
       "turn_snapshot_budget_open_hint": "파일 이름을 클릭하면 열립니다.",
       "omitted_files_notice_other": "이번 턴에서 변경된 파일 {{files}}개는 목록에 없습니다.",
-      "file_other": "파일 {{count}}개",
       "large_file_change_region_view": "큰 파일 — 음영 띠는 영역을 표시하며 정확한 줄을 뜻하지 않습니다",
       "large_file_simplified_view": "큰 파일 — 간소화된 보기",
       "show_line_by_line_diff": "줄 단위 diff 표시",

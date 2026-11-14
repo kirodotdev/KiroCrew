@@ -6438,15 +6438,16 @@
       "starting_session": "正在启动会话…"
     },
     "artifactFolderDeleteDialog": {
-      "artifact_other": "{{count}} 个产物",
+      "contains_artifacts_other": "此文件夹包含 {{count}} 个产物。",
+      "contains_artifacts_across_other": "此文件夹包含 {{count}} 个产物，分布在 {{subfolders}}中。",
       "cancel": "取消",
-      "contents_move_up_to": "内容将上移至",
+      "contents_move_up_to_parent": "内容将上移至上级文件夹。",
+      "contents_move_up_to_root": "内容将上移至库的根目录。",
       "delete_folder": "删除文件夹“{{name}}”？",
       "delete_folder_and_all_contents": "删除文件夹及其全部内容",
       "delete_folder_only_keep_artifacts": "仅删除文件夹，保留产物",
       "permanently_deletes_every_artifact_and_subfolder": "将永久删除其中的每个产物和子文件夹。此操作无法撤销。",
-      "subfolder_other": "{{count}} 个子文件夹",
-      "this_folder_contains": "此文件夹包含"
+      "subfolder_other": "{{count}} 个子文件夹"
     },
     "artifactPanel": {
       "add_instruction": "添加整体指令",
@@ -6925,11 +6926,10 @@
       "add_instruction": "添加整体指令",
       "additional_prompt": "整体指令",
       "close": "关闭",
-      "comment_other": "{{count}} 条评论",
+      "comments_pending_other": "{{count}} 条评论待处理",
       "edit": "编辑",
       "optional_overall_feedback_or_an_extra_instructio": "可选：随这些评论一起发送的整体反馈或额外指令…",
       "overall_instruction_hint": "添加一条适用于所有待处理评论的指令",
-      "pending": "待处理",
       "remove": "移除",
       "save": "保存",
       "submit_all": "全部提交",
@@ -7177,7 +7177,7 @@
     "fileChangeChips": {
       "additions_other": "{{count}} 处新增",
       "artifact": "产物",
-      "changed": "已更改",
+      "files_changed_other": "已更改 {{count}} 个文件",
       "diff_unavailable_file_exceeds_snapshot_limit": "无法显示差异：文件过大，无法比较（超过 {{limit}} 个字符）。",
       "file_only": "仅文件",
       "diff_unavailable_turn_snapshot_budget": "本轮改动太大，未能保留每个文件的差异（合计超过 {{limit}} 个字符）。",
@@ -7185,7 +7185,6 @@
       "diff_unavailable_unverified_write": "无法显示差异：写入失败，之前的文件未知。",
       "turn_snapshot_budget_open_hint": "点击文件名即可打开。",
       "omitted_files_notice_other": "本轮还有 {{files}} 个已更改的文件未列出。",
-      "file_other": "{{count}} 个文件",
       "large_file_change_region_view": "大文件 — 阴影带标记区域，而非精确行",
       "large_file_simplified_view": "大文件 — 简化视图",
       "show_line_by_line_diff": "显示逐行差异",

@@ -6438,15 +6438,16 @@
       "starting_session": "セッション開始中…"
     },
     "artifactFolderDeleteDialog": {
-      "artifact_other": "{{count}} アーティファクト",
+      "contains_artifacts_other": "このフォルダーには {{count}} 個のアーティファクトが含まれています。",
+      "contains_artifacts_across_other": "このフォルダーには {{subfolders}}にわたって {{count}} 個のアーティファクトが含まれています。",
       "cancel": "キャンセル",
-      "contents_move_up_to": "コンテンツが次の場所に移動",
+      "contents_move_up_to_parent": "コンテンツは親フォルダーに移動します。",
+      "contents_move_up_to_root": "コンテンツはライブラリのルートに移動します。",
       "delete_folder": "フォルダー「{{name}}」を削除しますか？",
       "delete_folder_and_all_contents": "フォルダーとすべてのコンテンツを削除",
       "delete_folder_only_keep_artifacts": "フォルダーのみ削除、アーティファクトは保持",
       "permanently_deletes_every_artifact_and_subfolder": "内部のすべてのアーティファクトとサブフォルダーを完全に削除します。元に戻すことはできません。",
-      "subfolder_other": "{{count}} サブフォルダー",
-      "this_folder_contains": "このフォルダーには以下が含まれています"
+      "subfolder_other": "{{count}} 個のサブフォルダー"
     },
     "artifactPanel": {
       "add_instruction": "全体への指示を追加",
@@ -6925,11 +6926,10 @@
       "add_instruction": "全体への指示を追加",
       "additional_prompt": "全体への指示",
       "close": "閉じる",
-      "comment_other": "{{count}}件のコメント",
+      "comments_pending_other": "保留中のコメント {{count}} 件",
       "edit": "編集",
       "optional_overall_feedback_or_an_extra_instructio": "オプション: これらのコメントとともに送信する総合フィードバックまたは追加の指示…",
       "overall_instruction_hint": "保留中のすべてのコメントに適用する指示を1つ追加",
-      "pending": "保留中",
       "remove": "削除",
       "save": "保存",
       "submit_all": "すべてを送信",
@@ -7177,7 +7177,7 @@
     "fileChangeChips": {
       "additions_other": "{{count}} 件の追加",
       "artifact": "アーティファクト",
-      "changed": "変更",
+      "files_changed_other": "変更されたファイル {{count}} 個",
       "diff_unavailable_file_exceeds_snapshot_limit": "差分を表示できません：ファイルが大きすぎて比較できません（{{limit}} 文字超）。",
       "file_only": "ファイルのみ",
       "diff_unavailable_turn_snapshot_budget": "このターンの変更が大きすぎて、すべてのファイルの差分を保存できませんでした（合計 {{limit}} 文字超）。",
@@ -7185,7 +7185,6 @@
       "diff_unavailable_unverified_write": "差分を表示できません：書き込みに失敗し、それ以前のファイルは不明です。",
       "turn_snapshot_budget_open_hint": "ファイル名をクリックすると開きます。",
       "omitted_files_notice_other": "このターンで変更されたさらに {{files}} 個のファイルは一覧にありません。",
-      "file_other": "{{count}} 個のファイル",
       "large_file_change_region_view": "大きなファイル — 網掛け帯は領域を示し、正確な行は示しません",
       "large_file_simplified_view": "大きなファイル — 簡易表示",
       "show_line_by_line_diff": "行単位の差分を表示",
