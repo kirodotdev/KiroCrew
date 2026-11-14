@@ -90,6 +90,7 @@ def forbid_real_http_client(monkeypatch):
         raise AssertionError("unit tests must not construct a real HTTP client")
 
     monkeypatch.setattr(l0_probe.aiohttp, "ClientSession", fail_if_constructed)
+    monkeypatch.setattr(l0_probe, "resolve_proxy", lambda _url: None)
 
 
 def provider(dcr=True, pkce=True, authorization_server=ISSUER):
