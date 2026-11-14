@@ -44,7 +44,6 @@ did before.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -59,6 +58,7 @@ from kiro_crew.agent_files import (
     MATE_WORKER_AGENT_FILENAME,
     is_mate_service_agent,
 )
+from kiro_crew.mcp_gateway.overlay_prune import prune_stale_json
 from kiro_crew.mcp_gateway.rewriter_launch import _WRAPPER_MARKER, _WRAPPER_MARKER_LEGACY
 from kiro_crew.mcp_gateway.rewriter_overlay import _source_sig
 
@@ -318,10 +318,7 @@ def rewrite_mate_overlays(
         out.incomplete = True
     else:
         _write_each(sources, target_dir, set(taken_identities or ()), publish, out, agents_dir)
-    for stale in target_dir.glob("*.json"):
-        if stale.name not in out.written:
-            with contextlib.suppress(OSError):
-                stale.unlink()
+    prune_stale_json(target_dir, out.written.__contains__)
     return out
 
 
@@ -331,9 +328,7 @@ def drop_mate_overlays(overlay_dir: Path) -> None:
         target_dir = mate_overlay_dir(overlay_dir)
         if mate_dir_refused(target_dir):
             return
-        for stale in target_dir.glob("*.json"):
-            with contextlib.suppress(OSError):
-                stale.unlink()
+        prune_stale_json(target_dir, lambda name: False)
     except Exception:  # noqa: BLE001 - best effort on a pass already failing closed
         logger.warning("crewmate overlays could not be removed", exc_info=True)
 
