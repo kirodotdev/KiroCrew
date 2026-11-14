@@ -37,8 +37,12 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * that change, measured 9,514,411 B. Ceiling = 9,454,228 B * 1.05, rounded up
  * to whole KB. Same rule as the per-chunk entries: lower it when the first load
  * shrinks; raising it is a regression the PR that does it must justify.
+ *
+ * Re-measured on main @ c275f70106: 347 chunks, 9,464,931 B. Bundling the first
+ * load into 11 chunks (the `firstLoadGroups(...)` call in vite.config.ts) takes
+ * it to 9,416,379 B, so the ceiling is lowered to 9,416,379 B * 1.05.
  */
-export const FIRST_LOAD_BUDGET_BYTES = 9695 * KB
+export const FIRST_LOAD_BUDGET_BYTES = 9656 * KB
 
 /**
  * Explicit ceilings for the chunks that are already known-large, keyed by
@@ -74,101 +78,6 @@ export const CHUNK_BUDGETS = {
   // needs its code added here; until then its chunk meets the 500 KB default.
   ...CATALOG_CHUNK_BUDGETS,
 
-  // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
-  // named after `src/i18n/t.ts`. Held separately from the catalog chunks above because
-  // `src/i18n/index.ts` imports English alone, so the ~600 components that call
-  // `t()` no longer pull the other twelve catalogs in behind them. Sized for the
-  // English catalog plus headroom; a jump here means a non-English catalog, or a
-  // library, reached the runtime module.
-  // Re-measured 2026-09-04 at 740 KB, and the 702 KB note above was ~38 KB
-  // stale, which is the same recurrence it describes: main drifted to EXACTLY
-  // 740.00 KB (757,764 B, 4 B over its own ceiling), so the gate began failing
-  // on the merge ref of every open PR rather than on the new library or surface
-  // it exists to catch. Attribution was measured, not assumed -- the branch that
-  // tripped it first builds a BYTE-IDENTICAL `t` chunk to its own base
-  // (`t-BLZeayKy.js`, 755,868 B on both), and main's tip alone, with none of that
-  // branch's code, reproduces the 4-byte failure with the same content hash. So
-  // the growth is main's accumulated English strings, and headroom is what was
-  // actually missing. 5% headroom, matching the file-wide convention,
-  // so the next English string does not re-trip this for the third time.
-  // Re-measured 2026-09-08: main @ 9af9543b0 alone builds the chunk at
-  // 795,127 B (776.5 KB) against the 777 KB ceiling -- 0.07% headroom, the
-  // same drift again (~36 KB of English strings in four days). A feature PR
-  // adding ~40 keys (#8307) trips it on its merge ref while main's own gate
-  // stays green, so the ceiling moves back to the 5% convention.
-  // Two catalog surfaces stack on this chunk after the merge: the
-  // structured-monitor dashboard (57 English keys) and the managed-credentials
-  // surface (25 English keys plus setup / irreversibility guidance). Both are
-  // ordinary translated product copy, not a library reaching the runtime. The
-  // merged analyze build measures the chunk at 807,525 B (788.6 KB); keep
-  // roughly 5% headroom (the file-wide convention) over that
-  // combined measurement so expected catalog growth does not block descendants.
-  // Re-measured 2026-09-13 on the reviewed member capability inheritance
-  // branch rebased onto main @ f382f0a70: the analyze build emits the chunk at
-  // 839,943 B (820.3 KB) against the 819 KB ceiling -- 1,287 B over. The
-  // growth is English catalog copy only: the feature's 96 keys
-  // (`crewCapabilities` / `crewCapabilityEditing`, ~4.7 KB) plus 15 upstream
-  // keys that landed on main after the branch's previous rebase. The chunk
-  // report counts 12 modules; this PR adds no dependency. This is the
-  // documented catalog-growth drift again: the previous ceiling
-  // was set at 3.7% over its own measurement, below the 5% convention, and
-  // ordinary catalog growth since then used that margin up. Back to the 5%
-  // convention over the measured size.
-  // Re-measured 2026-09-19 on this channel-folder backfill branch rebased onto
-  // main @ 1c7f963706: main's catalogs ALONE build the chunk at 881,305 B
-  // (860.6 KB) against the 861 KB ceiling -- 359 B left, or 0.04% headroom. With
-  // this feature's copy it builds at 882,910 B (862.2 KB), 1.2 KB over.
-  // Attribution is measured, not assumed: reverting ONLY the 14 files under
-  // `website/src/i18n/` to the base and rebuilding drops the chunk to the
-  // 881,305 B above, so the delta this branch owns is 1,605 B -- its 18 keys of
-  // product copy across 13 catalogs plus the generated `en-XA` pseudo-locale,
-  // which roughly doubles the byte cost of every string. The report still counts
-  // 12 modules and this branch adds no dependency, and no lazy `import()`
-  // boundary can move a catalog string out of this chunk (English
-  // is the always-loaded fallback). This is the documented drift for the fourth time: a
-  // ceiling left at 0.04% headroom fails on the next feature's ordinary strings
-  // rather than on the new library it exists to catch. Back to the 5% convention
-  // over the measured size.
-  // Re-measured on this branch: with the base catalogs restored and only this
-  // branch's other code present, the chunk builds at 926,128 B (904.4 KB), which
-  // is 592 B under the 905 KB ceiling -- 0.06% headroom. The judge row's nine
-  // keys across the twelve shipped catalogs, plus the generated `en-XA`
-  // pseudo-locale that roughly doubles each string's byte cost, add 1,456 B on
-  // top, so the build lands at 927,584 B (905.8 KB) -- 607 B over the old 905 KB
-  // ceiling. Attribution is measured, not assumed: reverting ONLY the files under
-  // `website/src/i18n/` to the base and rebuilding produces the 926,128 B above,
-  // and this branch adds no dependency to the chunk. No lazy `import()` boundary
-  // can move a catalog string out of it, since English is the always-loaded fallback. This is
-  // the drift the notes above already describe: a ceiling left under a tenth of a
-  // percent of headroom fails on the next feature's ordinary strings rather than
-  // on the new library it exists to catch. Back to the 5% convention over the
-  // measured size.
-  // OPERATOR-SET CEILING, NOT A MEASUREMENT. It departs from the 5% convention
-  // every other entry follows, and it is written this way deliberately so nobody
-  // reads it as one.
-  //
-  // Measured 955.0 KB (977948 B) on an analyze build of main at 2026-09-27, which
-  // is 28 B over the 955 KB this entry used to carry -- and that 28 B was failing
-  // the gate on EVERY open pull request at once, on a chunk whose growth none of
-  // those branches caused. A repository maintainer chose to stop that bill with a
-  // wide ceiling rather than by shrinking the chunk or by re-measuring it to ~1003
-  // KB, knowing what the choice costs: at 6.4x the measured size this entry no
-  // longer signals growth for this chunk, so the next 5 MB of i18n-runtime bloat
-  // arrives green. That is accepted for now; what it buys is that the gate stops
-  // reporting to people who cannot act on it.
-  //
-  // So this number is a decision, not evidence, and the thing it defers is still
-  // open: the i18n runtime went from a measured ~909 KB to 955 KB and nobody has
-  // named what grew. Re-measuring this entry down to the 5% convention is a
-  // strict improvement whenever someone does that work -- and until then, reading
-  // this ceiling as "the chunk is fine" would be reading it wrong.
-  //
-  // The crew board adds ~1,610 B (35 keys of product copy across the 12 shipped
-  // catalogs plus the generated en-XA pseudo-locale) to this same chunk. It adds
-  // no dependency and sits far under the operator ceiling below, so it needs no
-  // further raise.
-  t: 6075 * KB, // operator ceiling; chunk measured 955.0 KB -- see the note above
-
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor
   // engine, code-split from the app core and not usefully splittable further.
@@ -183,103 +92,6 @@ export const CHUNK_BUDGETS = {
   // The oniguruma regex engine WASM payload backing those grammars
   // (PR #4072); a single prebuilt binary, loaded on demand.
   wasm: 640 * KB, // measured 608 KB
-
-  // The app-core chunk: the dashboard shell plus everything eagerly imported
-  // from it. The vendor split in vite.config.ts already extracts the heaviest
-  // libraries; what remains is first-party code with no clean lazy boundary.
-  // Re-measured 2026-09-04: main drifted to 3201 KB (3,277,346 B, 546 B over
-  // the previous 3200 KB ceiling), so the gate began failing on the merge ref
-  // of every open PR rather than on a new library or surface — the same
-  // recurrence the `t` entry above documents. Attribution was measured, not
-  // assumed: main's tip alone, with no PR code, reproduces the failure.
-  // Re-measured 2026-09-08: four days of ordinary first-party growth took main
-  // @ 6ae74179d to 3,440,273 B (3360 KB) against the 3360 KB ceiling -- 367 B
-  // of headroom, so a PR adding ONE module to the app core (#9437, +1.7 KB)
-  // fails the gate on its merge ref while main itself still passes by a hair.
-  // Same recurrence, same remedy: 5% headroom, matching the `t`
-  // entry's convention, so ordinary first-party growth does not re-trip this
-  // within days.
-  // The managed-credentials UI and its setup / irreversible-delete states take
-  // the merge result to 3,445,107 B (3364.4 KB). Preserve the documented margin
-  // at that current measurement; a library-class regression still exceeds this
-  // ceiling by hundreds of kilobytes.
-  // Re-measured 2026-09-21 against main @ 20261b7633, whose tip alone -- no PR
-  // code in the tree -- builds this chunk at 3,619,504 B and so exceeds the
-  // 3533 KB (3,617,792 B) ceiling by 1,712 B on its own. The margin the lines
-  // above describe is therefore already spent: the gate fails on the merge ref
-  // of every open PR, which is exactly the recurrence the `t` entry
-  // documents, and attribution here was measured rather than assumed (pristine
-  // main built in its own worktree, then this branch on top of it).
-  // The compaction shadow-scoring surface (the keep line, its record reader and
-  // one settings switch) adds 2,761 B of first-party code on top of that, for a
-  // merge result of 3,622,265 B. The ceiling moves to cover both parts --
-  // main's 1,712 B of drift and this surface's 2,761 B -- rounded up to this
-  // table's whole-KB unit: 3538 KB, which leaves 647 B of headroom. It is NOT
-  // restored to the ~5% margin the lines above prescribe, because that is a
-  // re-measure of main's growth rather than a cost this surface incurs; at 647 B
-  // the next app-core addition trips this entry again.
-  // Re-measured 2026-09-21 after rebasing onto main @ 17c96c7ab0, which had itself
-  // re-baselined this entry to 3538 KB for the compaction shadow-scoring surface
-  // (that measurement and its reasoning are the paragraph above; both notes are kept
-  // because the two surfaces are independent and the ceiling has to cover both).
-  // Attribution measured, not assumed: main's tip alone builds this chunk at
-  // 3,622,265 B per the note above, and this branch on top of it builds 3,624,314 B
-  // (3539.4 KB). So main's 3538 KB (3,622,912 B) is 1,402 B SHORT of the merge ref of
-  // this PR, which is why the entry moves again rather than being left alone.
-  // This branch's own cost is the difference, 2,049 B -- and that is the SAME 2,049 B
-  // measured against the previous base (main @ feed35446c at 3,616,146 B, this branch
-  // at 3,618,195 B), so the attribution is confirmed by two independent bases rather
-  // than by one build. It is not a library or a lazy-loadable surface: the member
-  // projection store, its hook and the roster/drawer wiring are first-party app-core
-  // code with no lazy boundary available, the same shape the notes above document.
-  // Back to the ~5% convention over the measurement that includes this branch,
-  // matching the `t` entry.
-  // The memory-recall strip, its own record reader and the card's second switch
-  // add a further 5,492 B on top of that.
-  // Route-only pages (settings, capabilities, schedule, artifacts, apps, ...) load
-  // through React.lazy in their own chunks, so this chunk holds the shell and the
-  // chat route; the ceiling keeps the ~5% margin the lines above prescribe.
-  // F06 chat-input composition (#15284): +16.8 KB unmangled owner property names; measured 2,027,630 B
-  // Re-measured 2026-09-30 on pristine main @ 2d4278a18: the analyze build emits
-  // this chunk at 2,041,857 B (1994.0 KB) against the 1990 KB (2,037,760 B)
-  // ceiling -- 4,097 B over on main's own tip, so the gate fails on the merge ref
-  // of every open backend-only PR (#15235, #13650) rather than on a new library
-  // or surface, the same recurrence the notes above document. Attribution is
-  // measured, not assumed: main @ 0322c3375 (before the six website/src commits of
-  // the last six hours) builds this chunk at 2,024,935 B (433 modules), 12.8 KB
-  // UNDER budget; main @ 867d7a46d, the ChatInput owner split (#15284), alone
-  // builds it at 2,041,733 B (451 modules) -- +16,798 B, already 3,973 B over --
-  // and the five later website commits net only +124 B on top. So the growth is
-  // #15284's own first-party code (the chat-input owner modules and their
-  // unmangled property names, part of the always-loaded chat-route shell, not a
-  // lazy-loadable surface); its pre-merge note above measured 2,027,630 B, ~14 KB
-  // below what the chunk actually built to after merge, so the 1990 KB ceiling was
-  // set from a stale-low pre-merge build and never had headroom. Back to the ~5%
-  // convention over the true merged measurement (2,041,857 B * 1.05 = 2,143,950 B),
-  // so ordinary first-party growth does not re-trip this on the next PR.
-  // Re-measured 2026-10-11 on pristine main @ f07162523a, whose tip alone -- no PR
-  // code in the tree -- builds this chunk at 2,144,668 B (2094.4 KB, 504 modules)
-  // against the 2094 KB (2,144,256 B) ceiling, so it exceeds it by 412 B on its
-  // own and the gate fails on the merge ref of every PR that touches website/
-  // rather than on the new library or surface it exists to catch. That is the
-  // recurrence the notes above document, and the headroom the line below used to
-  // carry (102,399 B, 5% over its 2,041,857 B measurement) is spent: eleven days
-  // of ordinary first-party growth added 102,811 B to the always-loaded shell and
-  // chat route. The growth is spread across that shell rather than concentrated in
-  // one surface, and the route-only pages are already behind React.lazy in their
-  // own chunks, so no lazy `import()` boundary is available to move it out. Back
-  // to the ~5% convention over the new measurement (2,144,668 B * 1.05 =
-  // 2,251,901 B), rounded up to this table's whole-KB unit, which leaves
-  // 108,132 B (5.04%) of headroom.
-  // Re-measured 2026-11-09: pristine main @ f08ae0d08d builds this chunk at
-  // 2,253,662 B (581 modules), 862 B over the 2200 KB (2,252,800 B) ceiling, so
-  // the gate fails on main's own tip again (main @ aab3c57e1c, CI run
-  // actions/runs/42555400948). The 108,994 B of growth since f07162523a is spread across
-  // ~750 commits touching the chunk's first-party modules (net +43,522 lines; the
-  // largest single commit adds 1,188), not one library or surface. Back to the
-  // ~5% convention: 2,253,662 B * 1.05 = 2,366,346 B, rounded up to whole KB,
-  // which leaves 112,802 B (5.01%) of headroom.
-  App: 2311 * KB, // measured 2,253,662 B on main @ f08ae0d08d with route-only pages lazy (~5% headroom)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `codeSplitting` group, see vite.config.ts.
@@ -324,33 +136,23 @@ export const CHUNK_BUDGETS = {
   // cytoscape) -- one deliberate `codeSplitting` group, see vite.config.ts.
   'vendor-graph': 606 * KB, // measured 577 KB
 
-  // The SPA entry chunk: router, providers, and the eager page skeleton.
-  main: 594 * KB, // measured 566 KB
-
-  // The shared chat-route chunk Rolldown names after the composer's model/effort
-  // picker: 163 modules, split off the App chunk by the bundler's own grouping
-  // rather than by a `codeSplitting` entry in vite.config.ts.
-  // Measured 2026-10-24 on pristine main @ 0dab198632, whose tip alone -- no PR
-  // code in the tree -- builds it at 517,094 B (505.0 KB) against the 500 KB
-  // (512,000 B) default, 5,094 B over, so the gate fails on the merge ref of
-  // every open website PR (#23618 first) rather than on a new library or
-  // surface. Attribution is measured per main commit since fada42f7b3, where the
-  // chunk was 502,179 B (162 modules): eight website commits of ordinary
-  // chat-route growth added 5,664 B between them, and #23271 (MCP elicitation on
-  // both ACP wires, 1a7190c711) added the one new module and the 9,251 B that
-  // took it over. Both are website/src commits: no dependency joined the chunk
-  // (the only package.json change since fada42f7b3 is #23634's React Compiler
-  // toolchain, with an empty opt-in list), so this is first-party growth of a
-  // chunk that is already lazy, not a library to move behind an `import()`. The
-  // ~5% convention over the measurement (517,094 B * 1.05 = 542,949 B), rounded
-  // up to this table's whole-KB unit, leaves 26,650 B (5.15%) of headroom.
-  // Re-measured 2026-10-29: by then main's own chat-route growth had used all but
-  // about 1 KB of that headroom, and the workflow change cards (the line-by-line
-  // script diff and script block in cards/CardChanges.tsx, about 4.5 KB of
-  // first-party code in this already-lazy chunk, no new dependency) built it at
-  // 543,975 B, 231 B over. The same ~5% convention over that measurement
-  // (543,975 B * 1.05 = 571,174 B), rounded up to whole KB, is 558 KB.
-  ModelEffortDropdown: 560 * KB, // measured 558.6 KB; holds the eagerly bundled English catalog (i18n/enCatalog.ts), and this change adds about 3.6 KB of strings that are part of the fix
+  // The first load, bundled by the `firstLoadGroups(...)` call in vite.config.ts
+  // (cut rules: scripts/lib/firstLoadGroup.mjs). They replace the App, `t` and
+  // ModelEffortDropdown chunks and ~340 small ones. Measured on an analyze build
+  // of main @ c275f70106 with this change; each ceiling is ~5% over, rounded up
+  // to whole KB.
+  //
+  // `first-load-shared` holds the first-load modules an app window also reaches,
+  // the English catalog among them (English is the always-loaded fallback), so no
+  // lazy `import()` can move most of it out.
+  'first-load-shared': 3216 * KB, // measured 3,135,505 B
+  // The dashboard's own first-load code, cut by import depth into four parts of
+  // near-equal size; `main` is the top part, holding the entry. Because the cut
+  // is by size, growth anywhere in it raises all four by about a quarter each.
+  'first-load-0': 1003 * KB, // measured 977,976 B
+  'first-load-1': 1164 * KB, // measured 1,134,732 B
+  'first-load-2': 1179 * KB, // measured 1,149,207 B
+  main: 1341 * KB, // measured 1,307,743 B
 
   // `heic-to/csp`: libheif and its HEVC decoder compiled to plain JavaScript,
   // which is why one decoder is this large. `utils/heicImage.ts`
