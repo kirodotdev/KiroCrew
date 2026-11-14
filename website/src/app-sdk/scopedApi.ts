@@ -115,6 +115,9 @@ export interface AppInfo {
   session?: AppSession
 }
 
+/** The session key a routed `ui.pages` page sends (InstalledAppSurface); not a chat. */
+const ROUTED_PAGE_SESSION_KEY = 'dashboard:ui'
+
 export interface AppSession {
   /** Session key, e.g. `dashboard:chat-2-1787502679`. */
   sessionKey: string
@@ -394,8 +397,10 @@ export function AppScopedApiProvider({
       // exists to carry.
       ...(appUpdate ? { update: appUpdate } : {}),
       // Absent, not undefined, on a surface with no session binding, for the
-      // same `'session' in info` reading as `update`.
-      ...(sessionKey ? { session: { sessionKey } } : {}),
+      // same `'session' in info` reading as `update`. A routed page passes the
+      // dashboard's own request identity (InstalledAppSurface), which is not a
+      // chat: it still goes out as X-Session-Key but is not published here.
+      ...(sessionKey && sessionKey !== ROUTED_PAGE_SESSION_KEY ? { session: { sessionKey } } : {}),
     },
     subscribe: subscribeFn,
     navigate: navigateFn,

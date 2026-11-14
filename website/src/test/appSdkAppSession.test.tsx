@@ -77,6 +77,22 @@ describe('useAppInfo().session', () => {
     expect(sent).toBe(info.session?.sessionKey)
   })
 
+  it('is absent on a routed page, which sends the dashboard identity, not a chat', async () => {
+    const fetchMock = vi.fn(async () => new Response('{}', {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    // InstalledAppSurface (the /apps/<name> route) mounts AppHost with this key.
+    const { info, api } = mount('dashboard:ui')
+    expect('session' in info).toBe(false)
+
+    await api.get('/api/apps/test-app/ping')
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as RequestInit
+    expect(new Headers(init.headers).get('X-Session-Key')).toBe('dashboard:ui')
+  })
+
   it('leaves the rest of the app info untouched', () => {
     const { info } = mount('dashboard:chat-2-1787502679')
     expect(info.name).toBe('test-app')
