@@ -51,6 +51,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_ULTRACODE_CONFIG_OPTION,
     ULTRACODE_CONFIG_OPTION_ID,
+    effort_refused_by_model,
     launch_effort_supported,
 )
 from kiro_crew.effort import EFFORT_LEVELS, model_supports_effort, resolve_effort_for_model
@@ -458,8 +459,10 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     session down the channel ``SessionCapabilities`` names: the ``/effort`` slash
     command for ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option``
     for ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
-    model does not support effort, or when this harness is in neither set and
-    so has no effort channel at all.
+    model does not support effort (including a session that advertises the option
+    but whose model refuses the write, ``effort_refused_by_model``, after the
+    stored level and overlay are rolled back), or when this harness is in neither
+    set and so has no effort channel at all.
     """
     model = self._effort_model
     if not self.supports_effort():
@@ -532,7 +535,7 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
             await self._set_effort_config_option(level)
         else:
             await self._client.send_command("/effort", args={"level": level})
-    except Exception:
+    except Exception as exc:
         # Roll back to the prior state before propagating to the caller.
         if _prev is None:
             self._effort_per_model.pop(model, None)
@@ -564,6 +567,16 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
                     model,
                     level,
                 )
+        if effort_refused_by_model(self._client.backend, exc):
+            # The session advertises the option but its current model takes no
+            # level: the same answer as a model without effort support, and
+            # rolled back above so a respawn does not re-apply the refused level.
+            logger.info(
+                "change_effort refused — model %s has no effort setting (backend=%s)",
+                model,
+                self._client.backend,
+            )
+            return False
         logger.warning(
             "ACP effort live push failed (model=%s effort=%s) — rolled back", model, level
         )
