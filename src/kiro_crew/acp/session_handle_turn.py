@@ -1099,3 +1099,12 @@ async def _close_abandoned_turn(self: AcpSessionHandle) -> None:
         )
     if self._abandoned_prompt_id == req_id:
         self._abandoned_prompt_id = None
+
+
+def prompts_since(turn: tuple[Any, Any]) -> int:
+    """Prompts written on *turn*'s handle since the turn began, or 0 when unknown."""
+    handle, before = turn
+    after = getattr(handle, "prompts_written", 0)
+    if isinstance(before, int) and isinstance(after, int):
+        return max(0, after - before)
+    return 0

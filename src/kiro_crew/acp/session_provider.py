@@ -50,6 +50,7 @@ from kiro_crew.acp.runtime import (
     AcpSessionHandle,
 )
 from kiro_crew.acp.session_handle import WatchdogSettings
+from kiro_crew.acp.session_handle_turn import prompts_since
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
@@ -89,15 +90,6 @@ from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.trust_patterns import GrantDeadline
 
 logger = logging.getLogger(__name__)
-
-
-def _prompts_since(turn: tuple[Any, Any]) -> int:
-    """Prompts written on *turn*'s handle since the turn began, or 0 when unknown."""
-    handle, before = turn
-    after = getattr(handle, "prompts_written", 0)
-    if isinstance(before, int) and isinstance(after, int):
-        return max(0, after - before)
-    return 0
 
 
 class AcpSessionProvider(LLMProvider):
@@ -982,7 +974,7 @@ class AcpSessionProvider(LLMProvider):
         if self._open_turn_count is not turn:
             return
         self._open_turn_count = None
-        self._prompts_written += _prompts_since(turn)
+        self._prompts_written += prompts_since(turn)
 
     @property
     def prompts_written(self) -> int:
@@ -999,7 +991,7 @@ class AcpSessionProvider(LLMProvider):
         when that caller reads the count.
         """
         turn = self._open_turn_count
-        return self._prompts_written + (_prompts_since(turn) if turn is not None else 0)
+        return self._prompts_written + (prompts_since(turn) if turn is not None else 0)
 
     async def discard_unanswered_prompt(self) -> bool:
         """Forward to the session handle: rewind KAS history to before the last prompt."""
@@ -1176,12 +1168,15 @@ class AcpSessionProvider(LLMProvider):
         stalled = isinstance(exc, AcpRuntimeStdinStalled) or (
             getattr(self._runtime, "stdin_stall_death", False) is True
         )
+        translated = AcpProcessDied(str(exc), ambiguous_delivery=ambiguous)
         if not stalled and not getattr(handle, "prompt_or_tool_seen", True):
             tail = getattr(self._runtime, "redacted_stderr_tail", lambda: "")()
             cause = registration_throttle_line(tail) if tail else None
             if cause is not None:
-                return registration_rate_limited_error(str(exc), cause)
-        return AcpProcessDied(str(exc), ambiguous_delivery=ambiguous)
+                translated = registration_rate_limited_error(str(exc), cause)
+        if getattr(exc, "session_start_failed", False) is True:
+            translated.session_start_failed = True
+        return translated
 
     async def _guarded(self, awaitable: Any, *, own_write_only: bool = False) -> Any:
         """Await a runtime-touching handle coroutine, translating AcpRuntimeDead
