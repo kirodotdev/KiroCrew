@@ -150,6 +150,7 @@ class _SlackTurn:
     had_voice_input: "bool"
     spool_text: "str | None"
     spool_attachments: "int"
+    spool_attachment_names: "tuple[str, ...]"
     _compaction_replay: "_CompactionReplay | None"
     start_priority: "StartPriority"
     user_meta: "dict[str, Any] | None"
@@ -221,6 +222,7 @@ class _SlackTurn:
         had_voice_input: "bool",
         spool_text: "str | None",
         spool_attachments: "int",
+        spool_attachment_names: "tuple[str, ...]",
         _compaction_replay: "_CompactionReplay | None",
         start_priority: "StartPriority",
         user_meta: "dict[str, Any] | None" = None,
@@ -255,6 +257,7 @@ class _SlackTurn:
         self.had_voice_input = had_voice_input
         self.spool_text = spool_text
         self.spool_attachments = spool_attachments
+        self.spool_attachment_names = spool_attachment_names
         self._compaction_replay = _compaction_replay
         # Set by ``_run_turn``; none until a turn has run its hooks.
         self._hook_turn = None
@@ -628,6 +631,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 had_voice_input=had_voice_input,
                 spool_text=turn.spool_text,
                 spool_attachments=turn.spool_attachments,
+                spool_attachment_names=turn.spool_attachment_names,
                 _compaction_replay=replay,
                 start_priority=start_priority,
                 user_meta=turn.user_meta,

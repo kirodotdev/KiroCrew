@@ -570,6 +570,7 @@ async def _dispatch_queued(
     if not isinstance(_q_spool_text, str):
         _q_spool_text = None
     _q_spool_attachments = int(kwargs.get("spool_attachments") or 0)
+    _q_spool_attachment_names = tuple(kwargs.get("spool_attachment_names") or ())
     # Whether the queued message was a voice memo, so it is still answered in kind.
     _q_had_voice_input = bool(kwargs.get("had_voice_input", False))
     if client:
@@ -623,6 +624,7 @@ async def _dispatch_queued(
                 start_priority=person_priority(not from_trusted_bot),
                 spool_text=_q_spool_text,
                 spool_attachments=_q_spool_attachments,
+                spool_attachment_names=_q_spool_attachment_names,
                 had_voice_input=_q_had_voice_input,
             )
             return
@@ -648,6 +650,7 @@ async def _dispatch_queued(
             had_voice_input=_q_had_voice_input,
             spool_text=_q_spool_text,
             spool_attachments=_q_spool_attachments,
+            spool_attachment_names=_q_spool_attachment_names,
             start_priority=person_priority(not from_trusted_bot),
         )
     finally:

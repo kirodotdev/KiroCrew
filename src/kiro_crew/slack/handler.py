@@ -965,6 +965,7 @@ async def handle_message(
     had_voice_input: bool = False,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
     user_meta: dict[str, Any] | None = None,
@@ -996,6 +997,8 @@ async def handle_message(
     these, never the ingested *text*, which inlines turn-owned temp paths (dead
     after a restart) and extracted file contents. ``None`` means *text* was not
     ingested (button and interaction re-dispatches), so it is spooled as is.
+    *spool_attachment_names* is Slack's name for each of those files, which the
+    restart notice lists.
 
     *_compaction_replay* is set only by this function's own turn, when it re-runs a
     message whose previous attempt was abandoned after a transient compaction
@@ -1058,6 +1061,7 @@ async def handle_message(
             thread_id=reply_ts,
             message_id=msg_ts,
             attachments_dropped=spool_attachments,
+            attachment_names=spool_attachment_names,
         ),
         restricted=_is_slack_restricted(session_key),
     ):
@@ -1094,6 +1098,7 @@ async def handle_message(
         had_voice_input=had_voice_input,
         spool_text=spool_text,
         spool_attachments=spool_attachments,
+        spool_attachment_names=spool_attachment_names,
         _compaction_replay=_compaction_replay,
         start_priority=start_priority,
         user_meta=user_meta,
