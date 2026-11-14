@@ -31,6 +31,9 @@ _LAUNCHER_REFUSED = (
     "sandbox: BLOCKED -- making mount propagation private on / failed: errno 13 "
     "(Permission denied).\n"
 )
+# A launcher exit that is no sandbox verdict, so its trusted re-run sets no
+# ``sandbox_failure``: still the launcher's line, not the file's answer.
+_LAUNCHER_FATAL = "sandbox: FATAL — cannot enter the launch directory (Device or resource busy)\n"
 
 
 def _install(tmp_path: Path, name: str = "kiro-cli") -> str:
@@ -397,6 +400,7 @@ class TestTheProbeItself:
             ProcessResult(ok=False, timed_out=True, error="process timed out"),
             ProcessResult(ok=False, returncode=-9, error="process exited with code -9"),
             ProcessResult(ok=False, returncode=1, output=_LAUNCHER_REFUSED),
+            ProcessResult(ok=False, returncode=1, output=_LAUNCHER_FATAL),
             ProcessResult(
                 ok=False, returncode=1, sandbox_failure=("no_backend", "mount refused", "")
             ),
@@ -408,6 +412,7 @@ class TestTheProbeItself:
             "timeout",
             "wrapper-killed-by-signal",
             "launcher-refusal-line",
+            "launcher-fatal-line",
             "sandbox-refused",
             "output-at-the-cap",
         ],
