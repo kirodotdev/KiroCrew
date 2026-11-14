@@ -1004,7 +1004,7 @@ class TestStateStructuralValidation:
             assert st.opted_out is False
             assert st.last_shown_ts == 0.0
             # {"id": "ok"} lacks the required fields → discarded by the
-            # persisted-tip sanitizer (round-18), like the non-dict entries
+            # persisted-tip sanitizer, like the non-dict entries
             assert st.tips == []
             assert st.offered is None
 

@@ -75,8 +75,8 @@ class TestEpisodicRelevanceAdmission:
         store = _store(tmp_path)
         _seed_old_exact_plus_recent_fillers(store)
         ctx = store.get_episodic_context(query_embedding=_Q)
-        # Before the fix the exact match was ranked past `limit` by the fillers, which
-        # were then dropped by the cosine gate, so this returned "".
+        # The exact match must not be ranked past `limit` by the fillers, which the
+        # cosine gate then drops, or this returns "".
         assert "EXACT" in ctx
         assert "FILLER" not in ctx
 

@@ -108,9 +108,9 @@ class TestListSessionsTool:
         assert "dashboard_chat-1" in out
 
     def test_workspace_scoping_excludes_other_workspace(self, tmp_path, monkeypatch):
-        # Regression: list_sessions() rows omit `workspace`, so scoping MUST
+        # list_sessions() rows omit `workspace`, so scoping MUST
         # re-read full metadata. A session tagged to another workspace must not
-        # leak to a default-workspace caller (Codex round-3 HIGH).
+        # leak to a default-workspace caller.
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         sessions = tmp_path / "sessions"
         sessions.mkdir(parents=True, exist_ok=True)

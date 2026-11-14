@@ -607,7 +607,7 @@ async def test_an_unexpected_value_error_from_a_read_is_not_echoed(
     [
         # The 280-character cut lands inside a token whose run began far earlier.
         "word " * 30 + "y" * 120 + _SECRET + " tail",
-        # The local GPT review's case: 250 non-space characters, a colon, a token.
+        # The edge case: 250 non-space characters, a colon, a token.
         "x" * 250 + ":" + _SECRET + " tail",
         "lead " + "x" * 245 + ":" + _SECRET + " tail",
     ],

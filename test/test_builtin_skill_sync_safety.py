@@ -1315,8 +1315,8 @@ class TestMarkerNameCollision:
     ) -> None:
         # The tree walk excludes the marker name, so a directory holding ONLY
         # a user-made file at that name reports content-free and takes the
-        # placeholder-removal path. Before the fix that path unlinked the
-        # file unverified; it must instead fail verification (the content is
+        # placeholder-removal path. That path must not unlink the file
+        # unverified; it must instead fail verification (the content is
         # no fingerprint of this tree) and quarantine the directory intact.
         user = base / "deploy"
         user.mkdir()

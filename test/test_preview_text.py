@@ -278,7 +278,7 @@ class TestSlotLastMessageStripsMarkdown:
         assert d["last_message"] == "pick one"
 
     def test_syntax_only_message_falls_back_to_older_preview(self):
-        # Codex PR-243 finding: a latest message that is ONLY stripped syntax
+        # A latest message that is ONLY stripped syntax
         # must not blank the preview — fall back to the previous visible
         # message (mirrors history.last_message_preview's skip-empty scan).
         s = self._slot_with(
@@ -306,7 +306,7 @@ class TestSlotLastMessageStripsMarkdown:
         assert s.to_dict()["last_message"] == "here is the real answer"
 
     def test_credential_split_by_markdown_is_still_redacted(self):
-        # Codex PR-243 HIGH finding: stripping must run BEFORE redaction.
+        # Stripping must run BEFORE redaction.
         # Markdown markers inside a secret split the credential signature past
         # the scanner; stripping afterwards would rejoin the fragments into a
         # valid credential in the broadcast preview.

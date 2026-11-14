@@ -338,7 +338,7 @@ class TestTheSkillCarriesTheTeamProcedure:
 
 
 # --------------------------------------------------------------------------- #
-# GPT 6.1 F1: a failed team-lead rewrite must leave the ceiling HELD, not synced.
+# A failed team-lead rewrite must leave the ceiling HELD, not synced.
 # --------------------------------------------------------------------------- #
 
 

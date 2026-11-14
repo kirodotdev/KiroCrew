@@ -235,8 +235,8 @@ class TestBootSweep:
         assert removed == 1
 
     def test_oversized_dead_tree_is_still_reclaimed(self, tmp_root: Path) -> None:
-        # Regression: an entry cap in the tree-idle walk that bailed to
-        # ``fallback`` (= now) made every tree larger than the cap read as
+        # An entry cap in the tree-idle walk that bails to ``fallback`` (= now)
+        # would make every tree larger than the cap read as
         # permanently ACTIVE, so a dead backend that wrote enough entries
         # could never be reclaimed -- the exact storage-exhaustion defect
         # this module exists to fix. 10,050 entries exceeds the removed
