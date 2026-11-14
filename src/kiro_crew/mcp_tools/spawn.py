@@ -567,7 +567,13 @@ def _spawn_run_receipt(
         started = [m for m in members if m[0] not in queued_reasons]
         deferred = [m for m in members if m[0] in queued_reasons]
         if started:
-            if parent_session:
+            if parent_session and _completion_ends_in_bell(parent_session):
+                # No completion event and no polling advice: the
+                # closing receipt line says what this caller should do.
+                spawn_lines.append(
+                    f"Spawned {len(started)} subagent(s). Completion events will not reach this caller:"
+                )
+            elif parent_session:
                 spawn_lines.append(
                     f"Spawned {len(started)} subagent(s). Results will arrive as completion events:"
                 )
@@ -635,7 +641,7 @@ def _spawn_run_receipt(
             "The gateway may have accepted these tasks before the response failed. "
             "Do not retry automatically. Check spawn_list"
         )
-        if parent_session:
+        if parent_session and not _completion_ends_in_bell(parent_session):
             guidance += " and wait for completion events"
         guidance += (
             ". spawn_list lists queued spawns too, but a submission still in flight "
@@ -644,7 +650,9 @@ def _spawn_run_receipt(
         )
         spawn_lines.append(guidance)
     if agent_ids:
-        if parent_session:
+        if parent_session and _completion_ends_in_bell(parent_session):
+            spawn_lines.append("\n" + _SUBAGENT_RECEIPT)
+        elif parent_session:
             if can_work:
                 spawn_lines.append(
                     "\nAdvance only your ready, non-overlapping parent work for a short bounded "
@@ -672,6 +680,30 @@ def _spawn_run_receipt(
     return "\n".join(spawn_lines)
 
 
+#: The receipt a sub-agent caller gets once its children are dispatched. A
+#: completion whose parent is a ``subagent:`` session has no conversation to be
+#: injected into: the gateway rings the bell only (``_finish_subagent_cron_or_notify``),
+#: so nothing resumes a sub-agent that ended its turn to wait. It must not
+#: be told to poll either: a ``spawn_run`` parent keeps its slot (``taskq_child_registered``),
+#: so a polling parent can starve its own children. Only ``spawn_sub_agents`` yields it.
+_SUBAGENT_RECEIPT = (
+    "This caller is a subagent: [Subagent completion event] messages will not reach "
+    "it, and nothing resumes it after its turn ends. spawn_run is for starting "
+    "parallel work while you do work of your own. To collect a child's result in "
+    "this turn, use spawn_sub_agents, which waits for it without holding your slot. "
+    "Dispatch is not completion."
+)
+
+
+def _completion_ends_in_bell(parent_session: str) -> bool:
+    """Whether a child's completion is delivered to *parent_session* by the bell alone.
+
+    Mirrors the routing in ``subagent_injection``: a ``subagent:`` parent has no
+    tab, channel or cron session to inject into.
+    """
+    return parent_session.startswith("subagent:")
+
+
 def spawn_continue(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, SPAWN_CONTINUE_SCHEMA)
     conv = (args.get("conversation") or "").strip()
@@ -689,6 +721,16 @@ def spawn_continue(name: str, args: dict[str, Any]) -> str:
     d = mcp_core._post(f"/api/spawn/{conv}/continue", body)
     if d.get("error"):
         return f"Error: {d['error']}"
+    if _completion_ends_in_bell(parent_session):
+        # spawn_sub_agents cannot wait on a continued run (no conversation
+        # parameter), so this caller is pointed at the run's own record.
+        run_id = d.get("id", "?")
+        return (
+            f"Continued conversation {conv} as run {run_id}. This caller is a subagent: "
+            "[Subagent completion event] messages will not reach it, and nothing resumes "
+            "it after its turn ends. Read the result with "
+            f"spawn_status(agent_id={run_id!r}) once the run has finished."
+        )
     return (
         f"Continued conversation {conv} as run {d.get('id', '?')}. "
         "The result will arrive as a [Subagent completion event] — "

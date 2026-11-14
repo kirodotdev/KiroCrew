@@ -18,7 +18,11 @@ from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_too
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
 
-def _run_tool(args: dict[str, Any], responses: list[dict] | None = None) -> tuple[list[dict], str]:
+def _run_tool(
+    args: dict[str, Any],
+    responses: list[dict] | None = None,
+    session_key: str = "dashboard:chat-1",
+) -> tuple[list[dict], str]:
     """Run spawn_run against a fake gateway; return (POSTed bodies, result text)."""
     from kiro_crew import mcp_core
 
@@ -33,7 +37,7 @@ def _run_tool(args: dict[str, Any], responses: list[dict] | None = None) -> tupl
 
     with (
         patch.object(mcp_core, "_post", side_effect=_fake_post),
-        patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
+        patch.object(mcp_core, "_resolve_session_key", return_value=session_key),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
         result = mcp_core._call_tool("spawn_run", args)
@@ -344,6 +348,27 @@ class TestDeferredSubmission:
             "boundary. Wait for the [Subagent completion event] messages. "
             "Dispatch is not completion."
         )
+
+    def test_subagent_caller_is_pointed_at_spawn_sub_agents(self):
+        """A ``subagent:`` parent's completion rings the bell only, so the
+        receipt must not tell it to end its turn and wait for an event, nor to
+        poll (a spawn_run parent keeps its slot)."""
+        _, text = _run_tool({"task": "one"}, responses=[{"id": "s1"}], session_key="subagent:p1")
+        assert "END YOUR TURN" not in text
+        assert "completion events:" not in text
+        assert "will not reach" in text and "spawn_sub_agents" in text
+        assert "poll" not in text
+
+    def test_subagent_continue_is_pointed_at_spawn_status(self):
+        from kiro_crew import mcp_core
+
+        with (
+            patch.object(mcp_core, "_post", return_value={"id": "r2"}),
+            patch.object(mcp_core, "_resolve_session_key", return_value="subagent:p1"),
+        ):
+            text = mcp_core._call_tool("spawn_continue", {"conversation": "c1", "task": "more"})
+        assert "END YOUR TURN" not in text
+        assert "will not reach" in text and "spawn_status(agent_id='r2')" in text
 
     @pytest.mark.parametrize("field", ["tasks", "agents"])
     def test_batch_member_limit_is_checked_before_any_post(self, gateway, field):
