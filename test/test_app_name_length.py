@@ -15,9 +15,9 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.apps import manifest_names
+from kiro_crew.apps import manager_records, manifest_names
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME
-from kiro_crew.apps.manager_records import _record_lock_path, _update_retired_tree_prefix
+from kiro_crew.apps.manager_records import _record_lock_path
 from kiro_crew.apps.manifest import app_name_error
 from kiro_crew.apps.routes import register_app_routes
 
@@ -38,7 +38,10 @@ def _derived_components(name: str) -> list[str]:
         f".{name}-data-tmp",
         f".{name}-secret-tmp",
         f".{name}-update-inflight",
-        f"{_update_retired_tree_prefix(name)}{_LONGEST_PID}-{_HEX8}",
+        *(
+            f"{manager_records._update_tree_prefix(name, phase)}{_LONGEST_PID}-{_HEX8}"
+            for phase in manager_records.UPDATE_TREE_PHASES
+        ),
         f"{name}.partial-{_HEX8}",
         f".{name}-deps-doomed.kirocrew-deps-prior",
         f".{name}-deps-doomed.kirocrew-deps-staging-{_LONGEST_PID}-{_HEX8}",

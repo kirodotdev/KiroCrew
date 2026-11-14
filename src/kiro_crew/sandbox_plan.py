@@ -220,7 +220,8 @@ class PlanHost:
     caller_ancestor_guards: tuple[str, ...] = ()
     #: Namespace only: the ``apps/<app>`` folder of each app that declares a credential
     #: mask, taken out of :attr:`readonly_ancestor_guards` and pinned AFTER the masks,
-    #: so the masks and ``data/``'s pin stay on the mount an update's rename keeps.
+    #: so the masks and ``data/``'s pin stay on the mount the rename keeps when a keep-data
+    #: uninstall or an install over kept data replaces that folder.
     mask_parent_pins: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()

@@ -563,14 +563,15 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     )
     # On the namespace backend, the folder of each app that declares a credential mask,
     # ``apps/<app>``, is pinned AFTER every mask instead of with the other pins before
-    # them; the set of pinned folders stays the same. An update replaces that folder from
-    # the gateway's namespace and renames ``data/`` into the new one. A mount placed
+    # them; the set of pinned folders stays the same. A keep-data uninstall, and an install
+    # over the data it kept, replace that folder from the gateway's namespace and rename
+    # ``data/`` into the new one (an update leaves the folder in place). A mount placed
     # through a pin of the old folder stays on the old folder's mount, so a running
     # session would read the restored credential plain. With the app folder unpinned
     # while the rest are placed, ``data/``'s pin and the masks sit on the mount the rename
     # keeps, and the app folder's pin, bound last, only adds one copy of them: one pin per
     # app spelling, nothing pinned above another after the masks.
-    # shortcut: the replacement ``apps/<app>`` an update creates is not pinned in a
+    # shortcut: the replacement ``apps/<app>`` either one creates is not pinned in a
     # session already running, so that session can rename it until its next spawn;
     # closing that needs a layout change (one top-level credentials folder).
     # Matched by the folder each guard resolves to, not by its spelling: a linked data

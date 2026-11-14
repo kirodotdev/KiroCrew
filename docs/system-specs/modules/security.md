@@ -2143,7 +2143,8 @@ points that read one: `sandbox_argv._live_plan_host` adds it to the tier's masks
 `crew_hidden_dirs` and to the relocated-home targets, and every parent of it to the rename
 guards on both backends (on the namespace backend the declaring app's own folder,
 `apps/<app>`, is pinned after every mask, `mask_parent_pins`, so the masks stay on the
-mount an update's rename keeps; except on the spawn that lifts it); `sandbox_aliases._hidden_leaves`
+mount the rename keeps when a keep-data uninstall or an install over kept data replaces
+that folder; except on the spawn that lifts it); `sandbox_aliases._hidden_leaves`
 and `_hardlink_refused_leaves` add it to the symlink, linked-component and hard-link passes,
 and a directory at a declared path refuses the spawn, because an entry names a file. Each entry is declared at the lifecycle's move-aside spelling too, and a record
 beside the app directory keeps it after a keep-data uninstall; only a manifest that reads

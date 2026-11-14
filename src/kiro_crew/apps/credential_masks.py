@@ -30,12 +30,14 @@ level 8, and an older host refuses a manifest carrying one (its grammar has no `
 ending), so it never runs the app with the directory unmasked.
 
 **Wherever the data is.** The app lifecycle moves ``data/`` aside to
-``apps/.<name>-data-tmp/`` while an install or update replaces the app's files, and a
-default uninstall removes the manifest and keeps the data. So each entry is masked at
-both locations, and the declaration is also kept in a record beside the app directory,
+``apps/.<name>-data-tmp/`` while an install over kept data or a keep-data uninstall
+replaces the app's files (an update leaves it in place), and a default uninstall removes
+the manifest and keeps the data. So each entry is masked at both locations, and the
+declaration is also kept in a record beside the app directory,
 ``apps/.<name>-credential-masks.json``, which :func:`remember_declaration` refreshes
-whenever the gateway records the installed app and before an update or uninstall moves
-the data. The record is read with the manifests and only ever adds masks, so a data
+whenever the gateway records the installed app and before an update removes the manifest
+or an uninstall moves the data. The record is read with the manifests and only ever adds
+masks, so a data
 directory with no manifest beside it stays masked, and only a manifest that reads
 cleanly rewrites or removes it.
 
@@ -619,8 +621,8 @@ def declarations_generation() -> int:
 def remember_declaration(app: str, *, kind: DeclarationKind = CREDENTIAL_MASKS) -> None:
     """Make *app*'s retained record match its installed ``app.json``.
 
-    Called by the gateway whenever it records the installed app and before an update or
-    uninstall moves the app's data, so the masks outlive the manifest beside the data.
+    Called by the gateway whenever it records the installed app and before an update removes
+    the manifest or an uninstall moves the app's data, so the masks outlive the manifest.
     Only a manifest that reads cleanly (:func:`_clean_declaration`) changes the record: one
     declaring nothing removes it. A missing, unreadable, unparseable, misnamed or invalid
     ``app.json`` (a built-in's record, a tree mid-copy, a hand edit) leaves the record as
