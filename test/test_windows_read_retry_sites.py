@@ -56,20 +56,45 @@ class _WindowsHost:
         return getattr(platform_compat, name)
 
 
+class _BothSeams:
+    """The sum of the two read counters: the named-path read and the descriptor read."""
+
+    def __init__(self, named: dict[str, int], descriptor: dict[str, int]) -> None:
+        self._named, self._descriptor = named, descriptor
+
+    def __getitem__(self, key: str) -> int:
+        return self._named[key] + self._descriptor[key]
+
+
 @contextmanager
-def held_open(path: Path, times: int) -> Iterator[dict[str, int]]:
+def held_open(path: Path, times: int) -> Iterator[_BothSeams]:
     """*path* is held open by another handle for its first *times* reads.
 
-    Yields the ``read_bytes`` counter: ``n`` is every read the retry helper made, the
-    faulted ones and the one that finally landed.
+    Yields the read counter: ``n`` is every read the retry helper made, the faulted ones
+    and the one that finally landed. A read made through a held folder descriptor does not
+    call ``Path.read_bytes``, so the same first *times* attempts also fault at the
+    function that read goes through, and ``n`` counts both kinds of read.
     """
+    through_descriptor = {"n": 0}
+    real = getattr(instance, "_read_once", None)
+
+    def faulted(fd: int, names: tuple[str, ...]) -> bytes:
+        if names[-1] == path.name:
+            through_descriptor["n"] += 1
+            if through_descriptor["n"] <= times:
+                raise PermissionError(f"[WinError 32] simulated sharing violation reading {path}")
+        if real is None:
+            raise RuntimeError("no descriptor read to call")
+        return real(fd, names)
+
     with (
         mock.patch.object(aw, "platform_compat", _WindowsHost()),
         mock.patch.object(aw, "_REPLACE_BACKOFF_SECONDS", 0),
+        mock.patch.object(instance, "_read_once", faulted, create=True),
         read_sharing_violation(match=str(path), times=times) as reads,
         read_text_sharing_violation(match=str(path), times=times),
     ):
-        yield reads
+        yield _BothSeams(reads, through_descriptor)
 
 
 def _write_json(path: Path, payload: Any) -> Path:
