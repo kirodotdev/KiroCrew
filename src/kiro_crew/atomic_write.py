@@ -355,7 +355,13 @@ def append_line(
     """
     target = Path(path)
     data = _encode(line + "\n", newline=None)
-    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | os.O_APPEND
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)  # 0 where os.O_NOFOLLOW does not exist
+    )
     if opener is not None:
         fd = opener(os.fspath(target), flags)
     else:
