@@ -308,7 +308,7 @@ export const sidebarCollision: CollisionDetection = (input) => {
   // pane wins only when nothing in the sidebar contains the pointer.
   const sidebarContainers = args.droppableContainers.filter(c => {
     const d = c.data?.current as { type?: string; container?: string } | undefined
-    if (d?.type === CHAT_PANE_DROP_TYPE) return false
+    if (d?.type === CHAT_PANE_DROP_TYPE || d?.type === SPLIT_PANE_DROP_TYPE) return false
     if (d?.type === 'pinned-session') {
       return activeData?.pinned === true && d.container === activeData.container
     }
@@ -364,6 +364,11 @@ function insideHiddenSubtree(container: DroppableContainer): boolean {
 // group). Re-pointing chatDropTarget at a wrapper shared with the sidebar
 // would break it.
 export const CHAT_PANE_DROP_TYPE = 'chat-pane-ref'
+
+/** Droppable `type` for a Split View pane, which shows the dropped session in
+ *  that pane. Portaled into the pane's own leaf inside the same chat-pane host,
+ *  so the invariant above holds for it too. */
+export const SPLIT_PANE_DROP_TYPE = 'split-pane'
 
 /** Approximate height (px) of a folder header row. For root folder drags the
  *  MIDDLE 25%–75% of this band re-parents INTO the folder; the top/bottom

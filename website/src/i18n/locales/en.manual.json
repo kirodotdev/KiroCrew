@@ -7045,6 +7045,7 @@
       "your_crewmate": "Your bot"
     },
     "chatSidebar": {
+      "session_already_in_another_pane": "Already open in another pane",
       "no_sessions_match_folders": "No sessions match — only a folder name did",
       "history_search_failed": "Search failed. Showing title matches only.",
       "search_results_count_one": "{{count}} match, best first",
