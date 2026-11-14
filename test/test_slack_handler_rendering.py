@@ -498,8 +498,8 @@ class TestToSlackMrkdwnTruncation:
     def test_leading_newline_does_not_truncate_to_empty(self):
         from kiro_crew.slack.format import SLACK_MAX_TEXT, to_slack_mrkdwn
 
-        # Newline only at index 0 of the window: rfind -> 0, `0 or CAP` -> CAP
-        # pre-fix (accidentally correct), but the explicit check keeps it robust.
+        # Newline only at index 0 of the window: rfind -> 0. A bare `0 or CAP`
+        # also gives CAP here by accident; the explicit check is what holds it.
         text = "\n" + "y" * (SLACK_MAX_TEXT + 1000)
         out = to_slack_mrkdwn(text)
         assert len(out) < SLACK_MAX_TEXT + 200

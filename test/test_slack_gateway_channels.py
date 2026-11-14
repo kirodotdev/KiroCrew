@@ -416,10 +416,10 @@ class TestChannelTransportStartGate:
 
     @pytest.mark.asyncio
     async def test_slack_connect_denied_by_policy_drops_socket_client(self):
-        # BLOCKING (GPT #593): Slack is a GOVERNED transport like every other
-        # channel. A `channels` policy that denies `slack` must stop it from
-        # CONNECTING — not merely drop its inbound messages — and must drop the
-        # socket client so nothing can reconnect it later.
+        # Slack is a GOVERNED transport like every other channel. A `channels`
+        # policy that denies `slack` must stop it from CONNECTING — not merely
+        # drop its inbound messages — and must drop the socket client so nothing
+        # can reconnect it later.
         self._install_policy(
             {
                 "version": 1,

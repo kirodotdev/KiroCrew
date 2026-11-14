@@ -1716,7 +1716,7 @@ def test_stop_never_reaches_a_rebound_conductor(world, stops):
     assert stops == []
 
 
-# ── round on ed6d3b0d71: compaction, already running, unit, overlay state ─
+# ── stop edge cases: compaction, already running, unit, overlay state ─────
 
 
 def test_a_stop_declined_by_compaction_gives_the_button_back(world, monkeypatch):
@@ -1792,7 +1792,7 @@ def test_an_approval_wait_links_the_session_and_does_not_say_retry(world, monkey
     assert world.store.resume_record(f"notice:{CHANNEL}")["state"] == "button", "still pressable"
 
 
-# ── GPT on ab90c3719f: a concurrent press on the other button ─────────────
+# ── a concurrent press on the other button ────────────────────────────────
 
 
 def test_a_resume_refusal_after_a_stop_meanwhile_keeps_both_states(world, monkeypatch, stops):

@@ -48,7 +48,7 @@ class TestRendererCloseClearsStuckStatus:
         # then clears the status. A cancellation inside that window leaves the
         # status set with _finalized already True. close() must still clear it
         # (its guard is _status_cleared, not _finalized), or the indicator is
-        # left stuck exactly as the pre-fix bug.
+        # left stuck.
         async def scenario():
             rec = _RecSlack()
             renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
