@@ -1,8 +1,8 @@
 """The directives that act on the turn's slot, and the quiet end of a turn.
 
-Setting the slot's project, resetting its conversation, applying a chat tag, suggesting
-a follow-up, and the nothing-to-do outcome, with the push that tells the browser. A new
-slot-targeted directive goes here. Its function-local imports are deliberate;
+Setting the slot's project, resetting its conversation, applying a chat tag, renaming
+the slot, suggesting a follow-up, and the nothing-to-do outcome, with the push that tells
+the browser. A new slot-targeted directive goes here. Its function-local imports are deliberate;
 the facade's module docstring says why.
 
 Served through :mod:`kiro_crew.dashboard.session_directive_apply`, which callers import
@@ -575,6 +575,200 @@ async def _apply_chat_tag(state: Any, slot: Any, session_key: str, args: dict[st
     names = [str(name_by_id.get(tid, tid)) for tid in slot.tags]
     shown = ", ".join(names) if names else "(none)"
     return f"Board tags updated. This session now carries: {shown}."
+
+
+#: ``chat_rename``'s refusal for each session it may not rename, keyed by the code
+#: ``session_rename`` uses for the same session, worded for a session renaming
+#: itself, plus ``not_user_turn`` (the guide's code for a turn the person did not
+#: send), ``conductor_session`` and ``manual_title``, which only ``chat_rename`` has.
+_SELF_RENAME_REFUSALS: dict[str, str] = {
+    "unattended_target": "a scheduled run's session cannot rename itself",
+    "app_scoped_target": "an app-scoped session cannot rename itself",
+    "linked_session_target": "a channel-linked session cannot rename itself",
+    "mirrored_target": "a session mirrored to a channel cannot rename itself",
+    "not_user_turn": "a turn the person did not send cannot rename this session",
+    "conductor_session": "a conductor's session cannot rename itself",
+    "manual_title": (
+        "this session's title was set by a person or a tool, and an agent does not "
+        "replace it; "
+        "the person can rename it in the sidebar, or choose Regenerate title and ask again"
+    ),
+}
+
+
+async def _apply_chat_rename(
+    state: Any,
+    slot: Any,
+    session_key: str,
+    args: dict[str, Any],
+    *,
+    producer_turn_actor: str = "",
+) -> str:
+    """Apply a ``chat_rename`` directive: rename THIS turn's slot.
+
+    The rename ``session_rename`` makes when a session names itself: the same
+    title rules (``_clean_rename_title``), the same refusals for a slot it cannot
+    reach (``_live_target_refusal``, ``_has_channel_mirror``) but for the two
+    differences below, then the sidebar's own write (``apply_manual_title``), so
+    the title is final and the automatic titler leaves it alone. The dispatcher
+    has already admitted only a turn carrying the user-origin mark on a
+    user-facing conversation that holds this slot.
+
+    The mark alone does not prove a person sent the turn (a script cron's
+    ``send_to_session`` carries it with actor ``cron``), so the slot checks also
+    refuse, as ``not_user_turn``, a turn that fails any of main's own person
+    checks: a person's actor (``producer_turn_actor`` in
+    ``turn_gate._PERSON_ACTORS``), ``slot._turn_user_sent``, which the dashboard
+    clears before a peer's or an app's text is steered in, and no channel
+    provenance (``_turn_channel_origin``, ``_turn_channel_narrowed``). A channel's
+    own tab (``channel_origin``) is refused as ``linked_session_target`` whether or
+    not it is bound yet, since ``_live_target_refusal`` lets an unbound one through.
+
+    A conductor's session is refused as ``conductor_session``: a Crew Mode chat
+    (``crew_mode.runs_crew_mode`` on the slot's agent, the call the slot list makes),
+    read in memory with the slot checks, and a crewmate's conductor chat
+    (``mate_worker.is_conductor_execution`` on the session's execution record), which
+    reads the record from disk and so runs in a worker thread beside the mirror
+    probe. A record that cannot be read is refused the same way.
+
+    Two rules differ from ``session_rename``'s self case. An incognito or
+    temporary session may rename itself: its memory mode decides what is learned
+    from it and that no other session may address it, and renaming itself does
+    neither. And a title someone set deliberately is kept, so an agent never
+    overwrites a person's name: origin ``user`` (the sidebar, a channel
+    ``/title``, ``session_rename``, a name given at creation) and a titled slot
+    with no recorded origin, which a reload reads as ``user``. Only the origins
+    in ``_AGENT_REPLACEABLE_ORIGINS`` may be replaced. The write records origin
+    ``agent``, which the background titler treats as final; a person's later
+    rename replaces it, and so may this directive. "Regenerate title" makes the
+    title ``auto`` again, after which the agent may rename it.
+
+    The mirror probe reads the session store through its guarded getters, whose
+    lock an off-loop writer holds across its disk write, so it runs in a worker
+    thread. The slot checks run again after it, and nothing awaits between that
+    re-check and ``apply_manual_title``, which assigns the title before its own
+    first await: a close, replacement or slot-side change landing during the
+    probe is refused rather than written over, and so is a person's rename made
+    while it ran.
+
+    The probe itself is a point-in-time read: a mirror linked after the worker
+    reads the store and before the write is not seen. ``rename_target``'s on-loop
+    read has the same window against an off-loop link writer; here an on-loop
+    writer can also land in it while the probe is in its thread. What lands is a
+    sidebar label on a session mirrored a moment earlier, which the sidebar's own
+    rename (``api_chat_slot_rename``) sets with no mirror check at all.
+    """
+    from kiro_crew import crew_mode
+    from kiro_crew.dashboard.chat_title import (
+        _AGENT_REPLACEABLE_ORIGINS,
+        _TITLE_ORIGIN_AGENT,
+        apply_manual_title,
+    )
+    from kiro_crew.dashboard.session_control_parts.caller_access import SessionControlError
+    from kiro_crew.dashboard.session_control_parts.delivery_containment import (
+        _has_channel_mirror,
+    )
+    from kiro_crew.dashboard.session_control_parts.session_titles import _clean_rename_title
+    from kiro_crew.dashboard.session_control_parts.target_authorization import (
+        _live_target_refusal,
+    )
+    from kiro_crew.shared_crew.turn_gate import _PERSON_ACTORS
+
+    def _sel_self_rename(outcome: str, resources: str) -> None:
+        # The title length or the refusal code, never the title text.
+        try:
+            from kiro_crew.sel import sel
+
+            sel().log_api_access(
+                caller="mcp-directive",
+                operation="chat.self_rename",
+                outcome=outcome,
+                source="mcp-directive",
+                resources=resources,
+            )
+        except Exception:
+            logger.debug("chat_rename SEL api_access audit failed", exc_info=True)
+
+    def _deny(code: str, reason: str) -> _DirectiveDenied:
+        _sel_self_rename("denied", code)
+        return _DirectiveDenied(f"Error: {reason} ({code}); the session title was not changed.")
+
+    def _refuse_unreachable_slot() -> None:
+        if state._slots.get(slot.key) is not slot or getattr(slot, "is_closing", False):
+            raise _deny("target_replaced", "this session was closed or replaced")
+        refusal = _live_target_refusal(slot, allow_ephemeral=True)
+        if refusal is not None:
+            code = refusal[1]
+            raise _deny(code, _SELF_RENAME_REFUSALS.get(code, refusal[0]))
+        # A channel's tab, bound or not: the dashboard leaves one unbound when it
+        # cannot resolve the channel session, and it still shows that channel.
+        if getattr(slot, "channel_origin", False):
+            raise _deny("linked_session_target", _SELF_RENAME_REFUSALS["linked_session_target"])
+        if crew_mode.runs_crew_mode(
+            getattr(slot, "agent", ""),
+            getattr(slot, "agent_kind", ""),
+            getattr(slot, "mode", ""),
+            getattr(slot, crew_mode.STAMP_FIELD, ""),
+        ):
+            raise _deny("conductor_session", _SELF_RENAME_REFUSALS["conductor_session"])
+        if not (
+            producer_turn_actor in _PERSON_ACTORS
+            and getattr(slot, "_turn_user_sent", False) is True
+            and not getattr(slot, "_turn_channel_origin", False)
+            and not getattr(slot, "_turn_channel_narrowed", False)
+        ):
+            raise _deny("not_user_turn", _SELF_RENAME_REFUSALS["not_user_turn"])
+        if getattr(slot, "_titled", False) and (
+            getattr(slot, "_title_origin", "") not in _AGENT_REPLACEABLE_ORIGINS
+        ):
+            raise _deny("manual_title", _SELF_RENAME_REFUSALS["manual_title"])
+
+    # Validated before any gate, as ``rename_target`` does: a malformed title needs
+    # no store read, and refusing it first keeps a bad argument from reading as an
+    # access decision.
+    try:
+        clean = _clean_rename_title(str(args.get("title") or ""))
+    except SessionControlError as exc:
+        _sel_self_rename("error", exc.code)
+        return f"Error: {exc.message} ({exc.code})."
+
+    def _is_crewmate_conductor() -> bool:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.execution_context import read_session_execution
+        from kiro_crew.mate_worker import is_conductor_execution
+
+        return is_conductor_execution(read_session_execution(session_key), KiroCrewConfig.load())
+
+    _refuse_unreachable_slot()
+    try:
+        crewmate_conductor = await asyncio.to_thread(_is_crewmate_conductor)
+    except Exception:  # noqa: BLE001 - an unreadable record is refused, not admitted
+        logger.debug("chat_rename: execution record unreadable", exc_info=True)
+        crewmate_conductor = True
+    if crewmate_conductor:
+        raise _deny("conductor_session", _SELF_RENAME_REFUSALS["conductor_session"])
+    if await asyncio.to_thread(_has_channel_mirror, state, slot):
+        raise _deny("mirrored_target", _SELF_RENAME_REFUSALS["mirrored_target"])
+    _refuse_unreachable_slot()
+    # Recorded when the decision is made, before the write: closing the session
+    # cancels the turn, which can land in ``apply_manual_title``'s save after the
+    # title is on the slot, and the audit must not lack the decision behind a
+    # changed title. The call is synchronous, so nothing suspends between the
+    # gate and the write. A failed save adds an ``error`` event.
+    _sel_self_rename("allowed", f"chars={len(clean)}")
+    if not await apply_manual_title(
+        state, slot, clean, route="chat_rename", caller=session_key, origin=_TITLE_ORIGIN_AGENT
+    ):
+        _sel_self_rename("error", f"chars={len(clean)},title_persist_failed")
+        return (
+            f'Error: this session now shows the title "{slot.title}", but it could not '
+            "be saved yet (title_persist_failed); the session's next save writes it, and "
+            "until then a restart brings back the previous title. Renaming again with "
+            "the same title is safe."
+        )
+    # The slot's title, not this call's: a rename that overtook this one while it
+    # saved has already replaced it.
+    return f'Session renamed. The sidebar now shows "{slot.title}".'
 
 
 async def _suggest_followup(state: Any, slot: Any, args: dict[str, Any]) -> str:

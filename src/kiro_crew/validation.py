@@ -271,6 +271,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ABSOLUTE_PATH_RE,
         _GIT_RESERVED_REFS,
         _WF_RUN_ID_RE,
+        CHAT_RENAME_SCHEMA,
         CHAT_TAG_SCHEMA,
         DELETE_MESSAGE_SCHEMA,
         FOLLOWUP_BRANCH_RE,

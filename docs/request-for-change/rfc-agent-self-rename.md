@@ -45,9 +45,10 @@ behind, and whose title it may replace.
    crewmate's DM thread, where it changes nothing.
 5. **Incognito and temporary sessions included.** Memory mode limits what is
    learned from a session and who else may address it, not its own label.
-6. **Not behind `agent.session_control`.** It reaches no peer session, as
-   `chat_tag` reaches none. A conductor reaches it only through an approval
-   prompt.
+6. **Not behind `agent.session_control`, and not in a conductor's session.** It
+   reaches no peer session, as `chat_tag` reaches none. Until the owner decides
+   whether a conductor may reach it (Sign-off, item 2), a conductor's session is
+   refused as `conductor_session`.
 7. **The naming convention stays the user's.** Lessons, steering and prompts
    say when and how to name a session; the tool only applies a title.
 
@@ -216,13 +217,20 @@ Every spec that mounts `@kirocrew-core` sees the tool. The default agent
 auto-approves `@kirocrew-core`, so it renames without a prompt. The conductor
 specs (`agent_materialization/conductor_agents.py`) mount `@kirocrew-core`
 whole but auto-approve only the verbs in their own grant lists, so a conductor
-reaches `chat_rename` only through an approval prompt, only on a turn the person
-sent in that chat, and never over a title the person set. `chat_tag` reaches
-them the same way today. The conductor decision of 2026-11-04
+would reach `chat_rename` only through an approval prompt. The conductor
+decision of 2026-11-04
 (`docs/decisions/2026-11-04-conductors-stay-simple-and-new-abilities-go-to-workers.md`)
 requires an explicit owner decision on any capability a conductor gains, so
 conductors reaching the tool is its own sign-off item, separate from accepting
-the tool (see Sign-off).
+the tool (see Sign-off). Until that decision, `chat_rename` refuses a
+conductor's session as `conductor_session`, so accepting the tool gives a
+conductor nothing:
+
+- a Crew Mode chat, whose agent `crew_mode.runs_crew_mode` counts as a
+  conductor, the check the slot list makes;
+- a crewmate's conductor chat, which `mate_worker.is_conductor_execution` finds
+  on the session's execution record. A worker the crewmate opened is not a
+  conductor, and it renames.
 
 Like `chat_tag`, the tool has no setting that turns it on or off, so rolling
 it back means reverting the implementation.
@@ -242,6 +250,9 @@ A `member` title is not a person's choice for that thread:
 `name_member_thread` writes the crewmate's display name each time the thread
 is opened, over no title, an `auto` one or an earlier `member` one. A person
 who renames the thread writes `user`, which `name_member_thread` then keeps.
+While conductors are refused (Sign-off, item 2), a crewmate's thread that runs
+on the mate conductor is refused as `conductor_session`, so the `member` row
+applies only to a thread that does not.
 
 A person's rename always wins: it writes `user` over any origin. To let the
 agent name a session the person named, they choose "Regenerate title", which
@@ -264,6 +275,8 @@ conservative side.
    passes, so an unattended, app-scoped or channel-linked session is refused
    with the code `session_rename` uses; it is not a channel's tab (a
    `channel_origin` tab is refused as `linked_session_target`, bound or not);
+   it is not a Crew Mode chat (`crew_mode.runs_crew_mode`, else
+   `conductor_session`);
    the turn is still the person's (a person's actor, `slot._turn_user_sent`
    and neither channel flag, else `not_user_turn`); and its title is one an
    agent may replace: untitled,
@@ -272,9 +285,13 @@ conservative side.
    other titled origin, a missing one included, is refused as `manual_title`:
    the list is an allowlist so a writer that records no origin is protected at
    once, not only after a reload reads it as `user`.
-3. `_has_channel_mirror(state, slot)` refuses a session mirrored to a channel
-   (`mirrored_target`). It reads the session store through getters whose lock
-   an off-loop writer holds across a disk write, so it runs in a worker thread.
+3. Two reads in worker threads. The session's execution record must not be a
+   crewmate's conductor chat (`mate_worker.is_conductor_execution`, else
+   `conductor_session`; a record that cannot be read is refused the same way).
+   Then `_has_channel_mirror(state, slot)` refuses a session mirrored to a
+   channel (`mirrored_target`). The first reads from disk, and the second reads
+   the session store through getters whose lock an off-loop writer holds across
+   a disk write, so neither runs on the event loop.
 4. The slot checks run again, so a close, replacement, channel link, a
    person's rename, or a peer's, an app's or a channel's steer during the probe
    is refused.
@@ -337,6 +354,10 @@ Exit criteria:
   mirror is removed before the directive applies.
 - A `channel_origin` tab is refused as `linked_session_target`, bound or not,
   and its title is unchanged.
+- A conductor's session is refused as `conductor_session` and its title is
+  unchanged: a Crew Mode chat, and a crewmate's conductor chat, including one
+  whose execution record cannot be read. A worker a crewmate opened and a
+  default-agent chat still rename.
 - A title with origin `agent` is never read as Slack mrkdwn.
 - An `agent` origin survives a reload, and an older version reads it as `user`.
 - The `chat.self_rename` line carries the title length or the refusal code,
@@ -354,7 +375,9 @@ so a downgrade can never make an agent's title refreshable. `agent` joins
 `mrkdwn_title._TYPED_TITLE_ORIGINS`, so a title the agent wrote is never read
 as Slack mrkdwn, as a person's is not.
 
-A crewmate's DM thread behaves differently once the agent names it: the thread
+A crewmate's DM thread the agent may rename (while conductors are refused, one
+that does not run on the mate conductor) behaves differently once the agent
+names it: the thread
 keeps the agent's title instead of taking the crewmate's display name each time
 it is opened, so reopening it does not undo a rename the person asked for.
 "Regenerate title" changes nothing on a crewmate's thread, so a person who wants

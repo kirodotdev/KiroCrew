@@ -597,7 +597,11 @@ class TestRehydration:
             (True, "auto", "auto"),
             (True, "user", "user"),
             (True, None, "user"),  # legacy: conservative, never refreshed
-            (True, "agent", "user"),  # unrecognized value: conservative
+            (True, "agent", "agent"),  # the session's own chat_rename
+            (True, "member", "member"),
+            # unrecognized value: conservative. Also the older-version proof: a
+            # release that predates "agent" reads it exactly like this row.
+            (True, "robot", "user"),
             (True, 7, "user"),
             (False, "auto", ""),
             (False, None, ""),

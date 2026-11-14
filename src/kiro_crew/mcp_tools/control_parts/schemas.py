@@ -1092,6 +1092,49 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "chat_rename",
+            "description": (
+                "Rename THIS chat session's sidebar title. Use it when the person "
+                "asks you to, or when their own instructions say how sessions should "
+                "be named. It renames only the session you are running in, and it is "
+                "not available in a conductor's session; to rename another session, "
+                "use session_rename."
+                "\n\n"
+                "The new title is final, like a manual rename: the automatic titler "
+                "stops refreshing it. The person can still rename it or choose "
+                "Regenerate title. You may replace an automatic title, a crewmate "
+                "thread's name, or one you set earlier, but never a title someone set "
+                "by hand (a sidebar rename, a "
+                "channel /title, session_rename, or a name given when the session was "
+                "created): that call is refused, and the person can rename it "
+                "themselves or choose Regenerate title, after which you may."
+                "\n\n"
+                "Title rules: surrounding whitespace is stripped; it must be 1 to 200 "
+                "characters on one line, with no control, text-direction or hidden "
+                "characters; credential-shaped text is redacted. The result reports "
+                "the title as stored."
+                "\n\n"
+                "Restrictions: refused for a turn a person did not send (cron jobs, "
+                "subagents, task runs, monitor wakes, messages an app sent), a turn a "
+                "channel opened, a turn another session, an app or a channel steered a "
+                "message into, a channel session with no dashboard slot, a channel's "
+                "own tab, a conductor's session (Crew Mode or a crewmate's own chat), "
+                "and a scheduled-run, app-scoped, channel-linked or "
+                "channel-mirrored session. Incognito and temporary sessions can rename "
+                "themselves. The change applies when this turn's result is processed."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The new sidebar title, at most 200 characters.",
+                    },
+                },
+                "required": ["title"],
+            },
+        },
+        {
             "name": "suggest_followup",
             "description": (
                 "Offer the user up to 3 follow-up items as a card below the chat "

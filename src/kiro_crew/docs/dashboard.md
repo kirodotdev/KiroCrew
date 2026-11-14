@@ -33,7 +33,7 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 - **Resume**: click a session under Older Sessions to restore the full conversation.
 - **Notifications**: click a notification to view it in the main pane.
 - **Auto-titles**: sessions get auto-generated titles after a few turns.
-- **Rename a session**: choose **Rename** from a sidebar row's `⋮` menu (or right-click the row), double-click the bold title in the row, or click the title in the session header. A name you set is kept: background title refreshes skip it, and only **Regenerate title** replaces it. **Regenerate title** sits on the session header (on hover) and in a sidebar row's `⋮` menu, so a stale name can be refreshed without opening the session.
+- **Rename a session**: choose **Rename** from a sidebar row's `⋮` menu (or right-click the row), double-click the bold title in the row, or click the title in the session header. A name you set is kept: background title refreshes skip it, and only **Regenerate title** replaces it. The agent can also rename its own session when you ask it to, or when your own instructions say how sessions should be named; background refreshes skip that name too, and the agent never replaces a name you set yourself. **Regenerate title** sits on the session header (on hover) and in a sidebar row's `⋮` menu, so a stale name can be refreshed without opening the session.
 - **Edit & resend**: edit and resend previous user messages with history preserved. From an empty composer, ⌘↑ (macOS) or Ctrl+↑ opens the last user message for editing.
 - **Fork session**: fork a session into a new tab with full context carried over.
 - **Regenerate replies**: regenerate assistant replies with variant history navigation.

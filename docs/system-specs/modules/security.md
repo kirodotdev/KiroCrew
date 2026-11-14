@@ -3961,7 +3961,7 @@ Centralized validation for the registered MCP tool handlers (`MCP_CORE_SCHEMAS` 
 | `wire_envelopes.py` | JSON-RPC request and response envelopes, `build_tool_response`, dashboard API request bodies |
 | `core_agent_schemas.py` | `kirocrew-core` schemas for spawn, lessons, the session ledger and monitor loops (with the wake-judge brief) |
 | `ask_question_card.py` | the `ask_question` bounds, its schema, `format_ask_answers` and `validate_ask_user_question` |
-| `core_turn_schemas.py` | `kirocrew-core` schemas for messages, skills, the project, `chat_tag`, follow-ups and workflows |
+| `core_turn_schemas.py` | `kirocrew-core` schemas for messages, skills, the project, `chat_tag`, `chat_rename`, follow-ups and workflows |
 | `artifact_schemas.py` | artifact tools, and the artifact and chat folder, tag and column tools |
 | `cron_schemas.py` | the `kirocrew-cron` tools and `MCP_CRON_SCHEMAS` |
 | `dashboard_route_schemas.py` | the dashboard hook and file route bodies |

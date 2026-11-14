@@ -349,6 +349,9 @@ _HOSTILE_CALLS: dict[str, dict] = {
     # chat_tag: an unknown tag id is the cheapest deterministic
     # refusal — it fails validation before any grant or persistence path.
     "chat_tag": {"add": ["definitely-not-a-vocabulary-tag-xyz"]},
+    # chat_rename: a schema-valid title whose escaped JSON overflows the marker,
+    # so the handler runs and ``encode`` refuses it.
+    "chat_rename": {"title": "\U0001f600" * 500},
 }
 
 
