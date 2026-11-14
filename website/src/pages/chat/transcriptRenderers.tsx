@@ -70,6 +70,8 @@ import { formatTs, quoteMessageFor, renderAssistantBubble, replyInThreadFor, thr
 import { renderUserContent } from './ChatPageMessageContent'
 import { fmtMessageTimeFull } from './messageTime'
 import type { ChatMessage } from '../../types'
+import { isHiddenInvisibleAssistantRow } from '../../utils/invisibleText'
+import { replyTurnStats } from './replyFooter'
 
 /** Disclosure-map identity for a tool row (#8204). messageRowKey is
  *  `${role}-${clientTs ?? ts}` and tool rows are never clientTs-stamped, so a
@@ -89,6 +91,11 @@ export function toolDisclosureKey(m: ChatMessage, key: string): string {
   if (m.role !== 'tool') return key
   const tcid = m.meta?.tool_call_id
   return typeof tcid === 'string' && tcid ? `${key}-${tcid}` : key
+}
+
+/** A reply that has no visible content in a crewmate chat. */
+function isHiddenCrewmateReply(m: ChatMessage): boolean {
+  return isHiddenInvisibleAssistantRow(m, { fileChips: false, steerChip: false })
 }
 
 export interface TranscriptRendererOptions {
@@ -745,7 +752,12 @@ export function createTranscriptRenderers(
           render: (m: ChatMessage, ctx: MessageRenderContext) => {
             // Run position reads turn boundaries off the UNFILTERED transcript
             // (a patrol wake between two replies is filtered from `ctx.messages`).
-            const pos = crewmateRunPosition(ctx.messages, ctx.index, crewmateTranscriptOf())
+            const transcript = crewmateTranscriptOf()
+            const pos = crewmateRunPosition(ctx.messages, ctx.index, transcript)
+            const transcriptIndex = transcript?.indexOf(m) ?? -1
+            const turnStats = transcript && transcriptIndex >= 0
+              ? replyTurnStats(m, transcript, transcriptIndex, isHiddenCrewmateReply)
+              : replyTurnStats(m, ctx.messages, ctx.index)
             // The run ends here (single / end): the row after it is a boundary
             // the user sees or the turn ended, so this bubble is the one that
             // carries the hover actions. No "Steered" chip on any bubble: in a
@@ -759,6 +771,7 @@ export function createTranscriptRenderers(
               forceFooter: pos === 'single' || pos === 'end',
               suppressSteerAck: true,
               hideFileChanges: true,
+              turnStats,
               // A crewmate's reply is prose about the crew's own work, so it
               // names sessions constantly. Same triple the single-chat page
               // hands its bubble, and `m.ts` with it so the SHORT form resolves

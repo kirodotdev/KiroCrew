@@ -18,6 +18,7 @@ import type { FrameData } from './frames'
 import { storeFocusedSlot } from '../../lib/storeFocusedSlot'
 import { getMountedMemberThreadSlot } from '../../lib/mountedMemberThread'
 import { isCrewmateSpeech } from '../../components/chat/crewmateBubbles'
+import { isHiddenReplyAt } from '../../app-sdk/turnPolicyBlock'
 
 type VoiceProgress = {
   slot: string
@@ -36,22 +37,23 @@ type VoiceRequest = {
   clientFallback: boolean
 }
 
-const isAssistantRow = (m: ChatMessage): boolean => m.role === 'assistant'
+type LastTurnReply = (m: ChatMessage, index: number, messages: readonly ChatMessage[]) => boolean
 
 /** The newest reply of the turn that just ended, or null when that turn
  *  produced none (it failed before any reply text). `isReply` says which rows
- *  count as the reply: any assistant row in a Sessions chat, and in a crewmate
- *  thread only the rows that chat draws as speech (`isCrewmateSpeech`), so a
+ *  count as the reply; the default is a Sessions-chat assistant row that is
+ *  actually drawn, while a crewmate thread passes `isCrewmateSpeech`, so a
  *  status row it hides (a compaction notice) is never read aloud. The walk
  *  stops at the turn's opener (`opensTurn`) over the unfiltered rows, so an
  *  earlier turn's reply is never read aloud again for a turn that said nothing. */
 export function replyOfLastTurn(
   msgs: readonly ChatMessage[],
-  isReply: (m: ChatMessage) => boolean = isAssistantRow,
+  isReply?: LastTurnReply,
 ): ChatMessage | null {
   for (let i = msgs.length - 1; i >= 0; i--) {
     const m = msgs[i]
-    if (isReply(m)) return m
+    const reply = isReply ? isReply(m, i, msgs) : m.role === 'assistant' && !isHiddenReplyAt(m, msgs, i)
+    if (reply) return m
     if (opensTurn(m)) return null
   }
   return null
@@ -381,7 +383,7 @@ export function useVoicePlayback(dispatch: AppDispatch): VoicePlayback {
           const msgs = selectSlotMessages(store.getState(), slot)
           const crewmate = slot === getMountedMemberThreadSlot()
           const last = [...msgs].reverse().find(m => m.role === 'streaming')
-            ?? replyOfLastTurn(msgs, crewmate ? isCrewmateSpeech : isAssistantRow)
+            ?? replyOfLastTurn(msgs, crewmate ? isCrewmateSpeech : undefined)
           if (last) flushVoiceTail(slot, last)
         }
       },

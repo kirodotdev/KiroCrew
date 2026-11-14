@@ -165,9 +165,11 @@ reports blocked playback, the crewmate's replies reveal their action rows, as
 the Sessions chat's do. At `chat_done` with no streaming row, the tail falls
 back only to an assistant row of the turn that ended (`replyOfLastTurn` stops
 at the turn's opener), so a turn that failed before any reply text reads
-nothing aloud instead of an earlier reply. In a crewmate thread that row must
-also be one the chat draws as speech (`isCrewmateSpeech`), so a status row it
-hides, such as a compaction notice, is never read aloud.
+nothing aloud instead of an earlier reply. In a Sessions chat that row must
+also be one the transcript draws (`isHiddenReplyAt`), so an invisible-only or
+policy-block steering-only row cannot displace the visible reply above it; in a
+crewmate thread it must be one the chat draws as speech (`isCrewmateSpeech`),
+so a status row it hides, such as a compaction notice, is never read aloud.
 A crewmate reply's More menu offers the same Read aloud as a Sessions reply
 (`website/src/pages/chat/speakReply.ts`, wired by `ChatPaneTranscript` for a
 crewmate pane only).

@@ -48,7 +48,8 @@ import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowMode
 import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
 import { sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
-import { isHiddenInvisibleAssistantRow, isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isRetractedSteerRow } from '../../../utils/invisibleText'
+import { isHiddenReplyAt } from '../../../app-sdk/turnPolicyBlock'
 import { isSystemNoticeRow } from '../CompactionCard'
 import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
@@ -351,13 +352,14 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
     }).finally(settle)
   }, [nativeApproval, instanceId, slotPath, settle, name])
   // The newest turn row the transcript draws as a bubble: a system notice
-  // (compaction, reload) and a say-nothing reply are not one.
-  const lastTurn = [...messages].reverse().find(m =>
+  // (compaction, reload) and a say-nothing reply (`isHiddenReplyAt`) are not one.
+  const lastTurnIdx = messages.findLastIndex((m, i) =>
     !isRetractedSteerRow(m) && (
       m.role === 'user' ||
-      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m))
+      (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenReplyAt(m, messages, i))
     ),
   )
+  const lastTurn = lastTurnIdx >= 0 ? messages[lastTurnIdx] : undefined
   // An untitled session shows the shared "Untitled session" label, never the
   // internal slot key. The key still routes every request (crewWindowSlot,
   // slotPath); only the header text changes. The label is used ONLY once a

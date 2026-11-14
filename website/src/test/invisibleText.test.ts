@@ -118,7 +118,7 @@ describe('ChatPage inline chain consults the skip (source contract)', () => {
     // lastTextIdx must agree with the renderer's skip, or those affordances
     // silently vanish for the rest of a quiet monitor run.
     expect(src).toMatch(
-      /role === 'assistant' && !isHiddenInvisibleAssistantRow\(messages\[i\]\)/,
+      /role === 'assistant' && !isHiddenReplyAt\(messages\[i\], messages, i\)/,
     )
   })
 

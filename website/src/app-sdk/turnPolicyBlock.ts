@@ -1,5 +1,6 @@
 import type { ChatMessage } from '../types'
 import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
+import { isHiddenInvisibleAssistantRow } from '../utils/invisibleText'
 
 /**
  * True when the turn containing `index` had a tool call blocked by policy.
@@ -30,7 +31,7 @@ import { parseRecoveryMessage } from '../pages/chat/RecoveryCard'
  * deserves its acknowledgement, and suppressing on the presence of a policy
  * notice alone would silently swallow it.
  */
-export function turnHadPolicyBlock(messages: ChatMessage[], index: number): boolean {
+export function turnHadPolicyBlock(messages: readonly ChatMessage[], index: number): boolean {
   let blocked = false
   for (let i = Math.min(index, messages.length - 1); i >= 0; i--) {
     const m = messages[i]
@@ -46,4 +47,17 @@ export function turnHadPolicyBlock(messages: ChatMessage[], index: number): bool
     }
   }
   return blocked
+}
+
+/**
+ * True when assistant row `m` draws nothing on a surface that shows file chips:
+ * invisible-only text, or a reply that is only a `[STEERING …]` note in a turn
+ * whose Steered chip `turnHadPolicyBlock` drops. `messages` and `index` locate
+ * only that turn's preceding rows because the rendered row may come from a
+ * deferred snapshot. The reply bubble, footer placement and Regenerate anchor
+ * all ask this, so a hidden row never keeps actions from the row above it.
+ */
+export function isHiddenReplyAt(m: ChatMessage, messages: readonly ChatMessage[], index: number): boolean {
+  if (!isHiddenInvisibleAssistantRow(m, { steerChip: false })) return false
+  return isHiddenInvisibleAssistantRow(m) || turnHadPolicyBlock(messages, index)
 }

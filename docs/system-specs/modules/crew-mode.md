@@ -3805,7 +3805,11 @@ unchanged.
 What is hidden: rows with role `nudge`, `inject`, `subagent`, `tool`,
 `tool_call`, `tool_result`, `thinking`; and an `assistant` row that is not
 speech — invisible-only content (the bare U+200B the model is instructed to
-answer a quiet patrol with, `isHiddenInvisibleAssistantRow`), a gateway system
+answer a quiet patrol with, `isHiddenInvisibleAssistantRow`), a row whose only
+content is something this chat does not draw (the content-less row
+`_attach_file_changes` writes for a quiet turn that only changed files, since
+the chat draws no file chips, or a reply that is only a `[STEERING steer-…]`
+note, since it draws no Steered chip), a gateway system
 notice written under the assistant role (compaction, session reload), or an
 injected workflow completion. A turn that ends without addressing the user is
 therefore a turn whose final assistant text is empty: the model's own silence
