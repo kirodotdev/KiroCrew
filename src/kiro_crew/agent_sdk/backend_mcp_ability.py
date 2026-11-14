@@ -281,9 +281,9 @@ def _dispositions(backend: str) -> Mapping[str, str] | None:
 
     Empty for every kind but ``mirror``: a mirror is what performs the projection, so
     it is the only kind that can answer per concern. One exception, a ``broker-only``
-    harness Crew does not fire spec hooks for (pi): no mirror hands it the spec, and
-    Crew's turn loop does not run the ``hooks`` field there, so that one concern is
-    ruled ``withheld`` (:func:`_broker_only_dispositions`).
+    harness (pi): no mirror hands it the spec, so ``autoApprove`` is ruled
+    ``withheld``, and so is ``hooks`` unless Crew's turn loop fires that field there
+    (:func:`_broker_only_dispositions`).
 
     ``None`` is the third answer and it is not the same as ``{}``: the rulings could
     not be READ. An empty map says this harness withholds nothing, which is a claim;
@@ -307,13 +307,19 @@ def _dispositions(backend: str) -> Mapping[str, str] | None:
 
 
 def _broker_only_dispositions(backend: str) -> Dict[str, str]:
-    """The rulings an unmirrored *backend* still has: ``hooks`` on a broker-only one.
+    """The rulings an unmirrored *backend* still has: a broker-only one's spec losses.
 
-    A ``broker-only`` projection is handed no agent spec, so the spec's ``hooks``
-    field reaches the harness by no route. Unless Crew fires that field itself
-    (``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``), nothing runs it, and an empty map would
-    tell the card and the session-start notice the opposite. Every other kind
-    answers ``{}``: this rules on the broker-only kind alone.
+    A ``broker-only`` projection is handed no agent spec, so two spec fields reach
+    the harness by no route, and an empty map would tell the card and the
+    session-start notice the opposite:
+
+    * ``autoApprove``: no approval value is projected, and pi's gate extension
+      (``agent_sdk/gate_extensions/pi``) asks Crew for every call, so a saved
+      auto-approval does not take effect -- the same ruling every mirror makes;
+    * ``hooks``: nothing runs the field unless Crew fires it itself
+      (``ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS``).
+
+    Every other kind answers ``{}``: this rules on the broker-only kind alone.
     """
     # circular import -- see :func:`_declaration`.
     from kiro_crew.agent_sdk.backends import ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
@@ -322,9 +328,11 @@ def _broker_only_dispositions(backend: str) -> Dict[str, str]:
     declared = _declaration(backend)
     if declared is None or declared.kind is not ProjectionKind.BROKER_ONLY:
         return {}
-    if backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS:
-        return {}
-    return {concern_id(Concern.HOOKS): str(Disposition.WITHHELD.value)}
+    withheld = str(Disposition.WITHHELD.value)
+    ruled = {concern_id(Concern.AUTO_APPROVE): withheld}
+    if backend not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS:
+        ruled[concern_id(Concern.HOOKS)] = withheld
+    return ruled
 
 
 def _on_card_ids() -> Tuple[str, ...]:
