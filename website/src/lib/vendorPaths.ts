@@ -8,6 +8,9 @@
 // Keeping one definition here means the consumer path can't drift from the
 // dev-serve / build-emit paths.
 //
+// src/lib/tailwindRuntimeInline.ts also fetches this path, so a document the
+// dashboard opens as a blob or saves as a file carries the runtime inline.
+//
 // A fourth consumer reads the same asset from DISK, not this URL path:
 // src/kiro_crew/publish_sync.py inlines it into published widget documents,
 // which are viewed away from the dashboard origin and so cannot resolve a

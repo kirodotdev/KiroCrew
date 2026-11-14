@@ -3,6 +3,7 @@ import { WidgetFrameProfileContext, widgetFramePolicy } from './widgetFrameProfi
 import { widgetHeightKey, getWidgetHeight, setWidgetHeight, estimateWidgetHeight, clampFrameHeight } from '../utils/widgetHeights'
 import { Maximize2, Minimize2, ExternalLink, Download, RotateCw, Eye } from 'lucide-react'
 import { Btn, IconButton, IconButtonGroup } from './ui'
+import ErrorNotice from './ErrorNotice'
 import { useTheme } from '../hooks/useTheme'
 import { AGENT_PAGE_SANDBOX, buildSrcdoc, popoutLinkBridgeScript, readThemeVars } from '../lib/widgetSrcdoc'
 import { analyzeWidgetComplexity } from '../lib/widgetComplexity'
@@ -10,6 +11,8 @@ import { useWidgetArtifact, WidgetArtifactTitle, WidgetStarButton } from './Widg
 
 import { i18nT } from '../i18n/t'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useQuery } from '@tanstack/react-query'
+import { tailwindRuntimeQuery } from '../lib/tailwindRuntimeInline'
 import { useFrameSrc } from '../hooks/useFrameSrc'
 import { useFrameLinkBridge } from '../hooks/useFrameLinkBridge'
 import { useSilentLoadWatch } from '../hooks/useSilentLoadWatch'
@@ -170,8 +173,8 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
   // Analyze widget complexity to decide rendering path. Cached per html content.
   const complexity = useMemo(() => analyzeWidgetComplexity(html), [html])
 
-  const srcdoc = useMemo(
-    () => visible ? buildSrcdoc({
+  const srcdocOptions = useMemo(
+    () => ({
       html,
       themeVars,
       mode: theme,
@@ -185,8 +188,24 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
       // passed in because the iframe cannot reach the parent's i18n catalog.
       showLoadingOverlay: complexity.needsProgressIndicator,
       loadingLabel: i18nT('components.widgetFrame.rendering'),
-    }) : '',
-    [html, themeVars, theme, visible, complexity.needsProgressIndicator, policy],
+    }),
+    [html, themeVars, theme, complexity.needsProgressIndicator, policy],
+  )
+  const srcdoc = useMemo(() => visible ? buildSrcdoc(srcdocOptions) : '', [srcdocOptions, visible])
+  // "Open in new tab" and "Download" carry the runtime inside the document they
+  // build (lib/tailwindRuntimeInline.ts). Read ahead while the widget is on
+  // screen, so the click itself stays synchronous: a popup opened after an
+  // await is no longer tied to the click and is blocked.
+  const runtime = useQuery({ ...tailwindRuntimeQuery, enabled: visible })
+  const runtimeSource = runtime.data
+  // Both actions wait for the read to settle: an early click would build the
+  // linked document this read exists to replace. A failed read settles too,
+  // and then the link is what they carry.
+  const standalonePending = visible && runtime.isPending
+  const runtimeFailed = visible && runtime.isError
+  const standaloneSrcdoc = useCallback(
+    () => runtimeSource ? buildSrcdoc({ ...srcdocOptions, inlineRuntime: runtimeSource }) : srcdoc,
+    [runtimeSource, srcdocOptions, srcdoc],
   )
 
   // Blob URL — only created when visible
@@ -308,7 +327,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     doc.body.style.height = '100vh'
     const iframe = doc.createElement('iframe')
     iframe.setAttribute('sandbox', AGENT_PAGE_SANDBOX)
-    iframe.setAttribute('srcdoc', srcdoc)
+    iframe.setAttribute('srcdoc', standaloneSrcdoc())
     iframe.style.width = '100%'
     iframe.style.height = '100%'
     iframe.style.border = 'none'
@@ -327,14 +346,14 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     const url = URL.createObjectURL(blob)
     window.open(url, '_blank')
     setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  }, [srcdoc, title, policy])
+  }, [standaloneSrcdoc, title, policy])
 
   const downloadAsHtml = useCallback(() => {
     // Note: downloaded HTML runs with file:// origin when opened locally.
     // This is expected for an explicit download action — the user chose
     // to save the file. The content is LLM-generated, same as any code
     // the agent writes to disk.
-    const blob = new Blob([srcdoc], { type: 'text/html' })
+    const blob = new Blob([standaloneSrcdoc()], { type: 'text/html' })
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
     a.download = `${title.replace(/[^a-zA-Z0-9-_ ]/g, '')}.html`
@@ -342,7 +361,7 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
     a.click()
     document.body.removeChild(a)
     setTimeout(() => URL.revokeObjectURL(a.href), 60_000)
-  }, [srcdoc, title])
+  }, [standaloneSrcdoc, title])
 
   // The artifact this widget is: its slug, whether it exists and is starred, and
   // the star action. Shared with the markdown-bodied widget (`WidgetArtifact`).
@@ -372,10 +391,10 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
         <IconButtonGroup reveal={!expanded}>
           {/* A welcome widget is not saved: an artifact page would draw it under the chat profile. */}
           {policy.saveAsArtifact && <WidgetStarButton artifact={artifact} />}
-          <IconButton onClick={downloadAsHtml} title={i18nT('components.widgetFrame.download_as_html')} aria-label={i18nT('components.widgetFrame.download_as_html')}>
+          <IconButton onClick={downloadAsHtml} disabled={standalonePending} title={i18nT('components.widgetFrame.download_as_html')} aria-label={i18nT('components.widgetFrame.download_as_html')}>
             <Download size={12} />
           </IconButton>
-          <IconButton onClick={openInNewTab} title={i18nT('components.widgetFrame.open_in_new_tab')} aria-label={i18nT('components.widgetFrame.open_in_new_tab')}>
+          <IconButton onClick={openInNewTab} disabled={standalonePending} title={i18nT('components.widgetFrame.open_in_new_tab')} aria-label={i18nT('components.widgetFrame.open_in_new_tab')}>
             <ExternalLink size={12} />
           </IconButton>
           <IconButton onClick={() => setExpanded(!expanded)} title={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')} aria-label={expanded ? i18nT('components.widgetFrame.minimize') : i18nT('components.widgetFrame.expand')}>
@@ -383,6 +402,18 @@ export default function WidgetFrame({ html, title = 'Widget', slug, messageTs, s
           </IconButton>
         </IconButtonGroup>
       </div>
+
+      {/* The two actions above still work after a failed read, with the link,
+          which a cookie-authenticating proxy refuses: say so before the click. */}
+      {runtimeFailed && (
+        <ErrorNotice
+          variant="inline"
+          askAgent
+          testId="widget-frame-runtime-error"
+          className="px-3 pb-2"
+          message={i18nT('components.widgetFrame.runtime_unavailable')}
+        />
+      )}
 
       {mintFailed && <div className="px-3 py-2 flex items-center gap-3 text-text">
         <span>{i18nT('components.widgetFrame.could_not_render')}</span>
