@@ -3514,7 +3514,11 @@ published by `/api/status` for this line; `kirocrew doctor` prints the same two
 readings at the top of its Memory Pressure section, on every platform. While the
 session map refuses writes after an unreadable startup read
 (`session_map_writes_refused`), a `Session map:` line after `Sessions:` prints the
-remedy `/api/status` carries in `session_map_remedy`.
+remedy `/api/status` carries in `session_map_remedy`. A body that parses as JSON but
+is not an object (`[]`, `null`, a string, a number) prints
+`Kiro Crew gateway is running but returned an unexpected response.` and exits 0,
+like any other unexpected answer; on the owner-token read below the same holds,
+except that `null` reads as a failed sign-in and prints the token-auth line.
 
 `/api/status` takes only a dashboard token, so a token-auth gateway refuses the
 first, credential-less read with `401`/`403`. `kirocrew status` then signs in the

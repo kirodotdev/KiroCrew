@@ -420,6 +420,22 @@ class TestStatus:
         assert "running" in out
         assert "unexpected response" in out
 
+    @pytest.mark.parametrize("body", [b"[]", b"null", b'"ok"', b"42"])
+    def test_status_non_object_json_reports_an_unexpected_response(self, capsys, body):
+        """Valid JSON that is not an object parses, so it must not reach the ``.get`` reads."""
+        import io
+
+        from kiro_crew.cli_server import _status
+
+        raised = None
+        with patch("kiro_crew.cli_server.loopback_urlopen", return_value=io.BytesIO(body)):
+            try:
+                _status(self._make_args())
+            except Exception as exc:  # noqa: BLE001 -- the traceback is the defect
+                raised = exc
+        assert raised is None, repr(raised)
+        assert "unexpected response" in capsys.readouterr().out
+
 
 class TestStatusAgainstAClosedPort:
     """``kirocrew status`` against a port nothing listens on, with a REAL probe.

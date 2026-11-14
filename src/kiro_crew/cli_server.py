@@ -180,6 +180,12 @@ def _status(args: argparse.Namespace) -> None:
     except Exception:
         print("Kiro Crew gateway is running but returned an unexpected response.")
         return
+    if not isinstance(data, dict):
+        # Valid JSON that is not an object (``[]``, ``null``, a string) parses
+        # without raising, so the handler above never sees it; the reads below
+        # would then raise on it. The owner fallback can return one too.
+        print("Kiro Crew gateway is running but returned an unexpected response.")
+        return
 
     print(f"Kiro Crew v{__version__} 👻\n")
     print(f"  Uptime:      {data.get('uptime', '—')}")
