@@ -1024,6 +1024,16 @@ supervision is a separate piece of work, proposed in
   response instead of crashing. The web terminal itself works here on a
   ConPTY shell; only its tab title, completions and the live cwd handed to chat are POSIX-only (see
   the per-feature table).
+- **Channels or chat cannot connect on a proxy-only network** — Windows keeps
+  the system proxy (Settings > Network > Proxy) in the registry, not in the
+  environment. When the environment has no proxy variable, the desktop app
+  reads that manual proxy with `reg.exe` and gives the gateway
+  `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`, so every channel client and
+  `kiro-cli` child uses the same route. A setup script (PAC) is not read and,
+  when set, nothing is set. The same goes for a bypass list with "Don't use
+  the proxy server for local addresses" or a wildcard such as `10.*`, because
+  `NO_PROXY` cannot express it. In those cases set `HTTPS_PROXY` and `NO_PROXY` as user
+  environment variables. Any proxy variable already in the environment wins.
 
 ## Related
 

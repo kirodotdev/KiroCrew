@@ -6,7 +6,9 @@ const assert = require("node:assert");
 const {
   readSystemProxyEnvironment,
   proxyEnvFromScutilOutput,
+  proxyEnvFromRegQueryOutput,
   SCUTIL,
+  WININET_KEY,
 } = require("../system-proxy-env");
 
 // A representative `scutil --proxy` dump for a host behind a manual corporate
@@ -332,9 +334,138 @@ test("off macOS, a missing scutil, or a wedged read, discover nothing", () => {
     throw new Error("scutil is gone");
   };
   assert.equal(readSystemProxyEnvironment({ execFileSync, platform: "darwin" }), null);
-  assert.equal(readSystemProxyEnvironment({ execFileSync, platform: "win32" }), null);
-
-  const untouchable = () => assert.fail("non-darwin must not shell out");
+  const untouchable = () => assert.fail("Linux must not shell out");
   assert.equal(readSystemProxyEnvironment({ execFileSync: untouchable, platform: "linux" }), null);
   assert.equal(readSystemProxyEnvironment({ platform: "darwin" }), null);
+});
+
+// `reg query` output for a host behind a manual proxy set in Windows
+// Settings > Network > Proxy. Subkey lines carry no type column.
+const winReg = (values) =>
+  [
+    "",
+    `HKEY_CURRENT_USER\\${WININET_KEY.slice(5)}`,
+    "    CertificateRevocation    REG_DWORD    0x1",
+    ...values,
+    "",
+    `HKEY_CURRENT_USER\\${WININET_KEY.slice(5)}\\Connections`,
+    "",
+  ].join("\r\n");
+
+test("a manual Windows system proxy becomes the standard proxy environment", () => {
+  const env = proxyEnvFromRegQueryOutput(
+    winReg([
+      "    ProxyEnable    REG_DWORD    0x1",
+      "    ProxyServer    REG_SZ    proxy.example:8080",
+      "    ProxyOverride    REG_SZ    *.corp.example;intranet.example",
+    ]),
+  );
+
+  assert.deepStrictEqual(env, {
+    HTTP_PROXY: "http://proxy.example:8080",
+    HTTPS_PROXY: "http://proxy.example:8080",
+    NO_PROXY: ".corp.example,intranet.example,localhost,127.0.0.1,::1",
+  });
+});
+
+test("a Windows proxy server with no port uses port 80", () => {
+  const env = proxyEnvFromRegQueryOutput(
+    winReg(["    ProxyEnable    REG_DWORD    0x1", "    ProxyServer    REG_SZ    proxy.corp.example"]),
+  );
+  assert.equal(env.HTTPS_PROXY, "http://proxy.corp.example:80");
+  assert.equal(env.HTTP_PROXY, "http://proxy.corp.example:80");
+  const v6 = proxyEnvFromRegQueryOutput(
+    winReg(["    ProxyEnable    REG_DWORD    0x1", "    ProxyServer    REG_SZ    [fd00::1]"]),
+  );
+  assert.equal(v6.HTTPS_PROXY, "http://[fd00::1]:80");
+});
+
+test("a per-protocol Windows proxy list sets only the protocols it names", () => {
+  const env = proxyEnvFromRegQueryOutput(
+    winReg([
+      "    ProxyEnable    REG_DWORD    0x1",
+      "    ProxyServer    REG_SZ    https=secure.example:3128;socks=socks.example:1080",
+    ]),
+  );
+
+  assert.deepStrictEqual(env, {
+    HTTPS_PROXY: "http://secure.example:3128",
+    NO_PROXY: "localhost,127.0.0.1,::1",
+  });
+});
+
+test("an empty registry value does not swallow the next value", () => {
+  const env = proxyEnvFromRegQueryOutput(
+    winReg([
+      "    ProxyEnable    REG_DWORD    0x1",
+      "    AutoConfigURL    REG_SZ    ",
+      "    ProxyOverride    REG_SZ",
+      "    ProxyServer    REG_SZ    proxy.example:8080",
+    ]),
+  );
+
+  assert.deepStrictEqual(env, {
+    HTTP_PROXY: "http://proxy.example:8080",
+    HTTPS_PROXY: "http://proxy.example:8080",
+    NO_PROXY: "localhost,127.0.0.1,::1",
+  });
+});
+
+test("a disabled, PAC-only or unrepresentable Windows proxy discovers nothing", () => {
+  const server = "    ProxyServer    REG_SZ    proxy.example:8080";
+  for (const values of [
+    ["    ProxyEnable    REG_DWORD    0x0", server],
+    [server],
+    ["    ProxyEnable    REG_DWORD    0x1", "    AutoConfigURL    REG_SZ    http://pac.example/p.pac"],
+    ["    ProxyEnable    REG_DWORD    0x1", "    ProxyServer    REG_SZ    socks=socks.example:1080"],
+    ["    ProxyEnable    REG_DWORD    0x1", "    ProxyServer    REG_SZ    http=plain.example:3128"],
+    ["    ProxyEnable    REG_DWORD    0x1", server, "    ProxyOverride    REG_SZ    <local>"],
+    ["    ProxyEnable    REG_DWORD    0x1", server, "    ProxyOverride    REG_SZ    10.*"],
+    ["    ProxyEnable    REG_DWORD    0x1", server, "    ProxyOverride    REG_SZ    srv?.corp.example"],
+    ["    ProxyEnable    REG_DWORD    0x1", server, "    ProxyOverride    REG_SZ    host[12].corp.example"],
+    ["    ProxyEnable    REG_DWORD    0x1", server, "    ProxyOverride    REG_SZ    http://intranet.example"],
+    ["    ProxyEnable    REG_DWORD    0x1", server, "    AutoConfigURL    REG_SZ    http://pac.example/p.pac"],
+  ]) {
+    assert.equal(proxyEnvFromRegQueryOutput(winReg(values)), null, values.join(" | "));
+  }
+});
+
+test("on Windows the registry is read through the kernel-named reg.exe", () => {
+  const calls = [];
+  const execFileSync = (file, args, options) => {
+    calls.push({ file, args, options });
+    return winReg([
+      "    ProxyEnable    REG_DWORD    0x1",
+      "    ProxyServer    REG_SZ    proxy.example:8080",
+    ]);
+  };
+  const fs = { realpathSync: { native: () => "\\\\?\\E:\\Windows" } };
+
+  const env = readSystemProxyEnvironment({ execFileSync, platform: "win32", fs });
+
+  assert.equal(env.HTTPS_PROXY, "http://proxy.example:8080");
+  assert.equal(env.HTTP_PROXY, "http://proxy.example:8080");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].file, "E:\\Windows\\System32\\reg.exe");
+  assert.deepStrictEqual(calls[0].args, ["query", WININET_KEY]);
+  assert.ok(calls[0].options.timeout > 0, "the read is bounded");
+  assert.equal(calls[0].options.windowsHide, true);
+});
+
+test("on Windows an unproven system root or a failed read discovers nothing", () => {
+  // Calls are recorded, not failed: the reader's own catch would swallow a throw.
+  const calls = [];
+  const recording = (...args) => {
+    calls.push(args);
+    return "";
+  };
+  const planted = { realpathSync: { native: () => "D:\\Users\\me\\Windows-ish" } };
+  assert.equal(readSystemProxyEnvironment({ execFileSync: recording, platform: "win32", fs: planted }), null);
+  assert.deepStrictEqual(calls, [], "an unproven root must not run reg.exe");
+
+  const fs = { realpathSync: { native: () => "C:\\Windows" } };
+  const failing = () => {
+    throw new Error("reg.exe failed");
+  };
+  assert.equal(readSystemProxyEnvironment({ execFileSync: failing, platform: "win32", fs }), null);
 });

@@ -1,5 +1,8 @@
 "use strict";
 
+const path = require("path");
+const { windowsSystemRoot } = require("./find-bin");
+
 // Recover the system HTTP(S) proxy on macOS for the gateway spawn.
 //
 // A GUI-launched .app inherits launchd's minimal environment rather than a
@@ -20,11 +23,14 @@
 // override: gateway-env.js calls it only when the gateway environment carries
 // none of the standard proxy variables, however they reached the app.
 //
-// Windows and Linux need no discovery here. A Windows GUI process inherits the
-// user's environment variables, the ordinary place proxy variables live; a
-// Linux desktop session starts from the session environment the app already
-// inherits. On both, `buildGatewayEnvironment` keeps passing the environment
-// through untouched.
+// Windows keeps its system proxy (Settings > Network > Proxy) in the per-user
+// WinINet registry key, not in the environment, so a desktop launch reaches
+// the gateway with no proxy variable either. Python's urllib falls back to
+// that key on its own, but slack_sdk and the Telegram client read the
+// environment only, so without discovery one channel's websocket and HTTP
+// legs take different routes. The Windows reader below fills the same gap
+// from `reg query` output. A Linux desktop session starts from the session
+// environment the app already inherits, so Linux keeps passing it through.
 //
 // Sits beside mac-env.js so it can be unit-tested without Electron: the one
 // system call is injected, and the parser is pure.
@@ -242,21 +248,217 @@ function proxyEnvFromScutilOutput(dump) {
   return env;
 }
 
+// The per-user key the Windows Internet Options proxy page writes.
+const WININET_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings";
+
 /**
- * Read the system proxy from macOS's Network configuration store.
+ * Pick the named values out of `reg query` output.
  *
- * Mirrors `mac-env.js`'s `readLaunchdPath`: returns `null` on any non-darwin
- * platform, without an executor, on a missing/wedged `scutil`, or when the
- * store enables no manual proxy — every one of those means "nothing to
- * merge", and the inherited environment stands.
+ * Each value prints as `    <name>    <REG_TYPE>    <data>` on its own line.
+ * Subkey lines carry no type column and never match.
+ *
+ * @param {string} text
+ * @returns {Map<string, string>}
+ */
+function parseRegQuery(text) {
+  const values = new Map();
+  for (const raw of text.split("\n")) {
+    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    // Columns are split on spaces and tabs only, never across a line break,
+    // so an empty value cannot swallow the next record.
+    if (line[0] !== " " && line[0] !== "\t") continue;
+    const [name, type, rest] = splitColumns(line);
+    if (!name || !isRegType(type)) continue;
+    values.set(name.toLowerCase(), trimBlanks(rest));
+  }
+  return values;
+}
+
+const BLANK = new Set([" ", "\t"]);
+
+function trimBlanks(text) {
+  let start = 0;
+  let end = text.length;
+  while (start < end && BLANK.has(text[start])) start += 1;
+  while (end > start && BLANK.has(text[end - 1])) end -= 1;
+  return text.slice(start, end);
+}
+
+/** The first two blank-separated fields and the rest of the line (maybe ""). */
+function splitColumns(line) {
+  const fields = [];
+  let i = 0;
+  while (fields.length < 2) {
+    while (i < line.length && BLANK.has(line[i])) i += 1;
+    const start = i;
+    while (i < line.length && !BLANK.has(line[i])) i += 1;
+    if (start === i) return [null, null, ""];
+    fields.push(line.slice(start, i));
+  }
+  return [fields[0], fields[1], line.slice(i)];
+}
+
+const REG_TYPE_CHARS = new Set("ABCDEFGHIJKLMNOPQRSTUVWXYZ_");
+
+function isRegType(type) {
+  return (
+    typeof type === "string" &&
+    type.startsWith("REG_") &&
+    type.length > 4 &&
+    [...type.slice(4)].every((c) => REG_TYPE_CHARS.has(c))
+  );
+}
+
+/**
+ * One WinINet `host:port` server entry as a proxy URL, or null when unusable.
+ *
+ * WinINet speaks plain HTTP to a server named here (an `http://` prefix is
+ * accepted and dropped). Any other scheme is not an HTTP proxy.
+ *
+ * @param {string} entry
+ * @returns {string | null}
+ */
+const DIGITS = new Set("0123456789");
+const HEX_HOST_CHARS = new Set("0123456789abcdefABCDEF:.");
+const NAME_HOST_FORBIDDEN = new Set([" ", "\t", "\r", "\n", ":", "/", "[", "]"]);
+
+function winProxyUrl(entry) {
+  let server = entry.trim();
+  if (server.toLowerCase().startsWith("http://")) server = server.slice(7);
+  if (server.endsWith("/")) server = server.slice(0, -1);
+  if (UNSAFE_ENTRY.test(server)) return null;
+  // WinINet reads a server with no port as port 80. A bracketed IPv6 literal
+  // carries its own colons, so only a colon after the closing `]` is a port.
+  const colon = server.lastIndexOf(":");
+  const hasPort = colon > 0 && colon > server.lastIndexOf("]");
+  const host = hasPort ? server.slice(0, colon) : server;
+  const portText = hasPort ? server.slice(colon + 1) : "80";
+  if (host === "") return null;
+  if (portText.length < 1 || portText.length > 5 || ![...portText].every((c) => DIGITS.has(c))) {
+    return null;
+  }
+  const bracketed =
+    host.length > 2 &&
+    host.startsWith("[") &&
+    host.endsWith("]") &&
+    [...host.slice(1, -1)].every((c) => HEX_HOST_CHARS.has(c));
+  const named = [...host].every((c) => !NAME_HOST_FORBIDDEN.has(c));
+  if (!bracketed && !named) return null;
+  const port = Number.parseInt(portText, 10);
+  return port > 0 && port <= 65535 ? `http://${host}:${port}` : null;
+}
+
+/**
+ * Turn the WinINet registry values into the standard proxy variables.
+ *
+ * `ProxyServer` is either one `host:port` for every protocol or a
+ * `http=...;https=...` list, where a protocol left out connects directly.
+ * The bypass rules match `proxyEnvFromScutilOutput`: `<local>` (bypass
+ * simple host names) and any wildcard other than a leading `*.` have no
+ * NO_PROXY spelling, so either one discovers nothing rather than export a
+ * narrower bypass than the system's. An auto-config (PAC) setting alone is
+ * not read, and a setup script set beside a manual server discovers nothing.
+ *
+ * @param {string | null | undefined} text - `reg query` output
+ * @returns {NodeJS.ProcessEnv | null}
+ */
+function proxyEnvFromRegQueryOutput(text) {
+  if (typeof text !== "string" || text.trim() === "") return null;
+  const values = parseRegQuery(text);
+  const enable = values.get("proxyenable");
+  if (!enable || Number.parseInt(enable, 16) !== 1) return null;
+  const server = (values.get("proxyserver") || "").trim();
+  if (server === "") return null;
+  // WinINet asks a setup script before the manual server, so a manual proxy
+  // exported for every host would override the script's DIRECT answers.
+  if ((values.get("autoconfigurl") || "").trim() !== "") return null;
+
+  const env = {};
+  if (!server.includes("=")) {
+    const url = winProxyUrl(server);
+    if (url) {
+      env.HTTP_PROXY = url;
+      env.HTTPS_PROXY = url;
+    }
+  } else {
+    for (const part of server.split(";")) {
+      const [scheme, ...rest] = part.split("=");
+      const url = winProxyUrl(rest.join("="));
+      if (!url) continue;
+      const name = scheme.trim().toLowerCase();
+      if (name === "http") env.HTTP_PROXY = url;
+      if (name === "https") env.HTTPS_PROXY = url;
+    }
+    // A list without an https entry sends HTTPS direct, and clients that fall
+    // back from HTTPS_PROXY to HTTP_PROXY would proxy it, so nothing is set.
+    if (!env.HTTPS_PROXY) return null;
+  }
+  if (Object.keys(env).length === 0) return null;
+
+  const listed = (values.get("proxyoverride") || "")
+    .split(";")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry !== "");
+  if (listed.includes("<local>")) return null;
+  if (listed.some(isUnrepresentableWildcard)) return null;
+  // WinINet matches `?` and `[...]` as wildcards too, while NO_PROXY readers
+  // take them literally, so an entry with either has no NO_PROXY spelling.
+  if (listed.some((entry) => ["?", "[", "]"].some((c) => entry.includes(c)))) return null;
+  // `<-loopback>` removes WinINet's implicit loopback bypass; the loopback is
+  // never proxied here, so it is dropped.
+  const bypass = listed.filter((entry) => entry !== "<-loopback>");
+  const exceptions = bypass.map((entry) => (UNSAFE_ENTRY.test(entry) ? null : toNoProxyEntry(entry)));
+  // An entry that cannot be copied would leave a narrower bypass than the
+  // system's, so it discovers nothing, like `<local>` above.
+  if (exceptions.includes(null)) return null;
+  env.NO_PROXY = [...new Set([...exceptions, ...LOOPBACK_BYPASS])].join(",");
+  return env;
+}
+
+// The in-box `reg.exe` under the Windows directory the kernel names, never
+// `%SystemRoot%`, which a user can point at a planted binary.
+function readWindowsProxyEnvironment(execFileSync, fs) {
+  const root = windowsSystemRoot(fs);
+  if (!root) return null;
+  const reg = path.win32.join(root, "System32", "reg.exe");
+  const out = execFileSync(reg, ["query", WININET_KEY], {
+    encoding: "utf8",
+    timeout: READ_TIMEOUT_MS,
+    maxBuffer: MAX_READ_BYTES,
+    stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
+  });
+  return proxyEnvFromRegQueryOutput(typeof out === "string" ? out : "");
+}
+
+/**
+ * Read the system proxy: macOS's Network configuration store, or the Windows
+ * WinINet registry key.
+ *
+ * Returns `null` on any other platform, without an executor, on a
+ * missing/wedged reader, or when the system enables no manual proxy. Every one
+ * of those means "nothing to merge", and the inherited environment stands.
  *
  * @param {object} deps
  * @param {Function} deps.execFileSync - `child_process.execFileSync`
  * @param {string} [deps.platform] - `process.platform` (defaults to it)
+ * @param {typeof import("fs")} [deps.fs] - Node fs (Windows reader only)
  * @returns {NodeJS.ProcessEnv | null}
  */
-function readSystemProxyEnvironment({ execFileSync, platform = process.platform } = {}) {
-  if (platform !== "darwin" || typeof execFileSync !== "function") return null;
+function readSystemProxyEnvironment({
+  execFileSync,
+  platform = process.platform,
+  fs = require("fs"),
+} = {}) {
+  if (typeof execFileSync !== "function") return null;
+  if (platform === "win32") {
+    try {
+      return readWindowsProxyEnvironment(execFileSync, fs);
+    } catch {
+      return null;
+    }
+  }
+  if (platform !== "darwin") return null;
   try {
     const out = execFileSync(SCUTIL, ["--proxy"], {
       encoding: "utf8",
@@ -273,7 +475,10 @@ function readSystemProxyEnvironment({ execFileSync, platform = process.platform 
 }
 
 module.exports = {
+  parseRegQuery,
   SCUTIL,
+  WININET_KEY,
+  proxyEnvFromRegQueryOutput,
   proxyEnvFromScutilOutput,
   readSystemProxyEnvironment,
 };

@@ -377,8 +377,8 @@ test("the owned gateway spawn discovers the system proxy for GUI launches", () =
   assert.match(supervisor, /require\("\.\/system-proxy-env"\)/);
   assert.match(
     supervisor,
-    /const discoverGatewayProxyEnv = \(\) =>\s*\n\s*readSystemProxyEnvironment\(\{ execFileSync, platform: processObj\.platform \}\);/,
-    "discovery must be built per spawn from the factory's execFileSync",
+    /const discoverGatewayProxyEnv = \(\) =>\s*\n\s*readSystemProxyEnvironment\(\{ execFileSync, platform: processObj\.platform, fs \}\);/,
+    "discovery must be built per spawn from the factory's execFileSync and fs",
   );
 });
 
