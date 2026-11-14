@@ -4979,6 +4979,29 @@ returns from one of the page's own app iframes is skipped, and one return reads
 once. The shared `['apps']` query keeps `staleTime: Infinity`; this re-read is
 what keeps the rail and the link-preview layer current without a reload.
 
+Because the page module runs in the dashboard document, an iframe it draws is
+allowed or refused by the dashboard's own `frame-src`. An app names the sites it
+frames in `ui.frameSources`: at most 8 exact `https://<hostname>` origins, refused at
+install otherwise (`UIConfig.frame_source_errors`, host rules from
+`apps/app_hosts.py`). The gateway appends the union of the declared origins of every
+app that is installed, enabled and trusted to execute (`third_party_ceiling_closed`)
+to `frame-src`. `apps/frame_sources.py` scans on enable, disable, update and
+uninstall, and on every hook-reconciler tick, whose first scan runs as soon as the
+reconciler task starts, after boot (a CLI change or a trust edit in `config.json`
+lands there), and re-validates each manifest as it scans. Until that first scan the
+CSP admits no app origin. The CSP middleware reads
+only the published string, never a manifest. A disabled, untrusted or uninstalled app
+adds nothing, and an origin two apps declare stays while either one qualifies. A
+document keeps the policy it was served with, so `AppHost` listens for a
+`securitypolicyviolation` that refuses one of the mounted app's declared origins
+under a document policy that lacks it (a refusal by a policy that lists the origin is
+of an undeclared redirect target, and is ignored), reads the policy the gateway serves now (a `HEAD` of the page URL), and reloads only
+when that policy admits the origin, at most once per 30 s per app
+(`website/src/components/appFrameSources.ts`). An untrusted app's refusal reloads
+nothing. This
+grants a trusted page nothing new: it already runs with the dashboard's authority,
+and `img-src` already admits every https host.
+
 This is a different mechanism from the MCP App (SEP-1865) `srcdoc` iframes, which
 load their own ESM runtime from a CDN through an import map and are confined by
 the response CSP. §13 covers their token scoping;
@@ -4990,7 +5013,8 @@ and the ones replaced since), `apps/manifest_sections.py` (the manifest `entry`
 field), `apps/routes_static.py` (static UI serving),
 `apps/routes_lifecycle.py::_announce_app_ui_changed` with its callers in
 `apps/routes_install.py` and `apps/routes_registry.py` (the `app_reload`
-announcement), `dashboard/server.py` (the CSP allowances the CDN import map needs).
+announcement), `dashboard/server.py` (the CSP allowances the CDN import map needs),
+`apps/frame_sources.py` (the `ui.frameSources` origins in `frame-src`).
 
 ## 18a. A link-preview card runs in an opaque-origin frame, never in the dashboard
 

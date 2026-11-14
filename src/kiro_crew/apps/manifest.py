@@ -670,6 +670,7 @@ class AppManifest:
                 report_path(refusal, f"ui page entryPoint {refusal}: {page.entryPoint!r}")
 
         # UI overlay validation
+        errors.extend(self.ui.frame_source_errors())
         seen_overlay_ids: set[str] = set()
         for overlay in self.ui.overlays:
             if not overlay.id:

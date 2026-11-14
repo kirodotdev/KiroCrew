@@ -332,6 +332,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         repository_bound_grant_denied,
         shipped_builtin_app_root,
     )
+    from kiro_crew.apps.frame_sources import (  # noqa: F401
+        refresh_frame_sources,
+    )
     from kiro_crew.apps.host_exec_grants import (  # noqa: F401
         grant_host_exec,
         host_exec_granted,

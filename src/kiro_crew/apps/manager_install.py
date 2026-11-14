@@ -23,6 +23,7 @@ from typing import Iterator
 from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import repository_bound_grant_denied
+from kiro_crew.apps.frame_sources import refresh_frame_sources
 from kiro_crew.apps.manager_records import (
     APP_MANIFEST_FILENAME,
     INSTALLED_META_FILENAME,
@@ -908,6 +909,9 @@ def update_app(
     # publishes every record's config keys before the dashboard serves.
     if _adoption is None:
         refresh_app_config_keys()
+        # Before the route announces app_reload, so the reloaded dashboard is
+        # served the updated manifest's frame origins.
+        refresh_frame_sources()
 
     logger.info(
         "Updated app %s: v%s -> v%s from %s",

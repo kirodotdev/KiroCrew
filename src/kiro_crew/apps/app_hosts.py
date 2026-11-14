@@ -162,9 +162,25 @@ def host_list_errors(where: str, hosts: list[str], bad_hosts: bool, limit: int) 
     return errors
 
 
+def frame_origin_refusal(origin: str) -> str | None:
+    """Why *origin* cannot be a ``ui.frameSources`` entry, or None when it can.
+
+    Accepted: exactly ``https://`` and one lowercase hostname, nothing else. So no
+    path (not even ``/``), port, query, fragment, user info or wildcard; and, from
+    :func:`host_refusal`, no IP literal, loopback name or public suffix. The entry
+    is written into the dashboard's ``Content-Security-Policy`` header as is, so this
+    character set is also what keeps it from adding a directive.
+    """
+    host = origin[len("https://") :] if origin.startswith("https://") else ""
+    if host.startswith(".") or not HOST_RE.fullmatch(host):
+        return "not an exact https://host origin (no path, port, query, user info or wildcard)"
+    return host_refusal(host)
+
+
 __all__ = [
     "HOST_RE",
     "PUBLIC_SUFFIXES",
+    "frame_origin_refusal",
     "host_list_errors",
     "host_refusal",
     "is_public_suffix",

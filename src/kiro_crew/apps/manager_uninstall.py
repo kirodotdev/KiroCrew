@@ -21,6 +21,7 @@ from pathlib import Path
 from kiro_crew import platform_compat
 from kiro_crew.apps import agent_readonly_dirs, credential_masks, protected_app_state
 from kiro_crew.apps.builtin_fold import carry_folded_switch
+from kiro_crew.apps.frame_sources import refresh_frame_sources
 from kiro_crew.apps.host_exec_grants import revoke_host_exec
 from kiro_crew.apps.manager_builtins import (
     folded_switch_state,
@@ -500,6 +501,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
     except (OSError, ValueError):
         logger.warning("could not clear an uninstalled app's deleted cron jobs", exc_info=True)
     refresh_app_config_keys()
+    refresh_frame_sources()
     logger.info("Uninstalled app %s (keep_data=%s)", name, keep_data)
 
     # Withdraw the grant a SECOND time, now that the files are actually gone.
