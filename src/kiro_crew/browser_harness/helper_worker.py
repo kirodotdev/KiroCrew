@@ -25,6 +25,7 @@ if anything else ever reaches the pipe.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import sys
@@ -43,6 +44,10 @@ _ALLOWLIST: dict[str, tuple[str, tuple[str, ...]]] = {
     "press_key": ("press_key", ("key", "modifiers")),
     "scroll": ("scroll", ("x", "y", "dy", "dx")),
     "screenshot": ("capture_screenshot", ("path", "full", "max_dim")),
+    "screenshot_clip": (
+        "_local_screenshot_clip",
+        ("path", "x", "y", "width", "height", "max_dim", "magnify"),
+    ),
     "page_info": ("page_info", ()),
     "wait_for_load": ("wait_for_load", ("timeout",)),
     "new_tab": ("new_tab", ("url",)),
@@ -112,6 +117,52 @@ _HELD_CALLBACKS = (
     "setTimeout.callback",
     "setInterval.callback",
 )
+
+
+def _local_screenshot_clip(
+    helpers: Any,
+    path: str,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+    max_dim: int,
+    magnify: float,
+) -> dict[str, Any]:
+    """Write a PNG of one box of the page: an element, or a region to read up close.
+
+    *x*, *y*, *width*, *height* are CSS pixels from the top left of the visible
+    page (the pixels a click uses). The image is scaled so its longest side is at
+    most *max_dim* device pixels, and is magnified past one-to-one by at most
+    *magnify* (1 keeps an element at its own size).
+    """
+    metrics = helpers.cdp("Page.getLayoutMetrics")
+    view = metrics.get("cssVisualViewport") or metrics.get("visualViewport") or {}
+    scale_now = helpers.cdp(
+        "Runtime.evaluate", expression="window.devicePixelRatio", returnByValue=True
+    )
+    ratio = (scale_now.get("result") or {}).get("value")
+    ratio = float(ratio) if isinstance(ratio, (int, float)) and ratio > 0 else 1.0
+    scale = min(magnify, max_dim / (max(width, height) * ratio))
+    shot = helpers.cdp(
+        "Page.captureScreenshot",
+        format="png",
+        captureBeyondViewport=True,
+        fromSurface=True,
+        clip={
+            "x": x + float(view.get("pageX") or 0),
+            "y": y + float(view.get("pageY") or 0),
+            "width": width,
+            "height": height,
+            "scale": scale,
+        },
+    )
+    data = shot.get("data") if isinstance(shot, dict) else None
+    if not isinstance(data, str) or not data:
+        raise RuntimeError("screenshot_clip: the browser returned no image")
+    with open(path, "wb") as handle:
+        handle.write(base64.b64decode(data))
+    return {"path": path, "scale": scale}
 
 
 def _local_page_clock(helpers: Any, state: str) -> dict[str, str]:
@@ -300,6 +351,7 @@ _LOCAL: dict[str, Callable[..., Any]] = {
     "_local_mouse_move": _local_mouse_move,
     "_local_drag": _local_drag,
     "_local_page_clock": _local_page_clock,
+    "_local_screenshot_clip": _local_screenshot_clip,
     "_local_js_isolated": _local_js_isolated,
     "_local_frame_owner_count": _local_frame_owner_count,
     "_local_closed_secret_count": _local_closed_secret_count,

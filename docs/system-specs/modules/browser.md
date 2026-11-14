@@ -212,6 +212,7 @@ equal by a test):
 | `press_key` | `key, modifiers=0` (1 Alt, 2 Ctrl, 4 Meta, 8 Shift) | `press_key` |
 | `scroll` | `x, y, dy=-300, dx=0` | `scroll` |
 | `screenshot` | `path, full=False, max_dim=None` | `capture_screenshot` |
+| `screenshot_clip` | `path, x, y, width, height, max_dim, magnify` | the worker's own `Page.captureScreenshot` of one box (an element, or a region magnified up to `magnify`), fitted to `max_dim` device pixels |
 | `page_info` | -- | `page_info` (`{url,title,w,h,sx,sy,pw,ph}` or `{dialog}`) |
 | `wait_for_load` | `timeout=15.0` | `wait_for_load` |
 | `new_tab`, `switch_tab`, `list_tabs`, `close_tab`, `current_tab` | `url` / `target, activate` / `include_chrome` / `target` / -- | the tab helpers |
