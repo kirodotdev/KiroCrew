@@ -88,24 +88,31 @@ _MAX_QUIET_STREAK = 10
 _JUDGE_QUIET_STREAK_FLOOR_DEFAULT = _MAX_QUIET_STREAK
 
 #: Quiet ticks before a work-ledger watch's floor turn when no worker has reported
-#: since the last delivered turn: four times the shipped floor. A floor turn then
-#: re-reads a long conductor chat to find the board as the conductor left it, since
-#: a worker's report and a stalled worker are WAKEs the probe raises on its own. The
-#: longer floor still DELIVERS, so silence stays bounded -- which also covers a
-#: stall the probe's rate limit folded forward without waking.
-_IDLE_LEDGER_QUIET_FLOOR = 4 * _MAX_QUIET_STREAK
+#: since the last delivered turn. Equal to the shipped floor (10 ticks, about
+#: hourly): the conductor's goal skill treats that turn as an active check of each
+#: open item, so it is worth having on the shipped cadence. A worker's report and a
+#: stalled worker are still WAKEs the probe raises on its own.
+_IDLE_LEDGER_QUIET_FLOOR = _MAX_QUIET_STREAK
+
+#: Quiet ticks before the floor turn of a pull-request watch that only waits on a
+#: reviewer (:func:`_pr_waits_only_on_review`): four times the shipped floor, since
+#: nothing the owner can do moves it and a floor turn only re-reads the same page.
+_REVIEW_WAIT_QUIET_FLOOR = 4 * _MAX_QUIET_STREAK
 
 
 def _quiet_floor(loop: NudgeLoop, monitor: MonitorState) -> int:
     """Quiet ticks before this monitor's floor turn.
 
     The shipped floor, except for a work-ledger watch whose ledger is idle (see
-    :func:`_ledger_is_idle`) and a pull request that only waits on a reviewer (see
-    :func:`_pr_waits_only_on_review`), which wait :data:`_IDLE_LEDGER_QUIET_FLOOR`.
+    :func:`_ledger_is_idle`), which waits :data:`_IDLE_LEDGER_QUIET_FLOOR`, and a
+    pull request that only waits on a reviewer (see :func:`_pr_waits_only_on_review`),
+    which waits :data:`_REVIEW_WAIT_QUIET_FLOOR`.
     Re-read every tick, so a worker report landing mid-streak, or a lane going
     red, puts the floor back to the shipped length at once.
     """
-    if _ledger_is_idle(loop, monitor) or _pr_waits_only_on_review(monitor):
+    if _pr_waits_only_on_review(monitor):
+        return _REVIEW_WAIT_QUIET_FLOOR
+    if _ledger_is_idle(loop, monitor):
         return _IDLE_LEDGER_QUIET_FLOOR
     return _MAX_QUIET_STREAK
 
@@ -117,7 +124,7 @@ def _pr_waits_only_on_review(monitor: MonitorState) -> bool:
     and ``REVIEW_REQUIRED``. Nothing the owner can do moves it, so a floor turn
     every :data:`_MAX_QUIET_STREAK` ticks only re-reads the same page. A review or
     a comment changes the reading, which the judge and the typed probe still wake
-    on at once; the longer floor bounds only the silence.
+    on at once; :data:`_REVIEW_WAIT_QUIET_FLOOR` bounds only the silence.
     """
     from kiro_crew import autonudge_judge as judge
 
