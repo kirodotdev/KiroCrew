@@ -54,6 +54,7 @@ REMOTE_EDITOR_HOST_PATTERN = (
 FEATURE_PREVIEW_FLAGS: tuple[str, ...] = (
     "artifact_deploy",
     "bridge_approvals",
+    "chat_page_colors",
     "chat_runtime_sharing",
     "crew_mode",
     "crew_oauth",

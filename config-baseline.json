@@ -10235,6 +10235,20 @@
       "defaultValue": false
     },
     {
+      "path": "dashboard.feature_previews.chat_page_colors",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Feature preview: chat_page_colors",
+      "help": "Turn on the 'chat_page_colors' feature preview.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "dashboard.feature_previews.chat_runtime_sharing",
       "kind": "core",
       "type": "boolean",

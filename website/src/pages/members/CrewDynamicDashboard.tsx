@@ -15,7 +15,8 @@ import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
 import { useLanguage } from '../../i18n/LanguageProvider'
-import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, subscribeDashboardFields } from '../../hooks/useWebSocket'
+import { subscribeDashboardFields } from '../../hooks/useWebSocket'
+import { dashboardQueryKey, type DashboardTarget } from './dashboardQueryKey'
 import CrewDashboardEmpty from './CrewDashboardEmpty'
 import CrewDashboardLoading from './CrewDashboardLoading'
 import CrewDashboardBehindBand from './CrewDashboardBehindBand'
@@ -260,20 +261,6 @@ interface Loaded {
  * offered, read from the same route with `preview=1`. The host draws the one
  * preview label above it (`DashboardPreviewLabel`) and drops it on `onPreviewGone`.
  */
-/** Whose dashboard this frame reads: a crewmate's, or one ROOT session's own page. */
-export type DashboardTarget =
-  | { kind: 'member'; slug: string; member: string }
-  | { kind: 'session'; slot: string }
-
-/** The query key a target's read is cached under. The first segment is the prefix
- *  `handleDashboardMoved` invalidates by, so a frame naming only a slug or a slot
- *  reaches the read. */
-export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
-  return target.kind === 'member'
-    ? [MEMBER_DASHBOARD_QUERY_PREFIX, target.slug, target.member]
-    : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
-}
-
 export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in

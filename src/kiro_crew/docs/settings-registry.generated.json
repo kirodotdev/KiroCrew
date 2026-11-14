@@ -1312,6 +1312,14 @@
       "configKey": "dashboard.dynamic_dashboard_cards"
     },
     {
+      "id": "developer.bot-chat-follows-its-dashboard-page-colors",
+      "label": "Bot chat follows its dashboard page colors",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.bot-chat-follows-its-dashboard-page-colors",
+      "description": "Colors a Bot's chat from its dashboard page.",
+      "hint": "Tints a Bot's chat on the Crewmates page with the colors of its dashboard page, so the chat and the Dashboard tab read as one theme. Text and link colors adjust automatically for readable contrast; pages without colors keep the default look."
+    },
+    {
       "id": "developer.bot-sessions-on-the-bot-s-profile",
       "label": "Bot sessions on the bot's profile",
       "tab": "developer",

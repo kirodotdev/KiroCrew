@@ -35,6 +35,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import conditional_get
 from kiro_crew.dashboard.handlers import member_dashboard_fields
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.member_dashboard_page_theme import page_theme as _page_theme
 from kiro_crew.dashboard.handlers.member_dashboard_render import _render
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
@@ -767,49 +768,6 @@ def page_safe_for(state: Any, slot: str = "") -> Callable[[Any], Any]:
     from kiro_crew.dashboard.handlers.work_ledger_board import with_worker_facts
 
     return lambda value: _page_safe(with_worker_facts(value, state, slot))
-
-
-def package_declared_name_spots(package: Mapping[str, Any]) -> list[str]:
-    """Where *package* declares a name a redactor would mask. Positions, never names.
-
-    THE ONE SCAN over the two name sets a dashboard package carries -- its model's
-    field names and its theme's token keys -- and the one place
-    the rule lives. ``dashboard_save`` asks it and refuses a save that trips it. Two
-    copies of this predicate would be two rules, and the first thing the second one
-    would do is drift from this one.
-
-    The save keeps a credential out of a page an agent asked for honestly, with a
-    refusal it can act on while the name can still be changed.
-
-    REFUSED RATHER THAN MASKED, at both ends, because every one of these names is a
-    JOIN KEY: a field name ties the model to the page cells that read it, and a theme
-    token is the CSS variable the style references. A redacted key hides nothing -- a declaration is a name, not a value
-    -- and leaves the reference pointing at a key the package does not contain.
-
-    The POSITION comes back and the name does not. A name that needs redacting is not
-    a name to write to a log, and these sentences travel through the gateway's logs;
-    the agent can resolve a position against the package in its own hand.
-
-    The field and token order is the model's sorted key order, which is what the
-    package validator canonicalises to, so an index here is the index the stored
-    package has.
-    """
-    raw_model = package.get("model")
-    raw_theme = package.get("theme")
-    model: Mapping[str, Any] = raw_model if isinstance(raw_model, Mapping) else {}
-    theme: Mapping[str, Any] = raw_theme if isinstance(raw_theme, Mapping) else {}
-    raw_types = model.get("types")
-    raw_tokens = theme.get("tokens")
-    types: Mapping[str, Any] = raw_types if isinstance(raw_types, Mapping) else {}
-    tokens: Mapping[str, Any] = raw_tokens if isinstance(raw_tokens, Mapping) else {}
-    spots: list[str] = []
-    for index, name in enumerate(sorted(types), start=1):
-        if isinstance(name, str) and redact_via_context(name) != name:
-            spots.append(f"declared field #{index} of {len(types)}")
-    for index, token in enumerate(sorted(tokens), start=1):
-        if isinstance(token, str) and redact_via_context(token) != token:
-            spots.append(f"theme token #{index} of {len(tokens)}")
-    return spots
 
 
 def _safe_body(body: dict[str, Any]) -> dict[str, Any]:
@@ -1901,6 +1859,9 @@ async def _serve_package(
             # amendment's fourth reason, and why the profile has to be read too.
             "scripts": scripts,
             "locale": read.get("locale", locale) if isinstance(read, dict) else locale,
+            # The chat's colour source: the bounded, redacted page colour tokens the
+            # chat may follow, or no key for a page that declares neither.
+            **({"page_theme": _tokens} if (_tokens := _page_theme(package)) else {}),
         }
     )
 

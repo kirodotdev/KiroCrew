@@ -582,9 +582,9 @@ def _broadcast_changed(
 def _credential_shaped_names(package: Mapping[str, Any]) -> str:
     """Where this package declares a name a redactor would mask, or ``""``.
 
-    ONE RULE, AND IT LIVES WITH THE READ MODULE. The scan itself is
-    ``member_dashboard.package_declared_name_spots``, which this route asks to
-    refuse the SAVE. Keeping the predicate in two places would be keeping two
+    ONE RULE, IN ONE PLACE. The scan itself is
+    ``member_dashboard_page_theme.package_declared_name_spots``, which this route asks
+    to refuse the SAVE. Keeping the predicate in two places would be keeping two
     rules, and the first thing the second one would do is drift.
 
     It sits in the read's module rather than here because that is where the name
@@ -597,7 +597,7 @@ def _credential_shaped_names(package: Mapping[str, Any]) -> str:
     Why a refusal rather than a mask, what the three name sets are, and why a
     POSITION comes back instead of the name: see that function.
     """
-    from kiro_crew.dashboard.handlers.member_dashboard import package_declared_name_spots
+    from kiro_crew.dashboard.handlers.member_dashboard_page_theme import package_declared_name_spots
 
     return ", ".join(package_declared_name_spots(package))
 
