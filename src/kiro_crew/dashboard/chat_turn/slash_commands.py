@@ -1054,7 +1054,7 @@ async def _turn_compact_command(turn: _ChatTurn) -> None:
                 # The provider ships the reason on `failed` too, and every
                 # other surface already tells the user what it was — Slack,
                 # Telegram, Discord, and this dashboard's own AUTO-compact
-                # notice (see chat_utils._compaction_notice_text). Dropping
+                # notice (see chat_utils._append_compaction_notice). Dropping
                 # it here left the one path a user takes deliberately as the
                 # only one that says nothing, so a `/compact` that fails
                 # because the conversation is too large is indistinguishable
