@@ -32,6 +32,9 @@ import { useShellBranding } from './branding'
 import { useRumPageView } from '../hooks/useRumPageView'
 import { useFocusRouteRelay } from '../hooks/useFocusRouteRelay'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useViewportSegments } from '../hooks/useViewportSegments'
+import { foldHoldsRailCompact } from '../pages/chat/sidebarWidth'
+import { leadingEdge } from '../lib/layoutFormTransition'
 import { useKeyboardViewportReset } from '../hooks/useKeyboardViewportReset'
 import { useSidePanelDock } from '../hooks/useSidePanelDock'
 import { useAppRailOrder } from './nav/appRail'
@@ -494,6 +497,13 @@ export function useAppShell() {
     return () => window.removeEventListener(PREVIEW_EXPAND_EVENT, onPreviewExpand)
   }, [])
   const isMobile = useIsMobile()
+  // Beside a reported fold the sessions list ends at the fold, so the rail
+  // stays compact wherever an expanded rail would push the list across it.
+  // The fold owns that state: the rail toggle does nothing while it holds.
+  const foldSegments = useViewportSegments()
+  const foldCompactRail = !isMobile && foldSegments !== null && foldHoldsRailCompact({
+    segments: foldSegments, expandedRailW: railWidthFor({ isMobile: false, collapsed: false }), leading: leadingEdge(),
+  })
   const [sidePanelDock] = useSidePanelDock()
   // Side panel docked to the bottom (desktop only) swaps the shell from a
   // 3-column grid with a full-height right rail to a 2-column grid with an
@@ -507,7 +517,7 @@ export function useAppShell() {
   const {
     focusMode, toggleFocusMode, focusActive, topPeek, railPeek, topPeekTrigger, topPeekSurface,
     railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,
-  } = useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topReservePx })
+  } = useFocusChrome({ isMobile, navCollapsed: navCollapsed || foldCompactRail, activeInstanceId, topReservePx })
   // Whether the shell's one-shot entrance animation has already played.
   //
   // The local pane is HIDDEN, not unmounted, while a remote instance tab is
@@ -1019,7 +1029,7 @@ export function useAppShell() {
 
   const toggleNav = () => {
     if (isMobile) { if (mobileNavPhaseRef.current === 'open') closeMobileNavDrawer(); else openMobileNav() }
-    else {
+    else if (!foldCompactRail) {
       // The user has taken ownership of the rail: leaving preview expand mode
       // must not overwrite this with the pre-expand state.
       navAutoCollapsed.current = null
@@ -1042,7 +1052,7 @@ export function useAppShell() {
   useEffect(() => { if (!isMobile) { setMobileNavPhase('closed'); takeOverDrawer(mobileNavX) } }, [isMobile, mobileNavX])
   // Focus mode honours the collapse preference too: the overlay rail is as wide
   // as the docked rail would be, and the collapse control toggles it the same way.
-  const effectiveCollapsed = navCollapsed && !isMobile
+  const effectiveCollapsed = (navCollapsed || foldCompactRail) && !isMobile
   // Publish the rail track so consumers outside the shell can size against the
   // space actually left for content — ChatPage's activity panel decides
   // beside-vs-fill from it. Kept in sync with the gridTemplateColumns value
@@ -1131,7 +1141,7 @@ export function useAppShell() {
     capsuleLayoutPulse, pulseCapsuleLayout, sysMetrics, metricsProbeRef, metricsGroupRef,
     subscribeLogs, subscribeSubagents, forceReconnect, updateFlow, updating, setUpdating, showUpdateModal,
     setShowUpdateModal, showChangelog, updateError, setUpdateError, reportProblemOpen,
-    setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, closeMobileNav, activePath,
+    setReportProblemOpen, requestFeature, toggleNav, effectiveCollapsed, foldCompactRail, closeMobileNav, activePath,
     libraryNavActive, discoverNavActive, isChat, needsFixedHeight, navRowActive, membersRoute, mobileSingle,
     membersBarPending, mobileNavOpen, topbarSearch,
   }
