@@ -133,6 +133,20 @@ LESSON_APPLIES_INSTRUCTION = (
 #: raises this: the vector store has no row cap and names its own reasons.
 LESSON_REFUSED_AT_CAPACITY = "store_at_capacity"
 
+#: How every block of retained rules opens, up to its closing ``]``: the
+#: session-start rule tier from either store, and the block ``memory_recall``
+#: returns (which inserts its shown/omitted counts line before the ``]``). All of
+#: them state the authority rule the rest of the prompt states for memory: a rule
+#: the user taught is followed, a stored inference never overrides the current
+#: user. Recall ranks user-taught and inferred rows together, so a recall header
+#: that called every row user-taught and said the rows override default behavior
+#: would promote an inference to an instruction the moment an agent looked it up,
+#: in a tool result the session is told to read as evidence.
+LESSON_RULES_HEADER = (
+    "[Learned corrections — retained rules from past mistakes.\n"
+    "Follow explicit user rules; stored inferences do not override the current user."
+)
+
 
 def normalize_lesson_applies(tier: object) -> str | None:
     """Validate a caller-supplied tier for a write path.

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import vector_memory
+from kiro_crew.learn import Lesson, LessonStore
 from kiro_crew.vector_memory import VectorMemoryStore
 from kiro_crew.vector_memory_runtime.lessons import (
     LESSON_TRUNCATION_MARKER,
@@ -109,10 +110,14 @@ class TestCharacterBudget:
     def test_cap_is_respected_and_omissions_reported(self, store: VectorMemoryStore) -> None:
         for rule in ALL_RULES:
             store.write_lesson(rule)
+        # Room for the counts line, the footer and some but not all of ALL_RULES,
+        # measured past the rendered header so rewording the header keeps the intent.
+        header = store.get_lessons_context().split("]\n", 1)[0]
+        cap = len(header) + 137
 
-        block = store.get_lessons_context(cap=250)
+        block = store.get_lessons_context(cap=cap)
 
-        assert len(block) <= 250
+        assert len(block) <= cap
         assert 0 < len(shown(block)) < len(ALL_RULES)
         assert f"of {len(ALL_RULES)} lessons" in block
         assert "omitted." in block
@@ -251,11 +256,11 @@ class TestRecallLessonShare:
         assert "omitted" not in result["lessons_context"]
         assert LESSON_TRUNCATION_MARKER not in result["lessons_context"]
 
-    @pytest.mark.parametrize(("cap", "kept"), [(483, True), (480, False)])
+    @pytest.mark.parametrize(("cap", "kept"), [(555, True), (552, False)])
     def test_a_lone_lesson_is_kept_only_from_the_stated_cap(
         self, store: VectorMemoryStore, cap: int, kept: bool
     ) -> None:
-        """The spec's 483 is the smallest cap whose share fits one in-scope lesson's frame."""
+        """The spec's 555 is the smallest cap whose share fits one in-scope lesson's frame."""
         store.write_lesson(long_lesson(1200))
 
         result = store.recall(CERTIFICATE, cap=cap)
@@ -265,16 +270,16 @@ class TestRecallLessonShare:
     @pytest.mark.parametrize(
         ("query", "order", "cap", "kept"),
         [
-            (CERTIFICATE, "most relevant", 651, True),
-            (CERTIFICATE, "most relevant", 648, False),
-            ("what is the status of", "most recent", 645, True),
-            ("what is the status of", "most recent", 642, False),
+            (CERTIFICATE, "most relevant", 723, True),
+            (CERTIFICATE, "most relevant", 720, False),
+            ("what is the status of", "most recent", 717, True),
+            ("what is the status of", "most recent", 714, False),
         ],
     )
     def test_with_a_second_lesson_counted_it_is_kept_only_from_the_stated_cap(
         self, store: VectorMemoryStore, query: str, order: str, cap: int, kept: bool
     ) -> None:
-        """The spec's 651, or 645 for a query with no recall terms, is the
+        """The spec's 723, or 717 for a query with no recall terms, is the
         smallest cap whose share also fits the counts line."""
         store.write_lesson(long_lesson(1200))
         other = TABS + " " + " ".join(f"padding{index}" for index in range(1200))
@@ -287,6 +292,37 @@ class TestRecallLessonShare:
         if kept:
             assert f"Showing 1 of 2 lessons, {order} first" in lessons
             assert len(lessons) <= cap // 3
+
+
+class TestRuleBlockAuthority:
+    """A retained rule reads the same whichever path delivers it.
+
+    The session is told recalled text is evidence, not instructions, and the
+    session-start block says stored inferences do not override the current
+    user. Recall ranks user-taught and inferred rows together, so a recall
+    header calling every row user-taught and saying the rows override default
+    behavior promoted an inference the moment an agent looked it up.
+    """
+
+    def test_every_rule_block_opens_like_the_session_start_block(
+        self, store: VectorMemoryStore, tmp_path: Path
+    ) -> None:
+        store.write_lesson(CERTIFICATE, source="consolidation")
+        jsonl = LessonStore(base_dir=tmp_path / "jsonl")
+        jsonl.save(Lesson(ts="2026-01-01T00:00:00+00:00", rule=CERTIFICATE, category="knowledge"))
+
+        startup = store.get_lessons_context(CERTIFICATE, background=True)
+        others = {
+            "memory_recall": store.recall(CERTIFICATE)["lessons_context"],
+            "JSONL session start": jsonl.get_context(query_text=CERTIFICATE),
+        }
+
+        opening = startup.split("]\n", 1)[0]
+        assert "stored inferences do not override the current user" in opening
+        for path, block in others.items():
+            assert CERTIFICATE in block, path
+            assert block.split("]\n", 1)[0] == opening, path
+            assert "override default behavior" not in block, path
 
 
 class TestTruncateExplicitLessons:
