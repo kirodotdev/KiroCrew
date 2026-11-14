@@ -1528,11 +1528,10 @@ def publish_committed_write(
     # (called outside the lock — _retire_stale_episodic does a blocking embed
     # first, then takes _db_lock itself for its db writes).
     #
-    # Best-effort: the semantic row is already committed at this point, so a
-    # failure here must not propagate. Callers batch many keys per call
-    # (history consolidation writes N semantic + M episodic items in one
-    # thread), and an exception raised after a successful commit discarded
-    # every remaining item in the batch.
+    # Best-effort: the semantic row is already committed, so a failure here
+    # must not propagate. Callers batch many keys per call (history
+    # consolidation writes N semantic + M episodic items in one thread), and a
+    # raise after the commit would discard every remaining item in the batch.
     #
     # A rewrite that changes nothing supersedes nothing, on EITHER algorithm:
     # the episodes it would retire restate the still-current value. Value-level
