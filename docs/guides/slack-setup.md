@@ -46,6 +46,7 @@ https://api.slack.com/apps?new_app=1&manifest_yaml=...
 
    Slash command: /kirocrew-<alias> — the gateway answers it once slack.command matches:
    kirocrew config set slack.command kirocrew-<alias>
+   Slack Code switches rendered: none
 ```
 
 The app's slash command is `/kirocrew-<alias>` (lowercase, cut to Slack's 32-character limit), so people with different aliases in one Enterprise Grid org register different commands. Two aliases that differ only in case, or only after their first 22 characters, still collide; pass `--alias` to pick another. Run the printed `kirocrew config set slack.command` line so the gateway answers it; `kirocrew setup --slack` keeps offering `kirocrew` (or your configured command) as its default.
@@ -693,6 +694,7 @@ to use instead.
 | `!voice` | Configure TTS voice settings |
 | `!channel` | Configure the current channel |
 | `!stop` | Interrupt the running turn |
+| `!compact` | Compact the current thread's session context in place |
 | `!restart` | Restart the gateway |
 
 ### Keyword Commands

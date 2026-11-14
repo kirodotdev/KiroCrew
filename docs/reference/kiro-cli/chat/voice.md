@@ -34,7 +34,7 @@ fallback).
 ### Messaging Voice Notes
 
 When STT is enabled, audio and voice attachments received through Slack, Discord,
-Teams, Telegram, Webex, WeCom, Weixin, and WhatsApp are automatically transcribed
+Feishu, Teams, Telegram, Webex, WeCom, Weixin, and WhatsApp are automatically transcribed
 through the shared attachment path. Kiro Crew responds to the transcribed text as
 if it had been typed. A channel may impose its own attachment-size and media-type
 limits before transcription.
@@ -82,7 +82,7 @@ Once the recognizer and decoder are available, there is no separate transcriptio
 program or provider-specific runtime to install. `kirocrew doctor` reports the
 recognizer, model, and resolved decoder.
 
-The other two providers, the full setting list and the retired providers are in
+The other providers (`apple`, `transcribe`, `codex`, and `off`), the full setting list and the retired providers are in
 Kiro Crew's own [configuration reference](../../../../src/kiro_crew/docs/configuration.md).
 
 ### CPU threads (many-core hosts)
@@ -275,7 +275,7 @@ Responses are cleaned for natural speech before synthesis:
   1. Run `aws configure --profile polly` (or your credential provider) in your
      terminal to set up a named profile.
   2. In **Settings > Voice**, enter `polly` in the
-     **AWS Profile** field (or set `"aws_profile": "polly"` in config.json).
+     **AWS Profile (Amazon Polly)** field (or set `"aws_profile": "polly"` in config.json).
   3. Leave the profile blank to use your default AWS CLI credentials
      (`~/.aws/credentials` default profile or environment variables).
 

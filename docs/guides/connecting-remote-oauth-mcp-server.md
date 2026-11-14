@@ -5,9 +5,9 @@ Crew desktop app — the class of server you reach over `https://`, whose tools
 you unlock by signing in through a browser, as opposed to a **local stdio**
 server you launch with a `command`. The worked example is Miro's remote MCP
 ([`https://mcp.miro.com/`](https://mcp.miro.com/)), the flow that motivated this
-guide. Miro is now also a curated **Connections** provider, so the built-in card
+guide. Miro is also a curated **Connections** provider, so the built-in card
 or MCP-table **Sign in** action is the shortest path; the manual flow below
-remains useful for a custom Miro entry and applies to any OAuth-backed remote
+is for a custom Miro entry and applies to any OAuth-backed remote
 server (Linear, Notion, Atlassian, a self-hosted OIDC-fronted service, …).
 
 The short version is five moves, and every one of them has a trap that reads

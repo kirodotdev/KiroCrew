@@ -362,8 +362,9 @@ SHORT deliberately: a pod's private dashboard socket lives at
 gateway fall back to TCP-only, after which every `kirocrew pod api` call refuses
 correctly and permanently while the pod still answers health.
 
-CI runs this phase nightly on Linux, macOS and Windows. See
-[../ci/e2e-gate.md](../ci/e2e-gate.md) for that job.
+CI runs this phase nightly on Linux, macOS and Windows. A pull request that
+carries the `ci:pod-scenarios` label before its push also runs it on Windows.
+See [../ci/e2e-gate.md](../ci/e2e-gate.md) for that job.
 
 ## Restarting a harness-owned gateway
 
