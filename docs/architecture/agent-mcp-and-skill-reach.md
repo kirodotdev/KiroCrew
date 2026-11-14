@@ -16,7 +16,7 @@ to custom agents, needs an explicit owner decision.
 |---|---|---|---|---|
 | The conductor in conductor mode (`kirocrew-conductor`) | Crew's own: `kirocrew-core`, `kirocrew-dashboard`, `kirocrew-work` | No | Its fixed mapped list | No |
 | Conductor mode worker (`kirocrew-worker`) | Same as the default `kirocrew` agent | Yes | Whole catalog (or the default agent's mapped set) | Yes |
-| Mate conductor (`kirocrew-mate-conductor`) | In its spec: `kirocrew-core`, `kirocrew-cron`, `kirocrew-guide`, `kirocrew-mate`, `kirocrew-work`. Per session: `kirocrew-dashboard`, `kirocrew-panel` | No | Its mapped skills; this release also the user's (deprecated) | This release: yes, with a notice. Next: no |
+| Mate conductor (`kirocrew-mate-conductor`) | In its spec: `kirocrew-core`, `kirocrew-cron`, `kirocrew-guide`, `kirocrew-mate`, `kirocrew-work`. Per session: `kirocrew-dashboard`, `kirocrew-panel` | No | Its mapped skills; this release also the user's (deprecated) | This release: yes. Next: no |
 | Mate worker (`kirocrew-mate-worker`) | Platform servers + that mate's own additions | Only when added to that mate | Worker base + that mate's own additions | Only when added to that mate |
 
 ## The conductor in conductor mode

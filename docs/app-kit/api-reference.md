@@ -1423,14 +1423,14 @@ state = await ctx.crewmate.status(card_id)     # {"status": "pending"} ... {"sta
 
 | Code | Cause |
 |---|---|
-| `unknown_param` | an unknown key in the bundle, `crewmate`, `agent`, `goals`, `rules`, `sender` or `avatar` (`{"type", "size"}`); crons and key results are only counted |
-| `invalid_bundle` | not `format: "kirocrew.crewmate"`, a bad shape, or a `dashboardTemplate` that is not a `builtin:` or `user:` id |
+| `unknown_param` | an unknown key in the bundle, `crewmate`, `agent`, `goals`, `rules`, `sender`, `avatar` (`{"type", "size"}`) or a cron |
+| `invalid_bundle` | not `format: "kirocrew.crewmate"`, a bad shape, or a `dashboardTemplate` that is not a `builtin:` id |
 | `newer_format` | a `formatVersion` this version does not read |
 | `grant_in_bundle` | `allowedTools`, `autoApprove` or `permissions` in `agent.json` |
 | `needs_mate_config` | any `mcpServers` or `skills` entry, until the mate-owned agent file exists (RFC §5.7) |
-| `rules_unsupported` | non-empty rules, which this version cannot import yet |
+| `user_template` | a `user:` `dashboardTemplate`, which stays with its sender |
 
-The card creates the Bot from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal when the bundle has one. It lists the crons, key results, picture or face, model or effort hints and dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
+The card creates the Bot from the `kirocrew` template with a fresh member id, its own empty memory and workspace, and `approval_mode: "normal"` in the create. It writes the long-term goal and the rules when the bundle has them, and creates each cron paused. It lists the key results, a reasoning-effort hint without a model hint, and the dashboard template a bundle carries under "Not brought over", as codes the dashboard words, and memory, history, credentials and the sender's approval settings under "Stays with the sender". A taken name becomes the first free `<name> 2` to `<name> 9`, and the owner can edit it.
 
 The card is stored under the key `app:<name>` with no conversation, so an app's open cards count against one per-app cap. `status` reads only this app's own cards. The dashboard view where the owner presses an app card is not built yet.
 
@@ -1838,7 +1838,7 @@ def read_attachment(path: str, root: str) -> bytes | None:
 | `run_sandboxed(argv, *, mode="standard", env=None, strip_python_env=False, **run_kwargs)` | Runs `argv` to completion in the Gateway's OS sandbox, with its resource limits and a scrubbed environment, and returns a `subprocess.CompletedProcess`. `run_kwargs` are the `subprocess.run` keywords that shape stdio, the working directory and the result (`input`, `capture_output`, `timeout`, `check`, `cwd`, `stdin`, `stdout`, `stderr`, `text`, `encoding`, `errors`, `universal_newlines`, `bufsize`); any other keyword raises `TypeError` and starts nothing. Past `timeout` the child is killed (its whole tree on Windows), but a POSIX descendant that outlives it is not: use `run_sandboxed_async` for a child that leaves work running in the background. `mode` is `"standard"` or `"strict"`; anything else raises `ValueError`. Raises `SandboxUnavailableError` when the host cannot sandbox the child, and then no child starts. |
 | `run_sandboxed_async(argv, *, mode="standard", env=None, strip_python_env=False, input=None, timeout=None, cwd=None)` | The same for an event loop, with stdout and stderr captured as bytes. The child starts in its own process group, so past `timeout`, or on a cancel, the child and its descendants are killed, a descendant that outlived the child included (one that called `setsid()` is outside the group), and `subprocess.TimeoutExpired` (or the cancel) is raised. |
 | `sandboxed_argv(...)`, `sandboxed_argv_async(...)` | Only the preparation, `(argv, env, cleanup)`, for a child whose output you stream yourself. Run that argv with that env, and delete `cleanup`, when it is not `None`, after the child exits. |
-| `kill_and_reap(proc, *, timeout=None)` | Kills a child and its descendants and waits for it, for a `communicate()` you abandoned on a timeout or a cancel. On POSIX the descendants are reached through the child's own process group, so start it with `start_new_session=True`; a descendant that outlives an already-reaped child is not reached. `run_sandboxed_async` covers that case itself. |
+| `kill_and_reap(proc, *, timeout=None)` | A coroutine. Kills a child and its descendants and waits for it, for a `communicate()` you abandoned on a timeout or a cancel. On POSIX the descendants are reached through the child's own process group, so start it with `start_new_session=True`; a descendant that outlives an already-reaped child is not reached. `run_sandboxed_async` covers that case itself. |
 | `is_link_or_junction(path)`, `first_linked_ancestor(path)` | A symlink (or Windows junction) at `path`, or the first linked ancestor above it. |
 | `rmtree_force(path)` | Removes a tree, read-only files included; `True` when it is gone. Never raises. |
 | `file_lock(fd, *, exclusive=True, required=False, wait=True, timeout=None)` | An advisory lock for a `with` block. It raises rather than run the block unlocked, so call it from a worker thread when it may wait. |
@@ -1883,8 +1883,9 @@ POST /api/member-records/{slug}
   that namespace grants nothing here. The grant reaches any Bot the app names by
   slug; there is no per-crewmate form of it.
 - **Who wrote it.** The gateway stamps `writer` from the token's app claim and `member`
-  from the path. The body is read for `type` and `data` only; a `writer`, `member`,
-  `src`, `seq` or `time` in the body is ignored.
+  from the path. The body is read for `type`, `data` and the optional `max_age_s`
+  (whole seconds, 60 to 30 days, after which the fold marks the row stale); a `writer`,
+  `member`, `src`, `seq` or `time` in the body is ignored.
 - **Where it lands.** The record is stored under the key `<app>__<type>`: your app id
   with each `-` written `_`, two underscores, your type (`github-pr` + `status` is
   `github_pr__status`). A page binds
@@ -1904,8 +1905,9 @@ POST /api/member-records/{slug}
 - **Refusals.** `403 app_token_required` (no app claim: the owner and internal callers
   have their own write paths), `403 crew_panel_disabled`, `404 member_not_found`,
   `409 ambiguous_slug` (two Bots share the slug), `409 crew_log_unavailable`
-  (the Bot's chat has never started), `400 bad_record_type` / `invalid_record` /
-  `record_too_deep` / `record_too_large`, `503 crew_log_off`.
+  (the Bot's chat has never started), `400 invalid_json` / `invalid_body` / `bad_max_age` /
+  `bad_record_type` / `invalid_record` / `record_too_deep` / `record_too_large`,
+  `503 crew_log_off` / `append_failed`.
 - **What it is not.** The record is text a page draws. It is never read into an
   agent's context as an instruction; a Bot sees at most a one-line fold summary
   of it through `dashboard_fields`, marked as fold-sourced. It is the same door a
@@ -2150,7 +2152,7 @@ does so before each reconnect.
 | `ackNotifications()` | `ack_notification(ts)` / `ack_all_notifications()` |
 | `approveAction(slot, task, pattern?)` | `resolve_approval(request_id, "approved", slot_id=slot, pattern=pattern)`; command/base trust passes the pending card pattern |
 | `rejectAction(slot, task)` | `resolve_approval(request_id, "rejected", slot_id=slot)` |
-| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", pattern="")`; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
+| `resolveApproval(id, action, slot?, pattern?)` | `resolve_approval(id, action="approve", slot_id="", *, pattern="")`; `approve`/`approved` and `reject`/`rejected` are aliases; without a slot, accepted actions are `approve`, `reject`, `reject_once`; with a slot, accepted actions are `approved`, `rejected`, `trust`, `trust_reads`, `trust_command`, `trust_base`, `yolo`; command/base trust requires `pattern` |
 | `listApprovals()` | `list_approvals()`; pending background approvals only (cron, autonudge, subagent, task runner), never a slot's own tool prompts; empty for an app token |
 | `getApprovalMode()` | `get_gateway_config("kirocrew")`, then read `agent.approval_mode` |
 | `setApprovalMode(mode)` | `set_approval_mode(mode, slot_id="")`; accepted modes are `normal`, `trust_reads`, `trust`, `yolo`; `normal`, `trust_reads`, and `trust` may target one slot, while `yolo` is process-global and rejects `slot_id` |

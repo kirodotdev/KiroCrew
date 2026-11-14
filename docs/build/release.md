@@ -322,7 +322,8 @@ code.
 
 ## Workflows in the release path
 
-Every one of these exists on `main`. Two trigger workflows call the same set of
+Every one of these exists on `main`. Two trigger workflows (plus `release-lts.yml`,
+see "LTS edition releases") call the same set of
 reusable ones, which hold all of the build, sign, and publish logic so the
 recipe exists exactly once; the triggers carry only their trigger, their
 concurrency group, and their version derivation.
@@ -658,7 +659,8 @@ with the matching `*-mac.zip`.
    unsigned app is removed and replaced with the stapled app before the image
    is shrunk and recompressed. This preserves the Finder background and icon
    positions while ensuring no unsigned app survives. The resulting DMG is
-   signed by a second CDSigner task with a `type: dmg` manifest, notarized,
+   signed by a second CDSigner task with a `type: "app"` manifest that names the
+   DMG as its output, notarized,
    stapled, and held to the same `spctl` gate. The DMG signature is load-bearing
    twice over: an `hdiutil` DMG carries an adhoc signature that the Apple notary
    accepts but Gatekeeper treats as "no usable signature" ("app is damaged" on
@@ -990,7 +992,7 @@ path. On Linux the install shape decides: an AppImage is replaced in place (so
 the directory holding it must be writable, which `bundle-location.js`'s
 `canUpdateLinuxInstall` gates on), while a deb or rpm is handed to
 `dpkg`/`rpm` behind an elevation prompt by electron-updater's `DebUpdater` /
-`RpmUpdater`. `resolveLinuxInstall()` picks the shape from three positive
+`RpmUpdater`. `classifyLinuxInstall()` picks the shape from three positive
 signals — `resources/package-type`, `$APPIMAGE`, and an `/opt` install path —
 and a package whose FORMAT cannot be named is refused rather than pointed at
 another format's feed. On Windows `NsisUpdater` reads

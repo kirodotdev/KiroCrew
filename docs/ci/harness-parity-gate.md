@@ -11,8 +11,8 @@ judgment-only ones it cannot, are catalogued in
 
 | Where | Command | Fails the build |
 |---|---|---|
-| Job `harness-parity` in `fast-gate.yml` | `check_harness_parity.py --test` then the diff-scoped run | yes — `Fast Gate` is a required check of its own, so every job in it is blocking |
-| CI job `backend-test` (ordinary pytest) | `test/test_harness_parity.py` | yes — the structural pins in groups A (Kiro is the default and the floor), B (identity is tested positively) and C (the Kiro path keeps its own machinery) |
+| Step "Check harness identity tests on the lines this change adds" in job `source-gates` of `fast-gate.yml` | `check_harness_parity.py --test` then the diff-scoped run | yes — `Fast Gate` is a required check of its own, so every job in it is blocking |
+| CI job `backend-test` (ordinary pytest) | `test/test_harness_parity.py` | yes — the structural pins in groups A (KAS is the default, Kiro is the floor), B (identity is tested positively) and C (the Kiro path keeps its own machinery) |
 | The four AI review lanes | the `harness-parity` rule in `AUTOSDE.yaml`, `blocking: true` | yes — a violation of a blocking rule blocks |
 | Locally | `HARNESS_BASE_REF=origin/main python3 scripts/check_harness_parity.py` | exit 1 on any violation |
 | Same job, same command | the [X-capture rule](#the-x-capture-rule-whole-tree-shrink-only-allowlist), whole tree | yes, except entries on its shrink-only allowlist |
@@ -36,7 +36,7 @@ no dependency install.
 | `bare-literal` | H8 | `backend == "kas"` — `ACP_BACKEND_KIRO` is the empty string, so only the named constant is legible |
 | `sandbox-delegation` | H7 | `is_kiro_cli=` derived from a negation. This flag makes `wrap_argv` SKIP Kiro Crew's seatbelt, so it fails OPEN |
 | `vocabulary-home` | H8 | an `ACP_BACKEND_*` identifier or `ACP_BACKENDS_*` set defined outside `agent_sdk/backends.py` and the owners `VOCABULARY_PATHS` lists beside it |
-| `non-kiro-default` | H1 | `default=ACP_BACKEND_KAS` and equivalents — an operator who configures nothing gets Kiro |
+| `non-kiro-default` | H1 | `default=ACP_BACKEND_KAS` and equivalents — a harness other than Kiro named as a default on an added line |
 
 ## Why diff-scoped rather than whole-tree
 

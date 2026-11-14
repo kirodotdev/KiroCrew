@@ -39,8 +39,9 @@ my-dashboard/
 
 Every app needs an `app.json`. See [Manifest Reference](manifest-reference.md) for all fields.
 
-The scaffold writes no `permissions` block. Add the one below: the sample page
-calls `api.get('/api/status')` and listens for `notification` events, and the
+The scaffold writes no `permissions` block (`--cron` writes only `"cron": true`).
+Add the one below: the page in the next section calls `api.get('/api/status')`
+and listens for `notification` events, and the
 SDK rejects a path or event the manifest does not declare.
 
 ```json

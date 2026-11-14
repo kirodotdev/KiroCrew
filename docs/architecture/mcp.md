@@ -2448,13 +2448,13 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-cron` | `kirocrew mcp-cron` (`mcp_cron.py` + `mcp_cron_*.py`) | `cron_add`, `cron_list`, `cron_update`, `cron_remove`, `cron_remove_all`, `cron_pause`, `cron_resume`, `cron_trigger`, `cron_secret_request` |
 | `kirocrew-core` | `kirocrew mcp-core` (`mcp_core.py` + `mcp_core_parts/` + `mcp_tools/`) | spawn/subagent, learn, task, messaging, artifact, workflow, knowledge and session-directive tools (see below) |
 | `kirocrew-computer` | `kirocrew mcp-computer` (`mcp_computer.py`) | `computer_list_apps`, `computer_launch_app`, `computer_get_state`, `computer_click`, `computer_drag`, `computer_type_text`, `computer_press_key`, `computer_set_value`, `computer_scroll`, `computer_perform_action`, `computer_end_turn` |
-| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary`, `session_queue` |
-| `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ledger_record`, `accept_eval` |
+| `kirocrew-dashboard` | `kirocrew mcp-dashboard` (`mcp_dashboard.py` + `mcp_dashboard_*.py`) | `chat_folder_tree`, `chat_folder_create`, `chat_folder_move`, `chat_folder_update`, `chat_folder_move_session`, `chat_folder_delete`, `chat_tag_list`, `chat_tag_create`, `chat_tag_update`, `chat_tag_assign`, `chat_tag_column_list`, `chat_tag_column_create`, `chat_tag_column_move`, `session_move_to_column`, `chat_session_pin`, `chat_session_pin_move`, `session_create`, `session_fork`, `session_stop`, `session_end_wait`, `session_retry`, `session_continue`, `session_set_model`, `session_reload`, `session_rename`, `session_generate_title`, `session_set_color`, `session_set_note`, `session_close`, `session_revive`, `session_history_list`, `session_send`, `session_broadcast`, `session_status`, `session_adopt`, `session_handoff`, `session_release`, `session_read_message`, `session_summary`, `session_queue`, `work_dispatch` |
+| `kirocrew-work` | `kirocrew mcp-work` (`mcp_work.py`) | `work_brief`, `work_report`, `work_ledger_read`, `work_ledger_rebuild`, `work_ask_record`, `work_ledger_record`, `accept_eval` |
 | `kirocrew-crew-log` | `kirocrew mcp-crew-log` (`mcp_crew_log.py`) | `crew_log_list`, `crew_log_read`, `crew_log_projection` |
 | `kirocrew-debug` | `kirocrew mcp-debug` (`mcp_debug.py`) | `debug_gateway`, `debug_refusals`, `debug_threads`, `debug_processes`, `debug_snapshots` |
-| `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates`, `dashboard_fields`, `dashboard_types`, `dashboard_write`, `dashboard_templates`, `dashboard_preview`, `dashboard_apply`, `dashboard_rollback`, `dashboard_snapshot` |
+| `kirocrew-panel` | `kirocrew mcp-panel` (`mcp_panel.py`) | `panel_publish`, `panel_templates`, `dashboard_fields`, `dashboard_types`, `dashboard_write`, `dashboard_save`, `dashboard_templates`, `dashboard_preview`, `dashboard_apply`, `dashboard_rollback`, `dashboard_snapshot` |
 | `kirocrew-guide` | `kirocrew mcp-guide` (`mcp_guide.py`) | `guide_list_actions`, `guide_start`, `guide_status`, `guide_cancel`, `list_change_kinds`, `find_setting`, `get_member_capabilities`, `diagnose_settings`, `propose_change`, `get_change_status`, `search_docs`, `find_ui` |
-| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `find_capabilities`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report`, `save_notes` |
+| `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `find_capabilities`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `set_check_ins`, `offer_dashboard_page`, `key_result_progress`, `save_goal_report`, `save_notes` |
 | `kirocrew-secrets` | `kirocrew mcp-secrets` (`mcp_secrets.py`) | `call_api_with_secret` |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
@@ -2557,7 +2557,7 @@ are admitted without a turn the user sent: any turn in the Bot's own
 pinned thread (a check-in, a sub-agent's result coming back, the goal-setup
 nudge of `dashboard/goal_setup.py`) may call `set_goal`, `set_key_results` and
 `set_check_ins`. `_resolve_agent_caller(..., own_goal=True)` (passed only by
-`member.propose_self`) admits such a turn when the slot is a Bot DM thread
+`member_self.api_member_self_propose`) admits such a turn when the slot is a Bot DM thread
 and marks the request `REQ_OWN_GOAL_TURN`; a channel turn is still refused. The
 route then refuses every other request (`model`, `approval_mode`,
 `capabilities`) with `not_user_turn`. Each is a card: nothing changes until the
@@ -2594,7 +2594,7 @@ and each refused tool answers one line --
 changed. ...` (`mcp_guide._off_dashboard`, keyed on the gateway's
 `no_live_slot`/`no_dashboard_turn`/`channel_caller`/`subagent_caller`/
 `unattended_caller`/`app_caller`/`app_scoped_caller`/`missing_session_key`/
-`not_user_turn` codes) -- while `find_ui` and
+`not_user_turn`/`unattested_caller` codes) -- while `find_ui` and
 `search_docs` still answer in text, every result `live: not_observed`. `guide_start` only offers a
 card the user must press Start on, and `guide_cancel` only stops this
 conversation's guide, undoing nothing the user saved. A conversation has at most
@@ -2770,9 +2770,13 @@ credential and security-ceiling controls are excluded from the catalog.
 The same server carries **change cards**. `propose_change(kind, params, reason?)`
 names one REGISTERED kind (`change_card_catalog.KINDS`: `setting.change`,
 `schedule.create`/`.update`, `crewmate.create`/`.update`/`.capabilities`,
+`crewmate.goal`/`.key_results`/`.check_ins`,
 `template.update`, `mcp.install`/`.add_custom`/`.toggle`, `connection.connect`,
 `secret.save`, `trust.app`, `denied_command`, `folder.steering`,
 `workflow.save`/`.update`); trust-root files have no kind.
+`crewmate.import` is the owner's own (`APP_ONLY_KINDS`, refused `app_only`) and
+`crewmate.dashboard_page` the Bot's own `offer_dashboard_page` ask
+(`SELF_ONLY_KINDS`, refused `self_only`).
 `template.mcp_server` is not one of them: its server entry is the gateway's own, so
 only `request_server` raises it (see *Asking for an MCP server mid-chat*).
 `setting.change` takes a Settings-registry `setting_id` (found with
@@ -3119,6 +3123,8 @@ answers `tools/list` from):
 
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
+- **Lessons:** `learn_update`
+- **Questions:** `ask_question`
 - **The session's own MCP servers:** `mcp_server_wait` (one parked call that
   returns when a named server of the calling session has connected, or says why
   it will not; see "A server that is still starting" below)
@@ -4751,10 +4757,11 @@ Two steps, and the generator fails on either one alone; then regenerate:
    to the DOM node a person clicks (a forwarding component re-emits it with
    `forwardUiLocation(id, ...ownRefs)`), proven by a rendered test: `uiIndex.test.ts` scans every production marker and
    accepts an intrinsic element, or a component in its `FORWARDING_PROVEN`
-   list (`Btn`, `SendBtn`, `DropdownMenuItem`, `Glass`, `IconButton`,
-   `Clickable`, `Link`, `NavItem`, `Row`, `AddMenuItem`, `SimpleSelect`,
-   `SegmentedControl`, `CrewEditorNextRail`, `Tablist`, `SidePanel`, `Table`,
-   `DropdownMenuSubTrigger`, `Item` today),
+   list (`Btn`, `SendBtn`, `DropdownMenuItem`, `Glass`, `HeaderControl`,
+   `IconButton`, `Clickable`, `Link`, `NavItem`, `Row`, `AddMenuItem`,
+   `SimpleSelect`, `SegmentedControl`, `CrewEditorNextRail`, `Tablist`,
+   `SidePanel`, `Table`, `DropdownMenuSubTrigger`, `Item`,
+   `NotificationClearButton`, `TipClickable` today),
    each with its own rendered forwarding test, whose `afterEach` fails on any
    `data-ui-location` in the document not registered under that same id
    (`unregisteredMarkers`, `src/test/guideTargets.ts`). `NavItem` (`shell/nav/navRow.tsx`) takes a fixed

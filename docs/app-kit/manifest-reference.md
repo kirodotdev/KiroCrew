@@ -93,7 +93,8 @@ permissions or setting `minKiroCrewVersion`.
 The signature covers `name`, `version`, `signer` and `permissions`, plus each of
 these groups when it is non-empty: `notifications`, `crons`, `contributes`,
 `setup`, `mcpServers`, `backend`, `ui`, `agents`, `skills`, `sops`,
-`dependencies`, `platform`, `publishProvider` and `config_keys`. An empty group is left
+`dependencies`, `platform`, `publishProvider`, `config_keys`, `credentialMasks`,
+`agentReadOnlyDirs`, `desktop` and `agentTools`. An empty group is left
 out of the signed bytes. `displayName`, `description` and `author` are display text
 and are not signed.
 
@@ -278,11 +279,14 @@ own (`mcpServers`); the user approves each of its calls.
 | Field | Type | Description |
 |-------|------|-------------|
 | `route` | string | The route that serves every call, below your app's API: a process backend receives `POST /api/<route>` through the signed app proxy; `backend.routes` receive `POST /<route>`. Lowercase segments only; no leading `/`, query, host or `..` |
-| `tools[].name` | string | Must begin with your app's name with `-` read as `_`, then `_` (app `my-app`: `my_app_...`). A name a built-in core tool already has is never yours |
+| `namespace` | string | Optional. The prefix your tool names use instead of the app name: a lowercase identifier of at most 32 characters (`pod`: `pod_...`) |
+| `tools[].name` | string | A lowercase identifier (`[a-z][a-z0-9_]{0,63}`) that must begin with your namespace, or by default your app's name with `-` read as `_`, then `_` (app `my-app`: `my_app_...`). A name a built-in core tool already has is never yours |
 | `tools[].description` | string | What the model reads, up to 4,000 characters |
 | `tools[].title` | string | Optional one-line display title, up to 80 characters |
-| `tools[].inputSchema` | object | An object schema using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
+| `tools[].inputSchema` | object | An object schema of at most 32 arguments using only `string` (`enum`, `maxLength`), `integer` and `number` (`minimum`, `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, item `maxLength`). A string with no `maxLength` is capped at 65,536 characters and an array with no `maxItems` at 256 items; a bool is refused where an integer is declared; `additionalProperties` may only be `false` |
 | `tools[].maxResultChars` | number | Where your answer is cut after redaction, 1 to 60,000; default 20,000 |
+| `tools[].timeoutSeconds` | integer | How long the core waits for your answer, 1 to 600; default 30 |
+| `tools[].result` | string | `json` (default): any JSON object, serialized and redacted by the core. `text`: model-facing text you formatted, redacted and relayed as text |
 | `tools[].strictSession` | boolean | `true`: the call is forwarded only from a directly identified session, whose key your route reads from `X-Session-Key`. Only for `backend.routes`; refused on an app with a process backend, whose proxy strips that header. Default `false` |
 
 Your route receives `{"tool": "<name>", "arguments": {...}}` holding only arguments your
@@ -2446,7 +2450,8 @@ before it runs your command, which is the same silent failure:
 
 ## Validation Rules
 
-- `name` must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` (kebab-case)
+- `name` must match `/^[a-z0-9]+(?:-[a-z0-9]+)*$/` (kebab-case) and be at most 128
+  characters, because the name is used in file names
 - `name` must not be `system` (it would shadow the `system.*` notification-channel
   namespace)
 - `name` must not be `library` (the dashboard serves `/apps/library` as a static
@@ -2465,7 +2470,9 @@ before it runs your command, which is the same silent failure:
 - `version` must start with `MAJOR.MINOR.PATCH`; a pre-release (`-`) or build
   (`+`) suffix may follow it
 - Paths in `agents`, `skills`, `sops`, `ui.entry`, `ui.pages[].entryPoint`,
-  `contributes.sessionControls[].entryPoint`, `contributes.panelTabs[].entry`, and
+  `contributes.sessionControls[].entryPoint`, `contributes.panelTabs[].entry`, the
+  `entry` of every `linkPreviews`, `messageActions`, `linkOpen`, `composerActions` and
+  `selectionActions` contribution, `desktop.windows[].entry`, and
   `backend.entryPoint` must be relative and stay inside the app root: absolute paths
   and `..` traversal are rejected (canonical resolve + containment when the app dir
   is known). `backend.hooks.*` are format-checked (`module.path:callable`, which
@@ -2481,7 +2488,8 @@ before it runs your command, which is the same silent failure:
   directory (see [Credential masks](#credential-masks))
 - `agentReadOnlyDirs` must be an array of at most 32 paths relative to the app's data
   directory (see [Agent read-only directories](#agent-read-only-directories))
-- Each cron entry must specify either `every` or `cron_expr`
+- Each cron entry must specify either `every` or `cron_expr`, and at least one of
+  `agent`, `agent_sequence`, `message`, `command` or `script`
 - A non-empty `crons` requires `"cron": true` under `permissions`. Install,
   update and self-registration refuse the manifest otherwise; an app already
   installed keeps loading and firing its crons until its next update
