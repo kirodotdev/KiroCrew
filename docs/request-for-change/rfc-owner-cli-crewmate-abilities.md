@@ -47,22 +47,23 @@ later RFC.
 - The crew editor's **Add abilities** and **Remove** call
   `PUT /api/agents/{name}/capabilities` and
   `POST /api/agents/{name}/capabilities/detach`
-  (`dashboard/routes/agents.py:47-50`). Both handlers start with
-  `require_owner_dashboard_request` (`dashboard/handlers/agent_capabilities.py:56`,
-  `:138`), which admits only a dashboard session whose subject is the owner and
-  that is not an app token (`dashboard/handlers/source_providers.py:870`).
+  (`dashboard/routes/agents.py`). Both handlers, `api_member_capabilities` and
+  `api_member_capabilities_detach` in `dashboard/handlers/agent_capabilities.py`,
+  start with `require_owner_dashboard_request`, which admits only a dashboard
+  session whose subject is the owner and that is not an app token
+  (`dashboard/handlers/_shared_access.py`).
 - The capability state already covers every part a spec carries:
   `CAPABILITY_SECTIONS` is mcpServers, tools, allowedTools, autoApprove, skills,
-  prompt, model, resources (`agent_state.py:188`).
+  prompt, model, resources (`CAPABILITY_SECTIONS` in `agent_state.py`).
 - `kirocrew agent update` sets only template, workspace, display name, memory
   store and model (`kirocrew agent update --help`). There is no CLI for
   abilities or for `approval_mode`.
 - The CLI already has an owner path to owner-only routes: `kirocrew app
   install|enable|disable` reads the local secret, mints a two-minute session
   at `/api/token/local` and posts the lifecycle action
-  (`app_lifecycle_client.py:160-185`). `/api/token/local` refuses a process it
+  (`_post_lifecycle_action` in `app_lifecycle_client.py`). `/api/token/local` refuses a process it
   cannot verify as the local owner, with "from an agent's shell or a sandbox"
-  (`dashboard/handlers/core_local_token.py:113-115`).
+  (`api_token_local` in `dashboard/handlers/core_local_token.py`).
 
 ### Problems
 
@@ -76,7 +77,8 @@ later RFC.
 3. **Remove leaves residue** (#26898): skill names no current ability set adds
    stay in the mate file and cannot be removed from the editor.
 4. **A new mate opens in `trust`** while `approval_mode` is unset
-   (`config/sections_agent_fields.py:235` and the seed in crew-mode.md). The
+   (`MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE` in `config/sections_agent_fields.py`
+   and the seed in crew-mode.md). The
    owner can fix it only in the profile, after the mate exists.
 5. **No owner automation.** The owner cannot script "after sync, refresh all
    mates", although the same owner can script app install today.
