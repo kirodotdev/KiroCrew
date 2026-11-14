@@ -184,7 +184,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                 del servers[k]
             if stale:
                 _sync_app_tool_refs(data, app_name)
-                if _write_mcp_json_unlocked(data):
+                if _write_mcp_json_unlocked(data, removal=True):
                     logger.info("Pruned %d stale app MCP server(s) for %s", len(stale), app_name)
 
 

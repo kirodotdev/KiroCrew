@@ -151,7 +151,7 @@ def _read_mcp_json_unlocked(*, strict: bool = False) -> dict[str, Any]:
         return {}
 
 
-def _write_mcp_json_unlocked(data: dict[str, Any]) -> bool:
+def _write_mcp_json_unlocked(data: dict[str, Any], *, removal: bool = False) -> bool:
     """Write mcp.json without acquiring a lock (caller must hold lock).
 
     Returns whether the write landed. ``kirocrew.json`` is the shared agent spec,
@@ -160,7 +160,11 @@ def _write_mcp_json_unlocked(data: dict[str, Any]) -> bool:
     question as the derived-spec writers (``agent._declined_foreign_spec_write``):
     a shared directory owned by another home is left untouched and the caller
     registers nothing; a default-home instance and ``isolated_agents_dir`` write
-    as before. Returns ``False`` rather than raising, as ``_register_agents``
+    as before. ``removal=True`` marks a write that only drops this home's own app
+    entries; it asks ``agent._declined_foreign_spec_removal`` instead, which skips
+    the ephemeral arms, so a default-home instance run from a linked worktree or a
+    temp checkout still removes them. Returns ``False`` rather than raising, as
+    ``_register_agents``
     skips a refused spec; the guard logs the WARNING and the SEL denial itself.
     Asked under ``_mcp_lock``, which the rebuild also holds for this file, so the
     provenance it reads cannot change between the decision and the write. A first
@@ -173,7 +177,10 @@ def _write_mcp_json_unlocked(data: dict[str, Any]) -> bool:
     # imported during the backend's boot path (same shape as bridges_agents).
     from kiro_crew import agent as _agent
 
-    if _agent._declined_foreign_spec_write(path):
+    declined = (
+        _agent._declined_foreign_spec_removal if removal else _agent._declined_foreign_spec_write
+    )
+    if declined(path):
         return False
     if not path.exists():
         if _agent._new_shared_spec_needs_owner_pin(path.parent):

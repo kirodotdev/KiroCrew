@@ -1116,11 +1116,19 @@ relocated home, the writer includes the existing `kirocrew-core` managed entry.
 Its `KIROCREW_HOME` pin makes the app-created file recognizable on later register,
 deregister and prune writes.
 
-The removals in that directory ask the same guard once per sweep, under
+The removals in that directory ask a narrower question,
+`agent._declined_foreign_spec_removal`: do the specs belong to another data home?
+A removal of this home's own app entries writes nothing of this instance, so the
+ephemeral arms (a linked worktree, a temp checkout) do not refuse it, and a
+default-home gateway run from a linked worktree still removes a disabled or denied
+app's agents and MCP entries. `_deregister_mcp_servers` and the MCP half of the
+prune pass `removal=True` to the writer for this. The agent removals ask once per
+sweep, under
 `agents_spec_lock` held until the last unlink, so ownership cannot change between
 the answer and a delete: `_deregister_agents` (which the boot reconcile runs for every app this
 instance denies) and the agent half of `_prune_stale_app_resources`, each of which
-also removes the app's launch copies. On a refusal they delete nothing and
+also removes the app's launch copies. When another home owns the directory they
+delete nothing and
 `_deregister_agents` returns `0`, as `_deregister_mcp_servers` does. That is a
 settled no-op, not an error: `_register_agents` declines every write there, so
 nothing in the directory is this home's to remove, and a retry gets the same

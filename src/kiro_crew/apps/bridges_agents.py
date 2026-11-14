@@ -1285,7 +1285,7 @@ def _owned_agents_dir(agents_dir: Path) -> Iterator[bool]:
     from kiro_crew.agent_files import AGENT_FILENAME
 
     with _agent.agents_spec_lock(agents_dir):
-        yield not _agent._declined_foreign_spec_write(agents_dir / AGENT_FILENAME)
+        yield not _agent._declined_foreign_spec_removal(agents_dir / AGENT_FILENAME)
 
 
 def _deregister_agents(app_name: str) -> int:

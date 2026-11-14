@@ -259,7 +259,7 @@ def test_the_ownership_check_and_every_delete_of_a_deregistration_share_the_spec
     held = []
     seen = []
     real_lock = agent_mod.agents_spec_lock
-    real_guard = agent_mod._declined_foreign_spec_write
+    real_guard = agent_mod._declined_foreign_spec_removal
     real_remove = agent_launch.remove_app_agent_launches
 
     @contextlib.contextmanager
@@ -280,7 +280,7 @@ def test_the_ownership_check_and_every_delete_of_a_deregistration_share_the_spec
         return real_remove(*args, **kwargs)
 
     monkeypatch.setattr(agent_mod, "agents_spec_lock", recording_lock)
-    monkeypatch.setattr(agent_mod, "_declined_foreign_spec_write", recording_guard)
+    monkeypatch.setattr(agent_mod, "_declined_foreign_spec_removal", recording_guard)
     monkeypatch.setattr(agent_launch, "remove_app_agent_launches", recording_remove)
 
     assert _deregister_agents("test-app") == 2
@@ -399,3 +399,80 @@ def test_an_unavailable_agent_spec_lock_does_not_skip_the_stale_mcp_prune(
     servers = json.loads((tmp_path / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
     assert "test-app:srv" not in servers
     assert "Could not prune stale agents for test-app" in caplog.text
+
+
+def _default_home_in_a_linked_worktree(tmp_path, app_env, monkeypatch) -> tuple[Path, list[Path]]:
+    """A default-home gateway run from a linked worktree, with ``test-app`` registered.
+
+    The shared spec carries the app's MCP entry and no ``KIROCREW_HOME`` pin (the
+    default-home writer's signature), and the agents dir holds the app's agent spec,
+    its launch copy and its template record.
+    """
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.config import paths
+
+    monkeypatch.setattr(paths, "_resolve_default_home", lambda: app_env["home"].resolve())
+    spec_path = _share(monkeypatch, tmp_path / "agents")
+    monkeypatch.setattr(agent_mod, "_in_linked_git_worktree", lambda _checkout: True)
+    _installed_manifest(tmp_path, app_env)
+    spec = {"name": "kirocrew", "mcpServers": {"test-app:srv": dict(_SERVER)}}
+    spec_path.write_text(json.dumps(spec, indent=2) + "\n", encoding="utf-8")
+    template = spec_path.parent / "test-app--dropped.template"
+    template.write_text("{}", encoding="utf-8")
+    return spec_path, [*_app_files(spec_path.parent), template]
+
+
+def test_a_default_home_gateway_in_a_linked_worktree_revokes_a_denied_app(
+    tmp_path, app_env, monkeypatch
+):
+    """The boot revocation of a denied app removes this home's own entries even from
+    a linked worktree: a removal pins nothing of the worktree into the shared specs."""
+    import kiro_crew.apps.backend as backend_mod
+
+    spec_path, files = _default_home_in_a_linked_worktree(tmp_path, app_env, monkeypatch)
+    monkeypatch.setattr(
+        backend_mod, "list_apps", lambda: [{"name": "test-app", "enabled": True, "manifest": {}}]
+    )
+    monkeypatch.setattr(backend_mod, "_app_activation_denied", lambda _name, **_kw: "denied")
+    monkeypatch.setattr(
+        backend_mod, "start_app_backend", lambda *_a, **_k: pytest.fail("denied app started")
+    )
+
+    backend_mod.start_enabled_app_backends()
+
+    assert not any(f.exists() for f in files)
+    assert "test-app:srv" not in json.loads(spec_path.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_a_default_home_gateway_in_a_linked_worktree_still_may_not_write_app_entries(
+    tmp_path, app_env, monkeypatch
+):
+    """Positive control for the test above: the same setup is inside the guard's
+    worktree arm, which still refuses a registration write."""
+    spec_path, _files = _default_home_in_a_linked_worktree(tmp_path, app_env, monkeypatch)
+    manifest = AppManifest.from_json_file(
+        app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+    )
+    before = spec_path.read_bytes()
+
+    assert _register_mcp_servers("test-app", manifest) == []
+    assert spec_path.read_bytes() == before
+
+
+def test_an_admitted_removal_from_the_shared_dir_is_audited_as_allowed(
+    tmp_path, app_env, monkeypatch
+):
+    """Every admitted shared-home permission decision leaves a SEL record, removals too:
+    a default-home gateway's deregistration records one ``allowed`` event per sweep."""
+    from kiro_crew import agent as agent_mod
+    from kiro_crew.apps.bridges_agents import _deregister_agents
+
+    spec_path, _files = _default_home_in_a_linked_worktree(tmp_path, app_env, monkeypatch)
+    events = _capture_sel(monkeypatch, agent_mod)
+
+    assert _deregister_mcp_servers("test-app") == 1
+    assert _deregister_agents("test-app") > 0
+
+    writes = [e for e in events if e.get("operation") == "agent_home_write"]
+    assert [e["outcome"] for e in writes] == ["allowed", "allowed"]
+    assert all(e["resources"] == str(spec_path.parent) for e in writes)

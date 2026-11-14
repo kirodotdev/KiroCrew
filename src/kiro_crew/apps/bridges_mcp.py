@@ -1289,7 +1289,7 @@ def _deregister_mcp_servers(app_name: str) -> int:
         # A refused write (this data home does not own the shared spec) removed
         # nothing: the owner's entries stay on disk, so report none removed.
         tools_changed = mcp_data.get("tools") != before
-        if (to_remove or tools_changed) and not _write_mcp_json_unlocked(mcp_data):
+        if (to_remove or tools_changed) and not _write_mcp_json_unlocked(mcp_data, removal=True):
             to_remove = []
     # NOT scrubbed here: the legacy shared ~/.kiro/settings/mcp.json is held by
     # OTHER processes (Kiro IDE, other kiro-cli agents), so its cross-process
