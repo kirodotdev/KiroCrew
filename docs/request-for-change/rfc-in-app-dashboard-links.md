@@ -1,11 +1,11 @@
 ---
 title: In-app dashboard links -- a plain click on a link to a dashboard page opens it in the same window
-status: draft
+status: accepted
 author: peterhieuvu
 created: 2026-11-05
 last-audited: 2026-11-05
 audited-at: 142d40ecfc
-doc-pr: null
+doc-pr: 30791
 implementation-prs: [26450]
 tracking-issues: [26442]
 supersedes: []
@@ -14,7 +14,8 @@ superseded-by: []
 
 # RFC: In-app dashboard links
 
-- Status: draft. Nothing is on main. The implementation is open as [#26450](https://github.com/kirodotdev/KiroCrew/pull/26450) and waits on this document; [#26442](https://github.com/kirodotdev/KiroCrew/issues/26442) is the issue (tier T3, because it changes how existing links behave). This document asks a maintainer to accept or change the design.
+- Status: accepted 2026-11-11 by the maintainer Bolin Chen (@bolichen97) in his approval of #30791 ([review](https://github.com/kirodotdev/KiroCrew/pull/30791#pullrequestreview-5857019948)), with the answers in section 9 and one condition for #26450: no regex in the section 4 checks. Nothing is on main. The implementation is open as [#26450](https://github.com/kirodotdev/KiroCrew/pull/26450); [#26442](https://github.com/kirodotdev/KiroCrew/issues/26442) is the issue (tier T3, because it changes how existing links behave).
+- The acceptance edit did not re-audit the claims below: `last-audited` and `audited-at` still refer to 2026-11-05 and `142d40ecfc`.
 - Main measured at `142d40ecfc`. Every file and symbol named below is on the #26450 head `c1fa2144f3`, paths under `website/src/`.
 
 ## 1. Problem
@@ -38,7 +39,7 @@ Non-goals:
 
 - Web URLs. They keep opening in a new tab, with the existing gesture checks.
 - Popout and embed windows. They keep today's behaviour.
-- A user setting. Section 9 asks whether one is wanted.
+- A user setting. Section 9 records that none is wanted for now.
 
 ## 3. Design
 
@@ -67,7 +68,7 @@ Popout and embed routes, app pages and redirect-only aliases are left out on pur
 
 - A middle click or a click with Cmd, Ctrl, Alt or Shift. In a chat message only a plain primary click is taken (the message click handler in `components/MarkdownRenderer.tsx`). In a frame the link-bridge shim (`LINK_BRIDGE_SHIM_BODY` in `lib/widgetSrcdoc.ts`) posts a middle click, or a click with Cmd, Ctrl or Shift, with `tab: true`, and the bridge then opens a new tab (`wantsNewTab` and `go` in `hooks/useFrameLinkBridge.ts`). Alt is not yet included in a frame (section 8).
 
-What reaches the host from a frame is unchanged by this design. The shim posts a link that opens a window (`target="_blank"` or any target but `_self`), a bare absolute web link, and a `window.open` call. A link with no target and a root-relative href, such as a bare `<a href="/schedule">`, is left to the frame (`planOf` returns null for it), so it navigates the frame itself, as it does today. Section 9 asks whether it should reach the host.
+What reaches the host from a frame is unchanged by this design. The shim posts a link that opens a window (`target="_blank"` or any target but `_self`), a bare absolute web link, and a `window.open` call. A link with no target and a root-relative href, such as a bare `<a href="/schedule">`, is left to the frame (`planOf` returns null for it), so it navigates the frame itself, as it does today. Section 9 records that it stays in the frame.
 - Any link the resolver refuses, including every web URL.
 - A chat link some earlier handler already took, such as a session, file or staged-dashboard link. The in-place step runs last and only when the click is not yet handled (`!e.defaultPrevented`).
 
@@ -83,11 +84,11 @@ A frame's request is honoured only while the dashboard window has a live user ac
 
 For an in-app link only, #26450 adds a weaker tie (`pointerTiedToFrame`): focus came into this frame from the dashboard, the pointer is over it and entered it after the dashboard's last click or key, and no sibling frame reported input within an activation's lifespan. Without it, a link clicked within a few seconds of opening the page, or of clicking its tab, needed a second click on the "Open" button.
 
-This tie does not prove the click happened in the frame. A page script that moves focus into its own frame while the pointer rests over it, within the activation lifespan of a dashboard click, can open an in-app link with no click in the frame. Section 4 states the limits; section 9 asks the reviewer to keep or drop it.
+This tie does not prove the click happened in the frame. A page script that moves focus into its own frame while the pointer rests over it, within the activation lifespan of a dashboard click, can open an in-app link with no click in the frame. Section 4 states the limits; section 9 records the decision to keep it.
 
 ## 4. Security considerations
 
-- The path that is navigated is rebuilt from parsed fields, never the authored text (the tail of `resolveInternalNav`). Each segment must match `[A-Za-z0-9._~-]`, at most 128 characters, with `.` and `..` refused (`SEGMENT_RE`). A fragment must match a short anchor pattern (`HASH_RE`). A link therefore cannot carry its own URL, scheme or traversal into the router.
+- The path that is navigated is rebuilt from parsed fields, never the authored text (the tail of `resolveInternalNav`). Each segment is 1 to 128 characters, every one in the allowed set `A-Za-z0-9._~-`, with `.` and `..` refused. A fragment is `#` followed by 1 to 128 characters from `A-Za-z0-9._-`, the set and bound the earlier `HASH_RE` accepted. Both checks, and the control-character check below, are plain character checks (an allowed-character `Set` and a length bound), not regular expressions, as the maintainer's acceptance of this RFC requires of #26450. The behaviour is the one stated here. A link therefore cannot carry its own URL, scheme or traversal into the router.
 - For every destination but `/chat`, a query parameter not listed for it, a repeated one, one longer than 512 characters, or one holding a control character refuses the whole link (`MAX_PARAM_LENGTH` and the parameter loop in `resolveInternalNav`). A `/chat` link is checked only for parameter names (`sid`, `slot`); its session key must then pass `sessionKeyFrom`, and the link is rebuilt with that one key. Section 8 lists bringing `/chat` under the same checks. A link cannot reach a page action through a parameter the list never named.
 - The pointer tie in section 3.4 is the one open that can happen without a click in the frame. Its reach is bounded: only a page on the list in section 3.1, never a web URL or a new tab; the leave check still runs first, so unsaved work is never discarded without the person's answer; and only within an activation lifespan of the person's own dashboard click or key.
 - The extra origins are exact. No loopback alias is added, because `localhost` or `127.0.0.1` on another port may be a different gateway (the `useInternalNavHandler` doc comment).
@@ -117,18 +118,23 @@ The feature map gains an "In-app dashboard links" row, and the dashboard skills 
 
 ## 8. Known gaps in #26450
 
-Measured at `c1fa2144f3`. Each is fixed in #26450 before it merges.
+Measured at `c1fa2144f3`. Each is fixed in #26450 before it merges; the maintainer's acceptance makes that a condition of merging #26450.
 
 1. **Alt-click in a frame.** The shim's click handler marks Cmd, Ctrl and Shift as a new-tab click, not Alt, so an Alt-click on a dashboard link in a frame opens it in place. The chat side already includes Alt.
 2. **`/chat` parameter checks.** The `/chat` branch of `resolveInternalNav` returns before the repeat, length and control-character checks the other destinations get, so `/chat?sid=a&slot=b` or a repeated `sid` opens the first key instead of being refused.
 3. **Fragment on the current address.** `useIsCurrentUrl` compares the current pathname and query with the whole target, fragment included, so a same-page link with `#section` asks the leave question on a page with an unsaved draft.
 4. **`/members` parameter.** `DESTINATIONS` allows `name` for `/members`, but `MembersPage` selects a member by `member` (`MEMBER_PARAM` in `pages/members/membersPageModel.ts`), and the dashboard's own links use it (`/members?member=<name>`, for example in `src/kiro_crew/milestones.py`). So a real member link is refused and keeps its new tab. The list in section 3.1 is the intended one.
 
-## 9. Open questions
+## 9. Decisions
 
-1. Is a setting wanted for people who want every link in a new tab, or is the modified click enough?
-2. Should `/chat` accept a short session name, which needs the session roster to resolve? Today only a full key is taken (the `resolveInternalNav` doc comment).
-3. Should app pages join the list once the app platform says which of their routes are safe to open from a link?
-4. Should a popout window forward an in-app link to the main window, as app pop-outs already do for `/chat` navigation, instead of keeping its previous behavior?
-5. Should a bare root-relative link in an agent-written page (`<a href="/schedule">` with no target) reach the host and open in place, instead of navigating the frame? That needs the shim to relay it, while fragments and other relative links stay in the frame.
-6. Keep or drop the pointer tie (section 3.4)? Keeping it opens an in-app link on the first click after opening a page, with the residual in section 4. Dropping it leaves those clicks to the "Open" button.
+Decided 2026-11-11 by the maintainer Bolin Chen (@bolichen97) when accepting
+this RFC ([review](https://github.com/kirodotdev/KiroCrew/pull/30791#pullrequestreview-5857019948)).
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | A setting for people who want every link in a new tab? | No setting for now: the modified click is the escape hatch |
+| 2 | Should `/chat` accept a short session name? | Full session key only; a short name can follow once the roster lookup is cheap |
+| 3 | Should app pages join the list? | Later, once the app platform names its safe routes |
+| 4 | Should a popout forward an in-app link to the main window? | No: popouts keep their current behaviour in this change |
+| 5 | Should a bare root-relative link in an agent-written page reach the host? | No: it stays in the frame, as today. Agents are already told to write `target="_blank"` |
+| 6 | Keep or drop the pointer tie (section 3.4)? | Keep it. Its reach is bounded to the allowlist, never a web URL or a new tab, and the leave check still runs first |
