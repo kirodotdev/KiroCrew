@@ -6948,8 +6948,9 @@ process and message), and when called on a running event loop. `run(func, *args,
 parameters. No method raises into the app.
 
 **Manifest `l10n`.** An optional block of listing copy per locale (`L10nConfig` in
-`apps/manifest_sections.py`), preserved by `AppManifest.to_dict` and by the built-in
-discovery conversion. A locale key outside `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$`, a
+`apps/manifest_sections.py`), preserved by `AppManifest.to_dict`, by the built-in
+discovery conversion, and on a store row as `manifest.l10n` (`_merge_manifest`, parsed
+the same way, so a reader sees the translation before install). A locale key outside `^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$`, a
 locale past the 32nd, an unknown entry key or an over-cap value drops that locale. The
 drops are kept in `L10nConfig.warnings`, logged by the install validation
 (`manager_tree._validate_source_path`) and never refuse an install. The block is not in
