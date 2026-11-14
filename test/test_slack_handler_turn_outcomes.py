@@ -1529,6 +1529,39 @@ def test_native_review_ephemeral_raise_books_one_failure(monkeypatch):
     assert sessions.calls["success"] == 0
 
 
+def _thread_statuses(slack) -> list[str]:
+    return [a[1]["status"] for a in slack.actions if a[0] == "set_thread_status"]
+
+
+def test_review_ephemeral_raise_clears_the_awaiting_review_status():
+    # The draft never landed, so no draft owns "Awaiting review…": the status
+    # must come down, otherwise the requester waits on a review that never arrives.
+    slack = _ReviewEphemeralRaisesSlack()
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the draft answer")])
+    sessions = _TrackNativeSessions(provider)
+
+    _run_review_turn(slack, sessions)
+
+    statuses = _thread_statuses(slack)
+    assert "Awaiting review…" in statuses, f"the review path never set its status: {statuses}"
+    assert statuses[-1] == "", f"status left on after the draft post failed: {statuses}"
+
+
+def test_review_ephemeral_success_keeps_the_awaiting_review_status():
+    # Counterpart: a landed draft owns the status until a button press, so the
+    # failure-path clear must not run when the post succeeded.
+    slack = MockSlackClient()
+    slack._stream_enabled = True
+    provider = FakeProvider([LLMEvent(kind="text_chunk", text="the draft answer")])
+    sessions = _TrackNativeSessions(provider)
+
+    _run_review_turn(slack, sessions)
+
+    statuses = _thread_statuses(slack)
+    assert statuses and statuses[-1] == "Awaiting review…", statuses
+    assert sessions.calls["success"] == 1 and sessions.calls["failure"] == 0
+
+
 class _OptionsFooterFailsSlack(MockSlackClient):
     """Answer streams fine, but the footer post_blocks carrying the [OPTIONS]
     choices fails. ``fallback_posts`` collects the plain-text re-send."""
