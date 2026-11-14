@@ -3207,6 +3207,14 @@ answers `tools/list` from):
   serves each call from its own process; this server lists the tool and forwards the
   call (below).
 - **Browser:** `browser`
+- **Slack code channels:** `code_channel_set_view`,
+  `code_channel_publish_plan_canvas`, `code_channel_set_context_bar`,
+  `code_channel_rename`, `code_channel_set_status`, `code_channel_wrap_up`
+  (`mcp_tools/catalog/code_channels.py` declares them, `mcp_tools/code_channels.py`
+  serves them). They are listed only while `slack.code_channels` is on, and each
+  acts on the calling session's own bound code channel: no argument names a
+  channel. The gateway side, its checks and the SEL rows are in
+  [slack-gateway § Code-channel agent surface](../system-specs/modules/slack-gateway.md#code-channel-agent-surface)
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
   fenced identity/token stores, and never the conversation-bearing sources

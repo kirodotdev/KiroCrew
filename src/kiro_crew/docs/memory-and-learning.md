@@ -349,6 +349,21 @@ interface rather than the on-disk layout:
 Both run non-interactively (no TTY or editor needed), so they work from
 scheduled jobs.
 
+## Checking and Moving Memory from the CLI
+
+- `kirocrew memory stats` — counts for the default store: active and deleted
+  facts and episodes, how many episodes have embeddings, and the search index.
+  Rows that wait for embeddings are still found by keyword search.
+- `kirocrew memory audit` — scan every memory store for suspicious content,
+  such as text that tries to give the agent instructions. It lists each finding
+  with its store, or says memory is clean.
+- `kirocrew memory import <file> [--store <name>]` — load a file written by
+  `kirocrew memory export` into the default store, or into the named one. The
+  file is checked before anything is written; a bad file imports nothing and
+  exits 1. The `markdown` collection is never imported, and a private Bot (V2)
+  store refuses the import: use the dashboard copy, which keeps provenance.
+  Embeddings are built later by the gateway; `memory stats` shows the progress.
+
 ## Editing Memory
 
 - **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
