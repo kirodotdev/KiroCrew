@@ -121,6 +121,7 @@ interface AppPermissions {
   workerAutoApprove?: boolean
   chatSlots?: boolean
   reachableByUserSessions?: string[]
+  webhookSource?: boolean
   [key: string]: unknown
 }
 

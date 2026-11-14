@@ -189,11 +189,12 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     "agent_backend": ScopeSpec(RULESET, matcher="identifier"),
     # Which inbound webhook sources may start work (RFC crew-lts-edition,
     # appendix rows "Incoming webhooks" and Red "Webhooks by source"). Members are
-    # source ids: ``agent`` (``POST /api/hooks/agent``) and ``ops-mission-control``
-    # (that app's signal webhook), e.g. ``{"webhooks": {"mode": "allow", "allow":
-    # ["agent"]}}``. Asked by ``kiro_crew.webhook_sources.source_refusal`` at each
-    # source's entry, policy layer only (a request carries no session). An absent
-    # scope leaves each source to its own switch.
+    # source ids: ``agent`` (``POST /api/hooks/agent``) and the name of each app
+    # whose manifest declares ``permissions.webhookSource`` (that app's own inbound
+    # route), e.g. ``{"webhooks": {"mode": "allow", "allow": ["agent"]}}``. Asked by
+    # ``kiro_crew.webhook_sources.source_refusal`` at each source's entry, policy
+    # layer only (a request carries no session). An absent scope leaves each source
+    # to its own switch.
     "webhooks": ScopeSpec(RULESET, matcher="identifier"),
     # Capabilities (registered defaults — see the CAPABILITY-DEFAULT CONTRACT above):
     "capabilities.spawn": ScopeSpec(

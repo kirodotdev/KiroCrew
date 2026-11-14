@@ -2082,6 +2082,8 @@
         "user_session_reach_read": "Your chats can read those sessions.",
         "user_session_reach_send": "Your chats can send messages to those sessions. Each message shows which chat sent it.",
         "user_session_reach_note": "Only chats you opened yourself. Incognito, temporary, scheduled and channel-linked chats cannot, and no chat can stop or close those sessions.",
+        "webhook_source_heading": "Takes inbound webhooks",
+        "webhook_source_desc": "Systems outside can post to this app's own route, and a delivery can start work. Your security policy names it as webhook source {{source}}.",
         "session_approval_desc": "Sending messages or choosing response options in your chats, approving or denying tool prompts, and switching a chat's approval mode.",
         "session_approval_member_threads": "This includes your own chats with your Bots. The app can send your Bots messages in your name.",
         "session_approval_modes": "Chat approval modes it can set",
