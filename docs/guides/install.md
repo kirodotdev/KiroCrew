@@ -1235,7 +1235,8 @@ sandbox probe names the failing step so you can tell them apart:
 | Symptom | Mechanism | Remedy |
 |---|---|---|
 | `unshare(CLONE_NEWNS)` fails `EPERM`, sysctl is `1` | Ubuntu >= 23.10 AppArmor userns restriction | `kirocrew service install`, or `kirocrew sandbox install-profile` for the AppImage (this page) |
-| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` | `user.max_user_namespaces=0` (CIS-hardened host) | Raise that sysctl |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` and `/proc/sys/user/max_user_namespaces` reads `0` (token `userns_cap_zero`) | User namespaces are disabled: `user.max_user_namespaces=0`, a deliberate hardening setting on CIS-hardened and IT-managed hosts | Check with whoever manages the host, then raise it (`sudo sysctl -w user.max_user_namespaces=15000`) and persist it in a file under `/etc/sysctl.d/`. On ENOSPC the result is not cached, so no restart is needed once the value is raised. On EUSERS the result is cached for the life of the gateway, so restart the gateway after raising the value. |
+| `unshare(CLONE_NEWUSER)` fails `ENOSPC` / `EUSERS` and that file reads non-zero or cannot be read (token `max_user_namespaces`) | The per-user cap was reached, or (`ENOSPC` only) momentary resource pressure | Retry; if it keeps happening, raise that sysctl |
 | `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | Set it to 1 |
 | `unshare` fails `EINVAL` / `ENOSYS` | Kernel built without `CONFIG_USER_NS` | None short of a different kernel |
 | Fails inside Docker/Podman | The container's seccomp filter denies `unshare` | Container run flags, **not** host config |
@@ -1253,8 +1254,9 @@ sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
 `kirocrew doctor` reports the same verdict without the one-liner, and the
 dashboard's **Sandbox unavailable** screen names the mechanism and the command
 for it directly — the probe classifies the failing step into one of
-`apparmor_userns`, `max_user_namespaces`, `userns_denied`, `no_user_ns` or
-`mount_denied`, which is the row of the table above that applies to you.
+`apparmor_userns`, `userns_cap_zero`, `max_user_namespaces`, `userns_denied`,
+`no_user_ns` or `mount_denied`, which is the row of the table above that applies
+to you.
 
 ## Troubleshooting
 

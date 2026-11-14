@@ -11320,6 +11320,7 @@
         "aws_check_no_sandbox": "The AWS check could not run because this computer has no sandbox for the aws command. Your credentials were not checked. Run kirocrew doctor in a terminal for the fix, then re-check.",
         "aws_check_outer_sandbox": "The AWS check could not run because another sandbox already confines {{productName}}, so it cannot start its own sandbox for the aws command. Your credentials were not checked. Start {{productName}} outside that sandbox, then re-check.",
         "aws_check_sandbox_busy": "The AWS check could not run because the sandbox for the aws command hit a temporary limit. Your credentials were not checked. Re-check in a moment.",
+        "aws_check_userns_cap_zero": "The AWS check could not run because user namespaces are disabled on this host (user.max_user_namespaces is 0), so the aws command has no sandbox. Your credentials were not checked. Run kirocrew doctor in a terminal for the fix.",
         "before_you_start": "Before you start — your AWS setup",
         "billing": "This runs in your AWS account and is billed to you — one EC2 instance, its disk, and a small S3 bucket used during setup. Charges depend on your region, size, and any discounts.",
         "cancel": "Cancel",
