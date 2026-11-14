@@ -166,11 +166,33 @@ through `session_send`, so the withholding of `session_send` is left as it is.
   default and is set by the Bot's owner on the app's page. A team-level default
   can be set to open; the per-Bot switch can always turn a Bot off, immediately,
   and an open request that has not been answered is then dropped.
-- **Meetings.** The app's backend reads `/api/apps/meetings/*` under a declared
-  `permissions.api` prefix and proposes tasks from the reviewed action items. A
-  person confirms each one on the board before it becomes a task.
+- **Meetings.** The app proposes tasks from the reviewed action items, and a person
+  confirms each one on the board before it becomes a task. The app's backend cannot
+  fetch them itself: a call from one app's backend to another app's backend through
+  the proxy is refused with `403 app token cannot access another app's backend`
+  (`handle_app_api_proxy` in `src/kiro_crew/apps/routes_proxy.py`). The read has to
+  come from the page, running as the person, or from a consented read (Phase 1).
 - **Team Bot and role Bots.** Shipped as `.kirobot` bundles. The owner imports each
   one through the existing `crewmate.import` card, and so approves each.
+- **Measured on a real gateway.** A skeleton of this app (backend, UI entry and MCP
+  server) was installed into an isolated gateway built from `main` at
+  `8a1b4d3855`, on Linux, with its own `KIROCREW_HOME`. What held, and what did not:
+  - The proxy forwards `/apps/<name>/api/{path}` to the backend as `/api/{path}`,
+    so a backend serves `/api/...` and `/health`; the manifest's `backend.routes`
+    plays no part.
+  - A write from a dashboard session passed the signed-claim check. The same write
+    carrying only `?token=` was refused by the app with `owner_session_required`.
+  - A session minted by `kirocrew token` carries the `ownerId` `local-app`, so the
+    audit row's `by` read `local-app`: the owner session names that it is the owner,
+    not which person, which is the Phase 1 gap in practice.
+  - Third-party app execution is off by default: `enable` was refused until
+    `agent.apps_trusted` named the app.
+  - Enabling the app wrote `team-board:board` into the user-level agent spec
+    (`~/.kiro/agents/kirocrew.json`), which every gateway of that user reads whatever
+    its `KIROCREW_HOME`. A test gateway therefore changes the spec of a real one on
+    the same machine until the app is disabled.
+  - Not measured: whether a worker session receives `KIROCREW_SESSION_LABEL`, and how
+    the page renders in a browser.
 - **Distribution.** Published in a team's own registry (`registries` in config), so
   another team can install the same app and change the roles, rules and Bots.
 
@@ -181,7 +203,7 @@ through `session_send`, so the withholding of `session_send` is left as it is.
 | Propose Bots | `ctx.crewmate` is off | Switch it on (#21718), so the app proposes the Team Bot and role Bots as cards |
 | Know who is acting | The signed principal claim (`backend.signedPrincipal`, `X-KiroCrew-Principal`) already carries an authenticated identity to an app backend, but its kinds are `agent-tool`, `app-token`, `owner-session` and `none`, and "an authenticated non-owner" is `none` with an empty `ownerId`. So on a team every person but the owner is indistinguishable | Give the existing claim a kind that names a person, resolved from `derive_principal`, so a request carries who is acting rather than only whether they are the owner. No new header and no accessor the app could be lied to through |
 | Name an approver | A card is confirmed by the owner only | Allow a card to name a required approver, so a task owner confirms a change to their task |
-| Read another app's reviewed output | Only by `permissions.api` prefix | A consented read of the `meetings` output, if the prefix route proves too coarse |
+| Read another app's reviewed output | An app backend cannot call another app's backend through the proxy (`403`), so the `permissions.api` prefix does not reach it from the backend | A consented read of the `meetings` output for an app backend, or the page does the read as the person |
 
 Each is one PR and stands without the others. The second is the one the owner
 field depends on, because without it the app cannot tell which person set an owner.
@@ -240,8 +262,11 @@ governance scope all behave as they do today. Removes nothing.
 - **Spend.** `permissions.spawn` has no per-app rate limit
   (`docs/app-kit/manifest-reference.md`), so the app budgets any Bot work it
   triggers.
-- **Registries.** A team registry is cloned credential-free unless the operator
-  grants it trust.
+- **Registries.** A team registry the owner adds is read with the owner's
+  identity, so it can be a private GitHub repository read through the host's
+  `gh` sign-in (`rfc-app-registry-private-github`, shipped in #38999); a
+  repository an untrusted index chose is read anonymously. The app needs no
+  credential of its own.
 
 ## Alternatives considered
 
@@ -272,6 +297,10 @@ governance scope all behave as they do today. Removes nothing.
 5. An app's MCP tools reach a Bot's worker, not its conductor chat. Is that the
    right place for `pending_requests` and `answer`, given that a Bot only reads
    its requests when a worker runs? The pilot should measure how long a request
-   waits for an idle Bot and whether a cron-driven check is needed.
+   waits for an idle Bot and whether a cron-driven check is needed. A tool also
+   needs to know who is calling. The only hook an app has is the opt-in
+   `x-kirocrew-session-label` on an `mcpServers` entry, which hands the server the
+   session key: a session, not a Bot, and absent for a warm-pool or pooled server.
+   Whether a call can be mapped to a Bot from there is open.
 6. A shared Crew host with per-person execution, or one Crew per person joined
    through the hub, as the first target?
