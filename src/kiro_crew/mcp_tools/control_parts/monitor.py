@@ -75,7 +75,7 @@ def autonudge_stop(name: str, args: dict[str, Any]) -> str:
         )
     return _emit_directive(
         "autonudge_stop",
-        {"reason": args.get("reason", "").strip()},
+        {"reason": str(args.get("reason") or "").strip()},
         # NOT a confirmation, and worded so a model cannot read it as one: this
         # tool resolves no session, so it cannot know whether a loop is bound
         # here. The consumer applies the stop and records the real outcome —
