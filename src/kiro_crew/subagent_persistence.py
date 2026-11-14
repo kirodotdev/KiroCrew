@@ -589,6 +589,9 @@ def _tombstone_cleanup_identities(
 #: three stats a sweep instead of a full evaluation. See ``_unreclaimable_evidence``.
 _UNRECLAIMABLE_MEMO: dict[str, tuple[tuple[object, ...], float]] = {}
 
+#: Not-yet-due runs: agent id -> (tombstone identity, death time, delivered).
+_NOT_DUE_MEMO: dict[str, tuple[tuple[int, int, int], int | float, bool]] = {}
+
 
 def _file_identity(path: str) -> tuple[int, int, int] | None:
     """Inode, size and modification time of *path*, or None when absent.
@@ -694,6 +697,13 @@ def prune_stale_tombstones(
                 continue
             del _UNRECLAIMABLE_MEMO[d.name]
         ts_path = d / "tombstone.json"
+        # Sampled before the read, so a write that lands during it shows next sweep.
+        ts_identity = _file_identity(os.fspath(ts_path))
+        not_due = _NOT_DUE_MEMO.pop(d.name, None)
+        if not_due is not None and ts_identity is not None and not_due[0] == ts_identity:
+            if not_due[1] > (delivered_cutoff if not_due[2] else default_cutoff):
+                _NOT_DUE_MEMO[d.name] = not_due
+                continue
         if not ts_path.exists():
             continue
         try:
@@ -707,8 +717,12 @@ def prune_stale_tombstones(
                 continue
             if keep is not None and keep(d.name, ts):
                 continue
-            cutoff = delivered_cutoff if ts.get("cause") == "delivered" else default_cutoff
+            delivered = ts.get("cause") == _DELIVERED_CAUSE
+            cutoff = delivered_cutoff if delivered else default_cutoff
             died = _tombstone_died(ts, ts_path, now)
+            if died > cutoff and ts_identity is not None:
+                # On a forward clock _tombstone_died's fallbacks only move later: no skip ends late.
+                _NOT_DUE_MEMO[d.name] = (ts_identity, died, delivered)
             if died <= cutoff:
                 # Sampled before any of it is read, so a write that lands during the
                 # evaluation leaves this unequal to the next sweep's sample.
@@ -914,6 +928,8 @@ def prune_stale_tombstones(
             logger.debug("prune: tombstone processing failed for %s", d.name)
     for gone in _UNRECLAIMABLE_MEMO.keys() - seen:
         del _UNRECLAIMABLE_MEMO[gone]
+    for gone in _NOT_DUE_MEMO.keys() - seen:
+        del _NOT_DUE_MEMO[gone]
     return pruned
 
 
