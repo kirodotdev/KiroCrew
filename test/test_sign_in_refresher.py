@@ -52,7 +52,7 @@ class _FakeSession:
     async def __aexit__(self, *a):
         return False
 
-    def post(self, url, *, json=None, data=None, headers=None):  # noqa: A002
+    def post(self, url, *, json=None, data=None, headers=None, proxy=None):  # noqa: A002
         self.calls.append(url)
         assert self._responses, f"unexpected refresh request to {url}"
         return self._responses.pop(0)

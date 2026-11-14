@@ -50,6 +50,12 @@ from kiro_crew.acp.oversized_request_errors import (
     _RE_OVERSIZED_REQUEST,
     _is_request_size_exceeded,
 )
+from kiro_crew.acp.proxy_refusal import (  # noqa: F401 - re-exported
+    PROXY_REFUSAL_TEXT,
+    _is_proxy_refusal,
+    _proxy_refusal_line,
+    drop_proxy_refusal_lines,
+)
 from kiro_crew.acp.runtime_models import (
     DEFAULT_MODEL,
     advertised_model_ids,
@@ -714,7 +720,12 @@ def _is_session_expired(haystack: str) -> bool:
     All three signals are terminal: retrying can neither refresh a login nor
     revive a credential the upstream has rejected. Checked before the 5xx family
     so an aborted request's transport error does not shadow the real cause.
+
+    A line that :func:`_is_proxy_refusal` claims is left out first: a proxy's 403
+    or 407 is the network refusing the request, not Kiro refusing the credential.
     """
+    if _is_proxy_refusal(haystack):
+        haystack = drop_proxy_refusal_lines(haystack)
     return bool(
         _RE_AUTH_STATUS.search(haystack)
         or _RE_SESSION_EXPIRED.search(haystack)
@@ -1255,7 +1266,7 @@ def _is_transient_raw_error(error: object, available_models: Sequence[str] | Non
     if _is_session_expired(haystack):
         # Session expiry is terminal — retrying can't refresh an expired login.
         return False
-    if _RE_CONNECTION.search(haystack):
+    if _RE_CONNECTION.search(haystack) or _is_proxy_refusal(haystack):
         # A temporary endpoint failure is safe for the bounded retry ladder.
         return True
     return bool(
@@ -1339,6 +1350,8 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     match = _RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
+    if _is_proxy_refusal(text):
+        return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, "proxy refusal")
     match = (
         _RE_5XX_NAMED.search(text)
         or _RE_5XX_STATUS.search(text)
@@ -1640,6 +1653,10 @@ def _format_acp_error_worded(
             )
         elif is_model_registry_unavailable(error.get("data")):
             formatted = MODEL_REGISTRY_UNAVAILABLE_TEXT + req_id_suffix
+        elif _is_proxy_refusal(haystack):
+            # A proxy between this computer and the backend refused the request.
+            # Signing in again cannot help, so this does not take the sign-in arm.
+            formatted = PROXY_REFUSAL_TEXT + req_id_suffix
         elif _RE_CONNECTION.search(haystack) or _RE_CONNECTOR_FAILURE.search(haystack):
             formatted = (
                 "Could not reach the model backend (connection refused, reset, "
