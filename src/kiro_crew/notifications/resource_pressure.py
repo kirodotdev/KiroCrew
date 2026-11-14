@@ -61,10 +61,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import uuid
 from typing import TYPE_CHECKING, Callable
 
-from kiro_crew import host_pressure
 from kiro_crew.notifications.bus import _MAX_BODY_LEN, NotificationPayload
 from kiro_crew.resource_status import (
     POSTURE_AMPLE,
@@ -101,8 +99,7 @@ CRITICAL_REALERT_SECS = 1800.0
 # heartbeat awaits this sample, so the worst-case gap between beats is
 # interval + this bound. Keeping the bound under the interval leaves the gap
 # far inside any watchdog exit threshold; a memory probe that needs more than
-# this is already pathological and forfeits its sample. The host_pressure flush
-# after it has the same bound, so one beat waits at most twice this.
+# this is already pathological and forfeits its sample.
 PROBE_TIMEOUT_SECS = 2.0
 
 # The most slice OOM reports held for the loop. Older ones are counted, not
@@ -134,17 +131,6 @@ def _agent_ceiling_context(status: ResourceStatus) -> str:
     )
 
 
-def _wake_conductors(_level: str) -> None:
-    """Default level-change hook: pull every watched conductor's patrol forward.
-
-    Imported here, not at module top: ``conductor_wake`` reaches the AutoNudge
-    service, which this producer must not load just to be constructed.
-    """
-    from kiro_crew import conductor_wake
-
-    conductor_wake.wake_conductors_for_pressure()
-
-
 class ResourcePressureNotifier:
     """Turns the advisory posture stream into at-most-once-per-episode notes.
 
@@ -160,28 +146,10 @@ class ResourcePressureNotifier:
         *,
         probe_fn: Callable[[], ResourceStatus] = probe,
         clock: Callable[[], float] = time.monotonic,
-        wall_clock: Callable[[], float] = time.time,
-        pressure_sink: Callable[..., None] = host_pressure.write,
-        on_level_change: Callable[[str], None] | None = None,
     ) -> None:
         self._bus = bus
         self._probe = probe_fn
         self._clock = clock
-        # The ledger side (rfc-work-ledger-resource-pressure §3.1, §3.3): the
-        # episode's alerted level, rewritten on every sample while it is open, and a
-        # conductor wake once per level change. ``_pending_pressure`` is the write
-        # ``observe`` decided on; :meth:`flush_pressure` performs it off the loop.
-        self._wall = wall_clock
-        self._pressure_sink = pressure_sink
-        self._on_level_change = on_level_change or _wake_conductors
-        self._episode_id = ""
-        self._episode_wall_since = 0.0
-        self._written_level = ""
-        self._pending_pressure: dict[str, object] | None = None
-        self._pending_wake = ""
-        # One flush thread at most, released like ``_inflight`` (see maybe_sample).
-        self._flush_inflight = False
-        self._flush_started = False
         self._next_sample = 0.0
         self._inflight = False
         # Set by the worker thread at entry, read on the loop side after a
@@ -254,10 +222,6 @@ class ResourcePressureNotifier:
             if self._slice_oom_reports or self._slice_oom_dropped:
                 self._deliver_slice_oom()
             self.observe(status, now)
-            if (self._pending_pressure is not None or self._pending_wake) and not (
-                self._flush_inflight
-            ):
-                await self._flush_bounded()
         except Exception:
             logger.debug("resource-pressure sample failed", exc_info=True)
 
@@ -306,8 +270,6 @@ class ResourcePressureNotifier:
     def observe(self, status: ResourceStatus, now: float) -> None:
         """Advance the episode state machine with one posture reading."""
         posture = status.posture
-        was_open = self._episode_since is not None
-        closed_alerted = False
         if posture == POSTURE_CRITICAL:
             if self._episode_since is None:
                 self._episode_since = now
@@ -344,99 +306,8 @@ class ResourcePressureNotifier:
                 self._alerted_agent_ceiling = False
                 if alerted:
                     self._push_recovery(status, agent_ceiling=agent_ceiling)
-                closed_alerted = alerted
         # unknown: non-signal — keep the episode state untouched (see module
         # docstring).
-        if posture in (POSTURE_CRITICAL, POSTURE_TIGHT, POSTURE_AMPLE):
-            self._note_pressure(status, was_open=was_open, closed_alerted=closed_alerted)
-
-    # ── the ledger side (rfc-work-ledger-resource-pressure) ──────────────
-
-    def _note_pressure(
-        self, status: ResourceStatus, *, was_open: bool, closed_alerted: bool
-    ) -> None:
-        """Decide the ``host_pressure`` write and wake this reading calls for.
-
-        The record's level is the episode's ALERTED level, not the raw sample, so it
-        has the notes' hysteresis: ``tight`` only after the sustained window,
-        ``critical`` at once and until the episode ends at ample. An open episode is
-        rewritten on every sample, so the record never goes stale while it lasts. A
-        recovery after an alert writes ``clear`` once; an episode that never alerted
-        writes nothing at all.
-        """
-        if self._episode_since is not None and not was_open:
-            self._episode_id = uuid.uuid4().hex[:12]
-            self._episode_wall_since = self._wall()
-        if closed_alerted:
-            level = host_pressure.LEVEL_CLEAR
-        elif self._critical_alerted:
-            level = host_pressure.LEVEL_CRITICAL
-        elif self._tight_alerted:
-            level = host_pressure.LEVEL_TIGHT
-        else:
-            return
-        self._pending_pressure = {
-            "episode": self._episode_id,
-            "level": level,
-            "since": self._episode_wall_since,
-            "reading": status.memory_reading(),
-            "load_per_cpu": status.load_per_cpu,
-        }
-        if level != self._written_level:
-            self._pending_wake = level
-        self._written_level = "" if closed_alerted else level
-
-    async def _flush_bounded(self) -> None:
-        """:meth:`flush_pressure` off the loop, bounded like the probe.
-
-        The heartbeat awaits this, so stalled storage must forfeit the write rather
-        than hold the beat past the watchdog. A flush that timed out before its
-        thread started releases the slot; one that started keeps it until it ends,
-        so a hung write never gets a second thread beside it. What it did not
-        write stays pending for the next sample.
-        """
-        self._flush_inflight = True
-        self._flush_started = False
-        try:
-            await asyncio.wait_for(asyncio.to_thread(self._run_flush), PROBE_TIMEOUT_SECS)
-        except (asyncio.TimeoutError, TimeoutError):
-            logger.debug("host_pressure flush timed out; retried next sample")
-            if not self._flush_started:
-                self._flush_inflight = False
-
-    def _run_flush(self) -> None:
-        self._flush_started = True
-        try:
-            self.flush_pressure()
-        finally:
-            self._flush_inflight = False
-
-    def flush_pressure(self) -> None:
-        """Write the pending record, then wake the conductors. OFF THE LOOP.
-
-        Persist before publish: the wake fires only after the write landed, so a
-        woken conductor's read already sees the level that woke it. A failed write
-        keeps both the record and the wake pending for the next sample, unless a
-        newer sample has replaced them meanwhile; a ``clear`` that failed is
-        therefore retried rather than lost.
-        """
-        record, self._pending_pressure = self._pending_pressure, None
-        wake, self._pending_wake = self._pending_wake, ""
-        if record is not None:
-            try:
-                self._pressure_sink(**record)
-            except Exception:
-                logger.debug("host_pressure record write failed", exc_info=True)
-                if self._pending_pressure is None:
-                    self._pending_pressure = record
-                if not self._pending_wake:
-                    self._pending_wake = wake
-                return
-        if wake:
-            try:
-                self._on_level_change(wake)
-            except Exception:
-                logger.debug("host_pressure conductor wake failed", exc_info=True)
 
     # ── note builders ────────────────────────────────────────────────────
 

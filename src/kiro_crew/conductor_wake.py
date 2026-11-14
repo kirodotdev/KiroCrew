@@ -820,10 +820,7 @@ def _admit(svc: Any, loop_id: str, item_id: str, now: float) -> bool:
     lookup gap into a lost wake.
     """
     counts = getattr(svc, "_pull_forward_counts", None)
-    if counts is None or not item_id or item_id == PRESSURE_ITEM_ID:
-        # A host-pressure push is bounded by its source instead: the notifier
-        # pushes once per level change, and a capped ``clear`` would leave a paused
-        # board waiting for its scheduled tick.
+    if counts is None or not item_id:
         return True
     pending = getattr(svc, "_pushed_ticks", ())
     firing = getattr(svc, "_firing", ())
@@ -1009,48 +1006,6 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
         )
         return ""
     return loop_id
-
-
-#: The item id a host-pressure push is charged to in :func:`_admit`. Not an item id
-#: (those start ``it_``), so it shares no pull-forward budget with a real item.
-PRESSURE_ITEM_ID = "_pressure"
-
-
-async def wake_all_for_pressure(svc: Any) -> "list[str]":
-    """Pull every watched conductor's patrol forward for a host-pressure level change.
-
-    ON THE EVENT LOOP. ``docs/request-for-change/rfc-work-ledger-resource-pressure.md``
-    §3.3: the gateway's notifier calls this once per level change, and each board in
-    :func:`_watched_boards` gets one :func:`_fire`. The tick that runs reads the
-    ``host_pressure`` record and its probe emits the one wake; this push only makes
-    that tick come now instead of at the patrol cadence. Every refusal of
-    :func:`_fire` applies and is dropped at DEBUG, as it is for a report. The loop
-    ids that were fired.
-    """
-    fired = []
-    for board in sorted(_watched_boards(svc)):
-        loop_id = await _fire(svc, board, PRESSURE_ITEM_ID)
-        if loop_id:
-            fired.append(loop_id)
-    return fired
-
-
-def wake_conductors_for_pressure() -> "Any | None":
-    """Schedule :func:`wake_all_for_pressure` on the service's loop. The future, or
-    ``None``. Callable from any thread; never raises."""
-    try:
-        from kiro_crew import autonudge
-
-        svc = autonudge.get_instance()
-        if svc is None:
-            return None
-        running = _service_loop(svc)
-        if running is None:
-            return None
-        return asyncio.run_coroutine_threadsafe(wake_all_for_pressure(svc), running)
-    except Exception:  # noqa: BLE001 - a push must never reach the notifier
-        logger.debug("conductor wake: could not schedule a host-pressure push")
-        return None
 
 
 def wake_for_undelivered_report(conductor_slot_key: str, item_id: str) -> "Any | None":
