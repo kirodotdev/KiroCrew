@@ -278,6 +278,9 @@ export function chatImportLines(summary: Record<string, unknown>): string[] {
   const withheld = summaryCount(summary.sessions_withheld) ?? 0
   const lines = [i18nT('pages.overview.portabilityTab.import_chats_result', { added, existing })]
   if (withheld) lines.push(i18nT('pages.overview.portabilityTab.import_chats_withheld', { withheld }))
+  // A chat whose folder could not be moved to this computer's home lost its folder.
+  const cleared = summaryCount(summary.sessions_project_cleared) ?? 0
+  if (cleared) lines.push(i18nT('pages.overview.portabilityTab.import_chats_folder_missing', { cleared }))
   return lines
 }
 

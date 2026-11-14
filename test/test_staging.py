@@ -420,9 +420,69 @@ class TestSweep:
         assert orphan.is_dir()
 
 
+class TestSweepImportStaging:
+    """The import extraction leaf gets the same crash-orphan sweep as ``staging``."""
+
+    def _leaf(self, home: Path) -> Path:
+        leaf = home / staging.IMPORT_STAGING_DIRNAME
+        leaf.mkdir(mode=0o700)
+        return leaf
+
+    def test_removes_an_import_tree_idle_past_the_grace(self, home: Path) -> None:
+        orphan = self._leaf(home) / "tmp-dead-import"
+        orphan.mkdir()
+        (orphan / "chat.json").write_bytes(b"extracted")
+        _age(orphan, staging.IDLE_GRACE_SECONDS + 60)
+
+        assert staging.sweep_staging(leaf=staging.IMPORT_STAGING_DIRNAME) == 1
+        assert not orphan.exists()
+
+    def test_removes_an_import_tree_when_the_platform_cannot_pin_a_tree_walk(
+        self, home: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(staging.pinned_fs, "supports_pinned_tree_walk", lambda: False)
+        orphan = self._leaf(home) / "tmp-dead-import"
+        orphan.mkdir()
+        _age(orphan, staging.IDLE_GRACE_SECONDS + 60)
+
+        assert staging.sweep_staging(leaf=staging.IMPORT_STAGING_DIRNAME) == 1
+        assert not orphan.exists()
+
+    def test_keeps_a_fresh_import_tree(self, home: Path) -> None:
+        fresh = self._leaf(home) / "tmp-live-import"
+        fresh.mkdir()
+
+        assert staging.sweep_staging(leaf=staging.IMPORT_STAGING_DIRNAME) == 0
+        assert fresh.is_dir()
+
+    @_POSIX_ONLY
+    def test_a_linked_import_root_skips_the_whole_sweep(self, home: Path, tmp_path: Path) -> None:
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        victim = outside / "victim"
+        victim.mkdir()
+        _age(victim, staging.IDLE_GRACE_SECONDS + 60)
+        (home / staging.IMPORT_STAGING_DIRNAME).symlink_to(outside, target_is_directory=True)
+
+        assert staging.sweep_staging(leaf=staging.IMPORT_STAGING_DIRNAME) == 0
+        assert victim.is_dir()
+
+    def test_the_default_sweep_touches_only_staging(self, home: Path) -> None:
+        import_orphan = self._leaf(home) / "tmp-dead-import"
+        import_orphan.mkdir()
+        _age(import_orphan, staging.IDLE_GRACE_SECONDS + 60)
+        staging_orphan = staging.staging_dir() / "kc-build-dead"
+        staging_orphan.mkdir()
+        _age(staging_orphan, staging.IDLE_GRACE_SECONDS + 60)
+
+        assert staging.sweep_staging() == 1
+        assert not staging_orphan.exists()
+        assert import_orphan.is_dir()
+
+
 class TestTheLargeSitesStageUnderTheDataHome:
     """The regression lock: the three large-staging callers pass ``dir=`` resolving
-    under ``<data home>/staging``, never the system temp dir.
+    under the data home, never the system temp dir.
 
     Driven through the real command entrypoint rather than asserted on source, and
     through a spy on the module's own ``tempfile`` so a revert to a bare
@@ -464,7 +524,7 @@ class TestTheLargeSitesStageUnderTheDataHome:
     def test_import_extraction_stages_under_the_staging_root(
         self, patched_config_dir, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The import EXTRACTION stages under ``<data home>/staging``.
+        """The import EXTRACTION stages under ``<data home>/import-staging``.
 
         This lock is on ``portability.apply_import_zip``'s own ``TemporaryDirectory``;
         the uploaded ``.zip`` spool beside it is covered by
@@ -482,7 +542,7 @@ class TestTheLargeSitesStageUnderTheDataHome:
         target.mkdir()
         zip_path = tmp_path / "export.zip"
         zip_path.write_bytes(zip_bytes)
-        expected_root = (target / staging.STAGING_DIRNAME).resolve()
+        expected_root = (target / "import-staging").resolve()
 
         seen_dirs: list[str | None] = []
         real_tempdir = portability.tempfile.TemporaryDirectory

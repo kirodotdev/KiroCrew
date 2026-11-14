@@ -513,7 +513,12 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   sealed read-only so an agent cannot switch off a rule for its own chat. A
     #:   file at the data-home root beside writable siblings, rewritten in place,
     #:   so leaf-only is the only hold, as for ``shared_crew_preview.json``.
-    EXPECTED: dict[str, int] = {"standard": 351, "cc": 358, "strict": 359}
+    #:
+    #: ``import-staging`` adds three entries per tier. The gateway extracts and
+    #: removes temporary trees INSIDE this masked directory, never replacing the
+    #: directory itself. Its parent is the data-home root beside writable siblings,
+    #: so no enclosing stand-in can hold it: leaf-only by design, like update-staging.
+    EXPECTED: dict[str, int] = {"standard": 354, "cc": 361, "strict": 362}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

@@ -17239,6 +17239,7 @@
         "export_chats_skipped_size": "Ältere Unterhaltungen, die nicht in dieses Archiv gepasst haben und weggelassen wurden: {{chats}}.",
         "import_chats_result": "Hinzugefügte Chats: {{added}}. Bereits in dieser Installation: {{existing}}.",
         "import_chats_withheld": "Nicht importierte Chats, weil sie Inkognito, temporär oder unlesbar sind: {{withheld}}.",
+        "import_chats_folder_missing": "Importierte Chats, deren Ordner es auf diesem Computer nicht gibt: {{cleared}}. Sie öffnen sich stattdessen im Standard-Workspace.",
         "export_memory_only": "Nur das Gedächtnis exportieren",
         "export_memory_only_hint": "Damit teilst du, was der Agent gelernt hat, mit jemand anderem.",
         "share_memory_title": "Dieses Gedächtnis exportieren?",

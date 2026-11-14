@@ -244,6 +244,9 @@ def _build_export_zip(
         "created_at": _pf.datetime.now(_pf.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "hostname": socket.gethostname(),
         "user": os.environ.get("USER", "unknown"),
+        # The importer moves the paths under this home to its own (`home_path_rewrite`).
+        "home": str(Path.home()),
+        "home_real": os.path.realpath(Path.home()),
         "contents": contents_summary,
     }
     if memory_only:
@@ -457,6 +460,8 @@ def plan_export(
             "created_at": created_at,
             "hostname": socket.gethostname(),
             "user": os.environ.get("USER", "unknown"),
+            "home": str(Path.home()),
+            "home_real": os.path.realpath(Path.home()),
             "contents": contents_summary,
         }
         if include_agent_templates:

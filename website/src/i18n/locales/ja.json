@@ -16791,6 +16791,7 @@
         "export_chats_skipped_size": "このアーカイブに収まらず除外された古いチャット: {{chats}}",
         "import_chats_result": "追加したチャット: {{added}}。このインストールに既にあるもの: {{existing}}。",
         "import_chats_withheld": "「プライベート」「一時的」または読み取れないためインポートしなかったチャット: {{withheld}}。",
+        "import_chats_folder_missing": "このコンピューターにフォルダーがないインポート済みチャット: {{cleared}}。代わりに既定のワークスペースで開きます。",
         "export_memory_only": "メモリのみエクスポート",
         "export_memory_only_hint": "エージェントが学んだことを他の人と共有するときに使います。",
         "share_memory_title": "このメモリをエクスポートしますか？",

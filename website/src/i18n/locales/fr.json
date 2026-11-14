@@ -17687,6 +17687,7 @@
         "export_chats_skipped_size": "Discussions plus anciennes laissées de côté faute de place dans cette archive : {{chats}}.",
         "import_chats_result": "Discussions ajoutées : {{added}}. Déjà dans cette installation : {{existing}}.",
         "import_chats_withheld": "Discussions non importées car Incognito, Temporaire ou illisibles : {{withheld}}.",
+        "import_chats_folder_missing": "Discussions importées dont le dossier n'existe pas sur cet ordinateur : {{cleared}}. Elles s'ouvrent à la place dans l'espace de travail par défaut.",
         "export_memory_only": "Exporter uniquement la mémoire",
         "export_memory_only_hint": "Utilise-le pour partager ce que l’agent a appris avec quelqu’un d’autre.",
         "share_memory_title": "Exporter cette mémoire ?",
