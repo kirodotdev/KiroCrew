@@ -156,6 +156,49 @@ def _data_at_carveout_allows(command: str) -> bool:
     return bool(words) and words[0].raw in _CARVEOUT_VERBS
 
 
+#: Programs a line may run beside the carve-out verbs: ``echo`` and ``cat``
+#: execute nothing and cannot assign variables; every redirection is refused.
+_INERT_LINE_PROGRAMS = frozenset(("echo", "cat"))
+#: Ends of a command the line reading accepts: a list or a pipe. A paren, a
+#: backtick or a heredoc (``(``, ``)``, a backtick, ``<<``) is refused.
+_INERT_LINE_SEPARATORS = frozenset(("", ";", "&", "&&", "||", "|", "\n"))
+#: A prefix assignment that only picks the time zone or locale: never ``PATH``,
+#: ``LD_PRELOAD`` or another variable that changes which program runs.
+_LOCALE_PREFIX_RE = re.compile(r"(?:TZ|LANG|LC_[A-Z]+)=[A-Za-z0-9_./:+-]*\Z")
+
+
+def _inert_line_allows(command: str) -> bool:
+    """A `-d @` hit in a line every command of which runs no subcommand: a chain,
+    pipe, double-quoted `$(…)` or locale prefix around `date`/`grep` and `echo`/`cat`.
+
+    Reads the shared reader's commands, those of a double-quoted substitution
+    included, and fails closed: a live `$` or backtick left in any word (a
+    variable, an unquoted substitution, `${ …; }`), a redirection, any other
+    separator, or a first word outside `_CARVEOUT_VERBS` and `_INERT_LINE_PROGRAMS`
+    keeps the deny. With no such program on the line, no HTTP client can run."""
+    for cmd in _read_commands(command):
+        raws = [word.raw for word in cmd.words]
+        if cmd.separator not in _INERT_LINE_SEPARATORS or cmd.redirects:
+            return False
+        if any("$" in raw or "`" in raw for raw in raws):
+            return False
+        while raws and _LOCALE_PREFIX_RE.match(raws[0]):
+            raws.pop(0)
+        if raws and raws[0] not in _CARVEOUT_VERBS | _INERT_LINE_PROGRAMS:
+            return False
+    return True
+
+
+def _exfil_denial(reason: str, rule_id: str, command: str, span: "tuple[int, int] | None") -> str:
+    """*reason* with the rule id and matched span on a line of its own, never the text."""
+    from .diagnostics import (  # local: not a name the exfil facade serves
+        annotate_refusal,
+        refusal_diagnostic,
+    )
+
+    return annotate_refusal(reason, refusal_diagnostic(rule_id, "exfil-gate", command, span))
+
+
 def audit_bash_exfiltration(
     command: str, *, enabled_ids: "frozenset[str] | None" = None
 ) -> str | None:
@@ -183,23 +226,30 @@ def audit_bash_exfiltration(
         if rule_id and not _on(rule_id):
             continue
         pat = pattern.lower()
+        reason = f"Blocked: command matches data-exfiltration pattern '{pattern}'"
         if "*" in pat:
             if fnmatch.fnmatch(lower, f"*{pat}*"):
-                return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
+                return _exfil_denial(reason, rule_id, command, None)
         elif pat in lower:
-            # Fail-closed denial, except an inert `date`/`grep` command (computed
-            # once per command and reused).
+            # Compute the inert `date`/`grep` carve-outs once per command.
             if rule_id == _DATA_EXFIL_FILE_BODY_RULE:
                 if carveout_allows is None:
-                    carveout_allows = _data_at_carveout_allows(command)
+                    carveout_allows = _data_at_carveout_allows(command) or _inert_line_allows(
+                        command
+                    )
                 if carveout_allows:
                     continue
-            return f"Blocked: command matches data-exfiltration pattern '{pattern}'"
+            # Lowercasing can expand Unicode characters, so those offsets are not original.
+            if len(lower) != len(command):
+                return _exfil_denial(reason, rule_id, command, None)
+            start = lower.index(pat)
+            return _exfil_denial(reason, rule_id, command, (start, start + len(pat)))
     for rx, label in _BASH_EXFIL_RES:
         rule_ids = _BASH_EXFIL_RULE_BY_LABEL.get(label, ())
+        reason = f"Blocked: command matches data-exfiltration pattern ({label})"
         if not rule_ids:
-            if rx.search(command):
-                return f"Blocked: command matches data-exfiltration pattern ({label})"
+            if m := rx.search(command):
+                return _exfil_denial(reason, "", command, m.span())
             continue
         # A label can span more than one catalog row (one regex covers both the nc
         # and ncat rules). Denying while EITHER is enabled defeats the operator:
@@ -211,6 +261,6 @@ def audit_bash_exfiltration(
         for m in rx.finditer(command):
             matched_id = _exfil_rule_id_for_match(label, m.group(0), rule_ids)
             if _on(matched_id):
-                return f"Blocked: command matches data-exfiltration pattern ({label})"
+                return _exfil_denial(reason, matched_id, command, m.span())
         continue
     return None

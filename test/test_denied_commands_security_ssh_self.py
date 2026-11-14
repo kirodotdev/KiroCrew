@@ -1068,3 +1068,95 @@ class TestSandboxEscapeSshSelf:
         # textual layers decide these without it).
         assert _denied_by("ssh -- localhost") == self._RULE
         assert _denied_by("ssh -v -- 127.0.0.1 id") == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A Python edit script on stdin: a bare ``*`` (multiplication) followed by a
+            # self-host word was read as a glob verb naming ``ssh`` and its target.
+            "python3 - <<'EOF'\nn = a * localhost\nEOF",
+            "cd /work && python3 -u - <<'PY'\nfor p in paths: p.write_text(t * 127.0.0.1)\nPY",
+            # The same body written to a script file, which the line then runs.
+            "cat > /tmp/edit.py <<'EOF'\nn = a * localhost\nEOF\npython3 /tmp/edit.py",
+            "tee /tmp/edit.py <<'EOF' >/dev/null\nn = a * localhost\nEOF",
+            "cat <<'EOF'\nssh -p 22 localhost id\nEOF",
+            'cat <<"EOF"\nssh -p 22 localhost id\nEOF',
+            "cat <<EOF\nssh -p 22 localhost id\nEOF",
+            "python3 - <<'PY'\nn = a * localhost\nPY",
+        ],
+    )
+    def test_heredoc_body_read_as_data_is_not_argv(self, cmd):
+        assert _denied_by(cmd) is None
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A shell reads the body as its script.
+            "bash <<'EOF'\nssh localhost id\nEOF",
+            "sudo sh <<'EOF'\nssh localhost id\nEOF",
+            "env --split-string='bash -s' cat <<'EOF'\nssh -p 22 localhost id\nEOF",
+            "flock --command=bash /dev/null <<'EOF'\nssh -p 22 localhost id\nEOF",
+            "cat <<'EOF' | bash\nssh localhost id\nEOF",
+            "source /dev/stdin <<'EOF'\nssh localhost id\nEOF",
+            # The body is stdin to code that executes it.
+            "python3 -c 'import os,sys; os.system(sys.stdin.read())' <<'EOF'\nssh localhost\nEOF",
+            "cat <<'EOF' | python3 -c 'import os,sys; os.system(sys.stdin.read())'\nssh localhost\nEOF",
+            "perl -e 'system(<STDIN>)' <<'EOF'\nssh localhost\nEOF",
+            "python3 runner.py <<'EOF'\nssh localhost\nEOF",
+            # The body is written to a file a shell then runs.
+            "cat > /tmp/x.sh <<'EOF'\nssh localhost id\nEOF\nbash /tmp/x.sh",
+            "cat > /tmp/x.sh <<'EOF'\nssh localhost id\nEOF\nchmod +x /tmp/x.sh && /tmp/x.sh",
+            # An unquoted body runs its substitutions even for ``cat``.
+            "cat <<EOF\n$(ssh localhost id)\nEOF",
+            "cat <<EOF\n`ssh localhost id`\nEOF",
+            # A real ssh command outside the body.
+            "python3 - <<'EOF'\nprint(1)\nEOF\nssh localhost id",
+        ],
+    )
+    def test_heredoc_body_that_can_run_stays_argv(self, cmd):
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Arithmetic: bash reads ``<<`` as a left shift and runs the ssh line.
+            "((cat<<z))\nssh -p 22 localhost id\nz",
+            "((cat<<z))\nssh -p 22 localhost id",
+            "echo $((cat<<z))\nssh -p 22 localhost id\nz",
+            "echo $((1<<2))\nssh -p 22 localhost id\n2",
+            "for ((cat<<z;;)); do break; done\nssh -p 22 localhost id\nz",
+            # Non-plain tags keep the full text; bash runs the ssh after the delimiter.
+            "cat <<$'EOF\\t'\ninert\nEOF\t\nssh -p 22 localhost id",
+            "cat <<$'EOF'\ninert\nEOF\nssh -p 22 localhost id",
+            'cat <<E"O"F\ninert\nEOF\nssh -p 22 localhost id',
+            # Continuations can change the delimiter; check the whole text, even bodies.
+            "cat <<EO\\\nF\ninert\nEOF\nssh -p 22 localhost id",
+            "cat <<EO\\\r\nF\ninert\nEOF\nssh -p 22 localhost id",
+            "cat <<'EOF'\ninert\\\ntext\nssh -p 22 localhost id\nEOF",
+            "cat <<'EOF'\ninert\\\r\ntext\nssh -p 22 localhost id\nEOF",
+            # Compound syntax on the line: every body stays argv.
+            "[[ -n x ]] && cat <<'EOF'\nssh -p 22 localhost id\nEOF",
+            "let x=1; cat <<'EOF'\nssh -p 22 localhost id\nEOF",
+            "(cat<<z)\nssh -p 22 localhost id\nz",
+            "{ cat<<z; }\nssh -p 22 localhost id\nz",
+            "if true; then cat <<'EOF'\nssh -p 22 localhost id\nEOF\nfi",
+            "echo `true`; cat <<'EOF'\nssh -p 22 localhost id\nEOF",
+        ],
+    )
+    def test_heredoc_on_compound_line_stays_argv(self, cmd):
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # The delimiter is case-sensitive: ``eof`` does not close ``EOF``, so the
+            # second ``<<'Y'`` is body text and bash runs the ssh line after ``EOF``.
+            "cat <<'EOF'\neof\ncat <<'Y'\nEOF\nssh -p 22 localhost id\nY",
+            # Two heredocs on one line keep every body as argv.
+            "cat <<'A'\nx\nA\ncat <<'B'\nssh -p 22 localhost id\nB",
+            # The tag also appears in the body in another case.
+            "cat <<'EOF'\nEof\nssh -p 22 localhost id\nEOF",
+        ],
+    )
+    def test_heredoc_tag_seen_again_or_second_heredoc_stays_argv(self, cmd):
+        assert _denied_by(cmd) == self._RULE
