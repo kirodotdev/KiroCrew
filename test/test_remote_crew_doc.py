@@ -173,6 +173,7 @@ def test_the_diagnosis_codes_the_troubleshooting_table_quotes_still_exist(doc_fl
     )
     for code in (
         "ssh_unreachable",
+        "ssh_client_missing",
         "ssm_unreachable",
         "ssm_target_missing",
         "ssm_access_denied",

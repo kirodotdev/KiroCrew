@@ -104,6 +104,54 @@ class TestDiagnostics:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", mk(0, b"000"))
         assert asyncio.run(diag._probe_remote_dashboard("cd-1", 7777)) is False
 
+    def test_unspawnable_ssh_child_raises_from_the_run_helpers(self, monkeypatch):
+        """A child that never started is not "ssh ran and exited non-zero"."""
+        from kiro_crew.instances import diagnostics as diag
+
+        async def _no_ssh(*a, **k):
+            raise FileNotFoundError(2, "No such file or directory", "ssh")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_ssh)
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(diag._run_ok(["ssh", "x", "true"], 1.0))
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(diag._run_stdout(["ssh", "x", "true"], 1.0))
+
+    def test_missing_local_ssh_client_is_named_not_the_host(self, monkeypatch):
+        from kiro_crew.instances.diagnostics import SSH_CLIENT_MISSING, diagnose_instance
+
+        async def _no_ssh(*a, **k):
+            raise FileNotFoundError(2, "No such file or directory", "ssh")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_ssh)
+        r = asyncio.run(diagnose_instance("cd-1-alias", 7777, 7778))
+        assert r.code == SSH_CLIENT_MISSING and not r.ok
+        assert "OpenSSH client" in r.reason
+        assert r.probes == [{"name": "ssh", "ok": False}]
+
+    def test_missing_ssh_client_at_the_remote_rung_is_not_remote_down(self, monkeypatch):
+        from kiro_crew.instances.diagnostics import SSH_CLIENT_MISSING, diagnose_instance
+
+        class _Exited0:
+            returncode = 0
+
+            async def wait(self):
+                return 0
+
+        spawns: list[tuple] = []
+
+        async def _first_spawns_then_missing(*argv, **k):
+            spawns.append(argv)
+            if len(spawns) == 1:
+                return _Exited0()
+            raise FileNotFoundError(2, "No such file or directory", "ssh")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _first_spawns_then_missing)
+        r = asyncio.run(diagnose_instance("cd-1-alias", 7777, 7778))
+        assert r.code == SSH_CLIENT_MISSING
+        assert r.probes == [{"name": "ssh", "ok": True}, {"name": "remote_dashboard", "ok": False}]
+        assert len(spawns) == 2
+
     def test_probes_honor_connect_timeout_secs(self, monkeypatch):
         """The hardcoded ConnectTimeout=10 must not silently override a
         caller-supplied budget -- a diagnosis on a slow-proxy host the user
