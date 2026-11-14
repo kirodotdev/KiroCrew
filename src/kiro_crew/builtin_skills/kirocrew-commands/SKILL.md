@@ -86,6 +86,7 @@ transcripts.
 | `kirocrew logs` | Show gateway logs (last 100 lines) |
 | `kirocrew logs -f` | Follow (tail) live log output |
 | `kirocrew logs -n 50` | Show last N lines |
+| `kirocrew tmp` | Remove your idle, unused leftovers from /tmp and /var/tmp |
 
 ## Pods (Isolated Worktree Test Instances)
 
@@ -136,6 +137,9 @@ Override with `PORT=` in `~/.kiro/crew/pods/<name>.env`.
 | `kirocrew desktop tunnel --host HOST` | Keep the desktop app's SSH forward to a remote crew alive (client-only mode); `--local-port` is the loopback port the app connects to, `--remote-port` the one the crew listens on over there |
 | `kirocrew manifest` | Generate Slack app manifest with your alias |
 | `kirocrew manifest --url` | Print one-click Slack app creation URL |
+| `kirocrew remote-control status` | Show whether personal Remote Control is on (`--json`) |
+| `kirocrew remote-control on` | Turn personal Remote Control on; it connects after Kiro Crew restarts |
+| `kirocrew remote-control off` | Turn personal Remote Control off; it stays off across restarts |
 
 ## Chat
 
@@ -258,6 +262,9 @@ leftover prefix without touching it.
 | `kirocrew memory retired [--restore ID]` | List episodes a semantic write superseded, and restore one |
 | `kirocrew memory forget KEY` | Delete one semantic memory key after you confirm it (owner only; needs a terminal and the running gateway; not on native Windows). `--superseded-by KEY` records the live key that replaces it |
 | `kirocrew memory show [preferences\|projects\|history]` | Show the markdown memory layer (default: all three; `--format md\|json`, `--since YYYY-MM-DD` for history) |
+| `kirocrew memory dream list` | Print the Dreaming approval list of what a run proposed, read-only (`--store`, `--json`) |
+| `kirocrew memory dream run` | Ask the gateway for a Dreaming run now; it still waits for idle |
+| `kirocrew memory shadow report` | Per shadow memory stage, show its flag, window, days, sessions and would-change rate, read-only (`--stage`, `--since YYYY-MM-DD` or `<n>d`, `--store`, `--json`) |
 | `kirocrew knowledge stats` | Count sources, documents and items in the knowledge library (read-only; `--json` for JSON) |
 | `kirocrew knowledge dedup` | Preview cross-source duplicate knowledge documents (dry-run) |
 | `kirocrew knowledge dedup --apply` | Actually collapse the duplicates |
@@ -296,6 +303,8 @@ LLM-generated UI components (widgets, HTML, markdown, SVG, JSON, text).
 | `kirocrew agent delete NAME` | Delete an agent |
 | `kirocrew agent reset-model [--agent kirocrew]` | Clear a pinned model so the agent tracks the shipped default |
 | `kirocrew agent pin [NAME FILE]` | Choose which spec file an agent name runs when several declare it (`agent.spec_pins`); with no arguments, list the pins. `--clear` removes the pin for `NAME` |
+| `kirocrew agent validate [PATH]` | Check agent specs offline for unknown fields, wrong value shapes and malformed tools entries; exits 1 on a problem (`--allow-unknown-fields`, `--print-schema`) |
+| `kirocrew models [NAME]` | List the model names `--model` accepts, or check one name (`--json`, `--port`) |
 | `kirocrew workspace list` | List workspaces |
 | `kirocrew workspace create --name NAME --dir DIRNAME` | Create workspace (`--dir` is a **name under the data home**, not an absolute path) |
 | `kirocrew workspace create --name NAME --copy-from existing` | Copy from existing |
@@ -342,6 +351,9 @@ keystone paths are still refused). The CLI is the stricter of the two.
 | `kirocrew config get agent.provider` | Get specific value (dot-separated key) |
 | `kirocrew config set dashboard.url http://localhost:5476` | Set a config value (port is the KIROCREW_PORT env var, not a config key) |
 | `kirocrew config set --file config.json` | Load full config from JSON file |
+| `kirocrew config pending list` | Show each settings file changed outside Kiro Crew and held for review, and what changed (the default of `kirocrew config pending`; needs no dashboard) |
+| `kirocrew config pending apply FILE SIGNATURE` | Keep the outside change (`FILE` is the file name, e.g. `config.json`; `SIGNATURE` the version `kirocrew config pending` printed) |
+| `kirocrew config pending discard FILE SIGNATURE` | Put the saved version back |
 | `kirocrew config edit` | Open config in $EDITOR |
 | `kirocrew config defaults [KEYS…]` | Review stored values that still hold a superseded default |
 | `kirocrew config defaults [KEYS…] --adopt` | Remove those stored keys so the current defaults apply |
@@ -396,6 +408,7 @@ already-running app record -- restart it.
 | `kirocrew bench lesson-recall` | Measure lesson ranking recall/MRR/nDCG against a golden set (deterministic) |
 | `kirocrew bench session-recall` | Measure session search recall/MRR against a golden set (deterministic) |
 | `kirocrew bench compare A B` | Diff two saved JSON reports; refuses to attribute a delta when the runs disagree on corpus |
+| `kirocrew acceptance-check --json CHECK REF` | Answer a goal acceptance check that an installed edition provides; prints the report as one JSON object (`CHECK` names the edition's check, `REF` the item it is about) |
 
 ## Governance Policy
 
