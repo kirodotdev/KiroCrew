@@ -657,12 +657,18 @@ class HookManager:
         before = self._config
         after = hooks_config_from_config_dict(getattr(change, "new").hooks)
         self.reload(after)
+
+        def _grants(cfg: HooksConfig) -> set[tuple[str, str]]:
+            return {("tools", p) for p in cfg.auto_approve_tools} | {
+                ("identities", p) for p in cfg.auto_approve_tool_identities
+            }
+
         # A hooks reload can WIDEN what runs without a prompt, and config.json is
         # writable by an auto-approved agent shell, so an approval-set change is
         # SEL-audited the way the channel transports audit an allow-list reload:
         # by COUNT and flag, never by tool name (governance still caps the set).
-        added = len(set(after.auto_approve_tools) - set(before.auto_approve_tools))
-        removed = len(set(before.auto_approve_tools) - set(after.auto_approve_tools))
+        added = len(_grants(after) - _grants(before))
+        removed = len(_grants(before) - _grants(after))
         flags = {
             "sources": (before.auto_approve_sources != after.auto_approve_sources),
             "subagent_spawn": (

@@ -30,6 +30,7 @@ function isToday(epochSecs: number): boolean {
 import SortableHeader from '../../components/SortableHeader'
 import { connectionProviderForServer } from '../connections/registry'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
+import McpToolAlwaysAllow, { McpToolGrantsNote } from './McpToolAlwaysAllow'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
@@ -1299,14 +1300,14 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         Worded for THIS server: a server the reach spares shows
                         only that fact. */}
                     <McpDenyReach reach={mcpServerDeny(denyProbe, s.name)} />
+                    <McpToolGrantsNote server={s.name} />
                     <div className="space-y-0.5">{s.tools.map(t => {
                       const currentlyDisabled = (s.disabledTools || []).includes(t)
                       const toolOverride = pendingTools[s.name]?.[t]
                       const effectivelyEnabled = toolOverride !== undefined ? toolOverride : !currentlyDisabled
                       const hasPending = toolOverride !== undefined
-                      return <button
+                      return <div key={t} className="flex items-center gap-2"><button
                         type="button"
-                        key={t}
                         className={`flex items-center gap-1.5 text-[12px] font-mono cursor-pointer transition-colors bg-transparent border-none p-0 text-left ${effectivelyEnabled ? 'text-text hover:text-accent' : 'text-muted line-through opacity-60 hover:opacity-100'} ${hasPending ? 'ring-1 ring-[var(--warn)] rounded px-1' : ''}`}
                         disabled={pendingUninstall || s.enabled === false}
                         onClick={() => toggleToolPending(s.name, t, !effectivelyEnabled)}
@@ -1314,6 +1315,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           ? (effectivelyEnabled ? i18nT('pages.overview.mcpTab.pending_enable_click_to_revert') : i18nT('pages.overview.mcpTab.pending_disable_click_to_revert'))
                           : effectivelyEnabled ? i18nT('pages.overview.mcpTab.click_to_disable_pending_until_apply') : i18nT('pages.overview.mcpTab.click_to_enable_pending_until_apply')}
                       ><span className={`w-1.5 h-1.5 rounded-full shrink-0 ${effectivelyEnabled ? 'bg-ok' : 'bg-muted'}`} />{t}</button>
+                      {/* Beside Disable: stop asking for this one tool (the approval card's grant). */}
+                      {effectivelyEnabled && s.enabled !== false && <McpToolAlwaysAllow server={s.name} tool={t} />}</div>
                     })}</div></motion.div>}</AnimatePresence>
                   </div>) : disabledInConfig || notProbedReason ? null : '—'}
                 </td>

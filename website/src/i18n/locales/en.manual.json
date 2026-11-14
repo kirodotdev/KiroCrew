@@ -4055,6 +4055,7 @@
       "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
     },
     "trustDropdown": {
+      "always_allow_this_tool": "Always allow this tool",
       "trust_all_base": "Trust all <mono/> commands",
       "trust_all_base_channel": "Trust all <mono/> commands for @{{role}} — until {{productName}} restarts",
       "trust_all_base_hour": "Trust any <mono/> command for an hour (until {{time}})",
@@ -8004,6 +8005,14 @@
         "default_crewmate_unknown_reason": "{{name}} is no longer in the bot list"
       },
       "mcpTab": {
+        "always_allow": "Always allow",
+        "always_allow_undo": "Turn off to ask before each call again.",
+        "always_allow_hint": "Stop asking before each call of this tool. {{productName}}'s own safety rules still apply.",
+        "always_allow_failed": "Could not change Always allow. Try again.",
+        "always_allow_refused_asks_every_time": "Your settings ask before every call of this server's tools, so they can't be always allowed.",
+        "always_allow_refused_set_elsewhere": "Always allow is managed by a local settings file on this computer, so it can't be changed here.",
+        "always_allow_refused_crew_owned": "{{productName}}'s own tools always ask.",
+        "always_allow_refused_other": "These tools can't be always allowed right now.",
         "share_refused_one": "{{count}} server set to share is not shared: {{names}}. Its launch needs your approval, so every chat starts its own copy.",
         "share_refused_other": "{{count}} servers set to share are not shared: {{names}}. Their launch needs your approval, so every chat starts its own copy.",
         "share_refused_restart": "In MCP Servers, press Approve sharing for each one. Then restart the gateway (Settings → About → Restart gateway) so new chats use the shared copy.",

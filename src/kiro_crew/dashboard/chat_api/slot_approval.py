@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
+from kiro_crew.dashboard.always_allow_tool import ACTION as _ALWAYS_ALLOW_TOOL
 from kiro_crew.dashboard.deny_override import DENY_OVERRIDE_ACTIONS, is_deny_override_card
 
 if TYPE_CHECKING:
@@ -1150,6 +1151,7 @@ def _elicitation_not_an_approval() -> web.Response:
 # off the strict path.
 _STRICT_NATIVE_ACTIONS = frozenset(
     {"approved", "rejected", "rejected_once", "trust", "trust_reads", "trust_command", "trust_base"}
+    | {_ALWAYS_ALLOW_TOOL}
 )
 
 
@@ -1517,6 +1519,24 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 mode="yolo",
                 resource=request_id,
             )
+        action = "approved"
+    # Always allow this tool: the verified ``@server/tool`` the pending card
+    # carries, written before this call is approved (``always_allow_tool``).
+    elif action == "always_allow_tool":
+        # Imported here: this body runs on the chat handlers facade's globals.
+        from kiro_crew.dashboard import always_allow_tool as _always_allow
+
+        refused = await _always_allow.grant_from_card(
+            request,
+            fut=fut,
+            card=lambda field: _get_pattern_from_pending(owner, request_id, field),
+            body=body,
+            from_app=bool(request_app),
+            delegated=bool(delegated),
+            strict_native=strict_native,
+        )
+        if refused is not None:
+            return refused
         action = "approved"
     # YOLO: auto-approve all tools globally (all slots)
     elif action == "yolo":

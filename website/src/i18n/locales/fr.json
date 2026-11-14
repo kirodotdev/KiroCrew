@@ -9952,6 +9952,7 @@
       "show_full_command": "Afficher la commande complète"
     },
     "trustDropdown": {
+      "always_allow_this_tool": "Toujours autoriser cet outil",
       "trust": "Approuver",
       "trust_all_base": "Faire confiance à toutes les commandes <mono/>",
       "trust_all_base_channel": "Faire confiance à toutes les commandes <mono/> pour @{{role}} — jusqu’au redémarrage de {{productName}}",
@@ -17406,6 +17407,14 @@
         "default_crewmate_unknown_reason": "{{name}} ne figure plus dans la liste de Bot"
       },
       "mcpTab": {
+        "always_allow": "Toujours autoriser",
+        "always_allow_undo": "Désactive pour confirmer à nouveau chaque appel.",
+        "always_allow_hint": "Ne plus demander avant chaque appel de cet outil. Les règles de sécurité de {{productName}} s’appliquent toujours.",
+        "always_allow_failed": "Impossible de modifier « Toujours autoriser ». Réessaie.",
+        "always_allow_refused_asks_every_time": "Tes réglages demandent avant chaque appel des outils de ce serveur, ils ne peuvent donc pas être toujours autorisés.",
+        "always_allow_refused_set_elsewhere": "« Toujours autoriser » est géré par un fichier de réglages local sur cet ordinateur et ne peut pas être modifié ici.",
+        "always_allow_refused_crew_owned": "Les outils de {{productName}} demandent toujours.",
+        "always_allow_refused_other": "Ces outils ne peuvent pas être toujours autorisés pour l’instant.",
         "share_refused_one": "{{count}} serveur que tu veux partager n'est pas partagé : {{names}}. Son lancement attend ton approbation, donc chaque chat lance sa propre copie.",
         "share_refused_many": "{{count}} serveurs que tu veux partager ne sont pas partagés : {{names}}. Leur lancement attend ton approbation, donc chaque chat lance sa propre copie.",
         "share_refused_other": "{{count}} serveurs que tu veux partager ne sont pas partagés : {{names}}. Leur lancement attend ton approbation, donc chaque chat lance sa propre copie.",

@@ -160,6 +160,12 @@ def is_connection_server(session_key: str, server: str) -> bool:
         return any(b.session_key == session_key and b.server == server for b in _bridges.values())
 
 
+def serves_connection(server: str) -> bool:
+    """Whether a registered bridge serves *server* for any session."""
+    with _lock:
+        return any(b.server == server for b in _bridges.values())
+
+
 def drop_slug(slug: str) -> None:
     """Forget every bridge of *slug* (a failed Disconnect); their next call is refused."""
     with _lock:

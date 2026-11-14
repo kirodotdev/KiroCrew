@@ -3391,7 +3391,7 @@ Consequences, and they are the point:
   `hooks.*` live, and `config.json` — sealed read-only against an in-sandbox agent
   shell — is still written by every settings surface outside the seal (the config
   PATCH, the operator CLI, an unsandboxed spawn), so its applier SEL-logs an
-  `auto_approve_tools` / `auto_approve_sources` /
+  `auto_approve_tools` / `auto_approve_tool_identities` / `auto_approve_sources` /
   `auto_approve_subagent_*` change (`hook_manager.reconfigure`,
   `auto_approve_changed`, counts and flag names only) the way the channel
   transports audit an allow-list reload. Governance still caps the resulting
@@ -3480,7 +3480,10 @@ narrowed allow-list is applied to the running transport before the caller sees
 "saved", never one poll interval after it. For a connection field the same
 dispatch also drops the old client's mirror registration synchronously and
 schedules its reconnect, so a request that follows the response (a WhatsApp QR
-start, a mirror send) is never handed the client about to be closed.
+start, a mirror send) is never handed the client about to be closed. The per-tool
+"Always allow" grant (`dashboard/always_allow_tool.save_grant`, shared by the MCP
+tool list's toggle and the approval card) waits the same way, so the next call of
+that tool is judged under the new `hooks.auto_approve_tool_identities` list with no restart.
 
 **A two-file save runs under `live.hold()`.** Every channel saver that writes
 `config.json` and then `.env` (Slack, Teams, Webex, WeCom, Feishu, Discord,

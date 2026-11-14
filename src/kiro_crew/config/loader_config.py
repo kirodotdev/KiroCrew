@@ -374,7 +374,8 @@ class KiroCrewConfig:
                             "(@server, @server/tool*, Running: @server/*, *), that always "
                             "ask before running. A matching MCP server stays mounted but "
                             "loses its blanket auto-approve grant, and a match outranks an "
-                            "auto_approve_tools grant at the gate. The gate follows a change "
+                            "auto_approve_tools or auto_approve_tool_identities grant at the "
+                            "gate. The gate follows a change "
                             "at once; a grant already in the agent spec is withdrawn at the "
                             "next restart, when the spec is rebuilt."
                         ),

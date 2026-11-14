@@ -506,6 +506,26 @@ class TestHookManagerWatchConfig:
         assert "subagent_spawn" in kw["resources"]
         assert "execute_bash" not in kw["resources"]
 
+    def test_a_new_tool_identity_grant_is_sel_audited_by_count(self) -> None:
+        """An "Always allow" grant widens what runs too, so it is counted the same way."""
+        from kiro_crew import hooks as hooks_mod
+
+        manager = hooks_mod.HookManager(hooks_mod.HooksConfig.from_dict({}))
+        manager.watch_config()
+        cfg = KiroCrewConfig()
+        cfg.hooks = {"auto_approve_tool_identities": ["@notes/lookup"]}  # type: ignore[assignment]
+        sel_obj = MagicMock()
+        with (
+            patch.object(hooks_mod, "sel", return_value=sel_obj),
+            patch.object(hooks_mod, "load_denied_commands_state", return_value=_keystone_state()),
+        ):
+            manager._on_config_change(_change(cfg, "hooks.auto_approve_tool_identities"))
+        assert manager._config.auto_approve_tool_identities == ["@notes/lookup"]
+        sel_obj.log_api_access.assert_called_once()
+        kw = sel_obj.log_api_access.call_args.kwargs
+        assert "added=1 removed=0" in kw["resources"]
+        assert "notes" not in kw["resources"]
+
     def test_an_unchanged_auto_approve_set_leaves_no_audit_row(self) -> None:
         from kiro_crew import hooks as hooks_mod
 

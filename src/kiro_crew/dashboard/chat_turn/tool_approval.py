@@ -1580,6 +1580,8 @@ _OVERRIDE_WITHHELD_FIELDS = (
     "trust_base_grantable",
     "base_command",
     "is_read_only",
+    "always_allow_tool_grantable",
+    "always_allow_tool_ref",
 )
 
 
