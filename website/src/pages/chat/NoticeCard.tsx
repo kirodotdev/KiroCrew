@@ -60,6 +60,7 @@ export default memo(function NoticeCard({
   content,
   tone: toneOverride,
   icon: iconOverride,
+  body,
   action,
 }: {
   content: string
@@ -67,6 +68,9 @@ export default memo(function NoticeCard({
   /** A caller whose notice names a cause the tone alone does not show (a Stop
    *  the user pressed) may name the glyph; the tone and its colour are kept. */
   icon?: LucideIcon
+  /** Copy the caller already built in the reader's language, drawn in place of
+   *  `content`'s text; `content` still sets the tone from its leading glyph. */
+  body?: ReactNode
   /** A small control that follows the copy on its last line, such as a
    *  Dismiss link. It wraps with the text, so a narrow column keeps it. */
   action?: ReactNode
@@ -101,7 +105,7 @@ export default memo(function NoticeCard({
             so a single-line notice renders identically. */}
         <span className="min-w-0 break-words whitespace-pre-line" data-testid="notice-card-text">
           {severity && <span className="sr-only">{severity} </span>}
-          {text}
+          {body ?? text}
           {action && <>{' '}{action}</>}
         </span>
       </div>
