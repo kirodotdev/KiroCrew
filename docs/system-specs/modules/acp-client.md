@@ -1746,7 +1746,10 @@ write table's MCP tools (`batch_guard.withhold_write_auto_approval`, called by
 hook asks): each write-class MCP tool the policy auto-approves (an `allow`
 matches it and no `ask` or `deny` does, read as KAS reads them: an empty `match`
 covers every resource, `**` crosses path segments, `*` and `?` stay in one, and a
-glob it cannot read counts as covered by an `ask` or `deny` and not by an `allow`)
+glob it cannot read counts as covered by an `ask` or `deny` and not by an `allow`;
+the match of a readable glob against one resource is a pure function of the two
+strings, so `batch_guard._read_glob_matches` memoizes it, bounded, and every
+decision built on it is still made fresh)
 gets an
 exact `ask` on its `<server>/<tool>` resource, which outranks the derived `allow`
 and any relayed from the spec's own block, so a server-wide grant such as
@@ -3137,7 +3140,11 @@ spec the same way kiro-cli v2 does where the wire allows it:
   `excluded_whole`, which spares servers an agent never named. Neither the
   target's stamp nor the session agent's counts a switched-off server as declared
   (`kas_settings_mcp.declared_servers`, read with `mcp_server_muted_in_any_store`,
-  so a config scope's switch-off counts too), so `excluded_whole` also excludes
+  so a config scope's switch-off counts too; one session projection reads the
+  scopes once, `mcp_cleanup.mcp_scope_muted_aliases` in `KasHarness.session_extras`,
+  and hands that reading to the worker-stub withdrawal, the agent block, these
+  declared names and each sub-agent target's projection, so all of them answer
+  from the same files), so `excluded_whole` also excludes
   the `mcp.json` server of that name, with its usual exemptions. For the same
   reason a Crew server (a managed one, or a builtin app server running Crew's
   code) the session's own entry declares too is left out of the target's entry:
@@ -3145,7 +3152,21 @@ spec the same way kiro-cli v2 does where the wire allows it:
   into that array (`hoist_servers_for_session`), and a second declaration of the
   name in the target's entry would launch without it.
   A `*` pattern is matched against the agents the spawn gate offers, and at most
-  `MAX_SUBAGENT_TARGETS` (8) are registered. Not registered, and named in the
+  `MAX_SUBAGENT_TARGETS` (8) are registered. One session start reads each file
+  its targets share once: inside `build_reuse.one_build`, opened around
+  `KasHarness.session_extras`'s `_build`, the agent-spec name scan
+  (`agent._scanned_name`, which keeps only each file's declared name, keyed on
+  the file's identity, so a spec written meanwhile is read again), each in-scope
+  skill file and its matched globs
+  (`kas_skill_scope._kept_skill_read`, `_kept_files`; a skill copy one start
+  writes twice under one name and text is written once) and each installed app's
+  manifest, of which only its label, state and agent names are kept
+  (`manager_lookup._declared_agents`), answer every target
+  from the first read. Nothing is kept past the start, a read that raises keeps
+  nothing, what one start keeps is bounded (`build_reuse.MAX_KEPT` answers,
+  `MAX_KEPT_WEIGHT` characters; past either an answer is read again each time),
+  and every target's entry is the one a start without that reuse
+  projects. Not registered, and named in the
   session-start notice with the reason: a name no spec declares; a pattern that
   matches nothing; an agent whose spec cannot be used; a reserved id
   (`KAS_RESERVED_AGENT_IDS`, sent under another id the rule denies); a mate
