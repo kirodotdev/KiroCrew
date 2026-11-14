@@ -616,12 +616,10 @@ class WhatsAppRenderer(Renderer):
             # Nothing reached the chat at all: the whole reply still has to.
             await self._send(body)
         await self._deliver_uploads()
-        # Post-answer redaction notice, counted over the converted chunks that
-        # shipped (streamed prefix included — those are chunks[:start], already
-        # delivered by earlier flushes). Best-effort by the shared contract:
+        # Redaction notice, counted over the converted chunks that shipped
+        # (including chunks[:start], streamed by earlier flushes). Best-effort:
         # ``_send`` raises so the dispatcher can fail an undelivered TURN, but
-        # the answer is out by now, so the raise is contained here rather than
-        # allowed to convert a delivered turn into a failed one.
+        # the answer is out, so the raise is caught here.
         cred_count, url_count = count_redaction_tags("\n".join(chunks))
         if cred_count or url_count:
             try:

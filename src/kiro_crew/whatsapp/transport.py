@@ -681,12 +681,9 @@ class WhatsAppTransport(MessagingTransport):
         # 4. Group gate (before authorize: an unconfigured group must not
         #    even produce an audit row per message).
         verdict: GroupVerdict | None = None
-        # ``from_me`` means the account sent it, which includes the operator
-        # texting an ordinary contact from their phone. That is NOT a command: the
-        # agent would answer their private conversation and reply into the
-        # contact's chat. Operator authority in a DIRECT chat therefore requires
-        # the self-chat, which is the command surface; in a configured group the
-        # operator addresses the agent normally, gated by mention or rules.
+        # Operator authority: in a DIRECT chat only the self-chat counts (see
+        # 3b); in a configured group the operator addresses the agent normally,
+        # gated by mention or rules.
         self_chat = self._client.me.matches(chat)
         sender_is_operator = (from_me or self._client.me.matches(sender, sender_alt)) and (
             is_group or self_chat
