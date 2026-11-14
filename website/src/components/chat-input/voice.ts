@@ -222,7 +222,7 @@ export function useHoldToTalk({ onVoiceStart, onVoiceStop, onVoiceCancel, voiceC
   voiceSlideToSend?: boolean
   /** A send from this composer right now would steer the running turn (the
    *  default Send's busy decision), so the hold bar's send zone says "steer".
-   *  False under Auto (Jev): Jev may queue it instead, so it says "send". */
+   *  False under Auto (decision model): Jev may queue it instead, so it says "send". */
   voiceSendSteers?: boolean
   /** The push-to-talk key the mic names, or null where pressing it would not
    *  record into this composer (see `pttBinding` in `useComposerVoice`). */

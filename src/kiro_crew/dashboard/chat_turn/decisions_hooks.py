@@ -140,10 +140,10 @@ def _jev_route_armed(slot: Any) -> bool:
     Two ways in, and both are the OWNER saying "do not pin this session, let Jev
     name a model per turn":
 
-    * the owner picked the ``Auto (Jev)`` row, which survives as ``slot.jev_route``;
+    * the owner picked the ``Auto (decision model)`` row, which survives as ``slot.jev_route``;
     * the slot's model is ``auto`` -- the picker's inherit row, which the sentinel
       pick also resolves to -- while the Jev preview is on, which is the state the
-      composer chip renders as ``Auto (Jev)``.
+      composer chip renders as ``Auto (decision model)``.
 
     A slot that names NO model (``""``) is not armed. That value is not a choice,
     it is the absence of one, and the runtime replaces it with the resolved model
@@ -420,7 +420,7 @@ async def _route_model_for_turn(
     """Ask ``model.route`` which model this turn should run on, and switch to it.
 
     Called for a NORMAL dashboard chat turn of a slot whose owner picked
-    ``Auto (Jev)`` in the model picker, after the fallback restore probe and before
+    ``Auto (decision model)`` in the model picker, after the fallback restore probe and before
     the prompt is sent. Every refusal -- the seam off, the session unsampled, an
     answer outside the three tiers, a pinned id this account cannot run, a
     timeout, a provider failure, no ``set_model`` seam -- leaves the session on
@@ -586,7 +586,7 @@ async def _route_model_for_turn(
             return
         # No seam to switch through: the tier was answered and cannot be applied,
         # which is a finding rather than a quiet no-op -- the owner picked
-        # Auto (Jev) and every turn would keep the same model with nothing said.
+        # Auto (decision model) and every turn would keep the same model with nothing said.
         await asyncio.to_thread(
             model_route.record_error,
             session_key,

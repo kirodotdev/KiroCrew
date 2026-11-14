@@ -76,7 +76,7 @@ export interface ChatInputProps {
    * composer draft and its staging untouched (the rule an option send follows).
    * A host that renders follow-up chips while busy must honour it. */
   onSteer?: (opts?: { auto?: boolean; text?: string }) => void
-  /** Whether the host may offer `Auto (Jev)` in the split button's mode picker:
+  /** Whether the host may offer `Auto (decision model)` in the split button's mode picker:
    * the gateway reports the Decisions seam as permitted by governance AND
    * consented to. Defaults to false, so a surface that never asks cannot offer a
    * mode the gateway would refuse to act on. */
@@ -223,7 +223,7 @@ export interface ChatInputProps {
    * preview is on, so `model.route` puts the turn in a tier and runs it on that
    * tier's model.
    *
-   * The chip then names the POLICY (`Auto (Jev)`) in place of `modelName`, rather
+   * The chip then names the POLICY (`Auto (decision model)`) in place of `modelName`, rather
    * than an id with a marker beside it. A routed session's model changes from turn
    * to turn, so naming one makes a chip that reads like a pin and is stale by the
    * next reply; the model a given turn actually ran on is on that turn's routing
@@ -234,7 +234,7 @@ export interface ChatInputProps {
    * Hosts compute it from the SAME `jevRouteOffered()` the picker's row is drawn
    * from (`lib/jevRoute.ts`) against the slot's raw `model`, which is what the
    * routing gate reads. One condition, so the chip cannot say Auto for a turn that
-   * routed, nor Auto (Jev) for one that did not.
+   * routed, nor Auto (decision model) for one that did not.
    *
    * Wins over `modelIsInheritedDefault`: both describe a slot that pinned nothing,
    * and this one names WHO picks instead, which is the more specific fact and the

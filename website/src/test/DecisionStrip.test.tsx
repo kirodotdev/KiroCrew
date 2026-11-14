@@ -260,7 +260,7 @@ describe('DecisionStrip', () => {
     expect(strip).toHaveAttribute('data-agree', 'false')
     expect(strip).toHaveAttribute('data-expanded', 'false')
     expect(strip.textContent).toContain('word match: brazil, crux-code-reviews')
-    expect(strip.textContent).toContain('Jev: brazil')
+    expect(strip.textContent).toContain('Decision model: brazil')
     expect(screen.getByTestId('decision-strip-scores').textContent).toBe('(0.81, 197 ms)')
     expect(screen.getByTestId('decision-strip-saved').textContent).toContain('3.2K')
     // Collapsed means collapsed: the question's own shape is not on the line.
@@ -276,7 +276,7 @@ describe('DecisionStrip', () => {
     // A visible word, not only a glyph: the check alone read as "brazil succeeded".
     expect(screen.getByTestId('decision-strip-agreed-word').textContent).toBe('same pick')
     // Both sides named, so the line says Jev was involved in this turn at all.
-    expect(strip.textContent).toContain('Jev and word match: brazil')
+    expect(strip.textContent).toContain('Decision model and word match: brazil')
     // Still ONE list, not two separately labelled ones. Checked by the DIVERGED
     // line's own shape — its Jev segment — because now that both sides share one
     // term, "Jev and word match: brazil" legitimately contains "word match:".
@@ -286,7 +286,7 @@ describe('DecisionStrip', () => {
   it('says so rather than showing a blank when a side picked nothing', () => {
     consent(ON)
     render(<DecisionStrip record={readDecisionStrip({ ...WIRE, jev: [] })!} />)
-    expect(screen.getByTestId('decision-strip').textContent).toContain('Jev: no skills')
+    expect(screen.getByTestId('decision-strip').textContent).toContain('Decision model: no skills')
   })
 
   it('omits the score and the saving when the record carries neither', () => {
@@ -305,13 +305,13 @@ describe('DecisionStrip', () => {
     render(<DecisionStrip record={readDecisionStrip({ ...WIRE, p: null })!} />)
     const only = screen.getByTestId('decision-strip-scores')
     expect(only.textContent).toBe('(197 ms)')
-    expect(only).toHaveAttribute('title', 'How long Jev took to answer')
+    expect(only).toHaveAttribute('title', 'How long the decision model took to answer')
     cleanup()
 
     render(<DecisionStrip record={readDecisionStrip({ ...WIRE, latency_ms: 0 })!} />)
     const score = screen.getByTestId('decision-strip-scores')
     expect(score.textContent).toBe('(0.81)')
-    expect(score).toHaveAttribute('title', "Jev's confidence in its own answer, from 0 to 1")
+    expect(score).toHaveAttribute('title', "The decision model's confidence in its own answer, from 0 to 1")
   })
 
   it('names both measurements in the legend when the parenthetical holds both', () => {
@@ -319,7 +319,7 @@ describe('DecisionStrip', () => {
     render(<DecisionStrip record={record} />)
     expect(screen.getByTestId('decision-strip-scores')).toHaveAttribute(
       'title',
-      "Jev's confidence in its own answer, from 0 to 1, and how long the answer took",
+      "The decision model's confidence in its own answer, from 0 to 1, and how long the answer took",
     )
   })
 
@@ -419,8 +419,8 @@ describe('DecisionStrip', () => {
   it('gives both thumbs a label, since neither carries text', () => {
     consent(ON)
     render(<DecisionStrip record={record} />)
-    expect(screen.getByLabelText('Jev picked the right skills')).toBeInTheDocument()
-    expect(screen.getByLabelText('Jev picked the wrong skills')).toBeInTheDocument()
+    expect(screen.getByLabelText('The decision model picked the right skills')).toBeInTheDocument()
+    expect(screen.getByLabelText('The decision model picked the wrong skills')).toBeInTheDocument()
   })
 
   it('says what each thumbs pair rates, in text a sighted reader can see', () => {
@@ -431,7 +431,7 @@ describe('DecisionStrip', () => {
     render(<DecisionStrip record={record} />)
     // Short SIDE names, not two near-identical sentences: with both pairs open a
     // reader could not tell which one a thumb counted for.
-    expect(screen.getByTestId('decision-strip-rate-label-jev').textContent).toBe('Jev')
+    expect(screen.getByTestId('decision-strip-rate-label-jev').textContent).toBe('Decision model')
     fireEvent.click(screen.getByTestId('decision-strip-toggle'))
     expect(screen.getByTestId('decision-strip-rate-label-baseline').textContent).toBe('Word match')
     expect(screen.getByTestId('decision-strip-rate-label-jev').textContent)
@@ -441,8 +441,8 @@ describe('DecisionStrip', () => {
   it('carries each thumb’s meaning as a tooltip too, since the button renders no text', () => {
     consent(ON)
     render(<DecisionStrip record={record} />)
-    expect(screen.getByTestId('decision-strip-right-jev')).toHaveAttribute('title', 'Jev picked the right skills')
-    expect(screen.getByTestId('decision-strip-wrong-jev')).toHaveAttribute('title', 'Jev picked the wrong skills')
+    expect(screen.getByTestId('decision-strip-right-jev')).toHaveAttribute('title', 'The decision model picked the right skills')
+    expect(screen.getByTestId('decision-strip-wrong-jev')).toHaveAttribute('title', 'The decision model picked the wrong skills')
   })
 
   it('puts the agreement check’s meaning where a sighted reader can reach it', () => {
@@ -465,8 +465,8 @@ describe('DecisionStrip', () => {
       expect(strip.textContent).not.toContain(mechanism)
     }
     expect(strip.textContent).toContain('Skills offered')
-    expect(strip.textContent).toContain('Sent to Jev')
-    expect(strip.textContent).toContain('Jev latency')
+    expect(strip.textContent).toContain('Sent to the decision model')
+    expect(strip.textContent).toContain('Decision model latency')
   })
 
   it('carries no row whose number is the same on every turn', () => {
@@ -508,7 +508,7 @@ describe('DecisionStrip', () => {
     render(<DecisionStrip record={readDecisionStrip({ ...WIRE, message_chars: undefined })!} />)
     fireEvent.click(screen.getByTestId('decision-strip-toggle'))
     const strip = screen.getByTestId('decision-strip')
-    expect(strip.textContent).not.toContain('Sent to Jev')
+    expect(strip.textContent).not.toContain('Sent to the decision model')
     expect(strip.textContent).not.toContain('message 0 chars')
     // The rest of the card is unaffected: an old record still says who picked
     // what, which is the claim the strip exists to make.
@@ -531,7 +531,7 @@ describe('DecisionStrip', () => {
     consent(ON)
     render(<DecisionStrip record={record} />)
     fireEvent.click(screen.getByTestId('decision-strip-toggle'))
-    expect(screen.getByTestId('decision-strip').textContent).toContain('Jev latency')
+    expect(screen.getByTestId('decision-strip').textContent).toContain('Decision model latency')
     expect(screen.getByTestId('decision-strip').textContent).toContain('197 ms')
     cleanup()
 
@@ -539,7 +539,7 @@ describe('DecisionStrip', () => {
     // would read as an answer that arrived instantly.
     render(<DecisionStrip record={readDecisionStrip({ ...WIRE, latency_ms: 0 })!} />)
     fireEvent.click(screen.getByTestId('decision-strip-toggle'))
-    expect(screen.getByTestId('decision-strip').textContent).not.toContain('Jev latency')
+    expect(screen.getByTestId('decision-strip').textContent).not.toContain('Decision model latency')
   })
 
   it('spells the saving in a word the product uses elsewhere', () => {

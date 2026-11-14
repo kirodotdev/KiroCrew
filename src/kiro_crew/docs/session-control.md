@@ -712,7 +712,7 @@ running or queued sub-agent by id and state, and says when some could not be
 checked. The tool never stops anything itself. To force the change, call
 `session_stop`, then retry once the target is idle.
 
-Also refused: `auto` and `Auto (Jev)` (`model_owner_only`), because with the Jev
+Also refused: `auto` and `Auto (decision model)` (`model_owner_only`), because with the Jev
 preview on a slot on `auto` hands each turn's model to Jev routing, which only the
 owner may arm; and a read-only relay archive (`relay_archive_read_only`).
 
@@ -1205,7 +1205,7 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `memory_delegation_denied` | HTTP 403: session_create named a Bot's agent the caller may not bind (a cron, a fenced deputy, a peer member, a member thread on the shared store naming a member with private memory). The member's memory binding cannot be changed in Settings. Re-send with `agent_kind: "template"` to run that name's shared template on your own memory (a `kirocrew-worker` needs no memory of its own), or ask the owner to make the create from their own tab. The tool reply says the same |
 | `agent_kind_requires_agent` | `agent_kind` was given without `agent`. The namespace qualifies an explicit selection, not an inherited caller agent |
 | `invalid_agent_kind` | `agent_kind` is not `template`, the one value it takes |
-| `model_owner_only` | HTTP 403: `auto` and **Auto (Jev)** can only be picked by the owner from the model picker |
+| `model_owner_only` | HTTP 403: `auto` and **Auto (decision model)** can only be picked by the owner from the model picker |
 | `model_rejected` | The model id is missing, malformed, looks like a credential, or is one the target's backend would refuse |
 | `effort_rejected` | session_create or session_set_model: `reasoning_effort` is not one of the five standard levels (low, medium, high, xhigh, max). On session_set_model `""` is refused too; set it from the target's effort dropdown |
 | `target_replaced` | HTTP 409: the target was replaced by another session under the same key while the call ran (or, for title generation, closed); nothing was changed. Try again |

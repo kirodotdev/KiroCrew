@@ -1,5 +1,5 @@
 /**
- * The Decisions (Jev) card's scope switches past the tool-argument one: the whole-transcript
+ * The Decisions card's scope switches past the tool-argument one: the whole-transcript
  * scope on compaction.keep, the recalled-memory scope on memory.recall and the evidence
  * scope on nudge.wake, plus what a scope write does while it is in flight, when it is
  * refused and beside the main switch. Split from decisionsCard.test.tsx, which keeps the

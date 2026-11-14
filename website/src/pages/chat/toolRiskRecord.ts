@@ -1,7 +1,7 @@
 /**
  * The read model behind the tool card's risk badge.
  *
- * The gateway stamps one record on a TOOL row when the Decisions (Jev) seam
+ * The gateway stamps one record on a TOOL row when the Decisions seam
  * answered `tool.risk` for that call (`decisions/points/tool_risk.py`). The badge
  * renders that record and nothing else: it makes no request of its own to learn
  * what happened, so a transcript reloaded from disk and one that arrived live say
