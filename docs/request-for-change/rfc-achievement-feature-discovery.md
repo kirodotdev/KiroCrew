@@ -1,10 +1,10 @@
 ---
 title: Milestones for new-user feature discovery — one milestone table, quiet surfaces
-status: accepted
+status: partial
 author: zejiangg
 created: 2026-10-29
-last-audited: 2026-10-31
-audited-at: 95f78562f1
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [26512, 26488]
 tracking-issues: [26327]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Milestones for New-User Feature Discovery
 
-- **Status:** Accepted. The product owner merged this RFC and started the build of Ship 1. Decisions D1–D3 were made on 2026-10-29 and D4–D14 on 2026-10-30 by the product owner (section 7.1).
+- **Status:** Partial. Accepted by the product owner, who merged this RFC and started the build of Ship 1. Ship 1 is on main ([#26512](https://github.com/kirodotdev/KiroCrew/pull/26512) backend in `src/kiro_crew/milestones.py`, [#26488](https://github.com/kirodotdev/KiroCrew/pull/26488) Explore panel, behind a default-off Feature Preview since [#27449](https://github.com/kirodotdev/KiroCrew/pull/27449)); Ship 2 (peak counter, daily task, `milestones_daily_nudge`) is not built (checked at `1d08e941b3`). Decisions D1–D3 were made on 2026-10-29 and D4–D14 on 2026-10-30 by the product owner (section 7.1).
 - **Verified at:** `95f78562f1`. Every code reference below was read at that commit.
 - **Tracks:** [#26327](https://github.com/kirodotdev/KiroCrew/issues/26327).
 - **Hard constraint:** the sign-in / first-run flow does not change. `website/src/components/OnboardingFlow.tsx` stays as it is.

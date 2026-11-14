@@ -1,12 +1,12 @@
 ---
 title: A crewmate's sessions live under the crewmate — out of the sidebar, in a grouped status view, closed by the AI that opened them
-status: accepted
+status: partial
 author: iamwhatever
 created: 2026-10-31
-last-audited: 2026-10-31
-audited-at: 19c481f1ad
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [26952, 28869, 28931, 30220]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: A crewmate's sessions live under the crewmate
 
-**Status:** accepted 2026-11-03. The maintainer Joe Guo (@iamwhatever) picked this path (path B) in [rfc-mate-sessions-folder-or-lineage.md](rfc-mate-sessions-folder-or-lineage.md), merged in [#27837](https://github.com/kirodotdev/KiroCrew/pull/27837); the pick is recorded in [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md). Nothing built yet; this document changes no code. Every "exists today" claim below was verified at main `19c481f1ad` (2026-10-31); citations name files and symbols at that commit.
+**Status:** accepted 2026-11-03. The maintainer Joe Guo (@iamwhatever) picked this path (path B) in [rfc-mate-sessions-folder-or-lineage.md](rfc-mate-sessions-folder-or-lineage.md), merged in [#27837](https://github.com/kirodotdev/KiroCrew/pull/27837); the pick is recorded in [2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md](../decisions/2026-11-03-a-crewmates-sessions-leave-the-sidebar-for-its-sessions-tab.md). Partial at `1d08e941b3`: migration PRs 2 ([#26952](https://github.com/kirodotdev/KiroCrew/pull/26952), `mate_root` stamps), 3 ([#28869](https://github.com/kirodotdev/KiroCrew/pull/28869), Crew panel routes), 4 ([#28931](https://github.com/kirodotdev/KiroCrew/pull/28931), Sessions tab) and 6 ([#30220](https://github.com/kirodotdev/KiroCrew/pull/30220), hidden behind a preview) are on main; PR 7 is not (conductor specs still grant `chat_folder_file_self`). Every "exists today" claim below was verified at main `19c481f1ad` (2026-10-31); citations name files and symbols at that commit.
 
 This RFC amends one clause of an owner decision: [2026-10-17-crewmate-chat-hands-off-to-worker-sessions.md](../decisions/2026-10-17-crewmate-chat-hands-off-to-worker-sessions.md) (Ray Xu, @buluoray), which says a crewmate's worker sessions appear in the sidebar. The rest of that decision stands. It builds on [rfc-mate-owned-agent-config.md](rfc-mate-owned-agent-config.md) (`accepted`), which makes a crewmate's chat a dispatch-only conductor whose work runs on worker sessions.
 

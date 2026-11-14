@@ -1,12 +1,12 @@
 ---
 title: Crew LTS Edition -- a build-time edition that requires login, fetches governance rules before it opens, and turns most governable features off by default
-status: accepted
+status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
-last-audited: 2026-10-29
-audited-at: a7ecdf3f1
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [23213, 23697, 23703, 23968, 24661, 26818, 32970]
 tracking-issues: [23206, 28751, 30178, 30821]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Crew LTS Edition
 
-- Status: accepted. The owner approved this design on 2026-10-23; D1 to D12 in section 5 are owner decisions (D4 and D5 added 2026-10-29, D3 amended and D6 added 2026-11-02, D7, D8 and D9 added and D3 amended again 2026-11-05, D10 and D11 added 2026-11-07, D12 added 2026-11-09). This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the LTS edition changes defaults (most governable features off) and adds a startup gate.
+- Status: partial. Checked at `1d08e941b3`: the edition stamp (`src/kiro_crew/edition.py`, `make ... EDITION=lts`, #23213), the LTS gate (`lts_gate.py`, `lts_boot.py`, `lts_signin_gateway.py`, the policy fetch in `platform/enterprise_policy_fetch.py`; #23697, #23968, #24661, #26818) and the LTS baseline in `_query_level` (`platform/governance_parts/evaluator.py`) are on main; #32970 renamed Enterprise Edition to LTS Edition. Open question 2 is still undecided. Accepted: the owner approved this design on 2026-10-23; D1 to D12 in section 5 are owner decisions (D4 and D5 added 2026-10-29, D3 amended and D6 added 2026-11-02, D7, D8 and D9 added and D3 amended again 2026-11-05, D10 and D11 added 2026-11-07, D12 added 2026-11-09). This document landed first so the implementation pull requests that follow have a design for the First Principles and Design lanes to check against: the LTS edition changes defaults (most governable features off) and adds a startup gate.
 - Tracking issue: [#23206](https://github.com/kirodotdev/KiroCrew/issues/23206)
 - Related: [rfc-central-governance-ceiling](rfc-central-governance-ceiling.md) (the policy ceiling this edition fetches and enforces), [platform-context](../system-specs/modules/platform-context.md) (the existing edition seam), [governance](../system-specs/modules/governance.md) (the evaluator and catalog this edition tightens)
 

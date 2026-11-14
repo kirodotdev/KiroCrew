@@ -1,12 +1,12 @@
 ---
 title: Remove the Piper text-to-speech provider -- unpinned install and model downloads, and a GPL engine, are risks the project will not carry
-status: accepted
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-22
-last-audited: 2026-10-22
-audited-at: 69b2e503eb
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [23189]
 tracking-issues: [23154]
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Remove the Piper text-to-speech provider
 
-- Status: accepted on the repository owner's decision of 2026-10-22. Nothing is removed yet. This document lands first because the change removes a user-facing capability, and the First Principles lane reads that decision off the base branch.
+- Status: implemented in [#23189](https://github.com/kirodotdev/KiroCrew/pull/23189) (merged 2026-10-23): `piper_runtime.py` and `piper_worker.py` are deleted, and `REMOVED_PROVIDERS` in `src/kiro_crew/speech_providers.py` maps a saved `piper` to `system`. Accepted on the repository owner's decision of 2026-10-22. This document lands first because the change removes a user-facing capability, and the First Principles lane reads that decision off the base branch.
 - Tracking issue: [#23154](https://github.com/kirodotdev/KiroCrew/issues/23154)
 - Related: [voice-streaming](../system-specs/modules/voice-streaming.md) (the shipped TTS contract), [chat/voice.md](../reference/kiro-cli/chat/voice.md) (the user setup guide), [rfc-pluggable-speech-providers](rfc-pluggable-speech-providers.md) (whose provider table lists `piper`)
 

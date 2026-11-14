@@ -1,10 +1,10 @@
 ---
 title: Slack Code — agent sessions and code channels for Kiro Crew
-status: in-progress
+status: partial
 author: kseam
 created: 2026-10-16
-last-audited: 2026-11-12
-audited-at: 6ded84fc02
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [21425, 21410, 22001]
 tracking-issues: [15175]
@@ -14,11 +14,11 @@ superseded-by: []
 
 # RFC: Slack Code — agent sessions and code channels for Kiro Crew
 
-- Status: in-progress. Phase 1 (the switch registry, the manifest built from the
+- Status: partial. Phase 1 (the switch registry, the manifest built from the
   switches, the update flow, the capability latch and the scope probe, plus the
   Agent sessions switch and its runtime, first opened as
-  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) is in the pull
-  request that carries this document. Phase 2 (code channels: their switch, their
+  [#21422](https://github.com/kirodotdev/KiroCrew/pull/21422)) shipped in
+  [#21425](https://github.com/kirodotdev/KiroCrew/pull/21425). Phase 2 (code channels: their switch, their
   defaults and their runtime) shipped in
   [#21410](https://github.com/kirodotdev/KiroCrew/pull/21410), with helper-agent
   dispatch and restart resume in

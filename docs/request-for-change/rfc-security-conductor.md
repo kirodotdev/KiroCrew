@@ -117,7 +117,7 @@ The pattern facts were measured at `e992b7771`; the shipped-state facts were re-
 - The fixer lane has a procedure to reuse:
   `src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/SKILL.md`.
 - The three pilot surfaces are real code, not hypotheticals: the deny classifier `is_denied` in
-  `src/kiro_crew/security.py`, reached through `src/kiro_crew/platform/security_authority.py` from
+  `src/kiro_crew/security/deny_gate.py` (`security.py` became a package in #9183), reached through `src/kiro_crew/platform/security_authority.py` from
   the PreToolUse gate in `src/kiro_crew/hooks.py`; webhook ingest in `src/kiro_crew/webhooks.py`;
   dashboard session and bearer handling in `src/kiro_crew/dashboard/token_auth.py`.
 - What this document proposes and main does **not** have: the harness that executes `flow` and
@@ -270,7 +270,7 @@ not when it is decided.
 Round 1 is this repository, two to three auditors, concurrency two to three:
 
 1. **Safety-policy fence bypass** — the `execute_bash` deny classifier: `is_denied` in
-   `src/kiro_crew/security.py` and its gate path through
+   `src/kiro_crew/security/deny_gate.py` and its gate path through
    `src/kiro_crew/platform/security_authority.py` and `src/kiro_crew/hooks.py`.
 2. **MCP gateway and webhook ingest input validation** — `src/kiro_crew/webhooks.py`.
 3. **Session and bearer handling** — `src/kiro_crew/dashboard/token_auth.py`.

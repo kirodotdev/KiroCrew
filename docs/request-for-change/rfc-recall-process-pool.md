@@ -1,12 +1,12 @@
 ---
 title: Recall process pool -- answer a turn's memory reads in child processes so concurrent sessions use more than one core
-status: in-progress
+status: implemented
 author: chenmingwei23, with kirocrew-worker
 created: 2026-11-01
-last-audited: 2026-11-01
-audited-at: 4537582b9b
-doc-pr: null
-implementation-prs: []
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
+doc-pr: 26868
+implementation-prs: [26868]
 tracking-issues: [26600]
 supersedes: []
 superseded-by: []
@@ -14,9 +14,9 @@ superseded-by: []
 
 # RFC: Recall process pool
 
-- Status: in-progress. The implementation ships behind
+- Status: implemented. The implementation shipped behind
   `memory.recall_pool_processes` (default `0`, off) in the same pull request as
-  this document.
+  this document, [#26868](https://github.com/kirodotdev/KiroCrew/pull/26868).
 - Tracking issue: [#26600](https://github.com/kirodotdev/KiroCrew/issues/26600),
   suggestion 4. Suggestion 1 shipped as #26628 and suggestion 2 as #26655; suggestion 3
   (patching the resident scoring set on a write) is separate work this RFC depends on only

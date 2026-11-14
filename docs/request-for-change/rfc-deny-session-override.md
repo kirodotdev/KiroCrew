@@ -1,12 +1,12 @@
 ---
 title: A person can override a command deny rule for one call or one session
-status: accepted
+status: implemented
 author: Bolin Chen
 created: 2026-11-01
-last-audited: 2026-11-01
-audited-at: 69a0d28622
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [27574, 29427, 33626]
 tracking-issues: [26984, 33406]
 supersedes: []
 superseded-by: []

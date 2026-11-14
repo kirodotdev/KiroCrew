@@ -18,7 +18,7 @@ superseded-by: []
 > [`builtin_skills/pipeline-conductor/SKILL.md`](../../src/kiro_crew/builtin_skills/pipeline-conductor/SKILL.md)
 > for what runs today, and [`../system-specs/modules/pipeline-conductor.md`](../system-specs/modules/pipeline-conductor.md)
 > for the contract.** M0 is on main: the `kirocrew-pipeline-conductor` agent is
-> registered in `subagent_parts/agent_policy.py`'s `UNADVERTISED_AGENTS`, and the skill ships with its
+> registered in `subagent_parts/spawn_allowlists.py`'s `UNADVERTISED_AGENTS` (moved from `agent_policy.py` by #35293), and the skill ships with its
 > bundled scripts and the `conductor-status/v1` schema. M1's `PipelineSpec` and
 > SQLite event store, M2's adjudication and SLA machinery, and M3's baking,
 > compensation and per-repo objects are unbuilt — `PipelineSpec` has no code hit

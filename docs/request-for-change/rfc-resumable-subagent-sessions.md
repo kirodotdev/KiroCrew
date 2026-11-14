@@ -3,8 +3,8 @@ title: Resumable Subagent Sessions
 status: partial
 author: zezhexu
 created: 2026-07-28
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 806
 implementation-prs: [1023, 1246]
 tracking-issues: [1113, 1114, 1115]
@@ -124,7 +124,7 @@ Record rows use the existing schema. `tools` carries tool **names in order** (`a
 
 **Archive pruning must be scoped.** `_cleanup_old_archives` is throttled by a module-global `_last_cleanup` and defaults its window to `session.archive_retention_days` (`_resolve_retention_days`). The record base passes an explicit `retention_days`, and the throttle is keyed per base dir so a record rotation cannot consume the chat store's prune window.
 
-**Redaction** is at write, single-pass, reusing the redactors the run already applies before it stores its task line and streams its result (`subagent_manager/admission.py`'s `spawn_impl` runs `redact_exfiltration_urls` + `redact_credentials` over the task; the result path applies `subagent_parts/run_output.py`'s `_redact` to each assistant chunk in `subagent_manager/run_turn.py`'s `_run_inner_impl`). If redaction raises, the row is dropped, the dropped-row count increments, and the record view labels itself incomplete. A record is never written unredacted.
+**Redaction** is at write, single-pass, reusing the redactors the run already applies before it stores its task line and streams its result (`subagent_manager/admission/gate.py`'s `spawn_impl` runs `redact_exfiltration_urls` + `redact_credentials` over the task; the result path applies `subagent_parts/run_output.py`'s `_redact` to each assistant chunk in `subagent_manager/run_turn.py`'s `_run_inner_impl`). If redaction raises, the row is dropped, the dropped-row count increments, and the record view labels itself incomplete. A record is never written unredacted.
 
 `result.txt`, `state.json`, and `tombstone.json` keep their current format and role; `result.txt` remains the fast path for `spawn_status` paging/grep and the completion-event pointer. Record-write failures are surfaced through the record's own metadata and the `spawn_status` response — **not** by adding a field to `state.json`.
 
@@ -227,7 +227,7 @@ Entry blocker: Open question 4 (which records are surfaced) is answered.
 | Existing `/api/spawn` endpoints | Request/response shapes unchanged, including the `counted` flag semantics wave accounting depends on. Phase 1 adds record-write failure counts to `spawn_status`; Phase 3 adds two routes (`GET /api/spawn/{id}/record`, records list) |
 | `spawn_run` / `spawn_sub_agents` / `spawn_list` / `spawn_status` | Unchanged; `spawn_status` keeps reading `result.txt` with offset/limit/grep |
 | Completion-event delivery | Unchanged: same announce text, digest chunking, injection and timeout behaviour |
-| Chat history (`/api/sessions`, `list_sessions`, `search_chat_history`, `api_sessions_clear`, folders, suggestions, artifacts, `sync_bridge`) | Unaffected by records — they live outside the chat-history glob root. A **promoted** run's transcript does enter chat history, correctly: it is a real session from that point |
+| Chat history (`/api/sessions`, `list_sessions`, `search_chat_history`, `api_sessions_clear`, folders, suggestions, artifacts, `sync_bridge` (since removed by #10339)) | Unaffected by records — they live outside the chat-history glob root. A **promoted** run's transcript does enter chat history, correctly: it is a real session from that point |
 | `result.txt` / `state.json` / `tombstone.json` | Format unchanged — record-write failures are reported through record metadata and `spawn_status`, not by adding a `state.json` field. Lifecycle changes once: prune retains the kiro session files of runs that still have a record |
 | `/api/usage` | Tallies unchanged; retained kiro session files are excluded in `_parse_sessions` |
 | `_STATELESS_PREFIXES` | Unchanged. `subagent:` stays stateless; execution keys never resume |

@@ -473,7 +473,8 @@ tests exist.
 
 **Files:**
 
-- Modify: `src/kiro_crew/security.py` (consent-host allowlist reuse of
+- Modify: the `src/kiro_crew/security/` package (a single `security.py`
+  until #9183 split it; consent-host allowlist reuse of
   `oauth_endpoints.json`; do not add a second file unless the existing
   keystone cannot express AgentCore consent hosts)
 - Modify: dashboard handler + a small Settings / modal component

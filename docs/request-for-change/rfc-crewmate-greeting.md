@@ -28,6 +28,7 @@ superseded-by: []
 > Warm branch amended by [rfc-delayed-task-brief.md](rfc-delayed-task-brief.md).
 >
 > 2026-10-24: the cold Recap is removed; the warm task brief is the only return greeting.
+> [#23829](https://github.com/kirodotdev/KiroCrew/pull/23829) deleted `website/src/pages/members/mateGreeting.ts` (and `useMateGreeting`, `COLD_AFTER_MS` with it), so the hook named below no longer exists on main.
 
 ## 1. Summary
 

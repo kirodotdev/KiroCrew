@@ -1,12 +1,12 @@
 ---
 title: Fewer review loops and fewer escaped bugs -- a PASS/BLOCK review gate, lint first, and six smaller changes
-status: accepted
+status: partial
 author: unattributed (blameless study write-up)
 created: 2026-10-19
-last-audited: 2026-10-19
-audited-at: 2cf3d0d69
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [22698, 22702, 22957, 22961, 22971, 22694]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -16,7 +16,7 @@ superseded-by: []
 
 - Status: accepted. The repository owner recorded all eight decisions on
   2026-10-20 in section 2.2: D1 with an amendment, D2 to D8 as written. Each of
-  the eight decisions in section 2 is separable. Nothing is built yet.
+  the eight decisions in section 2 is separable. Partial at `1d08e941b3`: D1 overrides (#22698), D3 sibling list (#22957), D4 `Proof:` line (#22971), D5 sweep check (#22961), D6 PR Size (#22694, now a job in `pr-policy.yml` since #25186) and D8 metrics (#22702) are on main; D7 `pre_push_gate.py` is not.
 - This document changes no code. The merged pull request adds this file and one
   row in [README.md](README.md).
 - Measured at `origin/main` commit `2cf3d0d69` (2026-10-19). Every repository
