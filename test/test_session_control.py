@@ -514,6 +514,24 @@ def test_target_in_another_workspace_is_refused(tmp_path):
     assert "different workspace" in exc.value.message
 
 
+def test_a_refusal_across_workspaces_also_names_the_creator_fence(tmp_path):
+    """A workspace fix cannot clear the fence, so one refusal names both."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1", workspace="default")
+    _slot(state, "chat-other", workspace="research")
+    with pytest.raises(sc.SessionControlError) as exc:
+        sc.authorize_target(
+            state,
+            caller_session_key=_key(caller),
+            target="chat-other",
+            operation="read",
+            precomputed_ownership_fenced=True,
+        )
+    assert exc.value.code == "workspace_mismatch"
+    assert "different workspace" in exc.value.message
+    assert "only control sessions it created itself" in exc.value.message
+
+
 def test_scheduled_target_is_refused(tmp_path):
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
