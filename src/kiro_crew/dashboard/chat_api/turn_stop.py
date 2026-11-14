@@ -1145,6 +1145,18 @@ async def api_chat_slot_interrupt(request: web.Request) -> web.Response:
                 {"error": "queue_id required for idle interrupt", "code": "invalid_queue_id"},
                 status=400,
             )
+        if linked_turn and not any(
+            isinstance(item, dict) and item.get("id") == queue_id for item in slot._queue
+        ):
+            # The card is gone (sent, cancelled or edited away): refuse before the
+            # cancel below, so a refused interrupt never stops the channel turn.
+            return web.json_response(
+                {
+                    "error": "queued message is no longer available",
+                    "code": "queue_item_unavailable",
+                },
+                status=409,
+            )
         if linked_turn:
             # Validated: cancel the channel-path turn, then dispatch the selected
             # card below, which starts once the channel path releases the session.
