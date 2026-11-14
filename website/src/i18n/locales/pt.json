@@ -17398,6 +17398,7 @@
         "sign_in_kas_chat_note": "Os chats no Kiro Agent não usam um login feito aqui. Entre pelo chat, com o cartão Autorizar dele.",
         "sign_in_kas_chat_again_note": "Os chats no Kiro Agent ainda não usam este login. Entre novamente para salvá-lo para eles.",
         "sign_in_unsupported_on_kas": "Este servidor ainda não consegue fazer login com o motor Kiro Agent. Ele foi configurado com as próprias configurações de login, que o Kiro Agent não consegue usar.",
+        "sign_in_unsupported_vendor_pending": "Este servidor ainda não consegue fazer login com o motor Kiro Agent. O {{provider}} só aceita login de apps que aprovou.",
         "sign_in_unavailable": "Login indisponível",
         "oauth_not_a_static_token": "Este servidor inicia sessão com OAuth, por isso um cabeçalho Authorization estático não é suficiente. Remova e volte a adicionar este servidor sem o cabeçalho, ative-o e depois inicie uma nova sessão de chat para iniciar sessão.",
         "sign_in_required_next": "Depois de aprovar, use o botão Testar servidores MCP acima desta tabela; a linha passará então a Sessão iniciada.",

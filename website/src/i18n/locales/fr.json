@@ -17398,6 +17398,7 @@
         "sign_in_kas_chat_note": "Les chats sur Kiro Agent n’utilisent pas une connexion faite ici. Connecte-toi depuis le chat, avec sa carte Autoriser.",
         "sign_in_kas_chat_again_note": "Les chats sur Kiro Agent n’utilisent pas encore cette connexion. Reconnecte-toi pour l’enregistrer pour eux.",
         "sign_in_unsupported_on_kas": "Ce serveur ne peut pas encore se connecter avec le moteur Kiro Agent. Il a été configuré avec ses propres réglages de connexion, que Kiro Agent ne peut pas utiliser.",
+        "sign_in_unsupported_vendor_pending": "Ce serveur ne peut pas encore se connecter avec le moteur Kiro Agent. {{provider}} n’accepte les connexions que des applications qu’il a approuvées.",
         "sign_in_unavailable": "Connexion indisponible",
         "oauth_not_a_static_token": "Ce serveur se connecte via OAuth ; un en-tête Authorization statique ne peut pas lui suffire. Supprimez puis ajoutez à nouveau ce serveur sans l’en-tête, activez-le, puis démarrez une nouvelle session de chat pour vous connecter.",
         "sign_in_required_next": "Une fois la connexion approuvée, utilisez le bouton Sonder les serveurs MCP au-dessus de ce tableau : la ligne affichera alors Connecté.",

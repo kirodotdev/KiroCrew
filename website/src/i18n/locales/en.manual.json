@@ -7963,6 +7963,7 @@
         "sign_in_kas_chat_note": "Chats on Kiro Agent don't use a sign-in made here. Sign in from the chat, with its Authorize card.",
         "sign_in_kas_chat_again_note": "Chats on Kiro Agent don't use this sign-in yet. Sign in again to save it for them.",
         "sign_in_unsupported_on_kas": "This server can't sign in with the Kiro Agent engine yet. It was set up with its own sign-in settings, which Kiro Agent can't use.",
+        "sign_in_unsupported_vendor_pending": "This server can't sign in with the Kiro Agent engine yet. {{provider}} accepts sign-ins only from apps it has approved.",
         "sign_in_unavailable": "Sign-in unavailable",
         "sign_in": "Sign in",
         "sign_in_retry": "Try again",

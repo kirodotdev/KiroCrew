@@ -28,7 +28,7 @@ function isToday(epochSecs: number): boolean {
   return new Date(epochSecs * 1000).toDateString() === new Date().toDateString()
 }
 import SortableHeader from '../../components/SortableHeader'
-import { connectionProviderForServer } from '../connections/registry'
+import { connectionProviderForServer, vendorPendingProviderForServer } from '../connections/registry'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
@@ -411,23 +411,29 @@ function signInTargetFor(
  * server's own `oauth` block to the engine, except a block that names a client
  * secret or keeps nothing Crew sends (`oauthWithheld`, from
  * `mcp_oauth_projection.oauth_withheld`), so neither the chat guidance nor Sign in
- * could finish for that one. A Connections provider is left to its card, and a
- * sign-in Crew holds is Crew's, not the harness's.
+ * could finish for that one. The same holds at the url of a provider whose vendor
+ * has not admitted Kiro yet (`vendorPending`), unless the entry brings its own
+ * `clientId`: the vendor refuses the engine's client, so no chat sign-in can
+ * finish. A Connections provider is left to its card, and a sign-in Crew holds is
+ * Crew's, not the harness's.
  * shortcut: an engine older than 0.66.104 drops every block, and this row cannot
  * see the engine version; the chat notice covers that case. Read the version
  * here if the gateway ever reports it per row.
  */
-function kasCannotSignIn(s: McpServer, managedProvider: unknown, onKas: boolean): boolean {
-  return onKas && !managedProvider && !!s.oauthWithheld && !s.authCrewHeld
+function kasCannotSignIn(s: McpServer, managedProvider: unknown, onKas: boolean, vendorPending: unknown): boolean {
+  return onKas && !managedProvider && (!!s.oauthWithheld || !!vendorPending) && !s.authCrewHeld
 }
 
-/** The row's sentence for a sign-in KAS cannot do. It offers no harness switch:
- *  a Kiro CLI pick runs on KAS wherever kiro-cli offers its v3 engine
- *  (`kiro_cli_pick_backend`), so the switch would not reach the sign-in either. */
-function KasSignInUnsupported() {
+/** The row's sentence for a sign-in KAS cannot do, naming the vendor when it is
+ *  the vendor that refuses. It offers no harness switch: a Kiro CLI pick runs on
+ *  KAS wherever kiro-cli offers its v3 engine (`kiro_cli_pick_backend`), so the
+ *  switch would not reach the sign-in either. */
+function KasSignInUnsupported({ vendor }: { vendor?: string }) {
   return (
     <span className="text-warn text-[12px]" data-testid="mcp-sign-in-unsupported">
-      {i18nT('pages.overview.mcpTab.sign_in_unsupported_on_kas')}
+      {vendor
+        ? i18nT('pages.overview.mcpTab.sign_in_unsupported_vendor_pending', { provider: vendor })
+        : i18nT('pages.overview.mcpTab.sign_in_unsupported_on_kas')}
     </span>
   )
 }
@@ -927,7 +933,8 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const base = s.presence || DEFAULT_PRESENCE
             const hasToolOverrides = pendingTools[s.name] && Object.keys(pendingTools[s.name]).length > 0
             const managedProvider = connectionProviderForServer(s)
-            const signInUnsupported = kasCannotSignIn(s, managedProvider, onKas)
+            const vendorPending = s.clientId ? undefined : vendorPendingProviderForServer(s)?.name
+            const signInUnsupported = kasCannotSignIn(s, managedProvider, onKas, vendorPending)
             const signInTarget = signInUnsupported ? undefined : signInTargetFor(s, managedProvider, connectionsUi)
             // Greyed like a pending uninstall, but not AS a pending uninstall: the
             // row is inert because its config lives elsewhere. The reason is SAID
@@ -1226,7 +1233,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                           that stopped working (expired, revoked, or minted for other
                           scopes). Signing in again is the remedy the row can offer. */}
                       {!!s.authChallenge && !s.headers && signInUnsupported && (
-                        <span className="block mt-0.5"><KasSignInUnsupported /></span>
+                        <span className="block mt-0.5"><KasSignInUnsupported vendor={vendorPending} /></span>
                       )}
                       {!!s.authChallenge && !s.headers && signInTarget && (
                         <span className="flex flex-col items-start gap-1 mt-1">
@@ -1251,7 +1258,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                        IS something the panel can do) and names the probe step that
                        repaints the row. */
                     signInUnsupported ? (
-                      <KasSignInUnsupported />
+                      <KasSignInUnsupported vendor={vendorPending} />
                     ) : signInTarget ? (
                       <McpRowSignIn target={signInTarget} serverName={s.name} kasChatNote={s.kasChatSignIn} />
 
@@ -1266,7 +1273,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                   ) : mcpAuthState(s) === 'signed_in' && signInUnsupported ? (
                     /* A held grant is Kiro CLI's, which a KAS chat does not use, so
                        the row says the same as one nobody signed in to. */
-                    <KasSignInUnsupported />
+                    <KasSignInUnsupported vendor={vendorPending} />
                   ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length && !s.authCrewHeld ? (
                     /* A held grant the probe cannot verify. The probe never uses the
                        session's grant, so it cannot list this server's tools; the

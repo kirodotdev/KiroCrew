@@ -759,15 +759,20 @@ the sharing rows and the gateway rewriter use; otherwise it is stdio.
   `clientSecret`, or keeps nothing Crew sends) and that is neither a Connections
   provider nor Crew-held offers no sign-in at all (`kasCannotSignIn` in
   `McpTab.tsx`). Neither the chat guidance nor Sign in could ever finish for it. A
-  block Crew does send (a public `clientId`) keeps the normal row. Its badge reads **Sign-in unavailable** whether or not a
+  block Crew does send (a public `clientId`) keeps the normal row. A row with no
+  `clientId` of its own at the url of a registry provider whose vendor has not
+  admitted Kiro yet (`vendor_approval_pending`, matched by url whatever the entry
+  is named: `vendorPendingProviderForServer`) is the same case, because the vendor
+  refuses the engine's client, so no chat sign-in can finish (#36337); its sentence
+  names the vendor instead of the server's own settings. Its badge reads **Sign-in unavailable** whether or not a
   Kiro CLI grant is held (a KAS chat does not use one), with no hover tip,
   and the row says in plain words that the server cannot sign in with this
   engine. The row cannot see the engine version, so an engine older than 0.66.104,
   which drops every block, is left to the chat notice. It offers no harness switch: a Kiro CLI pick runs on KAS wherever
   kiro-cli offers its v3 engine (`kiro_cli_pick_backend`, and the row also reads
   the `kiro_selection_runs_on_kas` probe), so the switch would
-  not reach the sign-in either. The chat says the same at session start in a
-  notice tagged
+  not reach the sign-in either. For an `oauthWithheld` server the chat says the
+  same at session start in a notice tagged
   `meta.kind: "mcp_sign_in_unsupported"`, which `TurnBlock.isAlwaysVisible` keeps
   out of the turn's folded steps.
 

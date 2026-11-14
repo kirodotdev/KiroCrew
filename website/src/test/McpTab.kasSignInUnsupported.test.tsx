@@ -3,7 +3,8 @@
  * secret or keeps nothing Crew sends (`oauthWithheld`), so that server cannot
  * sign in on the KAS harness. Its row must say so, with its own badge, instead of
  * sending the user to chat for an approval that never comes or offering a Sign
- * in control. A block KAS does receive keeps the normal guidance.
+ * in control. A block KAS does receive keeps the normal guidance. The same holds
+ * at the url of a provider whose vendor has not admitted Kiro yet.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
@@ -86,6 +87,38 @@ describe('McpTab: a sign-in the KAS harness cannot do', () => {
     expect(screen.getByText('Sign-in unavailable')).toBeInTheDocument()
     expect(screen.queryByText('Signed in')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
+  })
+
+  it.each([
+    ['not signed in', false],
+    ['a Kiro CLI sign-in held', true],
+  ])('names the vendor for a hand-added server at a url it has not admitted Kiro to: %s', async (_label, held) => {
+    // Figma refuses the engine's client whatever the entry is named, so
+    // "Go to chat" would lead nowhere.
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    mockApi.mcpServers.mockResolvedValue([
+      remote({ name: 'figma-official', url: 'https://mcp.figma.com/mcp', authGrantPresent: held }),
+    ])
+    renderTab()
+
+    const line = await screen.findByTestId('mcp-sign-in-unsupported')
+    expect(line).toHaveTextContent('Figma accepts sign-ins only from apps it has approved.')
+    expect(screen.getByText('Sign-in unavailable')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Go to chat/ })).toBeNull()
+  })
+
+  it('keeps the chat guidance at that url for an entry with its own client', async () => {
+    mockApi.kirocrewConfig.mockResolvedValue({ agent: { acp_backend: 'kas' } })
+    mockApi.mcpServers.mockResolvedValue([
+      remote({ name: 'figma-official', url: 'https://mcp.figma.com/mcp', clientId: '123.456' }),
+      remote({ name: 'withheld', oauthWithheld: true }),
+    ])
+    renderTab()
+
+    // The withheld row's line shows only once the KAS config has loaded.
+    await screen.findByTestId('mcp-sign-in-unsupported')
+    expect(screen.getAllByTestId('mcp-sign-in-unsupported')).toHaveLength(1)
+    expect(screen.getByRole('link', { name: /Go to chat/ })).toBeInTheDocument()
   })
 
   it('keeps the Outdated tip, which is not a sign-in step', async () => {

@@ -16530,6 +16530,7 @@
         "sign_in_kas_chat_note": "Kiro Agent のチャットは、ここで行ったサインインを使いません。チャットの「認証」カードからサインインしてください。",
         "sign_in_kas_chat_again_note": "Kiro Agent のチャットは、まだこのサインインを使いません。再度サインインすると、チャット用に保存されます。",
         "sign_in_unsupported_on_kas": "このサーバーは、まだ Kiro Agent エンジンではサインインできません。独自のサインイン設定で構成されていて、Kiro Agent はその設定を使えません。",
+        "sign_in_unsupported_vendor_pending": "このサーバーは、まだ Kiro Agent エンジンではサインインできません。{{provider}} は、承認したアプリからのサインインしか受け付けません。",
         "sign_in_unavailable": "サインイン不可",
         "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
         "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",

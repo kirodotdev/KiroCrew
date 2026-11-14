@@ -88,6 +88,19 @@ export function connectionProviderForServer(server: McpServer): ConnectionProvid
   )
 }
 
+/**
+ * The provider at this server's url whose vendor has not admitted Kiro's sign-in
+ * yet (`vendor_approval_pending`), whatever the entry is named: the vendor refuses
+ * the client, not the name, so a hand-added entry at that url is refused too.
+ */
+export function vendorPendingProviderForServer(server: McpServer): ConnectionProvider | undefined {
+  const serverUrl = normalizedUrl(server.url)
+  if (!serverUrl) return undefined
+  return registry.find(provider =>
+    provider.vendor_approval_pending && normalizedUrl(provider.mcp_url) === serverUrl,
+  )
+}
+
 export function serverForConnection(
   provider: ConnectionProvider,
   servers: readonly McpServer[],

@@ -16964,6 +16964,7 @@
         "sign_in_kas_chat_note": "Chats auf Kiro Agent nutzen keine hier erstellte Anmeldung. Melde dich im Chat an, mit seiner Autorisieren-Karte.",
         "sign_in_kas_chat_again_note": "Chats auf Kiro Agent nutzen diese Anmeldung noch nicht. Melde dich erneut an, um sie für diese Chats zu speichern.",
         "sign_in_unsupported_on_kas": "Dieser Server kann sich noch nicht über die Kiro Agent-Engine anmelden. Er ist mit eigenen Anmeldeeinstellungen eingerichtet, die Kiro Agent nicht nutzen kann.",
+        "sign_in_unsupported_vendor_pending": "Dieser Server kann sich noch nicht über die Kiro Agent-Engine anmelden. {{provider}} akzeptiert Anmeldungen nur von Apps, die es freigegeben hat.",
         "sign_in_unavailable": "Anmeldung nicht möglich",
         "oauth_not_a_static_token": "Dieser Server meldet sich über OAuth an; ein statischer Authorization-Header genügt ihm nicht. Den Server ohne den Header entfernen und erneut hinzufügen, aktivieren und dann in einer neuen Chat-Sitzung anmelden.",
         "sign_in_required_next": "Nach der Genehmigung die Schaltfläche MCP-Server prüfen über dieser Tabelle verwenden; die Zeile zeigt dann Angemeldet.",

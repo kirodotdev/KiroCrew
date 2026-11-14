@@ -40,7 +40,10 @@ is the same fact as the hidden row above.
 A hidden entry is not a missing feature. If a vendor you want is in the catalogue but
 has no card, you can still add its MCP endpoint by hand as an ordinary remote server
 — you give up the curated scopes, the revoke link and the **Sign in** control, and
-you keep the tools.
+you keep the tools. A vendor that admits clients by allowlist or waitlist (the last
+row above) is the exception on the Kiro Agent harness: until it admits Kiro, a row at
+its url reads **Sign-in unavailable**, unless its `oauth` block names a public client
+of your own.
 
 ## Adding your own MCP server
 
@@ -88,7 +91,10 @@ which reads exactly like a broken connection.
 Curated catalogue rows get a second route: a per-row **Sign in** control, and the
 provider's own card. Minting is deliberately fenced to catalogue providers, so a
 hand-added row — even one pointing at a vendor that *is* in the catalogue — is sent
-to chat instead. That is accurate routing, not a missing button.
+to chat instead. That is accurate routing, not a missing button. On the Kiro Agent
+harness, a row at the url of a vendor that admits clients by allowlist or waitlist
+reads **Sign-in unavailable** instead, unless its `oauth` block names a public client
+of your own (see [The vendor catalogue](#the-vendor-catalogue)).
 
 Two other ways to authorize a remote server:
 
