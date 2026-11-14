@@ -47,7 +47,7 @@ TOO_OLD_STDERR = [
 
 
 @pytest.fixture(autouse=True)
-def _resolved_route(monkeypatch):
+def _resolved_route(_floor_monkeypatch):
     """Pin the route KAS resolves to on its own; the relay unless a test moves it.
 
     The real resolver reads this host's kiro-cli and its sign-in store. Returns
@@ -62,7 +62,7 @@ def _resolved_route(monkeypatch):
         calls.append(kwargs)
         return routes[-1]
 
-    monkeypatch.setattr(kas_route, "resolve_kas_route", _resolve)
+    _floor_monkeypatch.setattr(kas_route, "resolve_kas_route", _resolve)
     return routes, calls
 
 
@@ -376,6 +376,7 @@ async def test_kas_moving_to_the_bundle_on_its_own_lifts_the_card_within_the_bou
     service.mark_cli_too_old()
     assert (await service.snapshot())["acp_supported"] is False
     assert len(calls) == 1
+    assert calls[0]["home"] == service._home
 
     routes.append(KasRoute(bundle=True, reason=reason))
     for _ in range(3):

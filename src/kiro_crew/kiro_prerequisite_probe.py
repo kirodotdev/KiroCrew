@@ -346,9 +346,9 @@ def _relay_route_resolved(environ: Mapping[str, str], home: Path) -> bool:
     kiro-cli signed out). Blocking; the signed-out read is SEL-audited, which is
     why callers bound how often they ask.
     """
-    from kiro_crew.acp.kas_route import resolve_kas_route
+    from kiro_crew.agent_sdk import kas_bundle
 
-    return not resolve_kas_route(environ=environ, home=home).bundle
+    return not kas_bundle.kas_route(environ=environ, home=home).bundle
 
 
 async def _drop_too_old_off_relay(self: KiroPrerequisiteService) -> bool:

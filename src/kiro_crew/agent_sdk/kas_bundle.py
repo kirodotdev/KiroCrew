@@ -249,16 +249,17 @@ def kas_spawn_takes_bundle(agent: Any) -> bool:
     return bool(getattr(agent, "kas_bundle", False)) or bool(kas_route().bundle)
 
 
-def kas_route() -> Any:
+def kas_route(*, environ: Mapping[str, str] | None = None, home: Path | None = None) -> Any:
     """The route the next KAS spawn takes, computed fresh (``acp.kas_route.KasRoute``).
 
     The bundle route is taken when ``agent.kas_bundle`` is on, or automatically
-    when kiro-cli's relay cannot run on this host. Blocking (reads config, resolves
-    kiro-cli, reads the sign-in stores); never raises.
+    when kiro-cli's relay cannot run on this host. ``environ`` and ``home`` default
+    to the process's own. Blocking (reads config, resolves kiro-cli, reads the
+    sign-in stores); never raises.
     """
     from kiro_crew.acp.kas_route import resolve_kas_route
 
-    return resolve_kas_route()
+    return resolve_kas_route(environ=environ, home=home)
 
 
 def crew_sign_in_starts_spawn() -> bool:
