@@ -137,9 +137,11 @@ def nothing_to_do(name: str, args: dict[str, Any]) -> str:
     return _emit_directive(
         "nothing_to_do",
         payload,
-        "Quiet end requested for this turn. Write nothing and call nothing "
-        "after this: the turn is over. The consumer records the quiet step; "
-        "if it refuses, the normal empty-reply handling applies instead.",
+        f"Quiet end requested for this turn. Reply with exactly "
+        f"{session_directive.QUIET_END_TOKEN} and nothing else, and call nothing "
+        "after this: the turn is over. Kiro Crew drops that token, so nobody "
+        "sees it. The consumer records the quiet step; if it refuses, the "
+        "normal empty-reply handling applies instead.",
         after_text=QUIET_END_AFTER_TEXT_REMINDER,
     )
 

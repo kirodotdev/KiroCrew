@@ -25,7 +25,7 @@ from kiro_crew.acp import session_handle_dispatch
 from kiro_crew.acp.runtime import AcpSessionHandle
 from kiro_crew.acp.types import METHOD_SESSION_UPDATE
 from kiro_crew.testing.clock import ManualClock
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS, await_until
 
 # ── _dispatch_events: notification kind branches ──
 
@@ -511,5 +511,46 @@ async def test_dispatch_thinking_chunk():
         await await_until(driver, what="the driver finishing its turn")
         think = [e for e in events if e.kind == EVENT_THINKING_CHUNK]
         assert len(think) == 1 and think[0].text == "thinking..."
+    finally:
+        await _stop_reader(task)
+
+
+@pytest.mark.asyncio
+async def test_a_token_only_reply_after_a_tool_reaches_no_consumer():
+    """The handle's loop drops a reply that is only the quiet-end token (see
+    ``test_acp_end_token.py``): the tool call passes, no text is yielded."""
+    from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, EVENT_TOOL_CALL
+    from kiro_crew.session_directive import QUIET_END_TOKEN
+
+    rt, reader, _ = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    task = await _start_reader(rt)
+    try:
+        events = []
+
+        async def drive():
+            async for ev in handle.prompt("hi", timeout=FALLBACK_TIMEOUT_SECS):
+                events.append(ev)
+
+        driver = asyncio.ensure_future(drive())
+        req_id = (await _await_routed(rt, "sA"))["sA"]
+        for update in (
+            {"sessionUpdate": "tool_call", "toolCallId": "tc1", "title": "bash", "kind": "shell"},
+            {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": QUIET_END_TOKEN},
+            },
+        ):
+            _feed(
+                reader,
+                {"method": METHOD_SESSION_UPDATE, "params": {"sessionId": "sA", "update": update}},
+            )
+        _feed(reader, {"id": req_id, "result": {"stopReason": "end_turn"}})
+        await await_until(driver, what="the driver finishing its turn")
+
+        kinds = [e.kind for e in events]
+        assert EVENT_TOOL_CALL in kinds and kinds[-1] == EVENT_COMPLETE
+        assert EVENT_TEXT_CHUNK not in kinds
     finally:
         await _stop_reader(task)

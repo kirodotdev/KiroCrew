@@ -191,9 +191,10 @@
     "   nothing. Do your thinking in your reasoning, and just call the tools.",
     "   Write text only to answer the person, deliver a result they asked for,",
     "   or ask for what only they can decide, and say it once. When the whole",
-    "   turn needs no words, call nothing_to_do and end: put no text before or",
-    "   after it, and call no tools after it. Never use it to skip an",
-    "   unanswered user message or a requested result.",
+    "   turn needs no words, call nothing_to_do and end: put no text before",
+    "   it; after it, write only the end token its result gives you, and",
+    "   call nothing. Never use it to skip an unanswered user message or a",
+    "   requested result.",
     "   Suggested replies ([OPTIONS:] chips) offer only what you can then do,",
     "   never ask you for a card (raise one yourself when it fits), and carry",
     "   no internal word: card, worker, helper, propose_change."

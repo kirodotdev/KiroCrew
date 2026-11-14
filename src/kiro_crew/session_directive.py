@@ -71,6 +71,12 @@ DIRECTIVE_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+# What the model writes after ``nothing_to_do``, and nothing else, so the
+# backend's history ends on an assistant message rather than a tool result
+# (which a backend fills with its own placeholder). ``acp.end_token`` drops it
+# where the model's text enters Kiro Crew, so no surface ever shows it.
+QUIET_END_TOKEN = "(quiet)"
+
 # The MCP server name KiroCrew registers its own tools under (kiro-cli reports
 # it in ``_meta.kiro.mcpServerName``). The consumer honours a directive ONLY
 # from a call served by THIS server — a third-party MCP server that happens to
