@@ -72,6 +72,33 @@ class TestReader:
         commands = read_commands("cat <<EOF\nbody; more\nEOF")
         assert [c.separator for c in commands] == ["<<"]
 
+    @pytest.mark.parametrize("text", ["x=$((1<<2))\nnext", "((1<<2))\nnext"])
+    def test_a_shift_in_arithmetic_opens_no_heredoc(self, text):
+        commands = read_commands(text, heredocs=True)
+        assert [c.heredocs for c in commands] == [()] * len(commands)
+        assert [w.raw for w in commands[-1].argv] == ["next"]
+
+    def test_a_heredoc_after_a_shift_is_still_read(self):
+        commands = read_commands("((1<<2))\ncat <<'EOF'\nbody\nEOF\nnext", heredocs=True)
+        docs = [(c.argv[0].raw, [d.body for d in c.heredocs]) for c in commands if c.heredocs]
+        assert docs == [("cat", ["body\n"])]
+        assert [w.raw for w in commands[-1].argv] == ["next"]
+
+    def test_an_unclosed_arithmetic_keeps_its_heredoc(self):
+        (doc,) = [d for c in read_commands("x=$((1<<2\nbody", heredocs=True) for d in c.heredocs]
+        assert doc.body == "body"
+
+    def test_a_dollar_arithmetic_that_is_a_subshell_keeps_its_heredoc(self):
+        text = "n=$((cat <<'EOF'\nbody\nEOF\n) | wc -l)"
+        docs = [
+            (c.argv[0].raw, d.body) for c in read_commands(text, heredocs=True) for d in c.heredocs
+        ]
+        assert docs == [("cat", "body\n")]
+
+    def test_the_default_read_still_stops_at_a_shift(self):
+        assert _shape("x=$((1<<2))\nnext") == [("(", ["x=$"], []), ("(", [], []), ("<<", ["1"], [])]
+        assert _shape("((1<<2))\nnext") == [("(", [], []), ("(", [], []), ("<<", ["1"], [])]
+
     def test_a_comment_is_skipped_to_its_newline(self):
         assert _shape("a # b; c\nd") == [("\n", ["a"], []), ("", ["d"], [])]
 

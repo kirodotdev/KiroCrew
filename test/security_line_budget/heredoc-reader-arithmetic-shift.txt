@@ -1,0 +1,5 @@
++36
+The shared reader's heredoc mode (`shell_commands.read_commands` with
+`heredocs=True` and tracking on) follows each `$((...))` / `((...))` span in its one
+pass: a `<<` inside a span that closes with `))` on its line is a shift, so no heredoc
+body follows it and the next line is a command the rm floor reads.
