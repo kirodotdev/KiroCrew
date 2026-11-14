@@ -146,6 +146,29 @@ class TestCronPreviewValidation:
         assert out.out == ""
         assert out.err == "Error: blocked by policy\n"
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RuntimeError("Symlink loop from '/home/u/.kiro/crew/crons/loop.py'"),
+            OSError(36, "File name too long"),
+        ],
+        ids=["symlink-loop", "name-too-long"],
+    )
+    def test_a_script_path_the_resolver_cannot_follow_is_refused(self, capsys, error):
+        """The errors cron add already refuses with one line end preview the same way."""
+        outcome: object = None
+        with patch("kiro_crew.cron_script.resolve_script_path", side_effect=error):
+            try:
+                _cron_preview(_make_args("~/.kiro/crew/crons/loop.py:run"))
+            except SystemExit as exc:
+                outcome = exc.code
+            except (RuntimeError, OSError) as exc:
+                outcome = f"escaped as {type(exc).__name__}"
+        assert outcome == 1
+        out = capsys.readouterr()
+        assert out.out == ""
+        assert out.err == f"Error: {error}\n"
+
     def test_unloadable_script_refused_on_stderr(self, tmp_path: Path, capsys):
         # Not named s.py: the bytecode fixture expects s.py to be imported,
         # and this script never is.
