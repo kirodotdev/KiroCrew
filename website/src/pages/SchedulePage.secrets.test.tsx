@@ -181,7 +181,12 @@ describe('JobSecretsPanel', () => {
         onSaved={vi.fn()}
       />,
     )
-    await userEvent.click(screen.getByText('Deny'))
+    // The stock transparent Btn has no edge on the pending note's warn tint until hovered.
+    const deny = screen.getByRole('button', { name: 'Deny' })
+    expect(deny).toHaveClass('bg-bg-elevated', 'border-border-strong', 'text-danger')
+    expect(deny).not.toHaveClass('bg-transparent')
+    expect(deny).not.toHaveClass('border-border')
+    await userEvent.click(deny)
     await waitFor(() =>
       expect(api.cronSecretsGrant).toHaveBeenCalledWith('abc12345', {
         deny_pending: true,

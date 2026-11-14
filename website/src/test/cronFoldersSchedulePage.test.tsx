@@ -213,6 +213,14 @@ describe('SchedulePage cron folders', () => {
 
     // Confirm row should appear
     await waitFor(() => expect(screen.getByText(/Delete “My Folder”\? Jobs will be ungrouped\./)).toBeInTheDocument())
+
+    // The stock transparent Btn has no edge on the row's danger tint until hovered.
+    const row = within(screen.getByText(/Delete “My Folder”\?/).closest('tr')!)
+    for (const name of ['Delete "My Folder"', 'Cancel']) {
+      expect(row.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(row.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(row.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
   })
 
   it('hides empty folders when filter is active (omitEmpty)', async () => {
@@ -570,6 +578,14 @@ describe('SchedulePage cron folders', () => {
     // Confirm row should appear (not immediately deleted)
     await waitFor(() => expect(screen.getByText(/Delete “DeleteMe”\? Jobs will be ungrouped\./)).toBeInTheDocument())
     expect(vi.mocked(api).deleteCronFolder).not.toHaveBeenCalled()
+
+    // The stock transparent Btn has no edge on the confirm's danger tint until hovered.
+    const confirmRow = within(screen.getByText(/Delete “DeleteMe”\?/).parentElement!)
+    for (const name of ['Delete "DeleteMe"', 'Cancel']) {
+      expect(confirmRow.getByRole('button', { name })).toHaveClass('bg-bg-elevated', 'border-border-strong')
+      expect(confirmRow.getByRole('button', { name })).not.toHaveClass('bg-transparent')
+      expect(confirmRow.getByRole('button', { name })).not.toHaveClass('border-border')
+    }
 
     // Confirm the delete
     const confirmDeleteBtn = screen.getAllByRole('button').find(b => b.textContent === 'Delete "DeleteMe"' && b.className.includes('danger'))
