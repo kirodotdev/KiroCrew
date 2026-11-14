@@ -751,6 +751,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         page when it is not. See ``kiro_crew.dashboard.slot_detail_delta``.
         Either form routes to the paged read and cannot be combined with
         ``before``.
+      - ``page_bytes=1`` (with a cursor read): cut the page by the same byte
+        budget as a plain page, oldest rows first, with ``next_before`` and
+        ``cursor.from`` naming the first row sent. Only a reader that pages
+        older with ``before=next_before`` sends it (the dashboard store); the
+        app-sdk embed does not, so its window is not cut.
 
     Either param being a non-integer is a 400, not an uncaught 500 out of the
     handler.
@@ -1283,8 +1288,9 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     # has been filled in the background, it is rendered without the memo.
     memo_scope = (slot_history_key(slot), before, limit_raw is None and before_raw is None)
     # A page (a limit or a cursor position) is also bounded by bytes; the whole-history
-    # read is not. A cursor read is cut inside the planner (``byte_floor``), which
-    # keeps its row-position contract.
+    # read is not. A cursor read is cut only on ``page_bytes=1`` (a reader that pages
+    # older), inside the planner (``byte_floor``), which keeps its row-position contract.
+    cursor_bytes = cursor_mode and request.query.get("page_bytes") == "1"
     paged = not cursor_mode and (limit_raw is not None or before_raw is not None)
     use_memo, fill = wire_render.plan_read(memo_scope)
 
@@ -1325,7 +1331,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     total=total,
                     window=limit,
                     cursor=delta_cursor,
-                    byte_floor=first + _oldest_over_byte_budget(fragments),
+                    byte_floor=(first + _oldest_over_byte_budget(fragments) if cursor_bytes else 0),
                 )
                 messages_json = "[" + ", ".join(plan.fragments) + "]"
             elif use_memo or paged:

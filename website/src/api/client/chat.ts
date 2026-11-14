@@ -259,7 +259,12 @@ export function createChatEndpoints({ post, put, del, patch, j, jAccepted, jfetc
         return fetch(chatSlotDetailPath(slot) + '?' + p, { signal }).then(j)
       }
       return readNewestPage(slot, limit, async (query, etag) => {
-        const r = await fetch(chatSlotDetailPath(slot) + '?' + new URLSearchParams(query), {
+        // `page_bytes=1`: a cursor page is cut by the server's byte budget like a
+        // plain one. Safe here because this store pages older with
+        // `before=next_before`; the app-sdk embed does not, so it never sends it.
+        const q = new URLSearchParams(query)
+        if (q.has('cursor') || q.has('digest')) q.set('page_bytes', '1')
+        const r = await fetch(chatSlotDetailPath(slot) + '?' + q, {
           signal, ...(etag ? { headers: { 'If-None-Match': etag } } : {}),
         })
         if (r.status === 304 && etag) return { page: null, etag }
