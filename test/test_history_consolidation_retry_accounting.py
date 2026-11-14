@@ -1024,8 +1024,7 @@ class TestAnUnreachableBackendIsNotAFailedAttempt:
 
         with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
             for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
-                with history_mod.allow_on_loop_persist():
-                    log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+                await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
                 await c._consolidate(KEY, include_history=True)
 
         attempts, retry_at = log.consolidation_retry_state(KEY)
@@ -1033,8 +1032,7 @@ class TestAnUnreachableBackendIsNotAFailedAttempt:
         assert retry_at > time.time(), "the environment backoff was not armed"
         assert abandoned == []
         assert log.unconsolidated_count(KEY) == 3, "an unreachable backend dropped the span unread"
-        with history_mod.allow_on_loop_persist():
-            log.update_metadata(KEY, {"consolidation_retry_at": 0.0})
+        await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
         assert c.retry_eligible(KEY) is True
 
     @pytest.mark.asyncio
