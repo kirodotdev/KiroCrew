@@ -208,7 +208,7 @@ CODE_ITEM_CLOSED = "item_closed"
 CODE_ITEM_CAP_EXCEEDED = "item_cap_exceeded"
 CODE_GOAL_CONCURRENCY_CAP_REACHED = "goal_concurrency_cap_reached"
 #: A ``create`` while host memory is critical (rfc-work-ledger-resource-pressure §3.5).
-CODE_HOST_PRESSURE_CRITICAL = "host_pressure_critical"
+CODE_HOST_MEMORY_CRITICAL = "host_memory_critical"
 CODE_CREW_LOG_INCOMPLETE = "crew_log_incomplete"
 CODE_CACHE_DIRTY = "cache_dirty"
 CODE_DEPTH_EXCEEDED = "depth_exceeded"

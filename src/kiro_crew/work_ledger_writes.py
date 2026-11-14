@@ -22,7 +22,7 @@ from kiro_crew.work_ledger_records import (
     CODE_DEPTH_EXCEEDED,
     CODE_DUPLICATE_ITEM,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
-    CODE_HOST_PRESSURE_CRITICAL,
+    CODE_HOST_MEMORY_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -527,9 +527,10 @@ def _admit_create_locked(slot_key: str) -> ConductorRecord:
 def _refuse_if_host_critical() -> None:
     """Refuse a create while host memory is critical. Writes nothing.
 
-    rfc-work-ledger-resource-pressure §3.5: the code backstop for a conductor that
-    misses the pause rule, under the admission contract: critical refuses; tight,
-    unknown and ``agent.admission_gate: false`` admit. A live probe, not the cached
+    rfc-work-ledger-resource-pressure §3.5 (the part not withdrawn), under the admission
+    contract: critical refuses; tight, unknown and ``agent.admission_gate: false``
+    admit. The conductor checks ``resource_status`` before dispatch; this refusal is
+    the only code backstop. A live probe, not the cached
     verdict: that cache refreshes only when asked, so the first create after memory
     recovered would be judged on a stale refusal. This runs off the loop (the route
     calls the store through ``asyncio.to_thread``) and the probe is one memory read.
@@ -540,8 +541,8 @@ def _refuse_if_host_critical() -> None:
         raise WorkLedgerError(
             f"create refused: {decision.reason}. Dispatch nothing new until memory is "
             "no longer critical",
-            code=CODE_HOST_PRESSURE_CRITICAL,
-            field="host_pressure",
+            code=CODE_HOST_MEMORY_CRITICAL,
+            field="host_memory",
         )
 
 
