@@ -1205,7 +1205,7 @@ jobs:
             setup.cfg
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[voice,desktop]" --group dev
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
 
       # Setup/install stays under the runner identity. Select test scope also
       # stays there because it writes the runner-owned GITHUB_OUTPUT file.
@@ -1504,7 +1504,7 @@ jobs:
             setup.cfg
 
       - name: Install dependencies
-        run: uv pip install --system -e ".[voice,desktop]" --group dev
+        run: uv pip install --system -e ".[voice,desktop,otlp]" --group dev
 
       - name: Verify Windows test prerequisites
         if: runner.environment == 'self-hosted'

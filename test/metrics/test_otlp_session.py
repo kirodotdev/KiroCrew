@@ -1,8 +1,9 @@
 """``metrics.otlp_session`` without the optional ``otlp`` extra.
 
 The loopback tests in ``test_otlp_no_redirect.py`` drive the real exporter and
-skip when the extra is absent, as it is in CI. These cover every branch of the
-session choice with the SDK module stubbed, so they always run.
+skip when the extra is absent, as it is in a default dev install (CI's backend
+test lanes install it). These cover every branch of the session choice with the
+SDK module stubbed, so they run either way.
 """
 
 from __future__ import annotations
