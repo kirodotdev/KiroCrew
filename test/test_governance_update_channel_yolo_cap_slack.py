@@ -606,9 +606,11 @@ class TestSlackInteractions:
         menu.assert_not_awaited()
 
     def test_every_slack_inbound_gate_also_asks_the_channel(self) -> None:
-        # The intake gate (events.py), the nudge fire and the two review-modal
-        # submits (which learn their channel only after parsing the modal) ask the
-        # channel on their own lines; every other Slack transport gate pairs them.
+        # The intake gate (events.py), the nudge fire, the two review-modal
+        # submits (which learn their channel only after parsing the modal) and the
+        # Home-tab action button (whose channel is the DM it opens after the gate)
+        # ask the channel on their own lines; every other Slack transport gate
+        # pairs them.
         unpaired = []
         for path in sorted((_SRC / "slack").rglob("*.py")):
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -625,6 +627,7 @@ class TestSlackInteractions:
             "slack/gateway_runtime/nudge_channel_fire.py",
             "slack/interactions_approvals.py",
             "slack/interactions_approvals.py",
+            "slack/interactions_options.py",
         ]
 
 

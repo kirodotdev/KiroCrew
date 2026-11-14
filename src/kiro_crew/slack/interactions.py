@@ -345,6 +345,13 @@ async def dispatch(payload: dict) -> None:
         if await handle_stop_click(_orch, payload):
             return
 
+    # ── A Home-tab action button: a new thread in the clicker's DM ──
+    # A Home-tab payload carries no channel, so the OPTIONS gate below would
+    # judge an empty channel id; the handler gates the DM it posts into.
+    if _is_home_tab_action_button(payload, action):
+        await _handle_home_tab_action(payload, action, user_id)
+        return
+
     # ── OPTIONS choice buttons / "Choose several..." menu ──
     # A choice button RESOLVES an [OPTIONS:] choice: it edits the card to show
     # the answer AND re-dispatches it as a fresh turn. So a ``channels`` policy
@@ -1118,7 +1125,9 @@ from kiro_crew.slack.interactions_settings import _handle_channel_remove  # noqa
 from kiro_crew.slack.interactions_settings import _handle_channels_select  # noqa: E402
 from kiro_crew.slack.interactions_settings import _handle_track_channel  # noqa: E402
 from kiro_crew.slack.interactions_settings import _handle_users_select  # noqa: E402
+from kiro_crew.slack.interactions_options import _handle_home_tab_action  # noqa: E402
 from kiro_crew.slack.interactions_options import _handle_options  # noqa: E402
+from kiro_crew.slack.interactions_options import _is_home_tab_action_button  # noqa: E402
 from kiro_crew.slack.interactions_options import _open_options_several  # noqa: E402
 from kiro_crew.slack.interactions_options import _tell_user  # noqa: E402
 from kiro_crew.slack.interactions_options import _import_thread_to_slot  # noqa: E402

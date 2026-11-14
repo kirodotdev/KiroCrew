@@ -294,7 +294,7 @@ def _linked_thread(sessions: Any, thread_ts: str | None, flat_key: str) -> bool:
 
 
 def resolve_session(
-    orch: GatewayOrchestrator, channel: str, thread_ts: str | None
+    orch: GatewayOrchestrator, channel: str, thread_ts: str | None, *, stop: bool = False
 ) -> tuple[str, str, bool] | None:
     """``(router_key, session_key, flat)`` for the session a thread belongs to.
 
@@ -305,13 +305,18 @@ def resolve_session(
     to its own session -- with or without single-session DMs, the binding the
     turn path itself follows (``_resolve_thread_owner``). A self-derived owner
     (``slack:<thread_ts>``) is not a binding. *flat* says the whole DM is the
-    session. None when the event addresses no session at all.
+    session. None when the event addresses no session at all. With *stop*, a
+    single-session DM thread whose own session holds a turn resolves as that thread
+    (``_dm_stop_flat_key``); a rename keeps the DM's one session.
     """
     from kiro_crew.slack import events as _events
 
-    flat_key = _events.flat_dm_session_key(
-        channel, thread_ts, enabled=_events._dm_single_session_enabled(orch, channel)
-    )
+    if stop:
+        flat_key = _events._dm_stop_flat_key(orch, channel, thread_ts)
+    else:
+        flat_key = _events.flat_dm_session_key(
+            channel, thread_ts, enabled=_events._dm_single_session_enabled(orch, channel)
+        )
     router_key = flat_key or thread_ts
     if not router_key:
         return None
@@ -402,7 +407,7 @@ async def handle_stopped(orch: GatewayOrchestrator, event: dict) -> str | None:
                     return "channel"
             except Exception:
                 logger.warning("channel stop handler failed for %s", channel, exc_info=True)
-    keys = resolve_session(orch, channel, thread_ts)
+    keys = resolve_session(orch, channel, thread_ts, stop=True)
     if (
         thread_ts is not None
         and keys is not None
