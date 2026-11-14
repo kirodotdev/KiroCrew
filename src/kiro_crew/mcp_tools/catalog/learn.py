@@ -49,11 +49,23 @@ def schemas() -> list[dict[str, Any]]:
                 "Returns bounded context and sources. The caller cannot choose another "
                 "store; private members cannot access Global V1 or sibling memories. "
                 "It returns distilled facts, not transcript text: for a past "
-                "conversation's exact words, follow up with search_chat_history."
+                "conversation's exact words, follow up with search_chat_history. "
+                "Optional filters narrow the answer: kind (fact, episode or lesson); "
+                "since and until (ISO date or time; keeps what was written in that "
+                "half-open range, a fact by when its current value was set, so October "
+                "is since 2026-10-01, until 2026-11-01); as_of (keeps what was valid at "
+                "that moment, including facts whose validity window has since closed). "
+                "Time filters apply to facts and episodes, not lessons."
             ),
             "inputSchema": {
                 "type": "object",
-                "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 2000}},
+                "properties": {
+                    "query": {"type": "string", "minLength": 1, "maxLength": 2000},
+                    "kind": {"type": "string", "enum": ["fact", "episode", "lesson"]},
+                    "since": {"type": "string", "maxLength": 64},
+                    "until": {"type": "string", "maxLength": 64},
+                    "as_of": {"type": "string", "maxLength": 64},
+                },
                 "required": ["query"],
                 "additionalProperties": False,
             },
