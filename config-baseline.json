@@ -4502,6 +4502,7 @@
         "traces_otlp_endpoint": "",
         "traces_otlp_headers_secret": {},
         "traces_otlp_headers_env": {},
+        "traces_ultra_mode": "run",
         "beacon_enabled": true,
         "beacon_endpoint": "https://d175o3ylxqum0e.cloudfront.net"
       }
@@ -4701,6 +4702,23 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "telemetry.traces_ultra_mode",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Traces: Ultra Mode Shape",
+      "help": "How an Ultra Mode or Bot conductor's work is traced while Traces Enabled is on. 'run' (default): one trace per round, an 'ultra round N' root with the conductor's turns and one 'work_item' span per item holding its worker's turns, so a round reads as one waterfall. 'turn': every turn is its own trace, joined by the shared kirocrew.crew.root and kirocrew.work.item_id attributes.",
+      "hasChildren": false,
+      "enumValues": [
+        "run",
+        "turn"
+      ],
+      "defaultValue": "run"
     },
     {
       "path": "telemetry.beacon_enabled",
