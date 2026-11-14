@@ -866,6 +866,14 @@ async def api_crons_create(request: web.Request) -> web.Response:
                 {"error": "'every' must be an integer", "code": "invalid_every"}, status=400
             )
         schedule_kwargs = {"every_secs": every}
+        if cron_expr:
+            # Both arrived; `every` is the one this route has always used, so the
+            # job keeps it, but cron_add would have used the expression instead,
+            # and a caller must not learn that only from the job it gets back.
+            flag_warnings.append(
+                f"'cron' ({cron_expr!r}) was ignored because 'every' was also given; "
+                "this job runs on the 'every' interval"
+            )
     elif cron_expr:
         schedule_kwargs = {"cron_expr": cron_expr}
     elif at_ts is not None:
