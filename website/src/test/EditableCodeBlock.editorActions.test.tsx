@@ -204,6 +204,18 @@ describe('EditableCodeBlock run-in-terminal action', () => {
     expect(screen.getByLabelText('Run in terminal')).toBeInTheDocument()
   })
 
+  it.each(['powershell', 'pwsh', 'ps1'])('offers the run action on a %s snippet', fence => {
+    setTerminalEnabledFlag(true)
+    render(<EditableCodeBlock code="Get-ChildItem" lang={fence} complete />)
+    expect(screen.getByLabelText('Run in terminal')).toBeInTheDocument()
+  })
+
+  it('matches the fence tag without regard to case', () => {
+    setTerminalEnabledFlag(true)
+    render(<EditableCodeBlock code="Get-ChildItem" lang="PowerShell" complete />)
+    expect(screen.getByLabelText('Run in terminal')).toBeInTheDocument()
+  })
+
   it('withholds it for a non-shell language', () => {
     setTerminalEnabledFlag(true)
     render(<EditableCodeBlock code="const a = 1" lang="ts" complete />)

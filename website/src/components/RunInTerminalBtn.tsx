@@ -8,7 +8,7 @@ import { RunInTerminalScope } from './runInTerminalScope'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
-export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'fish'])
+export const SHELL_LANGS = new Set(['bash', 'sh', 'shell', 'zsh', 'console', 'terminal', 'fish', 'powershell', 'pwsh', 'ps1'])
 
 function stripPromptChars(code: string): string {
   return code.replace(/^[\$>]\s+/gm, '')

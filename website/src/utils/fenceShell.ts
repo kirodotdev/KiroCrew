@@ -74,11 +74,14 @@ export const RUN_IN_TERMINAL_RESULT_FALLBACK_MS = RUN_IN_TERMINAL_READY_DEADLINE
 /**
  * Fence tags that NAME a shell binary, mapped to the program to invoke.
  *
- * The seven tags the button appears on split unevenly. These four name both an
- * executable and a syntax. The other three -- `shell`, `console`, `terminal` --
- * name no particular shell (`console` conventionally marks a session transcript,
- * which is why prompt characters are stripped before running), so there is
- * nothing to honor and they keep the configured shell, exactly as before.
+ * The tags the button appears on split unevenly. These four name both an
+ * executable and a syntax. `shell`, `console` and `terminal` name no particular
+ * shell (`console` conventionally marks a session transcript, which is why
+ * prompt characters are stripped before running), so there is nothing to honor
+ * and they keep the configured shell, exactly as before. `powershell`, `pwsh`
+ * and `ps1` are absent on purpose: they are meant for the PowerShell a Windows
+ * terminal launches by default, so their text is typed in unchanged, and no
+ * POSIX host is handed a PowerShell to delegate to.
  */
 const FENCE_SHELLS: Record<string, string> = {
   bash: 'bash',
