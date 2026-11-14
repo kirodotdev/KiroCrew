@@ -720,7 +720,11 @@ async def revive_session(
 
                     def _roll_back() -> None:
                         if slot.folder_id == folder_id:
-                            slot.folder_id = previous
+                            # `previous` can be deleted inside the awaits below:
+                            # never put the session back into a folder that is gone.
+                            slot.folder_id = (
+                                previous if any(f["id"] == previous for f in state._folders) else ""
+                            )
                             slot._folder_changed = previous_changed
 
                     try:

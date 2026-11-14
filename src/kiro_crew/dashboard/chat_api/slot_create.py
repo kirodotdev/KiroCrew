@@ -894,7 +894,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if not await state.read_folders(
                 lambda folders: any(f["id"] == folder_id for f in folders)
             ):
-                slot.folder_id = previous_folder
+                # The old folder can be deleted inside the same await: keep it
+                # only while it exists, else the conversation lands Unfiled.
+                slot.folder_id = (
+                    previous_folder
+                    if any(f["id"] == previous_folder for f in state._folders)
+                    else ""
+                )
                 slot._folder_changed = previous_changed
             else:
                 folder_applied = True
@@ -1227,7 +1233,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # from then on. A folder deleted since the read above declines the
             # move, as it would have at that read.
             if not await _unhide_folder(state, folder_id, claim_for_person=claim_folder):
-                slot.folder_id = previous_folder
+                # Same rule as the read above: never back into a deleted folder.
+                slot.folder_id = (
+                    previous_folder
+                    if any(f["id"] == previous_folder for f in state._folders)
+                    else ""
+                )
                 slot._folder_changed = previous_changed
                 folder_applied = False
         if folder_id or title:
