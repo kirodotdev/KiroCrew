@@ -2715,6 +2715,14 @@ pins the contract.
     gateway puts that Node ahead of nvm's on the MCP search path (see
     [mcp](../../architecture/mcp.md)), so without it a service on Amazon
     Linux 2 runs `npx` servers on an nvm Node that does not load.
+    `PATH` is the installer's, behind `~/.local/bin`, mise's shims, the nvm
+    version bin dirs found on it, and the system dirs (`service_path()`).
+    Under `sudo`, whose `secure_path` names no nvm dir, entries under root's
+    home are dropped and the `SUDO_USER` account's nvm Node is read from its
+    passwd home instead: `~/.nvm`, then `~/.config/nvm`, the version
+    `alias/default` names (none when it names `system`),
+    else the newest installed. Only files are read;
+    nothing in that home runs as root.
     Only the keys `service_environment()` names are captured; any other
     variable of the installing shell is absent under the service (see the
     Credentials bullet below for the ones the installer reports).
