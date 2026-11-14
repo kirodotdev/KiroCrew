@@ -7537,7 +7537,8 @@ request-supplied path or another active slot. The V1 notebook query reuses
 `memory_v2.terms` for CJK pairs and identifiers, strips question filler, and
 prefers lines matching at least half the remaining topic terms; when no line
 reaches that bar it admits lines sharing at least two distinct terms (one when
-the query has a single term), ranked by matches, so an older notebook line that
+the query has a single term), ranked by matches with ties in reverse path order
+(so the newest dated history file comes first), so an older notebook line that
 the old first turn showed unconditionally stays reachable from a natural
 question. A single shared word never admits a line on a multi-term query.
 English terms use quoted
@@ -7552,8 +7553,10 @@ when the rebuild yields no rows or the query still fails does it report
 `index_unavailable`, never a claim that no memory exists. V2 does not use the
 Markdown fallback. Both recall paths preserve truncated, cited evidence when
 a record exceeds its share. Repeated lessons do not reserve recall capacity.
-Merged V1 facts and episodes share query-coverage ranking, retaining a floor
-for already-admitted semantic evidence; lower-ranked tails are omitted first.
+Merged V1 facts and episodes share query-coverage ranking, each row scored on
+the text it returns (a notebook row on its snippet, not its whole file),
+retaining a floor for already-admitted semantic evidence; lower-ranked tails are
+omitted first.
 The complete response remains bounded to 3,000 context characters and 16,384
 transport bytes. This is lexical recovery, not translation or a guarantee that
 the model will call the tool. Notebook/history writes maintain the index;
