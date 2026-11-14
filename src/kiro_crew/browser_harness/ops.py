@@ -35,6 +35,7 @@ pure function of ``(op, args, ctx)``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib
 import json
 import logging
@@ -50,6 +51,7 @@ from typing import Any
 from kiro_crew.browser_harness.frames import FRAME_READ_CAP, split_frame_ref
 from kiro_crew.browser_snapshots import SNAPSHOT_DIR_NAME
 from kiro_crew.browser_snapshots import prune as prune_snapshots
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,7 @@ OPS: tuple[str, ...] = (
     "navigate",
     "back",
     "snapshot",
+    "read",
     "click",
     "drag",
     "scroll",
@@ -791,6 +794,71 @@ async def _snapshot(ctx: OpContext, _args: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+#: The longest ``content`` one ``read`` returns. Below :data:`TEXT_CAP` so the
+#: header the tool shim puts in front of it still fits the shim's 20,000 cap.
+READ_CONTENT_CAP = TEXT_CAP - 2_000
+READ_FORMATS = ("text", "html")
+
+
+async def _read(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
+    fmt = args.get("format", "text")
+    if fmt not in READ_FORMATS:
+        return refusal("bad_format", f"format must be one of: {', '.join(READ_FORMATS)}")
+    offset = args.get("offset", 0)
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        return refusal("bad_offset", "offset must be a whole number of characters, 0 or more")
+    ref = args.get("ref")
+    if ref is not None and not _is_ref(ref):
+        return refusal("bad_ref", f"not a valid ref: {ref!r}; call snapshot first")
+    if split_frame_ref(ref) is not None:
+        return refusal(
+            "bad_ref",
+            f"read cannot be scoped to {ref}, an element of a cross-origin frame; "
+            "read the page without a ref",
+        )
+    await _step(ctx, "Read the page text" if fmt == "text" else "Read the page HTML")
+    data = await _page(ctx, "read", ref, fmt)
+    if isinstance(data, dict) and data.get("code") == "ref_stale":
+        return refusal("ref_stale", f"ref {ref} is not on the current page; re-snapshot")
+    if not isinstance(data, dict) or not isinstance(data.get("content"), str):
+        return refusal("read_error", "the page returned no content")
+    # Redacted whole, before paging: a token split across two pages would match
+    # in neither, and the agent could join the halves.
+    content, _ = redact_exfiltration_urls(data["content"])
+    content, _ = redact_credentials(content)
+    total = len(content)
+    if offset > total:
+        return refusal("bad_offset", f"offset {offset} is past the end ({total} characters)")
+    page = content[offset : offset + READ_CONTENT_CAP]
+    out: dict[str, Any] = {
+        "ok": True,
+        "url": str(data.get("url", "")),
+        "title": str(data.get("title", "")),
+        "format": fmt,
+        "content": page,
+        "offset": offset,
+        "total": total,
+        "digest": hashlib.sha256(content.encode("utf-8", "surrogatepass")).hexdigest()[:12],
+    }
+    if offset + len(page) < total:
+        out["next_offset"] = offset + len(page)
+    if data.get("truncated"):
+        out["truncated"] = True
+    skipped = data.get("skippedFrames")
+    skipped = skipped if isinstance(skipped, int) and not isinstance(skipped, bool) else 0
+    if fmt == "html":
+        out["note"] = (
+            "html is the light DOM of the top document only: shadow roots and frame "
+            f"documents are not in it ({skipped} frame(s) left out); format text reads them"
+        )
+    elif skipped > 0:
+        out["note"] = (
+            f"{skipped} cross-origin frame(s) or embedded document(s) were not read; "
+            "their text is not included"
+        )
+    return out
+
+
 async def _click(ctx: OpContext, args: dict[str, Any]) -> dict[str, Any]:
     point = await _point(ctx, args, "ref", "x", "y")
     if isinstance(point, dict):
@@ -1443,6 +1511,7 @@ _HANDLERS: dict[str, Callable[[OpContext, dict[str, Any]], Awaitable[dict[str, A
     "navigate": _navigate,
     "back": _back,
     "snapshot": _snapshot,
+    "read": _read,
     "click": _click,
     "drag": _drag,
     "scroll": _scroll,
