@@ -157,6 +157,7 @@ if TYPE_CHECKING:
         api_approvals,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.tool_policy import (  # noqa: F401
+        _DANGLING_LINK_OF_UNKNOWN_OWNER_REFUSES,
         _TOOL_POLICY_MEMO,
         _UNREADABLE_SPEC_WARNED,
         _UNREADABLE_SPEC_WARNED_MAX,
@@ -166,6 +167,7 @@ if TYPE_CHECKING:
         POLICY_INCLUDE_KEY,
         ManagedToolPolicyUnreadable,
         _ambiguous_spec_reason,
+        _dangling_link_may_be_agents,
         _policy_answer,
         _policy_of_spec,
         _prefill_managed_tool_policies,

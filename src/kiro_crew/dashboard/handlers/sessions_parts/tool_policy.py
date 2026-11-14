@@ -159,7 +159,7 @@ _UNREADABLE_SPEC_WARNED: set[tuple[bytes, int]] = set()
 _UNREADABLE_SPEC_WARNED_MAX = 1024
 
 
-def _warn_unreadable_spec_once(path: Path, kind: str) -> None:
+def _warn_unreadable_spec_once(path: Path, kind: str, *, skipped: bool = False) -> None:
     """Name *path* in the gateway log, once per on-disk revision of it.
 
     The FULL path goes here, ``%r``'d: the gateway log is local to the
@@ -169,10 +169,12 @@ def _warn_unreadable_spec_once(path: Path, kind: str) -> None:
     this is for the operator tailing the log.
     """
     try:
-        revision = path.stat().st_mtime_ns
+        revision = path.lstat().st_mtime_ns
     except OSError:
         revision = -1
-    key = (hashlib.sha256(str(path).encode("utf-8", "surrogateescape")).digest(), revision)
+    # A skip and a refusal of one path are different lines, so one never hides the other.
+    seen = f"{'skipped' if skipped else 'refused'}:{path}"
+    key = (hashlib.sha256(seen.encode("utf-8", "surrogateescape")).digest(), revision)
     if key in _UNREADABLE_SPEC_WARNED:
         return
     if len(_UNREADABLE_SPEC_WARNED) >= _UNREADABLE_SPEC_WARNED_MAX:
@@ -183,12 +185,39 @@ def _warn_unreadable_spec_once(path: Path, kind: str) -> None:
     # operational line carrying foreign text applies (``redact_log_via_context``,
     # the non-raising spelling for a log site), so a credential-shaped name is
     # scrubbed before it is written. ``%r`` still escapes control bytes.
+    outcome = (
+        "it is skipped, since it holds no policy"
+        if skipped
+        else "every session whose agent has no spec of its own is refused its managed "
+        "tools until it is moved or fixed"
+    )
     logger.warning(
-        "agent spec %r could not be read (%s); every session whose agent has no "
-        "spec of its own is refused its managed tools until it is moved or fixed",
+        "agent spec %r could not be read (%s); %s",
         redact_log_via_context(str(path)),
         kind,
+        outcome,
     )
+
+
+# What a dangling spec link does to an agent that is NOT named by the link's own
+# path. The link holds no bytes, so its owner is only what its file name says; a
+# spec whose file name differs from the name it declares (``reviewer-v2.json``
+# declaring ``reviewer``) cannot be told from a link that belongs to someone else.
+# True: every agent without a readable spec of its own is refused (an agent with its
+# own readable spec never reaches this check).
+# False: that link is skipped and the agent answers as if it had no spec.
+_DANGLING_LINK_OF_UNKNOWN_OWNER_REFUSES = True
+
+
+def _dangling_link_may_be_agents(path: Path, agent_name: str) -> bool:
+    """Whether the link's own file name makes *agent_name* its owner.
+
+    ``<name>.json`` / ``<name>.md``, or the namespaced ``<package>-<name>`` form
+    the declared-name scan accepts. Case is folded so a case-insensitive
+    filesystem cannot spell the same owner two ways.
+    """
+    stem, want = path.stem.casefold(), agent_name.casefold()
+    return stem == want or stem.endswith("-" + want)
 
 
 def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None:
@@ -226,6 +255,16 @@ def _refuse_if_any_spec_is_unreadable(agents_dir: Path, agent_name: str) -> None
         try:
             read_agent_spec_strict(path, operation="session_tool_policy", source="dashboard")
         except (OSError, ValueError) as exc:
+            if (
+                isinstance(exc, FileNotFoundError)
+                and path.is_symlink()
+                and not _dangling_link_may_be_agents(path, agent_name)
+                and not _DANGLING_LINK_OF_UNKNOWN_OWNER_REFUSES
+            ):
+                # A dangling link holds no bytes and belongs to the agent its file
+                # name says, so it refuses that agent only (below) and is logged once.
+                _warn_unreadable_spec_once(path, "a link to a missing file", skipped=True)
+                continue
             if is_markdown_spec(path) and plain_markdown_document(path):
                 # Not a spec (no opening fence): it cannot declare a policy,
                 # so it must not turn into a denial of every other agent.

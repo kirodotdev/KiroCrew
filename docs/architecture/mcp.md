@@ -2383,7 +2383,12 @@ specs declaring one agent name -- answers `409` with `"code": "policy_unreadable
 body and a SEL `denied` record. A `.md` file with no opening `---` fence is plain
 markdown, not a spec (`agent_discovery.plain_markdown_document`): it cannot declare a
 policy, so a fence-less `<agent>.md` answers `{}` and a fence-less file elsewhere in the
-directory is skipped. A fenced document that fails to parse, and a head that is not
+directory is skipped. A symlink whose target is missing holds no bytes, so only its own file name says whose it is.
+Nothing is remembered between reads, so a restart changes no answer. An agent with its own readable spec
+never reaches this check. For an agent without one, the link refuses with `409` when its file name is
+`<agent>.json`/`.md` or the namespaced `<package>-<agent>`; a link of any other name may be a spec filed under a
+different name than it declares (`reviewer-v2.json` declaring `reviewer`), so it refuses too. The link is logged once
+per path and link revision. `_DANGLING_LINK_OF_UNKNOWN_OWNER_REFUSES` set to false skips such a link instead. A fenced document that fails to parse, and a head that is not
 UTF-8 (a UTF-16 or UTF-32 BOM included) or carries a NUL, still answer `409`. Sharing the empty body with those
 cases would make an unreadable deny indistinguishable from no deny on the wire, so
 no caller could tell them apart however carefully it fails closed. The MCP side
