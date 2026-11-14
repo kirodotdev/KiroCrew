@@ -224,6 +224,8 @@ class TestUnrequestedModePin:
 
         ``auto`` is the only mode Crew requests, so this is also the case of a
         requested mode that differs from the approving mode the adapter reports.
+        The pin moves it to ``default`` and returns that, and
+        ``_apply_claude_requested_mode`` then moves it on to the ``auto`` it asked for.
         """
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = self._seeded(
@@ -238,7 +240,8 @@ class TestUnrequestedModePin:
         assert client._session_id == ("s-old" if path == "load" else "s-new")
         assert killed == []
         assert [p for m, p in sent if m == "session/set_mode"] == [
-            {"sessionId": client._session_id, "modeId": "default"}
+            {"sessionId": client._session_id, "modeId": "default"},
+            {"sessionId": client._session_id, "modeId": "auto"},
         ]
 
     @pytest.mark.asyncio

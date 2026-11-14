@@ -232,6 +232,13 @@ class AcpClient:
         # The chat notice when the exclusion runs a requested ``auto`` in
         # ``default`` (_exclude_foreign_local_settings); "" otherwise.
         self.claude_mode_pinned_notice = ""
+        # The mode the adapter confirmed this session in, or None. A requested-auto
+        # session follows every mode report off the wire while watched, and one that
+        # lands in an approving mode is moved back before the next prompt
+        # (_note_claude_mode_report, _restore_claude_asking_mode_if_due).
+        self._claude_confirmed_mode: str | None = None
+        self._claude_mode_watched = False
+        self._claude_mode_restore_due = False
         # The exact bytes this session last wrote to that path, held as the str
         # whose utf-8 encoding IS those bytes -- the writer emits binary so no
         # newline translation can come between the two on any platform. Creating
@@ -1212,6 +1219,13 @@ class AcpClient:
         _client_claude_session._verify_claude_project_denies_unchanged
     )
     _pin_claude_starting_mode = _client_claude_session._pin_claude_starting_mode
+    _apply_claude_requested_mode = _client_claude_session._apply_claude_requested_mode
+    _track_claude_starting_mode = _client_claude_session._track_claude_starting_mode
+    _note_claude_mode_report = _client_claude_session._note_claude_mode_report
+    _restore_claude_asking_mode_if_due = _client_claude_session._restore_claude_asking_mode_if_due
+    _leave_claude_approving_mode_for_model_switch = (
+        _client_claude_session._leave_claude_approving_mode_for_model_switch
+    )
 
     async def confirm_member_projection(self) -> None:
         """Confirm the projection this session consumed. Blocking.

@@ -11,8 +11,9 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_activated_model``, ``_adopted_substitute_model``, ``_agent_accepts_image``,
 ``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``, ``_can_load_session``, ``_child_pids``,
-``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``, ``_kill_sent``,
-``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
+``_claude_confirmed_mode``, ``_claude_mode_restore_due``, ``_claude_mode_watched``,
+``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``,
+``_kill_sent``, ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
 ``_mode_frame_superseded``, ``_model``, ``_native_skill_projection``, ``_pid``,
 ``_process``, ``_process_adapter``, ``_process_instance``, ``_process_tree_confirmed_dead``,
 ``_resume_session_id``, ``_resumed``, ``_session_id``, ``_session_mcp_cache``,
@@ -28,13 +29,14 @@ Instance fields read: ``_agent``, ``_available_mode_ids``, ``_batch_window``, ``
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 import os
 import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 from kiro_crew import __version__, acp_tool_gate, agent_scratch
 from kiro_crew import kiro_cli as kiro_cli_mod
@@ -857,6 +859,30 @@ async def _fork_session(
     return forked_sid
 
 
+@contextlib.asynccontextmanager
+async def _ended_on_cancel(client: AcpClient) -> AsyncIterator[None]:
+    """End the session when a cancel lands inside the block.
+
+    For the span in which a claude session's requested ``auto`` is on the wire and
+    its mode reports are not yet read: a cancel there leaves the adapter in a mode
+    Crew has not confirmed (``acceptEdits`` on a model without Auto mode support). A
+    cancel skips ``ensure_ready``'s handler, so the next ``ensure_ready`` would take
+    the warm return into that session; the session is torn down instead, as a cancel
+    of the member confirm in :func:`_initialize_session` is. Entered only on that
+    claude branch, so every other start keeps its direct awaits (harness-parity H13).
+    """
+    try:
+        yield
+    except asyncio.CancelledError:
+        try:
+            await client._cleanup_failed_live_spawn()
+        except Exception:
+            logger.warning("ACP requested-mode cleanup after a cancel failed", exc_info=True)
+        finally:
+            client._reset_state()
+        raise
+
+
 async def _initialize_session(self: AcpClient) -> None:
     """Handshake: initialize → session/load or session/new → set_mode → set_model."""
     # 1. Initialize
@@ -936,6 +962,15 @@ async def _initialize_session(self: AcpClient) -> None:
 
     # 2. Try session/load if we have a resume ID and kiro-cli supports it
     self._resumed = False
+    # The session this start opens has its mode confirmed again, by the read-back
+    # after the pin (_track_claude_starting_mode); nothing an earlier session of
+    # this client confirmed speaks for it, and its reports are not followed.
+    self._claude_confirmed_mode = None
+    self._claude_mode_watched = False
+    self._claude_mode_restore_due = False
+    # The response a claude session was established by, for the requested mode
+    # applied after the startup model below.
+    claude_mode_resp: dict | None = None
     resume_sid = self._resume_session_id
     self._resume_session_id = None  # consume — no retry loop
     fork_request = self._fork_request
@@ -1079,7 +1114,11 @@ async def _initialize_session(self: AcpClient) -> None:
                 if self._is_goose and self._resumed:
                     self._verify_goose_routing(load_resp)
                 if self._is_claude and self._resumed:
-                    await self._pin_claude_starting_mode(load_resp)
+                    # The pin runs first and reports where it put the session, so
+                    # a requested auto it moved to default is still applied.
+                    pinned = await self._pin_claude_starting_mode(load_resp)
+                    self._track_claude_starting_mode(load_resp, pinned)
+                    claude_mode_resp = load_resp
         else:
             logger.info("Session file missing for %s, skipping load", resume_sid)
 
@@ -1140,7 +1179,9 @@ async def _initialize_session(self: AcpClient) -> None:
         _model_log, _ = redact_credentials(_model_log)
         logger.info("ACP session created: %s (model=%s)", self._session_id, _model_log)
         if self._is_claude:
-            await self._pin_claude_starting_mode(session_resp)
+            pinned = await self._pin_claude_starting_mode(session_resp)
+            self._track_claude_starting_mode(session_resp, pinned)
+            claude_mode_resp = session_resp
     self._last_activity = time.monotonic()
     # The session exists, so the pi process that read the MCP handoff file has
     # started; the file has no further reader and goes now.
@@ -1189,7 +1230,8 @@ async def _initialize_session(self: AcpClient) -> None:
     # 4. Activate agent via set_mode -- kiro only. claude-agent-acp does handle
     #    session/set_mode, but its modeIds are permission modes (default,
     #    acceptEdits, plan, ...), never an agent name, so there is no agent to
-    #    activate there. _pin_claude_starting_mode uses it for the permission mode.
+    #    activate there. _pin_claude_starting_mode, _apply_claude_requested_mode
+    #    and _restore_claude_asking_mode_if_due use it for the permission mode.
     #    Guard (A): fire only when the backend advertised this agent, or
     #    advertised no modes at all (older kiro-cli / fake → attempt,
     #    backward-compatible). If modes ARE advertised but this agent is
@@ -1246,6 +1288,19 @@ async def _initialize_session(self: AcpClient) -> None:
 
     # 5. Set model — override if Kiro Crew config specifies non-default.
     await self._apply_startup_model()
+    # A requested claude ``auto`` goes on after the model: a model without Auto mode
+    # support would move an ``auto`` applied before the switch to ``acceptEdits``.
+    # Until the drain below has read its mode reports, a cancel ends a requested-auto
+    # session; every other start keeps its direct awaits (harness-parity H13).
+    claude_mode_unsettled = claude_mode_resp is not None and getattr(
+        self, "_claude_mode_watched", False
+    )
+    if claude_mode_resp is not None:
+        if claude_mode_unsettled:
+            async with _ended_on_cancel(self):
+                await self._apply_claude_requested_mode(claude_mode_resp)
+        else:
+            await self._apply_claude_requested_mode(claude_mode_resp)
 
     # 6. Arm permission routing for harnesses whose asking is a session
     #    config option. AFTER the model apply (both write config options, and
@@ -1268,9 +1323,18 @@ async def _initialize_session(self: AcpClient) -> None:
     if self.backend in ACP_BACKEND_FORBIDDEN_MODES:
         self._drop_superseded_config_frames()
     # Drain MCP server init notifications
-    await self._drain_notifications()
+    if claude_mode_unsettled:
+        async with _ended_on_cancel(self):
+            await self._drain_notifications()
+    else:
+        await self._drain_notifications()
     if self.backend in ACP_BACKEND_FORBIDDEN_MODES:
         await self._refuse_session_config_drift()
+    # A mode report the drain read (an answer to ``set_mode`` ``auto`` reported after
+    # it) can leave a requested-auto claude session in a mode that approves on its
+    # own; it goes back before the first prompt.
+    if self._is_claude:
+        await self._restore_claude_asking_mode_if_due()
 
     # The drain usually reads step 4's agent/switched frame; judge the model
     # it named before the first prompt can run on it.
@@ -1322,6 +1386,11 @@ async def ensure_ready(self: AcpClient) -> None:
             # An agent/switched frame read after the start drain (inside a
             # prompt) is judged here, before the next prompt goes out.
             await self._judge_activated_model()
+        if getattr(self, "_claude_mode_restore_due", False):
+            # Likewise a mode report read since (a live model switch to a model
+            # without Auto mode support) that left a requested-auto claude session
+            # in a mode that approves on its own.
+            await self._restore_claude_asking_mode_if_due()
         return
 
     # Telemetry (kirocrew.session.startup.duration): time the cold-start work

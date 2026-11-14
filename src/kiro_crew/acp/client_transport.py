@@ -14,9 +14,9 @@ Instance fields written: ``_activated_model``, ``_drain_mode_reports``, ``_last_
 ``_pending_oauth_requests``, ``_stdin_lock``, ``_stdin_stalled``.
 
 Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
-``_native_skill_projection``, ``_process``, ``_session_id``, ``_stderr_lines``,
-``_stderr_task``, ``_turn_done``, ``memory_mode``.
+``_cancelled``, ``_claude_mode_watched``, ``_kill_sent``, ``_mcp_report``,
+``_mode_frame_awaited``, ``_native_skill_projection``, ``_process``, ``_session_id``,
+``_stderr_lines``, ``_stderr_task``, ``_turn_done``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -847,6 +847,11 @@ async def _read_message(
     )
     if self.backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS:
         self._note_advertised_commands(msg)
+    # A claude session that requested auto follows every mode report, whichever
+    # caller reads it (a request's wait, the start drain, a turn). Set only on such a
+    # session, so every other session reads one attribute here.
+    if getattr(self, "_claude_mode_watched", False):
+        self._note_claude_mode_report(msg)
     return msg
 
 
