@@ -303,7 +303,7 @@ _STORE_SIGNATURES = {
     "_matches_allowlist": "(self, key: 'str') -> 'bool'",
     "_matches_tags": "(mem: 'dict', tag_filter: 'list[str]') -> 'bool'",
     "_parse_preference": "(text: 'str') -> 'tuple[str, str] | None'",
-    "_rank_from_scoring_set": "(self, scoring: '_EpisodicScoringSet', q: 'list[float]', limit: 'int', mmr: 'bool', tag_filter: 'list[str] | None', relevance_filter: 'bool', now: 'datetime', blocked: 'set[str] | None' = None) -> 'list[dict]'",
+    "_rank_from_scoring_set": "(self, scoring: '_EpisodicScoringSet', q: 'list[float]', limit: 'int', mmr: 'bool', tag_filter: 'list[str] | None', relevance_filter: 'bool', now: 'datetime') -> 'list[dict]'",
     "_rank_lessons": "(self, entries: 'list[tuple[dict, str]]', query_text: 'str', *, recall_query: '_RecallQuery | None' = None) -> 'list[tuple[dict, str]]'",
     "_read_editable_history_for_day": "(self, day: 'str') -> 'str'",
     "_read_meta": "(self, key: 'str') -> 'str | None'",

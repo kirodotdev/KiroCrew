@@ -1325,11 +1325,10 @@ class VectorMemoryStore:
         tag_filter: list[str] | None,
         relevance_filter: bool,
         now: datetime,
-        blocked: set[str] | None = None,
     ) -> list[dict]:
         """Score, filter and rank from the resident set; resolve winner bodies."""
         return _episodic_search.rank_from_scoring_set(
-            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now, blocked
+            self, scoring, q, limit, mmr, tag_filter, relevance_filter, now
         )
 
     def _episodic_candidate(self, r: sqlite3.Row, cosine_sim: float, now: datetime) -> dict:
