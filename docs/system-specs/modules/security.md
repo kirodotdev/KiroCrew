@@ -1015,7 +1015,11 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
     and the DNS verdict cache behind `_host_is_self`, backed by `hosts_file.py` and
     `host_addresses.py`.
   - `argv_floor_ssh.py` — the ssh self-target floor (`_is_ssh_to_self`), which reads
-    the frame walk and the host verdicts below it.
+    the frame walk and the host verdicts below it. Its substitution readers live in
+    `ssh_floor_substitutions.py`, which takes quote state, comments and heredoc
+    bodies only from `shell_commands.read_commands`: which backticks bash pairs
+    left to right, the empty spans it splices out, and the commands of a list
+    that an `echo`/`printf` splice would erase, each judged as a line of its own.
   - `argv_floor_git.py` — protected or ambiguous git-publish detection.
   Governance-home path writes are intentionally outside this module and are
   enforced by the OS sandbox. Structure is the point: the product name in a path,

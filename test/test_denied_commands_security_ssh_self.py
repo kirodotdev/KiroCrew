@@ -689,6 +689,63 @@ class TestSandboxEscapeSshSelf:
         assert _denied_by("ssh local$(printf host) id") == self._RULE
         assert _denied_by("ssh $(printf remote.example.com) id") is None
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo $(echo hi; ssh -p 22 localhost id)",
+            "echo $(echo hi && ssh -p 22 localhost id)",
+            "echo $(echo hi || ssh -p 22 localhost id)",
+            "echo $(echo hi | ssh -p 22 localhost id)",
+            "echo $(echo hi\nssh -p 22 localhost id)",
+            "echo `echo hi; ssh -p 22 localhost id`",
+            "echo `printf hi && ssh -p 22 localhost id`",
+            "echo `date` `ssh -p 22 localhost id`",
+            'echo "$(echo hi; ssh -p 22 localhost id)"',
+            "ssh $(echo localhost; true) id",
+            "echo '`'; s``sh -p 22 localhost id",
+            "# `\ns``sh -p 22 localhost id",
+            "# x\n`date` `ssh -p 22 localhost id`",
+            "true # x\necho $(echo a; ssh -p 22 localhost id)",
+            "cat <<EOF\n$(echo a; ssh -p 22 localhost id)\nEOF",
+        ],
+    )
+    def test_every_command_of_a_substitution_list_is_judged(self, cmd):
+        # bash runs every command of a substitution body, so an ``echo`` first
+        # command must not stand in for the whole body, and the gap between two
+        # backtick spans is not an empty span.  A quoted or commented backtick
+        # must not shift the pairing off an empty-span splice either.  ``-p 22``
+        # keeps the catalog pattern off, so the argv floor alone decides.
+        assert _denied_by(cmd) == self._RULE
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "echo $(echo hi; echo ssh -p 22 localhost id)",
+            "echo '$(echo hi; ssh -p 22 localhost id)'",
+            "echo '`echo hi; ssh -p 22 localhost id`'",
+            "echo $(echo hi; ssh -p 22 remote.example.com id)",
+            "echo `date` `whoami`",
+            "echo $(echo a; true) ssh -p 22 localhost",
+            "cat `echo a; true` ssh -p 22 localhost",
+            "$(echo echo; true) ssh -p 22 localhost",
+            "git commit -m 'use `date` `ssh -p 22 localhost id` here'",
+            "echo `echo hi; s` `sh -p 22 localhost id`",
+            "echo '`' \"`date`echo q; ssh -p 22 localhost id`whoami`\"",
+            "true # $(echo a; ssh -p 22 localhost id)",
+            "cat <<'EOF'\n$(echo a; ssh -p 22 localhost id)\nEOF",
+            "echo $(echo hi ;echo ssh -p 22 localhost id)",
+            "echo $(echo a # ; ssh -p 22 localhost id\n)",
+            "echo $(echo a; cat <<'E'\nssh -p 22 localhost id\nE\n)",
+            "echo $(echo a; cat <<EOF\nssh -p 22 localhost id\nEOF\n)",
+            "cat <<'E' # note\n$(echo a; ssh -p 22 localhost id)\nE",
+            "echo `echo\\;echo ssh -p 22 localhost id`",
+            'echo "$$(echo hi; ssh -p 22 localhost id)"',
+            "echo " + '"$(' * 1000 + "echo a; true" + ')"' * 1000,
+        ],
+    )
+    def test_a_substitution_list_that_reaches_no_self_host_stays_allowed(self, cmd):
+        assert _denied_by(cmd) is None
+
     def test_here_string_fed_xargs_is_judged_as_the_rebuilt_command(self):
         # bash strips ``<<< word`` from argv and delivers the
         # word on stdin, and xargs turns stdin into ARGUMENTS for the verb it
