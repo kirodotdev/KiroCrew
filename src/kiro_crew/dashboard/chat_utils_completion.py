@@ -397,17 +397,14 @@ def wire_session_subagent_probe(state: DashboardState) -> None:
         return await subagents_attached_async(state, slot, session_key, "rss_recycle")
 
     state.sessions.set_subagent_probe(_probe)
-
-    def _resolve_slot(session_key: str) -> Any | None:
-        slot_key = dashboard_slot_key(session_key)
-        return state.get_slot(slot_key) if slot_key else None
-
-    state.sessions.set_live_slot_resolver(_resolve_slot)
-    if state.conversation_log is not None:
-        state.sessions.set_conversation_log(state.conversation_log)
     # The idle-compaction probe reads the same slots and is wired at the same
     # two points, so it is installed with this one.
     wire_session_idle_compaction_probe(state)
+    # So are the idle sweep's unanswered-turn hooks. Imported here: the module
+    # reads the turn queue cycle, which imports this one.
+    from kiro_crew.dashboard.idle_unanswered import wire_unanswered_turn_hooks
+
+    wire_unanswered_turn_hooks(state)
 
 
 def idle_compaction_blocker(state: DashboardState, session_key: str) -> str | None:

@@ -190,6 +190,7 @@ from kiro_crew.dashboard.chat_turn.prompt_assembly import (  # noqa: F401
     _turn_settle_debts,
 )
 from kiro_crew.dashboard.chat_turn.queue_cycle import (
+    FAILED_BEFORE_START_TEXT,
     TURN_FAILED_META,
     _arm_synthesis_recheck,
     _end_turn_tail,
@@ -197,6 +198,7 @@ from kiro_crew.dashboard.chat_turn.queue_cycle import (
     _note_failed_before_the_try,
     _turn_record_outcome,
     _TurnExit,
+    failed_before_start_meta,
 )
 from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _RESTORED_DRAIN_IDS,

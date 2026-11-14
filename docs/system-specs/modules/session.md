@@ -2182,11 +2182,15 @@ against sweep completeness, and are torn down at `close_all`.
   (`dashboard:{slot_key}`) idle-expire like any other session. A Bot's worker
   session is one of them: its process is released, its conversation resumes on
   the next send, and `session_status` reports it as `process: released`. When an
-  idle or orphaned session expires, the sweep inspects whether its newest
-  conversational message was an unanswered real user prompt (`CleanupDeps.unanswered_turn_age`).
-  If so, after reset succeeds it logs an ERROR and marks the turn failed via
-  `CleanupDeps.mark_turn_failed` (appending a `turn_failed` error row to the
-  live slot or to the transcript file off-loop) so unanswered user turns are not silently discarded.
+  idle or orphaned session expires, the sweep asks the dashboard's unanswered-turn
+  hooks (`set_unanswered_turn_hooks`, `kiro_crew/dashboard/idle_unanswered.py`)
+  whether its newest conversational row is a real user prompt (not a steer or a
+  system injection) with no reply, and a slot that is running, reserved for
+  admission or holding queued work never counts. If so, after reset succeeds it
+  logs an ERROR and appends the same "failed before it started" error row a turn
+  that raised before its start writes, to the live slot or off-loop to the
+  transcript, but only while that same prompt is still the tail. With no hooks
+  installed nothing is recorded.
   A key listed in `session.idle_exempt_keys` never expires on the idle clock,
   for a chat that automation wakes hours apart and that would otherwise pay a
   cold start on every wake. `SessionCleanup._idle_exempt_keys()` reads the list
