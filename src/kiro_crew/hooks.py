@@ -142,12 +142,14 @@ from kiro_crew.hook_runtime.governance_gate import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.hook_dispatch import (  # noqa: F401
     _lane_dispatch_is_permitted,
+    _redact_tool_input_values,
     _run_one_lane_hook,
     _session_lane_matcher_context,
     _status_tag_ids,
     dispatch_session_lane_changed_bulk,
     fire_tool_hooks,
     get_global_hook_store,
+    hook_tool_input,
     permission_pre_tool_block,
     persisted_hook_store,
     pre_tool_match_names,

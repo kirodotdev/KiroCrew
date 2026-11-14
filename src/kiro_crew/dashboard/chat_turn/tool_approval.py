@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Literal
@@ -36,6 +35,7 @@ from kiro_crew.hooks import (
     TOOL_DENY,
     ToolHookResult,
     hook_gate_kwargs,
+    hook_tool_input,
     identity_grant_covers_child,
     unattended_turn,
 )
@@ -971,10 +971,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 # Declarative auto-approve must NOT bypass scripted
                 # PreToolUse hooks — those are the audit/policy gate
                 # and exit-2 BLOCKED takes precedence over auto-approve.
-                try:
-                    _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-                except Exception:
-                    _parsed_input = None
+                _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
                 try:
                     pre_hook_results = await _fire(
                         turn,
@@ -1061,10 +1058,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
                 refusal_reasons=_refusal_reasons,
             )
             return _Flow.CONTINUE
-        try:
-            _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-        except Exception:
-            _parsed_input = None
+        _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
         try:
             pre_hook_results = await _fire(
                 turn,
@@ -1498,10 +1492,7 @@ async def _decide_permission_request(turn: _ChatTurn, event) -> Literal[_Flow.CO
             )
             return _Flow.CONTINUE
         if not turn._pre_tool_hooks_fired:
-            try:
-                _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-            except Exception:
-                _parsed_input = None
+            _parsed_input = hook_tool_input(event.raw_tool_params, event.tool_input)
             try:
                 pre_hook_results = await _fire(
                     turn,

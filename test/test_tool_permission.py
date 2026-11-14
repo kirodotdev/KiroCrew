@@ -1091,6 +1091,7 @@ async def test_spec_hooks_consult_the_gate_on_gated_and_ungated_turns():
                 "mcp_server": "srv",
                 "harness_tool_id": "bash",
                 "acp_session_id": "sess_abc",
+                "raw_tool_params": {"command": "ls -la"},
                 "parent_session_key": "p",
                 "agent_role": "role",
             },
@@ -1811,6 +1812,7 @@ async def test_each_ladder_gives_its_spec_hooks_the_callers_identity(monkeypatch
                 "harness_tool_id": "h1",
                 # The wire has no client, so no session id.
                 "acp_session_id": None,
+                "raw_tool_params": {"command": "ls -la"},
                 **identity,
             },
         )
