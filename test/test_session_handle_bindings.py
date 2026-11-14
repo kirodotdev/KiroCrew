@@ -193,6 +193,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_model_selection",
     ),
+    "_probe_mcp_sign_in": ("function", False, "e1215a3a5237", "session_handle_mcp"),
     "_push_model_config_option": (
         "function",
         True,
