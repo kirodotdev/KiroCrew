@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _subagents_attached_response,
         _switch_target_busy,
         continue_slot_turn,
+        cron_bound_session_key,
         cron_creator_admission,
         cron_slot_creator,
         effective_session_key,
@@ -348,9 +349,10 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     denied = _app_cancel_denied(request, slot, "slot_reset_conversation", key)
     if denied is not None:
         return denied
-    # A script cron resets only a slot it created, the fence its other chat routes keep.
+    # A script cron resets a slot it created, the fence its other chat routes keep,
+    # or the session its job record is bound to: the one session it serves.
     cron_creator = await cron_slot_creator(request)
-    if cron_creator:
+    if cron_creator and cron_bound_session_key(state, cron_creator) != key:
         refusal, _, _ = await cron_creator_admission(request, state, name, cron_creator)
         if refusal is not None:
             return refusal
@@ -433,7 +435,7 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     discarded = await state.sessions.discard_conversation(key, replay=replay, skip_if_busy=True)
     if not discarded:
         sel().log_api_access(
-            caller=request.get("app", "") or "dashboard",
+            caller=cron_creator or request.get("app", "") or "dashboard",
             operation="slot_reset_conversation",
             outcome="denied",
             resources=f"slot={name} replay={replay}",
@@ -448,7 +450,7 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     # place.
     slot.forget_session_model_state()
     sel().log_api_access(
-        caller=request.get("app", "") or "dashboard",
+        caller=cron_creator or request.get("app", "") or "dashboard",
         operation="slot_reset_conversation",
         outcome="completed",
         resources=f"slot={name} replay={replay}",

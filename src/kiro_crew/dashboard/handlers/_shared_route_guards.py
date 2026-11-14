@@ -120,6 +120,29 @@ async def cron_slot_creator(request: web.Request) -> str:
     return session
 
 
+def cron_bound_session_key(state: Any, cron_creator: str) -> str:
+    """The session key the caller's cron job is bound to, or ``""``.
+
+    ``job.session_key`` is gateway-owned: ``cron_add`` records the attested calling
+    session, and only the operator CLI's adopt rewrites it, never ``cron_update`` or
+    the dashboard PATCH. So it names the one session the job was set up to serve.
+    A registry that cannot answer yields ``""``, which leaves the caller to the
+    creator fence.
+    """
+    from kiro_crew.cron import cron_job_id_from_session_key
+
+    job_id = cron_job_id_from_session_key(cron_creator)
+    if not job_id:
+        return ""
+    try:
+        jobs = state.crons.list_jobs(include_disabled=True)
+    except Exception:
+        logger.warning("cron job lookup failed for %s", cron_creator, exc_info=True)
+        return ""
+    job = next((j for j in jobs if str(getattr(j, "id", "")) == job_id), None)
+    return str(getattr(job, "session_key", "") or "") if job is not None else ""
+
+
 async def cron_creator_admission(
     request: web.Request, state: Any, slot_name: str | None, cron_creator: str
 ) -> tuple[web.Response | None, bool, dict[str, Any]]:

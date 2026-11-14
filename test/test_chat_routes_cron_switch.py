@@ -495,3 +495,46 @@ class TestCronCreatorAdmission:
         state.conversation_log = _OwnerOpensMeanwhile()
 
         self._assert_not_creator(await self._refusal(state, self._SLOT))
+
+
+class _Crons:
+    def __init__(self, *jobs, error: Exception | None = None) -> None:
+        self._jobs = jobs
+        self._error = error
+
+    def list_jobs(self, include_disabled: bool = False):
+        assert include_disabled is True
+        if self._error is not None:
+            raise self._error
+        return list(self._jobs)
+
+
+def _bound_state(*jobs, error: Exception | None = None) -> SimpleNamespace:
+    return SimpleNamespace(crons=_Crons(*jobs, error=error))
+
+
+class TestCronBoundSessionKey:
+    _JOB = SimpleNamespace(id="nightly-dispatcher", session_key="dashboard:chat-7")
+
+    def test_a_cron_key_names_its_jobs_bound_session(self):
+        assert (
+            _shared.cron_bound_session_key(_bound_state(self._JOB), _CRON_KEY) == "dashboard:chat-7"
+        )
+
+    def test_a_per_run_key_names_its_jobs_bound_session(self):
+        state = _bound_state(self._JOB)
+
+        assert _shared.cron_bound_session_key(state, f"{_CRON_KEY}:run-3") == "dashboard:chat-7"
+
+    def test_an_unknown_job_is_bound_to_nothing(self):
+        assert _shared.cron_bound_session_key(_bound_state(self._JOB), "cron:weekly-digest") == ""
+
+    def test_a_non_cron_key_is_bound_to_nothing(self):
+        assert _shared.cron_bound_session_key(_bound_state(self._JOB), "dashboard:chat-7") == ""
+
+    def test_an_unreadable_registry_is_bound_to_nothing(self, caplog):
+        state = _bound_state(error=RuntimeError("store busy"))
+
+        with caplog.at_level(logging.WARNING):
+            assert _shared.cron_bound_session_key(state, _CRON_KEY) == ""
+        assert "cron job lookup failed" in caplog.text

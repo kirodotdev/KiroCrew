@@ -554,6 +554,7 @@ from kiro_crew.dashboard.deny_override import (  # noqa: F401
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,
+    cron_bound_session_key,
     cron_creator_admission,
     cron_mode_refusal,
     cron_slot_creator,
