@@ -869,6 +869,10 @@ _CREW_SANDBOX_VISIBLE_LEAVES: tuple[str, ...] = (
     # ``mcp_cron`` builds a ``CronService(base_dir=config_dir())`` in-sandbox and both
     # reads and rewrites the job store through it.
     "crons.json",
+    # ``register_hook`` (``mcp_tools.control``) writes the hook store from
+    # in-sandbox, so a mask breaks hook registration. The agent's own file tools
+    # are fenced at the tool gate instead (``security._CREW_SECRET_LEAVES``).
+    "hooks.json",
 )
 
 
@@ -939,6 +943,11 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # Capability-bearing job state: a cron entry carries the session key its run
     # executes under, so a readable store leaks that key and a writable one mints work.
     "crons.json",
+    # Executable hook definitions: each entry names a command the gateway will run,
+    # so a foreign child's passive read hands it the host's trusted command list
+    # and a write could plant its own. Crew's own in-sandbox ``register_hook``
+    # keeps the read-write disposition above.
+    "hooks.json",
     # Durable cross-session capability, and the reason this entry reads as a
     # surprise: the leaf name says "bindings", but a binding FILE carries the raw
     # session key it binds (``member_memory_auth.bind_private_session_store`` writes
