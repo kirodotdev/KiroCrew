@@ -428,6 +428,9 @@ export function AgentBackendTab() {
     // the restart was just the next session spawn.
     clearCachedModels()
     qc.resetQueries({ queryKey: ['available-models'] })
+    // The usage reading names whichever login the OLD harness ran on (kiro-cli's
+    // or the Kiro sign-in's), and the Kiro sign-in card shows that name: drop it.
+    qc.resetQueries({ queryKey: ['kiro-usage'] })
     // The probe carries `kiro_selection_runs_on_kas`, which reads the STORED pick, so
     // a save that changed it must re-ask rather than wait out the poll.
     qc.invalidateQueries({ queryKey: ['acpBackends'] })

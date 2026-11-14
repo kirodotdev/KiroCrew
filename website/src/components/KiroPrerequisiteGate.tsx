@@ -918,6 +918,7 @@ function OtherCodingAgents({
       // previous agent would otherwise offer models the new one cannot run.
       clearCachedModels()
       void qc.resetQueries({ queryKey: ['available-models'] })
+      void qc.resetQueries({ queryKey: ['kiro-usage'] })
       return qc.invalidateQueries({ queryKey: CONFIG_QUERY_KEY })
     },
   })
