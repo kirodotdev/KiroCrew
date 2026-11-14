@@ -165,6 +165,7 @@ DECLARED_SITES = frozenset(
         ("mcp_gateway/spill.py", "maybe_spill_response"),
         ("member_essential_context.py", "_is_absent"),
         ("member_essential_context.py", "_matches"),
+        ("member_folder.py", "_open_folder"),
         ("memory_files.py", "LocalMemoryFiles._atomic_write_text"),
         ("memory_files.py", "LocalMemoryFiles._guarded_entry"),
         ("memory_files.py", "LocalMemoryFiles._open_lock_nofollow"),
