@@ -51,6 +51,26 @@ if TYPE_CHECKING:
     )
 
 
+def _autocompact_pct_refusal(value: object) -> str | None:
+    """Why *value* is not a crew compaction threshold PUT may store, or ``None``.
+
+    0 inherits the global; any other value takes the slot route's own check
+    (``parse_autocompact_pct``), so a refusal says what is wrong instead of the
+    loader clamping it on the next read. A bool is refused although it is an ``int``.
+    """
+    from kiro_crew.config.sections_limits import AutocompactPctError, parse_autocompact_pct
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "autocompact_pct must be a number: 0 inherits session.autocompact_pct"
+    if value == 0:
+        return None
+    try:
+        parse_autocompact_pct(value, name="autocompact_pct")
+    except AutocompactPctError as exc:
+        return str(exc)
+    return None
+
+
 def _effort_inputs(crew: KiroCrewAgentConfig | None) -> tuple[str, str] | None:
     """The crew fields `resolve_session_effort` reads, or ``None`` for no crew.
 
@@ -357,6 +377,13 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    autocompact_reason = (
+        _autocompact_pct_refusal(body["autocompact_pct"]) if "autocompact_pct" in body else None
+    )
+    if autocompact_reason is not None:
+        return web.json_response(
+            {"error": autocompact_reason, "code": "invalid_autocompact_pct"}, status=400
+        )
     if "memory_store" in body:
         memory_store_reason = _crew_memory_store_rejected(body["memory_store"])
         if memory_store_reason:
@@ -605,6 +632,11 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
             harness_changed = pending_backend != (agent.acp_backend or "")
             agent.acp_backend = pending_backend
             changed.append("acp_backend")
+        if "autocompact_pct" in body:
+            # Validated above. 0 inherits; the crew's sessions read it live
+            # (``crew_autocompact_pct``), a session's own override still wins.
+            agent.autocompact_pct = float(body["autocompact_pct"])
+            changed.append("autocompact_pct")
         if "dynamic_capabilities" in body:
             # The per-crewmate preview (``kiro_crew.crewmate_dynamic_capabilities``);
             # validated above as a strict bool.

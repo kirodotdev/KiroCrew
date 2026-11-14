@@ -72,6 +72,7 @@ OWNER_PRIVATE = (
     "reasoning_effort",
     "worker_model",
     "worker_reasoning_effort",
+    "autocompact_pct",
     "approval_mode",
     "dynamic_capabilities",
     "dashboard_card_send",
