@@ -1177,6 +1177,11 @@ class TestRedactionSinkRegistry:
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
+            # Delegates to redact_via_context, plus containment for a miscomposed host.
+            "redact_log_via_context",
+            # The transcript write boundary: the composed policy for a user row, else
+            # redact_exfiltration_urls THEN redact_credentials.
+            "_redact_at_write_boundary(",
             "display_safe",
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.
