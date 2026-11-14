@@ -287,7 +287,7 @@ async def _on_tool_result(turn: _ChatTurn, event) -> None:
         # is all the claim needs to be attributable after a restart.
         # This does NOT clear `_dirty` -- only the flush passes do --
         # so the `mcp_app_lead` flag written further below is still
-        # owed to the periodic flush exactly as before.
+        # owed to the periodic flush.
         persist_rows=lambda: _persist_tool_result_rows(state, slot),
     )
     _out = _render.text

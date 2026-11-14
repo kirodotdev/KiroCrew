@@ -146,7 +146,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
     install_dst: Path | None = None
     copy_pending = False
     # Warnings carried into the success response. A copy_from whose source folder is
-    # missing still creates the workspace (empty), exactly as before, but the caller
+    # missing still creates the workspace (empty), but the caller
     # asked for a copy and got nothing -- so say so rather than return a bare success
     # that reads as "copied". Mirrors the CLI create's stderr warning on the same case.
     warnings: list[str] = []

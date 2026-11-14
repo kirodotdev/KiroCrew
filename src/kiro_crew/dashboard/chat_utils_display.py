@@ -1268,7 +1268,7 @@ def _prepare_messages_scoped(messages: list[dict], running: bool, *, live_child:
             # bound to that id (register_approval). Keep it for permission and
             # elicitation rows only (the two the approval registry binds, and
             # the two whose resolution frame names a `mid`), so every other
-            # row's wire meta stays exactly as before.
+            # row's wire meta is unchanged.
             if role in ("permission", "elicitation"):
                 meta = _carry_row_mid(meta, m)
             msg_out["meta"] = _expire_dead_child_oauth_meta(

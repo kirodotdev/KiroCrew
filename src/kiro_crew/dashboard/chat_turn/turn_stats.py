@@ -1366,7 +1366,7 @@ async def _persist_abnormal_turn_usage(
             elapsed_ms=elapsed_ms,
             model_source=client,
             delivered=delivered,
-            # Abnormal-turn histogram sampling is out of this change's scope
+            # Abnormal-turn histogram sampling is out of scope here
             # (the usage ROW is the deliverable); opt the row's persist out of
             # the metric so it does not file a sample under slot.key, which for a
             # linked-channel turn would mis-attribute to session_source=dashboard.

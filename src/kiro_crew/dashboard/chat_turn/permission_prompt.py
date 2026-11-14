@@ -960,7 +960,7 @@ async def _on_permission_prompt(
                 await asyncio.to_thread(pin_human_approval, cmd)
             # The transport floor judges the call again, so it gets the keys the
             # gate was judged with: an override's, or the session's overrides
-            # (none for almost every call, which then goes exactly as before).
+            # (none for almost every call, which then goes through unchanged).
             _floor_waivers = (
                 {"deny_waivers": _override_waivers(turn, _override_offer)}
                 if _override_offer is not None

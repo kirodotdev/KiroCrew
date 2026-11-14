@@ -423,7 +423,7 @@ async def api_prompts_create(request: web.Request) -> web.Response:
             #       a few hundred lines below goes through
             #       safe_read_file_bytes_nolink and refuses st_nlink > 1 -- a
             #       prompt with two links answers 403 forever, which is a worse
-            #       dead end than the 409 this fixes;
+            #       dead end than a 409;
             #   (4) leave nothing behind when the process dies mid-write.
             #
             # O_EXCL straight onto <stem>.md breaks (1): the name holds the body
@@ -510,7 +510,7 @@ async def api_prompts_create(request: web.Request) -> web.Response:
                     # It RAISES rather than being logged and swallowed. 201 is a
                     # claim the prompt is on disk, and a create that cannot flush
                     # the entry has not established that, so reporting success
-                    # would be the very failure this change exists to close.
+                    # would risk the acknowledged-then-vanished case.
                     # Answering 500 costs little here: the body is already
                     # written, flushed and linked, so the caller sees a complete
                     # and readable prompt, and a retry gets a truthful 409 on a
@@ -853,7 +853,7 @@ async def _api_prompt_write(request: web.Request) -> web.Response:
         # hands out the file's hash; a PUT that cannot present one was seeded
         # from something other than the file — exactly the copies (stale cache,
         # redacted, lossy) this feature refuses as edit bases everywhere else.
-        # The API is new in this change, so requiring it breaks no caller.
+        # No caller predates this field, so requiring it breaks none.
         # Checked LAST among the body checks so each earlier refusal keeps its
         # own code: a caller fixing an oversize body should hear "too large",
         # not "missing hash".

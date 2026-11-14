@@ -281,7 +281,7 @@ async def api_memory_recall(request: web.Request) -> web.Response:
         enter_work_phase("admission")
         # A private collection names the lessons the recall rendered for the shadow
         # trace's outcome line; it is read only by that line, and opened only while
-        # a stage is on so a recall with every flag off runs exactly as before.
+        # a stage is on, so a recall with every flag off pays nothing for it.
         from kiro_crew import injection_receipts
         from kiro_crew import memory_shadow_trace as trace
 
