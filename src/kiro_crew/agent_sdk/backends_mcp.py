@@ -60,22 +60,18 @@ from kiro_crew.agent_sdk.backends import (
 #: spec belongs here, and the next such harness should join the set rather than
 #: add a second branch at the call site (harness-parity H6).
 #
-# opencode is the third member, and it is here because the reason it was EXCLUDED
-# was wrong rather than because anything about the harness changed. That reason read
-# its ``initialize`` result -- ``mcpCapabilities: {"http": true, "sse": true}`` --
-# as an advertisement carrying "no stdio", and concluded the array could not mount
-# the stdio servers Crew puts in it. ACP's ``McpCapabilities`` schema has exactly
-# two boolean fields, ``http`` and ``sse``, and NO stdio field, so a conforming
-# agent cannot advertise stdio at all and that answer is what full support looks
-# like. Absence of a flag that cannot exist is not evidence. Measured on
-# opencode 1.18.30, the element ``acp.session_mcp.acp_server_element`` already
-# emits is accepted, the named child is spawned, its tools are listed and the
-# element's ``env`` reaches it -- so the excluded harness had in fact been serving
-# sessions with none of Crew's own tools for no reason at all. The exclusion also
-# contradicted the shipped code it sat beside: the shared gateway's broker stubs
-# are stdio elements too (``mcp_gateway.session_servers._acp_server_entry``) and
-# ``_pooled_mcp_servers`` appended them to this very array for opencode whenever
-# pooling was on. See ``providers/mirrors/opencode.py``.
+# opencode is the third member. Its ``initialize`` result --
+# ``mcpCapabilities: {"http": true, "sse": true}`` -- does not mean "no stdio": ACP's
+# ``McpCapabilities`` schema has exactly two boolean fields, ``http`` and ``sse``, and
+# NO stdio field, so a conforming agent cannot advertise stdio at all and that answer
+# is what full support looks like. Measured on opencode 1.18.30, the element
+# ``acp.session_mcp.acp_server_element`` emits is accepted, the named child is
+# spawned, its tools are listed and the element's ``env`` reaches it. The shared
+# gateway's broker stubs are stdio elements too
+# (``mcp_gateway.session_servers._acp_server_entry``), and ``_pooled_mcp_servers``
+# appends them to this array for opencode when pooling is on. See
+# ``providers/mirrors/opencode.py``.
+#
 # Pi is a member, and it is the one member whose array is NOT what mounts the
 # servers. ``pi-acp`` accepts the array on ``session/new``, stores it on its session
 # state, and never hands it to the ``pi`` process (its own documentation lists MCP

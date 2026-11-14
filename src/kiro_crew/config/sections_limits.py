@@ -182,12 +182,10 @@ COMPACT_WAIT_SECS_MAX = 3600.0
 # the same load/write asymmetry the security-relevant knobs also close.
 #
 # Defined HERE and imported by `_EDITABLE_CONFIG` rather than spelled twice, so
-# the write gate and the load clamp cannot drift. Three fields already clamped on
-# load but duplicated their literals across the two files; those now read from
-# these names too, which is the "two-literal drift" half of the same problem.
+# the write gate and the load clamp cannot drift.
 #
-# Bounds are the ones the write path already declared. This change does not
-# re-litigate any range; it makes the load path honour what the API promised.
+# Bounds are the ones the write path declares; the load path honours what the
+# API promises.
 COMPLETION_KEEP_CHARS_MIN = 0
 # Mirrors ``context_management.RESULT_FILE_MAX_BYTES`` (500 KB) rather than importing
 # it: ``context_management`` does ``from kiro_crew.config.loader import config_dir``, so

@@ -1272,13 +1272,12 @@ def kiro_cli_pick_backend() -> str:
 # ``backend_identity`` beside them are consumers that read it through this module.
 
 
-# ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` is gone, and it has no replacement HERE.
-# Whether a ``kiro-cli logout`` may retire a running child is a fact about how the
-# harness SIGNS IN, and it was the third hand-maintained copy of that fact -- beside
-# the credential floor and the sandbox mask, each of which had to agree with it. It is
-# now ``host_auth.backends_retired_by_host_logout()``, projected from the harness's own
-# declaration, which is where the same declaration also supplies the leaf the floor
-# fences and the leaf the mask spares.
+# There is no backend set HERE for "a ``kiro-cli logout`` retires this child".
+# That is a fact about how the harness SIGNS IN, which the credential floor and the
+# sandbox mask must also agree with, so it has one home:
+# ``host_auth.backends_retired_by_host_logout()``, projected from the harness's own
+# declaration, which also supplies the leaf the floor fences and the leaf the mask
+# spares.
 #
 # It could not become a projected SET in this module: this module supplies the backend
 # ids that table is keyed by, so importing ``host_auth`` from here would close a cycle.
