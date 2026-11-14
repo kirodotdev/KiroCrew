@@ -57,6 +57,7 @@ from kiro_crew.messaging import driver as driver_mod
 from kiro_crew.messaging.dispatch import build_tool_gate
 from kiro_crew.messaging.renderer import Renderer
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST
+from kiro_crew.sel import SecurityEventLog
 
 _GENERIC = "User denied tool execution"
 _TAG = "[Kiro Crew host notice]"
@@ -246,10 +247,30 @@ class _StalledSlack(_SlackSteerProvider):
         return True
 
 
-async def _cancel_slack_steer(monkeypatch, *, audited: bool) -> tuple[_StalledSlack, MagicMock]:
-    """Cancel the Slack helper mid-steer and return the provider and SEL double."""
-    sel_mock = MagicMock()
-    monkeypatch.setattr(h, "sel", lambda: sel_mock)
+def _real_sel(monkeypatch, base_dir: pathlib.Path) -> SecurityEventLog:
+    """A real, synchronous security event log under *base_dir*, read back by a test.
+
+    The log is a process singleton: cleared around the construction, so the test
+    owns this log and no other caller is handed it.
+    """
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+    log = SecurityEventLog(base_dir=base_dir, sync=True)
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    monkeypatch.setattr(SecurityEventLog, "_initialized", False)
+    return log
+
+
+def _rows(log: SecurityEventLog, event_type: str) -> list[dict]:
+    return [r for r in log.recent() if r["event_type"] == event_type]
+
+
+async def _cancel_slack_steer(
+    monkeypatch, tmp_path, *, audited: bool
+) -> tuple[_StalledSlack, SecurityEventLog]:
+    """Cancel the Slack helper mid-steer and return the provider and the real SEL it wrote."""
+    sel_log = _real_sel(monkeypatch, tmp_path)
+    monkeypatch.setattr(h, "sel", lambda: sel_log)
     provider = _StalledSlack([])
     event = SimpleNamespace(title="W", request_id="rq9")
     task = asyncio.ensure_future(
@@ -263,32 +284,34 @@ async def _cancel_slack_steer(monkeypatch, *, audited: bool) -> tuple[_StalledSl
         await asyncio.sleep(0)
     assert provider.rejected == ["rq9"]
     assert not h._orphan_rejects
-    return provider, sel_mock
+    return provider, sel_log
 
 
 @pytest.mark.asyncio
-async def test_slack_cancelled_mid_steer_still_answers_the_wire(monkeypatch):
+async def test_slack_cancelled_mid_steer_still_answers_the_wire(monkeypatch, tmp_path):
     # The helper's cancellation arm: a stranded permission request wedges the
     # backend, so the reject is scheduled and stepped while the caller unwinds.
-    await _cancel_slack_steer(monkeypatch, audited=True)
+    await _cancel_slack_steer(monkeypatch, tmp_path, audited=True)
 
 
 @pytest.mark.asyncio
-async def test_slack_audited_site_cancelled_mid_steer_writes_no_second_sel_row(monkeypatch):
+async def test_slack_audited_site_cancelled_mid_steer_writes_no_second_sel_row(
+    monkeypatch, tmp_path
+):
     # The hook deny wrote its SEL row BEFORE the steer; the orphan reject must
     # not write another for the same decision (the ledger is append-only).
-    _provider, sel_mock = await _cancel_slack_steer(monkeypatch, audited=True)
-    sel_mock.log_tool_invocation.assert_not_called()
+    _provider, sel_log = await _cancel_slack_steer(monkeypatch, tmp_path, audited=True)
+    assert _rows(sel_log, "tool_invocation") == []
 
 
 @pytest.mark.asyncio
-async def test_slack_after_wire_site_cancelled_mid_steer_audits_once(monkeypatch):
+async def test_slack_after_wire_site_cancelled_mid_steer_audits_once(monkeypatch, tmp_path):
     # The approval-timeout arm's caller audits after the wire, which the
     # cancellation skips; the orphan reject must write that one row itself.
-    _provider, sel_mock = await _cancel_slack_steer(monkeypatch, audited=False)
-    assert sel_mock.log_tool_invocation.call_count == 1
-    kw = sel_mock.log_tool_invocation.call_args.kwargs
-    assert kw["outcome"] == "rejected" and kw["request_id"] == "rq9"
+    _provider, sel_log = await _cancel_slack_steer(monkeypatch, tmp_path, audited=False)
+    assert [(r["outcome"], r["request_id"]) for r in _rows(sel_log, "tool_invocation")] == [
+        ("rejected", "rq9")
+    ]
 
 
 # ── channel.py ────────────────────────────────────────────────────────────────
@@ -636,9 +659,9 @@ class _StalledDriverProvider(_DriverProvider):
         return True
 
 
-async def _cancel_driver_steer(monkeypatch, *, audited: bool) -> MagicMock:
-    sel_mock = MagicMock()
-    monkeypatch.setattr("kiro_crew.messaging.driver.sel", lambda: sel_mock)
+async def _cancel_driver_steer(monkeypatch, tmp_path, *, audited: bool) -> SecurityEventLog:
+    sel_log = _real_sel(monkeypatch, tmp_path)
+    monkeypatch.setattr("kiro_crew.messaging.driver.sel", lambda: sel_log)
     p = _StalledDriverProvider([])
     drv = TurnDriver(p, _Renderer(), approval_mode=APPROVAL_AUTO)
     event = SimpleNamespace(title="W", request_id="rq9")
@@ -653,20 +676,23 @@ async def _cancel_driver_steer(monkeypatch, *, audited: bool) -> MagicMock:
         await asyncio.sleep(0)
     assert p.rejected == ["rq9"]
     assert not driver_mod._orphan_rejects
-    return sel_mock
+    return sel_log
 
 
 @pytest.mark.asyncio
-async def test_driver_audited_site_cancelled_mid_steer_writes_no_second_sel_row(monkeypatch):
-    sel_mock = await _cancel_driver_steer(monkeypatch, audited=True)
-    sel_mock.log_api_access.assert_not_called()
+async def test_driver_audited_site_cancelled_mid_steer_writes_no_second_sel_row(
+    monkeypatch, tmp_path
+):
+    sel_log = await _cancel_driver_steer(monkeypatch, tmp_path, audited=True)
+    assert _rows(sel_log, "api_access") == []
 
 
 @pytest.mark.asyncio
-async def test_driver_after_wire_site_cancelled_mid_steer_audits_once(monkeypatch):
-    sel_mock = await _cancel_driver_steer(monkeypatch, audited=False)
-    assert sel_mock.log_api_access.call_count == 1
-    assert "cancelled_mid_steer" in sel_mock.log_api_access.call_args.kwargs["resources"]
+async def test_driver_after_wire_site_cancelled_mid_steer_audits_once(monkeypatch, tmp_path):
+    sel_log = await _cancel_driver_steer(monkeypatch, tmp_path, audited=False)
+    rows = _rows(sel_log, "api_access")
+    assert len(rows) == 1
+    assert "cancelled_mid_steer" in rows[0]["resources"]
 
 
 def test_build_tool_gate_leaves_the_hooks_reason_on_the_gate():

@@ -574,9 +574,13 @@ class TestHandlers:
         loop = MagicMock()
         loop.call_soon_threadsafe.side_effect = queued.append
         handlers.push_switch_moved_by_policy(app, loop)
+        pushes_before = handlers._push_count
         handlers._push_to_owners(MagicMock(), redaction_switch.RedactionState(True, "t"))  # the PUT
         queued[0]()
         app["state"].broadcast_ws_owners.assert_not_called()
+        # Only the PUT counted as a push, and its ON is what owners were last told.
+        assert handlers._push_count == pushes_before + 1
+        assert handlers._pushed_enabled is True
 
     @pytest.mark.asyncio
     async def test_a_lost_push_does_not_fail_the_put(self, _isolated_switch, _quiet_audit):

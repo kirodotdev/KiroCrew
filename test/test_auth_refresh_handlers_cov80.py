@@ -1126,18 +1126,24 @@ async def test_logout_records_a_noop_when_the_access_cookie_was_not_revocable(
 
 @pytest.mark.asyncio
 async def test_logout_revokes_on_unavailable_state_even_if_the_store_reads_again(
-    audit: list, monkeypatch: pytest.MonkeyPatch
+    state: RefreshStateManager, audit: list, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The revoke follows the validation's own answer, not a second look at the store."""
+    """The revoke follows the validation's own answer, not a second look at the store.
+
+    The validation reported the store unavailable, while the real store reads fine
+    again by the time the handler acts: the chain must still end up revoked on disk.
+    """
     unavailable = (False, "alice", "refresh state unavailable (x)", "chain-1", "j", 1.0)
     monkeypatch.setattr(h, "validate_refresh_token", lambda _t: unavailable)
-    fake = MagicMock()
-    fake.degraded_reason.return_value = ""  # the file read again in between
-    fake.revoke_chain.return_value = True
-    monkeypatch.setattr(h, "_get_state", lambda: fake)
+    assert state.degraded_reason() == ""
     request = _mk("POST", "/api/auth/logout", cookies={refresh_cookie_name(str(PORT)): "tok"})
-    await h.api_auth_logout(request)
-    assert fake.revoke_chain.call_args.args[0] == "chain-1"
+    response = await h.api_auth_logout(request)
+    assert _body(response) == {"logged_out": True}
+    assert state.is_chain_revoked("chain-1")
+    # Persisted, so a restart cannot bring the chain back.
+    reloaded = RefreshStateManager(state_path=tmp_path / "refresh_chains.json")
+    assert reloaded.is_chain_revoked("chain-1")
+    assert ("alice", "refresh_token_logout", "ok", "chain-1") in audit
 
 
 @pytest.mark.asyncio
