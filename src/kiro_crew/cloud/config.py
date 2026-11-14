@@ -154,7 +154,7 @@ class FargateConfig:
     #:
     #: Deliberately NOT part of :meth:`is_complete`. A lane that does not claim it is
     #: a complete, usable lane -- it simply cannot run on a host with no user
-    #: namespace, which is the behaviour every lane had before this key existed.
+    #: namespace.
     internal_only: bool = False
     #: How long one of this lane's tasks may run before the launcher stops it, in
     #: seconds, or ``None`` when the operator did not say.

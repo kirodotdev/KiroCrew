@@ -424,13 +424,13 @@ def list_microvms(
     next_token = ""
     while True:
         # 50, which is this parameter's own documented maximum -- botocore's model
-        # says ``{'min': 1, 'max': 50}``. 100 is refused outright:
+        # says ``{'min': 1, 'max': 50}``. A larger value is refused outright:
         #   ValidationException: Value '100' at 'maxResults' failed to satisfy
         #   constraint: Member must have value less than or equal to 50
-        # so the call never returned a page. This list is an ORPHAN sweep's only
-        # input, and a sweep that cannot list is one that reports every leaking VM
-        # as absent -- which is why it was failing closed on an unreadable list
-        # rather than reporting zero orphans. Measured against the real service.
+        # and the call returns no page. This list is an ORPHAN sweep's only input,
+        # and a sweep that cannot list would report every leaking VM as absent, so
+        # an unreadable list fails closed rather than reporting zero orphans.
+        # Measured against the real service.
         args = ["--max-results", str(MAX_LIST_RESULTS)]
         if next_token:
             args += ["--next-token", next_token]

@@ -1131,8 +1131,7 @@ class IngestionPipeline:
                 # *One unit*, because the append must sit BETWEEN the two writes:
                 # a chunk whose location write raises has to already be in
                 # created_item_ids or the partial-failure rollback leaves the
-                # item orphaned. Inside the hop that ordering is preserved
-                # exactly as it was inline.
+                # item orphaned. The hop keeps that ordering.
                 def _write_chunk() -> str:
                     new_id = self.store.add_item(
                         title=item_title,
