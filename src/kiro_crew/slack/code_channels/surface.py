@@ -317,7 +317,10 @@ def policy_gated_handlers() -> tuple[tuple[Any, int], ...]:
     worktree). ``_bind_channel`` (also reached by a new channel's creation)
     checks before it cuts the worktree and before it binds the session. The
     only writes outside both clients are a slash
-    command's fixed-text replies to its own invoker (``response_url``). A new
+    command's fixed-text replies to its own invoker (``response_url``) and the
+    Approval mode confirmation's fixed line that replaces the clicker's own private
+    message (``approval_picker._settle_confirm``, which asks the same ``channels``
+    policy first). A new
     handler belongs on this list; its test
     (``test_every_policy_gated_handler_checks_at_entry_and_at_its_commit_point``)
     holds the counts.
