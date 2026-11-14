@@ -227,6 +227,7 @@
     "{dispatch_bind}",
     "{dispatch_seed}",
     "{bind_before_seed}",
+    "{resource_wave}",
     "A bound worker reports blocked, question or done through the ledger.",
     "Patrol: when tracked work needs a loop, follow this. {patrol_watch} Leave gate at its default. Never pass gate:false on a patrol. {patrol_bounds} {patrol_requested} If arming is refused, say no loop is running: the [Worker report] turns stay your patrol. {patrol_final_report}",
     "{dependent_calls}",

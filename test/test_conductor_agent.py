@@ -549,9 +549,9 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "Can I pick a default?" not in text
 
     def test_back_to_back_rounds_keep_a_spend_bound(self, tmp_path, monkeypatch):
-        """Without a pause between rounds, a default concurrency cap and a no-progress
-        back-off are the only hard spend gates when the user set no bound. The item
-        total has no cap and no notice; it stays readable as ``goal_items_used``.
+        """Without a pause between rounds, resource_status sizes each wave, a bound the
+        user set is the concurrency cap, and a no-progress back-off stops the loop. The
+        item total has no cap and no notice; it stays readable as ``goal_items_used``.
         """
         prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
         body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
@@ -560,6 +560,8 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "two rounds in a row" in text
             assert "goal_concurrency_cap_reached" in text
             assert "concurrency_cap=<N>" in text
+            assert "`resource_status` decides the wave" in text
+            assert "at most 6" not in text and "more than 6" not in text
             assert "goal_items_used" in text
             # The advisory item cap and its one-time notice are gone
             # (rfc-drop-goal-item-cap.md).
@@ -567,8 +569,6 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "cap_exceeded" not in text
             assert "keep going?" not in text.lower()
             assert "goal_item_cap_reached" not in text
-        assert "at most 6 ledger items OPEN at once" in prompt
-        assert "at most **6 ledger items open at once**" in body
 
     def test_prompt_names_its_own_skill_and_not_the_deprecated_alias(self, tmp_path, monkeypatch):
         """The procedure lives in ``goal-conductor``. ``goal-ledger-conductor`` is a

@@ -636,15 +636,14 @@ no-progress check replace the old per-round pause. Count both from
 `work_ledger_read`, not from memory, and read the goal's item total from its
 `conductor.goal_items_used`, not by counting `items`:
 
-- **Concurrency cap.** When the user set no bound of their own, a goal may hold
-  at most **6 ledger items open at once**. The ledger enforces it: a `create`
+- **Concurrency cap.** `resource_status` decides the wave; a bound the user
+  set is `concurrency_cap` (`work_ledger_record` `action=goal`
+  `concurrency_cap=<N>`, 1 to 32), written before the first `create`. With no
+  bound set, it is the ledger's own 32. The ledger enforces it: a `create`
   past the cap is refused with `goal_concurrency_cap_reached`. That refusal is
   about how much runs in parallel, never about the total: keep patrolling what
   is in flight and dispatch the next item when one lands. Never ask to raise
-  the cap: wait for a seat. A bound the user set (`work_ledger_record`
-  `action=goal` `concurrency_cap=<N>`), or a Round-0 plan the user
-  approved with more than 6 parallel items, sets `concurrency_cap` the same way
-  before the first `create`.
+  the cap: wait for a seat.
 - **Item total.** The goal's total, every round's items and re-plans
   included, has no cap. It is `goal_items_used` on `work_ledger_read`'s
   `conductor` block, so a round report can state it. Only a goal the user

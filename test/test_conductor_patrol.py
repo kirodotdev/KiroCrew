@@ -771,3 +771,13 @@ async def test_an_audit_outage_that_races_closure_still_logs_its_refusal_at_warn
     assert [r.levelno for r in patrol_logs] == [logging.WARNING]
     assert "audit log unavailable" in patrol_logs[0].getMessage()
     assert SERVICE_SHUTTING_DOWN_MESSAGE not in patrol_logs[0].getMessage()
+
+
+def test_the_patrol_stays_open_while_work_is_queued_and_old_loops_still_pass():
+    """Queued work lives outside the ledger, so the patrol's stop names it; the text
+    from before that change stays a shipped one for loops armed with it."""
+    assert "every item is terminal and nothing is queued" in conductor_patrol.PATROL_MESSAGE
+    old = conductor_patrol._PATROL_MESSAGE_BEFORE_QUEUE
+    assert old != conductor_patrol.PATROL_MESSAGE
+    assert "every item is terminal or the user says stop" in old
+    assert old in conductor_patrol.SHIPPED_PATROL_MESSAGES

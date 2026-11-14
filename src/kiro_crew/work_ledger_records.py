@@ -136,13 +136,14 @@ CONDUCTOR_ACTIONS: frozenset[str] = frozenset(
 #: forgets a closed item once ``work_vocab.WORK_CLOSED_WINDOW`` newer closed items sit
 #: behind it. This cache keeps every record.
 MAX_ITEMS_PER_CONDUCTOR = 32
-#: How many OPEN items one GOAL may hold at once when the user set no bound: the bound
-#: on parallel work, tighter than :data:`MAX_ITEMS_PER_CONDUCTOR`. Stored as
-#: :attr:`ConductorRecord.concurrency_cap` (``work_ledger_record action=goal
-#: concurrency_cap=N``) and enforced by :func:`_create_item` only on a board that
-#: recorded a goal; queue boards that never write one (the pipeline and security
-#: conductors) keep only the store's open bound. Closed items do not count.
-DEFAULT_GOAL_CONCURRENCY_CAP = 6
+#: How many OPEN items one GOAL may hold at once when the user set no bound: the
+#: store's own open bound, so no fixed number sits below it. Host resources size
+#: each wave instead (the conductors' ``resource_status`` rule). A bound the user
+#: sets is stored as :attr:`ConductorRecord.concurrency_cap` (``work_ledger_record
+#: action=goal concurrency_cap=N``) and enforced by :func:`_create_item` only on a
+#: board that recorded a goal; queue boards that never write one (the pipeline and
+#: security conductors) keep only the store's open bound. Closed items do not count.
+DEFAULT_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR
 #: The highest ``concurrency_cap`` a goal write accepts: a cap past the store's open
 #: bound could never be reached.
 MAX_GOAL_CONCURRENCY_CAP = MAX_ITEMS_PER_CONDUCTOR

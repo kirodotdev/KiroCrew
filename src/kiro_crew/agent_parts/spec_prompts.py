@@ -169,6 +169,13 @@ nothing. A bound item with no seed is visible in your own ledger and you can see
 it next cycle; an unbound running worker is neither visible nor recoverable.
 
 """,
+    "resource_wave": """**`resource_status` decides the wave.** Call it before you stand up several
+worker sessions at once. On `ample`, dispatch every ready, independent item.
+On `tight` or `unknown`, dispatch one and queue the rest; on `critical`,
+dispatch none. Say what you queued. Carry no number of your own: a bound the
+user set is the goal's `concurrency_cap`.
+
+""",
     "patrol_watch": """When a `session_create` or `bind` reply's `patrol=` is
 `armed` or `existing (active-work-ledger)`, the gateway already runs your
 patrol: arm nothing. Otherwise arm a loop on your own session with
@@ -187,10 +194,10 @@ without the watch must be fixed with
 `watch="work-ledger"` loop runs every 300 seconds with no
 cycle cap, and its one bound is the gateway's 7-day runaway backstop, so it runs
 until you stop it. """,
-    "patrol_final_report": """When every ledger item is terminal or the user says stop, end the patrol in
-two steps. First send the user ONE final report: what landed, what is left, and
-the links. Then, in a later step, stop the loop with `autonudge_stop`. The
-final report is your last message to the user. """,
+    "patrol_final_report": """When every ledger item is terminal and nothing is queued, or the user says
+stop, end the patrol in two steps. First send the user ONE final report: what
+landed, what is left, and the links. Then, in a later step, stop the loop with
+`autonudge_stop`. The final report is your last message to the user. """,
     "patrol_requested": """A reply saying
 *requested* confirms receipt only — do not retry it in the same turn.
 Confirm activation from the gateway arm notice or `monitor_inspect` on a later turn. """,
@@ -338,6 +345,7 @@ call at a time, only to bind an existing session. The order is not a preference:
     ("dispatch_bind", _LEDGER_CONDUCTOR_RULES["dispatch_bind"]),
     ("dispatch_seed", _LEDGER_CONDUCTOR_RULES["dispatch_seed"]),
     ("bind_before_seed", _LEDGER_CONDUCTOR_RULES["bind_before_seed"]),
+    ("resource_wave", _LEDGER_CONDUCTOR_RULES["resource_wave"]),
     (
         "which_agent",
         """### Which agent
@@ -405,13 +413,13 @@ refused reset changes nothing: carry on.
     ),
     (
         "spend_bounded",
-        """**Rounds are not gated, but spend is bounded.** Count from the ledger. With no
-bound from the user, a goal holds at most 6 ledger items OPEN at once; the
-ledger enforces it: a `create` past it is refused `goal_concurrency_cap_reached`.
-That is about how much runs in parallel, not about the total: wait for an item
-to land, and never ask to raise it. A bound the user set calls
-`work_ledger_record` `action=goal` `concurrency_cap=<N>`. The goal's total has
-no cap: `work_ledger_read` returns it as `goal_items_used`.
+        """**Rounds are not gated, but spend is bounded.** Count from the ledger.
+`resource_status` decides the wave; a bound the user set is `concurrency_cap`
+(`work_ledger_record` `action=goal` `concurrency_cap=<N>`), and the ledger
+enforces it: a `create` past it is refused `goal_concurrency_cap_reached`. That
+is about how much runs in parallel, not about the total: wait for an item to
+land, and never ask to raise it. The goal's total has no cap:
+`work_ledger_read` returns it as `goal_items_used`.
 When two rounds in a row land with no item accepted, tell the user what failed,
 as a statement, then narrow to the failing items and re-plan once. Only after a
 third such round dispatch nothing new and ask the user. Pause, do not stop the
@@ -422,10 +430,10 @@ loop.
     ("host_pressure", _LEDGER_CONDUCTOR_RULES["host_pressure"]),
     (
         "patrol_ends",
-        """**Patrol ends on two signals only:** every ledger item is terminal, or the user
-says stop. Stop the loop only then, and only after the final report the Patrol
-section names. Before you ask the person anything, pass this checklist, and
-pass it again on every cycle while the ask is open:
+        """**Patrol ends on two signals only:** every ledger item is terminal and nothing
+is queued, or the user says stop. Stop the loop only then, and only after the
+final report the Patrol section names. Before you ask the person anything, pass
+this checklist, and pass it again on every cycle while the ask is open:
 
 1. Is it credentials, spend, deleting or overwriting someone's work, or
    irreversible? Then a default never settles it. If the item can simply be
