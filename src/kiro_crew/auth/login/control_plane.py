@@ -51,7 +51,14 @@ _TARGET = "AmazonCodeWhispererService.ListAvailableProfiles"
 # us-east-1, which is also what kiro-cli's ``DEFAULT_ENDPOINT`` resolves to.
 # eu-west-1 has no CPS host of its own (the name does not resolve); its
 # profiles are served by the Frankfurt control plane, which is where kiro-cli
-# sends EU regions. Sign-in asks every host here, the login region's first.
+# sends EU regions.
+#
+# The IAM Identity Center region a user signs in with is independent of which
+# control plane serves their Kiro profile: an eu-west-1 IdC instance can hold a
+# profile served from us-east-1 OR from eu-central-1. At sign-in the profile ARN,
+# the only thing that names the profile's real region, does not exist yet, so
+# sign-in asks every host here, the login region's first
+# (:func:`control_plane_urls`). After sign-in the ARN's own region picks the host.
 _CPS_ENDPOINTS = {
     "us-east-1": "https://management.us-east-1.kiro.dev/",
     "eu-central-1": "https://management.eu-central-1.kiro.dev/",
@@ -89,12 +96,22 @@ class ProfileListing:
 
 
 def control_plane_url(region: str) -> str:
-    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does."""
+    """CPS base URL for ``region``, falling back to us-east-1 like kiro-cli does.
+
+    After sign-in it is keyed by :func:`profile_region`, the region parsed from the
+    resolved profile ARN, which names the profile's control plane. At sign-in it
+    only picks which host :func:`control_plane_urls` asks first.
+    """
     return _CPS_ENDPOINTS.get(region) or _CPS_ENDPOINTS[_DEFAULT_CPS_REGION]
 
 
 def control_plane_urls(region: str) -> list[str]:
-    """Every CPS host sign-in asks for *region*'s profiles, in the order it asks them."""
+    """Every CPS host sign-in asks for *region*'s profiles, in the order it asks them.
+
+    The login region's own host comes first, so the common single-region case
+    resolves on the first host. Each known host appears once, so a profile on
+    another control plane is still found.
+    """
     return list(dict.fromkeys([control_plane_url(region), *_CPS_ENDPOINTS.values()]))
 
 
