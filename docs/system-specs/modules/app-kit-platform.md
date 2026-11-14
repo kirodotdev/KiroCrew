@@ -6419,7 +6419,7 @@ which module owns which part, so a change lands in its owner.
 | `manager_builtins.py` | `register_builtin_apps` and the definitions it reads, the default-on backfill, `resolve_mcp_backend_url`, orphan detection with its cache, and the migrated-builtin cleanup |
 | `manager_external.py` | `register_external_app`, the record of a self-managed app |
 | `manager_uninstall.py` | `uninstall_app` and the `agent.apps_trusted` grant it drops and restores (`trust_grant_removal_blocked`, `_drop_trust_grant`, `_restore_trust_grant`) |
-| `manager_lookup.py` | `list_apps`, `get_app`, the enablement reads (`app_enabled_state`, `is_app_enabled`), the source and provenance setters, and which installed app owns an agent (`owning_app_for_agent`, `app_command_agent_refusal`, `missing_agent_reason`) |
+| `manager_lookup.py` | `list_apps`, `get_app`, the enablement reads (`app_enabled_state`, `is_app_enabled`), the source and provenance setters, and which installed app owns an agent (`owning_app_for_agent`, `app_command_agent_refusal`, `missing_agent_reason`); inside one KAS session start (`build_reuse.one_build`) each app's manifest is read once for all its sub-agent targets and only its label, state and agent names are kept (`_declared_agents`) |
 | `manager_adopt.py` | `adopt_builtin_record`, `recover_interrupted_adoption`, and the sweep of what a killed update left (`sweep_interrupted_updates`, `sweep_completed_swap_leftovers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: records, tree, install,

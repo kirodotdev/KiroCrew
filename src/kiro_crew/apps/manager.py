@@ -129,6 +129,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _app_agent_registration,
         _app_display_name,
         _app_registered_agent,
+        _declared_agents,
         _owner_json,
         _screened_spec_path,
         app_agent_backend_refusal,

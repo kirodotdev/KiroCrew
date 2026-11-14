@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import bisect
+import functools
 import json
 import logging
 import time
@@ -1523,6 +1524,29 @@ def _glob_matches(pattern: str, resource: str, *, unread: bool) -> bool:
     """
     if _UNREAD_GLOB_CHARACTERS.intersection(pattern):
         return unread
+    if len(pattern) > _MEMO_MAX_CHARS or len(resource) > _MEMO_MAX_CHARS:
+        return _glob_match_steps(pattern, resource)[0]
+    return _read_glob_matches(pattern, resource)
+
+
+#: The longest pattern or resource :func:`_read_glob_matches` keeps. A resource is
+#: an MCP server's own tool name, so an oversized one is matched uncached instead
+#: of pinning its text in the gateway: the cache then holds at most 4096 pairs of
+#: this size.
+_MEMO_MAX_CHARS = 256
+
+
+@functools.lru_cache(maxsize=4096)
+def _read_glob_matches(pattern: str, resource: str) -> bool:
+    """:func:`_glob_match_steps`'s answer alone, memoized.
+
+    A pure function of its two strings: it reads no file, setting or clock, so a
+    cached answer is the answer. Each new session's projection matches the same
+    hook and policy patterns against the same tool names again; the cache keeps
+    that work to the first session. Bounded in entries and, through its caller,
+    in the length of each string (:data:`_MEMO_MAX_CHARS`). The grant decision
+    built on it (:func:`_auto_approved`) is not cached.
+    """
     return _glob_match_steps(pattern, resource)[0]
 
 

@@ -328,35 +328,61 @@ def owning_app_for_agent(agent: str) -> AgentOwner | None:
         entries = sorted(apps_dir().iterdir())
     except OSError:
         return None
+    from kiro_crew.build_reuse import reuse
+
     for entry in entries:
         if _is_sidecar_entry(entry.name):
             continue
         try:
-            raw_meta = _owner_json(entry / INSTALLED_META_FILENAME)
-            if raw_meta is None:
+            # One session start asks this for each of its sub-agent targets.
+            declared = reuse(
+                ("app-agents", str(entry)),
+                functools.partial(_declared_agents, entry),
+                weight=lambda kept: len(str(entry))
+                + (len(kept[0]) + sum(map(len, kept[2])) if kept else 0),
+            )
+            if declared is None:
                 continue
-            shipped_root = shipped_builtin_app_root(entry.name)
-            root = shipped_root or entry
-            shipped = shipped_root is not None
-            admit = None
-            if shipped:
-                from kiro_crew.skills_discovery import _builtin_app_file_admission
-
-                admit = _builtin_app_file_admission(root, [APP_MANIFEST_FILENAME])
-            raw_manifest = _owner_json(root / APP_MANIFEST_FILENAME, admit_hardlinked=admit)
-            if raw_manifest is None:
+            label, enabled, names = declared
+            if agent not in names:
                 continue
-            manifest = AppManifest.from_dict(raw_manifest)
-            if not manifest.agents or agent not in _app_agent_names(
-                entry.name, manifest, root, shipped=shipped
-            ):
-                continue
-            label = manifest.displayName.strip() or entry.name
-            enabled = bool(InstalledApp.from_dict(raw_meta).enabled)
             return AgentOwner(entry.name, label, enabled)
         except Exception:  # noqa: BLE001 - one unreadable app must not hide the others
             logger.debug("agent owner lookup skipped app %s", entry.name, exc_info=True)
     return None
+
+
+def _declared_agents(entry: Path) -> tuple[str, bool, frozenset[str]] | None:
+    """*entry*'s label, whether it is enabled and the agent names it declares, or
+    ``None`` when *entry* is not a readable app (:func:`owning_app_for_agent`).
+
+    Only those three are returned, so a caller that keeps the answer keeps no
+    manifest. Every read is screened (:func:`_owner_json`), from where registration
+    reads it. An app that declares no agent answers no names, and its label and
+    state are not read.
+    """
+    raw_meta = _owner_json(entry / INSTALLED_META_FILENAME)
+    if raw_meta is None:
+        return None
+    shipped_root = shipped_builtin_app_root(entry.name)
+    root = shipped_root or entry
+    shipped = shipped_root is not None
+    admit = None
+    if shipped:
+        from kiro_crew.skills_discovery import _builtin_app_file_admission
+
+        admit = _builtin_app_file_admission(root, [APP_MANIFEST_FILENAME])
+    raw_manifest = _owner_json(root / APP_MANIFEST_FILENAME, admit_hardlinked=admit)
+    if raw_manifest is None:
+        return None
+    manifest = AppManifest.from_dict(raw_manifest)
+    if not manifest.agents:
+        return "", False, frozenset()
+    names = frozenset(_app_agent_names(entry.name, manifest, root, shipped=shipped))
+    if not names:
+        return "", False, names
+    label = manifest.displayName.strip() or entry.name
+    return label, bool(InstalledApp.from_dict(raw_meta).enabled), names
 
 
 def missing_agent_reason(agent: str, *, member: str = "") -> str:
