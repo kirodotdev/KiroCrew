@@ -2104,7 +2104,11 @@ lessons. Literal managed prefixes and explicitly named managed files still refus
 other admission and read failures are not swallowed. The managed-source check
 matches a top-level name by prefix (`memory*`, `lessons*`, `.lessons*`), so an
 ordinary project entry in a managed workspace can share it; the prefix is kept
-fail-safe rather than narrowed, and the prune is not silent for a collision: each
+fail-safe rather than narrowed, with one exact exception: the directory a member's
+own memory pass runs in (`memory-consolidation_<store>_<32 hex>`, the shape
+`session_work_dir` mints) is never the store, so a path named under it is admitted
+and a wildcard walk still prunes it. Any other near miss of that name stays managed.
+The prune is not silent for a collision: each
 pruned entry the glob would have descended into or returned whose top-level name
 is not one of the store's own (`memory`, `lessons`, `.lessons`, `memory.db*`,
 `memory_index.db*`, `lessons.jsonl*`) is logged as a warning and named
