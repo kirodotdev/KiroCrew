@@ -75,6 +75,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _persist_holding_folder,
         _refuse_app_auto_approval,
         _refuse_mate_home_chat_folder,
+        _removal_actor,
         _resolve_chat_folder_id,
         _resolve_one_shot_at,
         _schema_field,

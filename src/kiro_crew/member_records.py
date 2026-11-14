@@ -52,6 +52,7 @@ RECORD_KINDS: tuple[str, ...] = (
     "app-grants",
     "app-disabled",
     "app-secrets",
+    "app-crons-deleted",
 )
 
 #: The kinds the one-time move carries from ``trust/``: the ones an older build kept

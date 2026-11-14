@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import cron_script
@@ -31,6 +32,40 @@ if TYPE_CHECKING:
 
 #: The cron service's logger: operators filter, and tests ``caplog``, on ``kiro_crew.cron``.
 logger = logging.getLogger("kiro_crew.cron")
+
+
+def _remember_deleted_app_jobs(removed: Iterable[CronJob], *, actor: str) -> None:
+    """Record each removed manifest app job, so app registration does not bring it back.
+
+    *removed* is the rows the removal took out of the store, read under its lock
+    after the reload, so a job another process created since this one last read
+    the store is recorded too. Only a job with a manifest stamp counts: a job the
+    app made at runtime is the app's to remake. A removal the app asked for itself
+    (``actor`` ``app:<name>``) records nothing. A record that cannot be written is
+    logged, never raised: the job is already gone, and the delete must not read as
+    failed.
+    """
+    from kiro_crew.apps.cron_sdk import app_owner_name
+
+    if app_owner_name(actor):
+        return
+    for job in removed:
+        if not job.app_manifest_digest:
+            continue
+        app = app_owner_name(job.created_by)
+        if not app:
+            continue
+        try:
+            from kiro_crew.apps import protected_app_state
+
+            protected_app_state.remember_deleted_app_cron(app, job.name)
+        except (OSError, ValueError):
+            logger.warning(
+                "could not record the deletion of app %s's cron %r; it returns on the next start",
+                app,
+                job.name,
+                exc_info=True,
+            )
 
 
 def remove_job(
@@ -55,8 +90,10 @@ def remove_job(
     surface asked for it. An automated one-shot removal keeps it: the run
     path appends that run's record after the removal.
     """
-    ok = self._remove_job_locked(job_id)
-    if ok and one_shot_path is None:
+    row = self._remove_job_locked(job_id)
+    ok = row is not None
+    if row is not None and one_shot_path is None:
+        _remember_deleted_app_jobs([row], actor=actor)
         self._delete_history_of([job_id])
     self._audit_requested_removal(
         job_id,
@@ -82,8 +119,10 @@ async def remove_job_async(
 
     Raises :class:`CronStoreBusy` (retryable) on sustained contention.
     """
-    ok = await asyncio.to_thread(self._remove_job_locked, job_id)
-    if ok and one_shot_path is None:
+    row = await asyncio.to_thread(self._remove_job_locked, job_id)
+    ok = row is not None
+    if row is not None and one_shot_path is None:
+        await asyncio.to_thread(_remember_deleted_app_jobs, [row], actor=actor)
         await asyncio.to_thread(self._delete_history_of, [job_id])
     self._audit_requested_removal(
         job_id,
@@ -114,10 +153,11 @@ async def remove_job_if_async(
     A removal here is caller-requested, so it deletes the job's run history
     like :meth:`remove_job_async` does.
     """
-    outcome = await asyncio.to_thread(
+    outcome, row = await asyncio.to_thread(
         self._remove_job_if_locked, job_id, expected_revision, revision_of
     )
-    if outcome == "removed":
+    if row is not None:
+        await asyncio.to_thread(_remember_deleted_app_jobs, [row], actor=actor)
         await asyncio.to_thread(self._delete_history_of, [job_id])
     if outcome == "changed":
         self._audit_refused_removal(job_id, actor=actor, source=source)
@@ -409,7 +449,7 @@ def _release_children_of_removed(
     return restore
 
 
-def _remove_jobs_locked(self: CronService, job_ids: list[str]) -> tuple[list[str], list[str]]:
+def _remove_jobs_locked(self: CronService, job_ids: list[str]) -> tuple[list[CronJob], list[str]]:
     """Sync core of :meth:`remove_jobs` — lock/reload/mutate/save only.
 
     Deliberately does NO timer work so it is safe to run in an executor
@@ -417,16 +457,19 @@ def _remove_jobs_locked(self: CronService, job_ids: list[str]) -> tuple[list[str
     every other store mutation also takes ``_file_lock`` — flock on
     separate fds mutually excludes within the process too — so a
     concurrent loop-side mutation blocks until this completes.
+
+    Returns ``(removed_rows, missing_ids)`` in input order; each removed row
+    is the job as the reloaded store held it.
     """
-    removed: list[str] = []
+    removed: list[CronJob] = []
     missing: list[str] = []
     with self._file_lock():
         self._sync_for_write()
-        present = {j.id for j in self._jobs}
+        present = {j.id: j for j in self._jobs}
         targets = set()
         for jid in job_ids:
             if jid in present:
-                removed.append(jid)
+                removed.append(present[jid])
                 targets.add(jid)
             else:
                 missing.append(jid)
@@ -468,8 +511,10 @@ async def remove_jobs(
     runs back on the loop, and only when something was actually removed.
     """
     requested = list(job_ids)
-    removed, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
+    rows, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
+    removed = [j.id for j in rows]
     if removed:
+        await asyncio.to_thread(_remember_deleted_app_jobs, rows, actor=actor)
         await asyncio.to_thread(self._delete_history_of, removed)
     self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
     if removed:
@@ -518,8 +563,10 @@ def remove_jobs_sync(
     deletes the removed jobs' run history.
     """
     requested = list(job_ids)
-    removed, missing = self._remove_jobs_locked(requested)
+    rows, missing = self._remove_jobs_locked(requested)
+    removed = [j.id for j in rows]
     if removed:
+        _remember_deleted_app_jobs(rows, actor=actor)
         self._delete_history_of(removed)
     self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
     if removed:
