@@ -1444,6 +1444,7 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         preferred_language=section.get("preferred_language"),
         link_previews=section.read("link_previews", _safe_bool),
         tail_fork_enabled=section.get("tail_fork_enabled"),
+        fork_inherits_pin=section.get("fork_inherits_pin"),
         terminal=section.get("terminal"),
         default_project=section.get("default_project"),
         session_folder_root=_session_folder_root_or_empty(section.get("session_folder_root")),
