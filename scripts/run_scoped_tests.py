@@ -91,6 +91,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import importlib
 import os
 import re
 import shutil
@@ -98,6 +99,7 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -106,12 +108,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # helper lives beside it, so `test/` joins sys.path the way
 # scripts/new_test_stability_scope.py already puts it there. One list, one
 # platform rule, shared by the hook and by every selector that names files
-# explicitly.
+# explicitly. Loaded on first use, not at import: the helper needs pytest and
+# kiro_crew, and scripts/leaf_test_scope.py imports this module in CI's
+# dependency-free `changes` job.
 _TEST_DIR = str(REPO_ROOT / "test")
-if _TEST_DIR not in sys.path:
-    sys.path.insert(0, _TEST_DIR)
 
-import platform_collect_ignore_helpers as _collect_ignore  # noqa: E402  (sys.path set above)
+
+def _collect_ignore() -> ModuleType:
+    """The collector's helper module (one cached object, so a patch on it sticks)."""
+    if _TEST_DIR not in sys.path:
+        sys.path.insert(0, _TEST_DIR)
+    return importlib.import_module("platform_collect_ignore_helpers")
+
 
 # A change to any of these can affect anything, so no reduction is defensible.
 # Matched on the FILE NAME or on a PATH PREFIX, never as a bare substring:
@@ -780,7 +788,7 @@ def platform_uncollected_targets() -> frozenset[str]:
     subdirectory or under the apps-builtins root, which no conftest excludes and
     the platform collects fine.
     """
-    return frozenset(f"test/{name}" for name in _collect_ignore.PLATFORM_IGNORED)
+    return frozenset(f"test/{name}" for name in _collect_ignore().PLATFORM_IGNORED)
 
 
 def related_targets(
@@ -1154,12 +1162,13 @@ def _self_test() -> int:
     # this platform is not re-enabled by being named explicitly. Checked under
     # the Windows list on every host, then under an empty list, so the verdict
     # is the same on Linux, macOS and Windows runners.
-    listed = sorted(_collect_ignore.platform_ignore_names("win32"))
+    collect_ignore = _collect_ignore()
+    listed = sorted(collect_ignore.platform_ignore_names("win32"))
     check("the windows list parses to something", bool(listed))
     listed_rel = f"test/{listed[0]}"
-    _real_ignored = _collect_ignore.PLATFORM_IGNORED
+    _real_ignored = collect_ignore.PLATFORM_IGNORED
     try:
-        _collect_ignore.PLATFORM_IGNORED = frozenset(listed)
+        collect_ignore.PLATFORM_IGNORED = frozenset(listed)
         check(
             "an uncollected list file is a test/ path",
             listed_rel in platform_uncollected_targets(),
@@ -1170,14 +1179,14 @@ def _self_test() -> int:
             listed_rel not in win_picked,
         )
         check("the verdict says why", "not collected on this platform" in win_verdict)
-        _collect_ignore.PLATFORM_IGNORED = frozenset()
+        collect_ignore.PLATFORM_IGNORED = frozenset()
         open_picked, open_verdict = related_targets("backend", [listed_rel])
         check(
             "the same suite is selected when the platform lists nothing", listed_rel in open_picked
         )
         check("no list, no note", "not collected" not in open_verdict)
     finally:
-        _collect_ignore.PLATFORM_IGNORED = _real_ignored
+        collect_ignore.PLATFORM_IGNORED = _real_ignored
 
     fe_targets, _ = related_targets("frontend", ["website/src/App.tsx"])
     check("the frontend related set is website-relative", all(not p.startswith("website/") for p in fe_targets))

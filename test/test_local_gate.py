@@ -20,6 +20,7 @@ import importlib
 import importlib.util
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -783,6 +784,25 @@ def test_an_empty_platform_list_drops_nothing(
     targets, verdict = selector.related_targets("backend", [f"test/{_LISTED}"], root=root)
     assert f"test/{_LISTED}" in targets
     assert "not collected" not in verdict
+
+
+def test_the_leaf_selector_imports_without_pytest_or_kiro_crew() -> None:
+    """CI's ``changes`` job runs ``leaf_test_scope.py`` with no dependencies
+    installed, and it imports this selector; the collector helper (which needs
+    pytest and kiro_crew) must load on first use, not at import."""
+    probe = (
+        "import sys; sys.path.insert(0, 'scripts'); import leaf_test_scope; "
+        "assert 'platform_collect_ignore_helpers' not in sys.modules"
+    )
+    # -S: no site-packages, so neither pytest nor an installed kiro_crew is importable.
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", probe],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_the_selector_subtracts_exactly_what_the_hook_ignores(
