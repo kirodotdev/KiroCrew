@@ -1239,7 +1239,18 @@ _INSTALL_OPTIONS = {
 _CHANNEL_OPTIONS = release_channel.CHANNEL_FORM_OPTIONS
 
 
-def _versions_text(note: str, identity: release_channel.Provenance) -> str:
+#: ``versions.txt``'s ``version_alignment:`` in a bundle the gateway collects: its own
+#: files are not the selected package of a side-by-side install (a promoted update
+#: whose restart was put off, a desktop update), so comparing them would read aligned.
+_ALIGNMENT_NOT_CHECKED = (
+    "not checked (collected inside the gateway, which cannot read a side-by-side"
+    " install's selected package; `kirocrew doctor --bundle` compares them)"
+)
+
+
+def _versions_text(
+    note: str, identity: release_channel.Provenance, version_alignment: str | None = None
+) -> str:
     # Private, so it keeps everything the public report may not: the raw stamp
     # (a repackager's build id), the distribution metadata it was weighed
     # against, and the channel record -- the evidence behind `channel:`.
@@ -1251,6 +1262,7 @@ def _versions_text(note: str, identity: release_channel.Provenance) -> str:
         f"distribution_version: {identity.distribution or 'unavailable'}",
         f"channel: {identity.channel or 'unknown'}",
         f"channel_record: {identity.recorded or 'absent'}",
+        f"version_alignment: {version_alignment or _ALIGNMENT_NOT_CHECKED}",
         f"kiro_cli_version: {_kiro_cli_version()}",
         f"kas_engine: {_kas_engine_version()}",
         f"python: {platform.python_version()}",
@@ -1441,6 +1453,7 @@ def collect_bundle(
     note: str = "",
     include_logs: bool = True,
     output_dir: Path | None = None,
+    version_alignment: str | None = None,
 ) -> BundleResult:
     """Collect, redact, and zip a diagnostics bundle.
 
@@ -1450,6 +1463,9 @@ def collect_bundle(
         include_logs: when False, only versions + crash reports are bundled
             (no full gateway / chat logs) for a lighter, lower-sensitivity zip.
         output_dir: where to write the zip. Defaults to ``<data_home>/diagnostics``.
+        version_alignment: the running gateway's version against the selected
+            package's, as ``kirocrew doctor --bundle`` reads it. None, the
+            dashboard's collector, records it as not checked.
 
     Returns:
         :class:`BundleResult` with the zip path and a pre-filled issue URL.
@@ -1552,7 +1568,7 @@ def collect_bundle(
     )
     with os.fdopen(_fd, "wb") as _raw, zipfile.ZipFile(_raw, "w", zipfile.ZIP_DEFLATED) as zf:
         # Generated members first.
-        versions = _versions_text(note, identity)
+        versions = _versions_text(note, identity, version_alignment)
         # ``versions.txt`` carries the absolute ``data_home`` path
         # unconditionally, which embeds the OS login. Run it through the bundle
         # scrub stack so the archive does not ship a local path in a file whose

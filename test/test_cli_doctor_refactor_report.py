@@ -1091,6 +1091,10 @@ Collecting diagnostics bundle (secrets are redacted)...
 """
 
 
+def _pin_bundle_alignment(monkeypatch) -> None:
+    monkeypatch.setattr(services, "_bundle_version_alignment", lambda: "aligned (1.2.3)")
+
+
 def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     result = SimpleNamespace(
         zip_path=host.tmp / "diag.zip",
@@ -1098,7 +1102,13 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
         total_redactions=3,
         skipped=["gateway.log"],
     )
-    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+    collected: list[dict] = []
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(
+        cli_doctor.diagnostics,
+        "collect_bundle",
+        lambda **kwargs: collected.append(kwargs) or result,
+    )
     monkeypatch.setattr(
         cli_doctor.diagnostics, "terminal_issue_url", lambda r: "https://example.invalid/issues/new"
     )
@@ -1108,6 +1118,7 @@ def test_bundle_mode_prints_only_the_bundle(host, capsys, monkeypatch) -> None:
     assert out == _BUNDLE
     assert code is None
     assert host.calls == []
+    assert collected == [{"version_alignment": "aligned (1.2.3)"}]
 
 
 def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
@@ -1116,7 +1127,8 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
     result = cli_doctor.diagnostics.BundleResult(
         zip_path=host.tmp / "diag.zip", filename="diag.zip"
     )
-    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda: result)
+    _pin_bundle_alignment(monkeypatch)
+    monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", lambda **_: result)
 
     def refuse_context():
         raise PlatformCompositionError("companion did not compose")
@@ -1134,9 +1146,10 @@ def test_bundle_mode_prints_the_bundle_when_the_companion_does_not_compose(
 
 
 def test_bundle_mode_exits_one_when_the_bundle_cannot_be_written(host, capsys, monkeypatch) -> None:
-    def refuse():
+    def refuse(**_):
         raise OSError("disk full")
 
+    _pin_bundle_alignment(monkeypatch)
     monkeypatch.setattr(cli_doctor.diagnostics, "collect_bundle", refuse)
 
     out, code = host.run(capsys, bundle=True)
