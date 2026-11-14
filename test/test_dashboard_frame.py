@@ -206,6 +206,32 @@ class TestTheComposedDocument:
         a page it then presents as the template's."""
         assert self.page() in self.doc()
 
+    def test_the_body_carries_the_tabs_scheme_marker_and_no_class(self) -> None:
+        """The tab's frame marks its scheme on the body as an attribute, so an offline
+        run must meet the same body: a page whose own ``.light`` rule once styled a body
+        classed ``light`` was squashed on the tab while the save's check and the snapshot,
+        composed over a bare ``<body>``, drew it whole. A class would put the host in the
+        page's class namespace; an attribute keeps every class name the page's own."""
+        doc = self.doc()
+        assert f'<body {dashboard_frame.MODE_ATTRIBUTE}="{dashboard_frame.OFFLINE_MODE}">' in doc
+        assert re.search(r"<body[^>]*\sclass=", doc) is None
+
+    def test_the_scheme_marker_is_the_browser_wrappers(self) -> None:
+        """One attribute on both sides, read out of the wrapper rather than restated, and the
+        wrapper's Tailwind ``dark:`` variant reads that attribute and no class."""
+        from pathlib import Path
+
+        from kiro_crew import dashboard_snapshot_look
+
+        wrapper = (
+            Path(__file__).resolve().parents[1] / "website" / "src" / "lib" / "widgetSrcdoc.ts"
+        ).read_text(encoding="utf-8")
+        attribute = re.search(r"export const FRAME_MODE_ATTRIBUTE = '([^']+)'", wrapper)
+        assert attribute is not None and attribute.group(1) == dashboard_frame.MODE_ATTRIBUTE
+        directives = dashboard_snapshot_look.TAILWIND_DIRECTIVES
+        assert f"[{dashboard_frame.MODE_ATTRIBUTE}=dark]" in directives
+        assert ".dark" not in directives
+
     def test_the_data_island_precedes_the_page(self) -> None:
         """A page's own inline script runs during parse, so a bootstrap placed after
         it would leave the first script reading ``undefined`` -- and a chart that

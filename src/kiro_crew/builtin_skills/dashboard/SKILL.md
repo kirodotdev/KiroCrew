@@ -364,7 +364,10 @@ The frame supplies `--bg`, `--bg-elevated`, `--card`, `--card-fg`, `--text`,
 `--text-strong`, `--muted`, `--border`, `--accent`, `--accent-subtle`, `--ok`,
 `--warn`, `--danger` and other host theme variables. Your CSS and `theme.tokens`
 can define custom properties too. An undefined variable uses its fallback;
-a defined custom variable is a normal design tool.
+a defined custom variable is a normal design tool. The frame marks its scheme
+on the body as `data-mode="light"` or `data-mode="dark"`; a Tailwind `dark:`
+utility and a `[data-mode=dark]` selector read it. No host element carries a
+class, so every class name is the page's own, `light` and `dark` included.
 
 Pair surface and text colours, either through host variables or your own
 scheme-aware definitions. Fixed colours can also form a readable self-contained

@@ -168,6 +168,23 @@ BINDING_ATTRIBUTE: Final[str] = "data-dashboard-field"
 
 _DATA_ELEMENT_ID = "kirocrew-dashboard-data"
 
+#: The attribute the frame marks its colour scheme with, on ``<body>``: ``data-mode="light"``
+#: or ``data-mode="dark"``. MIRRORED from the browser wrapper's ``FRAME_MODE_ATTRIBUTE``
+#: (``website/src/lib/widgetSrcdoc.ts``), which marks the tab's frame; a test pins the two
+#: equal. An attribute and not a class, because the body shares the page's class namespace:
+#: a page that styles its own ``.light`` or ``.dark`` element would style the body too, in
+#: whichever theme matches the name, and lay the whole page out inside that rule.
+MODE_ATTRIBUTE: Final[str] = "data-mode"
+
+#: The scheme an offline run draws. Every document this module composes whole -- the
+#: save's check and the snapshot -- is drawn in the dashboard's default light look
+#: (:mod:`kiro_crew.dashboard_snapshot_look`); the tab writes the person's own scheme
+#: into the body it builds. Marked here so an offline run meets the same body the tab
+#: shows, and a page that collides with the marker fails where its author can still see.
+OFFLINE_MODE: Final[str] = "light"
+
+_BODY_OPEN = f'<body {MODE_ATTRIBUTE}="{OFFLINE_MODE}">\n'
+
 #: Document-skeleton tags a page must not carry.
 #:
 #: Taken from dsh-visualize's ``SKELETON_TAG`` regex. The host supplies the
@@ -1287,7 +1304,8 @@ def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
     2. the inert data island, then the bootstrap that freezes it onto ``window``
        and binds the fields -- both before the page, so the page's first inline
        script already sees its values;
-    3. the page, verbatim, inside ``<body>``;
+    3. the page, verbatim, inside ``<body>``, which carries the scheme marker the tab's
+       frame puts on its own body (:data:`MODE_ATTRIBUTE`, :data:`OFFLINE_MODE`);
     4. the readiness beacon, which only a page whose own scripts survived reaches.
 
     The host draws no markup of its own above the page. A field that did not resolve
@@ -1325,7 +1343,7 @@ def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
         f"<title>{_escape_html_text(title or 'Dashboard')}</title>\n"
         f"<style>{_HOST_CSS}</style>\n"
         "</head>\n"
-        "<body>\n"
+        f"{_BODY_OPEN}"
         f"{island}\n"
         # BEFORE the page, so an error in the page's first script is counted.
         f"<script>{_INIT_GUARD_JS}</script>\n"
@@ -1561,7 +1579,7 @@ def compose_body(html: str, read: Mapping[str, Any]) -> str:
     differently.
     """
     document = compose(html, read)
-    start = document.index("<body>\n") + len("<body>\n")
+    start = document.index(_BODY_OPEN) + len(_BODY_OPEN)
     end = document.rindex("</body>")
     # The host builds the HEAD, so everything this module puts there is dropped by the
     # slice -- including its own stylesheet, which is not decoration: it is what dims a
