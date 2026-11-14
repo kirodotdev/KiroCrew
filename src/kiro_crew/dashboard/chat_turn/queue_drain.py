@@ -1574,17 +1574,19 @@ async def _start_next_queued_turn(
     # this turn's own call, so it ends with this dispatch (``turn_entry`` adopts
     # it only for a user-sent opener).
     _run_kwargs["_directive_owner_origin"] = directive_owner_origin
+    from kiro_crew.tracing import steps as trace_steps
     from kiro_crew.tracing import subagents as trace_subagents
     from kiro_crew.tracing import workflows as trace_workflows
 
     # The sub-agent results, or the workflow run, these entries deliver: the
-    # turn's trace joins that run's.
+    # turn's trace joins that run's. Their queue wait and senders ride its turn span.
     with (
         independent_turn(),
         initiated_by(queued_initiator(consumed)),
         queued_work(consumed),
         trace_subagents.delivered(item.get("id") for item in consumed),
         trace_workflows.delivering(trace_workflows.run_of(consumed)),
+        trace_steps.drained(consumed),
     ):
         task = spawn_guarded_turn(
             state,
