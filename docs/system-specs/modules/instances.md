@@ -3266,7 +3266,10 @@ validates the coordinates and splits the target (an invalid value answers
 broken link:
 
 1. `task_exec_ready`: the `describe-tasks` exec-readiness preflight on the task.
-   Not ready answers `ssm_unreachable` with the preflight's own reason.
+   Not ready answers `ssm_unreachable` with the preflight's own reason. An `aws`
+   CLI that cannot be started (any `OSError` other than a missing binary, which
+   the preflight already reports) answers `ssm_unreachable` with that reason, not
+   an error out of the ladder.
 2. If no local port is recorded, `not_connected`.
 3. `local_forward`: a TCP connect to `127.0.0.1:<local_port>`. Refused answers
    `tunnel_down`.
