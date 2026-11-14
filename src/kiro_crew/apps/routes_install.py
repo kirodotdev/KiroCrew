@@ -128,6 +128,26 @@ async def handle_update_app(request: web.Request) -> web.Response:
             status=400,
         )
 
+    # A marketplace app is never updated from a folder, whether the request names
+    # its recorded source (``market:<ref>@<n>``, what the Update button and
+    # ``kirocrew app update`` send) or a ``--source`` folder: refuse before anything
+    # is stopped or deregistered. ``update_app`` refuses the same way.
+    from kiro_crew.apps.market_source import MARKET_OVERWRITE_HINT, is_market_source
+
+    if is_market_source(source) or is_market_source(info.get("source")):
+        error = f"{name!r} cannot be updated from a folder. {MARKET_OVERWRITE_HINT}"
+        sel().log_api_access(
+            caller="dashboard",
+            operation="provenance",
+            outcome="rejected",
+            resources=name,
+            error=error,
+        )
+        return web.json_response(
+            {"ok": False, "name": name, "error": error, "code": "app_update_market_source"},
+            status=400,
+        )
+
     # Registry-installed apps: re-clone from registry.
     if is_registry_source(source):
         registry_name = registry_name_from_source(source)
