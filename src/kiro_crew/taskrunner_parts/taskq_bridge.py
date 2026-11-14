@@ -96,8 +96,10 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
         return None
     from kiro_crew.taskq import model as _taskq_model
     from kiro_crew.taskq.adapters import runner as _runner_adapter
+    from kiro_crew.taskq.store import TaskStoreUnavailable
 
     resumable: list[str] = []
+    row_of: dict[str, str] = {}
 
     def _resume(rec: _taskq_model.TaskRecord) -> bool:
         run_id = str(rec.params.get("task_id") or "")
@@ -109,6 +111,7 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
         if run.execution_context is not None and run.execution_context.memory_mode != "persistent":
             return False
         resumable.append(run_id)
+        row_of[run_id] = rec.id
         return True
 
     try:
@@ -120,9 +123,17 @@ async def adopt_task_rows(self: TaskRunner) -> "_runner_adapter.AdoptReport | No
         )
         for run_id in resumable:
             try:
-                await self.execute_plan(run_id)
+                await self.execute_plan(run_id, adopting=True)
             except ValueError as exc:
                 logger.warning("taskq adopt: could not resume run %s: %s", run_id, exc)
+                # An operator's cancel of a run the sweep had not reached ended the run,
+                # but its adopted row has no handle for the cancel to settle.
+                run = self._runs.get(run_id)
+                if run is not None and run.status in ("cancelling", "cancelled"):
+                    try:
+                        await store.run(store.cancel, row_of[run_id], reason="run cancelled")
+                    except TaskStoreUnavailable:
+                        logger.warning("taskq adopt: could not end the row of run %s", run_id)
                 continue
             await self._notify(
                 "Resumed after a gateway restart",
