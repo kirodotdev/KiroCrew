@@ -16194,6 +16194,7 @@
       "share_all_cancel": "취소",
       "enable_all_review_skipped_names": "건너뜀: {{names}}.",
       "approval_not_approvable_here": "이 서버의 명령은 공유용으로 승인할 수 없으므로 각 세션 안에서는 계속 실행됩니다.",
+      "approval_over_launch_cap": "이 서버를 서로 다른 설정으로 실행하는 에이전트가 너무 많습니다. 한도는 {{cap}}개입니다. 일부 에이전트에서 이 서버를 뺀 다음 제거를 누르세요. 서버는 그대로 있고 공유만 멈춥니다. 스위치가 다시 나타나므로 다시 공유할 수 있습니다.",
       "launch_preview_error_name_required": "서버 이름이 전달되지 않아 보여줄 것이 없습니다. 아무것도 켜지지 않았습니다.",
       "launch_preview_error_invalid_name": "{{name}}은(는) {{productName}}이(가) 서버 이름으로 읽을 수 있는 이름이 아닙니다. 아무것도 켜지지 않았습니다.",
       "launch_preview_error_unresolved": "{{name}}에는 보여줄 명령이 없어 공유 백엔드를 쓸 수 없습니다. 아무것도 켜지지 않았습니다.",

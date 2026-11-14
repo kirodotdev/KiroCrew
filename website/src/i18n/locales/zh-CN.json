@@ -16194,6 +16194,7 @@
       "share_all_cancel": "取消",
       "enable_all_review_skipped_names": "已跳过：{{names}}。",
       "approval_not_approvable_here": "此服务器的命令无法批准共享，因此它会继续在每个会话内运行。",
+      "approval_over_launch_cap": "以不同设置启动此服务器的代理太多，上限为 {{cap}} 个。请从部分代理中去掉它，然后按“移除”：服务器会保留，只停止共享，开关会重新出现，你可以再次共享它。",
       "launch_preview_error_name_required": "没有发送服务器名，没有可显示的内容。没有开启任何内容。",
       "launch_preview_error_invalid_name": "{{name}} 不是 {{productName}} 能识别的服务器名。没有开启任何内容。",
       "launch_preview_error_unresolved": "{{name}} 没有可显示的命令，无法使用共享后端。没有开启任何内容。",

@@ -17046,6 +17046,7 @@
       "share_all_cancel": "Cancelar",
       "enable_all_review_skipped_names": "Ignorados: {{names}}.",
       "approval_not_approvable_here": "O comando deste servidor não pode ser aprovado para compartilhamento, por isso ele continua sendo executado dentro de cada sessão.",
+      "approval_over_launch_cap": "Agentes demais iniciam este servidor com configurações diferentes (o limite é {{cap}}). Tire-o de alguns agentes e depois pressione Remover: o servidor continua, só o compartilhamento para, e o interruptor dele volta para você compartilhar de novo.",
       "launch_preview_error_name_required": "Nenhum nome de servidor foi enviado, então não há nada para mostrar. Nada foi ligado.",
       "launch_preview_error_invalid_name": "{{name}} não é um nome que o {{productName}} consiga ler como servidor. Nada foi ligado.",
       "launch_preview_error_unresolved": "{{name}} não tem comando para mostrar, então não pode usar um backend compartilhado. Nada foi ligado.",

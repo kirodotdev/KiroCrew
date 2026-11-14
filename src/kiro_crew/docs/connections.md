@@ -496,7 +496,7 @@ env names only, never their values. A row's state is one of:
 |---|---|
 | **shared** | All new chats use one copy |
 | **direct** | Each chat starts its own copy. A row with Share on also reads **direct** while the switch at the top is off, when its env names a vault secret, or when it needs a setting each chat keeps |
-| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here |
+| **Can't share** | It has no stdio pipe, it hands out credentials, or its command cannot be approved here, such as when too many agents start it with different settings (the row names the limit and the way back) |
 | **Paused · command changed** | Its command or settings changed since you approved it, so it runs inside each chat until you press **Approve update** |
 | **Paused · not approved yet** | It was added in a config file and never approved here; **Approve** shares it |
 

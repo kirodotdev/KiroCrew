@@ -7785,6 +7785,7 @@
       "share_all_cancel": "Cancel",
       "enable_all_review_skipped_names": "Skipped: {{names}}.",
       "approval_not_approvable_here": "This server's command cannot be approved for sharing, so it keeps running inside each session.",
+      "approval_over_launch_cap": "Too many agents start this server with different settings (the limit is {{cap}}). Take it out of some agents, then press Remove: the server stays, only sharing stops, and its switch comes back so you can share it again.",
       "launch_preview_error_name_required": "No server name was sent, so there is nothing to show. Nothing was turned on.",
       "launch_preview_error_invalid_name": "{{name}} is not a name {{productName}} can read as a server. Nothing was turned on.",
       "launch_preview_error_unresolved": "{{name}} has no command to show, so it cannot use a shared backend. Nothing was turned on.",

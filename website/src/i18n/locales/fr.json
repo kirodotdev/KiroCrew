@@ -17046,6 +17046,7 @@
       "share_all_cancel": "Annuler",
       "enable_all_review_skipped_names": "Ignorés : {{names}}.",
       "approval_not_approvable_here": "La commande de ce serveur ne peut pas être approuvée pour le partage, elle continue donc de s’exécuter dans chaque session.",
+      "approval_over_launch_cap": "Trop d’agents lancent ce serveur avec des réglages différents (la limite est de {{cap}}). Enlève-le de certains agents, puis appuie sur Retirer : le serveur reste, seul le partage s’arrête, et son interrupteur revient pour que tu puisses le partager à nouveau.",
       "launch_preview_error_name_required": "Aucun nom de serveur n’a été envoyé, il n’y a donc rien à afficher. Rien n’a été activé.",
       "launch_preview_error_invalid_name": "{{name}} n’est pas un nom que {{productName}} peut lire comme serveur. Rien n’a été activé.",
       "launch_preview_error_unresolved": "{{name}} n’a aucune commande à afficher, il ne peut donc pas utiliser un backend partagé. Rien n’a été activé.",
