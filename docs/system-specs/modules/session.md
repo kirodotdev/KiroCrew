@@ -771,7 +771,8 @@ directory. A resumed cwd, or an explicit one from a caller that passes
 notice), is dropped when it is inside an earlier process's scratch tree; any other
 caller keeps its explicit cwd, so a sub-agent's start there fails loudly instead of
 running in another repository: the sandbox hides every scratch tree but the spawn's own
-(and a `shared_scratch` tree it is handed), so a child started there could not read
+(and a `shared_scratch` tree it is handed, or the recorded tree a resume rejoins; a cwd that tree
+kept is checked again when a provider switch or a failed join leaves the tree unbound), so a child started there could not read
 its working directory and every MCP server it launched failed to spawn. The session
 then starts in its default directory, and the provider carries a
 `hidden_scratch_cwd_skipped` `startup_notice`. The chat's stored folder is never

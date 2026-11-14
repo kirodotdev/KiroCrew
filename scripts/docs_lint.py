@@ -369,6 +369,8 @@ _UNRESOLVABLE_REF_OK: frozenset[str] = frozenset(
         # spec-builder's decision record, in the `trust/` directory its manifest
         # declares read-only to agents: `config_dir() / "apps" / "spec-builder" / ...`.
         "apps/spec-builder/data/trust/spec-builder-decisions.json",
+        # Scratch tree index, written by agent_scratch.py under the scratch root.
+        "scratch/.trees.json",
         # Optional dev-only override read from KIROCREW_PROJECT_DIR by
         # `agent_parts/spec_build.py`'s `_shipped_defaults()`; the shipped file is
         # `config/defaults.json`, which resolves.
