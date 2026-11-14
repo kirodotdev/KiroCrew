@@ -207,6 +207,7 @@
       "runtime/update/armed-apply.js",
       "runtime/update/startup-apply.js",
       "runtime/update/gateway-probe.js",
+      "runtime/update/install-splash.js",
       "runtime/update/policy-source.js",
       "runtime/update/freshness-gate.js",
       "runtime/update/feed-lane.js",
