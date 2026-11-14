@@ -226,12 +226,45 @@ class TestOwnedApprovalStillRoutesToItsSlot:
         gateway.dashboard_state._slots = {"slot-other": _slot(running=True)}
 
         with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
-            approve_fn = gateway._interactive_approval(
-                "subagent", slot_resolver=lambda _rid: ""
-            )
+            approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "")
             await approve_fn(_event("req-owned-4"), "")
 
         assert _requested_slot(gateway) == ""
+
+
+class TestNestedSubagentPromptShowsInRootChat:
+    """A nested run's prompt is shown in its root chat's tab, never answered by its Trust."""
+
+    @pytest.mark.asyncio
+    async def test_nested_prompt_is_raised_in_root_tab_and_not_auto_approved(self) -> None:
+        """Asked under ``subagent:p1`` (a key no tab shows): the card goes to ``main``.
+
+        ``main`` is trusted, but the Trust slot stays the run's own parent key, so
+        the root chat's Trust must not approve the nested call: the prompt is raised.
+        """
+        from kiro_crew.subagent_parts.run_record import SubagentInfo
+
+        gateway = _make_gateway()
+        gateway.dashboard_state._slots = {"main": _slot(running=True, trust=True)}
+        gateway.dashboard_state.subagents.all_agents = [
+            SubagentInfo(
+                id="p1",
+                task="nested",
+                conversation_key="",
+                root_session_key="dashboard:main",
+                parent_session_key="subagent:p0",
+                done=False,
+                started=1.0,
+            )
+        ]
+        gateway.dashboard_state.request_approval = AsyncMock(return_value=False)
+
+        with patch("kiro_crew.slack.handler.is_yolo_mode", return_value=False):
+            approve_fn = gateway._interactive_approval("subagent")
+            result = await approve_fn(_event("1"), "subagent:p1")
+
+        assert _requested_slot(gateway) == "main"
+        assert result is False, "the root chat's Trust must not answer a nested run's call"
 
 
 def _child_lf_event(request_id: str = "req-child-1") -> LLMEvent:
@@ -281,9 +314,7 @@ class TestLowFidelityChildNeverAutoApproved:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -378,9 +409,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_not_awaited()
 
@@ -391,9 +420,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=False)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_identity_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
@@ -404,9 +431,7 @@ class TestIdentityTrustedChildHonorsUnconditionalGrants:
         gateway = _make_gateway()
         gateway.dashboard_state._slots = {"slot-1": _slot(running=True, trust=True)}
         gateway.sessions.get_pid = MagicMock(return_value=None)
-        approve_fn = gateway._interactive_approval(
-            "subagent", slot_resolver=lambda _rid: "slot-1"
-        )
+        approve_fn = gateway._interactive_approval("subagent", slot_resolver=lambda _rid: "slot-1")
         assert await approve_fn(_child_lf_event()) is True
         gateway.dashboard_state.request_approval.assert_awaited_once()
 
