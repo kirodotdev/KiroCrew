@@ -26,7 +26,7 @@ from kiro_crew.history import ConversationLog
 
 #: Every dispatcher sharing the two-append ``_persist_turn`` shape. Slack is absent
 #: deliberately: its persist is a different topology (three write branches, off-loop
-#: stamping) and is not covered by this change.
+#: stamping) and is not covered here.
 _CHANNELS = [
     ("weixin", "kiro_crew.weixin.transport_dispatch"),
     ("telegram", "kiro_crew.telegram.transport_dispatch"),

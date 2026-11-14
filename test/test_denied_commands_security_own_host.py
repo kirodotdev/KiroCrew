@@ -960,10 +960,10 @@ class TestSandboxEscapeSshSelfOwnHost:
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_DONE", False)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_NAMES_CACHE", None)
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_NEXT_TRY", 0.0)
-        # raising=False so this test also runs against pre-fix code (which lacks
-        # the attribute) and fails on the behavioral overlap assert, not on a
-        # missing attribute -- the parent's proof pass reverts the hunk and
-        # expects THIS test to fail there.
+        # raising=False so this test also runs against code that lacks the
+        # attribute and fails on the behavioral overlap assert, not on a missing
+        # attribute -- a proof pass that reverts the fix expects THIS test to
+        # fail there.
         monkeypatch.setattr(_argv_floor, "_OWN_HOST_RESOLVE_IN_FLIGHT", False, raising=False)
 
         spawned: list[threading.Thread] = []
@@ -1045,8 +1045,8 @@ class TestSandboxEscapeSshSelfOwnHost:
         # still names this machine, so the resolver must union in
         # ``_own_interface_addresses``.  The DNS halves are stubbed to fixed
         # values so the test is network-free; raising=False so it also runs
-        # against the pre-fix tree (where the helper is absent) and fails on the
-        # missing address rather than on a patch error.
+        # against a tree without the helper and fails on the missing address
+        # rather than on a patch error.
         monkeypatch.setattr(security.socket, "gethostname", lambda: "myhost")
         monkeypatch.setattr(security.socket, "getfqdn", lambda: "myhost.example.com")
         monkeypatch.setattr(security.socket, "getaddrinfo", lambda *a, **k: [])

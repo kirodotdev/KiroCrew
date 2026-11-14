@@ -140,7 +140,7 @@ class TestCatalog:
             # the interpreter's authority, so it can BUILD the verb instead of passing it —
             # which is why the `-c` form is denied on the IMPORT rather than on the verb. The
             # verb requirement holds everywhere else (`kirocrew doctor` is legitimate) but is
-            # not enforceable here. Found in review (GPT 5.6).
+            # not enforceable here.
             "python -c \"import sys; sys.argv.append('token'); "
             'from kiro_crew.cli import main; main()"',
             'python -c "from kiro_crew.cli import main; import sys; '
@@ -1668,9 +1668,9 @@ class TestIsDeniedReDoSResistance:
     that bypass — see ``test_padded_single_segment_needle_not_bypassed``).
     """
 
-    # The ceiling only has to separate LINEAR from CATASTROPHIC: the pre-fix ReDoS
-    # took many seconds to minutes (exponential/polynomial), so a wide 5s bound is
-    # all the resolution this needs.
+    # The ceiling only has to separate LINEAR from CATASTROPHIC: a ReDoS takes many
+    # seconds to minutes (exponential/polynomial), so a wide 5s bound is all the
+    # resolution this needs.
     _BUDGET_SECONDS = 5.0
 
     @staticmethod

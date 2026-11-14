@@ -327,7 +327,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # ---- tranche 2 ----
     # taskrunner.py: the control-field endpoints TAKE the cap rather than
     # deferring it, which is what tranche 1 could not do without rewriting its
-    # handlers' mocked-json test harness. Its own harness is updated in this PR.
+    # handlers' mocked-json test harness. Its own harness is updated to match.
     "handlers/taskrunner.py::api_taskrunner_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/taskrunner.py::api_taskrunner_rename": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/taskrunner.py::api_taskrunner_retry": ("<default>", _BOUNDED_CONTROL_FIELDS),

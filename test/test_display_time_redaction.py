@@ -137,12 +137,11 @@ def test_history_prefix_keeps_user_text() -> None:
     assert "my own note" in _build_history_prefix(slot)
 
 
-# ── 3b. the OTHER prompt paths, found by the CI GPT lane ─────────────────────
+# ── 3b. the OTHER prompt paths ───────────────────────────────────────────────
 #
-# My own egress audit covered client-facing routes thoroughly and under-covered
-# prompt builders. The GPT review lane caught `side_context`; auditing that class
-# properly then turned up `chat_orchestrator` as the same defect writing to disk.
-# Both are pinned here so the class stays closed.
+# Prompt builders are egress too: `side_context` sends to the model and
+# `chat_orchestrator` writes the same text to disk. Both are pinned here so the
+# class stays closed.
 
 
 def test_side_chat_parent_snapshot_redacts_assistant_content() -> None:

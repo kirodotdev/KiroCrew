@@ -976,7 +976,7 @@ def test_enforce_denied_commands_settable_key_removed():
 
 # ── keystone lockdown ──
 #
-# Regression: the keystone ``denied_commands.json`` lives in
+# The keystone ``denied_commands.json`` lives in
 # ``_SENSITIVE_HOME_DIRS`` and is the user-editable opt-out of the agent's own
 # security ceiling. The agent process must NEVER leave it world-readable, even
 # briefly. On Windows ``chmod_safe`` is a documented no-op and would leave the
