@@ -41,6 +41,18 @@
     .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: gb-blink 1.1s ease-in-out infinite; }
     .item .line { font-size: 10.5px; color: var(--muted, #9aa); margin-top: 4px; }
     .item .line em { color: var(--text, #e6e6e6); font-style: normal; overflow-wrap: anywhere; }
+    .talk { margin-top: 4px; }
+    .talk .tg { font: inherit; font-size: 10.5px; padding: 0; margin-top: 3px; border: 0; background: none; cursor: pointer;
+      color: var(--info, #6aa9ff); text-decoration: underline; }
+    .talk .tg:focus-visible, .talk .thread:focus-visible { outline: 2px solid var(--accent, #00d492); outline-offset: 1px; }
+    .talk .panel { margin-top: 4px; padding: 5px 8px; border-left: 2px solid var(--info, #6aa9ff); border-radius: 4px; background: var(--bg-hover, #222); }
+    .talk .sh { margin-top: 5px; font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--muted, #9aa); }
+    .talk .sh:first-child { margin-top: 0; }
+    .talk ul { margin: 1px 0 0; padding-left: 15px; }
+    .talk li { overflow-wrap: anywhere; color: var(--text, #e6e6e6); }
+    .talk li b { color: var(--text-strong, #fff); font-weight: 600; }
+    .talk .thread { font: inherit; font-size: 10.5px; margin-top: 6px; padding: 1px 8px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--info, #6aa9ff); background: var(--bg-elevated, #1a1a1a); color: var(--text-strong, #fff); }
     .nest { margin-top: 6px; padding-left: 8px; border-left: 2px solid var(--border, #333); }
     .nest .nh { font-size: 10.5px; color: var(--muted, #9aa); }
     .nest .row { margin-top: 5px; }
@@ -89,7 +101,7 @@
       var DASH = '\u2014';
 
       // The page's own words, one table per UI language. A key a language lacks
-      // falls back to English. Values the ledger or a crewmate wrote are never
+      // falls back to English, which is why most tables hold only the discussion row's. Values the ledger or a crewmate wrote are never
       // looked up here. The zh-CN strings are \u-escaped so the source stays ASCII.
       var I18N = {
         en: {
@@ -118,7 +130,14 @@
           fills_chat: 'Buttons fill your chat box. Nothing sends until you press send.',
           state_open: 'open', state_accepted: 'accepted', state_rejected: 'rejected',
           state_blocked: 'blocked', state_abandoned: 'abandoned', state_unknown: 'unknown',
-          sub_board: 'Sub-tasks', sub_goal: 'goal', sub_more: '{n} more not shown'
+          sub_board: 'Sub-tasks', sub_goal: 'goal', sub_more: '{n} more not shown',
+          state_discussing: '\ud83d\udcac discussing',
+          talk_counts: '{a} agreed \u00b7 {d} disputed \u00b7 {c} checking \u00b7 {q} for you',
+          talk_meta: '{p} \u00b7 round {r} \u00b7 {m} min', phase_talking: 'talking',
+          phase_checking: 'checking facts', phase_asking: 'asking you', phase_done: 'wrapped up',
+          talk_show: 'Show the discussion', talk_hide: 'Hide the discussion', talk_direction: 'Direction',
+          talk_agreed: 'Agreed', talk_disputed: 'Disputed', talk_checking: 'Being checked',
+          talk_recent: 'Latest lines', talk_thread: 'See the back-and-forth \u2197', talk_thread_title: 'Open {v}'
         },
         'zh-CN': {
           title: '\u76ee\u6807\u770b\u677f', round: '\u8f6e\u6b21', goal_version: '\u76ee\u6807\u7248\u672c', depth: '\u5c42\u7ea7',
@@ -147,7 +166,139 @@
           state_open: '\u8fdb\u884c\u4e2d', state_accepted: '\u5df2\u63a5\u53d7', state_rejected: '\u5df2\u62d2\u7edd',
           state_blocked: '\u53d7\u963b', state_abandoned: '\u5df2\u653e\u5f03', state_unknown: '\u672a\u77e5',
           sub_board: '\u5b50\u4efb\u52a1', sub_goal: '\u76ee\u6807',
-          sub_more: '\u8fd8\u6709 {n} \u9879\u672a\u663e\u793a'
+          sub_more: '\u8fd8\u6709 {n} \u9879\u672a\u663e\u793a',
+          state_discussing: '\ud83d\udcac \u8ba8\u8bba\u4e2d',
+          talk_counts: '\u5df2\u4e00\u81f4 {a} \u00b7 \u5206\u6b67 {d} \u00b7 \u6b63\u5728\u67e5 {c} \u00b7 \u95ee\u4f60 {q}',
+          talk_meta: '{p} \u00b7 \u7b2c {r} \u8f6e \u00b7 {m} \u5206\u949f', phase_talking: '\u5feb\u804a\u4e2d',
+          phase_checking: '\u67e5\u4e8b\u5b9e', phase_asking: '\u95ee\u4f60', phase_done: '\u5df2\u7ed3\u675f',
+          talk_show: '\u5c55\u5f00\u8ba8\u8bba', talk_hide: '\u6536\u8d77\u8ba8\u8bba',
+          talk_direction: '\u65b9\u5411', talk_agreed: '\u5df2\u4e00\u81f4', talk_disputed: '\u5206\u6b67',
+          talk_checking: '\u6b63\u5728\u67e5', talk_recent: '\u6700\u8fd1\u51e0\u53e5',
+          talk_thread: '\u770b\u6765\u56de \u2197', talk_thread_title: '\u6253\u5f00 {v}'
+        },
+        'hi': {
+          state_discussing: '\ud83d\udcac \u091a\u0930\u094d\u091a\u093e \u091c\u093e\u0930\u0940',
+          talk_counts: '{a} \u0938\u0939\u092e\u0924 \u00b7 {d} \u0905\u0938\u0939\u092e\u0924 \u00b7 {c} \u091c\u093e\u0901\u091a \u092e\u0947\u0902 \u00b7 {q} \u0906\u092a\u0938\u0947',
+          talk_meta: '{p} \u00b7 \u0926\u094c\u0930 {r} \u00b7 {m} \u092e\u093f\u0928\u091f',
+          phase_talking: '\u092c\u093e\u0924\u091a\u0940\u0924 \u091c\u093e\u0930\u0940',
+          phase_checking: '\u0924\u0925\u094d\u092f \u091c\u093e\u0901\u091a',
+          phase_asking: '\u0906\u092a\u0938\u0947 \u0938\u0935\u093e\u0932',
+          phase_done: '\u0938\u092e\u093e\u092a\u094d\u0924',
+          talk_show: '\u091a\u0930\u094d\u091a\u093e \u0926\u093f\u0916\u093e\u090f\u0901',
+          talk_hide: '\u091a\u0930\u094d\u091a\u093e \u091b\u093f\u092a\u093e\u090f\u0901',
+          talk_direction: '\u0926\u093f\u0936\u093e', talk_agreed: '\u0938\u0939\u092e\u0924',
+          talk_disputed: '\u0905\u0938\u0939\u092e\u0924',
+          talk_checking: '\u091c\u093e\u0901\u091a \u092e\u0947\u0902',
+          talk_recent: '\u0939\u093e\u0932 \u0915\u0940 \u092c\u093e\u0924\u0947\u0902',
+          talk_thread: '\u092a\u0942\u0930\u0940 \u092c\u093e\u0924\u091a\u0940\u0924 \u0926\u0947\u0916\u0947\u0902 \u2197',
+          talk_thread_title: '{v} \u0916\u094b\u0932\u0947\u0902'
+        },
+        'es': {
+          state_discussing: '\ud83d\udcac en debate',
+          talk_counts: '{a} acordados \u00b7 {d} en disputa \u00b7 {c} en revisi\u00f3n \u00b7 {q} para ti',
+          talk_meta: '{p} \u00b7 ronda {r} \u00b7 {m} min', phase_talking: 'conversando',
+          phase_checking: 'verificando datos', phase_asking: 'te pregunta', phase_done: 'terminado',
+          talk_show: 'Ver el debate', talk_hide: 'Ocultar el debate', talk_direction: 'Direcci\u00f3n',
+          talk_agreed: 'Acordado', talk_disputed: 'En disputa', talk_checking: 'En revisi\u00f3n',
+          talk_recent: '\u00daltimas frases', talk_thread: 'Ver el intercambio \u2197',
+          talk_thread_title: 'Abrir {v}'
+        },
+        'fr': {
+          state_discussing: '\ud83d\udcac en discussion',
+          talk_counts: '{a} d\u2019accord \u00b7 {d} en d\u00e9saccord \u00b7 {c} en v\u00e9rification \u00b7 {q} pour vous',
+          talk_meta: '{p} \u00b7 tour {r} \u00b7 {m} min', phase_talking: '\u00e9change en cours',
+          phase_checking: 'v\u00e9rification', phase_asking: 'vous interroge', phase_done: 'termin\u00e9',
+          talk_show: 'Afficher la discussion', talk_hide: 'Masquer la discussion', talk_direction: 'Direction',
+          talk_agreed: 'Accords', talk_disputed: 'D\u00e9saccords', talk_checking: 'En v\u00e9rification',
+          talk_recent: 'Derni\u00e8res r\u00e9pliques', talk_thread: 'Voir les \u00e9changes \u2197',
+          talk_thread_title: 'Ouvrir {v}'
+        },
+        'bn': {
+          state_discussing: '\ud83d\udcac \u0986\u09b2\u09cb\u099a\u09a8\u09be \u099a\u09b2\u099b\u09c7',
+          talk_counts: '{a} \u098f\u0995\u09ae\u09a4 \u00b7 {d} \u09ae\u09a4\u09ad\u09c7\u09a6 \u00b7 {c} \u09af\u09be\u099a\u09be\u0987 \u099a\u09b2\u099b\u09c7 \u00b7 {q} \u0986\u09aa\u09a8\u09be\u09b0 \u099c\u09a8\u09cd\u09af',
+          talk_meta: '{p} \u00b7 \u09b0\u09be\u0989\u09a8\u09cd\u09a1 {r} \u00b7 {m} \u09ae\u09bf\u09a8\u09bf\u099f',
+          phase_talking: '\u0986\u09b2\u09cb\u099a\u09a8\u09be \u099a\u09b2\u099b\u09c7',
+          phase_checking: '\u09a4\u09a5\u09cd\u09af \u09af\u09be\u099a\u09be\u0987',
+          phase_asking: '\u0986\u09aa\u09a8\u09be\u0995\u09c7 \u09aa\u09cd\u09b0\u09b6\u09cd\u09a8',
+          phase_done: '\u09b6\u09c7\u09b7',
+          talk_show: '\u0986\u09b2\u09cb\u099a\u09a8\u09be \u09a6\u09c7\u0996\u09be\u09a8',
+          talk_hide: '\u0986\u09b2\u09cb\u099a\u09a8\u09be \u09b2\u09c1\u0995\u09be\u09a8',
+          talk_direction: '\u09a6\u09bf\u0995', talk_agreed: '\u098f\u0995\u09ae\u09a4',
+          talk_disputed: '\u09ae\u09a4\u09ad\u09c7\u09a6',
+          talk_checking: '\u09af\u09be\u099a\u09be\u0987 \u099a\u09b2\u099b\u09c7',
+          talk_recent: '\u09b8\u09be\u09ae\u09cd\u09aa\u09cd\u09b0\u09a4\u09bf\u0995 \u0995\u09a5\u09be',
+          talk_thread: '\u09aa\u09c1\u09b0\u09cb \u0986\u09b2\u09cb\u099a\u09a8\u09be \u09a6\u09c7\u0996\u09c1\u09a8 \u2197',
+          talk_thread_title: '{v} \u0996\u09c1\u09b2\u09c1\u09a8'
+        },
+        'pt': {
+          state_discussing: '\ud83d\udcac em discuss\u00e3o',
+          talk_counts: '{a} acordados \u00b7 {d} em disputa \u00b7 {c} em verifica\u00e7\u00e3o \u00b7 {q} para voc\u00ea',
+          talk_meta: '{p} \u00b7 rodada {r} \u00b7 {m} min', phase_talking: 'conversando',
+          phase_checking: 'verificando fatos', phase_asking: 'perguntando a voc\u00ea', phase_done: 'conclu\u00edda',
+          talk_show: 'Mostrar a discuss\u00e3o', talk_hide: 'Ocultar a discuss\u00e3o',
+          talk_direction: 'Dire\u00e7\u00e3o', talk_agreed: 'Acordado', talk_disputed: 'Em disputa',
+          talk_checking: 'Em verifica\u00e7\u00e3o', talk_recent: '\u00daltimas falas',
+          talk_thread: 'Ver a conversa \u2197', talk_thread_title: 'Abrir {v}'
+        },
+        'ru': {
+          state_discussing: '\ud83d\udcac \u043e\u0431\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0435',
+          talk_counts: '\u0441\u043e\u0433\u043b\u0430\u0441\u043e\u0432\u0430\u043d\u043e {a} \u00b7 \u0441\u043f\u043e\u0440\u043d\u043e {d} \u00b7 \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f {c} \u00b7 \u0432\u043e\u043f\u0440\u043e\u0441\u044b \u0432\u0430\u043c {q}',
+          talk_meta: '{p} \u00b7 \u0440\u0430\u0443\u043d\u0434 {r} \u00b7 {m} \u043c\u0438\u043d',
+          phase_talking: '\u0438\u0434\u0451\u0442 \u043e\u0431\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0435',
+          phase_checking: '\u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0444\u0430\u043a\u0442\u043e\u0432',
+          phase_asking: '\u0432\u043e\u043f\u0440\u043e\u0441 \u0432\u0430\u043c',
+          phase_done: '\u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043d\u043e',
+          talk_show: '\u041f\u043e\u043a\u0430\u0437\u0430\u0442\u044c \u043e\u0431\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0435',
+          talk_hide: '\u0421\u043a\u0440\u044b\u0442\u044c \u043e\u0431\u0441\u0443\u0436\u0434\u0435\u043d\u0438\u0435',
+          talk_direction: '\u041d\u0430\u043f\u0440\u0430\u0432\u043b\u0435\u043d\u0438\u0435',
+          talk_agreed: '\u0421\u043e\u0433\u043b\u0430\u0441\u043e\u0432\u0430\u043d\u043e',
+          talk_disputed: '\u0421\u043f\u043e\u0440\u043d\u043e',
+          talk_checking: '\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f',
+          talk_recent: '\u041f\u043e\u0441\u043b\u0435\u0434\u043d\u0438\u0435 \u0440\u0435\u043f\u043b\u0438\u043a\u0438',
+          talk_thread: '\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u0432\u0441\u044e \u043f\u0435\u0440\u0435\u043f\u0438\u0441\u043a\u0443 \u2197',
+          talk_thread_title: '\u041e\u0442\u043a\u0440\u044b\u0442\u044c {v}'
+        },
+        'de': {
+          state_discussing: '\ud83d\udcac in Diskussion',
+          talk_counts: '{a} einig \u00b7 {d} strittig \u00b7 {c} in Pr\u00fcfung \u00b7 {q} an dich',
+          talk_meta: '{p} \u00b7 Runde {r} \u00b7 {m} Min.', phase_talking: 'im Gespr\u00e4ch',
+          phase_checking: 'pr\u00fcft Fakten', phase_asking: 'fragt dich', phase_done: 'abgeschlossen',
+          talk_show: 'Diskussion anzeigen', talk_hide: 'Diskussion ausblenden', talk_direction: 'Richtung',
+          talk_agreed: 'Einig', talk_disputed: 'Strittig', talk_checking: 'In Pr\u00fcfung',
+          talk_recent: 'Letzte Beitr\u00e4ge', talk_thread: 'Ganzen Verlauf ansehen \u2197',
+          talk_thread_title: '{v} \u00f6ffnen'
+        },
+        'ja': {
+          state_discussing: '\ud83d\udcac \u8b70\u8ad6\u4e2d',
+          talk_counts: '\u5408\u610f {a} \u00b7 \u76f8\u9055 {d} \u00b7 \u78ba\u8a8d\u4e2d {c} \u00b7 \u3042\u306a\u305f\u3078 {q}',
+          talk_meta: '{p} \u00b7 \u7b2c {r} \u30e9\u30a6\u30f3\u30c9 \u00b7 {m} \u5206',
+          phase_talking: '\u8a71\u3057\u5408\u3044\u4e2d', phase_checking: '\u4e8b\u5b9f\u78ba\u8a8d\u4e2d',
+          phase_asking: '\u8cea\u554f\u4e2d', phase_done: '\u7d42\u4e86',
+          talk_show: '\u8b70\u8ad6\u3092\u958b\u304f', talk_hide: '\u8b70\u8ad6\u3092\u9589\u3058\u308b',
+          talk_direction: '\u65b9\u5411\u6027', talk_agreed: '\u5408\u610f', talk_disputed: '\u76f8\u9055',
+          talk_checking: '\u78ba\u8a8d\u4e2d', talk_recent: '\u6700\u8fd1\u306e\u767a\u8a00',
+          talk_thread: '\u3084\u308a\u53d6\u308a\u3092\u898b\u308b \u2197',
+          talk_thread_title: '{v} \u3092\u958b\u304f'
+        },
+        'ko': {
+          state_discussing: '\ud83d\udcac \ub17c\uc758 \uc911',
+          talk_counts: '\ud569\uc758 {a} \u00b7 \uc774\uacac {d} \u00b7 \ud655\uc778 \uc911 {c} \u00b7 \uc9c8\ubb38 {q}',
+          talk_meta: '{p} \u00b7 {r}\ub77c\uc6b4\ub4dc \u00b7 {m}\ubd84', phase_talking: '\ub17c\uc758 \uc911',
+          phase_checking: '\uc0ac\uc2e4 \ud655\uc778 \uc911', phase_asking: '\uc9c8\ubb38 \uc911',
+          phase_done: '\uc885\ub8cc', talk_show: '\ub17c\uc758 \ud3bc\uce58\uae30',
+          talk_hide: '\ub17c\uc758 \uc811\uae30', talk_direction: '\ubc29\ud5a5', talk_agreed: '\ud569\uc758',
+          talk_disputed: '\uc774\uacac', talk_checking: '\ud655\uc778 \uc911',
+          talk_recent: '\ucd5c\uadfc \ubc1c\uc5b8', talk_thread: '\uc804\uccb4 \ub300\ud654 \ubcf4\uae30 \u2197',
+          talk_thread_title: '{v} \uc5f4\uae30'
+        },
+        'it': {
+          state_discussing: '\ud83d\udcac in discussione',
+          talk_counts: '{a} concordati \u00b7 {d} in disaccordo \u00b7 {c} in verifica \u00b7 {q} per te',
+          talk_meta: '{p} \u00b7 round {r} \u00b7 {m} min', phase_talking: 'in discussione',
+          phase_checking: 'verifica dei fatti', phase_asking: 'ti chiede', phase_done: 'conclusa',
+          talk_show: 'Mostra la discussione', talk_hide: 'Nascondi la discussione', talk_direction: 'Direzione',
+          talk_agreed: 'Concordato', talk_disputed: 'In disaccordo', talk_checking: 'In verifica',
+          talk_recent: 'Ultimi interventi', talk_thread: 'Vedi lo scambio \u2197', talk_thread_title: 'Apri {v}'
         }
       };
       function locale() {
@@ -192,6 +343,7 @@
       var STATES = [
         ['needs_you', 'needs you', 'var(--warn, #ffd230)'],
         ['working', 'working', 'var(--accent, #00d492)'],
+        ['discussing', 'discussing', 'var(--info, #6aa9ff)'],
         ['stuck', 'stuck', 'var(--muted-strong, #778)'],
         ['quiet', 'quiet', 'var(--muted-strong, #778)'],
         ['waiting', 'waiting', 'var(--muted-strong, #778)'],
@@ -244,6 +396,9 @@
         if (typeof it.awaits_person === 'boolean' ? it.awaits_person :
           ((it.status === 'question' || it.status === 'blocked') &&
           (it.reason === 'approval' || it.reason === 'needs_human'))) return 'needs_you';
+        // A discussion its worker hosts, while that worker is still there and not quiet;
+        // a stalled host falls through to stuck or quiet below, its panel still drawn.
+        if (discussionOf(it) && it.worker !== 'closed' && it.orphaned !== true && it.stale !== true) return 'discussing';
         if (it.worker === 'running') return 'working';
         if (it.orphaned === true && (it.status === 'progress' || it.status === 'blocked' ||
           it.status === 'question')) return 'stuck';
@@ -259,7 +414,10 @@
       // An item that waits on the reader: the warm band.
       function needsYou(it) { return view(it) === 'needs_you'; }
       // Only a worker actually mid-turn pulses.
-      function live(it) { return view(it) === 'working' && !(it.looping === true && it.worker === 'idle'); }
+      function live(it) {
+        return (view(it) === 'working' && !(it.looping === true && it.worker === 'idle')) ||
+          (view(it) === 'discussing' && it.worker === 'running');
+      }
       // THE CHAT BOX, never the wire: the host fills the person's composer with this
       // text and the person presses send. Used for Reply, whose text is a starter.
       function act(text) {
@@ -335,6 +493,94 @@
           row.appendChild(ob);
         }
         return row;
+      }
+
+      // A discussion the item's worker hosts: the `discussion` its last report carried,
+      // which the next report replaces. Only an open item's counts as one.
+      function discussionOf(it) {
+        var d = it.discussion;
+        return text(it.state) === 'open' && d && typeof d === 'object' && text(d.phase) ? d : null;
+      }
+      function listOf(v) { return Array.isArray(v) ? v : []; }
+      // One titled list in the discussion panel. A row is a string, or [bold, rest] for
+      // a disputed point with its sides and a line with who said it.
+      function talkSection(host, key, rows) {
+        var ul = document.createElement('ul');
+        for (var i = 0; i < rows.length; i++) {
+          var r = rows[i];
+          var head = Array.isArray(r) ? text(r[0]) : null;
+          var rest = Array.isArray(r) ? text(r[1]) : text(r);
+          if (!head && !rest) continue;
+          var li = document.createElement('li');
+          if (head) {
+            var b = document.createElement('b');
+            b.textContent = head;
+            li.appendChild(b);
+            if (rest) li.appendChild(document.createTextNode(': '));
+          }
+          if (rest) li.appendChild(document.createTextNode(rest));
+          ul.appendChild(li);
+        }
+        if (!ul.children.length) return;
+        var h = document.createElement('div');
+        h.className = 'sh';
+        h.textContent = i18n(key);
+        host.appendChild(h);
+        host.appendChild(ul);
+      }
+      // Which items' discussion panels the reader opened, kept across refills.
+      var talkOpen = {};
+      // The discussing row's counts, and behind a toggle what the discussion holds.
+      // A question for the reader is not drawn here: it is the needs-you band's.
+      function drawTalk(card, it, id) {
+        var d = discussionOf(it);
+        if (!d) return;
+        var agreed = listOf(d.agreed), disputed = listOf(d.disputed);
+        var checking = listOf(d.checking), recent = listOf(d.recent);
+        var phase = text(d.phase);
+        var box = document.createElement('div');
+        box.className = 'talk';
+        var head = document.createElement('div');
+        head.className = 'line';
+        head.textContent = i18n('talk_counts', {
+          a: agreed.length, d: disputed.length, c: checking.length, q: needsYou(it) ? 1 : 0
+        }) + ' \u00b7 ' + i18n('talk_meta', {
+          p: has('phase_' + phase) ? i18n('phase_' + phase) : phase, r: num(d.round) || 0, m: num(d.minutes) || 0
+        });
+        box.appendChild(head);
+        var panel = document.createElement('div');
+        panel.className = 'panel';
+        panel.id = 'gb-talk-' + id.replace(/[^A-Za-z0-9_-]/g, '_');
+        var toggle = button('', 'tg', null);
+        toggle.setAttribute('aria-controls', panel.id);
+        function show(open) {
+          talkOpen[id] = open;
+          panel.hidden = !open;
+          toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+          toggle.textContent = i18n(open ? 'talk_hide' : 'talk_show');
+        }
+        toggle.addEventListener('click', function () { show(!talkOpen[id]); });
+        var direction = text(d.direction);
+        talkSection(panel, 'talk_direction', direction ? [direction] : []);
+        talkSection(panel, 'talk_agreed', agreed);
+        talkSection(panel, 'talk_disputed', disputed.map(function (x) {
+          return x && typeof x === 'object' ? [x.point, x.sides] : null;
+        }));
+        talkSection(panel, 'talk_checking', checking);
+        talkSection(panel, 'talk_recent', recent.map(function (x) {
+          return x && typeof x === 'object' ? [x.who, x.text] : null;
+        }));
+        var thread = text(d.thread);
+        if (thread && thread.length <= 2048 && LINKABLE.test(thread)) {
+          var tb = button(i18n('talk_thread'), 'thread', null);
+          tb.title = i18n('talk_thread_title', { v: thread });
+          tb.addEventListener('click', function () { openLink(thread); });
+          panel.appendChild(tb);
+        }
+        box.appendChild(toggle);
+        box.appendChild(panel);
+        show(!!talkOpen[id]);
+        card.appendChild(box);
       }
 
       // Ids already drawn once, so a host refill does not replay the pop-in.
@@ -524,7 +770,8 @@
         for (var i = 0; i < list.length; i++) {
           var v = view(list[i]);
           if (v === 'accepted') acc += 1;
-          if (v === 'working') run += 1;
+          // A discussion is work in progress: it counts as running, not as nothing.
+          if (v === 'working' || v === 'discussing') run += 1;
           if (v === 'waiting') park += 1;
           if (v === 'quiet') hush += 1;
           if (v === 'stuck') stuck += 1;
@@ -674,6 +921,7 @@
           if (decision) card.appendChild(line(i18n('decision'), decision));
           var summary = text(it.summary);
           if (summary) card.appendChild(line(i18n('reported'), summary));
+          drawTalk(card, it, id);
           var worker = text(it.spender);
           if (worker) card.appendChild(line(i18n('worker'), worker));
           drawNest(card, all, own, text(it.item_id), 1, own ? [own] : []);

@@ -619,6 +619,9 @@ def apply_remote_report(
             )
         item.status = checked_status
         item.reason = checked_reason
+        # A peer report carries no discussion, and a report replaces it, as the fold
+        # replaces it on every report entry.
+        item.discussion = None
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:

@@ -26,6 +26,7 @@ from kiro_crew.work_vocab import (
     WORK_VERDICTS,
     WORK_WORKER_STATUSES,
     coerce_ask,
+    coerce_discussion,
     coerce_retired_bindings,
 )
 
@@ -395,7 +396,7 @@ class WorkItem:
     Conductor-owned: ``title``, ``acceptance``, ``state``, ``verdict``, ``decision``,
     ``worker_session_key``, ``round``, ``fails``, ``ask``.
     Worker-owned: ``status``, ``reason``, ``wake_at``, ``summary``, ``artifacts``,
-    ``pr``, ``last_report_at``.
+    ``pr``, ``discussion``, ``last_report_at``.
     Server-owned: ``item_id``, ``created_at``, ``closed_at``, ``decided_at``,
     ``pending_since``.
 
@@ -452,6 +453,10 @@ class WorkItem:
     #: and ``close`` clear it. Serialized only when set, so an item that never asked
     #: is stored exactly as before.
     ask: dict[str, Any] | None = None
+    #: Where a discussion this item's worker hosts stands, from its last report
+    #: (:func:`~kiro_crew.work_vocab.coerce_discussion`), or ``None``. Every report
+    #: replaces it, so one without it clears it. Serialized only when set.
+    discussion: dict[str, Any] | None = None
     schema: int = SCHEMA_VERSION
     #: When the crew log first held this item whole (its recorded create, or the
     #: baseline its first recorded mutation carried). Empty until then: the write
@@ -472,6 +477,8 @@ class WorkItem:
             out["retired_bindings"] = [dict(b) for b in self.retired_bindings]
         if self.ask:
             out["ask"] = dict(self.ask)
+        if self.discussion:
+            out["discussion"] = dict(self.discussion)
         return out
 
     def _base_dict(self) -> dict[str, Any]:
@@ -538,6 +545,7 @@ class WorkItem:
             decided_at=_as_opt_str(raw.get("decided_at")),
             pending_since=_as_opt_str(raw.get("pending_since")),
             ask=coerce_ask(raw.get("ask")),
+            discussion=coerce_discussion(raw.get("discussion")),
             recorded_at=_as_str(raw.get("recorded_at")),
             schema=_as_int(raw.get("schema"), SCHEMA_VERSION),
         )
