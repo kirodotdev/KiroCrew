@@ -17,6 +17,7 @@ from dashboard_source_link_unlink_helpers import (
     _identity_key,
     _slot,
 )
+from source_link_rows import append_created, gh_create_meta, gh_create_row
 
 from kiro_crew.dashboard import channel_slots
 from kiro_crew.dashboard.state import _ChatSlot
@@ -40,10 +41,8 @@ class TestAlternateHydratorsRestoreDismissals:
             "title": "t",
             "modified": 0.0,
         }
-        # The transcript mentions PR_A, so absent a restore the chip would derive.
-        messages = [
-            {"role": "assistant", "content": PR_A, "ts": "2026-09-01T00:00:00+00:00"},
-        ]
+        # The transcript created PR_A, so absent a restore the chip would derive.
+        messages = [gh_create_row(PR_A, ts="2026-09-01T00:00:00+00:00")]
         meta = {"dismissed_source_links": [key]}
 
         slot = channel_slots.surface_channel_session(
@@ -177,7 +176,9 @@ class TestEveryHydrationPathRestoresOrDefers:
     @staticmethod
     def _seed(state, hkey: str, key: str, *urls: str) -> None:
         for url in urls:
-            state.conversation_log.append(hkey, "assistant", url)
+            state.conversation_log.append(
+                hkey, "tool", "🔧 Open the pull request", extra_meta=gh_create_meta(url)
+            )
         state.conversation_log.update_metadata(hkey, {"dismissed_source_links": [key]})
 
     def test_rehydrate_slot_from_history_restores_the_dismissed_set(self, tmp_path, monkeypatch):
@@ -355,7 +356,7 @@ class TestEveryHydrationPathRestoresOrDefers:
             slot = _ChatSlot(hkey.replace(":", "-"))
             slot.linked_session_key = hkey  # bound, nothing else touched
             if with_rows:
-                slot.append("assistant", PR_A, ts="t1")
+                append_created(slot, PR_A, ts="t1")
             assert slot._dismissed_source_links == set()
             assert slot._dismissed_hydrated is True and slot._dismissed_txn_depth == 0
             # Display-only regression: the forgetful slot shows the chip ...

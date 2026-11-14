@@ -11,6 +11,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from aiohttp import web
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.handlers.source_providers import parse_source_url
 from kiro_crew.dashboard.source_providers.contract import source_ref_identity_key
@@ -27,8 +28,9 @@ def _identity_key(url: str) -> str:
 
 
 def _slot(*urls: str) -> _ChatSlot:
+    """A slot that created *urls* (the session OWNS them, so they are chips)."""
     slot = _ChatSlot("s1")
-    slot.append("assistant", "\n".join(urls or (PR_A, PR_B, ISSUE_A)), ts="t1")
+    append_created(slot, *(urls or (PR_A, PR_B, ISSUE_A)), ts="t1")
     return slot
 
 

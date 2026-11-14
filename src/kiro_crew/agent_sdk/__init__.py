@@ -222,6 +222,38 @@ def mcp_call_arguments(event: Any, server: str, tool: str) -> dict[str, Any]:
     return _mcp_arguments(event, server, tool)
 
 
+def gh_call_writes(argv: list[str]) -> bool:
+    """Whether a ``gh`` call (*argv* starting with ``gh``) writes, as the batch write
+    guard judges it: one table of write verbs and one ``gh api`` method rule, so a
+    consumer and the guard cannot disagree. Imported lazily, as above."""
+    from kiro_crew.acp.batch_guard import _gh_is_write
+
+    return _gh_is_write(argv)
+
+
+def gh_write_verbs(program: str) -> frozenset[str]:
+    """The batch write guard's write verbs for ``gh <program>`` (``pr``, ``issue``)."""
+    from kiro_crew.acp.batch_guard import _GH_WRITE_VERBS
+
+    return _GH_WRITE_VERBS.get(program, frozenset())
+
+
+def gh_valued_options() -> frozenset[str]:
+    """The batch write guard's ``gh`` options that take a value (``-R``, and the
+    ``gh api`` ones), skipped when it finds the subcommand and endpoint."""
+    from kiro_crew.acp.batch_guard import _GH_VALUED_OPTIONS
+
+    return _GH_VALUED_OPTIONS
+
+
+def command_positionals(words: list[str], valued: frozenset[str]) -> list[str]:
+    """The batch write guard's positional reader: the non-option words after the
+    program in *words*, skipping the value of each option in *valued*."""
+    from kiro_crew.acp.batch_guard import _positionals
+
+    return _positionals(words, valued)
+
+
 def watch_agent_turns(provider: object, callback: Callable[[], None] | None) -> bool:
     """Call *callback* when *provider*'s agent starts a turn between prompts; ``None`` stops it.
 
@@ -257,6 +289,10 @@ __all__ = [
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
     "mcp_call_arguments",
+    "gh_call_writes",
+    "gh_write_verbs",
+    "gh_valued_options",
+    "command_positionals",
     "watch_agent_turns",
     "tool_row_text",
     "agents_dir_competing_claim",

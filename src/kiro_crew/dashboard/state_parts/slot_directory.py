@@ -31,6 +31,7 @@ from kiro_crew.config.sections_defaults import DEFAULT_MAX_PER_CREATOR
 from kiro_crew.config.sections_limits import MAX_PER_CREATOR_MAX, MAX_PER_CREATOR_MIN
 from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.slot_buffers import MAX_SLOT_KEY_CHARS
+from kiro_crew.dashboard.source_providers.ownership import set_ledger_refresh_hook
 from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
 from kiro_crew.dashboard.state_parts.dashboard_services import _registry_for
 from kiro_crew.dashboard.state_parts.transcript_rows import chat_message_note
@@ -669,6 +670,11 @@ def get_or_create_slot(
     slot._on_question_retired = self._broadcast_question_retired
     slot._coordinator_approvals = self.pending_coordinator_approvals
     slot._linked_session_busy = self.linked_session_busy
+    # Read live, so a conductor's card finds a worker opened after it.
+    slot._peer_slot = lambda key: self._slots.get(key)
+    # A chip's ledger links are read off the loop; when one lands changed, the
+    # slots are pushed again so the card shows it.
+    set_ledger_refresh_hook(self.push_slots_update)
     slot._app = app
     # ``origin`` must be declared by the layer that actually knows it, and
     # an undeclared non-app slot stays UNTAGGED ("") rather than being

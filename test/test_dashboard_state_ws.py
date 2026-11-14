@@ -15,6 +15,7 @@ from dashboard_state_ws_helpers import (  # noqa: F401 -- fixtures are requested
     state_fixture,
     sync_event_loop,
 )
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.state import DashboardState
 
@@ -1138,6 +1139,7 @@ class TestOwnerSourceStatusTransport:
         # this fixture treats the repo as KNOWN public, so the dashboard-user
         # view shows status alongside the owner view.
         slot = state.get_or_create_slot("chat-1")
+        append_created(slot, source_url, cls="msg")
         slot.append("assistant", f"opened {source_url}", "msg")
         monkeypatch.setattr(
             "kiro_crew.dashboard.handlers.source_providers._session_card_chips_snapshot",
@@ -1231,8 +1233,10 @@ class TestOwnerSourceStatusTransport:
         public_url = "https://github.com/acme/public/pull/1"
         private_url = "https://github.com/acme/private/pull/2"
         slot_a = state.get_or_create_slot("chat-a")
+        append_created(slot_a, public_url, cls="msg")
         slot_a.append("assistant", f"opened {public_url}", "msg")
         slot_b = state.get_or_create_slot("chat-b")
+        append_created(slot_b, private_url, cls="msg")
         slot_b.append("assistant", f"opened {private_url} [OPTIONS: yes | no]", "msg")
         state.get_or_create_slot("chat-c")  # no links at all
         monkeypatch.setattr(

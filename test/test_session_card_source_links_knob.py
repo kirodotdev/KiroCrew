@@ -22,6 +22,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
+from source_link_rows import append_created
 
 import kiro_crew.dashboard.handlers.source_providers as sp
 from kiro_crew.config.loader import KiroCrewConfig
@@ -35,7 +36,7 @@ ISSUES = [f"https://github.com/acme/widgets/issues/{n}" for n in (21, 22)]
 
 def _slot(key: str = "s1") -> _ChatSlot:
     slot = _ChatSlot(key)
-    slot.append("assistant", "\n".join([*PRS, *ISSUES]), ts="t1")
+    append_created(slot, *PRS, *ISSUES, ts="t1")
     return slot
 
 
@@ -372,6 +373,18 @@ class _OwnerState:
 
     def push_slots_update(self) -> None:
         self._pushes.append(1)
+
+
+@pytest.fixture(autouse=True)
+def _restore_the_chip_switch(_floor_monkeypatch):
+    """Put the process-wide chip switch back after each test.
+
+    The config PUT publishes the value it wrote into the shared snapshot, so a
+    test that turns the chips off would otherwise leave every later test in the
+    same worker serializing no chips. Recorded on the isolation floor's own
+    patcher, apart from the stubs a test makes.
+    """
+    _floor_monkeypatch.setattr(sp, "_session_card_chips_snapshot", sp._session_card_chips_snapshot)
 
 
 @pytest.fixture()

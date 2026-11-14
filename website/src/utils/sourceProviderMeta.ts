@@ -214,40 +214,49 @@ export function sourceProviderCapabilities(
 export function sourceTabQualifier<T extends SourceLinkRef>(
   sources: T[],
 ): (link: T) => string | null {
+  // GitHub resolves owner and repo names case-insensitively, so two spellings
+  // of one repository are one project here and never trigger qualification.
+  // Every other provider's path keeps its case (GitLab paths are case-sensitive).
+  // The same-path-on-two-hosts check compares paths without case for every
+  // provider, so a GitHub path and a GitLab path that differ only in case
+  // still get their hosts named.
+  const fold = (link: SourceLinkRef, text: string) =>
+    link.provider === 'github' ? text.toLowerCase() : text
   const identities = new Set<string>()
   const hostsByPath = new Map<string, Set<string>>()
   for (const item of sources) {
     const path = sourceProjectPath(item)
     if (!path) continue
     const host = sourceProjectHost(item) ?? ''
-    identities.add(`${host}/${path}`)
-    let hosts = hostsByPath.get(path)
-    if (!hosts) hostsByPath.set(path, (hosts = new Set()))
-    hosts.add(host)
+    identities.add(fold(item, `${host}/${path}`))
+    let hosts = hostsByPath.get(path.toLowerCase())
+    if (!hosts) hostsByPath.set(path.toLowerCase(), (hosts = new Set()))
+    hosts.add(fold(item, host))
   }
   if (identities.size <= 1) return () => null
   const fullQualifier = (link: SourceLinkRef): string[] | null => {
     const path = sourceProjectPath(link)
     if (!path) return null
     const segments = path.split('/')
-    const hosts = hostsByPath.get(path)
+    const hosts = hostsByPath.get(path.toLowerCase())
     if (hosts && hosts.size > 1) {
       const host = sourceProjectHost(link)
       return host ? [host, ...segments] : segments
     }
     return segments
   }
+  const qualifierKey = (link: SourceLinkRef, segments: string[]) => fold(link, segments.join('/'))
   // Collect the strip's distinct qualifiers once, then shorten each to its
   // minimal unique trailing suffix (see the doc comment above).
   const distinct = new Map<string, string[]>()
   for (const item of sources) {
     const segments = fullQualifier(item)
-    if (segments) distinct.set(segments.join('/'), segments)
+    if (segments) distinct.set(qualifierKey(item, segments), segments)
   }
   const display = new Map<string, string>()
   for (const [full, segments] of distinct) {
     if (segments.length <= 2) {
-      display.set(full, full)
+      display.set(full, segments.join('/'))
       continue
     }
     let keep = 1
@@ -256,7 +265,7 @@ export function sourceTabQualifier<T extends SourceLinkRef>(
       let clashes = false
       for (const [otherFull, otherSegments] of distinct) {
         if (otherFull === full) continue
-        if (otherSegments.slice(-keep).join('/') === suffix) {
+        if (otherSegments.slice(-keep).join('/').toLowerCase() === suffix.toLowerCase()) {
           clashes = true
           break
         }
@@ -264,11 +273,11 @@ export function sourceTabQualifier<T extends SourceLinkRef>(
       if (!clashes) break
       keep++
     }
-    display.set(full, keep >= segments.length ? full : `…/${segments.slice(-keep).join('/')}`)
+    display.set(full, keep >= segments.length ? segments.join('/') : `…/${segments.slice(-keep).join('/')}`)
   }
   return link => {
     const segments = fullQualifier(link)
     if (!segments) return null
-    return display.get(segments.join('/')) ?? segments.join('/')
+    return display.get(qualifierKey(link, segments)) ?? segments.join('/')
   }
 }

@@ -15,22 +15,23 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from aiohttp import web
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_source_links
 from kiro_crew.dashboard.state import _ChatSlot
 
 PRS = [f"https://github.com/acme/widgets/pull/{n}" for n in (11, 12, 13, 14)]
 ISSUES = [f"https://github.com/acme/widgets/issues/{n}" for n in (21, 22, 23, 24)]
-# The extractor scans messages newest-first, so the links a session mentioned
-# last are the ones it reports first. Both fixtures land in ONE message, so the
-# order is that message's urls reversed.
+# The extractor scans rows newest-first, so the links a session created last
+# are the ones it reports first. Both fixtures land in ONE row, so the order is
+# that row's urls reversed.
 RECENT_PRS = list(reversed(PRS))
 RECENT_ISSUES = list(reversed(ISSUES))
 
 
 def _slot() -> _ChatSlot:
     slot = _ChatSlot("s1")
-    slot.append("assistant", "\n".join([*PRS, *ISSUES]), ts="t1")
+    append_created(slot, *PRS, *ISSUES, ts="t1")
     return slot
 
 
@@ -72,13 +73,13 @@ class TestSourceLinksPayload:
         with no PR at all spends the whole budget on issues.
         """
         one_pr = _ChatSlot("s2")
-        one_pr.append("assistant", "\n".join([PRS[0], *ISSUES]), ts="t1")
+        append_created(one_pr, PRS[0], *ISSUES, ts="t1")
         budgeted = [link["url"] for link in one_pr.to_dict()["source_links"]]
         assert budgeted == [PRS[0], *RECENT_ISSUES[:2]]
         assert one_pr.to_dict()["source_links_total"] == 5
 
         no_pr = _ChatSlot("s3")
-        no_pr.append("assistant", "\n".join(ISSUES), ts="t1")
+        append_created(no_pr, *ISSUES, ts="t1")
         budgeted = [link["url"] for link in no_pr.to_dict()["source_links"]]
         assert budgeted == RECENT_ISSUES[:3]
 

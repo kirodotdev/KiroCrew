@@ -401,7 +401,12 @@ def binding_lock(worker_slot_key: str) -> Iterator[None]:
     conductors binding the same worker at once cannot both see it free."""
     path = binding_path(worker_slot_key)
     with _open_lock(path.with_suffix(".lock")):
-        yield
+        try:
+            yield
+        finally:
+            # A binding change is a change to what the worker reports to, so a
+            # reader keyed on the worker's own mark (its sidebar card) re-reads.
+            _mark_changed(worker_slot_key)
 
 
 def forget_undelivered_for_item(

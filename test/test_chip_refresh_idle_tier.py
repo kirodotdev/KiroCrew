@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app, _make_state
+from source_link_rows import gh_create_meta
 
 from kiro_crew.dashboard import chat_persistence as cp
 from kiro_crew.dashboard import state as dashboard_state
@@ -182,8 +183,10 @@ def restored(tmp_path, monkeypatch):
     for n, key in enumerate(_KEYS, start=1):
         history_key = _history_key_for(key)
         seed.conversation_log.append(history_key, "user", f"{key} question")
-        shared = f" and {_pr(99)}" if n < 3 else ""
-        seed.conversation_log.append(history_key, "assistant", f"opened {_pr(n)}{shared}")
+        created = (_pr(n), _pr(99)) if n < 3 else (_pr(n),)
+        seed.conversation_log.append(
+            history_key, "tool", "🔧 Open the pull request", extra_meta=gh_create_meta(*created)
+        )
     (tmp_path / "open_slots.json").write_text(
         json.dumps({"keys": _KEYS, "ts": 0.0}), encoding="utf-8"
     )

@@ -56,6 +56,9 @@ class _ChatSlot:
         "_dismissed_hydrated",
         "_dismissed_txn_depth",
         "_dismissed_txn_pending",
+        "_owned_links_cache",
+        "_owned_row_memo",
+        "_peer_slot",
         "_closing",
         "_close_recorded",
         "credential_evidence",
@@ -395,11 +398,14 @@ class _ChatSlot:
     # Initialised by state_parts/source_links.py.
     _projection: SlotProjection
     _source_links_revision: int
-    _source_links_cache: tuple[tuple[int, int, int], list[dict]] | None
+    _source_links_cache: tuple[tuple[int, int, int], list[dict], list[dict]] | None
     _dismissed_source_links: set[str]
     _dismissed_hydrated: bool
     _dismissed_txn_depth: int
     _dismissed_txn_pending: set[str]
+    _owned_links_cache: tuple[Any, ...] | None
+    _owned_row_memo: dict[int, tuple[Any, ...]] | None
+    _peer_slot: Callable[[str], "_ChatSlot | None"] | None
     # Initialised by state_parts/slot_transcript.py; see dashboard/slot_row_memo.py.
     _row_summary_memo: tuple[Any, ...] | None
     _row_redacted_memo: tuple[Any, ...] | None

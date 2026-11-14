@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from dashboard_source_link_unlink_helpers import _identity_key, _request
+from source_link_rows import append_created
 
 from kiro_crew.dashboard.chat_handlers import api_chat_slot_source_link_unlink
 from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
@@ -27,10 +28,10 @@ REPO_ONLY = "https://github.com/kirodotdev/KIROCREW/pull/21991"
 
 
 def _slot(*messages: str) -> _ChatSlot:
-    """A slot whose transcript carries *messages* oldest first."""
+    """A slot whose transcript created *messages* oldest first."""
     slot = _ChatSlot("s1")
     for i, content in enumerate(messages):
-        slot.append("assistant", content, ts=f"t{i}")
+        append_created(slot, content, ts=f"t{i}")
     return slot
 
 
@@ -96,7 +97,7 @@ class TestDismissal:
         slot = _slot(MIXED)
         (chip,) = slot._pr_source_links()
         assert slot.dismiss_source_link(chip["identity"]) is True
-        slot.append("assistant", LOWER, ts="t9")
+        append_created(slot, LOWER, ts="t9")
         assert _urls(slot) == []
 
     def test_a_tombstone_under_the_old_case_sensitive_key_still_hides_the_chip(self):
@@ -118,7 +119,7 @@ class TestDismissal:
             resp = await api_chat_slot_source_link_unlink(req)
         assert resp.status == 200
         assert slot._dismissed_source_links == {_identity_key(LOWER)}
-        slot.append("assistant", LOWER, ts="t9")
+        append_created(slot, LOWER, ts="t9")
         assert _urls(slot) == []
 
 
