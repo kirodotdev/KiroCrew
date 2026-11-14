@@ -701,7 +701,7 @@ async def run_bridge(
     }
     # Gated on negotiation, not assumed: an older gatewayd has no ping handler,
     # so pinging it would guarantee a miss streak and force-degrade a healthy
-    # session. No capability, no monitor — the bridge behaves exactly as before.
+    # session. No capability, no monitor.
     if peer_supports_ping:
         tasks.add(asyncio.create_task(_liveness_monitor(), name="kirocrew-mcp-stub-liveness"))
     try:

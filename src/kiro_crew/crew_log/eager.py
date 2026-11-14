@@ -965,7 +965,7 @@ def _publish_fold(slot: str, name: str, folded: Any) -> None:
         if not bus.delta_wanted(slot):
             # No open tab that applies deltas watches this board, so nothing reads a
             # delta the carried value does not already replace. Hold no base (a whole
-            # board render) and publish the plain value, exactly as before deltas.
+            # board render) and publish the plain value.
             # When a watcher arrives, the first publish has no base and is
             # ``snapshot_needed``, which is what that tab starts from anyway.
             _published.pop((slot, name), None)
