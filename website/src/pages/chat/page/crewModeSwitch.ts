@@ -177,7 +177,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
       dropPanelViews(key, BOARD_VIEWS)
     }).finally(() => setTurningOff(set => withoutKey(set, key)))
   }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent, dispatch])
-  // A plain ROOT chat that already has a message can still be turned into an
+  // A plain ROOT chat that already has a message can still be turned into a
   // conductor mode chat (one way: the gateway then locks it on the conductor). A
   // crew member's chat is not a root, so it never offers this.
   const crewModeMidChat = crewModeEligible && !crewModeChosen && hasUserMessage && isRootSession(currentSlot)

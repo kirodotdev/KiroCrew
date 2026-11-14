@@ -483,7 +483,7 @@ def test_a_worker_turn_carries_its_root_and_its_item(spans, monkeypatch):
     assert worker
     for span in worker:
         assert span.attributes["kirocrew.crew.root"] == _hash("chat-conductor")
-        assert span.attributes["kirocrew.crew.root_kind"] == "ultra"
+        assert span.attributes["kirocrew.crew.root_kind"] == "conductor_mode"
         assert span.attributes["kirocrew.crew.dispatcher"] == _hash("chat-conductor")
         assert span.attributes["kirocrew.work.item_id"] == "it_3f9a1c2e"
         assert span.attributes["kirocrew.work.round"] == 2
@@ -524,7 +524,7 @@ def test_a_nested_worker_turn_carries_its_root_and_item_without_taking_causes(sp
 def test_crew_roots_by_kind():
     from kiro_crew import crew_mode
 
-    assert crew.root_of("c", {crew_mode.ROOT_FIELD: True}) == ("c", "", "ultra")
+    assert crew.root_of("c", {crew_mode.ROOT_FIELD: True}) == ("c", "", "conductor_mode")
     assert crew.root_of(
         "w", {crew_mode.MATE_ROOT_FIELD: "m", crew_mode.MATE_DISPATCHER_FIELD: "m"}
     ) == (
@@ -536,7 +536,7 @@ def test_crew_roots_by_kind():
     assert crew.attrs(KEY, "p", {}, None) == {}
     # No key: the hashed ids are omitted, the raw kind and item id stay.
     assert crew.attrs(None, "w", {crew_mode.WORKER_FIELD: "c"}, ("c", "it_00000001", 0)) == {
-        "kirocrew.crew.root_kind": "ultra",
+        "kirocrew.crew.root_kind": "conductor_mode",
         "kirocrew.work.item_id": "it_00000001",
     }
 

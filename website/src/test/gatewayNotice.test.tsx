@@ -423,9 +423,6 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     expect(
       resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
     ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
-    expect(
-      resolveGatewayNotice(legacy('notice', '📌 Agent switch to x was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.'), [], 0)?.text,
-    ).toBe('Switching to x was blocked — this chat is in conductor mode, which stays on its own agent. The next turn restarts on that agent.')
     // A notice wording on an error row is not ours.
     expect(resolveGatewayNotice(legacy('error', 'ℹ Auto-continue cancelled — your message takes over.'), [], 0)).toBeNull()
   })
