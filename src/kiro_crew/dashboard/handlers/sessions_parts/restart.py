@@ -51,14 +51,16 @@ async def _reset_all_sessions(request: web.Request) -> int:
     state: DashboardState = request.app["state"]
     sessions = state.sessions
 
-    # Reload factory so provider switch takes effect immediately
-    await sessions.reload_provider_factory()
+    # Reload factory so provider switch takes effect immediately. A session a
+    # turn holds (a cron run, a chat reply) is reset when that turn ends, so a
+    # settings change never cuts work in flight.
+    await sessions.reload_provider_factory(defer_busy=True)
 
     # Pop all active sessions
     providers: list[LLMProvider] = []
     count = sessions.count
     if count > 0:
-        providers = await sessions.drain_all_providers()
+        providers = await sessions.drain_all_providers(keep_busy=True)
 
     # Drain warm pool — pre-spawned processes have stale MCP config
     pool_providers = await sessions.drain_warm_pool()

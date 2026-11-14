@@ -365,6 +365,6 @@ async def _eager_respawn(self: SessionManager, key: str) -> None:
     await self._lifecycle_boundary()._eager_respawn(key)
 
 
-async def drain_all_providers(self: SessionManager) -> list:
-    """Pop all registered sessions and return their providers."""
-    return await self._lifecycle_boundary().drain_all_providers()
+async def drain_all_providers(self: SessionManager, *, keep_busy: bool = False) -> list:
+    """Pop registered sessions and return their providers (``keep_busy`` skips a held one)."""
+    return await self._lifecycle_boundary().drain_all_providers(keep_busy=keep_busy)

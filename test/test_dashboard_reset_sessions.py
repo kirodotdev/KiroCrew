@@ -42,15 +42,18 @@ class _FakeSessionManager:
         self._pool_started = True
         self.start_pool_called = False
         self.start_pool_called_at: float | None = None
+        self.reload_kwargs: dict | None = None
+        self.drain_kwargs: dict | None = None
 
     @property
     def count(self) -> int:
         return len(self._sessions)
 
-    async def reload_provider_factory(self) -> None:
-        pass
+    async def reload_provider_factory(self, **kwargs) -> None:
+        self.reload_kwargs = kwargs
 
-    async def drain_all_providers(self) -> list:
+    async def drain_all_providers(self, **kwargs) -> list:
+        self.drain_kwargs = kwargs
         async with self._lock:
             providers = [s.provider for s in self._sessions.values()]
             self._sessions.clear()
@@ -293,3 +296,21 @@ class TestResetAllSessionsShutdown:
         # Both shutdowns must complete before start_pool.
         assert completion_order[-1] == "start_pool"
         assert set(completion_order[:-1]) == {"shutdown:p1", "shutdown:p2"}
+
+
+class TestResetAllSessionsWaitsForRunningTurns:
+    """A settings reset must not cut a turn in flight (a cron run among them)."""
+
+    @pytest.mark.asyncio
+    async def test_reload_and_drain_leave_a_mid_turn_session_alone(self) -> None:
+        provider = MagicMock()
+        provider.shutdown = MagicMock(return_value=asyncio.sleep(0))
+        sessions = _FakeSessionManager([provider])
+        request, state = _make_request(sessions)
+
+        await _reset_all_sessions(request)
+        for task in list(state._background_tasks):
+            await task
+
+        assert sessions.reload_kwargs == {"defer_busy": True}
+        assert sessions.drain_kwargs == {"keep_busy": True}

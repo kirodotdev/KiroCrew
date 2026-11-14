@@ -14,6 +14,7 @@ Instance fields read: ``_deps``, ``_owner``, ``state``.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.metrics.sessions import (
@@ -104,11 +105,51 @@ async def refresh_defaults(self: SessionLifecycleService, cfg: Any = None) -> No
     )
 
 
-async def reload_provider_factory(self: SessionLifecycleService, cfg: Any = None) -> None:
+def _turn_holds(session: Any) -> bool:
+    """Whether a turn holds *session* right now, so a deferred reset waits for it.
+
+    The turn semaphore is held from admission to the turn's end. A channel member
+    holds its lease for its whole listening life instead (``lifecycle_lease``), so
+    waiting on it would never end; such a session is reset at once, as before.
+    """
+    semaphore = getattr(session, "semaphore", None)
+    if semaphore is None or not semaphore.locked():
+        return False
+    return not getattr(session, "lifecycle_lease", False)
+
+
+async def _reset_after_turn(lifecycle: SessionLifecycleService, key: str, session: Any) -> None:
+    """Reset *session* under *key* once no turn holds it.
+
+    Waits on the turn semaphore, then resets with ``skip_if_busy``. A turn that took
+    the semaphore first declines that reset, so the loop waits for that turn too.
+    It ends once the reset lands or another path has replaced the session.
+    """
+    owner = lifecycle._owner
+    while owner._sessions.get(key) is session:
+        async with session.semaphore:
+            pass
+        if owner._sessions.get(key) is not session:
+            return
+        try:
+            if await owner.reset(key, expect_session=session, skip_if_busy=True):
+                return
+        except Exception:
+            lifecycle._deps.logger.debug("Deferred reset of session %s failed", key, exc_info=True)
+            return
+
+
+async def reload_provider_factory(
+    self: SessionLifecycleService, cfg: Any = None, *, defer_busy: bool = False
+) -> None:
     """Reload the provider factory and tear down providers from the old one.
 
     ``cfg`` is the already-loaded config the live applier hands in so the
     switch does no filesystem work on the loop; ``None`` loads it here.
+
+    ``defer_busy`` leaves a session a turn holds (a cron run, a chat reply) in
+    place on its old provider and resets it when that turn ends, so a settings
+    change never cuts a running turn. Without it every session is torn down now.
     """
     owner = self._owner
     logger = self._deps.logger
@@ -116,6 +157,7 @@ async def reload_provider_factory(self: SessionLifecycleService, cfg: Any = None
     if cfg is None:
         cfg = self._deps.load_config()
     stale: list[tuple[str, Any]] = []
+    deferred: list[tuple[str, Any]] = []
     async with owner._pool_fill_lock:
         pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
         async with owner._lock:
@@ -136,10 +178,11 @@ async def reload_provider_factory(self: SessionLifecycleService, cfg: Any = None
                 await owner._discard_pool_provider(provider, "Stale pool drain")
             # Intentionally clear only the registry: the original reload
             # path does not rewrite session-map or compaction state here.
-            stale = list(owner._sessions.items())
+            for item in list(owner._sessions.items()):
+                (deferred if defer_busy and _turn_holds(item[1]) else stale).append(item)
             for stale_key, _ in stale:
                 owner._advance_session_generation(stale_key)
-            owner._sessions.clear()
+                owner._sessions.pop(stale_key, None)
             # Same tick as the clear. This removal had no end record, so a
             # replacement under a reused key inherited the old start and
             # reported a lifetime spanning two sessions. Recorded as one set,
@@ -159,15 +202,31 @@ async def reload_provider_factory(self: SessionLifecycleService, cfg: Any = None
                 key,
                 exc_info=True,
             )
+
+    def forget_deferred_reset(done: asyncio.Task[Any], key: str) -> None:
+        pending = owner._deferred_resets.get(key)
+        if pending is not None and pending[1] is done:
+            owner._deferred_resets.pop(key)
+
+    for key, sess in deferred:
+        pending = owner._deferred_resets.get(key)
+        if pending is not None and pending[0] is sess and not pending[1].done():
+            continue
+        task = asyncio.create_task(_reset_after_turn(self, key, sess))
+        owner._deferred_resets[key] = (sess, task)
+        owner._background_tasks.add(task)
+        task.add_done_callback(owner._background_tasks.discard)
+        task.add_done_callback(functools.partial(forget_deferred_reset, key=key))
     owner._pool_started = False
     if owner._pool_health_task and not owner._pool_health_task.done():
         owner._pool_health_task.cancel()
         owner._pool_health_task = None
     await owner.start_pool(blocking=False)
     logger.info(
-        "Provider factory reloaded: provider=%s, cleared %d sessions",
+        "Provider factory reloaded: provider=%s, cleared %d sessions, %d reset after their turn",
         cfg.agent.provider,
         len(stale),
+        len(deferred),
     )
 
 
@@ -455,7 +514,9 @@ async def close_all(self: SessionLifecycleService, drain_timeout: float | None =
     logger.info("All sessions closed (active=%d)", len(sessions))
 
 
-async def drain_all_providers(self: SessionLifecycleService) -> list[Any]:
+async def drain_all_providers(
+    self: SessionLifecycleService, *, keep_busy: bool = False
+) -> list[Any]:
     """Pop every registered session and return its providers.
 
     Records an end per popped key even though the one current caller drains
@@ -463,6 +524,9 @@ async def drain_all_providers(self: SessionLifecycleService) -> list[Any]:
     which clears and records). An unrecorded mass pop here would not lose
     samples, it would manufacture crashes: every crumb left behind is
     reported as ``crashed`` at the next boot.
+
+    ``keep_busy`` leaves in place a session a turn holds: the reload that came
+    first resets it when that turn ends, or it was created by the new factory.
     """
     owner = self._owner
     providers: list[Any] = []
@@ -471,6 +535,8 @@ async def drain_all_providers(self: SessionLifecycleService) -> list[Any]:
         keys = list(owner._sessions.keys())
         ended: list[str] = []
         for key in keys:
+            if keep_busy and _turn_holds(owner._sessions.get(key)):
+                continue
             session = owner._sessions.pop(key, None)
             owner._advance_session_generation(key)
             if session:

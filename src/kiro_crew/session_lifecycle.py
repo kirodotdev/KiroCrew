@@ -231,6 +231,7 @@ class SessionLifecycleOwner(Protocol):
     _compact_pending_verdict: MutableMapping[str, float]
     _cleanup_task: asyncio.Task[Any] | None
     _background_tasks: set[asyncio.Task[Any]]
+    _deferred_resets: dict[str, tuple[Any, asyncio.Task[Any]]]
 
     _bg_runtime_lock: asyncio.Lock
     _bg_runtime: _BackgroundRuntime | None
