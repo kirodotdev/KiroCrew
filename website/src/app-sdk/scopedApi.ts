@@ -105,6 +105,22 @@ export interface AppInfo {
    * Also absent on hosts that predate this field.
    */
   update?: AppUpdate
+  /**
+   * The chat session this host surface is bound to: the same key the scoped
+   * client sends as `X-Session-Key`. Present when the host binds a session (a
+   * `contributes.panelTabs` side-panel tab, a session control); ABSENT on a
+   * routed `ui.pages` page, which is not session-scoped. A side-panel tab uses
+   * it to show the data that belongs to its own chat.
+   */
+  session?: AppSession
+}
+
+/** The session key a routed `ui.pages` page sends (InstalledAppSurface); not a chat. */
+const ROUTED_PAGE_SESSION_KEY = 'dashboard:ui'
+
+export interface AppSession {
+  /** Session key, e.g. `dashboard:chat-2-1787502679`. */
+  sessionKey: string
 }
 
 export interface AppSdkContextValue {
@@ -380,6 +396,11 @@ export function AppScopedApiProvider({
       // from "consulted, nothing newer", which is the distinction the field
       // exists to carry.
       ...(appUpdate ? { update: appUpdate } : {}),
+      // Absent, not undefined, on a surface with no session binding, for the
+      // same `'session' in info` reading as `update`. A routed page passes the
+      // dashboard's own request identity (InstalledAppSurface), which is not a
+      // chat: it still goes out as X-Session-Key but is not published here.
+      ...(sessionKey && sessionKey !== ROUTED_PAGE_SESSION_KEY ? { session: { sessionKey } } : {}),
     },
     subscribe: subscribeFn,
     navigate: navigateFn,

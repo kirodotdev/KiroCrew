@@ -206,7 +206,7 @@ Available in `@kirocrew/app-sdk`:
 | `useAppApi()` | Permission-scoped JSON-response HTTP client (`request`, GET/POST/PUT/PATCH/DELETE); request options and errors: [API reference](api-reference.md#app-sdk-hooks-dashboard-ui) |
 | `useAppEvents(event, cb)` | Subscribe to real-time WebSocket events |
 | `useTheme()` | Reactive theme (mode, accent, colorTheme) |
-| `useAppInfo()` | App metadata (name, version, permissions, `active`, `update`) |
+| `useAppInfo()` | App metadata (name, version, permissions, `active`, `update`, `session`) |
 | `useNavigate()` | Navigate to Kiro Crew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
@@ -227,6 +227,19 @@ useEffect(() => {
   const id = setInterval(refresh, 5000)
   return () => clearInterval(id)
 }, [active])
+```
+
+`useAppInfo().session` names the chat a side-panel tab is mounted in. A tab is
+mounted per chat, so read `session.sessionKey` to show the data that belongs to
+that chat. It is the same key your `useAppApi()` requests already carry as
+`X-Session-Key`, and the same `sessionKey` a `contributes.sessionControls` control
+receives. A routed `ui.pages` page is not session-scoped, so there the field is
+absent.
+
+```tsx
+const { session } = useAppInfo()
+if (!session) return <p>Open this from a chat's side panel.</p>
+return <StreamFor sessionKey={session.sessionKey} />
 ```
 
 Treat `undefined` as `true`: the field is optional, so an app running on a host that
