@@ -802,6 +802,97 @@ class TestForkLaneStrandedRunSweeps:
         ), "sweep overwrote a NEWER run's row -- the close/reopen regression\n" + _proc_log(result)
         assert "is newer than 500" in (result.stdout + result.stderr), _proc_log(result)
 
+    @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
+    def test_sweep_parses_ids_only_from_a_successful_listing(
+        self, lane: str, check_name: str, prefix: str, finalize: str
+    ) -> None:
+        # gh prints an error body on stdout, so a swallowed failure fed its
+        # lines (`{`, `"message": ...`) to the loop as check-run ids.
+        script = _step_script(_workflow(lane), finalize)
+        assert 'if ! stranded="$(gh api --method GET' in script, lane
+        assert '2>/dev/null || true)"' not in script.split('stranded="$(gh api', 1)[1], lane
+        assert f"could not list the incomplete {check_name} check-runs" in script, lane
+
+    def test_gpt_sweep_on_a_rate_limited_listing_patches_nothing_and_fails(
+        self, tmp_path: Path
+    ) -> None:
+        bash = _bash()
+        if bash is None:
+            pytest.skip("the finalize step is Bash; skip where Bash is absent")
+
+        calls = tmp_path / "patch-calls"
+        calls.touch()
+        gh = tmp_path / "gh"
+        # The listing fails the way gh does on a rate limit: the error body on
+        # stdout, the message on stderr, exit 1. Every PATCH is recorded.
+        gh.write_text(
+            "#!/usr/bin/env bash\n"
+            'for a in "$@"; do\n'
+            '  case "$a" in\n'
+            '    *"/check-runs?check_name="*)\n'
+            "      printf '%s\\n' '{' "
+            '\'  "message": "API rate limit exceeded for installation.",\' '
+            '\'  "documentation_url": "https://docs.github.com/rest",\' '
+            "'  \"status\": \"403\"' '}'\n"
+            "      echo 'gh: API rate limit exceeded for installation. (HTTP 403)' >&2\n"
+            "      exit 1 ;;\n"
+            "  esac\n"
+            "done\n"
+            'for a in "$@"; do\n'
+            '  case "$a" in\n'
+            '    repos/*/check-runs/*) printf "%s\\n" "$a" >> "$CALLS"; exit 0 ;;\n'
+            "  esac\n"
+            "done\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        sleep = tmp_path / "sleep"
+        sleep.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        gh.chmod(0o755)
+        sleep.chmod(0o755)
+
+        result = subprocess.run(
+            [
+                bash,
+                "-uo",
+                "pipefail",
+                _script_file(
+                    tmp_path,
+                    _step_script(
+                        _workflow("fork-gpt-review.yml"), "Finalize check-run (fail closed)"
+                    ),
+                ),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=_child_env(
+                {
+                    "PATH": _stub_path(tmp_path),
+                    "GH_TOKEN": "stub",
+                    "REPO": "kirodotdev/KiroCrew",
+                    "HEAD": "a" * 40,
+                    "CHECK_ID": "",
+                    "PR": "77",
+                    "WR_RUN_ID": "500",
+                    "WR_RUN_ATTEMPT": "1",
+                    "ADJ_DECISION": "",
+                    "ADJ_NOTE": "",
+                    "CALLS": str(calls),
+                    "GITHUB_SERVER_URL": "https://github.com",
+                    "GITHUB_RUN_ID": "999",
+                }
+            ),
+            cwd=tmp_path,
+        )
+
+        assert result.returncode != 0, _proc_log(result)
+        assert calls.read_text(encoding="utf-8") == "", _proc_log(result)
+        out = result.stdout + result.stderr
+        assert "could not list the incomplete GPT 6.1 Review check-runs" in out, _proc_log(result)
+        assert "completing stranded check-run" not in out, _proc_log(result)
+
 
 class TestForkReviewersAreStageTwoOfFastGate:
     """The fork reviewers' only trigger is `workflow_run` on Fast Gate.
