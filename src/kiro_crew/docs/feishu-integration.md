@@ -114,9 +114,15 @@ Deny-by-default, in both directions:
   never evaluated can never run a turn.
 - **Every denial is audited.** Rejected inbound messages write a SEL audit
   record with `source: feishu`, so an unexpected sender shows up in
-  `kirocrew security events` rather than vanishing. A group message that does
-  not mention the bot is chatter, not an access attempt, so it is ignored
-  without a record.
+  `kirocrew security events` rather than vanishing. In an allow-listed group,
+  a message that does not mention the bot is chatter, not an access attempt,
+  so it is ignored without a record.
+- **Finding a group's `chat_id`.** Add the bot to the group and send any message
+  in it. The denial record for that message carries the group's id as
+  `chat_id=oc_...` in its `resources` field: look for operation
+  `feishu_transport.receive` and outcome `denied_group_not_allowed` in
+  `kirocrew security events` or in `~/.kiro/crew/security_events.jsonl`. Put
+  that id in `feishu.allowed_group_ids` and set `feishu.allow_group` to `true`.
 - **The agent can message you first, but only someone on the lists.** A cron
   result, a finished background task or a `send_message` to Feishu arrives as a
   new message in the DM or group it belongs to. Only an `open_id` in
