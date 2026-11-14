@@ -28,6 +28,10 @@ HISTORY_IDLE_HOURS_MIN = 0.5
 #: ``memory.kind_routing`` values; :mod:`kiro_crew.memory_kind_routing` says what each does.
 KIND_ROUTING_MODES = ("off", "shadow", "enforce")
 
+#: Longest ``memory.extraction_instructions`` kept on load; the rest is dropped so one
+#: pasted page cannot crowd the transcript out of the consolidation prompt.
+EXTRACTION_INSTRUCTIONS_MAX_CHARS = 2000
+
 #: ``memory.lesson_origin_gate`` values; :mod:`kiro_crew.memory_origin_gate` says what each does.
 LESSON_ORIGIN_GATE_MODES = ("off", "shadow", "enforce")
 
@@ -434,6 +438,19 @@ class MemoryConfig:
             enum=list(KIND_ROUTING_MODES),
         ),
     )
+    extraction_instructions: str = field(
+        default="",
+        metadata=_meta(
+            "Consolidation Instructions",
+            "Free text, in your own words, that steers what history consolidation "
+            "extracts: what to keep (for example 'keep build commands') and what never "
+            "to store (for example 'never store customer names'). Empty (default) "
+            "keeps today's prompt. It guides the model and is not a filter: it cannot "
+            "change the answer format or the fixed rules, it does not touch memory "
+            "that is already stored, and it never applies to facts you save "
+            "yourself. Text past 2000 characters is ignored.",
+        ),
+    )
     lesson_origin_gate: str = field(
         default="off",
         metadata=_meta(
@@ -625,6 +642,19 @@ def kind_routing_mode_from(raw: object) -> str:
     if isinstance(raw, str) and raw in KIND_ROUTING_MODES:
         return raw
     return str(field_default(MemoryConfig, "kind_routing"))
+
+
+def extraction_instructions_from(raw: object) -> str:
+    """A stored ``memory.extraction_instructions`` ready for the prompt, or ``""``.
+
+    Anything that is not text reads as empty, so a wrong-typed key behaves like an
+    absent one. Control characters other than newline and tab are dropped, the
+    text is trimmed, and it is cut to :data:`EXTRACTION_INSTRUCTIONS_MAX_CHARS`.
+    """
+    if not isinstance(raw, str):
+        return ""
+    text = "".join(c for c in raw if c in "\n\t" or c.isprintable())
+    return text.strip()[:EXTRACTION_INSTRUCTIONS_MAX_CHARS].strip()
 
 
 def lesson_origin_gate_mode_from(raw: object) -> str:

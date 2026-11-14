@@ -135,6 +135,7 @@ Switches that change what is written or injected:
 | `memory.writes_enabled: false` | No automatic writes | Unchanged |
 | `memory.lesson_extraction_enabled: false` | No extracted lessons; other writes and `learn_add` unchanged | Unchanged |
 | `memory.kind_routing: "enforce"` | Consolidation skips a `state` fact; facts and events are written as before (`"shadow"` only logs; default `"off"` does neither) | Unchanged |
+| `memory.extraction_instructions: "<text>"` | Consolidation is asked to follow your text about what to keep and what never to store; an empty value (default) changes nothing | Unchanged |
 | `memory.lesson_origin_gate: "enforce"` | A lesson from turns no person sent is saved as an `on_topic` finding, never a standing rule (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.lesson_tier_policy: "enforce"` | A new consolidation lesson is a standing rule only when your own words in a message back it; otherwise it is saved as an `on_topic` finding (`"shadow"` only counts; default `"off"` does neither) | Unchanged |
 | `memory.lesson_fold: "enforce"` | Unchanged | A rule that repeats another one takes no room in the rule block; the block says how many were folded, `learn_list` shows all, and rules you taught are never folded (`"shadow"` only records what would fold; default `"off"` does neither) |

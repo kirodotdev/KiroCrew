@@ -2805,6 +2805,7 @@
         "lesson_extraction_enabled": true,
         "repeated_failures_notice": false,
         "kind_routing": "off",
+        "extraction_instructions": "",
         "lesson_origin_gate": "off",
         "lesson_tier_policy": "off",
         "lesson_fold": "off",
@@ -3407,6 +3408,20 @@
         "enforce"
       ],
       "defaultValue": "off"
+    },
+    {
+      "path": "memory.extraction_instructions",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Consolidation Instructions",
+      "help": "Free text, in your own words, that steers what history consolidation extracts: what to keep (for example 'keep build commands') and what never to store (for example 'never store customer names'). Empty (default) keeps today's prompt. It guides the model and is not a filter: it cannot change the answer format or the fixed rules, it does not touch memory that is already stored, and it never applies to facts you save yourself. Text past 2000 characters is ignored.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "memory.lesson_origin_gate",

@@ -883,6 +883,8 @@ async def _consolidate(
         # whole session is judged as a unit. It is therefore intentionally
         # absent from this consolidation prompt's keys.
 
+        from kiro_crew.memory_extraction_guidance import configured_guidance_block
+
         numbered = "\n\n".join(f"{i + 1}. {k}" for i, k in enumerate(keys))
         prompt_parts = [
             "You are a memory consolidation agent. Process this conversation "
@@ -900,6 +902,7 @@ async def _consolidate(
                 )
             prompt_parts.append(f"\n\n## Current Preferences\n{current_prefs or '(empty)'}")
             prompt_parts.append(f"\n\n## Current Projects\n{current_projects or '(empty)'}")
+        prompt_parts.append(configured_guidance_block())
         prompt_parts.append(f"\n\n## Conversation to Process\n{conversation}")
         prompt_parts.append("\n\nRespond with ONLY valid JSON, no markdown fences.")
         prompt = "".join(prompt_parts)
