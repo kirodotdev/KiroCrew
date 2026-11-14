@@ -19,7 +19,7 @@ rest lives in sibling modules, and new work for each part goes to its module:
 | `cli_parser_admin.py` | the registrars of the `Security and privacy`, `Move it and back it up` and `Develop Kiro Crew itself` commands, but `bench`, `perf` and `desktop`, which register from `cli_bench.py`, `cli_perf.py` and `cli_desktop.py` |
 | `cli_logging.py` | console and `gateway.log` logging: `_setup_cli_logging`, the log queue listener and its drains |
 | `cli_jail.py` | the process-isolation jail gate: `_JAILED_COMMANDS`, `_jail_reexec_gate` |
-| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics, and `_refuse_unpersistable_data_home`, the branch's first step, which exits 1 with one `Cannot persist state` line when the data home cannot hold files |
+| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics, and `_refuse_unpersistable_data_home`, the branch's first step, which exits 1 when the data home cannot hold files, with one `Cannot persist state` line plus the ownership notice when another account owns files there |
 | `cli_knowledge.py` | the `knowledge` and `consolidate` handlers |
 
 A registrar is one `register_<command>_parser(sub)` function per command (`chat`,
@@ -1617,9 +1617,14 @@ both halves:
   `DataHomeAccess.explain()` says it in plain words: which folder and owner,
   that Kiro Crew was probably started as root once, to stop running it as root,
   and the docs link. The gateway logs that sentence once after it reports ready,
-  off the event loop (`warn_if_data_home_not_owned`, never on the boot path),
-  `kirocrew doctor` prints it under Data Home as an issue, `/api/status` carries
-  `data_home_access` (`ok`, `home`, `foreign`, `owner`, `help_url`), and
+  off the event loop (`warn_if_data_home_not_owned`, never on the boot path).
+  A start refused before ready, at the persistence probe or the gateway lock
+  (the sign-in screen's lock included), prints it to stderr after its own
+  refusal line instead (`print_if_data_home_not_owned`) when another account
+  owns some of the files, with the same exit status; a start that can run is
+  never refused for it. `kirocrew doctor` prints it under Data Home
+  as an issue, `/api/status` carries `data_home_access` (`ok`, `home`,
+  `foreign`, `owner`, `help_url`), and
   `POST /api/agents` refuses with 409 `data_home_not_owned`, `home`, `owner` and
   `help_url` before it touches the config.
 - **No repair as root.** Kiro Crew never changes the owner of these files
@@ -1795,7 +1800,8 @@ if args.command == "gateway":
 
 The preflight runs `probe_file_persistence` on the data home (created through
 `config_dir()` when missing) and, when the home cannot hold files, prints one
-`Error: Cannot persist state: …` line and exits 1, so a read-only home, a missing home
+`Error: Cannot persist state: …` line (then the ownership notice when another account
+owns files there) and exits 1, so a read-only home, a missing home
 under a read-only parent or a read-only mount never reaches a traceback.
 
 `maybe_reexec` reads the live-target pointer (`config_dir() / "live_target.json"`)
