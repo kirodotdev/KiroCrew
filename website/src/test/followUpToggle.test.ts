@@ -14,13 +14,13 @@ describe('followUpToggle — appendFollowUpOption', () => {
   })
 
   it('appends onto a user draft, recording it as the base', () => {
-    expect(appendFollowUpOption('note', null, 'Alpha')).toEqual({ value: 'note, Alpha', owned: { base: 'note', options: ['Alpha'] } })
+    expect(appendFollowUpOption('note', null, 'Alpha')).toEqual({ value: 'note. Alpha', owned: { base: 'note', options: ['Alpha'] } })
   })
 
   it('extends the owned suffix when it is still intact at the tail', () => {
     const owned: OwnedSuffix = { base: 'note', options: ['Alpha'] }
-    expect(appendFollowUpOption('note, Alpha', owned, 'Beta')).toEqual({
-      value: 'note, Alpha, Beta',
+    expect(appendFollowUpOption('note. Alpha', owned, 'Beta')).toEqual({
+      value: 'note. Alpha. Beta',
       owned: { base: 'note', options: ['Alpha', 'Beta'] },
     })
   })
@@ -28,7 +28,7 @@ describe('followUpToggle — appendFollowUpOption', () => {
   it('re-baselines to the live draft when the user edited the owned tail', () => {
     const owned: OwnedSuffix = { base: '', options: ['Alpha'] }
     expect(appendFollowUpOption('Alpha and more', owned, 'Beta')).toEqual({
-      value: 'Alpha and more, Beta',
+      value: 'Alpha and more. Beta',
       owned: { base: 'Alpha and more', options: ['Beta'] },
     })
   })
@@ -44,7 +44,7 @@ describe('followUpToggle — appendFollowUpOption', () => {
 describe('followUpToggle — removeFollowUpOption', () => {
   it('removes the only owned option, restoring the base', () => {
     const owned: OwnedSuffix = { base: 'note', options: ['Alpha'] }
-    expect(removeFollowUpOption('note, Alpha', owned, 'Alpha')).toEqual({ value: 'note', owned: { base: 'note', options: [] } })
+    expect(removeFollowUpOption('note. Alpha', owned, 'Alpha')).toEqual({ value: 'note', owned: { base: 'note', options: [] } })
   })
 
   it('empties ownership to null when base and options are both empty', () => {
@@ -54,17 +54,17 @@ describe('followUpToggle — removeFollowUpOption', () => {
 
   it('removes only the un-toggled option, keeping the rest in order', () => {
     const owned: OwnedSuffix = { base: 'note', options: ['Alpha', 'Beta'] }
-    expect(removeFollowUpOption('note, Alpha, Beta', owned, 'Alpha')).toEqual({
-      value: 'note, Beta',
+    expect(removeFollowUpOption('note. Alpha. Beta', owned, 'Alpha')).toEqual({
+      value: 'note. Beta',
       owned: { base: 'note', options: ['Beta'] },
     })
   })
 
   it('leaves the draft untouched when the user edited the owned tail', () => {
     const owned: OwnedSuffix = { base: 'note', options: ['Alpha'] }
-    // The user rewrote the draft to text that still ENDS with ', Alpha' but is
+    // The user rewrote the draft to text that still ENDS with '. Alpha' but is
     // no longer the chip's own append — a content endsWith() would eat it.
-    expect(removeFollowUpOption('other, Alpha', owned, 'Alpha')).toEqual({ value: 'other, Alpha', owned })
+    expect(removeFollowUpOption('other. Alpha', owned, 'Alpha')).toEqual({ value: 'other. Alpha', owned })
   })
 
   it('removes a comma-bearing label as ONE unit, never mis-split (#7616 F1)', () => {
@@ -89,8 +89,8 @@ describe('followUpToggle — selectSingleFollowUpOption', () => {
 
   it('replaces the previous pick while the owned tail is intact', () => {
     const owned: OwnedSuffix = { base: 'note', options: ['Go'] }
-    expect(selectSingleFollowUpOption('note, Go', owned, 'Cancel')).toEqual({
-      value: 'note, Cancel',
+    expect(selectSingleFollowUpOption('note. Go', owned, 'Cancel')).toEqual({
+      value: 'note. Cancel',
       owned: { base: 'note', options: ['Cancel'] },
     })
   })
@@ -98,8 +98,49 @@ describe('followUpToggle — selectSingleFollowUpOption', () => {
   it('never removes user text: an edited tail is appended to, not replaced', () => {
     const owned: OwnedSuffix = { base: '', options: ['Go'] }
     expect(selectSingleFollowUpOption('Go now please', owned, 'Cancel')).toEqual({
-      value: 'Go now please, Cancel',
+      value: 'Go now please. Cancel',
       owned: { base: 'Go now please', options: ['Cancel'] },
     })
+  })
+})
+
+describe('followUpToggle — separators between draft and picks', () => {
+  it('puts only a space after a draft that ends with a period', () => {
+    expect(appendFollowUpOption('Looks good.', null, 'Merge it now').value).toBe('Looks good. Merge it now')
+  })
+
+  it('puts only a space after a draft that ends with a question mark', () => {
+    expect(appendFollowUpOption('Ready?', null, 'Merge it now').value).toBe('Ready? Merge it now')
+  })
+
+  it('puts only a space after a draft that ends with a comma', () => {
+    expect(appendFollowUpOption('Sure,', null, 'Merge it now').value).toBe('Sure, Merge it now')
+  })
+
+  it('puts only a space after a closing quote that follows a period', () => {
+    expect(appendFollowUpOption('He said "ok."', null, 'Merge it now').value).toBe('He said "ok." Merge it now')
+  })
+
+  it('joins two capitalised picks as sentences', () => {
+    const first = appendFollowUpOption('', null, 'Merge it now')
+    expect(appendFollowUpOption(first.value, first.owned, 'Show me the diff').value).toBe('Merge it now. Show me the diff')
+  })
+
+  it('joins a lowercase pick with a comma', () => {
+    const first = appendFollowUpOption('', null, 'Merge it now')
+    expect(appendFollowUpOption(first.value, first.owned, 'then deploy').value).toBe('Merge it now, then deploy')
+  })
+
+  it('re-renders the separators when the middle of three picks is removed', () => {
+    const owned: OwnedSuffix = { base: 'Looks good.', options: ['Merge it now', 'then deploy', 'Show me the diff'] }
+    expect(removeFollowUpOption('Looks good. Merge it now, then deploy. Show me the diff', owned, 'then deploy')).toEqual({
+      value: 'Looks good. Merge it now. Show me the diff',
+      owned: { base: 'Looks good.', options: ['Merge it now', 'Show me the diff'] },
+    })
+  })
+
+  it('puts only a space after a label that ends with a period', () => {
+    const first = appendFollowUpOption('', null, 'Do A.')
+    expect(appendFollowUpOption(first.value, first.owned, 'Do B').value).toBe('Do A. Do B')
   })
 })
