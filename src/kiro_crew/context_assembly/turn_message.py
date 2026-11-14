@@ -451,7 +451,12 @@ def build_message(
                 # deep in, and may be compacted out of, the restored transcript,
                 # and cost ~1.5K chars. Same variant and opt-out as session start.
                 _resume_rules = (
-                    ctx._critical_rules_for(session_key, runtime_source)
+                    ctx._critical_rules_for(
+                        session_key,
+                        runtime_source,
+                        mode=mode,
+                        execution_context=execution_context,
+                    )
                     if ctx._agent_includes_crew_context(agent)
                     else ""
                 )

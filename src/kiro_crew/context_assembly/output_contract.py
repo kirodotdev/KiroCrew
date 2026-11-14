@@ -4,9 +4,10 @@ The critical-rules block is the dashboard and channel assistant's own output con
 diff blocks for file changes (selected per runtime by :func:`_critical_rules_for`, from
 the same trusted resolution that names the ``[RUNTIME]`` line), the ``[OPTIONS: ...]``
 footer, the absolute-path and link rules, and the rule to ask a person only when
-human involvement is truly required (in every variant). Both variants are fixed module constants,
+human involvement is truly required (in every variant). Every variant is a fixed module constant,
 never templated, so the marker-neutralization prefix check and the tests can treat
-"a critical-rules block" as one of two strings. The ``[UI LANGUAGE]`` block steers the
+"a critical-rules block" as one of the strings in ``_CRITICAL_RULES_VARIANTS``. The
+``[UI LANGUAGE]`` block steers the
 language of tool-call purpose text to the configured dashboard language, admitted only
 when it is tag-shaped and names a catalog the dashboard ships.
 
@@ -21,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -275,6 +276,25 @@ _CRITICAL_RULES_TAIL = (
 )
 
 
+# The autonomous-goal marker is taught ONLY to slots the full dashboard chat can
+# open, where it renders as a review card (see _goal_card_surface). The text
+# states the degradation too: the same slot can also be shown in a split pane,
+# which offers the objective as an ordinary reply instead.
+_GOAL_RULE_DASHBOARD = (
+    "When the user's request clearly needs several more turns of autonomous "
+    "work they have not yet started (for example: keep fixing until the tests "
+    "pass), you MAY offer it as a goal: one standalone line [GOAL: objective] "
+    "placed before any final [OPTIONS:] line, at most once per reply. The full "
+    "chat view shows it as an Autonomous goal card, and nothing runs until the "
+    "user reviews the objective in the goal editor and starts it. Split panes "
+    "offer the same objective as an ordinary one-turn reply "
+    "instead. Write the objective "
+    "as the complete instruction the goal will follow, including when it is "
+    "done. Never offer a goal for one-turn work or while a goal or monitor is "
+    "already running in this session.\n"
+)
+
+
 # Every variant stays a fixed module constant, never templated: the
 # marker-neutralization prefix check matches _CRITICAL_RULES_VARIANTS exactly.
 _CRITICAL_RULES = (
@@ -284,6 +304,15 @@ _CRITICAL_RULES = (
 
 _CRITICAL_RULES_CHANNEL = (
     _CRITICAL_RULES_HEAD + _ASK_ONLY_WHEN_NEEDED_RULE + _DIFF_RULE_CHANNEL + _CRITICAL_RULES_TAIL
+)
+
+
+_CRITICAL_RULES_GOAL = (
+    _CRITICAL_RULES_HEAD
+    + _ASK_ONLY_WHEN_NEEDED_RULE
+    + _DIFF_RULE_DASHBOARD
+    + _GOAL_RULE_DASHBOARD
+    + _CRITICAL_RULES_TAIL
 )
 
 
@@ -311,10 +340,39 @@ _CRITICAL_RULES_SUBAGENT = (
 
 # Every fixed critical-rules block. Callers that must recognise the trusted
 # block as a prefix (marker neutralization, essentials splice) test this tuple.
-_CRITICAL_RULES_VARIANTS = (_CRITICAL_RULES, _CRITICAL_RULES_CHANNEL, _CRITICAL_RULES_SUBAGENT)
+_CRITICAL_RULES_VARIANTS = (
+    _CRITICAL_RULES_GOAL,
+    _CRITICAL_RULES,
+    _CRITICAL_RULES_CHANNEL,
+    _CRITICAL_RULES_SUBAGENT,
+)
 
 
-def _critical_rules_for(session_key: str | None, runtime_source: str | None) -> str:
+def _goal_card_surface(mode: str, execution_context: Any) -> bool:
+    """Whether the full dashboard chat can open this slot's goal review.
+
+    Crew and member slots route work through their crew and never offer goal
+    review, and an App Kit slot renders only through ChatEmbed. Any other slot
+    can be opened in full chat, which renders the review card. The server cannot
+    tell which host shows a slot, because one slot can be open in full chat, a
+    split pane and the companion chat at once. The companion chat mounts the full
+    ChatPage and renders the card too, so the rule text itself says only that
+    split panes degrade the marker to an ordinary reply (``ChatInput`` without
+    ``onAutomationClick`` takes ``goalSuggestionReplyFallback``).
+    """
+    if mode in ("crew", "member"):
+        return False
+    app = getattr(execution_context, "app", "") if execution_context is not None else ""
+    return not app
+
+
+def _critical_rules_for(
+    session_key: str | None,
+    runtime_source: str | None,
+    *,
+    mode: str = "",
+    execution_context: Any = None,
+) -> str:
     """Select the critical-rules block for this session's runtime.
 
     Compares the RAW source key from the trusted resolution behind the
@@ -328,6 +386,8 @@ def _critical_rules_for(session_key: str | None, runtime_source: str | None) -> 
 
     source = ctx._resolve_runtime_source(session_key or "", runtime_source)
     if source == "dashboard":
+        if _goal_card_surface(mode, execution_context):
+            return _CRITICAL_RULES_GOAL
         return _CRITICAL_RULES
     if source == "subagent":
         return _CRITICAL_RULES_SUBAGENT

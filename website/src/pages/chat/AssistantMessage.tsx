@@ -33,6 +33,7 @@ import { useSmoothStream } from '../../hooks/useSmoothStream'
 import { usePagerFocus } from '../../hooks/usePagerFocus'
 import type { PlanStepInput } from '../../api/client'
 import { extractSteeringAcks, parseOptions, stripPartialOptionMarker } from '../../app-sdk/protocol'
+import { stripPartialGoalMarker } from '../../app-sdk/protocol/goalMarker'
 import { i18nT } from '../../i18n/t'
 import { ROUTING_PREFIX_RE } from '../../providers/modelRegistry'
 import { fmtCredits, fmtCurrency, fmtElapsed } from '../../i18n/format'
@@ -260,12 +261,14 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
   // scratchpad as the answer.
   const { cleaned: thinkingCleaned, thinking: inlineThinking } = useMemo(() => extractInlineThinking(effectiveContent, { hidePartial: isStreaming }), [effectiveContent, isStreaming])
   const { text: parsedText } = parseOptions(thinkingCleaned)
-  // While the marker line is still arriving it has no closing `]`, so
-  // OPTION_MARKER_RE can't match it yet and the raw `[OPTIONS: …` would type
-  // itself out as prose before flipping to pills at turn end. Suppress the
-  // growing tail — streaming only, so a finished message still renders an
-  // unterminated marker (prose about the syntax, or a truncated turn) as written.
-  const text = isStreaming ? stripPartialOptionMarker(parsedText) : parsedText
+  // While an action marker line is still arriving it has no closing `]`, so
+  // the complete-marker parsers cannot match it yet and the raw protocol would
+  // type itself out as prose before flipping to controls at turn end. Suppress
+  // the growing tail — streaming only, so a finished unterminated marker still
+  // renders as written.
+  const text = isStreaming
+    ? stripPartialGoalMarker(stripPartialOptionMarker(parsedText))
+    : parsedText
   // Pull kiro-cli's [STEERING …] acknowledgments out of the prose; render them as
   // chips instead of raw markers. Feed the cleaned text (marker removed) to the
   // stream so the raw tag never renders.

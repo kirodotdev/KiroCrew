@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types'
-import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
+import { parseOptions } from '../app-sdk/protocol/options'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 import { extractInlineThinking } from '../app-sdk/protocol/inlineThinking'
 import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
@@ -28,13 +28,15 @@ export function searchableText(m: ChatMessage): string {
   const brief = warmBriefOf(m)
   if (brief) return warmBriefVisibleText(brief)
   if (m.role === 'assistant' || m.role === 'streaming') {
-    // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
-    // shows (#7948), so a search hit inside it would be a phantom match.
+    // parseOptions is the parser AssistantMessage renders through: it drops the
+    // accepted [OPTIONS:] markers and the [GOAL:] line full chat draws as a card,
+    // so a hit inside either would be a phantom match. stripKeepVisibleMarker:
+    // the marker is an HTML comment the renderer never shows (#7948).
     // An inline `<thinking>` block leaves the bubble for a reasoning row whose
     // body mounts only when opened, so it is split off here exactly as the
     // bubble splits it; a hit inside it would be a phantom match.
     const shown = extractInlineThinking(m.content, { hidePartial: m.role === 'streaming' }).cleaned
-    return stripKeepVisibleMarker(stripOptionMarkers(shown.replace(MCWIDGET_RE, ''))).trimEnd()
+    return stripKeepVisibleMarker(parseOptions(shown.replace(MCWIDGET_RE, '')).text).trimEnd()
   }
   return m.content
 }

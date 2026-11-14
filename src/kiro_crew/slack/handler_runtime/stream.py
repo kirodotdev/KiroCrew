@@ -46,8 +46,8 @@ if TYPE_CHECKING:
         redact_credentials,
         redact_exfiltration_urls,
         split_message,
-        strip_control_comments,
         strip_thinking_tags,
+        strip_trailing_control_tags,
     )
 
 
@@ -138,7 +138,7 @@ def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str
 
     The stream is over, so the held span is the reply's tail, and the tail
     grammar can now be asked directly on the whole reply -- fence parity and
-    all: when ``strip_control_comments`` removes something from *accumulated*,
+    all: when ``strip_trailing_control_tags`` removes something from *accumulated*,
     the held tail IS the control tag and is dropped; when it removes nothing
     (an unterminated fence swallows the tail, a tag prefix that never
     completed, a body over the bound) the span is content and is released for
@@ -147,7 +147,7 @@ def _resolve_comment_hold(bracket_hold: str, accumulated: str) -> tuple[str, str
     """
     if not bracket_hold or bracket_hold[0] != "<":
         return bracket_hold, ""
-    if strip_control_comments(accumulated) != accumulated:
+    if strip_trailing_control_tags(accumulated) != accumulated:
         return "", ""
     return "", bracket_hold
 
