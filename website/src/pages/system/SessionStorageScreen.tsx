@@ -19,7 +19,7 @@ import { errMessage } from '../../utils/thunkError'
 import SimpleSelect from '../../components/SimpleSelect'
 import { Btn, ContentSkeleton } from '../../components/ui'
 import { usePagerFocus } from '../../hooks/usePagerFocus'
-import { compareText, fmtBytes, fmtNumber, fmtRelative } from '../../i18n/format'
+import { compareText, fmtBytes, fmtNumber, fmtRelative, joinSentences } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type {
   SessionInventoryDetail,
@@ -1104,17 +1104,22 @@ function EmptyProgress({ job }: { job: SessionStorageEmptyJob }) {
     // every locale to say something the reasons already say.
     const reasons = [...new Set(job.skipped)]
     return (
-      <p className="px-1.5 py-2 text-[12px] text-warn" role="status">
-        {i18nT('pages.sessionStorage.empty_kept', { freed: fmtBytes(job.freed_bytes) })}
-        {' '}
-        {reasons.map(skipReason).join(' ')}
-        {/* Gated on the reason it actually describes. Only the unlisted-file case has
-            a file to name, so appending it to every code promised a log line that
-            says nothing for the others. */}
-        {reasons.includes('unlisted_files') && (
-          <> {i18nT('pages.sessionStorage.kept_next_step')}</>
-        )}
-      </p>
+      <div className="px-1.5 py-2">
+        {/* The hand-off is on: a kept batch is still listed above, untouched, and
+            this panel holds no draft. */}
+        <ErrorNotice
+          askAgent
+          testId="session-storage-empty-kept"
+          message={joinSentences([
+            i18nT('pages.sessionStorage.empty_kept', { freed: fmtBytes(job.freed_bytes) }),
+            ...reasons.map(skipReason),
+            // Gated on the reason it actually describes. Only the unlisted-file case has
+            // a file to name, so appending it to every code promised a log line that
+            // says nothing for the others.
+            reasons.includes('unlisted_files') && i18nT('pages.sessionStorage.kept_next_step'),
+          ])}
+        />
+      </div>
     )
   }
   return (

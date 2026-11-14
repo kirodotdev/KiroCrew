@@ -8,7 +8,7 @@ import ErrorNotice from '../../../components/ErrorNotice'
 import { lazyRetry } from '../../../components/lazyRetry'
 import { i18nT } from '../../../i18n/t'
 import InfoTip from '../../../components/InfoTip'
-import { fmtDateTime } from '../../../i18n/format'
+import { fmtDateTime, joinSentences } from '../../../i18n/format'
 import { useAppSelector } from '../../../store'
 import { membersRosterQuery } from '../../../api/membersQuery'
 import { missingSourcesNotice, useCommandCenter } from './useCommandCenter'
@@ -106,11 +106,11 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
   const [chosen, setSection] = useState<'dashboard' | 'attention' | 'approvals'>('dashboard')
   const section = !root && chosen === 'dashboard' ? 'attention' : chosen
   const showingOverview = root && (section === 'dashboard' || !sessionReady)
-  const about = [
+  const about = joinSentences([
     t('commandCenter.description'),
     sessionReady && data.approvalMode === 'normal' ? t('commandCenter.normal_help') : '',
     sessionReady && data.updatedAt > 0 ? t('commandCenter.updated', { time: fmtDateTime(data.updatedAt) }) : '',
-  ].filter(Boolean).join(' ')
+  ])
   return <div className="h-full flex flex-col min-w-0 bg-bg text-text" data-testid="command-center-panel">
     <header className="shrink-0 p-3 border-b border-border space-y-3">
       <div className="flex gap-2 items-center flex-wrap"><LayoutDashboard size={17} className="text-accent" /><h2 tabIndex={-1} {...{ [PANEL_HEADING_ATTR]: '' }} className="font-semibold text-sm outline-hidden">{t('commandCenter.title')}</h2>

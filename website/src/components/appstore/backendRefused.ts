@@ -8,6 +8,7 @@
  * surface that reports the result shows this as a warning instead of a success.
  */
 
+import { joinSentences } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 
 /** The refusal reason the response carries, or '' when there is none. */
@@ -35,5 +36,5 @@ export function appActionNotice(name: string, result: unknown, action: 'enable' 
   const warnings = Array.isArray(raw) ? raw.filter((w): w is string => typeof w === 'string' && w.trim() !== '') : []
   const key = action === 'enable' ? 'pages.appsPage.action_warnings_enabled' : 'pages.appsPage.action_warnings_disabled'
   const warned = warnings.length ? i18nT(key, { name, warnings: warnings.join('; ') }) : ''
-  return [refused, warned].filter(Boolean).join(' ')
+  return joinSentences([refused, warned])
 }

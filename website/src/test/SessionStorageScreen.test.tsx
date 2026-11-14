@@ -917,6 +917,8 @@ describe('SessionStorageScreen (inventory)', () => {
     ).toBeTruthy())
     expect(screen.getByText(/manifest does not list/)).toBeTruthy()
     expect(screen.queryByText('Freed 0B.')).toBeNull()
+    // A kept batch is a failed delete, so it shows on the shared error surface.
+    expect(screen.getByTestId('session-storage-empty-kept').textContent).toMatch(/not everything could be deleted/)
   })
 
   /**

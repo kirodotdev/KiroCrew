@@ -7,6 +7,8 @@
  *  - The settings provider at runtime
  */
 
+import { joinSentences } from '../../i18n/format'
+
 /** Primitive types we recognize. */
 export type SettingPrimitiveType = 'toggle' | 'select' | 'input' | 'stepper' | 'buttonGroup'
 
@@ -94,6 +96,6 @@ export type ManualSettingEntry = Omit<SettingEntry, 'label' | 'labelKey' | 'desc
  * states the consequence, so tip-then-description reads as prose.
  */
 export function settingHelpText(entry: { description?: string; hint?: string }): string | undefined {
-  const text = [entry.hint, entry.description].filter((s): s is string => !!s).join(' ')
+  const text = joinSentences([entry.hint, entry.description])
   return text || undefined
 }

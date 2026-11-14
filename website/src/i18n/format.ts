@@ -640,6 +640,34 @@ export function fmtList(
   ).format(items.filter((item) => item !== ''))
 }
 
+/**
+ * Languages whose sentences end with a full-width stop and run on with no space
+ * before the next sentence (`…です。次は…`, `…状态。如果…`).
+ */
+const UNSPACED_SENTENCE_LANGUAGES = new Set(['ja', 'zh'])
+const FULL_WIDTH_SENTENCE_ENDS = ['。', '！', '？']
+
+/**
+ * Join whole, separately translated sentences the way the language does.
+ *
+ * `join(' ')` is right for English but leaves `。 ` mid-message in Japanese and
+ * Chinese, which put no space after a sentence. A sentence there that ends in
+ * something else, such as a gateway's raw English reason, still gets a space,
+ * so two words never run together. Only for complete sentences; a list of names
+ * goes through `fmtList`. Empty entries are dropped, so a filtered-out sentence
+ * leaves no separator.
+ */
+export function joinSentences(sentences: readonly (string | undefined | null | false)[]): string {
+  const unspaced = UNSPACED_SENTENCE_LANGUAGES.has(activeLocale().split('-')[0])
+  let text = ''
+  for (const sentence of sentences) {
+    if (typeof sentence !== 'string' || sentence === '') continue
+    const joined = text === '' || (unspaced && FULL_WIDTH_SENTENCE_ENDS.some((end) => text.endsWith(end)))
+    text += joined ? sentence : ` ${sentence}`
+  }
+  return text
+}
+
 /* ----------------------------------------------------------------- collation */
 
 /**
