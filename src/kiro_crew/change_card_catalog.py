@@ -74,6 +74,7 @@ from kiro_crew.change_card_catalog_plans import (
     DASHBOARD_KEYS,
     DASHBOARD_LIST_OP_KEYS,
     IMPORT_STEP_CRON,
+    IMPORT_STEP_DASHBOARD,
     IMPORT_STEP_FILES,
     IMPORT_STEP_GOAL,
     IMPORT_STEP_RULES,
@@ -127,9 +128,9 @@ def extract_evidence(
     if kind in CREWMATE_CREATING_KINDS and step_index == 0:
         return pick("member_id", "name")
     if kind == KIND_CREWMATE_IMPORT and op == OP_APPLY:
-        # A cron step's job id and the fingerprint of the job as it made it; the
-        # import's Undo reads them only at a cron step.
-        return pick("id", "revision")
+        # A cron step's job id and the fingerprint of the job as it made it, and the
+        # dashboard step's adopted version; the import's Undo reads them at those steps.
+        return pick("id", "revision", "instance_version")
     if kind == KIND_CREWMATE_GOAL and op == OP_APPLY:
         # The goal the write added or changed, so the Undo of an added goal can
         # remove exactly that one.
@@ -474,6 +475,7 @@ def result_summary(
                     IMPORT_STEP_GOAL: "its goal",
                     IMPORT_STEP_RULES: "its rules",
                     IMPORT_STEP_FILES: "its skills, scripts and picture",
+                    IMPORT_STEP_DASHBOARD: "its dashboard",
                     IMPORT_STEP_CRON: "its schedules",
                 }.get(roles[failed_step] if failed_step < len(roles) else "", "every part")
                 return (
@@ -655,6 +657,8 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("POST", "/api/members/{slug}/import-files"),
         ("DELETE", "/api/members/{slug}/import-files"),
         ("POST", "/api/members/{slug}/dashboard/page-offer"),
+        ("POST", "/api/members/{slug}/dashboard/template"),
+        ("DELETE", "/api/members/{slug}/dashboard/template"),
         ("POST", "/api/mcp/discover/install"),
         ("POST", "/api/mcp/custom"),
         ("POST", "/api/mcp/remove"),
@@ -699,6 +703,8 @@ MEMORY_ROUTES: frozenset[tuple[str, str]] = HOOKED_ROUTES - {
     ("GET", "/api/connections/mint"),
     ("PATCH", "/api/chat/folders/{id}"),
     ("POST", "/api/members/{slug}/dashboard/page-offer"),
+    ("POST", "/api/members/{slug}/dashboard/template"),
+    ("DELETE", "/api/members/{slug}/dashboard/template"),
     ("PUT", "/api/members/{slug}/rules"),
     ("POST", "/api/members/{slug}/import-files"),
     ("DELETE", "/api/members/{slug}/import-files"),
@@ -824,7 +830,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _cron_body,
         _display,
         _impact_rows,
+        _import_applies_dashboard,
         _import_cron_step,
+        _import_dashboard_step,
         _import_files_step,
         _import_member_fills,
         _import_message_crons,
