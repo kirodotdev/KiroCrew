@@ -23944,7 +23944,18 @@
     "apply_replace": "Sostituisci le indicazioni",
     "apply_replace_n": "Sostituisci le indicazioni e aggiungi {{count}}",
     "current_directions": "Indicazioni attuali (verranno sostituite): {{directions}}",
-    "done_replaced": "Indicazioni di comportamento sostituite."
+    "done_replaced": "Indicazioni di comportamento sostituite.",
+    "unenforced_preview": "Questo Bot rifiuterà ogni comando da terminale che potrebbe cambiare qualcosa, per esempio uno che scrive, cancella o installa. I comandi da terminale che leggono soltanto continuano a funzionare, e anche i suoi strumenti per i file, scrittura compresa. {{productName}} non può controllare alcuni comandi bloccati dell’agente che stai aggiungendo.",
+    "unenforced_current": "Questo Bot rifiuta ogni comando da terminale che potrebbe cambiare qualcosa, per esempio uno che scrive, cancella o installa. I comandi da terminale che leggono soltanto continuano a funzionare, e anche i suoi strumenti per i file, scrittura compresa. Questo dipende da comandi bloccati di un agente aggiunto a questo Bot, che {{productName}} non può controllare. Per togliere il limite, rimuovi quei comandi bloccati dal file di configurazione di questo Bot.",
+    "unenforced_label": "Comandi bloccati che non può controllare",
+    "unenforced_lead": "Modifiche da terminale bloccate.",
+    "conditional_lead": "Alcune modifiche da terminale bloccate.",
+    "conditional_preview": "Questo Bot rifiuterà alcuni comandi da terminale che potrebbero cambiare qualcosa. I suoi altri strumenti funzionano ancora.",
+    "conditional_current": "Questo Bot rifiuta alcuni comandi da terminale che potrebbero cambiare qualcosa. I suoi altri strumenti funzionano ancora.",
+    "conditional_label": "Comandi bloccati che può controllare solo in forma semplice",
+    "conditional_which": "Quali comandi?",
+    "conditional_shapes": "Controllati solo in comandi semplici e catene semplici (&&, ||, ;, |). Un comando da terminale più complesso che potrebbe cambiare qualcosa viene rifiutato.",
+    "current_state_label": "Cosa fa ora questo Bot"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}} ha approvato",

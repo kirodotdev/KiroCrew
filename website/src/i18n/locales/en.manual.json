@@ -11944,7 +11944,18 @@
     "apply_replace": "Replace directions",
     "apply_replace_n": "Replace directions and add {{count}}",
     "current_directions": "Current directions (will be replaced): {{directions}}",
-    "done_replaced": "Behavior directions replaced."
+    "done_replaced": "Behavior directions replaced.",
+    "unenforced_preview": "This bot will refuse every terminal command that could change something, such as one that writes, deletes or installs. Terminal commands that only read still run, and its file tools, including write, still work. {{productName}} can't check some blocked commands of the agent you're adding.",
+    "unenforced_current": "This bot refuses every terminal command that could change something, such as one that writes, deletes or installs. Terminal commands that only read still run, and its file tools, including write, still work. This comes from blocked commands of an agent added to this bot, which {{productName}} can't check. To lift it, remove those blocked commands from this bot's config file.",
+    "unenforced_label": "Blocked commands it can't check",
+    "unenforced_lead": "Terminal changes blocked.",
+    "conditional_lead": "Some terminal changes blocked.",
+    "conditional_preview": "This bot will refuse some terminal commands that could change something. Its other tools still work.",
+    "conditional_current": "This bot refuses some terminal commands that could change something. Its other tools still work.",
+    "conditional_label": "Blocked commands it can check only in simple form",
+    "conditional_which": "Which commands?",
+    "conditional_shapes": "Checked only in plain commands and plain chains (&&, ||, ;, |). A more complex terminal command that could change something is refused.",
+    "current_state_label": "What this bot does now"
   },
   "milestone": {
     "widgets": {

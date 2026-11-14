@@ -4783,9 +4783,61 @@ the revoked approvals cannot be read. Each one
 left out is a `skipped` `toolsSettings` row
 ("Already has", id `<tool>.<key>`), so the worker behaves as the agent declares
 and no prompt appears or disappears. This runs at kit time only: the worker
-merge still refuses either key in a file, so a hand-edited one fails closed at
-session start. Owner decision:
+merge still refuses `web_fetch.trusted` in a file, so a hand-edited one fails
+closed at session start; a `subagent.trustedAgents` no allow covers is carried
+as written. Owner decision:
 `docs/decisions/2026-11-07-add-abilities-leaves-out-a-grant-the-worker-already-holds.md`.
+The worker carries the `toolsSettings` keys of
+`mate_spec_policy.CARRIED_TOOLS_SETTINGS`, the same ones an ordinary KAS session
+of that agent applies: shell `deniedCommands`, `allowedCommands`,
+`denyByDefault` and `autoAllowReadonly`, read and write `deniedPaths` and
+`allowedPaths`, `web_fetch.blocked`, and `subagent.availableAgents` and
+`trustedAgents` under the `subagent` spelling only. Crew's gate answers the
+shell keys and the `allowedPaths`; KAS turns `trustedAgents` into a `subagent`
+allow. Every other key (`fallbackAction`, `web_fetch.trusted` in a file, a key
+Crew does not know) is refused by name. A shell `allowedCommands` or a read or
+write `allowedPaths` is carried whole even when an entry of it is one Crew
+cannot read, since that entry grants nothing and the call asks. A
+`deniedCommands` list is carried whole too. When an entry of it is one neither
+KAS (a glob in the entry's `permissions`) nor the gate (`kas_spec_denies._refusable_deny`)
+can judge, such as a regex with `|` inside a group, the worker's projection
+records those entries under the Crew-only `_crewShellUnjudgedDenies` key
+(`kas_spec_denies.with_unjudged_denies`, set for `kirocrew-mate-worker` only),
+the session handle stamps them on its own agent's requests
+(`AcpEvent.spec_unjudged_denies`), and the gate's `spec-unjudged-denies` row,
+placed with the deny rows, refuses every shell call of that agent that is not
+read-only (`gate_tiers._command_is_read_only`). The row refuses rather than asks
+because a worker runs under its Bot's Permissions, and under Trust an ask is
+answered for the person; no gate result forces a person's answer
+(`hooks.confirm_tools` only withholds a grant). An ordinary session with the
+same spec keeps asking, as before. The preview and the kit view return those
+entries as `unenforced_denies`, and the pane names them as written, in code font,
+under one sentence saying this Bot refuses every command that is not read-only;
+the finished add adds where to see the list again (this section), and the
+section shows it while the file holds one. Owner decision:
+`docs/decisions/2026-11-13-a-bots-worker-carries-the-agents-tool-grants.md`
+(`test/test_mate_worker_carries_tools_settings.py`).
+Every gate-readable deny that KAS does not carry travels in the same worker
+record as an object containing `key`, the raw `entry`, `conditional`,
+`past_bound`, and `whole`. The same objects travel through the session handle
+and `AcpEvent.spec_unjudged_denies`; the existing Crew-only key is stripped from
+KAS's wire payload. Classification never comes from entry text. The session
+notice pipeline serializes these objects as JSON across its `list[str]` API,
+then formats them only in `spec_keys_notice`. Both gate rows use
+`platform.spec_denied_gate.shell_denies_match`: a match is refused by
+`spec-denies`, a definite no-match keeps the normal approval policy, and an
+unknown result holds a worker's non-read-only command at `spec-unjudged-denies`.
+Unknown includes redirects, chains containing `#` or `[[`, and non-ASCII commands
+against ASCII-only patterns. The preview and the kit view return these
+conditional entries as `conditional_denies`, apart from `unenforced_denies`
+(`mate_spec_policy.conditional_denies`), and the pane names them in a second
+group, "Blocked commands it can check only in simple form", under a sentence
+naming the command shapes the worker then refuses. Truly unjudged entries still
+hold every non-read-only command. Ordinary sessions continue to refuse only
+definite matches. On a Bot's worker (`kirocrew-mate-worker`) the session-start
+notice (`spec_keys_notice`) says the worker refuses those commands unless they
+are read-only, instead of "no effect" or "runs without a refusal"; an ordinary
+session keeps the old wording.
 The add is refused,
 with a `detail` naming the field: `template_restrictions_uncarried` when one
 cannot be kept exactly (`uncarried_restrictions`, `toolsSettings.<tool>` for

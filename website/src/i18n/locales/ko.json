@@ -22836,7 +22836,18 @@
     "apply_replace": "지침 대체",
     "apply_replace_n": "지침 대체 및 {{count}}개 추가",
     "current_directions": "현재 지침(대체될 예정): {{directions}}",
-    "done_replaced": "행동 지침을 대체했습니다."
+    "done_replaced": "행동 지침을 대체했습니다.",
+    "unenforced_preview": "이 Bot은 쓰기, 삭제, 설치처럼 무언가를 바꿀 수 있는 터미널 명령을 모두 거부합니다. 읽기만 하는 터미널 명령은 계속 실행되고, 쓰기를 포함한 파일 도구도 계속 작동합니다. {{productName}}이(가) 추가하려는 에이전트의 차단 명령 일부를 확인할 수 없기 때문입니다.",
+    "unenforced_current": "이 Bot은 쓰기, 삭제, 설치처럼 무언가를 바꿀 수 있는 터미널 명령을 모두 거부합니다. 읽기만 하는 터미널 명령은 계속 실행되고, 쓰기를 포함한 파일 도구도 계속 작동합니다. 이 Bot에 추가된 에이전트의 차단 명령을 {{productName}}이(가) 확인할 수 없기 때문입니다. 제한을 풀려면 이 Bot의 설정 파일에서 그 차단 명령을 지우세요.",
+    "unenforced_label": "확인할 수 없는 차단 명령",
+    "unenforced_lead": "터미널 변경 차단됨.",
+    "conditional_lead": "일부 터미널 변경 차단됨.",
+    "conditional_preview": "이 Bot은 무언가를 바꿀 수 있는 터미널 명령 일부를 거부합니다. 다른 도구는 계속 작동합니다.",
+    "conditional_current": "이 Bot은 무언가를 바꿀 수 있는 터미널 명령 일부를 거부하고 있습니다. 다른 도구는 계속 작동합니다.",
+    "conditional_label": "단순한 형태로만 확인할 수 있는 차단 명령",
+    "conditional_which": "어떤 명령인가요?",
+    "conditional_shapes": "단순한 명령과 일반 체인(&&, ||, ;, |)에서만 확인합니다. 그보다 복잡하고 무언가를 바꿀 수 있는 터미널 명령은 거부됩니다.",
+    "current_state_label": "이 Bot의 현재 동작"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}}님이 승인했습니다",

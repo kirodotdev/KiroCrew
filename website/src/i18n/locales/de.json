@@ -23390,7 +23390,18 @@
     "apply_replace": "Anweisungen ersetzen",
     "apply_replace_n": "Anweisungen ersetzen und {{count}} hinzufügen",
     "current_directions": "Aktuelle Anweisungen (werden ersetzt): {{directions}}",
-    "done_replaced": "Verhaltensanweisungen ersetzt."
+    "done_replaced": "Verhaltensanweisungen ersetzt.",
+    "unenforced_preview": "Dieser Bot lehnt jeden Terminalbefehl ab, der etwas ändern könnte, etwa einen, der schreibt, löscht oder installiert. Terminalbefehle, die nur lesen, laufen weiter, und seine Dateiwerkzeuge, auch Schreiben, funktionieren weiter. {{productName}} kann einige blockierte Befehle des Agenten, den du hinzufügst, nicht prüfen.",
+    "unenforced_current": "Dieser Bot lehnt jeden Terminalbefehl ab, der etwas ändern könnte, etwa einen, der schreibt, löscht oder installiert. Terminalbefehle, die nur lesen, laufen weiter, und seine Dateiwerkzeuge, auch Schreiben, funktionieren weiter. Das kommt von blockierten Befehlen eines Agenten, der diesem Bot hinzugefügt wurde und die {{productName}} nicht prüfen kann. Um das aufzuheben, entferne diese blockierten Befehle aus der Konfigurationsdatei dieses Bots.",
+    "unenforced_label": "Blockierte Befehle, die er nicht prüfen kann",
+    "unenforced_lead": "Terminaländerungen blockiert.",
+    "conditional_lead": "Einige Terminaländerungen blockiert.",
+    "conditional_preview": "Dieser Bot lehnt manche Terminalbefehle ab, die etwas ändern könnten. Seine anderen Werkzeuge funktionieren weiter.",
+    "conditional_current": "Dieser Bot lehnt manche Terminalbefehle ab, die etwas ändern könnten. Seine anderen Werkzeuge funktionieren weiter.",
+    "conditional_label": "Blockierte Befehle, die er nur in einfacher Form prüfen kann",
+    "conditional_which": "Welche Befehle?",
+    "conditional_shapes": "Nur in einfachen Befehlen und schlichten Ketten (&&, ||, ;, |) geprüft. Ein komplexerer Terminalbefehl, der etwas ändern könnte, wird abgelehnt.",
+    "current_state_label": "Was dieser Bot jetzt tut"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}} hat genehmigt",

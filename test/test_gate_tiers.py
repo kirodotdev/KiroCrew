@@ -188,6 +188,19 @@ TIER_SCENARIOS: tuple[Scenario, ...] = (
         ),
     ),
     Scenario(
+        "spec-unjudged-denies",
+        TOOL_DENY,
+        ToolCall(
+            title="Run Command",
+            is_shell=True,
+            command="make clean",
+            mcp_tool="run_command",
+            identity_trusted=True,
+            kas_builtin_ids=True,
+            spec_unjudged_denies=(r".*rm\s+-r(f)?\s+~($|\s|/).*",),
+        ),
+    ),
+    Scenario(
         "app-own-server",
         TOOL_AUTO_APPROVE,
         ToolCall(
@@ -416,6 +429,7 @@ def test_the_table_is_the_gate_order() -> None:
         ("spec-shell-allowlist", "deny_policy"),
         ("spec-write-allowlist", "deny_policy"),
         ("spec-denies", "deny_policy"),
+        ("spec-unjudged-denies", "deny_policy"),
         ("app-own-server", "grant"),
         ("operator-grants", "grant"),
         ("spec-builtin-grant", "grant"),
@@ -601,7 +615,13 @@ _DENY_UNDER_GRANT = (
             grant == "app-own-server"
             and (
                 scenario.call.mcp_server
-                or scenario.tier in ("spec-shell-allowlist", "spec-write-allowlist", "spec-denies")
+                or scenario.tier
+                in (
+                    "spec-shell-allowlist",
+                    "spec-write-allowlist",
+                    "spec-denies",
+                    "spec-unjudged-denies",
+                )
             )
         )
     ]
@@ -640,7 +660,11 @@ def test_every_deny_beats_every_grant(scenario: Scenario, grant: str) -> None:
             spec_granted_builtins=frozenset({"execute_bash"}),
         )
         granted = dataclasses.replace(
-            call, title="Run Command", command="make build", spec_shell_allowlist=None
+            call,
+            title="Run Command",
+            command="make build",
+            spec_shell_allowlist=None,
+            spec_unjudged_denies=(),
         )
         assert (
             HookManager().judge(granted).tier == "spec-builtin-grant"

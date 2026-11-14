@@ -85,6 +85,25 @@ def _is_write(call: ToolCall, names: tuple[str, ...]) -> bool:
     return is_edit_call(call.kind, call.diff_path) or bool(_WRITE_NAMES.intersection(names))
 
 
+def shell_denies_match(patterns: tuple[str, ...], command: str | None) -> bool | None:
+    """The refusal row's shell judgement: match, definite no-match, or unknown.
+
+    A redirect or unsplittable command is unknown. A ``#`` or ``[[`` in a chain
+    can change which pieces execute, so those chains are unknown too. A match
+    wins over an unknown piece, preserving the ordinary session's refusal.
+    """
+    pieces = allowed_commands.chain_commands(command) or ()
+    if not pieces or (len(pieces) > 1 and ("#" in str(command) or "[[" in str(command))):
+        return None
+    unknown = False
+    for piece in pieces:
+        answer = allowed_commands.denied_match(patterns, piece, word_bounded=True)
+        if answer is True:
+            return True
+        unknown = unknown or answer is None
+    return None if unknown else False
+
+
 def spec_denies_refusal(call: ToolCall, names: tuple[str, ...]) -> str | None:
     """Why the ``spec-denies`` row refuses *call*, or ``None``: its spec's checked
     ``deniedCommands`` or write ``deniedPaths`` names it. A ``deny_policy``: the
@@ -99,17 +118,7 @@ def spec_denies_refusal(call: ToolCall, names: tuple[str, ...]) -> str | None:
         return None
     prefix = "Blocked by this agent's spec: "
     if grant.denied_commands and call.is_shell and _SHELL_NAMES.intersection(names):
-        pieces = allowed_commands.chain_commands(call.command) or ()
-        # A ``#`` can start a comment that holds a separator, so a piece after it
-        # may never run; inside a ``[[ ... ]]`` test a separator is part of the
-        # test, not a new command. Such a chain is not split here.
-        command = str(call.command)
-        if len(pieces) > 1 and ("#" in command or "[[" in command):
-            pieces = ()
-        if any(
-            allowed_commands.denied_match(grant.denied_commands, piece, word_bounded=True) is True
-            for piece in pieces
-        ):
+        if shell_denies_match(grant.denied_commands, call.command) is True:
             return prefix + "the command matches its deniedCommands"
     if grant.denied_write_paths and _is_write(call, names):
         if _write_denied(call, grant) is True:
