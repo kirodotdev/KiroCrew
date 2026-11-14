@@ -290,19 +290,13 @@ class TestChatSlotContinue:
 
     @pytest.mark.asyncio
     async def test_parked_recovery_second_resume_returns_slot_queue_pending(self, monkeypatch):
-        # (c) Trace: second Resume on a slot whose recovery is parked.
+        # (c) Second Resume on a slot whose recovery is parked.
         #
-        # After the first Resume, continue_slot_turn inserts a recovery at
-        # the queue head (chat_handlers.py queue_insert call) and calls
-        # _start_next_queued_turn. If memory preparation is still running,
-        # _start_next_queued_turn returns False -- the recovery stays parked
-        # at position 0 with kind==SYNTHETIC_RECOVERY_KIND.
-        #
-        # A second Resume press re-enters continue_slot_turn. The queue_depth
-        # check: _is_interrupted is true (passes case 1); then case 1b fires:
-        # the recovery entry inserted by the first press has no RESTORED_QUEUE_KEY,
-        # so not all(e.get(RESTORED_QUEUE_KEY) ...) is True -> SlotContinueRefusal
-        # 409 slot_queue_pending. No second recovery inserted; queue length stays 2.
+        # The first Resume inserts a recovery at the queue head; with memory
+        # preparation still running, _start_next_queued_turn returns False and
+        # it stays parked there. The second press hits case 1b: that recovery
+        # has no RESTORED_QUEUE_KEY, so it is refused with 409
+        # slot_queue_pending and no second recovery is inserted.
         mock_sel = MagicMock()
         mock_sel.log_tool_invocation = MagicMock()
         # Parked: _start_next_queued_turn returns False; recovery stays at head.
@@ -340,18 +334,11 @@ class TestChatSlotContinue:
     async def test_live_queue_on_interrupted_slot_is_refused(self, _patched):
         # (d) Live (non-restored) queue entry on an interrupted slot is refused.
         #
-        # Distinguishing live from restored:
-        # - A restored entry has RESTORED_QUEUE_KEY=True (set by
-        #   sanitize_restored_queue on boot from the previous process's queue
-        #   file).
-        # - A live entry was added in THIS process; RESTORED_QUEUE_KEY is absent.
-        #   A live held entry (e.g. from a sign-in or memory-preparation hold,
-        #   chat_utils.py:1338) might be drained once the hold clears -- Resume
-        #   here would race with that drain.
-        #
-        # The backend check (chat_handlers.py):
-        #   not all(e.get(RESTORED_QUEUE_KEY) for e in slot._queue)
-        # is True when any entry lacks the tag -> case 1b -> SlotContinueRefusal.
+        # sanitize_restored_queue tags entries restored at boot with
+        # RESTORED_QUEUE_KEY; an entry added in THIS process has no tag. A live
+        # held entry (sign-in or memory-preparation hold) may drain once the
+        # hold clears, so Resume would race that drain: any untagged entry ->
+        # case 1b -> SlotContinueRefusal.
         slot = _ChatSlot("s")
         slot.append("user", "hi", "msg msg-u")
         slot.append(

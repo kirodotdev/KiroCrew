@@ -648,11 +648,10 @@ class TestSlotModelSwitchAtomicity:
     @pytest.mark.asyncio
     async def test_reset_raise_with_successor_session_still_succeeds(self):
         # A concurrent send can register a SUCCESSOR session for the same key
-        # after the pop and before the old session's shutdown raises (server
-        # GPT lane finding on 295817e70): the probe compares instance
-        # IDENTITY, so a different registered provider is NOT the unpopped
-        # old session — the switch is committed, the successor cold-started
-        # from the committed bindings, and the answer is 200 + warning.
+        # after the pop and before the old session's shutdown raises. The probe
+        # compares instance IDENTITY, so a different registered provider is NOT
+        # the unpopped old session — the switch is committed, the successor
+        # cold-started from the committed bindings, and the answer is 200 + warning.
         from kiro_crew.providers.base import LLMProvider
 
         slot = _ChatSlot("test")
