@@ -1,4 +1,5 @@
 import { copyToClipboard } from './clipboard'
+import { isUntitledSession } from './sessionDisplayTitle'
 
 /** Minimal message shape needed for deep-link resolution (avoids importing ChatMessage). */
 export interface ResolvableMessage {
@@ -41,7 +42,7 @@ export function buildShareableUrl(
   mid?: string,
 ): string {
   const basePath = '/chat'
-  const slug = title && title !== slotKey ? toSlug(title) : ''
+  const slug = title && !isUntitledSession({ key: slotKey, title }) ? toSlug(title) : ''
 
   const params = new URLSearchParams()
   params.set('sid', slotKey)

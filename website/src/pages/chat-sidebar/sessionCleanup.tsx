@@ -15,6 +15,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import type { AppDispatch } from '../../store'
 import type { SidebarScope } from './scope'
 import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 /** Inactivity windows offered by the cleanup panel, in days. The backend accepts any
  *  value >= 1, so this list is purely the set of presets the picker renders. */
@@ -108,7 +109,7 @@ export function renderSessionCleanupPanel(shell: SidebarScope): React.ReactNode 
                         <div id={CLEANUP_LIST_ID} className="mt-2 max-h-32 overflow-y-auto rounded-md border border-border bg-bg-elevated p-1.5">
                           {archivable.map(s => (
                             <div key={s.key} className="text-[12px] text-muted truncate py-0.5 px-1">
-                              {s.title && s.title !== s.key ? s.title : s.key}
+                              {sessionDisplayTitle(s)}
                               {slotActivityTs(s) && <span className="ml-1 text-[11px] opacity-60">{fmtRelativeTime(slotActivityTs(s))}</span>}
                             </div>
                           ))}

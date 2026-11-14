@@ -31,6 +31,7 @@ import { isPeerRow, sessionRowIdentity } from './rowIdentity'
 import type { MemorySourceRow } from '../../lib/agentMemorySource'
 import { sameCrewView, type CodeChannelCrewView } from './codeChannelCrew'
 import type { AgentInfo, FilterDimension, RevealBlockingFilter, SessionFilterKey, SidebarSourceLink, Slot } from './types'
+import { sessionDisplayTitle } from '../../utils/sessionDisplayTitle'
 
 /** What the chip prints. The serializer decides it; this only covers its absence,
  * which means a bundle newer than the gateway it is talking to.
@@ -849,7 +850,7 @@ function makeViews(model: ViewModel): SidebarRows['views'] {
         const key = localKeyOf(slot)
         const { renaming, revealFlash, nativeDragKey } = scene.local
         return {
-          title: slot.title && slot.title !== slot.key ? slot.title : slot.key,
+          title: sessionDisplayTitle(slot),
           // The active, renaming, dragged and revealed rows never stub: each holds state
           // a remount would drop. The dnd-kit clause compares the raw key, as the drag id
           // is one; no peer row can be dragged.
