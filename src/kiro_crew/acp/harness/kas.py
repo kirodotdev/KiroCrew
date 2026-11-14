@@ -1067,11 +1067,14 @@ class KasHarness(MembershipHarness):
         handle.kas_spec_write_allowlist = projected_write_allowlist(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
-        from kiro_crew.acp.kas_spec_denies import projected_spec_denies
+        from kiro_crew.acp.kas_spec_denies import projected_spec_denies, projected_unjudged_denies
 
         handle.kas_spec_denies = projected_spec_denies(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
+        # A Bot worker's `deniedCommands` entries nobody can judge
+        # (`spec-unjudged-denies` tier).
+        handle.kas_spec_unjudged_denies = projected_unjudged_denies(custom_agents, active_agent)
         # `autoAllowReadonly: true` beside `denyByDefault`, and the write tool's
         # `allowedPaths` the gate answers (`spec-builtin-grant` tier).
         handle.kas_spec_shell_readonly = kas_agents_mod.projected_shell_readonly(
@@ -1318,6 +1321,12 @@ class KasHarness(MembershipHarness):
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 governance_app=governance_app,
             )
+            if agent == MATE_WORKER_AGENT:
+                # A Bot's worker: the `deniedCommands` entries nobody can judge
+                # hold its shell at the gate, whatever its Bot's Permissions.
+                from kiro_crew.acp.kas_spec_denies import with_unjudged_denies
+
+                custom_agents = with_unjudged_denies(custom_agents, agent, spec)
             # Every per-tool switch, the global settings file's included: the spec
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.
             switched_off = session_mcp_disabled_tools(agent, spec=spec)

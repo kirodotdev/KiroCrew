@@ -602,6 +602,7 @@ class TestHookGateKwargs:
         "spec_write_allowlist": "spec_write_allowlist",
         "spec_write_cwd": "spec_write_cwd",
         "spec_denied_grant": "spec_denied_grant",
+        "spec_unjudged_denies": "spec_unjudged_denies",
         "spec_shell_readonly": "spec_shell_readonly",
         "spec_granted_paths": "spec_granted_paths",
         "spec_granted_read_paths": "spec_granted_read_paths",
@@ -638,6 +639,7 @@ class TestHookGateKwargs:
             spec_write_allowlist=("/w/out",),
             spec_write_cwd="/w",
             spec_denied_grant=_denied_grant(),
+            spec_unjudged_denies=("rm .*(a|b)",),
             spec_shell_readonly=True,
             spec_granted_paths=("/w/out/**",),
             spec_granted_read_paths=("/w/docs/**",),
@@ -665,6 +667,7 @@ class TestHookGateKwargs:
             "spec_write_allowlist": ("/w/out",),
             "spec_write_cwd": "/w",
             "spec_denied_grant": _denied_grant(),
+            "spec_unjudged_denies": ("rm .*(a|b)",),
             "spec_shell_readonly": True,
             "spec_granted_paths": ("/w/out/**",),
             "spec_granted_read_paths": ("/w/docs/**",),
@@ -705,6 +708,7 @@ class TestHookGateKwargs:
             "spec_write_allowlist": None,
             "spec_write_cwd": "",
             "spec_denied_grant": None,
+            "spec_unjudged_denies": (),
             "spec_shell_readonly": False,
             "spec_granted_paths": (),
             "spec_granted_read_paths": (),
@@ -811,6 +815,7 @@ class TestHookGateKwargs:
         probe.spec_write_allowlist = ("<spec_write_allowlist>",)
         probe.spec_write_cwd = "<spec_write_cwd>"
         probe.spec_denied_grant = _denied_grant()
+        probe.spec_unjudged_denies = ("<spec_unjudged_denies>",)
         probe.spec_shell_readonly = True
         probe.spec_granted_paths = ("<spec_granted_paths>",)
         probe.spec_granted_read_paths = ("<spec_granted_read_paths>",)
@@ -850,6 +855,7 @@ class TestHookGateKwargs:
                 "spec_write_allowlist",
                 "spec_granted_paths",
                 "spec_granted_read_paths",
+                "spec_unjudged_denies",
             ):
                 assert got[kwarg] == (f"<{attr}>",)
             elif kwarg == "spec_denied_grant":

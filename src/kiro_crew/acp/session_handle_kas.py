@@ -14,7 +14,7 @@ Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen`
 ``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_hook_held``, ``kas_spec_denies``,
 ``kas_spec_shell_allowlist``, ``kas_spec_write_allowlist``, ``kas_spec_shell_readonly``,
 ``kas_crew_answered_paths``, ``kas_crew_answered_read_paths``, ``kas_projected_agent``,
-``last_compaction_transient``.
+``kas_spec_unjudged_denies``, ``last_compaction_transient``.
 
 Instance fields read: ``_bound_cwd``, ``_crew_agent``, ``_engine_fallback``, ``_listed_hooks``,
 ``_prompt_starts``, ``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
@@ -354,11 +354,15 @@ def _handle_kas_update(
             self.kas_spec_write_allowlist = switched_write_allowlist(
                 registered, mode_id, getattr(self, "_bound_cwd", "")
             )
-            from kiro_crew.acp.kas_spec_denies import switched_spec_denies
+            from kiro_crew.acp.kas_spec_denies import (
+                switched_spec_denies,
+                switched_unjudged_denies,
+            )
 
             self.kas_spec_denies = switched_spec_denies(
                 registered, mode_id, getattr(self, "_bound_cwd", "")
             )
+            self.kas_spec_unjudged_denies = switched_unjudged_denies(registered, mode_id)
             self.kas_spec_shell_readonly = switched_shell_readonly(registered, mode_id)
             self.kas_crew_answered_paths = switched_answered_paths(
                 registered, mode_id, getattr(self, "_bound_cwd", "")

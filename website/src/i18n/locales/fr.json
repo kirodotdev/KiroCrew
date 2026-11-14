@@ -23987,7 +23987,18 @@
     "apply_replace": "Remplacer les consignes",
     "apply_replace_n": "Remplacer les consignes et ajouter {{count}}",
     "current_directions": "Consignes actuelles (seront remplacées) : {{directions}}",
-    "done_replaced": "Consignes de comportement remplacées."
+    "done_replaced": "Consignes de comportement remplacées.",
+    "unenforced_preview": "Ce Bot refusera toute commande de terminal qui pourrait modifier quelque chose, par exemple une commande qui écrit, supprime ou installe. Les commandes de terminal qui ne font que lire fonctionnent toujours, et ses outils de fichiers, y compris l’écriture, aussi. {{productName}} ne peut pas vérifier certaines commandes bloquées de l’agent que tu ajoutes.",
+    "unenforced_current": "Ce Bot refuse toute commande de terminal qui pourrait modifier quelque chose, par exemple une commande qui écrit, supprime ou installe. Les commandes de terminal qui ne font que lire fonctionnent toujours, et ses outils de fichiers, y compris l’écriture, aussi. Cela vient de commandes bloquées d’un agent ajouté à ce Bot, que {{productName}} ne peut pas vérifier. Pour lever cette limite, retire ces commandes bloquées du fichier de configuration de ce Bot.",
+    "unenforced_label": "Commandes bloquées qu’il ne peut pas vérifier",
+    "unenforced_lead": "Modifications par terminal bloquées.",
+    "conditional_lead": "Certaines modifications par terminal bloquées.",
+    "conditional_preview": "Ce Bot refusera certaines commandes de terminal qui pourraient modifier quelque chose. Ses autres outils fonctionnent toujours.",
+    "conditional_current": "Ce Bot refuse certaines commandes de terminal qui pourraient modifier quelque chose. Ses autres outils fonctionnent toujours.",
+    "conditional_label": "Commandes bloquées qu’il ne peut vérifier que sous forme simple",
+    "conditional_which": "Quelles commandes ?",
+    "conditional_shapes": "Vérifiées seulement dans les commandes simples et les chaînes simples (&&, ||, ;, |). Une commande de terminal plus complexe qui pourrait modifier quelque chose est refusée.",
+    "current_state_label": "Ce que fait ce Bot maintenant"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}} a approuvé",

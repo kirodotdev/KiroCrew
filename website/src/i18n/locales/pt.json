@@ -23987,7 +23987,18 @@
     "apply_replace": "Substituir diretrizes",
     "apply_replace_n": "Substituir diretrizes e adicionar {{count}}",
     "current_directions": "Diretrizes atuais (serão substituídas): {{directions}}",
-    "done_replaced": "Diretrizes de comportamento substituídas."
+    "done_replaced": "Diretrizes de comportamento substituídas.",
+    "unenforced_preview": "Este Bot vai recusar qualquer comando de terminal que possa mudar algo, como um que escreva, apague ou instale. Comandos de terminal que só leem continuam rodando, e as ferramentas de arquivo dele, incluindo escrita, continuam funcionando. O {{productName}} não consegue verificar alguns comandos bloqueados do agente que você está adicionando.",
+    "unenforced_current": "Este Bot recusa qualquer comando de terminal que possa mudar algo, como um que escreva, apague ou instale. Comandos de terminal que só leem continuam rodando, e as ferramentas de arquivo dele, incluindo escrita, continuam funcionando. Isso vem de comandos bloqueados de um agente adicionado a este Bot, que o {{productName}} não consegue verificar. Para tirar o limite, remova esses comandos bloqueados do arquivo de configuração deste Bot.",
+    "unenforced_label": "Comandos bloqueados que ele não consegue verificar",
+    "unenforced_lead": "Mudanças pelo terminal bloqueadas.",
+    "conditional_lead": "Algumas mudanças pelo terminal bloqueadas.",
+    "conditional_preview": "Este Bot vai recusar alguns comandos de terminal que possam mudar algo. As outras ferramentas dele continuam funcionando.",
+    "conditional_current": "Este Bot recusa alguns comandos de terminal que possam mudar algo. As outras ferramentas dele continuam funcionando.",
+    "conditional_label": "Comandos bloqueados que ele só consegue verificar na forma simples",
+    "conditional_which": "Quais comandos?",
+    "conditional_shapes": "Verificados só em comandos simples e cadeias simples (&&, ||, ;, |). Um comando de terminal mais complexo que possa mudar algo é recusado.",
+    "current_state_label": "O que este Bot faz agora"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}} aprovou",

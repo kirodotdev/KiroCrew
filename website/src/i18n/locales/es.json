@@ -23987,7 +23987,18 @@
     "apply_replace": "Sustituir directrices",
     "apply_replace_n": "Sustituir directrices y agregar {{count}}",
     "current_directions": "Directrices actuales (se sustituirán): {{directions}}",
-    "done_replaced": "Se sustituyeron las directrices de comportamiento."
+    "done_replaced": "Se sustituyeron las directrices de comportamiento.",
+    "unenforced_preview": "Este Bot rechazará cualquier comando de terminal que pueda cambiar algo, como uno que escriba, borre o instale. Los comandos de terminal que solo leen siguen funcionando, y sus herramientas de archivos, incluida la de escribir, también. {{productName}} no puede comprobar algunos comandos bloqueados del agente que vas a añadir.",
+    "unenforced_current": "Este Bot rechaza cualquier comando de terminal que pueda cambiar algo, como uno que escriba, borre o instale. Los comandos de terminal que solo leen siguen funcionando, y sus herramientas de archivos, incluida la de escribir, también. Esto viene de comandos bloqueados de un agente añadido a este Bot, que {{productName}} no puede comprobar. Para quitar el límite, elimina esos comandos bloqueados del archivo de configuración de este Bot.",
+    "unenforced_label": "Comandos bloqueados que no puede comprobar",
+    "unenforced_lead": "Cambios en la terminal bloqueados.",
+    "conditional_lead": "Algunos cambios en la terminal bloqueados.",
+    "conditional_preview": "Este Bot rechazará algunos comandos de terminal que puedan cambiar algo. Sus otras herramientas siguen funcionando.",
+    "conditional_current": "Este Bot rechaza algunos comandos de terminal que puedan cambiar algo. Sus otras herramientas siguen funcionando.",
+    "conditional_label": "Comandos bloqueados que solo puede comprobar en forma simple",
+    "conditional_which": "¿Qué comandos?",
+    "conditional_shapes": "Solo se comprueban en comandos simples y cadenas sencillas (&&, ||, ;, |). Un comando de terminal más complejo que pueda cambiar algo se rechaza.",
+    "current_state_label": "Qué hace este Bot ahora"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}} aprobó",

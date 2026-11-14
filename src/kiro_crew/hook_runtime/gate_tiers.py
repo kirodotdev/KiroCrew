@@ -1527,6 +1527,50 @@ def _tier_spec_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None
     return None if reason is None else ToolHookResult.deny_policy(reason)
 
 
+def _tier_spec_unjudged_denies(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
+    """A Bot worker's ``deniedCommands`` entries that neither KAS nor the gate can
+    judge: refuse that agent's shell calls that are not read-only.
+
+    The KAS projection records them for a Bot's worker only
+    (``kas_spec_denies.with_unjudged_denies``), and the session handle stamps them
+    on its own agent's requests (``AcpEvent.spec_unjudged_denies``; empty on every
+    other session and on a sub-agent's request). A worker runs under its Bot's
+    Permissions, and under Trust an ask is answered for the person, so an entry
+    nobody can check must not reach an ask: this row refuses a shell call (kiro-cli's
+    ``execute_bash`` among its names, no MCP server behind it) unless its recovered
+    command is one the read-only row answers (:func:`_command_is_read_only`), which
+    no such entry blocks. Gate-only entries carry a conditional flag in the record and
+    hold unless ``spec_denied_gate.shell_denies_match`` returns a definite
+    no-match. The earlier ``spec-denies`` row uses that same judge to refuse
+    matches. A deny holds on every policy.
+
+    shortcut: an entry with a regex alternation (``(\\s|$)``) is unjudged; teach
+    ``allowed_commands.parse`` alternation inside a group to refuse only matches.
+    """
+    call = facts.call
+    unjudged = call.spec_unjudged_denies
+    if not unjudged or call.mcp_server:
+        return None
+    if not call.is_shell and "execute_bash" not in _spec_builtin_names(call):
+        return None
+    if _command_is_read_only(call.command):
+        return None
+    from kiro_crew.agent_sdk.kas_tool_view import unjudged_denies_for_command
+
+    unjudged = unjudged_denies_for_command(unjudged, call.command)
+    if not unjudged:
+        return None
+    # The first three are named and the rest counted. A literal: the tiers run on
+    # ``hooks``' globals (``compose``), where a module constant here is unbound.
+    named = ", ".join(unjudged[:3])
+    more = len(unjudged) - 3
+    return ToolHookResult.deny_policy(
+        "Blocked by this agent's spec: Kiro Crew cannot check some of its "
+        f"deniedCommands ({named}{f' and {more} more' if more > 0 else ''}), "
+        "so this command cannot run on the Bot's worker"
+    )
+
+
 def _tier_spec_builtin_grant(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     """A KAS built-in the session's agent spec grants in ``allowedTools``.
 

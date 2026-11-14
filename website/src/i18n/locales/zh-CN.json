@@ -22877,7 +22877,18 @@
     "apply_replace": "替换行为指引",
     "apply_replace_n": "替换行为指引并添加 {{count}} 项",
     "current_directions": "当前行为指引（将被替换）：{{directions}}",
-    "done_replaced": "已替换行为指引。"
+    "done_replaced": "已替换行为指引。",
+    "unenforced_preview": "此 Bot 会拒绝所有可能改动内容的终端命令，例如写入、删除或安装。只读取内容的终端命令仍可运行，文件工具（包括写入）也仍可使用。{{productName}} 无法检查所添加代理中部分被阻止命令。",
+    "unenforced_current": "此 Bot 会拒绝所有可能改动内容的终端命令，例如写入、删除或安装。只读取内容的终端命令仍可运行，文件工具（包括写入）也仍可使用。这是因为此 Bot 中添加了某个代理，{{productName}} 无法检查其部分被阻止命令。要解除限制，请从此 Bot 配置文件中删除这些被阻止命令。",
+    "unenforced_label": "无法检查的被阻止命令",
+    "unenforced_lead": "终端改动已阻止。",
+    "conditional_lead": "部分终端改动已阻止。",
+    "conditional_preview": "此 Bot 会拒绝部分可能改动内容的终端命令。它的其他工具仍可正常使用。",
+    "conditional_current": "此 Bot 会拒绝部分可能改动内容的终端命令。它的其他工具仍可正常使用。",
+    "conditional_label": "只能按简单形式检查的被阻止命令",
+    "conditional_which": "哪些命令？",
+    "conditional_shapes": "只在普通命令和普通命令链（&&、||、;、|）中检查。更复杂且可能改动内容的终端命令会被拒绝。",
+    "current_state_label": "此 Bot 当前的行为"
   },
   "sharedCrew": {
     "approved_by_person": "{{name}} 已批准",

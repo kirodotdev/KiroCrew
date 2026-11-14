@@ -9,7 +9,10 @@ them over the worker base (:func:`layer_policy`, called by
 
 Carrying is exact or refused. A hook is added beside the base's, a permission
 rule beside the base's rules, and a ``toolsSettings`` entry is copied whole for a
-tool the base sets nothing for. An ``mcp`` allow the worker's ``allowedTools``
+tool the base sets nothing for, when it sets only the keys of
+:data:`CARRIED_TOOLS_SETTINGS`. A ``deniedCommands`` entry nobody can judge is
+carried too and named by :func:`unjudged_denies`: the worker's gate then runs only
+read-only shell commands (``gate_tiers._tier_spec_unjudged_denies``). An ``mcp`` allow the worker's ``allowedTools``
 would otherwise drop also lands as that list's matching ``@server[/tool]`` refs,
 whether or not the base declares the server, and an unscoped built-in allow
 (``subagent``, ``skill``) as the one tool name KAS derives it from. A field
@@ -37,6 +40,7 @@ from kiro_crew.agent_sdk.kas_tool_view import (
     builtin_allow_tool,
     permission_allow_derivable,
     permissions_block_readable,
+    spec_unjudged_denies,
     tools_settings_family,
     tools_settings_unenforced,
 )
@@ -324,28 +328,82 @@ def _layer_tools_settings(target: dict[str, Any], settings: Any, lost: list[str]
             lost.append(f"toolsSettings.{tool}")
     lost.extend(_outside_allowlist(settings))
     # A listed key whose value KAS's translation drops would be copied but never
-    # take effect.
-    lost.extend(f"toolsSettings.{path}" for path in tools_settings_unenforced(settings))
+    # take effect, except a list that fails toward a prompt or a refusal
+    # (:data:`_CARRIED_WHOLE`).
+    lost.extend(
+        f"toolsSettings.{path}"
+        for path in tools_settings_unenforced(settings)
+        if not _carried_whole(path)
+    )
     if have:
         target["toolsSettings"] = have
 
 
-#: The ``toolsSettings`` keys carried onto a worker, by tool family: the ones KAS
-#: or Crew's gate is shown to apply on a worker session. Every other key, in any
-#: form, is refused by name (owner decision, ``docs/decisions``).
-CARRIED_TOOLS_SETTINGS: dict[str, frozenset[str]] = {
+#: The lists carried as written even when an entry of them is not enforced, by tool
+#: family. A grant entry Crew cannot read grants nothing, so the call still asks
+#: (``kas_unread_commands.name_unreadable_entries``, ``kas_permissions._paths_not_all_carried``);
+#: a ``deniedCommands`` entry nobody can judge holds the worker's shell at the gate
+#: (:func:`unjudged_denies`).
+_CARRIED_WHOLE: dict[str, frozenset[str]] = {
     "shell": frozenset({"deniedCommands", "allowedCommands"}),
-    "read": frozenset({"deniedPaths"}),
-    "write": frozenset({"deniedPaths"}),
+    "read": frozenset({"allowedPaths"}),
+    "write": frozenset({"allowedPaths"}),
+}
+
+
+def _carried_whole(path: str) -> bool:
+    """Whether the ``<tool>.<key>`` *path* names a list of :data:`_CARRIED_WHOLE`."""
+    tool, sep, key = path.rpartition(".")
+    return bool(sep) and key in _CARRIED_WHOLE.get(tools_settings_family(tool), frozenset())
+
+
+def unjudged_denies(spec: dict[str, Any]) -> list[str]:
+    """The ``deniedCommands`` entries of *spec* that neither KAS nor Crew's gate can
+    judge, as written.
+
+    Read as the worker's projection reads them
+    (``kas_spec_denies.unjudged_denied_commands``): an entry counts as judged when
+    the gate reads it, or when its glob reaches KAS in the spec's own
+    ``permissions`` or in the translation of its ``toolsSettings``. For the Add
+    abilities notice; the worker's gate refuses its shell calls that are not
+    read-only while any is left.
+    """
+    return spec_unjudged_denies(spec)
+
+
+def conditional_denies(spec: dict[str, Any]) -> list[str]:
+    """The ``deniedCommands`` entries of *spec* that only Crew's gate checks, as
+    written, for the Add abilities notice.
+
+    The gate checks them only in a command it can split into plain ones
+    (``spec_denied_gate.shell_denies_match``), so the worker's gate refuses any
+    other command that is not read-only while one is left. Kept apart from
+    :func:`unjudged_denies`, which hold every such command.
+    """
+    return spec_unjudged_denies(spec, conditional=True)
+
+
+#: The ``toolsSettings`` keys carried onto a worker, by tool family: the ones KAS
+#: or Crew's gate is shown to apply on a worker session, exactly as on an ordinary
+#: KAS session of the same agent. Crew's gate answers ``denyByDefault``,
+#: ``autoAllowReadonly`` and the ``allowedPaths``; KAS turns ``trustedAgents`` into
+#: a ``subagent`` allow. Every other key (``fallbackAction``, ``web_fetch.trusted``,
+#: a key Crew does not know), in any form, is refused by name (owner decision,
+#: ``docs/decisions``).
+CARRIED_TOOLS_SETTINGS: dict[str, frozenset[str]] = {
+    "shell": frozenset({"deniedCommands", "allowedCommands", "denyByDefault", "autoAllowReadonly"}),
+    "read": frozenset({"deniedPaths", "allowedPaths"}),
+    "write": frozenset({"deniedPaths", "allowedPaths"}),
     "web_fetch": frozenset({"blocked"}),
-    # KAS turns it into a ``subagent`` deny, and Crew's spawn gate reads the
-    # worker's merged spec for it (``agent_policy.parent_template_allowlists``).
-    "subagent": frozenset({"availableAgents"}),
+    # KAS turns ``availableAgents`` into a ``subagent`` deny, and Crew's spawn gate
+    # reads the worker's merged spec for it (``agent_policy.parent_template_allowlists``).
+    "subagent": frozenset({"availableAgents", "trustedAgents"}),
 }
 
 #: Families carried under one spelling only. The spawn gate reads
 #: ``availableAgents`` from the ``subagent`` key alone, so a ``use_subagent``
-#: copy would reach KAS but not ``spawn_run``.
+#: copy would reach KAS but not ``spawn_run``; ``trustedAgents`` follows the same
+#: spelling.
 _CARRIED_SPELLINGS: dict[str, frozenset[str]] = {"subagent": frozenset({"subagent"})}
 
 
@@ -413,8 +471,10 @@ def _trusted_agents_held(value: Any, merged: dict[str, Any]) -> bool:
 
 #: The grant-only ``toolsSettings`` keys Add abilities leaves out of a template's
 #: copy when the merged worker already grants what they grant, by tool family,
-#: each with its proof. Kit time only: the worker merge still refuses them in a
-#: file, so a hand-edited one fails closed (owner decision, ``docs/decisions``).
+#: each with its proof. Kit time only. The worker merge still refuses
+#: ``web_fetch.trusted`` in a file, so a hand-edited one fails closed (owner
+#: decision, ``docs/decisions``); a ``subagent.trustedAgents`` is carried, so
+#: leaving a covered one out only avoids a second allow.
 HELD_GRANT_SETTINGS: dict[str, dict[str, Callable[[Any, dict[str, Any]], bool]]] = {
     "web_fetch": {"trusted": _web_fetch_trust_held},
     "subagent": {"trustedAgents": _trusted_agents_held},
