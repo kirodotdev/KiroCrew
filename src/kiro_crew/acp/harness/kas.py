@@ -35,6 +35,7 @@ from typing import Any
 # stub. Only the exception type is bound directly -- an exception class is
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
+from kiro_crew import build_reuse
 from kiro_crew import sandbox as sandbox_mod
 from kiro_crew import session_head
 from kiro_crew.acp import kas_agents as kas_agents_mod
@@ -583,7 +584,12 @@ def mate_worker_projection(
     return worker_session_spec(literal, session_key)
 
 
-def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> frozenset[str]:
+def withdrawn_worker_stubs(
+    spec: dict[str, Any],
+    stub_names: frozenset[str],
+    *,
+    scope_muted: frozenset[str] | None = None,
+) -> frozenset[str]:
     """The names in *stub_names* whose server *spec* does not mount unmuted.
 
     *spec* is the governed worker spec the KAS payload is built from. A stub
@@ -604,7 +610,8 @@ def withdrawn_worker_stubs(spec: dict[str, Any], stub_names: frozenset[str]) -> 
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return frozenset(stub_names)
-    scope_muted = mcp_scope_muted_aliases()
+    if scope_muted is None:
+        scope_muted = mcp_scope_muted_aliases()
     return frozenset(
         name
         for name in stub_names
@@ -1250,6 +1257,11 @@ class KasHarness(MembershipHarness):
                     exc_info=True,
                 )
                 stubbed = frozenset()
+            # The MCP config scopes, read once for this whole projection: the worker
+            # withdrawal, the agent block and the declared names all answer from it.
+            from kiro_crew import mcp_cleanup
+
+            scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
             withdrawn: frozenset[str] = frozenset()
             if worker_stub_names is not None and agent == MATE_WORKER_AGENT:
                 # A crewmate's worker: the names of the stubs its session/new
@@ -1261,7 +1273,7 @@ class KasHarness(MembershipHarness):
                 # The worker spec above was read AFTER those stubs were picked,
                 # so a server muted or removed in between is withdrawn from the
                 # session-level array too: this payload is the later reading.
-                withdrawn = withdrawn_worker_stubs(spec, worker_stub_names)
+                withdrawn = withdrawn_worker_stubs(spec, worker_stub_names, scope_muted=scope_muted)
             else:
                 # A server this spec declares muted (a checkout's switch-off,
                 # ``_with_project_switch_offs``) is withdrawn from the session-level
@@ -1317,6 +1329,7 @@ class KasHarness(MembershipHarness):
                 engine_features=engine_features,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 governance_app=governance_app,
+                scope_muted=scope_muted,
             )
             # Every per-tool switch, the global settings file's included: the spec
             # rebuild never copies one onto Crew's own servers. Read here, off the loop.
@@ -1344,7 +1357,7 @@ class KasHarness(MembershipHarness):
                 custom_agents,
                 agent,
                 session_cwd or work_dir,
-                declared=declared_servers(spec),
+                declared=declared_servers(spec, scope_muted=scope_muted),
                 # Called for every session so the first one records the list; only
                 # a user-level spec can be on it, since a checkout's spec of the
                 # same name is not the file that was recorded.
@@ -1379,6 +1392,7 @@ class KasHarness(MembershipHarness):
                 engine_features=engine_features,
                 settings_dir=session_cwd or work_dir,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                scope_muted=scope_muted,
             )
             custom_agents = [*custom_agents, *targets]
             # Resolved HERE, in this thread, for the runtime's hoist: the managed
@@ -1412,7 +1426,12 @@ class KasHarness(MembershipHarness):
                 app_launches,
                 withdrawn_stubs,
                 withheld_notice,
-            ) = await asyncio.to_thread(_build)
+            ) = await asyncio.to_thread(
+                # The session's agent and each of its sub-agent targets read the same
+                # app manifests, skill files and agent specs: one start reads each once.
+                build_reuse.in_one_build,
+                _build,
+            )
             return SessionExtras(
                 custom_agents=built,
                 derived_spec_snapshot=built_from,

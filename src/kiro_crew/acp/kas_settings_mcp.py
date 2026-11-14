@@ -268,13 +268,19 @@ def _glob_disabled_tools(entry: Any) -> list[str]:
     ]
 
 
-def declared_servers(spec: Mapping[str, Any]) -> list[str]:
-    """Names *spec* declares that ``mcp_server_muted_in_any_store`` leaves on."""
+def declared_servers(
+    spec: Mapping[str, Any], *, scope_muted: frozenset[str] | None = None
+) -> list[str]:
+    """Names *spec* declares that ``mcp_server_muted_in_any_store`` leaves on.
+
+    *scope_muted* is the caller's one MCP scope reading for the projection.
+    """
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return []
     # Read through the module, so the one scope reader stays the patch seam.
-    scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
+    if scope_muted is None:
+        scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
     return [
         n
         for n, e in servers.items()

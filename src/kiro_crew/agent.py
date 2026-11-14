@@ -172,6 +172,7 @@ from kiro_crew.agent_parts.spec_lookup import (
     _project_shadow_of,
     _read_spec_capped,
     _resolve_spec_path,
+    _scanned_name,
     _spec_path_is_safe,
     _spec_path_shape_refusal,
     agent_spec_path,

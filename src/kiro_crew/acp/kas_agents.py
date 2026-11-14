@@ -734,6 +734,7 @@ def _project_mcp_servers(
     launch_key: str = "",
     engine_features: frozenset[str] = frozenset(),
     forward_ssh_auth_sock: bool = False,
+    scope_muted: frozenset[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
@@ -845,9 +846,10 @@ def _project_mcp_servers(
     relayed = _relayed_env_references()
     warned_about_the_marker = False
     launch_key = launch_key or session_key
-    # Every scope read once for the whole pass, not once per server: the same
-    # answer, through the one reader (and patch seam) the predicate uses.
-    scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
+    # Every scope read once for the whole projection, not per server: the caller's
+    # reading, else this pass's, through the one reader (and patch seam).
+    if scope_muted is None:
+        scope_muted = mcp_cleanup.mcp_scope_muted_aliases()
     for name, entry in servers.items():
         if not isinstance(name, str) or not name or not isinstance(entry, dict):
             continue
@@ -1067,6 +1069,7 @@ def to_client_custom_agent(
     engine_features: frozenset[str] = frozenset(),
     forward_ssh_auth_sock: bool = False,
     governance_app: str | None = None,
+    scope_muted: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -1436,6 +1439,7 @@ def to_client_custom_agent(
         launch_key=launch_key,
         engine_features=engine_features,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        scope_muted=scope_muted,
     )
     if mcp_servers:
         out["mcpServers"] = mcp_servers
@@ -1642,10 +1646,11 @@ def build_kas_custom_agents(
     engine_features: frozenset[str] = frozenset(),
     forward_ssh_auth_sock: bool = False,
     governance_app: str | None = None,
+    scope_muted: frozenset[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
-    *withheld_out*, *engine_features* and *forward_ssh_auth_sock* are handed to
+    *withheld_out*, *engine_features*, *forward_ssh_auth_sock* and *scope_muted* are handed to
     :func:`_project_mcp_servers`.
 
     A ``file://`` prompt that is missing, unreadable or empty
@@ -1698,6 +1703,7 @@ def build_kas_custom_agents(
             engine_features=engine_features,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
             governance_app=governance_app,
+            scope_muted=scope_muted,
             # Any key turns the relay on (its reference is shared), so a session
             # with none yet (a background or pooled runtime) still relays env.
             launch_key=session_key or f"unkeyed-{secrets.token_hex(8)}",

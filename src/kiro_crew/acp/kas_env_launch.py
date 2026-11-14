@@ -51,6 +51,7 @@ import json
 import logging
 import os
 import secrets
+import stat
 import threading
 from collections import Counter
 from pathlib import Path
@@ -249,16 +250,53 @@ def _write_snapshot(
         "version": version,
     }
     with _SHARE_LOCK if shared else contextlib.nullcontext():
-        # Owner-only before any byte is written, and it raises if that lockdown fails.
-        atomic_write(
-            directory / name,
-            json.dumps(doc, sort_keys=True).encode("utf-8"),
-            fsync=True,
-            restrict_to_owner=True,
-        )
+        data = json.dumps(doc, sort_keys=True).encode("utf-8")
+        # A shared name recurs for every projection of the same launch, so the file
+        # is often already there with these very bytes: then it is left as it is.
+        if not (shared and _holds_exactly(directory / name, data)):
+            # Owner-only before any byte is written, and it raises if that lockdown fails.
+            atomic_write(directory / name, data, fsync=True, restrict_to_owner=True)
         if shared:
             _SHARED_HOLDS[str(directory / name)] += 1
     return version
+
+
+def _holds_exactly(path: Path, data: bytes) -> bool:
+    """Whether *path* is already this user's owner-only regular file holding *data*.
+
+    Compared by content, never by a timestamp, and read without following a link.
+    Every doubt answers ``False``, so the caller writes as before: a missing,
+    different, linked, foreign or group-readable file, any error, and every file on
+    Windows, where the owner-only lock is an ACL that a mode cannot show.
+    """
+    if not platform_compat.IS_POSIX:
+        return False
+    try:
+        # Non-blocking, so a FIFO at the name is refused by the type check below
+        # instead of holding the share lock while it waits for a writer.
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    except OSError:
+        return False
+    try:
+        st = os.fstat(fd)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != platform_compat.effective_uid()
+            or st.st_mode & 0o077
+            or st.st_size != len(data)
+        ):
+            return False
+        held = b""
+        while len(held) <= len(data):
+            chunk = os.read(fd, len(data) + 1 - len(held))
+            if not chunk:
+                break
+            held += chunk
+        return held == data
+    except OSError:
+        return False
+    finally:
+        os.close(fd)
 
 
 #: The version a refused launch carries. ``secrets.token_hex`` only yields hex, so
