@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,6 +105,81 @@ async def test_a_name_that_is_not_one_folder_name_is_refused(tmp_path, mock_sel,
     status, data = await _post({"parent": str(tmp_path), "name": name})
     assert (status, data["code"]) == (400, "invalid_name")
     assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX keeps a trailing dot or space")
+@pytest.mark.parametrize("name", [" a", "a.b", ".hidden", "a.", "a..", "a ", "...", "café."])
+async def test_a_name_is_created_exactly_as_sent_on_posix(tmp_path, mock_sel, name):
+    status, data = await _post({"parent": str(tmp_path), "name": name})
+    assert status == 201
+    assert [p.name for p in tmp_path.iterdir()] == [name]
+    assert data == {"path": os.path.join(os.path.realpath(tmp_path), name)}
+
+
+@pytest.fixture()
+def as_windows(monkeypatch):
+    """Take the Windows naming branch on any host; the create itself stays the host's.
+
+    A Windows host already takes it, and keeps the real module for its pinned create.
+    """
+    if not platform_compat.IS_WINDOWS:
+        monkeypatch.setattr(files_mod, "platform_compat", SimpleNamespace(IS_WINDOWS=True))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["a.", "a ", "a. ", "a..", "a . "])
+async def test_windows_drops_a_trailing_dot_or_space_and_answers_the_real_path(
+    tmp_path, mock_sel, as_windows, name
+):
+    # Windows itself drops that ending, so the folder made is "a"; the answered
+    # path must be that folder, so the picker opens what exists.
+    status, data = await _post({"parent": str(tmp_path), "name": name})
+    assert status == 201
+    assert [p.name for p in tmp_path.iterdir()] == ["a"]
+    assert data == {"path": os.path.join(os.path.realpath(tmp_path), "a")}
+    assert os.path.isdir(data["path"])
+
+
+@pytest.mark.asyncio
+async def test_windows_a_trailing_dot_onto_an_existing_folder_is_a_conflict(
+    tmp_path, mock_sel, as_windows
+):
+    (tmp_path / "taken").mkdir()
+    status, data = await _post({"parent": str(tmp_path), "name": "taken."})
+    assert (status, data["code"]) == (409, "already_exists")
+    assert [p.name for p in tmp_path.iterdir()] == ["taken"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["...", " ", ". ."])
+async def test_windows_a_name_of_only_dots_and_spaces_is_refused(
+    tmp_path, mock_sel, as_windows, name
+):
+    status, data = await _post({"parent": str(tmp_path), "name": name})
+    assert (status, data["code"]) == (400, "invalid_name")
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["a.b", ".hidden", " a"])
+async def test_windows_keeps_a_name_without_a_trailing_dot_or_space(
+    tmp_path, mock_sel, as_windows, name
+):
+    status, data = await _post({"parent": str(tmp_path), "name": name})
+    assert status == 201
+    assert data == {"path": os.path.join(os.path.realpath(tmp_path), name)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows cannot hold a name ending in a space")
+async def test_the_parent_is_used_as_sent_not_trimmed(tmp_path, mock_sel):
+    spaced = tmp_path / "proj "
+    spaced.mkdir()
+    status, _ = await _post({"parent": str(spaced), "name": "x"})
+    assert status == 201
+    assert (spaced / "x").is_dir()
+    assert not (tmp_path / "proj").exists()
 
 
 @pytest.mark.asyncio
