@@ -148,7 +148,9 @@ KAS_SPELLINGS: dict[str, str] = {"invoke_sub_agent": "use_subagent"}
 #: every such call raises a permission request; Crew then answers the ones the spec
 #: granted itself, after its own checks (:func:`crew_answered_builtins`, the gate's
 #: ``spec-builtin-grant`` row), which is how the spec's grant still means "no
-#: prompt" here without taking the call past the deny floor.
+#: prompt" here without taking the call past the deny floor. ``code`` is the
+#: exception: Crew never answers it as a whole, so each ``code`` call reaches the
+#: same tiers as on kiro-cli.
 WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
     {
         # Filesystem reads.
@@ -591,6 +593,7 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
     """The :data:`WITHHELD_FROM_AUTO_APPROVE` built-ins *allowed_tools* grants, and
     each one whose capabilities an unscoped ``allow`` in *authored_permissions*
     covers (no ``match``, or an empty one: every resource, as KAS reads it).
+    Never ``code``.
 
     Withholding a built-in from the KAS policy keeps its calls at ``ask``, so
     each one raises ``session/request_permission`` and reaches Crew's gate. The
@@ -620,6 +623,9 @@ def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None)
         for name, capabilities in _ANSWERED_CAPABILITIES.items()
         if capabilities <= granted
     )
+    # ``code`` starts language servers and edits files, so on KAS it is never
+    # answered as a whole: each call reaches the same tiers as on kiro-cli.
+    out.discard("code")
     return frozenset(out)
 
 

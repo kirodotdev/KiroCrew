@@ -416,11 +416,17 @@ def test_kas_capabilities_open_only_settings_external_urls_and_user_input():
 
     Any other ``_meta.kiro`` capability would invite a request with no handler
     (``secretStorage`` would make Crew the MCP token store). ``userInput`` is served
-    by ``acp/elicitation.py``. The settings channel is empty here; the runtime fills
-    it at spawn.
+    by ``acp/elicitation.py``. The settings channel carries only ``codeIntelligence``
+    here; the runtime adds the rest at spawn.
     """
     kas = harness_for(ACP_BACKEND_KAS).client_capabilities
-    assert kas["_meta"] == {"kiro": {"settings": {}, "openExternalUrl": True, "userInput": True}}
+    assert kas["_meta"] == {
+        "kiro": {
+            "settings": {"codeIntelligence": {"enabled": True}},
+            "openExternalUrl": True,
+            "userInput": True,
+        }
+    }
     assert harness_for(ACP_BACKEND_KAS).opens_external_urls is True
     assert harness_for(ACP_BACKEND_KIRO).opens_external_urls is False
     assert {k: v for k, v in kas.items() if k != "_meta"} == ACP_CLIENT_CAPABILITIES

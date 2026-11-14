@@ -560,14 +560,16 @@ How a user's own harness permission settings reach a main or member chat: [claud
 ### KAS: a spec's `allowedTools` built-ins run without a prompt
 
 On kiro-cli a built-in the spec lists in `allowedTools` (`fs_read`, `shell`, `grep`,
-`glob`, `code`, `fs_write`, ...) runs without a prompt. KAS reaches the same user
+`glob`, `fs_write`, ...) runs without a prompt. KAS reaches the same user
 outcome by a different path, because a KAS allow rule would run the call with no
 permission request and so skip Crew's gate. The projection keeps those built-ins at
 `ask` (`kas_permissions.WITHHELD_FROM_AUTO_APPROVE`) and records them on the entry
 (`CREW_ANSWERED_BUILTINS_KEY`); every call raises `session/request_permission`, and
 the gate's `spec-builtin-grant` row answers it after the deny floor, the
 sensitive-path check and governance ([security.md](security.md) § KAS spec built-in
-grant). A call one of those checks refuses is refused on both engines. The Kiro
+grant). A call one of those checks refuses is refused on both engines. `code` is not
+answered this way on KAS: each of its calls reaches the same tiers as on kiro-cli,
+where only a proven tree-sitter lookup runs without a prompt. The Kiro
 path is unchanged: nothing on it sets `AcpEvent.spec_granted_builtins`.
 
 ### KAS managed MCP readiness
