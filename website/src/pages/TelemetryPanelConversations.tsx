@@ -27,7 +27,7 @@ import {
   PanelWindowCtx,
   usePersistedChoice,
 } from './telemetryPanelModel'
-import { type Col, DataTable, Sums, Histogram } from './TelemetryPanelBlocks'
+import { type Col, DataTable, Sums, Histogram, SpendAdvicePanel } from './TelemetryPanelBlocks'
 
 /**
  * A share that is real but rounds to zero must not read as zero.
@@ -617,6 +617,7 @@ export function SpendTab({ c, nested = false }: { c: Cost; nested?: boolean }) {
           },
         ]}
       />
+      <SpendAdvicePanel advice={c.advice} />
       {/* Both groupings at once. As a group-by over one table they were mutually
           exclusive: seeing which origin spent the credits meant giving up the
           model split, so no single screen answered where the window went.

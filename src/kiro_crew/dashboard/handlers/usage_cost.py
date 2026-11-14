@@ -120,6 +120,13 @@ def cost_breakdown(
     ):
         return _COST_CACHE
 
+    # Imported here, not at module level: a name an owner imports from outside
+    # the usage family is served by the facade, and this helper is not part of it.
+    from kiro_crew.dashboard.handlers.telemetry_spend_advice import (
+        HIGH_CONTEXT_TOKENS,
+        spend_advice,
+    )
+
     def _blank() -> dict[str, Any]:
         return {"credits": 0.0, "turns": 0}
 
@@ -133,6 +140,7 @@ def cost_breakdown(
     by_category: dict[str, dict[str, Any]] = {}
     prev_category: dict[str, float] = {}
     priciest: dict[str, Any] = {"credits": 0.0, "slot": "", "ts": ""}
+    high_context = 0.0
 
     def _window_rows() -> Iterator[tuple[dict[str, Any], str, float]]:
         """Each token row stamped inside the window or the one before it."""
@@ -247,6 +255,8 @@ def cost_breakdown(
         used = _coerce_int(obj.get("context_used"))
         if used > 0 and credits > 0:
             bands.setdefault(min(used // 200_000, 5), []).append(credits)
+            if used >= HIGH_CONTEXT_TOKENS:
+                high_context += credits
 
         if slot:
             c = convos.setdefault(
@@ -384,6 +394,7 @@ def cost_breakdown(
         )
 
     prev_credits = float(prev_tot["credits"])
+    advice = spend_advice(total, high_context, by_model)
     return _store(
         {
             "window_days": days,
@@ -409,6 +420,8 @@ def cost_breakdown(
             "by_channel": _rank(by_channel, prev_channel),
             "by_category": _rank(by_category, prev_category),
             "context_bands": band_rows,
+            # Measured recommendations with their share of the window, or `[]`.
+            "advice": advice,
             "conversations": convo_rows,
             # Slot -> the transcript its rows recorded, for the endpoint to title
             # a closed linked tab by; the endpoint drops it from the response.

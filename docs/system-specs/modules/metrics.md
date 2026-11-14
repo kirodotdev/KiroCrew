@@ -1793,6 +1793,7 @@ from fields the row store already carries — no new instrumentation:
 | `context_bands` | mean credits per turn bucketed by absolute `context_used`, which is what makes the cost/context relationship legible (a turn at 900k costs ~4.7x one at 100k) |
 | `conversations` | EVERY session in the window (not a top-N), each with its `category`, the unollapsed `channel` beneath it, peak occupancy, span, per-turn growth rate, and a projected turns-to-compaction. Named `conversations` for payload compatibility; the entity is a session |
 | `by_category` | same shape as `by_model`, keyed by `usage.session_category(slot)` — the taxonomy the panel groups by: `bg` for an unattended session (cron, heartbeat, task runner), otherwise the transport (`dashboard`, `telegram`, `slack`, …) |
+| `advice` | measured recommendations from `telemetry_spend_advice.spend_advice`, largest share first, `[]` when none applies. Each is `{id, share_pct, ...}` with ids and numbers only; the dashboard words it. `high_context`: the share of the window's credits on turns whose `context_used` is at least 600k. `costly_model`: the share on the model with the highest credits per turn, listed only when a second model has 5 or more turns and costs at most half as much per turn. A share under 10% is left out, and a sub-agent row reaches none of it, as with every figure in this block |
 
 **Channel comes from the slot key, not from `surface`.** New writes now derive
 `surface` from the effective session identity, but historical rows may contain a
