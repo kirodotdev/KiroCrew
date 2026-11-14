@@ -214,6 +214,7 @@ class TaskRunner:
     start_background = _run_lifecycle.start_background
     delete_run = _run_lifecycle.delete_run
     cancel = _run_lifecycle.cancel
+    cancel_paused = _run_lifecycle.cancel_paused
     pause = _run_lifecycle.pause
     _ensure_resumable_workspace = _run_lifecycle._ensure_resumable_workspace
 

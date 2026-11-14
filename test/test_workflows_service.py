@@ -1953,3 +1953,29 @@ async def test_durable_terminal_wait_includes_the_completion_callback(monkeypatc
             await waiter
         await _wait_durable_terminal(svc, out["run_id"])
     assert len(done) == 1
+
+
+async def test_cancel_reaches_a_paused_task_runner_run() -> None:
+    class _RunnerStub:
+        def __init__(self, answer: bool) -> None:
+            self.answer = answer
+            self.asked: list[str] = []
+
+        def cancel(self, task_id: str, exact: bool = False) -> None:
+            raise AssertionError("a paused run is ended by cancel_paused")
+
+        async def cancel_paused(self, task_id: str) -> bool:
+            self.asked.append(task_id)
+            return self.answer
+
+    for answer in (True, False):  # the answer is the runner's, not a literal
+        stub = _RunnerStub(answer)
+        svc = WorkflowService(sessions=FakeSessions([]), persist=False, task_runner=stub)
+        run_id = await svc.begin_host_run(
+            name="Plan", source_format="task-plan", task_id="task_123", driver="taskrunner"
+        )
+        await svc.bind_task(run_id, asyncio.create_task(asyncio.sleep(3600)), task_id="task_123")
+        assert await svc.pause(run_id) is True  # waiting on an approval: no driver task
+
+        assert await svc.cancel(run_id) is answer
+        assert stub.asked == ["task_123"]

@@ -104,6 +104,9 @@ async def _reserve_start(self: TaskRunner, task_id: str) -> None:
         prior = self._tasks.get(task_id)
         if prior is not None and not prior.done():
             raise ValueError("Cannot start while the previous run is still finishing")
+        settling = self._stop_settles.get(task_id)
+        if settling is not None and not settling.done():
+            raise ValueError("Cannot start while the previous run is still finishing")
         self._start_ids_in_flight.add(task_id)
 
 
@@ -600,6 +603,56 @@ def cancel(self: TaskRunner, task_id: str | None = None, *, exact: bool = False)
                 _settle_if_stop_frozen(self, run)
 
 
+async def cancel_paused(self: TaskRunner, task_id: str) -> bool:
+    """End one named PAUSED run as cancelled; True only once that is persisted.
+
+    A paused run has no driver task to settle it, and ``cancel()`` (with or without
+    an id) must keep leaving paused runs resumable, so this is a separate, awaited
+    call for a deliberate stop. The settle is registered in ``_stop_settles`` under
+    ``_start_lock``, where ``_reserve_start`` looks: a resume cannot begin while the
+    run's worktree is being finalized, and a call that finds a start already
+    reserved, or a run that is not paused, returns False. If persisting fails, the
+    run goes back to ``paused`` and the error propagates, so the cancel can be
+    repeated.
+    """
+    async with self._start_lock:
+        run = self._runs.get(task_id)
+        prior = self._tasks.get(task_id)
+        if (
+            run is None
+            or run.status != "paused"
+            or task_id in self._start_ids_in_flight
+            or task_id in self._stop_settles
+            or (prior is not None and not prior.done())
+        ):
+            return False
+        target: Project = run
+        steps = [(step, step.status) for step in target.tasks]
+        finished_at = target.finished_at
+
+        async def _end() -> None:
+            try:
+                # No git cleanup: the pause already did it, and a run recovered as
+                # paused keeps its worktree for a resume. Removing it again could
+                # delete a checkout that has since taken that path.
+                await self._settle_stopped_run(target, finalize_git=False)
+            except BaseException:
+                target.status = "paused"
+                target.finished_at = finished_at
+                for step, status in steps:
+                    step.status = status
+                raise
+
+        target.status = "cancelling"
+        self._reset_incomplete_tasks(target)
+        settle = asyncio.ensure_future(_end())
+        self._stop_settles[task_id] = settle
+        settle.add_done_callback(_observe_background_completion)
+    # Shielded: the write finishes, or rolls back, even if this caller is cancelled.
+    await asyncio.shield(settle)
+    return True
+
+
 def pause(self: TaskRunner, task_id: str) -> None:
     """Pause a running task. Sets status to 'pausing'; the finally block sets 'paused'."""
     run = self._runs.get(task_id)
@@ -638,7 +691,7 @@ def _settle_if_stop_frozen(runner: TaskRunner, run: Project) -> None:
     settle.add_done_callback(_observe_background_completion)
 
 
-async def _settle_stopped_run(self: TaskRunner, run: Project) -> None:
+async def _settle_stopped_run(self: TaskRunner, run: Project, *, finalize_git: bool = True) -> None:
     """End a stop-frozen run as its driver's ``finally`` would have, after a pause or cancel."""
     try:
         run.status = "paused" if run.status == "pausing" else "cancelled"
@@ -646,7 +699,7 @@ async def _settle_stopped_run(self: TaskRunner, run: Project) -> None:
         save_progress(run)
         await self._apersist_runs()
         await self._taskq_end_run(run)
-        if run.branch_name:
+        if run.branch_name and finalize_git:
             try:
                 await git_coord.finalize(run)
             except Exception:
