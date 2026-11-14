@@ -88,7 +88,24 @@ def _hook_subprocess_env(
     ``KIROCREW_SESSION_MODEL``. kiro-cli has no such variable, so the name is
     Kiro Crew's. Unknown, it stays unset.
     """
+    from kiro_crew.env import augmented_path, dedup_path
+
     env = {k: v for k, v in os.environ.items() if k in _HOOK_BASE_ENV_KEYS}
+    # The user tool dirs the kiro-cli and MCP spawns get (~/.local/bin,
+    # Homebrew, ...), so a hook finds its CLI under a desktop-app or service
+    # gateway's bare PATH. They go AFTER the inherited PATH, not ahead of it: a
+    # user-writable dir must not shadow a system binary a guard hook calls by
+    # name. An unset PATH falls back to os.defpath's absolute entries (Windows'
+    # lists "." first, which would let the cwd shadow a command).
+    inherited = env.get("PATH") or os.pathsep.join(
+        d for d in os.defpath.split(os.pathsep) if os.path.isabs(d)
+    )
+    # The inherited value is kept verbatim (an empty entry still means the cwd);
+    # only the appended dirs are deduplicated against it.
+    added = dedup_path(inherited + os.pathsep + augmented_path(""))
+    seen = set(dedup_path(inherited).split(os.pathsep))
+    extra = [d for d in added.split(os.pathsep) if d and d not in seen]
+    env["PATH"] = os.pathsep.join([inherited, *extra])
     env["KIROCREW_HOOK_EVENT"] = hook.event
     env["KIROCREW_HOOK_CONTEXT"] = context[:500]
     if acp_session_id:
@@ -297,7 +314,10 @@ async def run_script_hook(
         # (``_HOOK_BASE_ENV_KEYS``) plus the hook-metadata variables — NOT a
         # copy of the whole gateway environment, which would expose the gateway's
         # AWS/model/OAuth/connection-string credentials to every hook command.
-        env = _hook_subprocess_env(hook, context, acp_session_id, session_model)
+        # Off the loop: the PATH augmentation probes the filesystem.
+        env = await asyncio.to_thread(
+            _hook_subprocess_env, hook, context, acp_session_id, session_model
+        )
         # Shell per platform: POSIX /bin/sh -c, Windows cmd /c (no /bin/sh there).
         # The argv is what the sandbox/cgroup chokepoints below vet, on BOTH
         # platforms — only the eventual spawn form differs (see the Windows
