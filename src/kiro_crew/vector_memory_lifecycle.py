@@ -31,6 +31,7 @@ from pathlib import Path
 from time import monotonic as _monotonic
 from typing import TYPE_CHECKING
 
+from kiro_crew import memory_reconcile_child
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
 from kiro_crew.boot_timing import timed_step
@@ -544,9 +545,16 @@ def _init_database(self: VectorMemoryStore) -> None:
 
     # The metadata backfill keeps its own transaction: it reads every row, and
     # the write lock the schema transaction holds must not wait on that scan.
-    with self._db:
+    # A full pass (no trusted marker) runs in a child process so the GIL cannot
+    # starve it (#36596); the parent holds no transaction while the child works.
+    child_done = False
+    if not self._db.in_transaction and record_meta.full_pass_needed(self._db):
         with timed_step("vector_init.record_meta_reconcile"):
-            record_meta.reconcile(self._db)
+            child_done = memory_reconcile_child.run_full_pass_in_child(str(self._db_path))
+    with self._db:
+        if not child_done:
+            with timed_step("vector_init.record_meta_reconcile"):
+                record_meta.reconcile(self._db)
         if self.algorithm_version == "v1":
             with timed_step("vector_init.limit_v1_accepted_history"):
                 record_meta.limit_v1_accepted_history(self._db)
@@ -620,6 +628,12 @@ def _schema_steps(self: VectorMemoryStore, migrated: list[int]) -> list[Callable
         # their physical rows or version series; old binaries remain readable.
         if not record_meta.schema_is_current(self.db):
             steps.append(functools.partial(record_meta.ensure_schema, self.db))
+        # A store with no rows is marked in the same one commit that builds it, so a
+        # later start has nothing to scan. The step only joins schema work that is
+        # already pending: an up-to-date file must not take the write lock for it, so
+        # any other store is marked by reconcile, which never waits for the lock.
+        if steps and record_meta.marker_wanted_for_empty_store(self.db):
+            steps.append(functools.partial(record_meta.install_marker_if_empty, self.db))
         if self._lineage == memory_schema.LINEAGE_CREW:
             # Before its migrations run, a crew file has no memory_meta to read,
             # so the stamp step is planned and reads the stamps when it runs.

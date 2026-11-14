@@ -269,7 +269,9 @@ def test_doctor_runs_even_when_the_platform_cannot_compose(
     monkeypatch.setattr(cli, "boot_platform", refuse)
     monkeypatch.setattr(cli, "_doctor", _recorder(calls))
     _run(monkeypatch, "doctor", "--bundle")
-    assert calls == [((), {"platform_boot_error": failure, "bundle": True})]
+    assert calls == [
+        ((), {"platform_boot_error": failure, "bundle": True, "reconcile_memory": False})
+    ]
     assert "repair_legacy_member_stores" not in booted
 
 
@@ -283,7 +285,9 @@ def test_an_unexpected_boot_error_does_not_stop_a_standalone_command(
     monkeypatch.setattr(cli, "boot_platform", broken)
     monkeypatch.setattr(cli, "_doctor", _recorder(calls))
     _run(monkeypatch, "doctor")
-    assert calls == [((), {"platform_boot_error": None, "bundle": False})]
+    assert calls == [
+        ((), {"platform_boot_error": None, "bundle": False, "reconcile_memory": False})
+    ]
 
 
 def test_setup_and_manifest_get_their_flags_as_keywords(
