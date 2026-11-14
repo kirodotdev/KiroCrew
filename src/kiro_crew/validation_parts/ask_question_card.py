@@ -53,7 +53,7 @@ _ASK_MAX_ANSWER_LEN = (
 #: could go stale before its card was polled again. At 2s an idle card would cost a
 #: request every 2s, 32 requests a second at 64 cards; at 5s it is one request
 #: every 5s. The keepalive between slices still resets the ACP tool-stall
-#: watchdog long before its 600s.
+#: watchdog long before its ``_TOOL_STALL_TIMEOUT`` (720s).
 ASK_WAIT_SLICE_SECS = 5
 
 
