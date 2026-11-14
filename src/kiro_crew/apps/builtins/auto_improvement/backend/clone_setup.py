@@ -720,11 +720,15 @@ def _gitlab_hosts() -> frozenset[str]:
     because this module is also imported by the MCP server. Callers check the SaaS
     hosts first, so a github.com or gitlab.com URL never reaches this. Fails closed
     to an empty set on any import or read error.
+
+    An entry that carries a relative URL root (``gitlab.example.com/gitlab``) is
+    left out, so its host is refused here: the clone URL, the stored project path
+    and the origin identity pin are all built without a root.
     """
     try:
         from kiro_crew.dashboard.source_providers.hosts import gitlab_hosts_blocking
 
-        return frozenset(gitlab_hosts_blocking())
+        return frozenset(gitlab_hosts_blocking(served_at_root=True))
     except Exception:
         logger.debug("self-managed GitLab allowlist unavailable", exc_info=True)
         return frozenset()

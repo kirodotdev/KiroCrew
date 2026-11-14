@@ -383,12 +383,14 @@ const URL_CANDIDATE_RE = /https:\/\/[A-Za-z0-9!#$%&*+,.\/:;=?@_~-]+/g
  * Entries arrive from dashboard config (already `host[:port]`), never from chat
  * content, and are matched exactly — the backend re-validates every URL before
  * a provider CLI runs, so this only decides which links become source tabs.
+ * An entry may carry the instance's relative URL root (`host/gitlab`); only its
+ * `host[:port]` goes in the set, and the backend strips the root.
  * An explicit `:443` is dropped to match the URL API (and the backend), which
  * omits the default HTTPS port. */
 export function gitlabHostSet(hosts: readonly string[] | undefined): ReadonlySet<string> {
   return new Set(
     (hosts ?? [])
-      .map(host => host.trim().toLowerCase().replace(/:443$/, ''))
+      .map(host => host.trim().split('/')[0].toLowerCase().replace(/:443$/, ''))
       .filter(Boolean),
   )
 }

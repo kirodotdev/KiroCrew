@@ -272,7 +272,7 @@ class TestSelfManagedAllowlist:
     def test_an_unreadable_allowlist_fails_closed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.dashboard.source_providers import hosts
 
-        def _boom() -> frozenset[str]:
+        def _boom(**_kwargs: object) -> frozenset[str]:
             raise RuntimeError("no config")
 
         monkeypatch.setattr(hosts, "gitlab_hosts_blocking", _boom)
