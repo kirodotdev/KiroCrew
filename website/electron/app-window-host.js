@@ -29,6 +29,16 @@
  * The app's windows talk to each other only through this host (`send`,
  * `broadcast`), and each hears when another of them opens or closes.
  *
+ * Capabilities. Beyond its own windows, a page may use what its app declares in
+ * `permissions.desktopCapabilities` AND the owner approved (the row's
+ * `desktopCapabilitiesGrant.approved`), nothing else: `screenCapture` registers the
+ * window as a capture surface (capture-trust.js), so `getDisplayMedia` is granted
+ * there and refused everywhere else; `localFiles` serves reveal-a-file and
+ * open-an-image (app-local-files.js); `gatewayChoice` lists the operator's crews
+ * and loads the app's windows from the one it picks (app-window-gateways.js). A
+ * window whose app's approved set changes is closed, so a withdrawn capability
+ * leaves no window that was opened with it.
+ *
  * Fail closed on the page: a window is revealed only when its page says `ready`,
  * and a main-frame load that ends on an error document or a transport failure is
  * latched hidden (app-window-error-latch.js) until a later tick whose probe the
@@ -37,6 +47,13 @@
  */
 
 const { createAppWindowErrorLatch } = require("./app-window-error-latch");
+const { openLocalImage, revealLocalFile } = require("./app-local-files");
+const {
+  SELF_GATEWAY,
+  createGatewayChoices,
+  createGatewayResolver,
+  memoryStore,
+} = require("./app-window-gateways");
 const { desktopDeclarations, isAppListBody } = require("./app-window-host-rules");
 const { WORK_AREA_MARGIN, placeBesideAnchor } = require("./app-window-placement");
 const { SPAN_CHANNELS, createDisplayMemory, createSpans, spanKey } = require("./app-window-span");
@@ -67,6 +84,9 @@ const BACKGROUND_SIZE = 16;
 const USER_ACTION_MS = 2_000;
 /** The native input types that start a press: its release never counts again. */
 const USER_INPUT_TYPES = new Set(["mouseDown", "rawKeyDown"]);
+/** How long a resolved remote target is reused before core is asked again. */
+const TARGET_REUSE_MS = 60_000;
+const MAX_PATH_LEN = 4096;
 
 const CHANNELS = Object.freeze({
   ready: "app-window:ready",
@@ -87,6 +107,10 @@ const CHANNELS = Object.freeze({
   drag: SPAN_CHANNELS.drag,
   showSession: "app-window:show-session",
   openExternal: "app-window:open-external",
+  revealFile: "app-window:reveal-file",
+  openImage: "app-window:open-image",
+  listGateways: "app-window:list-gateways",
+  chooseGateway: "app-window:choose-gateway",
 });
 
 /** The page path a hosted window loads; the only document its navigation may hold. */
@@ -152,6 +176,9 @@ function pointInRegions(regions, x, y) {
  *   showDashboardSession?: (slotKey: string) => boolean,
  *   openExternal?: (url: string) => void,
  *   timers?: {setInterval?: Function, clearInterval?: Function, setTimeout?: Function, clearTimeout?: Function},
+ *   registerCaptureSurface?: (wc: object, url: string) => boolean,
+ *   localFiles?: {fs: object, path: object, shell: object, openPathHardened: Function},
+ *   gatewayStore?: {get: (key: string) => unknown, set: (key: string, value: unknown) => void},
  * }} deps
  */
 function createAppWindowHost(deps) {
@@ -164,6 +191,10 @@ function createAppWindowHost(deps) {
   const fetchImpl = deps.fetchImpl || globalThis.fetch;
   const reservations = deps.reservations || shellShortcutReservations;
   const timers = deps.timers || {};
+  const registerCaptureSurface = deps.registerCaptureSurface
+    || ((wc, url) => require("./capture-trust").registerCaptureSurface(wc, url));
+  const gatewayChoices = createGatewayChoices(deps.gatewayStore || memoryStore());
+  const gateways = createGatewayResolver({ fetchHost: (p, init) => fetchHost(p, init), fetchImpl, now });
   let stopWatchingReservations = null;
   const backendOrigin = (() => {
     try {
@@ -173,10 +204,14 @@ function createAppWindowHost(deps) {
     }
   })();
 
+  /** app -> {instanceId, baseUrl, token, choice, at}: what its stored choice resolved to; absent = self. */
+  const targets = new Map();
+  /** Remote page loads waiting on their crew's port being confirmed. */
+  const pendingLoads = new Set();
   /**
    * record key -> {key, app, id, decl, win, ready, regions, lastIgnore, lastInput, pending,
-   * inbox, span, displayId, placement, closing, respawn}. The key is "<app>/<id>",
-   * or "<app>/<id>@<display>" for one copy of a spanning overlay.
+   * inbox, span, displayId, placement, closing, respawn, caps, target, origin}. The key is
+   * "<app>/<id>", or "<app>/<id>@<display>" for one copy of a spanning overlay.
    */
   const records = new Map();
   /** webContents id -> record: how every page message is resolved to its window. */
@@ -198,7 +233,7 @@ function createAppWindowHost(deps) {
   let emptyAuthAt = 0;
   let timer = null;
   let hitTimer = null;
-  let reconciling = false;
+  let inflight = null;
   let suspended = false;
   let started = false;
   const latch = createAppWindowErrorLatch({ onBlank: (win) => blank(win) });
@@ -238,21 +273,53 @@ function createAppWindowHost(deps) {
     return cachedAuth;
   }
 
-  /** @returns {Promise<{state: "ok"|"unauthorized"|"unknown", body?: unknown}>} */
-  async function probe(auth) {
-    if (!backendOrigin || typeof fetchImpl !== "function") return { state: "unknown" };
-    let url = `${backendUrl}/api/apps`;
+  /** The URL and headers that carry *auth* to this shell's gateway, or null. */
+  function withAuth(path, auth) {
+    let url = `${backendUrl}${path}`;
     const headers = {};
     if (auth.viaCookie) {
       const cookie = deps.cookieHeader ? deps.cookieHeader(backendUrl, auth.value) : "";
-      if (!cookie) return { state: "unknown" };
+      if (!cookie) return null;
       headers.Cookie = cookie;
     } else {
-      url += `?token=${encodeURIComponent(auth.value)}`;
+      url += `${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(auth.value)}`;
     }
+    return { url, headers };
+  }
+
+  /** One request to this shell's gateway with its credential; null on any transport failure. */
+  async function fetchHost(path, { method = "GET", timeoutMs = PROBE_TIMEOUT_MS } = {}) {
+    if (!backendOrigin || typeof fetchImpl !== "function") return null;
+    const auth = await authFor(false);
+    const req = auth.value ? withAuth(path, auth) : null;
+    if (!req) return null;
     try {
-      const res = await fetchImpl(url, {
-        headers,
+      const res = await fetchImpl(req.url, {
+        method,
+        headers: req.headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.status === 401 || res.status === 403) {
+        // 401 is a stale credential; re-resolved on the next call. 403 is an answer.
+        if (res.status === 401) cachedAuth = { value: "", viaCookie: false };
+        return { status: res.status, body: null };
+      }
+      if (res.status !== 200) return { status: res.status, body: null };
+      return { status: 200, body: await res.json() };
+    } catch {
+      return null;
+    }
+  }
+
+  /** @returns {Promise<{state: "ok"|"unauthorized"|"unknown", body?: unknown}>} */
+  async function probe(auth) {
+    if (!backendOrigin || typeof fetchImpl !== "function") return { state: "unknown" };
+    const req = withAuth("/api/apps", auth);
+    if (!req) return { state: "unknown" };
+    try {
+      const res = await fetchImpl(req.url, {
+        headers: req.headers,
         redirect: "manual",
         signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
       });
@@ -270,9 +337,68 @@ function createAppWindowHost(deps) {
     cookieAuth = auth.viaCookie;
   }
 
-  function pageUrl(app, id) {
-    const url = `${backendUrl}${desktopWindowPath(app, id)}`;
-    return pageToken ? `${url}?token=${encodeURIComponent(pageToken)}` : url;
+  /** Where *app*'s windows load from now. */
+  function targetOf(app) {
+    return targets.get(app) || { instanceId: SELF_GATEWAY, baseUrl: "", token: "" };
+  }
+
+  function baseOf(target) {
+    return target.baseUrl || backendUrl;
+  }
+
+  /**
+   * What a window of an app holding *local* (declared and approved on this
+   * computer's gateway) is served when it loads from *target*: all of it from
+   * self; from a crew only what the app also holds there, so a bundle another
+   * gateway serves never gets a capability that gateway did not approve.
+   */
+  function servedCapabilities(local, target) {
+    if (!target.baseUrl) return [...local];
+    const there = Array.isArray(target.capabilities) ? target.capabilities : [];
+    return local.filter((cap) => there.includes(cap));
+  }
+
+  function pageUrl(rec) {
+    const url = `${baseOf(rec.target)}${desktopWindowPath(rec.app, rec.id)}`;
+    // A remote's first load carries the link token core minted for it; self the shell's own.
+    // A refreshed token for the SAME crew is used; never another gateway's.
+    const current = targetOf(rec.app);
+    const token = !rec.target.baseUrl ? pageToken
+      : sameTarget(current, rec.target) ? current.token : rec.target.token;
+    return token ? `${url}?token=${encodeURIComponent(token)}` : url;
+  }
+
+  function sameTarget(a, b) {
+    return !!a && !!b && a.instanceId === b.instanceId && a.baseUrl === b.baseUrl;
+  }
+
+  /**
+   * Load (or reload) *rec*'s page. A window on a crew loads only once core's
+   * registry still shows that crew connected on the port it was resolved to: a
+   * disconnect frees the port for the next crew to connect, which must never be
+   * sent this crew's credential. Otherwise the window closes; on a definite no its
+   * app's target is dropped and re-resolved at once, and a non-answer leaves the
+   * target for the next tick to try again. A tick waits for the loads it started.
+   */
+  function loadPage(rec) {
+    if (!rec.target.baseUrl) {
+      rec.win.loadURL(pageUrl(rec));
+      return;
+    }
+    const loading = gateways.confirm(rec.target).catch(() => ({ known: false })).then((check) => {
+      if (records.get(rec.key) !== rec || !isLive(rec) || rec.closing) return;
+      if (check.known && check.ok) {
+        rec.win.loadURL(pageUrl(rec));
+        return;
+      }
+      log(`app-window-host: ${rec.key}: its crew is no longer on that port; not loaded`);
+      closeRecord(rec);
+      if (check.known && sameTarget(targets.get(rec.app), rec.target)) {
+        targets.delete(rec.app);
+        void reconcileOnce();
+      }
+    }).finally(() => pendingLoads.delete(loading));
+    pendingLoads.add(loading);
   }
 
   // ── Windows ────────────────────────────────────────────────────────────────
@@ -368,7 +494,7 @@ function createAppWindowHost(deps) {
     };
   }
 
-  function windowOptions(app, decl, bounds) {
+  function windowOptions(app, decl, bounds, caps) {
     const overlay = decl.kind === "overlay";
     const background = decl.kind === "background";
     return {
@@ -399,7 +525,7 @@ function createAppWindowHost(deps) {
         // Chromium would throttle either to a stall.
         backgroundThrottling: decl.kind === "panel",
         additionalArguments: [
-          `--kc-app-window=${app}/${decl.id}/${decl.kind}/${APP_WINDOW_BRIDGE_LEVEL}`,
+          `--kc-app-window=${app}/${decl.id}/${decl.kind}/${APP_WINDOW_BRIDGE_LEVEL}/${caps.join(",")}`,
         ],
       },
     };
@@ -409,7 +535,7 @@ function createAppWindowHost(deps) {
   function isOwnDocument(rec, url) {
     try {
       const parsed = new URL(url);
-      return parsed.origin === backendOrigin && parsed.pathname === desktopWindowPath(rec.app, rec.id);
+      return parsed.origin === rec.origin && parsed.pathname === desktopWindowPath(rec.app, rec.id);
     } catch {
       return false;
     }
@@ -465,9 +591,17 @@ function createAppWindowHost(deps) {
 
   function createWindow(app, decl, { bounds, focus, displayId = null, placement = null }) {
     const key = displayId === null ? `${app}/${decl.id}` : `${app}/${decl.id}@${displayId}`;
+    const target = targetOf(app);
+    const caps = servedCapabilities(declarations.get(app)?.capabilities || [], target);
+    let origin;
+    try {
+      origin = new URL(baseOf(target)).origin;
+    } catch {
+      return null;
+    }
     let win;
     try {
-      win = new BrowserWindow(windowOptions(app, decl, bounds));
+      win = new BrowserWindow(windowOptions(app, decl, bounds, caps));
     } catch (err) {
       log(`app-window-host: ${key}: window failed — ${err && err.message}`);
       return null;
@@ -493,7 +627,17 @@ function createAppWindowHost(deps) {
       closing: false,
       closedHandled: false,
       respawn: false,
+      caps,
+      target: {
+        instanceId: target.instanceId,
+        baseUrl: target.baseUrl,
+        token: target.token,
+        capabilities: [...(target.capabilities || [])],
+      },
+      origin,
     };
+    // Only a window of an app holding the capability may be granted a screen.
+    if (caps.includes("screenCapture")) registerCaptureSurface(wc, baseOf(target));
     records.set(key, rec);
     bySender.set(wc.id, rec);
     if (decl.kind === "overlay") {
@@ -542,7 +686,7 @@ function createAppWindowHost(deps) {
       /* no native input feed: the window never counts as acted in */
     }
     win.on("closed", () => onClosed(rec));
-    win.loadURL(pageUrl(app, decl.id));
+    loadPage(rec);
     log(`app-window-host: ${key}: opened`);
     return rec;
   }
@@ -859,12 +1003,27 @@ function createAppWindowHost(deps) {
   // ── Reconcile ──────────────────────────────────────────────────────────────
 
   function apply(next) {
+    /** Window keys whose declaration or served capabilities changed: closed. */
     const stale = new Set();
+    /** Windows closed only because their app now loads from another gateway: reopened there. */
+    const moved = new Map();
     for (const rec of records.values()) {
-      const decl = next.get(rec.app)?.windows.find((w) => w.id === rec.id);
-      if (!decl || JSON.stringify(decl) !== JSON.stringify(rec.decl)) stale.add(`${rec.app}/${rec.id}`);
+      const entry = next.get(rec.app);
+      const decl = entry?.windows.find((w) => w.id === rec.id);
+      const key = `${rec.app}/${rec.id}`;
+      const current = targetOf(rec.app);
+      const here = sameTarget(current, rec.target);
+      // On the same gateway, a re-resolved crew's own approvals count as well as this computer's.
+      const served = entry ? servedCapabilities(entry.capabilities, here ? current : rec.target) : [];
+      if (!decl || JSON.stringify(decl) !== JSON.stringify(rec.decl)
+        || JSON.stringify(served) !== JSON.stringify(rec.caps)) {
+        stale.add(key);
+      } else if (!here) {
+        moved.set(key, { app: rec.app, decl });
+      }
     }
-    for (const key of stale) {
+    for (const key of stale) moved.delete(key);
+    for (const key of [...stale, ...moved.keys()]) {
       const rec = [...records.values()].find((r) => `${r.app}/${r.id}` === key);
       if (rec) closeWindow(rec.app, rec.id);
     }
@@ -879,18 +1038,65 @@ function createAppWindowHost(deps) {
       const decl = declared(app, id);
       if (decl && decl.kind === "background" && windowRecords(app, id).length === 0) openWindow(app, decl);
     }
+    for (const { app, decl } of moved.values()) openWindow(app, decl);
     latch.rearm(
       [...records.values()].map((rec) => rec.win),
       (win) => {
         const rec = [...records.values()].find((r) => r.win === win);
-        if (rec) win.loadURL(pageUrl(rec.app, rec.id));
+        if (rec) loadPage(rec);
       },
     );
   }
 
-  async function reconcileOnce() {
-    if (suspended || reconciling || !started) return;
-    reconciling = true;
+  /**
+   * Settle where each app's windows load from before *next* is applied.
+   *
+   * Self unless the app holds `gatewayChoice` and the operator picked a crew. A
+   * resolved remote is reused for TARGET_REUSE_MS, and only while core still shows
+   * that crew connected on the same port and while the app declares the same windows
+   * here (a window added here is checked against the crew's manifest before it loads
+   * from there); re-resolving it re-reads what the app holds there, so a grant
+   * withdrawn on the crew closes the windows served it within that time. A non-answer
+   * changes nothing: the app keeps the target it already has, this
+   * computer's gateway until a crew answers.
+   */
+  async function resolveTargets(next) {
+    for (const app of [...targets.keys()]) if (!next.has(app)) targets.delete(app);
+    await Promise.all([...next].map(async ([app, decl]) => {
+      const choice = decl.capabilities.includes("gatewayChoice") ? gatewayChoices.get(app) : SELF_GATEWAY;
+      if (choice === SELF_GATEWAY) {
+        targets.delete(app);
+        return;
+      }
+      const windowIds = decl.windows.map((w) => w.id);
+      const windowKey = JSON.stringify(windowIds);
+      const held = targets.get(app);
+      if (held && held.choice === choice && held.windowKey === windowKey && now() - held.at < TARGET_REUSE_MS) {
+        if (!held.baseUrl) return;
+        const check = await gateways.confirm(held);
+        if (!check.known || check.ok) return;
+      }
+      const resolved = await gateways.resolve(app, choice, windowIds);
+      if (resolved.keep) return;
+      // A fall-back to self is reused too, so a crew with the app off is not asked every tick.
+      targets.set(app, { ...resolved, choice, windowKey, at: now() });
+    }));
+  }
+
+  /** One tick; a call while one runs joins it rather than starting a second. */
+  function reconcileOnce() {
+    if (suspended || !started) return Promise.resolve();
+    if (!inflight) inflight = reconcileTick().finally(() => { inflight = null; });
+    return inflight;
+  }
+
+  /** A tick that STARTS after any in flight, so it reads a choice written just now. */
+  async function reconcileAfterCurrent() {
+    if (inflight) await inflight.catch(() => {});
+    return reconcileOnce();
+  }
+
+  async function reconcileTick() {
     try {
       let auth = await authFor(false);
       if (!auth.value) return;
@@ -904,9 +1110,13 @@ function createAppWindowHost(deps) {
       // Re-checked after the awaits: a suspend that landed mid-probe wins.
       if (suspended || !started || result.state !== "ok") return;
       target(auth);
-      apply(desktopDeclarations(result.body, log));
-    } finally {
-      reconciling = false;
+      const next = desktopDeclarations(result.body, log);
+      await resolveTargets(next);
+      if (suspended || !started) return;
+      apply(next);
+      await Promise.all([...pendingLoads]);
+    } catch (err) {
+      log(`app-window-host: reconcile failed: ${err && err.message}`);
     }
   }
 
@@ -1035,6 +1245,10 @@ function createAppWindowHost(deps) {
       }
       if (deps.openExternal) deps.openExternal(parsed.href);
     },
+    [CHANNELS.revealFile]: (event, filePath) => {
+      const rec = holding(event, "localFiles");
+      if (rec && isPathArg(filePath)) revealLocalFile(localFileDeps(), filePath);
+    },
   };
 
   /** Answered calls (`ipcMain.handle`): the page awaits the result. */
@@ -1049,7 +1263,59 @@ function createAppWindowHost(deps) {
         return false;
       }
     },
+    [CHANNELS.openImage]: async (event, filePath) => {
+      const rec = holding(event, "localFiles");
+      if (!rec || !isPathArg(filePath)) return false;
+      return openLocalImage(
+        { ...localFileDeps(), onRefused: (err) => log(`app-window-host: ${rec.app}: open-image refused: ${err && err.message}`) },
+        filePath,
+      );
+    },
+    [CHANNELS.listGateways]: async (event) => {
+      const rec = holding(event, "gatewayChoice");
+      if (!rec) return null;
+      const listed = await gateways.list(rec.app, (declarations.get(rec.app)?.windows || []).map((w) => w.id));
+      return { ...listed, chosen: gatewayChoices.get(rec.app), showing: rec.target.instanceId };
+    },
+    [CHANNELS.chooseGateway]: async (event, id) => {
+      const rec = holding(event, "gatewayChoice");
+      if (!rec || typeof id !== "string" || suspended) return { ok: false };
+      const { app } = rec;
+      const chosen = gatewayChoices.set(app, id);
+      gateways.forget(app);
+      const held = targets.get(app);
+      if (held) held.at = 0;
+      await reconcileAfterCurrent();
+      // Where the windows actually load from now, not merely that the tick ran.
+      const showing = targetOf(app).instanceId;
+      return { ok: showing === chosen, chosen, showing };
+    },
   };
+
+  /**
+   * The sender's record when its window is served *capability*: declared and approved
+   * on this computer's gateway and, for a window a crew serves, on that crew too.
+   */
+  function holding(event, capability) {
+    const rec = senderRecord(event);
+    if (!rec || !rec.caps.includes(capability)) return null;
+    const local = declarations.get(rec.app)?.capabilities || [];
+    return servedCapabilities(local, rec.target).includes(capability) ? rec : null;
+  }
+
+  function isPathArg(value) {
+    return typeof value === "string" && value !== "" && value.length <= MAX_PATH_LEN && !value.includes("\0");
+  }
+
+  function localFileDeps() {
+    if (deps.localFiles) return deps.localFiles;
+    return {
+      fs: require("fs"),
+      path: require("path"),
+      shell: electron.shell,
+      openPathHardened: require("./open-path").openPathHardened,
+    };
+  }
 
   function onDisplaysChanged() {
     refitOverlays();
@@ -1099,6 +1365,7 @@ function createAppWindowHost(deps) {
     closeAll();
     declarations = new Map();
     respawnDue.clear();
+    targets.clear();
     cachedAuth = { value: "", viaCookie: false };
     emptyAuthAt = 0;
   }
@@ -1126,6 +1393,8 @@ function createAppWindowHost(deps) {
     // Exported for tests: they drive the poll and inspect state directly.
     _pollHitRegionsOnce: pollHitRegionsOnce,
     _records: records,
+    _targets: targets,
+    _pendingLoads: pendingLoads,
     _liveShortcuts: liveShortcuts,
     _handlers: handlers,
     _invokeHandlers: invokeHandlers,

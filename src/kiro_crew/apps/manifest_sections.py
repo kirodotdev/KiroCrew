@@ -19,6 +19,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
+from kiro_crew.apps.desktop_capabilities import declared_capabilities
 from kiro_crew.apps.manifest_names import KEBAB_RE
 from kiro_crew.apps.user_session_reach import declared_verbs
 
@@ -607,6 +608,11 @@ class Permissions:
     #: which is the default. Shown at the trust prompt and held back on a widening
     #: update like a new API path.
     reachableByUserSessions: list[str] = field(default_factory=list)  # noqa: N815
+    #: What the app's hosted desktop windows may ask the shell for
+    #: (``"screenCapture"``, ``"localFiles"``, ``"gatewayChoice"``;
+    #: ``apps/desktop_capabilities.py``). Empty = none, which is the default. Shown at
+    #: the trust prompt and held back on a widening update like a new API path.
+    desktopCapabilities: list[str] = field(default_factory=list)  # noqa: N815
     # WS cross-app visibility opt-in: app names (or ["*"]) allowed to use
     # slots:app:<this-app> / subagent:app:<this-app> declarations to observe
     # this app's slots and subagents. Empty list = no cross-app visibility.
@@ -646,6 +652,8 @@ class Permissions:
             d["workerAutoApprove"] = True
         if self.reachableByUserSessions:
             d["reachableByUserSessions"] = self.reachableByUserSessions
+        if self.desktopCapabilities:
+            d["desktopCapabilities"] = self.desktopCapabilities
         if self.exposeToApps:
             d["exposeToApps"] = self.exposeToApps
         return d
@@ -680,6 +688,7 @@ class Permissions:
             chatSlots=data.get("chatSlots") is True,  # noqa: N815
             workerAutoApprove=data.get("workerAutoApprove") is True,  # noqa: N815
             reachableByUserSessions=declared_verbs(data.get("reachableByUserSessions")),
+            desktopCapabilities=declared_capabilities(data.get("desktopCapabilities")),
             exposeToApps=_granted_list(data.get("exposeToApps")),  # noqa: N815
         )
 

@@ -380,6 +380,11 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
             {"backend/_host.py": "def f(ctx):\n    return getattr(ctx, 'chat_slots', None)\n"},
             {"ctx.chat_slots": 7},
         ),
+        (
+            {"permissions": {"desktopCapabilities": ["localFiles"]}},
+            {},
+            {"app.json permissions.desktopCapabilities": 7},
+        ),
         ({}, {"backend/routes.py": "def f(ctx):\n    return ctx.turns.run\n"}, {"ctx.turns": 2}),
         ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
         (

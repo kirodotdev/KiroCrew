@@ -16,6 +16,7 @@ const { app, ipcMain } = require("electron");
 const Store = require("electron-store");
 const { seedRenamedStore } = require("../store-rename");
 const { STORE_FILE_MODE, tightenStoreFileMode } = require("../store-file-mode");
+const { openLocalImage } = require("../app-local-files");
 const { sessionCookieHeader } = require("../mochi-session-token");
 const { parseMochiEnabled, remoteEnabledState, hostDisabledMeansTeardown } = require("./instanceGate");
 const {
@@ -1228,25 +1229,19 @@ function startMochiWatcher() {
    * through core's /api/file-raw, which keeps its own sensitive-path gate.
    */
   ipcMain.handle("mochi-pet:open-image", async (_e, filePath) => {
-    if (typeof filePath !== "string" || filePath === "") return false;
-    const fs = require("fs");
-    const path = require("path");
     const { shell } = require("electron");
     const { openPathHardened } = require("../open-path");
-    const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
-    try {
-      // realpath BEFORE the extension test: a `.png` symlink to a key file must
-      // be judged by what it actually resolves to.
-      const real = fs.realpathSync(filePath);
-      if (!IMAGE_EXTS.has(path.extname(real).toLowerCase())) return false;
-      if (!fs.statSync(real).isFile()) return false;
-      // Non-empty return value means the OS refused to open it.
-      const err = await openPathHardened(shell, real);
-      return err === "";
-    } catch (err) {
-      glog(`Mochi open-image refused: ${err && err.message}`);
-      return false;
-    }
+    // The shell's one copy of the local-file rules, shared with the window host.
+    return openLocalImage(
+      {
+        fs: require("fs"),
+        path: require("path"),
+        shell,
+        openPathHardened,
+        onRefused: (err) => glog(`Mochi open-image refused: ${err && err.message}`),
+      },
+      filePath,
+    );
   });
 
   ipcMain.handle("mochi-shortcuts:apply", (_e, accelerators) => {

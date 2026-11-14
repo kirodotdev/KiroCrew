@@ -112,7 +112,7 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; reachableByUserSessions?: string[] }
+    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean; chatSlots?: boolean; reachableByUserSessions?: string[]; desktopCapabilities?: string[] }
     mcpServers?: Record<string, McpServerView>
     platform?: { requiresDesktopApp?: boolean }
   }
@@ -171,6 +171,8 @@ export type InstalledApp = {
   workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   /** `permissions.reachableByUserSessions` verbs the owner approved, and the ones an update holds back; absent when undeclared. */
   userSessionReachGrant?: { approved: string[]; staged: string[] }
+  /** `permissions.desktopCapabilities` the owner approved, and the ones an update holds back; absent when undeclared. */
+  desktopCapabilitiesGrant?: { approved: string[]; staged: string[] }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -254,6 +256,7 @@ export type InstalledApp = {
       workerAutoApprove?: boolean
       chatSlots?: boolean
       reachableByUserSessions?: string[]
+      desktopCapabilities?: string[]
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

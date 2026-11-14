@@ -33,6 +33,8 @@ const PANEL_ONLY_KEYS = ["width", "height", "position", "transparent", "gutter"]
 const OVERLAY_ONLY_KEYS = ["displays"];
 const SHORTCUT_KEYS = new Set(["id", "accelerator", "window"]);
 const BLOCK_KEYS = new Set(["windows", "shortcuts"]);
+/** What a hosted window may ask the shell for; mirrors `apps/desktop_capabilities.py`. */
+const CAPABILITIES = Object.freeze(["screenCapture", "localFiles", "gatewayChoice"]);
 
 const MODIFIERS = {
   commandorcontrol: "CommandOrControl",
@@ -176,15 +178,37 @@ function parseDesktopDeclaration(raw) {
   return { windows, shortcuts };
 }
 
+/** The known capabilities in a list, in `CAPABILITIES` order; anything else names none. */
+function knownCapabilities(value) {
+  return Array.isArray(value) ? CAPABILITIES.filter((cap) => value.includes(cap)) : [];
+}
+
+/**
+ * The capabilities a row both declares and has approved.
+ *
+ * Both halves are required: `manifest.permissions.desktopCapabilities` says what the
+ * app asks for, `desktopCapabilitiesGrant.approved` what the owner approved. A
+ * gateway that predates the grant publishes no `desktopCapabilitiesGrant`, so it
+ * grants nothing.
+ */
+function approvedCapabilities(row, manifest) {
+  const permissions = isPlainObject(manifest.permissions) ? manifest.permissions : {};
+  const declared = knownCapabilities(permissions.desktopCapabilities);
+  const grant = isPlainObject(row.desktopCapabilitiesGrant) ? row.desktopCapabilitiesGrant : {};
+  const approved = knownCapabilities(grant.approved);
+  return declared.filter((cap) => approved.includes(cap));
+}
+
 /**
  * The declarations the host should serve, keyed by app name, from `/api/apps`.
  *
  * Only an enabled app the gateway did not skip at boot is served. An app with no
- * `desktop` block, or one the rules above refuse, is absent from the map.
+ * `desktop` block, or one the rules above refuse, is absent from the map. Each
+ * declaration carries `capabilities`: the ones the app declares AND has approved.
  *
  * @param {unknown} rows the parsed `/api/apps` body.
  * @param {(line: string) => void} [log] told once per refused declaration.
- * @returns {Map<string, {windows: object[], shortcuts: object[]}>}
+ * @returns {Map<string, {windows: object[], shortcuts: object[], capabilities: string[]}>}
  */
 function desktopDeclarations(rows, log = () => {}) {
   const out = new Map();
@@ -196,7 +220,7 @@ function desktopDeclarations(rows, log = () => {}) {
     const manifest = isPlainObject(row.manifest) ? row.manifest : null;
     if (!manifest || manifest.desktop === undefined) continue;
     const parsed = parseDesktopDeclaration(manifest.desktop);
-    if (parsed) out.set(name, parsed);
+    if (parsed) out.set(name, { ...parsed, capabilities: approvedCapabilities(row, manifest) });
     else log(`app-window-host: ${name}: desktop declaration refused`);
   }
   return out;
@@ -209,10 +233,13 @@ function isAppListBody(body) {
 
 module.exports = {
   APP_NAME_RE,
+  CAPABILITIES,
   ID_RE,
   MAX_WINDOWS,
   MAX_SHORTCUTS,
+  approvedCapabilities,
   canonicalAccelerator,
+  knownCapabilities,
   parseDesktopDeclaration,
   desktopDeclarations,
   isAppListBody,

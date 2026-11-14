@@ -68,6 +68,22 @@ describe('TrustAppModal user-session reach disclosure', () => {
   })
 })
 
+describe('TrustAppModal desktop capabilities disclosure', () => {
+  it('names each declared capability the gateway knows, and only those', () => {
+    const dialog = renderModal({ ...BASE, desktopCapabilities: ['gatewayChoice', 'screenCapture', 'everything'] })
+    expect(dialog.getByText(`${K}.desktop_capabilities_heading`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.desktop_capability_screen_capture`)).toBeTruthy()
+    expect(dialog.getByText(`${K}.desktop_capability_gateway_choice`)).toBeTruthy()
+    expect(dialog.queryByText(`${K}.desktop_capability_local_files`)).toBeNull()
+    expect(dialog.getByText(`${K}.desktop_capabilities_note`)).toBeTruthy()
+  })
+
+  it('shows no such box when nothing it knows is declared', () => {
+    const dialog = renderModal({ ...BASE, desktopCapabilities: ['everything'] })
+    expect(dialog.queryByText(`${K}.desktop_capabilities_heading`)).toBeNull()
+  })
+})
+
 describe('useAppActions trust target', () => {
   function wrapper({ children }: { children: ReactNode }) {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -94,5 +110,19 @@ describe('useAppActions trust target', () => {
       expect(result.current.trustTarget('crew-app').workerAutoApprove).toBe(expected)
       unmount()
     }
+  })
+  it('carries the declared desktop capabilities from a registry row', () => {
+    const row = {
+      name: 'desk-app', displayName: 'Desk App', description: '', version: '1.0.0', author: '',
+      repo: '', origin: 'registry', manifest: { permissions: { desktopCapabilities: ['localFiles'] } },
+    }
+    const { result } = renderHook(
+      () => useAppActions({
+        apps: [] as never, browseApps: [row] as never, appsError: null, registryError: null,
+        announceAppsChanged: () => {}, sources: [], registriesUnknown: false,
+      }),
+      { wrapper },
+    )
+    expect(result.current.trustTarget('desk-app').desktopCapabilities).toEqual(['localFiles'])
   })
 })

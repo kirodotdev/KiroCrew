@@ -125,7 +125,10 @@ the page bridge in `app-window-preload.js`, the one-avatar-across-displays drag
 hand-off in `app-window-span.js`, placement beside an anchor in
 `app-window-placement.js`); main.js composes it next to the companion surfaces,
 with `dashboard-session.js` raising the dashboard on a session for a page that
-asks. A shell owner of a global shortcut (the summon hotkey,
+asks. What a hosted page may ask beyond its own windows is the app's approved
+`permissions.desktopCapabilities`, each with one implementation the shell's own
+windows share: `capture-trust.js` (screen capture), `app-local-files.js` (reveal a
+file, open an image) and `app-window-gateways.js` (which crew an app's windows show). A shell owner of a global shortcut (the summon hotkey,
 `mochi/shortcuts.js`) records the chords it is configured for in
 `shell-shortcut-reservations.js`, and the host never gives an app one of them. It names no app and runs no app code, and a new app never
 gets a directory of its own here. `mochi/` and `crew-companion/` predate it and
