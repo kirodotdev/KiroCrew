@@ -2332,9 +2332,26 @@ refusal's has not. With the off-loop pump off both run inline, once. A single
 `cancel` of a queued row registers its
 queued-stop record at once, which is what the claimer refuses, and its report
 (the `gate` of `_report_queued_stop`) and its `True` wait on
-`await_pending_defer` (pinned by `test_taskq_queued_stop_settle.py`); Stop all's
-applier (`cancel_queued` included) and the parent-end teardown settle the same way
-but publish without waiting. The shutdown drain keeps a queued-stop marker when it
+`await_pending_defer` (pinned by `test_taskq_queued_stop_settle.py`). The
+parent-end teardown gates its report the same way; its own answer reaches no one.
+With the off-loop pump on, Stop all's applier (`cancel_queued` included) gates each
+such row's report too, and a `cancel` that joined the batch answers once that gate
+opens, as one that ran alone does. Stop all counts such a row only through the
+dispatcher's bounded wait (`settled_within_bound`, which takes `await_pending_defer`
+with `dispatch=True` for each such row): a row whose hold released counts, and one
+past the bound is left out of the count and reported once its settle ends. The
+bound is `_STATE_READ_ATTEMPTS` store tries per row, and every row's tries share the
+store's one writer thread, so on a locked store the answer comes later the more
+such rows there are. Stop all waits after its running sweep and `cancel_queued`
+after it lets go of the parent's refill hold, so a refusing store holds up neither
+the running runs' stop nor the parent's other rows; past the bound `cancel_queued`
+answers False for a row it did stop (pinned by
+`test_taskq_queued_stop_settle.py::test_a_single_cancel_queued_past_the_read_bound_answers_false_outside_the_refill_hold`,
+`::test_a_stop_all_whose_cancel_keeps_missing_counts_the_row_once_it_is_cancelled`,
+`::test_a_stop_all_on_a_wedged_store_counts_the_row_on_its_marker`,
+`::test_a_stop_all_past_the_read_bound_publishes_nothing_for_the_row` and
+`::test_a_parent_end_whose_cancel_keeps_missing_reports_the_row_once_it_is_cancelled`).
+The shutdown drain keeps a queued-stop marker when it
 cancels that row's undelivered report, where it re-admits other runs to orphan
 recovery. Until the
 applier has reported a row, that row is in neither `_queue` nor `_agents`, so
