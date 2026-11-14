@@ -13,7 +13,8 @@ Instance fields written: ``_claude_inline_settings``,
 ``_claude_settings_written``, ``_permission_surface_share_validated``,
 ``claude_mode_pinned_notice``.
 
-Instance fields read: ``_agent``, ``_model``, ``_permission_mode``, ``_seed_owner``,
+Instance fields read: ``_adopted_substitute_model``, ``_agent``, ``_model``,
+``_permission_mode``, ``_seed_owner``,
 ``_session_key``, ``_work_dir``.
 """
 
@@ -372,6 +373,13 @@ def _render_claude_settings_payload(self: AcpClient) -> str:
             covered = user_models_a_family_entry_covers()
             if covered:
                 data["availableModels"] = covered
+        # The one model written on a cold cache: the one the backend itself
+        # named in a substitution advisory, so it is served. Left out, the
+        # user's own settings keep naming the restricted model the retry is
+        # meant to replace.
+        adopted = getattr(self, "_adopted_substitute_model", None)
+        if adopted and self._model == adopted:
+            data["model"] = adopted
     return json.dumps(data, indent=2, ensure_ascii=False) + "\n"
 
 

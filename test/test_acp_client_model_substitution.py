@@ -1,5 +1,6 @@
 """Tests for ACP client: model-substitution advisories and the session/new re-issue."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -385,6 +386,48 @@ class TestSubstitutionFollow:
         assert resolves == [True]
         assert reports == [[server], [server]]
         assert guards == [[server], [server]]
+
+    @pytest.mark.asyncio
+    async def test_retry_on_cold_cache_seeds_the_substitute_model(self, tmp_path, monkeypatch):
+        # A cold advertised-model cache (no session/new ever succeeded, which is
+        # the case when the pinned model is restricted from the start) must not
+        # leave ``model`` out of settings.local.json on the retry: the user's own
+        # settings.json still names the restricted model, and the retry would be
+        # refused the same way.
+        from kiro_crew import model_registry
+        from kiro_crew.acp import seed_provenance as sp
+
+        monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(sp, "_RECORDS", {})
+        monkeypatch.setattr(sp, "_LIVE", {})
+        monkeypatch.setattr(sp, "_SHARERS", {})
+        monkeypatch.setattr(sp, "_sidecar_path", lambda: tmp_path / "seeds.json")
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        client._model = "global.anthropic.claude-opus-4-8[1m]"
+        client._write_claude_local_settings()
+        client._resolve_session_mcp_servers = lambda: []  # type: ignore[assignment]
+        client._pooled_mcp_servers = lambda: []  # type: ignore[assignment]
+        settings = tmp_path / ".claude" / "settings.local.json"
+        seeded = []
+
+        async def _send(method, params):
+            seeded.append(json.loads(settings.read_text()).get("model"))
+            return len(seeded)
+
+        async def _wait(req_id, timeout=0.0, *, method="", expected_mcp=None):
+            if len(seeded) == 1:
+                client._last_substitution_model = "global.anthropic.claude-opus-5-5"
+                return {}
+            return {"sessionId": "retry-session"}
+
+        client._send_request = _send  # type: ignore[assignment]
+        client._wait_for_response = _wait  # type: ignore[assignment]
+
+        response = await client._new_session_following_substitution()
+        assert response == {"sessionId": "retry-session"}
+        # The first attempt leaves the model to the adapter, as before.
+        assert seeded == [None, "global.anthropic.claude-opus-5-5"]
 
     @pytest.mark.asyncio
     async def test_happy_path_no_retry(self, tmp_path):
