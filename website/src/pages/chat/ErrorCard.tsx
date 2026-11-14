@@ -8,6 +8,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 // update actions (shared components and the api client), not the Settings page.
 import { RestartGatewayButton } from '../settings/AboutPanelUpdateFlow'
 import { CopyCommandButton } from '../../components/settingRef/CopyCommandButton'
+import { fmtDateTime } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { chatErrorDisplayText } from '../../lib/chatErrorRecovery'
@@ -83,6 +84,27 @@ const USAGE_LIMIT_KIND = 'usage_limit'
 
 export const isUsageLimit = (m: Pick<ChatMessage, 'kind' | 'meta'>): boolean =>
   m.kind === USAGE_LIMIT_KIND || (m.meta as { kind?: string } | undefined)?.kind === USAGE_LIMIT_KIND
+
+/** When a `usage_limit` row's limit opens again, in the reader's locale and time
+ *  zone. The backend stamps `meta.reset_at` (an ISO instant) only when it read the
+ *  provider's reset clause; absent or unparseable, there is nothing to show. */
+export const limitResetTime = (meta: ChatMessage['meta']): string | undefined => {
+  if (!isUsageLimit({ meta })) return undefined
+  const raw = (meta as { reset_at?: unknown } | undefined)?.reset_at
+  const at = typeof raw === 'string' ? Date.parse(raw) : NaN
+  return Number.isFinite(at) ? fmtDateTime(at) : undefined
+}
+
+/** The one read-only line a usage-limit card adds under the provider's sentence. */
+function LimitResetLine({ meta }: { meta: ChatMessage['meta'] }) {
+  const time = limitResetTime(meta)
+  if (!time) return null
+  return (
+    <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-limit-reset">
+      {i18nT('pages.chat.errorCard.limit_resets_at', { time })}
+    </div>
+  )
+}
 
 /** Row kind the backend stamps on the terminal error a SESSION START that never
  *  answered produces (`chat_utils.SESSION_START_FAILED_KIND`): `session/new`
@@ -635,6 +657,7 @@ export const ErrorCard = memo(function ErrorCard({
       >
         <div className="text-danger text-[13px] leading-5 min-w-0" style={{ overflowWrap: 'anywhere' }}>
           {content}
+          <LimitResetLine meta={meta} />
         </div>
         <div className="text-[12px] leading-5 text-muted" data-testid="error-card-feature-request-hint">
           {i18nT(kiroCliMissing ? 'pages.chat.errorCard.feature_request_form_cli_missing_hint' : 'pages.chat.errorCard.feature_request_form_hint')}
@@ -1034,6 +1057,7 @@ export const ErrorCard = memo(function ErrorCard({
         style={{ overflowWrap: 'anywhere' }}
       >
         {withOriginLink(displayText)}
+        <LimitResetLine meta={meta} />
         {elsewhere && (
           <div className="text-[12px] leading-5 text-muted mt-1" data-testid="error-card-elsewhere-hint">
             {i18nT(elsewhereKey!)}
@@ -1062,6 +1086,7 @@ export const ErrorCard = memo(function ErrorCard({
     >
       <div className="text-danger text-[13px] leading-5 flex-1 min-w-0" style={{ overflowWrap: 'anywhere' }}>
         {withOriginLink(displayText)}
+        <LimitResetLine meta={meta} />
       </div>
       {resumeButton}
     </div>

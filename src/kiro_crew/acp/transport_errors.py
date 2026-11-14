@@ -80,6 +80,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.credential_errors import is_credential_propagation_delay
+from kiro_crew.limit_reset import parse_limit_reset
 from kiro_crew.sandbox import (
     LAUNCHER_EXIT_PREFIXES,
     SANDBOX_LAYER_CREW,
@@ -152,6 +153,10 @@ class AcpError(Exception):
         # retry that reproduces the rejection. Terminal like ``auth_required``
         # and, like it, decided from the raw frame rather than the prose.
         self.usage_limit: bool = False
+        # When that limit opens again (epoch seconds), read from the provider's own
+        # "resets ..." clause at raise time. ``None`` when the frame names no clause
+        # :func:`kiro_crew.limit_reset.parse_limit_reset` reads.
+        self.usage_limit_reset_at: float | None = None
         # Structural-rejection tag, set by :func:`_raise_acp_error` when the raw
         # frame says the request shape is deterministic: malformed request, or
         # an unsupported image already embedded in the conversation. Unlike a
@@ -1982,6 +1987,7 @@ def _raise_acp_error(
         raw_data_field, available_models
     ):
         err.usage_limit = True
+        err.usage_limit_reset_at = parse_limit_reset(raw_data)
     # A stale-credential answer, read from the structured field (not the prose),
     # recycles the process instead of retrying it. Pinned non-transient: the
     # prose ends in "try again", and a retry would re-ask the one process that

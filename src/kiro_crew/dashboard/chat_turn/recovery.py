@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.dashboard.chat_utils import (
@@ -313,7 +314,7 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     if getattr(exc, "auth_required", False):
         return {"kind": AUTH_REQUIRED_KIND, **_kas_signed_out_notice(str(exc))}
     if getattr(exc, "usage_limit", False):
-        return {"kind": USAGE_LIMIT_KIND}
+        return {"kind": USAGE_LIMIT_KIND, **_limit_reset_meta(exc)}
     if getattr(exc, "image_dimension_wedge", False) is True:
         return {"kind": IMAGE_REPAIR_KIND}
     if getattr(exc, "context_overflow", False) is True:
@@ -347,6 +348,21 @@ def _terminal_error_meta(exc: BaseException) -> dict[str, object] | None:
     if getattr(exc, "model_unavailable", False) is True:
         return {"kind": MODEL_UNAVAILABLE_KIND}
     return None
+
+
+def _limit_reset_meta(exc: BaseException) -> dict[str, object]:
+    """``reset_at``, the ISO instant a usage limit opens again, for the card to show.
+
+    Empty unless the error read one (``AcpError.usage_limit_reset_at``), so a
+    limit row with no readable reset clause keeps exactly ``{"kind": ...}``.
+    """
+    at = getattr(exc, "usage_limit_reset_at", None)
+    if isinstance(at, bool) or not isinstance(at, (int, float)):
+        return {}
+    try:
+        return {"reset_at": datetime.fromtimestamp(at, tz=timezone.utc).isoformat()}
+    except (OverflowError, OSError, ValueError):
+        return {}
 
 
 def _kas_signed_out_notice(text: str) -> dict[str, object]:
