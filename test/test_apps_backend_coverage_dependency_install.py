@@ -1667,3 +1667,83 @@ class TestDependencyInstall:
         with pytest.raises(_StopSpawn):
             bmod._start_app_backend_body("deps-none", _manifest("server.py"))
         assert "PYTHONPATH" not in seen["kwargs"]["env"]
+
+
+# Interpreter with ensurepip but no pip (Toolbox runtime)
+
+
+def _fake_ensurepip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, pip: bool, wheel: bool = True
+) -> Path:
+    """Make find_spec report a runtime whose pip is (not) installed and whose
+    ensurepip package sits in tmp_path; return the wheel path it would ship."""
+    import importlib.util
+
+    pkg = tmp_path / "ensurepip"
+    (pkg / "_bundled").mkdir(parents=True)
+    whl = pkg / "_bundled" / "pip-25.0.1-py3-none-any.whl"
+    if wheel:
+        whl.write_bytes(b"")
+    real = importlib.util.find_spec
+
+    def _find_spec(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "pip":
+            return SimpleNamespace(origin="pip") if pip else None
+        if name == "ensurepip":
+            return SimpleNamespace(origin=str(pkg / "__init__.py"))
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", _find_spec)
+    return whl
+
+
+class TestBundledPipWheel:
+    def test_pip_less_runtime_runs_pip_from_the_ensurepip_wheel(
+        self, spawn_root: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No installed pip: the pip child gets ensurepip's wheel on PYTHONPATH
+        (not a failing bare `-m pip`), ahead of the operator's own entries."""
+        whl = _fake_ensurepip(monkeypatch, tmp_path, pip=False)
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        monkeypatch.setenv("PYTHONPATH", "/operator/own")
+        pip_env: list[dict[str, str]] = []
+
+        def _run(argv: Any, **kwargs: Any) -> Any:
+            if "pip" in argv:
+                pip_env.append(kwargs["env"])
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-nopip", _manifest("server.py"))
+        assert len(pip_env) == 1
+        assert pip_env[0].get("PYTHONPATH", "").split(os.pathsep)[:1] == [str(whl)], pip_env
+
+    def test_runtime_with_pip_keeps_its_own_pip(
+        self, spawn_root: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_ensurepip(monkeypatch, tmp_path, pip=True)
+        (spawn_root / "server.py").write_text("x = 1\n")
+        (spawn_root / "requirements.txt").write_bytes(b"requests\n")
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        pip_env: list[dict[str, str]] = []
+
+        def _run(argv: Any, **kwargs: Any) -> Any:
+            if "pip" in argv:
+                pip_env.append(kwargs["env"])
+            return SimpleNamespace(returncode=0, stdout="")
+
+        monkeypatch.setattr(bmod, "run_limited", _run)
+        _capture_popen(monkeypatch)
+        with pytest.raises(_StopSpawn):
+            bmod._start_app_backend_body("deps-haspip", _manifest("server.py"))
+        assert len(pip_env) == 1
+        assert "PYTHONPATH" not in pip_env[0], pip_env
+
+    def test_no_wheel_to_fall_back_on_is_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fake_ensurepip(monkeypatch, tmp_path, pip=False, wheel=False)
+        assert bmod._bundled_pip_wheel() is None

@@ -1667,6 +1667,7 @@ if _typing.TYPE_CHECKING:
         _DEPS_STAMP_NAME,
         REQUIREMENTS_TXT_MAX_BYTES,
         _audit_provision_failure,
+        _bundled_pip_wheel,
         _capped_spill,
         _default_marker_environment,
         _deps_abi_tag,

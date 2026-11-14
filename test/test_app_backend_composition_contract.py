@@ -149,6 +149,7 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_app_enabled_state",
     "_audit_provision_failure",
     "_await_inflight_spawn",
+    "_bundled_pip_wheel",
     "_capped_spill",
     "_capture_adopted_owners",
     "_claim_port",
