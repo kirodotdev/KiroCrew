@@ -493,8 +493,10 @@ Each cycle:
    first. `what` is what you need from them, `why` why only they can do it, each
    option says what choosing it leads to, and `pick` is the label you recommend,
    with its reason. Use the same labels as your `[OPTIONS:]` row. The person's
-   welcome shows this record as written; with none it says the reason was not
-   written yet. `decide` and `close` clear it.
+   welcome shows this record as written. With none, it quotes your open
+   `[OPTIONS:]` reply when that item is the only one waiting, else it points at
+   the question by time; neither carries your why or pick. `decide` and `close`
+   clear it.
 3. **Verify every `done` with the evaluator — never by reading the child's
    transcript and judging, and never by believing the claim.** Call the
    `accept_eval` tool with NO arguments, or with `item_id=<id>` for the one item
