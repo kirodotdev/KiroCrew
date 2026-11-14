@@ -482,6 +482,92 @@ class TestApproveYoloPropagation:
         assert "dashboard:s2" in keys
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("settled", [False, True], ids=["missing", "settled"])
+    async def test_yolo_on_a_stale_card_leaves_yolo_off(self, tmp_path, monkeypatch, settled):
+        """The 404 a stale card gets is unchanged, and global auto-approval stays off."""
+        from kiro_crew.safety_override import safety_override
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        s1 = state.get_or_create_slot("s1")
+        state.get_or_create_slot("s2")
+        if settled:
+            fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            fut.set_result("rejected")
+            s1._approval_futures["gone"] = fut
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/approve", json={"action": "yolo", "request_id": "gone"}
+            )
+            assert resp.status == 404
+
+        assert safety_override().is_active() is False
+        state.sessions.set_approval_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_yolo_on_a_stale_card_under_a_yolo_ban_keeps_main_audit(
+        self, tmp_path, monkeypatch
+    ):
+        """A policy that forbids YOLO answers a stale press with main's 403 and both
+        of main's audit entries: the override's own refusal and the route's denial."""
+        from kiro_crew.dashboard import chat_handlers
+        from kiro_crew.safety_override import safety_override
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(chat_handlers, "yolo_policy_permits", lambda: False)
+        refusals: list[tuple] = []
+        override = safety_override()
+        monkeypatch.setattr(
+            override,
+            "_log_policy_refusal",
+            lambda source, *, scope: refusals.append((source, scope)),
+        )
+        denials: list[dict] = []
+        real_deny = chat_handlers._deny_approval_mode
+
+        def _spy_deny(**kwargs):
+            denials.append(kwargs)
+            return real_deny(**kwargs)
+
+        monkeypatch.setattr(chat_handlers, "_deny_approval_mode", _spy_deny)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        state.get_or_create_slot("s1")
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/approve", json={"action": "yolo", "request_id": "gone"}
+            )
+            assert resp.status == 403
+
+        assert refusals == [("dashboard", "")]
+        assert [d["operation"] for d in denials] == ["tool_approval:yolo"]
+        assert override.is_active() is False
+        state.sessions.set_approval_policy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_yolo_on_a_live_card_still_turns_yolo_on(self, tmp_path, monkeypatch):
+        from kiro_crew.safety_override import safety_override
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.push_slots_update = MagicMock()
+        s1 = state.get_or_create_slot("s1")
+        fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        s1._approval_futures["live"] = fut
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/approve", json={"action": "yolo", "request_id": "live"}
+            )
+            assert resp.status == 200
+
+        assert safety_override().is_active() is True
+        assert fut.result() == "approved"
+
+    @pytest.mark.asyncio
     async def test_trust_approve_propagates_to_slot(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
