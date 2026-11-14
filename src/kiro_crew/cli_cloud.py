@@ -344,7 +344,7 @@ def _cloud_login(args: argparse.Namespace) -> int:
         ui.detail(f"Verification code: {prompt.code}")
     # Keep the login daemon polling on the box so approval completes, then wait.
     login_mod.resume_login_daemon(instance_id, profile, region, target=target)
-    with ui.Spinner("Waiting for sign-in approval…"):
+    with ui.Spinner(f"Waiting for sign-in approval (up to {login_mod.signin_wait_limit()})…"):
         signed = login_mod.wait_until_logged_in(instance_id, profile, region, target=target)
     if signed:
         ui.ok(
