@@ -917,7 +917,37 @@ def session_scratch_root(scratch_root: str) -> ApprovedRoot | None:
     )
 
 
-def approved_roots(within_root: str, scratch_root: str = "") -> tuple[ApprovedRoot, ...]:
+def session_attachments_root(attachments_root: str) -> ApprovedRoot | None:
+    """A session's attachments directory as a root, or ``None``.
+
+    *attachments_root* is ``chat_attachments.attachments_dir`` for ONE session,
+    handed over by a caller that already resolved which session it serves. That
+    directory only holds pictures the transcript write copied out of a working
+    directory or scratch under the same gates, so admitting it opens no new
+    source. Admitted only when absolute, an existing directory and not a link or
+    junction; the read pin is canonical (parent resolved, leaf literal) like the
+    scratch root's, so a link swapped in at the leaf resolves outside the pin.
+    """
+    if not attachments_root or not os.path.isabs(attachments_root):
+        return None
+    lexical = os.path.abspath(attachments_root)
+    path = Path(lexical)
+    try:
+        if is_link_or_junction(path) or not path.is_dir():
+            return None
+        parent = os.path.realpath(path.parent)
+    except (OSError, ValueError):
+        return None
+    return ApprovedRoot(
+        lexical=lexical,
+        read_root=os.path.join(parent, path.name),
+        read_root_is_canonical=True,
+    )
+
+
+def approved_roots(
+    within_root: str, scratch_root: str = "", attachments_root: str = ""
+) -> tuple[ApprovedRoot, ...]:
     """The directories an outbound reference may name, authorized first.
 
     *within_root* is the provider's resolved working directory, handed over by
@@ -938,7 +968,9 @@ def approved_roots(within_root: str, scratch_root: str = "") -> tuple[ApprovedRo
     it was authorized with.
 
     The session's own scratch directory comes last, and only when
-    *scratch_root* passes :func:`session_scratch_root`.
+    *scratch_root* passes :func:`session_scratch_root`, and the session's
+    attachments directory after it when *attachments_root* passes
+    :func:`session_attachments_root`.
 
     An empty *within_root* contributes nothing, so neither the browser root nor
     the scratch root ever stands in for an authorization the dispatcher withheld.
@@ -954,11 +986,13 @@ def approved_roots(within_root: str, scratch_root: str = "") -> tuple[ApprovedRo
             read_root_is_canonical=True,
         ),
     )
-    scratch = session_scratch_root(scratch_root)
-    return roots if scratch is None else (*roots, scratch)
+    extra = (session_scratch_root(scratch_root), session_attachments_root(attachments_root))
+    return (*roots, *(root for root in extra if root is not None))
 
 
-def containing_root(path: Path, within_root: str, scratch_root: str = "") -> ApprovedRoot | None:
+def containing_root(
+    path: Path, within_root: str, scratch_root: str = "", attachments_root: str = ""
+) -> ApprovedRoot | None:
     """The approved root that lexically contains *path*, or ``None``.
 
     Lexical on purpose: ``abspath`` collapses ``..`` so a traversal spelling
@@ -967,7 +1001,7 @@ def containing_root(path: Path, within_root: str, scratch_root: str = "") -> App
     returned here and rechecks the opened descriptor's real path against it.
     """
     target = str(path)
-    for root in approved_roots(within_root, scratch_root):
+    for root in approved_roots(within_root, scratch_root, attachments_root):
         if lexically_within(target, root.lexical, os.path):
             return root
     return None
@@ -1083,6 +1117,7 @@ def _inspect(
     max_file_bytes: int | None,
     within_root: str | None,
     scratch_root: str = "",
+    attachments_root: str = "",
 ) -> OutboundFile | Rejection:
     """Decide whether *path* can be uploaded; return the file OR a rejection.
 
@@ -1107,7 +1142,7 @@ def _inspect(
     root: ApprovedRoot | None = None
     if within_root is not None:
         try:
-            root = containing_root(path, within_root, scratch_root)
+            root = containing_root(path, within_root, scratch_root, attachments_root)
         except (OSError, ValueError):
             root = None
         if root is None:
@@ -1335,6 +1370,7 @@ def extract_local_refs(
     limits: ExtractLimits | None = None,
     within_root: str | None = None,
     scratch_root: str = "",
+    attachments_root: str = "",
 ) -> ExtractResult:
     """Pull local raster references out of *text* for a transport to upload.
 
@@ -1344,7 +1380,8 @@ def extract_local_refs(
 
     *scratch_root* is the session's own ``$KIROCREW_SCRATCH`` directory, admitted
     beside *within_root* only as :func:`session_scratch_root` allows; empty adds
-    nothing.
+    nothing. *attachments_root* is one session's attachments directory, admitted
+    only as :func:`session_attachments_root` allows; empty adds nothing.
     """
     lim = limits or ExtractLimits()
     refs = iter_local_refs(text)
@@ -1378,6 +1415,7 @@ def extract_local_refs(
             lim.max_file_bytes,
             within_root,
             scratch_root,
+            attachments_root,
         )
         if isinstance(outcome, Rejection):
             # A rejected reference keeps its markup, so the path stays visible.
@@ -1469,6 +1507,7 @@ async def extract_local_refs_off_loop(
     within_root: str,
     limits: ExtractLimits | None = None,
     scratch_root: str = "",
+    attachments_root: str = "",
 ) -> ExtractResult:
     """Async form of :func:`extract_local_refs`, run off the event loop.
 
@@ -1489,4 +1528,5 @@ async def extract_local_refs_off_loop(
         limits=limits,
         within_root=within_root,
         scratch_root=scratch_root,
+        attachments_root=attachments_root,
     )

@@ -115,7 +115,9 @@ def test_posix_rules_stay_exact_and_case_sensitive(target: str, expected: bool) 
 def test_containing_root_applies_the_windows_rules(monkeypatch: pytest.MonkeyPatch) -> None:
     """The call site reaches the compare with the module's own ``os.path``."""
     root = ApprovedRoot(lexical=_ROOT, read_root=_ROOT)
-    monkeypatch.setattr(module, "approved_roots", lambda within, scratch="": (root,))
+    monkeypatch.setattr(
+        module, "approved_roots", lambda within, scratch="", attachments="": (root,)
+    )
     monkeypatch.setattr(module, "os", types.SimpleNamespace(name="nt", path=ntpath))
     inside = cast(Path, PureWindowsPath(r"\\?\c:\work\proj\shot.png"))
     outside = cast(Path, PureWindowsPath(r"c:\work\proj2\shot.png"))
