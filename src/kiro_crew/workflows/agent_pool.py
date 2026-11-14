@@ -539,13 +539,11 @@ def build_pooled_agent_fn(
                 await memory_scope.validate()
             return result
         finally:
-            # Best-effort teardown. An exception raised from this ``finally``
-            # would REPLACE the step's real outcome: a successful ``result``
-            # would vanish behind a session error, and the body's own exception
-            # (provider failure, a scope ``validate()`` rejection) would be
-            # swallowed. So a teardown failure is logged and dropped; the body's
-            # outcome always wins. ``CancelledError`` is a BaseException and is
-            # deliberately NOT caught, so a cancel still propagates.
+            # Best-effort teardown: a raise from this ``finally`` would REPLACE
+            # the step's outcome (hide a good ``result`` or swallow the body's
+            # own exception). So a teardown failure is logged and dropped.
+            # ``CancelledError`` is a BaseException and is NOT caught, so a
+            # cancel still propagates.
             #
             # Log the exception TYPE only (no message, no traceback): session
             # error text can carry restricted conversation content.
