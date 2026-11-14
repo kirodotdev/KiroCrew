@@ -660,7 +660,8 @@ def test_the_whole_census_holds_the_known_rebinds_and_an_owner_s_definitions() -
 #: outermost, the relay-path header rule is next so it reads a verified handover before
 #: any inner layer, the client-sent relay-header strip sits just inside it so no inner
 #: layer reads a client-sent relay header, the
-#: deny-audit boundary is outer to every barrier that can refuse, the SEL request
+#: deny-audit boundary is outer to every barrier that can refuse, the app web origin
+#: router is outer to the host canonicalization and the ``Host`` barrier, the SEL request
 #: audit is inner to them, the per-slot ownership checkpoint is inner to token auth
 #: and the audit record, and the workflow and crewmate-prune gates, the Shared Crew
 #: team-config gate and the change-card hook (innermost, after auth has classified
@@ -671,6 +672,7 @@ _DASHBOARD_CHAIN = (
     ("_relay_ingress", "relay_ingress_middleware.<locals>."),
     ("relay_header_strip_middleware", "relay_header_strip_middleware"),
     ("deny_audit_middleware", "_make_deny_audit_middleware.<locals>."),
+    ("app_web_origin_middleware", "build_app_web_origin_middleware.<locals>."),
     ("host_canonical_redirect", "build_host_canonical_redirect.<locals>."),
     ("host_validation_middleware", "_make_host_validation_middleware.<locals>."),
     ("reject_compressed_body_middleware", "reject_compressed_body_middleware"),

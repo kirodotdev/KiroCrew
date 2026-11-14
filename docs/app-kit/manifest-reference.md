@@ -1568,6 +1568,7 @@ popover says the app did not respond.
 | `backend.routes` | string | | Base route path for the backend |
 | `backend.type` | string | `""` | Backend runtime: `"python"`, `"asgi"`, `"node"`, `"exec"` (execute the entry point file as-is), or `""` (auto-detect from `entryPoint` — a `.sh` file or an extensionless executable with a non-Python shebang is treated as a shell launcher) |
 | `backend.signedPrincipal` | boolean | `false` | Add a signed `X-KiroCrew-Principal` claim to every request the reverse proxy forwards to this backend. Only the JSON boolean `true` turns it on. The claim says whether the gateway authenticated an `owner-session`, an `app-token`, an `agent-tool` call, or `none`. |
+| `backend.webOrigin` | boolean | `false` | Serve this backend on its own site, `http://<name>.apps.localhost:<dashboard port>`, so a page the app frames rides the dashboard's own connection. Only the JSON boolean `true` turns it on, and the name must be at most 63 characters. The gateway forwards no credential and signs nothing on that site; the app authenticates its own pages. Read the origin with `appWebOrigin(name)` from `@kirocrew/app-sdk` (level 8). |
 
 > **Note:** the shell-launcher auto-detect reads the entry point's shebang
 > line, so a compiled/binary launcher (e.g. an ELF executable) cannot be

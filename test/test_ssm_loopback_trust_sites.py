@@ -86,8 +86,12 @@ def test_an_ssm_request_mints_no_bearer_link() -> None:
 # ── every site that trusts a peer address ──
 
 #: ``is_direct_local_request(...)`` call sites per file. Each is covered by the
-#: predicate's SSM refusal above.
+#: predicate's SSM refusal above, except where its comment says otherwise.
 PREDICATE_SITES = {
+    # The app web origin router runs ahead of token auth, so the SSM gate has not
+    # set its mark yet and the predicate alone would pass an SSM request. The
+    # router refuses by listener first (``SsmGate.owns``, the socket's local port).
+    "apps/app_web_origin.py": 1,
     "dashboard/file_api/desktop.py": 1,
     "dashboard/handlers/core.py": 2,
     "dashboard/handlers/external_terminal.py": 1,

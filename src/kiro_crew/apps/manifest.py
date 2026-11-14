@@ -576,6 +576,9 @@ class AppManifest:
             name_error = app_name_error(self.name)
             if name_error:
                 errors.append(name_error)
+            elif self.backend.webOrigin and len(self.name) > 63:
+                # The name becomes a DNS label in its web origin's host name.
+                errors.append("backend.webOrigin needs an app name of at most 63 characters")
 
         if not self.version:
             errors.append("missing required field: version")
