@@ -67,7 +67,6 @@ _FALLBACK_PROVIDER_IDS: dict[str, str] = {
     "fable-5": "global.anthropic.claude-fable-5[1m]",
     "claude-fable-5": "global.anthropic.claude-fable-5[1m]",
     "opus-4.8-1m": "global.anthropic.claude-opus-4-8[1m]",
-    "opus": "global.anthropic.claude-opus-4-8[1m]",
     "claude-opus-4.8": "global.anthropic.claude-opus-4-8[1m]",
     "claude-opus-4-8[1m]": "global.anthropic.claude-opus-4-8[1m]",
     "claude-opus-4.6": "global.anthropic.claude-opus-4-8[1m]",
@@ -80,10 +79,12 @@ _FALLBACK_PROVIDER_IDS: dict[str, str] = {
     "claude-opus-4.7-1m": "global.anthropic.claude-opus-4-7[1m]",
     "claude-opus-4-7[1m]": "global.anthropic.claude-opus-4-7[1m]",
     "opus-5.5-1m": "global.anthropic.claude-opus-5-5[1m]",
+    "opus": "global.anthropic.claude-opus-5-5[1m]",
     "claude-opus-5.5": "global.anthropic.claude-opus-5-5[1m]",
     "claude-opus-5-5": "global.anthropic.claude-opus-5-5[1m]",
     "claude-opus-5-5[1m]": "global.anthropic.claude-opus-5-5[1m]",
     "sonnet-5.5-1m": "global.anthropic.claude-sonnet-5-5[1m]",
+    "sonnet": "global.anthropic.claude-sonnet-5-5[1m]",
     "claude-sonnet-5.5": "global.anthropic.claude-sonnet-5-5[1m]",
     "claude-sonnet-5-5": "global.anthropic.claude-sonnet-5-5[1m]",
     "claude-sonnet-5-5[1m]": "global.anthropic.claude-sonnet-5-5[1m]",
@@ -92,7 +93,6 @@ _FALLBACK_PROVIDER_IDS: dict[str, str] = {
     "claude-fable-5-1": "global.anthropic.claude-fable-5-1[1m]",
     "claude-fable-5-1[1m]": "global.anthropic.claude-fable-5-1[1m]",
     "sonnet-4.6-1m": "global.anthropic.claude-sonnet-4-6[1m]",
-    "sonnet": "global.anthropic.claude-sonnet-4-6[1m]",
     "claude-sonnet-4.6": "global.anthropic.claude-sonnet-4-6[1m]",
     "claude-sonnet-4.6-1m": "global.anthropic.claude-sonnet-4-6[1m]",
     "claude-sonnet-4-6[1m]": "global.anthropic.claude-sonnet-4-6[1m]",
@@ -103,12 +103,14 @@ _FALLBACK_PROVIDER_IDS: dict[str, str] = {
     "auto": "",
 }
 
-# Bare family aliases Claude Code resolves to its own current model. On the
-# ``claude_code`` provider ``to_provider_id`` passes one through unchanged, not
-# folded onto a versioned id that goes stale each release, but only when the
-# backend advertised that exact alias (``advertised_models``). With a cold cache,
-# or a backend that advertises only versioned ids (Bedrock's
-# ``global.anthropic.*``), the registry fold applies.
+# Bare family aliases Claude Code resolves to its OWN current model. On the
+# ``claude_code`` provider ``to_provider_id`` passes one through UNCHANGED, rather
+# than folding it onto the registry's fixed versioned id (which goes stale on
+# every model release), but only when the claude backend advertised that exact
+# alias (``advertised_models``). An advertised id is one the adapter accepts back.
+# A bare ``opus`` or ``sonnet`` it did not advertise takes the newest advertised
+# id of its family (a Bedrock deployment's ``global.anthropic.*`` ids, say). With
+# a cold cache, or no id of the family, the registry fold applies.
 #
 # ``claude_code`` only: on the ``acp`` (kiro) path these spellings are distinct
 # models (see ``to_acp_id``), so an ``acp`` caller still folds. ``haiku`` is
@@ -871,7 +873,9 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
     registry entry is accepted. Versioned aliases are excluded on purpose: an
     entry also lists substitution aliases (``claude-haiku-4.5`` under Sonnet,
     because the claude backend serves no Haiku), and folding onto one of those
-    would send a different model the provider really does serve.
+    would send a different model the provider really does serve. On ``claude_code``
+    an unmatched bare ``opus`` / ``sonnet`` takes the newest advertised id of its
+    family, the same pick :func:`to_provider_id` makes.
     """
     if not model_id or model_id == "auto":
         return model_id
@@ -884,6 +888,8 @@ def resolve_wire_model_id(model_id: str, provider: str) -> str:
     matches = [a for a in adv if _normalize_advertised_key(a) == want]
     if not matches:
         matches = _family_alias_matches(model_id, provider, adv)
+    if not matches and provider == "claude_code":
+        return _newest_advertised(model_id, adv) or model_id
     if not matches:
         return model_id
     return preferred_advertised_spelling(matches)
@@ -894,9 +900,11 @@ def _family_alias_matches(model_id: str, provider: str, adv: Sequence[str]) -> l
     key = _resolve_canonical(model_id, provider)
     if key is None:
         return []
+    entry = _REGISTRY[key]
+    aliases = [*entry.get("aliases", []), *entry.get("claude_code_aliases", [])]
     family = {
         alias.lower()
-        for alias in _REGISTRY[key].get("aliases", [])
+        for alias in aliases
         if not any(ch.isdigit() for ch in alias)
     }
     return [a for a in adv if a.lower() in family]
@@ -915,6 +923,19 @@ def preferred_advertised_spelling(matches: Sequence[str]) -> str:
     return ordered[0] if ordered else ""
 
 
+_OPUS_SONNET_VERSION = re.compile(r"claude-(opus|sonnet)-(\d+)(?:-(\d{1,2}))?(?:[-@]|$)")
+
+
+def _newest_advertised(alias: str, advertised: Sequence[str]) -> str:
+    """Newest advertised id of the opus/sonnet *alias*; a trailing date is no minor."""
+    by_version: dict[tuple[int, int], list[str]] = {}
+    for adv in advertised:
+        m = _OPUS_SONNET_VERSION.match(_normalize_advertised_key(adv))
+        if m and m[1] == alias:
+            by_version.setdefault((int(m[2]), int(m[3] or 0)), []).append(adv)
+    return preferred_advertised_spelling(by_version[max(by_version)]) if by_version else ""
+
+
 # ── Precomputed indices (built once; the registry is immutable after import) ──
 # canonical key / alias / per-provider id  ->  canonical key, keyed by provider.
 _CANONICAL_INDEX: dict[str, dict[str, str]] = {}
@@ -931,6 +952,9 @@ def _build_indices() -> None:
     _CANONICAL_INDEX.clear()
     _CANONICAL_INDEX_FOLDED.clear()
     _DEFAULTS.clear()
+    for key, entry in _REGISTRY.items():
+        for alias in entry.get("claude_code_aliases", []):
+            _CANONICAL_INDEX.setdefault("claude_code", {}).setdefault(alias, key)
     for key, entry in _REGISTRY.items():
         for provider, pid in entry.get("providers", {}).items():
             idx = _CANONICAL_INDEX.setdefault(provider, {})
@@ -1017,16 +1041,15 @@ def to_provider_id(canonical_or_id: str, provider: str) -> str:
     """
     if canonical_or_id == "":
         return ""
-    # A bare family alias passes through unchanged on claude_code only when the
-    # claude backend advertised that alias: an advertised id is one the adapter
-    # accepts back. A cold cache or a versioned-only list falls through to the
-    # registry fold below. See ``CLAUDE_CODE_PASSTHROUGH_ALIASES``.
-    if (
-        provider == "claude_code"
-        and canonical_or_id in CLAUDE_CODE_PASSTHROUGH_ALIASES
-        and canonical_or_id in advertised_models("claude_code")
-    ):
-        return canonical_or_id
+    # See ``CLAUDE_CODE_PASSTHROUGH_ALIASES``: an advertised alias passes through,
+    # an unadvertised opus/sonnet takes the newest advertised id of its family.
+    if provider == "claude_code" and canonical_or_id in CLAUDE_CODE_PASSTHROUGH_ALIASES:
+        advertised = advertised_models("claude_code")
+        if canonical_or_id in advertised:
+            return canonical_or_id
+        newest = _newest_advertised(canonical_or_id, advertised)
+        if newest:
+            return newest
     key = _resolve_canonical(canonical_or_id, provider)
     if key is not None:
         return _REGISTRY[key].get("providers", {}).get(provider, "")
