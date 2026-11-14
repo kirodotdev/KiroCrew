@@ -46,6 +46,26 @@ TOO_OLD_STDERR = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _resolved_route(_floor_monkeypatch):
+    """Pin the route KAS resolves to on its own; the relay unless a test moves it.
+
+    The real resolver reads this host's kiro-cli and its sign-in store. Returns
+    the list of resolved routes handed out, last one current.
+    """
+    from kiro_crew.acp import kas_route
+
+    routes = [kas_route.RELAY]
+    calls: list[object] = []
+
+    def _resolve(**kwargs):
+        calls.append(kwargs)
+        return routes[-1]
+
+    _floor_monkeypatch.setattr(kas_route, "resolve_kas_route", _resolve)
+    return routes, calls
+
+
 # -- The classifier --
 
 
@@ -332,6 +352,42 @@ async def test_a_still_kas_relay_route_keeps_the_card(tmp_path, monkeypatch):
         assert snapshot["acp_supported"] is False
         assert snapshot["ready"] is False
     assert service.cli_too_old is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["no_kiro_cli", "kiro_cli_signed_out"])
+async def test_kas_moving_to_the_bundle_on_its_own_lifts_the_card_within_the_bound(
+    tmp_path, monkeypatch, _resolved_route, reason
+):
+    """Config still names the relay, but the next KAS session starts on the bundle,
+    so the card must lift; the route is resolved at most once per bound."""
+    from kiro_crew import kiro_prerequisite_probe as probe_module
+    from kiro_crew.acp.kas_route import KasRoute
+
+    # The bound, read off the module so the test still collects without it.
+    bound = getattr(probe_module, "_RESOLVED_ROUTE_RECHECK_SECS", 60.0)
+
+    routes, calls = _resolved_route
+    _route(monkeypatch, "kas", False)
+    service, _runtime = _service(tmp_path)
+    now = [1000.0]
+    service._clock = lambda: now[0]
+    await service._probe()
+    service.mark_cli_too_old()
+    assert (await service.snapshot())["acp_supported"] is False
+    assert len(calls) == 1
+    assert calls[0]["home"] == service._home
+
+    routes.append(KasRoute(bundle=True, reason=reason))
+    for _ in range(3):
+        assert (await service.snapshot())["acp_supported"] is False
+    assert len(calls) == 1
+
+    now[0] += bound
+    after = await service.snapshot()
+    assert after["acp_supported"] is True
+    assert service.cli_too_old is False
+    assert len(calls) == 2
 
 
 @pytest.mark.asyncio

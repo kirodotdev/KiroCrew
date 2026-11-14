@@ -15,7 +15,8 @@ import asyncio
 import logging
 import os
 import shutil
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
@@ -105,6 +106,12 @@ _TURN_AUTH_MAX_AGE_SECS = 30.0
 # What ``kiro-cli whoami`` prints when there is no sign-in (measured on kiro-cli
 # 2.31.0: "Not logged in", exit 1). The launcher's refusal says the same words.
 _WHOAMI_SIGNED_OUT_MARKER = "not logged in"
+# How often, at most, a set too-old latch asks which route KAS resolves to
+# (``_drop_too_old_off_relay``). The answer can read kiro-cli's SEL-audited
+# sign-in store, and the blocking gate polls every few seconds, so asking per
+# poll would write an audit event per poll. A minute is how long the card can
+# outlive a kiro-cli that was removed or signed out.
+_RESOLVED_ROUTE_RECHECK_SECS = 60.0
 
 
 _KIRO_AUTH_SANDBOX_MODE = "standard"
@@ -332,20 +339,44 @@ def _relay_route_configured() -> bool:
     return agent.acp_backend == ACP_BACKEND_KAS and not agent.kas_bundle
 
 
+def _relay_route_resolved(environ: Mapping[str, str], home: Path) -> bool:
+    """Whether the next KAS spawn still takes the relay, config unchanged.
+
+    False once KAS moves to the bundled engine on its own (no kiro-cli, or
+    kiro-cli signed out). Blocking; the signed-out read is SEL-audited, which is
+    why callers bound how often they ask.
+    """
+    from kiro_crew.agent_sdk import kas_bundle
+
+    return not kas_bundle.kas_route(environ=environ, home=home).bundle
+
+
 async def _drop_too_old_off_relay(self: KiroPrerequisiteService) -> bool:
-    """Clear the too-old latch when config does not use the relay; True when cleared.
+    """Clear the too-old latch when KAS does not take the relay; True when cleared.
 
     The latch records that the relay's ``--auth-method`` was rejected. After a
     switch to the Kiro CLI harness or the bundled engine, with no restart, the
     card it raises would hide a harness that runs; the next session on the relay
-    latches it again if the CLI is still too old.
+    latches it again if the CLI is still too old. Config is read on every call;
+    the resolved route, which KAS changes on its own, at most once per
+    :data:`_RESOLVED_ROUTE_RECHECK_SECS`, because every status poll lands here.
     """
-    if not self._cli_too_old or await asyncio.to_thread(_relay_route_configured):
+    if not self._cli_too_old:
         return False
+    why = "the configured route does not use the relay"
+    if await asyncio.to_thread(_relay_route_configured):
+        now = self._clock()
+        checked = self._cli_too_old_route_checked_at
+        if checked is not None and now - checked < _RESOLVED_ROUTE_RECHECK_SECS:
+            return False
+        self._cli_too_old_route_checked_at = now
+        if await asyncio.to_thread(_relay_route_resolved, self._environ, self._home):
+            return False
+        why = "KAS moved to the bundled engine on its own"
     self._cli_too_old = False
     self._cli_too_old_stamp = None
     self._last_probe_at = 0.0
-    logger.info("Kiro CLI-too-old latch cleared: the configured route no longer uses the relay")
+    logger.info("Kiro CLI-too-old latch cleared: %s", why)
     return True
 
 

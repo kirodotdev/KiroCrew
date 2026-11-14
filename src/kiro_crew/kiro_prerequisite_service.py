@@ -267,6 +267,9 @@ class KiroPrerequisiteService:
         # The binary the latch was proven against, stamped by the first probe
         # after it (``kiro_prerequisite_probe._binary_stamp``). ``None`` = not yet.
         self._cli_too_old_stamp: tuple[object, ...] | None = None
+        # When a set latch last asked which route KAS resolves to
+        # (``kiro_prerequisite_probe._drop_too_old_off_relay``). ``None`` = never.
+        self._cli_too_old_route_checked_at: float | None = None
         # Which account the store named when the latch was last written.
         # Comparing it against a fresh read is how an out-of-band `kiro-cli
         # logout` (or a switch to another account) is noticed at all: nothing
