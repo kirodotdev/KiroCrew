@@ -256,7 +256,10 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
         # whatever autoApprove it carried. The caller turns it into a 409.
         raise
     except OSError as exc:
+        # Raised, not swallowed: the caller would answer ``applied`` while
+        # kiro-cli still loads the old spec. Same reason the read raises.
         logger.warning("Cannot write agent config %s: %s", path, exc)
+        raise
 
 
 def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
@@ -421,7 +424,10 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
         # so a swallowed refusal reports every name in it as applied.
         raise
     except OSError as exc:
+        # Raised, not swallowed: the caller would answer ``applied`` while
+        # kiro-cli still loads the old spec. Same reason the read raises.
         logger.warning("Cannot write agent config %s: %s", path, exc)
+        raise
 
 
 def _mcp_hot_reload_active(request: web.Request) -> bool:

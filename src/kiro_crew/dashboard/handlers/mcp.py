@@ -483,6 +483,10 @@ async def api_mcp_sync(request: web.Request) -> web.Response:
                     return _agent_home_not_owned_response(
                         ", ".join(s.name for s in to_sync) or "servers"
                     )
+                except PermissionError:
+                    return _mcp_config_busy("mcp servers sync")
+                except OSError:
+                    return _mcp_write_failed("mcp servers sync", "kirocrew.json")
 
     # The reset exists only to make kiro-cli re-read a file it may already
     # watch. Runs even with no new servers: an enable/disable toggle also wrote
@@ -674,6 +678,8 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
                 return _agent_home_not_owned_response(name)
             except PermissionError:
                 return _mcp_config_busy("mcp toggle")
+            except OSError:
+                return _mcp_write_failed("mcp toggle", "kirocrew.json")
 
     return web.json_response({"ok": True, "name": name, "enabled": enabled, "applied": True})
 
@@ -827,6 +833,8 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
                 return _agent_home_not_owned_response(", ".join(toggled) or "servers")
             except PermissionError:
                 return _mcp_config_busy("mcp toggle-all")
+            except OSError:
+                return _mcp_write_failed("mcp toggle-all", "kirocrew.json")
 
     return web.json_response({"ok": True, "enabled": enabled, "count": len(servers)})
 
@@ -939,6 +947,8 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
                 return _agent_home_not_owned_response(name)
             except PermissionError:
                 return _mcp_config_busy("mcp remove")
+            except OSError:
+                return _mcp_write_failed("mcp remove", "kirocrew.json")
 
     await _forget_owner_servers([name])
     return web.json_response({"ok": True, "name": name, "removed": removed})
@@ -1034,6 +1044,8 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
                     return _agent_home_not_owned_response(name)
                 except PermissionError:
                     return _mcp_config_busy("mcp server delete")
+                except OSError:
+                    return _mcp_write_failed("mcp server delete", "kirocrew.json")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_server_remove",
@@ -1125,6 +1137,10 @@ async def api_mcp_server_detail(request: web.Request) -> web.Response:
                 await asyncio.to_thread(_sync_mcp_to_agent, name, True)
             except SharedAgentHomeRefused:
                 return _agent_home_not_owned_response(name)
+            except PermissionError:
+                return _mcp_config_busy("mcp server register")
+            except OSError:
+                return _mcp_write_failed("mcp server register", "kirocrew.json")
 
     logger.info("MCP register via REST: %s command=%s", name, command)
     if warnings:
