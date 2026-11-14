@@ -17,6 +17,7 @@ organized for someone browsing the repository.
 | [use-cases.md](use-cases.md) | Real-world workflows. |
 | [troubleshooting.md](troubleshooting.md) | Common problems and fixes. |
 | [blocked-commands.md](blocked-commands.md) | Why a command was refused, what the agent is told to do instead, and how to check your credential setup. |
+| [tool-approvals.md](tool-approvals.md) | Auto-approving one MCP tool on KAS with a `permissions.yaml` rule, and the settings that look like they would but do not. |
 
 ## Core capabilities
 

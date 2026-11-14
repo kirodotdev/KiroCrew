@@ -126,6 +126,8 @@ gracefully rather than failing the turn.
 - [Blocked commands and credential access](blocked-commands.md): why a command was
   refused, what the agent is told to do instead, and how to check your AWS or SSO
   credential setup
+- [Tool approvals](tool-approvals.md): auto-approve one MCP tool on KAS so it stops
+  asking, and the settings that look like they would but do not
 - [Apps and the App Store](apps.md): what an app is, what ships, enabling and
   updating one, the agents and skills it brings, and why enabling one is a trust
   decision
