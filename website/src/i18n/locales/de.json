@@ -8074,6 +8074,7 @@
       "agent_wrong_version_detail": "Auf diesem Host ist {{name}} {{version}} installiert, das {{productName}} nicht geprüft hat. Installiere die geprüfte Version, um es zu verwenden.",
       "agent_install_on_host": "Installiere {{name}} auf dem Gateway-Host.",
       "agent_missing_components": "Fehlende Komponenten: {{components}}",
+      "agent_install_needs_node": "Dieser Befehl braucht Node.js und npm auf dem Gateway-Host. <0>Node.js herunterladen</0>",
       "agent_install_then_check": "Drücke nach der Installation „Erneut prüfen“, damit das Gateway erneut nach {{name}} sucht.",
       "agent_restart_required_detail": "{{name}} ist auf dem Gateway-Host installiert. Drücke „Erneut prüfen“, damit es übernommen wird. Steht diese Zeile danach noch da, starte {{productName}} auf diesem Host neu.",
       "agent_unverified_detail": "{{productName}} konnte nicht bestätigen, dass {{name}} installiert ist. Drücke „Erneut prüfen“, um die Installation zu überprüfen, bevor du diesen Agenten verwendest. Die Einrichtung bleibt geöffnet, bis der gewählte Agent bereit ist. Du kannst den Agenten hier wechseln oder später unter Einstellungen > Agent-Harness.",
