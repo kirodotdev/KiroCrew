@@ -23,6 +23,13 @@ roster, stalling the dashboard mid-boot. Executor-side callers such as
 ``_channel_members()`` still import this module lazily on their side, which
 stays correct either way.
 
+Signal is the one exception: it is opt-in and needs a separately installed
+``signal-cli``, so its modules stay off the boot path entirely
+(``no-new-work-on-gateway-boot-path``, clause 5: gate the import of a disabled
+subsystem). :func:`_start_signal` imports them only when the registry starts
+the channel, which it does only while the channel is enabled, and imports on a
+worker thread so that first start does not stall the loop as described above.
+
 Slack's descriptor carries ``start=None``: it is governed like every other
 member, but its socket-client lifecycle is host-managed in ``_connect_slack``
 (a governance deny must drop the client, not merely skip a start call), and it
@@ -31,9 +38,12 @@ deliberately connects AFTER the other channels — same boot order as before.
 
 from __future__ import annotations
 
+import asyncio
+import importlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import Any
 
 from kiro_crew.config.loader import (
     CRED_DISCORD_BOT_TOKEN,
@@ -60,6 +70,32 @@ from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
 from kiro_crew.weixin.gateway import maybe_start_weixin
 from kiro_crew.whatsapp.gateway import maybe_start_whatsapp
+
+#: The module :func:`_start_signal` loads on first start.
+_SIGNAL_GATEWAY_MODULE = "kiro_crew.signal_cli.gateway"
+
+
+async def _start_signal(orch: Any) -> Any:
+    """Signal's start factory: import the channel, then run ``maybe_start_signal``.
+
+    The registry calls a factory only for an enabled, permitted channel, so a
+    gateway with Signal off never loads ``kiro_crew.signal_cli``'s runtime.
+
+    The import is an await ahead of the dispatcher's watcher subscription, so
+    the registry's ``before_start`` adoption is not the last read before it: a
+    write landing during the import (an allow-list revocation) reaches no Signal
+    applier, and the deferred restart applier re-runs only for boot keys. The
+    section is adopted again here, synchronously, after the import, and
+    ``maybe_start_signal`` builds the dispatcher before its own first await.
+    """
+    module = await asyncio.to_thread(importlib.import_module, _SIGNAL_GATEWAY_MODULE)
+    # Signal's hoist reads no credential: signal-cli keeps its own key store.
+    orch._adopt_channel_section_from_watcher(_signal_descriptor(), {})
+    return await module.maybe_start_signal(orch)
+
+
+def _signal_descriptor() -> ChannelDescriptor:
+    return next(d for d in builtin_channel_descriptors() if d.channel_type == "signal")
 
 
 @lru_cache(maxsize=1)
@@ -136,6 +172,17 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
             # db_path and service are handed to the Messages.app bridge when it
             # opens, so a new value needs the bridge reopened.
             boot_keys=frozenset({"enabled", "db_path", "service"}),
+        ),
+        # Signal needs no credential either: signal-cli keeps its own key store
+        # under its data dir, registered or linked out of band. The account
+        # number IS required -- the gateway cannot launch signal-cli without it.
+        ChannelDescriptor(
+            channel_type="signal",
+            start=_start_signal,
+            # The account is handed to signal-cli on its argv, so a new value
+            # needs the daemon respawned.
+            boot_keys=frozenset({"enabled", "account"}),
+            required_config=("account",),
         ),
         # WhatsApp needs no credential either: it pairs by QR and keeps its own
         # session store, so `whatsapp.enabled` is the whole gate.

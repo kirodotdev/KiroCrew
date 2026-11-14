@@ -163,6 +163,13 @@
       "mtime": 1792454759.0
     },
     {
+      "feature": "Signal Integration",
+      "title": "Signal Integration",
+      "summary": "Chat with your Kiro Crew agent from Signal, and let it message you there \u2014 a finished background task, a cron job's report, anything the agent decides you should hear about. No bot platform, no developer portal, no token to paste.",
+      "doc": "signal-integration.md",
+      "mtime": 1794516995.0
+    },
+    {
       "feature": "Skills",
       "title": "Skills",
       "summary": "Skills are directories containing `SKILL.md` files. Global skills live in `~/.kiro/crew/skills/`.",

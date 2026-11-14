@@ -1,0 +1,42 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "signal-cli 0.14.x src/main/java/org/asamk/signal/json/JsonReaction.java (emoji, targetAuthor [deprecated], targetAuthorNumber, targetAuthorUuid, targetSentTimestamp, isRemove), carried as dataMessage.reaction and, for the account's own sends, unwrapped into syncMessage.sentMessage (JsonSyncDataMessage's @JsonUnwrapped dataMessage). Values are synthetic; only the FIELD NAMES and nesting are the claim.",
+    "captured_at": "2026-10-16",
+    "note": "Transcribed from signal-cli source, NOT captured from a live account. This is the shape the channel's own status reaction in Note to Self takes when another device of the account syncs it back: source and destination are both the account, there is no message body. It must never become a turn."
+  },
+  "jsonrpc": "2.0",
+  "method": "receive",
+  "params": {
+    "envelope": {
+      "source": "+447700900001",
+      "sourceNumber": "+447700900001",
+      "sourceUuid": "aaaaaaaa-1111-4111-8111-111111111111",
+      "sourceName": "Owner",
+      "sourceDevice": 2,
+      "timestamp": 1700000000400,
+      "serverReceivedTimestamp": 1700000000405,
+      "serverDeliveredTimestamp": 1700000000409,
+      "syncMessage": {
+        "sentMessage": {
+          "destination": "+447700900001",
+          "destinationNumber": "+447700900001",
+          "destinationUuid": "aaaaaaaa-1111-4111-8111-111111111111",
+          "timestamp": 1700000000400,
+          "message": null,
+          "expiresInSeconds": 0,
+          "viewOnce": false,
+          "reaction": {
+            "emoji": "✅",
+            "targetAuthor": "+447700900001",
+            "targetAuthorNumber": "+447700900001",
+            "targetAuthorUuid": "aaaaaaaa-1111-4111-8111-111111111111",
+            "targetSentTimestamp": 1700000000200,
+            "isRemove": false
+          }
+        }
+      }
+    },
+    "account": "+447700900001"
+  }
+}

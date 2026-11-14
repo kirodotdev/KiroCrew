@@ -29,6 +29,7 @@ from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
 from kiro_crew.imessage.transport_dispatch import IMessageDispatcher
 from kiro_crew.messaging import commands
 from kiro_crew.messaging.conversation import ConversationState
+from kiro_crew.signal_cli.transport_dispatch import SignalDispatcher
 from kiro_crew.teams.transport_dispatch import TeamsDispatcher
 from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
 from kiro_crew.webex.transport_dispatch import WebexDispatcher
@@ -123,6 +124,14 @@ def _imessage(sent):
     return fake, lambda p: IMessageDispatcher._maybe_notice(fake, inbound, "k", p)
 
 
+def _signal(sent):
+    fake = _fake(sent)
+    fake.client = object()
+    fake._notify = fake.record
+    inbound = SimpleNamespace(conversation_id="+1555")
+    return fake, lambda p: SignalDispatcher._maybe_notice(fake, inbound, "k", p)
+
+
 def _teams(sent):
     fake = _fake(sent)
     fake.client = object()
@@ -163,6 +172,7 @@ SURFACES = {
     "telegram": (_telegram, "/new"),
     "feishu": (_feishu, "/new"),
     "imessage": (_imessage, "/new"),
+    "signal": (_signal, "/new"),
     "teams": (_teams, "/new"),
     "webex": (_webex, "/new"),
     "wecom": (_wecom, "/new"),

@@ -1387,6 +1387,13 @@
     "pages.developer.featurePreviewsTab.decisions_provider_clear_saved": "Button under that line: writes No model over the refused model saved in the settings. Imperative.",
     "pages.developer.featurePreviewsTab.decisions_provider_saved_refused": "Small tag beside the name of a refused model still saved in the settings, where In use would sit: it is the saved choice, and the administrator does not allow it.",
     "pages.developer.featurePreviewsTab.decisions_egress": "The egress sentence beside the main switch: what leaves the machine while it is on, and that it goes to the decision model the reader picks below.",
-    "components.crewPrFacts.read": "On the work board, after a pull request's state tags: the time the app itself last looked the pull request up on GitHub ('read at 19:22'); {{time}} is a clock time."
+    "components.crewPrFacts.read": "On the work board, after a pull request's state tags: the time the app itself last looked the pull request up on GitHub ('read at 19:22'); {{time}} is a clock time.",
+    "pages.settings.signalPanel.active": "Status pill in the Settings Signal panel header: the channel is connected and answering right now; an adjective describing the channel, not a verb.",
+    "pages.settings.signalPanel.account": "Field label in the Settings Signal panel: the phone number of the Signal account signal-cli runs as. Account in the sense of a Signal user identity, not a billing account.",
+    "pages.settings.signalPanel.cli_missing": "Notice in the Settings Signal panel when no signal-cli executable was found; {{env}} is the literal environment variable name KIROCREW_SIGNAL_CLI and is never translated.",
+    "pages.settings.signalPanel.setup_linked_title": "Heading of one of the two setups in the Settings Signal panel. Note to Self is the name of a Signal app feature (the chat with yourself) and stays in English, as the other Apple and Signal feature names in these catalogs do.",
+    "pages.settings.signalPanel.connection_failed": "Error in the Settings Signal panel when signal-cli could not start; {{error}} is signal-cli's own English reason and {{command}} is a shell command the reader can run, both never translated.",
+    "pages.settings.signalPanel.example_placeholder": "Placeholder inside an empty phone-number input in the Settings Signal panel, marking the number as an example rather than a saved value; {{example}} is a fictional phone number and is never translated. Use the language's usual abbreviation for 'for example'.",
+    "pages.settings.signalPanel.no_operator_warning": "Warning under the allowed numbers in the Settings Signal panel. The operator is the one person allowed to answer tool-approval prompts and run commands such as /stop; /stop is a literal chat command and is never translated. The linked setup is the setup where signal-cli is a linked device of the user's own account."
   }
 }

@@ -93,6 +93,7 @@ PREDICATE_SITES = {
     "dashboard/handlers/external_terminal.py": 1,
     "dashboard/handlers/knowledge_sources.py": 1,
     "dashboard/handlers/secrets.py": 1,
+    "dashboard/handlers/signal_settings.py": 2,
     "dashboard/handlers/weixin_qr.py": 4,
     "dashboard/handlers/webapp_preview.py": 1,
     "dashboard/handlers/whatsapp_setup.py": 5,
