@@ -44,6 +44,19 @@ logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
 
+# The failed page's reason for each RFC 6749 section 4.1.2.1 error code, in fixed
+# words: the callback request is untrusted and error_description is developer text,
+# so nothing the request carries is put on the page.
+_PORTAL_ERROR_REASONS = {
+    "access_denied": "the sign-in was cancelled or not approved",
+    "server_error": "the sign-in service ran into a problem",
+    "temporarily_unavailable": "the sign-in service is temporarily unavailable",
+    **dict.fromkeys(
+        ("invalid_request", "unauthorized_client", "unsupported_response_type", "invalid_scope"),
+        "the sign-in service did not accept the request",
+    ),
+}
+
 
 class PortalAuthError(Exception):
     """Loopback portal login failed."""
@@ -176,13 +189,16 @@ async def wait_for_callback(
     """
     loop = asyncio.get_running_loop()
     result: asyncio.Future[dict] = loop.create_future()
+    reason = ""
 
     async def _handle(request: web.Request) -> web.Response:
+        nonlocal reason
         # First terminal outcome wins; later hits (refresh, favicon retry) are inert.
         if not result.done():
             query = request.query
             error = query.get("error")
             if error:
+                reason = _PORTAL_ERROR_REASONS.get(error, "")
                 result.set_exception(PortalAuthError(f"portal returned error: {error}"))
             elif query.get("state") != expected_state:
                 result.set_exception(PortalAuthError("state mismatch on portal callback"))
@@ -198,10 +214,11 @@ async def wait_for_callback(
                     }
                 )
         done = result.done() and not result.cancelled() and result.exception() is None
+        failed = f"Login failed: {reason}." if reason else "Login failed."
         text = (
             "Login complete. You can close this window."
             if done
-            else "Login failed. You can close this window and retry from the dashboard."
+            else f"{failed} You can close this window and retry from the dashboard."
         )
         return web.Response(text=text, content_type="text/html")
 
