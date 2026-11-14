@@ -10,6 +10,9 @@ import { useMeasuredHeight } from '../hooks/useMeasuredHeight'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { CodeCommentContext, holdCodeBlock, holdCodeChip, type CodeLineAnnotationMeta } from './codeComments'
 import { ProseFencesContext } from './codeBlockProse'
+import ErrorNotice from './ErrorNotice'
+import { useCodeWrap } from '../hooks/useCodeWrap'
+import { loadChatConfig, saveChatConfig } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -298,9 +301,16 @@ export const CodeBlock = memo(function CodeBlock(
   // that defines a fence for a record or a reply, not for source code.
   const hostProse = useContext(ProseFencesContext)
   const prose = isProseLang(lang) || (!!lang && hostProse.has(lang.toLowerCase()))
-  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null)
-  const isWrapped = wrapOverride !== null ? wrapOverride : prose
-  const toggleWrap = () => setWrapOverride(!isWrapped)
+  // One chat setting every code block follows: a press on any block sets it,
+  // and until the first press each block keeps its own default (prose wraps).
+  // A press the storage refused changes nothing and says so, as the tables'
+  // Widen / Narrow does: showing the wrap would promise a choice a reload drops.
+  const codeWrap = useCodeWrap()
+  const isWrapped = codeWrap === 'auto' ? prose : codeWrap === 'wrap'
+  const [wrapSaveFailed, setWrapSaveFailed] = useState(false)
+  const toggleWrap = () => {
+    setWrapSaveFailed(!saveChatConfig({ ...loadChatConfig(), codeWrap: isWrapped ? 'nowrap' : 'wrap' }))
+  }
   // Stable file identity per (code, lang): Pierre diffs options/files by
   // reference first, so a fresh object every render would force re-renders.
   const file = useMemo(() => ({ name: `snippet.${lang || 'txt'}`, contents: code }), [code, lang])
@@ -428,6 +438,9 @@ export const CodeBlock = memo(function CodeBlock(
           onCopy={copy}
         />
       </div>
+      {wrapSaveFailed && (
+        <ErrorNotice variant="inline" className="px-3 pb-1" askAgent message={i18nT('components.codeBlock.wrap_not_saved')} onDismiss={() => setWrapSaveFailed(false)} />
+      )}
       {/* tabIndex=0 + role/label: a horizontally-scrollable region must be keyboard
           focusable so keyboard-only users can scroll it (axe scrollable-region-focusable).
           The region role is a labelled landmark, so the tabIndex here is intentional.
