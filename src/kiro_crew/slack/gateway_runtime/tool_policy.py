@@ -285,8 +285,9 @@ def _build_heartbeat_hooks(user_hooks: HookManager) -> HookManager:
         from the read-only tier, so it reaches ``_heartbeat_approval`` too
 
     They drop:
-      - ``auto_approve_tools`` (set to empty so the heartbeat allowlist in
-        ``_is_heartbeat_safe_tool`` is the sole approval authority)
+      - ``auto_approve_tools`` and ``auto_approve_tool_identities`` (left
+        empty so the heartbeat allowlist in ``_is_heartbeat_safe_tool`` is the
+        sole approval authority)
       - ``auto_replies`` / ``transforms`` / ``context_rules`` (chat-only)
       - the gate's read-only classifier tier (``defer_reads_to_approver``): it
         auto-approves on the ACP ``kind``, the title and ``is_shell``, all of

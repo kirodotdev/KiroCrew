@@ -130,7 +130,13 @@ def _validate_hook_command(command: str, event: str) -> str | None:
 # specs (kiro-cli rejects unknown keys). Excluded when deriving _VALID_HOOK_EVENTS
 # from bundled defaults below, so an internal key never round-trips as an event.
 _INTERNAL_HOOK_KEYS = frozenset(
-    {"auto_approve_tools", "auto_deny_tools", "auto_replies", "transforms"}
+    {
+        "auto_approve_tools",
+        "auto_approve_tool_identities",
+        "auto_deny_tools",
+        "auto_replies",
+        "transforms",
+    }
 )
 
 # Valid kiro-cli hook event names — the UNION of the hardcoded baseline (kiro-cli's
