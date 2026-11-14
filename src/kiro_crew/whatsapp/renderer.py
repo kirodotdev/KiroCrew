@@ -321,18 +321,13 @@ def render_chunks(
     if not text:
         return []
     if stable:
-        # PREFIX-STABLE: this caller opts into the shared splitter's stable mode
-        # (``split_markdown_safe(..., stable=True)``) rather than its default
-        # whole-body search. The streaming turn renderer re-splits its growing
-        # body every frame and treats all but the last chunk as delivered, so it
-        # needs chunk *i* decided by the text before it and NOTHING later. A sealed
-        # chunk is a promise to the client that nothing may rewrite, so this cut
-        # redacts the whole body (``stable=True``) then splits at the budget with
-        # no whole-body search that could move a boundary under a message already
-        # sent. The cross-message seam -- a chunk ending in a credential PREFIX the
-        # next completes -- is graded by the turn renderer, which knows which
-        # chunks are still unsealed and gives up only the completing span on a
-        # boundary it has not yet promised.
+        # PREFIX-STABLE (``split_markdown_safe(..., stable=True)``), not the
+        # default whole-body search. The streaming turn renderer re-splits its
+        # growing body every frame and treats all but the last chunk as sent, so
+        # chunk *i* must depend only on the text before it. This mode redacts the
+        # whole body, then cuts at the budget, so no boundary moves under a sent
+        # message. A chunk ending in a credential PREFIX that the next completes is
+        # graded by the turn renderer, which knows which chunks are still unsealed.
         return split_markdown_safe(text, limit, redactor=_redact_all, stable=True)
     # A credential-aware cut can DECLINE to cut, answering with the text whole,
     # which is fail-closed but one chunk over ``limit``. This channel's own sender

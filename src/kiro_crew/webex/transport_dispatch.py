@@ -178,12 +178,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many queued messages collapse into one drained turn. A burst answered as
-# one turn keeps the conversation coherent; past this the surplus is deferred in
-# order rather than dropped, so the combined prompt stays bounded. Same value as
-# the Telegram and Discord drains for the same reason — a single human will not
-# realistically burst past it mid-turn — rather than a third number for one
-# concept.
+# How many queued messages collapse into one drained turn, so a burst gets one
+# coherent answer. The surplus waits in order (never dropped), keeping the
+# combined prompt bounded. Same value as the Telegram and Discord drains: one
+# person will not burst past it mid-turn.
 _MAX_COLLAPSE = 50
 
 # Bound on an in-place compaction so a backend that streams text without ever
