@@ -165,10 +165,11 @@ asks for.
 
 - Loader (`config/sections.py`, `config/loader.py`) validates the shape.
   `auth` is a typed object (`A2aAuthConfig`): `scheme` is `none` or `bearer`,
-  and `token_env` NAMES the environment variable holding the credential — the
-  credential value is never in config. The variable must be under the
-  `KIROCREW_A2A_*` namespace, and its companion `<token_env>_ORIGIN` pins the
-  one origin the credential may be sent to (see *Security considerations*).
+  and `token_env` NAMES the environment variable holding a vault reference
+  to the credential (`secret://<name>`) — neither the credential nor the
+  reference is in config. The variable must be under the `KIROCREW_A2A_*`
+  namespace, and its companion `<token_env>_URL` pins the exact Agent Card
+  URL the credential may be sent to (see *Security considerations*).
   Only the object spelling is accepted.
 - A name that also names a local agent is refused **at spawn time**, with the
   typed code `agent_name_collision`, in `_validate_agent` — the one place the
@@ -220,7 +221,7 @@ Sizes are added lines on the reference branch at `e337a6649`.
 | # | File | Change | Size |
 |---|---|---|---|
 | 1 | `config/sections.py`, `config/loader.py` | `a2a_agents` section, `A2aAuthConfig`, accessors, `validate_a2a_collisions` | ~150 |
-| 2 | `providers/a2a.py`, `providers/base.py` | `A2AProvider`, `A2AStreamError`, SSE mapping, origin pin, TLS-only transport with named-loopback plaintext, credential-origin pin, size caps, one-turn-one-task lock, card security-requirement check, cancel; `provider_label` on the ABC | ~930 |
+| 2 | `providers/a2a.py`, `providers/base.py` | `A2AProvider`, `A2AStreamError`, SSE mapping, endpoint prefix pin, TLS-only transport with named-loopback plaintext, credential-URL pin and vault-reference credential, size caps, one-turn-one-task lock, card security-requirement check, cancel; `provider_label` on the ABC | ~930 |
 | 3 | `agent_sdk/drivers/a2a.py` | scheme table (`none`, `bearer`), `register_auth_scheme`, provider construction | ~230 |
 | 4 | `subagent.py` | `_a2a_agent_entry`, `_validate_agent(remote=)` with collision refusal, `_vet_spawn_governance(remote=)` remote gate, `build_remote_task_message` (the egress boundary), roster union | ~270 |
 | 5 | `subagent_manager/admission/gate.py` | classify local-vs-remote **once** and stash the entry on the run record; both gates consume that decision | ~90 |
@@ -297,7 +298,12 @@ someone else's identity on someone else's infrastructure, and everything sent
 to it is gone. Forwarding task text there is therefore not equivalent to a
 model-provider request, and this section states exactly what crosses that
 boundary, what does not, and how an enterprise forbids or scopes it. Every
-claim below names the code that enforces it in #10171.
+claim below names the code that enforces it in #10171, except two that
+this section added after the 2026-11-13 security review and #10171 does not
+yet carry:
+the credential is a `secret://` vault reference rather than a plaintext
+environment value, and the credential is pinned to the exact Agent Card URL
+(with the message endpoint under its prefix) rather than to its origin.
 
 **Trust model: registering a remote is a configuration decision.** The
 registry lives in `config.json`, which is agent-writable. Whoever can edit that
@@ -320,10 +326,27 @@ outside `config.json`, in the gateway's **environment** (set by whoever starts
 the process; an agent cannot change a running process's environment, and the
 launcher is outside the data home it works in):
 
-- the credential itself (`<token_env>`), because a secret does not belong in
-  config;
-- the origin that credential may travel to (`<token_env>_ORIGIN`), because a
-  config edit must not be able to redirect a token it cannot read;
+- the reference to the credential (`<token_env>`), because a secret does not
+  belong in config. The variable holds a vault reference
+  (`KIROCREW_A2A_TRIAGE=secret://a2a-triage`, stored under Settings > Secrets),
+  never the token: `load_credentials()` copies every `.env` line into
+  `os.environ` (`config/loader_config.py`), and the kiro-cli child, cron
+  scripts and MCP backends all start from that environment
+  (`acp/launch.py`; `scrub_agent_subprocess_env` in `sandbox_spawn.py` and
+  `cron_script_child_env._clean_cron_env` do not cover `KIROCREW_A2A_*`). A
+  plaintext value would therefore be readable with `printenv` from the
+  agent's own shell. The driver refuses a value that is not a `secret://`
+  reference and resolves it per request through
+  `config/loader_credentials.py::resolve_env_credential`
+  (`_is_env_credential_key` admits the `KIROCREW_A2A_` names), so children
+  inherit only the reference, and `.vault/` is hidden from the agent
+  (`sandbox_leaves.py`, `security/paths_lists.py`);
+- the exact Agent Card URL that credential may travel to (`<token_env>_URL`),
+  because a config edit must not be able to redirect a token it cannot read.
+  An origin is not enough: every AgentCore Runtime in a region shares
+  `https://bedrock-agentcore.<region>.amazonaws.com`, and only the escaped
+  runtime ARN in the path tells one agent from another
+  ([AWS A2A runtime guide](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-a2a.html));
 - the loopback origins that may be reached over plain HTTP
   (`KIROCREW_A2A_PLAINTEXT_ORIGINS`), because a config edit must not be able to
   aim the gateway at an arbitrary local port unencrypted.
@@ -355,8 +378,13 @@ delegation sits under the admin ceiling as a distinct catalog row,
 `capabilities.remote_spawn` (`platform/governance.py::SCOPE_CATALOG`), opt-in
 like the other external-side-effect rows (`publish`, `messaging`) and carrying
 two rulesets: `agents` over registry entry names and `origins` over the
-entries' card-URL origins (`scheme://host[:port]`, host-glob matched like
-`network.egress`). The layering is:
+entries' card URLs, as a list of URL prefixes (scheme, host, port and path,
+for example `https://bedrock-agentcore.us-east-1.amazonaws.com/runtimes/<escaped-arn>/`).
+A prefix and not an origin, because AgentCore Runtimes share one origin per
+region. The ruleset needs its own prefix matcher: a capability's `host` list
+refuses entries carrying a scheme or a path at load
+(`platform/governance_parts/archetypes.py::_refuse_unmatchable_host_entries`).
+The layering is:
 
 - `capabilities.spawn` off → no sub-agents at all, local or remote;
 - `capabilities.remote_spawn` absent from the policy (or no policy at all) →
@@ -368,7 +396,7 @@ entries' card-URL origins (`scheme://host[:port]`, host-glob matched like
   listed names, and only the listed destinations, may be targeted. The
   `origins` ruleset is what makes the destination an operator decision: a
   policy that only names agents can be satisfied by a config entry that keeps
-  an allowed name and points its URL elsewhere; a policy that pins origins
+  an allowed name and points its URL elsewhere; a policy that pins URL prefixes
   cannot.
 
 Both gates run at the spawn chokepoint (`subagent._vet_spawn_governance`). The
@@ -404,20 +432,22 @@ Runtime exposes for JWT-authenticated A2A servers. The provider then:
   `KIROCREW_A2A_PLAINTEXT_ORIGINS`, which is how the test fixture and a local
   development shim are reached;
 - binds each credential to one destination: `token_env` must be under the
-  `KIROCREW_A2A_*` namespace, and its companion `<token_env>_ORIGIN` must name
-  the origin (`scheme://host[:port]`) the credential may be sent to. The
-  driver refuses at construction, and the provider again at `start()`, unless
-  the card URL's origin matches exactly — so a config edit that repoints the
-  URL while keeping `token_env` cannot redirect a token it cannot read. A
-  configured credential that resolves to nothing is a refusal, never an
-  unauthenticated attempt;
-- pins the message endpoint named in the card to the card URL's origin
-  (scheme, host, port) and refuses redirects on every request, so an
-  operator-configured host cannot hand the conversation — or the header — to a
+  `KIROCREW_A2A_*` namespace, and its companion `<token_env>_URL` must equal
+  the entry's `agent_card_url` exactly. The driver refuses at construction,
+  and the provider again at `start()`, unless the two match — so a config edit
+  that repoints the URL while keeping `token_env`, including one that changes
+  only the runtime ARN under a shared AgentCore origin, cannot redirect a
+  token it cannot read. A configured credential that resolves to nothing, or a
+  `<token_env>` value that is not a `secret://` reference, is a refusal, never
+  an unauthenticated attempt;
+- pins the message endpoint named in the card under the card URL's prefix
+  (the part before `/.well-known/`; scheme, host, port and path) and refuses
+  redirects on every request, so an operator-configured URL cannot hand the
+  conversation — or the header — to another agent on the same host or to a
   third host;
-- reads the credential from the named environment variable per request, so a
-  rotated value is picked up and the value is never stored in config or on the
-  provider;
+- resolves the vault reference named by the environment variable per request,
+  so a rotated secret is picked up and the value is never stored in config,
+  in the environment, or on the provider;
 - never answers `TASK_STATE_AUTH_REQUIRED`: a remote agent asking this client
   for a credential mid-task ends the run as failed.
 
@@ -430,10 +460,12 @@ agent with no authentication, and a local development shim over plain HTTP.
 Gateway environment (`~/.kiro/crew/.env`, read at start; operator-owned):
 
 ```bash
-# Bearer credential for "incident-triage". Config names only the variable.
-KIROCREW_A2A_TRIAGE=<token>
-# The one origin that token may be sent to; any other card URL refuses at spawn.
-KIROCREW_A2A_TRIAGE_ORIGIN=https://triage-agent.example.com
+# Bearer credential for "incident-triage": a vault reference, never the token
+# (the token is stored under Settings > Secrets as "a2a-triage"). Config names
+# only the variable; a plaintext value refuses at spawn.
+KIROCREW_A2A_TRIAGE=secret://a2a-triage
+# The one Agent Card URL that token may be sent to; any other URL refuses at spawn.
+KIROCREW_A2A_TRIAGE_URL=https://triage-agent.example.com/.well-known/agent-card.json
 # Plain HTTP is refused everywhere by default; name the local shim's exact
 # loopback origin to allow it (loopback only; other entries are ignored).
 KIROCREW_A2A_PLAINTEXT_ORIGINS=http://127.0.0.1:9990
@@ -457,7 +489,7 @@ KIROCREW_A2A_PLAINTEXT_ORIGINS=http://127.0.0.1:9990
 
 | entry | needs in the environment | why |
 |---|---|---|
-| `incident-triage` (bearer) | `KIROCREW_A2A_TRIAGE` **and** `KIROCREW_A2A_TRIAGE_ORIGIN`; either missing refuses | the environment is the only credential source; the pin keeps the token on the operator's host |
+| `incident-triage` (bearer) | `KIROCREW_A2A_TRIAGE` (a `secret://` reference) **and** `KIROCREW_A2A_TRIAGE_URL`; either missing, or a plaintext token, refuses | the token stays in the vault, so a child process sees only the reference; the URL pin keeps the token bound to this one agent |
 | `docs-librarian` (`https`, `none`) | nothing | trusted because it is in config — the same footing as an MCP server |
 | `local-kiro` (`http`, `none`) | `KIROCREW_A2A_PLAINTEXT_ORIGINS` naming `http://127.0.0.1:9990` exactly | plaintext is refused unless the operator names the loopback port |
 
@@ -465,9 +497,15 @@ Optional enterprise lock, in the keystone-protected `security_policy.json`
 (nothing above depends on it):
 
 ```json
-"capabilities": { "remote_spawn": { "enabled": true,
-                                    "origins": { "allow": ["https://*.example.com"] } } }
+"capabilities": { "remote_spawn": {
+  "enabled": true,
+  "scopes": { "origins": { "mode": "allow",
+                           "allow": ["https://triage-agent.example.com/",
+                                     "https://docs-agent.example.com/"] } } } }
 ```
+
+(`CapabilityGate.from_dict` accepts only `enabled` and `scopes`, and
+`ScopedRuleset.from_dict` requires `mode`.)
 
 With that policy a config entry pointing anywhere else is refused at spawn,
 regardless of what `config.json` says.
@@ -512,9 +550,10 @@ permission events, which a remote never emits.
   environment-side controls keep that edit from carrying a credential or
   travelling unencrypted; the `origins` ruleset is the control an enterprise
   relies on to remove the power altogether.
-- Bearer-via-environment is the public core's only credential source; an
-  environment that leaks to sub-processes leaks the token. A `command`-style
-  credential provider is a candidate for a later change.
+- The environment carries only a `secret://` reference, so a sub-process that
+  inherits it (the agent's shell, a cron script, an MCP backend) learns the
+  vault entry's name, not the token. The token itself is as safe as the vault:
+  anything that can read `.vault/` can read it, and the agent cannot.
 
 ## Testing
 
@@ -577,7 +616,7 @@ maintainers prefer smaller units.
   object, spawn-time collision refusal, `_validate_agent` and roster union, the
   `capabilities.remote_spawn` catalog row and its gate, single admission-time
   classification. Behaviour change: none until a remote agent is configured.
-- **Phase 2 — `A2AProvider` + branch.** Provider (origin pin, TLS-only
+- **Phase 2 — `A2AProvider` + branch.** Provider (endpoint prefix pin, TLS-only
   credentials, card security-requirement check, cancel), `run.py` branch,
   `build_remote_task_message` as the egress boundary, session-sharing
   exclusion, `contextId` persistence on every terminal path, failure
