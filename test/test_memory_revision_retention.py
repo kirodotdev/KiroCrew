@@ -11,6 +11,7 @@ import pytest
 
 from kiro_crew import (
     memory_edit,
+    memory_reconcile_child,
 )
 from kiro_crew import memory_record_metadata as metadata
 from kiro_crew import (
@@ -203,6 +204,8 @@ def _existing_journal(tier):
 
 @pytest.mark.parametrize("store", ["v1"], indirect=True)
 def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
+    # The statements are spied on this process's connection, so run the pass here.
+    monkeypatch.setattr(memory_reconcile_child, "run_full_pass_in_child", lambda *_a, **_k: False)
     with store.db:
         store.db.execute(
             "INSERT INTO semantic_memory "
