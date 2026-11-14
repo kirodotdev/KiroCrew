@@ -1314,6 +1314,7 @@ def governance_permits(
             "governance_permits",
             session_key=session_key,
             scope=scope,
+            app=app,
             log_warning=log_warning,
             failed_closed=fail_closed,
         )
@@ -1426,6 +1427,7 @@ def governance_floor_ordinal(
             "governance_floor_ordinal",
             session_key=session_key,
             scope=scope,
+            app=app,
             log_warning=log_warning,
         )
         return None
