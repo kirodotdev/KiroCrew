@@ -93,24 +93,52 @@ function createManagedExec({ managed, managedPath, log }) {
   };
 
   // Run a marker command through the platform shell, resolving to
-  // {code, out} (combined stdout+stderr, capped). Never rejects: spawn errors
-  // and timeouts resolve with a non-zero code so callers treat them uniformly.
+  // {code, out, stdout, failed, timedOut, signal} (`out` is combined
+  // stdout+stderr, capped). Never rejects: spawn errors and timeouts resolve
+  // with a non-zero code so callers treat them uniformly.
   // Hardened like the Python CommandProvider: narrowed PATH, cwd="/", a
   // timeout, and bounded retained output.
-  const runManagedCommand = (command, { timeout } = {}) => new Promise((resolve) => {
+  //
+  // With a `label`, the run is logged: one line after spawn naming the pid, and
+  // one when it ends naming the exit code, signal or timeout, the run time and
+  // the size of `out`. The output TEXT is never logged: an update tool can
+  // print credential URLs or tokens, and no redactor here covers them. Check
+  // runs pass no label, so the periodic check poll adds no lines.
+  const runManagedCommand = (command, { timeout, label } = {}) => new Promise((resolve) => {
     const cp = require("child_process");
-    let out = "";        // combined stdout+stderr, for logging an apply
+    let out = "";        // combined stdout+stderr; its size is logged for a labelled run
     let outStdout = "";  // stdout ONLY, for deriving the check's version
     let settled = false;
+    let timedOut = false;
+    let timer = null;
+    const startedAt = Date.now();
     // `failed` marks that the command could not be RUN to completion (spawn
-    // error or timeout kill), as distinct from running and exiting non-zero.
-    // The check path treats these differently: a run that exits non-zero is
-    // "no update", but a command that could not run at all is an error.
-    const done = (code, failed) => {
-      if (!settled) {
-        settled = true;
-        resolve({ code: typeof code === "number" ? code : 1, out, stdout: outStdout, failed: !!failed });
+    // error, timeout kill or another signal), as distinct from running and
+    // exiting non-zero. The check path treats these differently: a run that
+    // exits non-zero is "no update", but a command that could not run at all
+    // is an error.
+    const done = (code, failed, signal = null) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      const result = {
+        code: typeof code === "number" ? code : 1,
+        out,
+        stdout: outStdout,
+        failed: !!failed,
+        timedOut,
+        signal: signal || null,
+      };
+      if (label) {
+        let outcome = `exit ${result.code}`;
+        if (timedOut) outcome = `timed out after ${timeout} ms`;
+        else if (signal) outcome = `killed by ${signal}`;
+        else if (failed) outcome = "could not run";
+        const line = `[update] managed ${label} ended: ${outcome}, ran ${Date.now() - startedAt} ms, ${Buffer.byteLength(out)} bytes of output`;
+        if (result.code === 0 && !result.failed) log.info(line);
+        else log.error(line);
       }
+      resolve(result);
     };
     // Keep consuming BOTH streams (so the pipe never blocks the child) but
     // stop RETAINING once capped. stdout is captured separately because the
@@ -145,23 +173,39 @@ function createManagedExec({ managed, managedPath, log }) {
         shell: managedShell(),
         cwd: "/",
         env: managedEnv(),
-        ...(timeout ? { timeout } : {}),
       });
     } catch (err) {
       log.error("[update] managed command spawn threw", err);
       return done(1, true);
     }
+    if (label) log.info(`[update] managed ${label} started (pid ${child.pid ?? "unknown"})`);
+    // The timeout is armed here rather than through spawn's own `timeout`
+    // option so a kill it causes is KNOWN to be a timeout: spawn's option
+    // kills with the same SIGTERM any other sender could, and the close
+    // event cannot tell them apart. Same signal, same ceiling.
+    // The timer is cancelled when the process EXITS, as spawn's option does,
+    // not when its pipes close: a background helper the command left behind
+    // can hold the pipes open past the deadline after a clean exit, and that
+    // run finished in time.
+    if (timeout) {
+      timer = setTimeout(() => { timedOut = true; child.kill(); }, timeout);
+      child.on("exit", () => clearTimeout(timer));
+    }
     if (child.stdout) child.stdout.on("data", onStdout);
     if (child.stderr) child.stderr.on("data", onStderr);
     child.on("error", (err) => { log.error("[update] managed command error", err); done(1, true); });
-    // A timeout kill closes with a null exit code and a signal; treat that as
-    // "could not run", not as a non-zero exit.
-    child.on("close", (code, signal) => done(code, code === null && signal != null));
+    // A kill closes with a null exit code and a signal; treat that as
+    // "could not run", not as a non-zero exit. A timeout kill is "could not
+    // run" whatever exit code the platform reports for it.
+    child.on("close", (code, signal) => done(code, timedOut || (code === null && signal != null), signal));
   });
 
   // The command run to APPLY an update, on quit and on explicit install.
   // Bounded by a ceiling timeout so a wedged package manager cannot hang quit.
-  const runUpdateCommand = () => runManagedCommand(managed.updateCommand, { timeout: MANAGED_APPLY_TIMEOUT_MS });
+  const runUpdateCommand = () => runManagedCommand(managed.updateCommand, {
+    timeout: MANAGED_APPLY_TIMEOUT_MS,
+    label: "update command",
+  });
 
   // An update command that exits 0 but leaves the install as it was would
   // relaunch into the same check and the same apply on every quit. So the
@@ -184,6 +228,7 @@ function createManagedExec({ managed, managedPath, log }) {
     runUpdateCommand,
     applyChangedNothing,
     unchangedMessage,
+    MANAGED_APPLY_TIMEOUT_MS,
     MANAGED_CHECK_TIMEOUT_MS,
     MANAGED_VERSION_CAP,
   };

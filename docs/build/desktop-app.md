@@ -2003,6 +2003,16 @@ the 2026-11-10 decision "updates never restart a running gateway"):
   a newer feed, a gateway still running) still brings the app back; the feed
   lane asks for it explicitly on each of those stand-downs, because only
   `quitAndInstall` honors its relaunch flag.
+- **Every apply is logged to `gateway-launch.log`.** `updateCommand` writes
+  `[update] managed update command started (pid N)` when it spawns and
+  `... ended: <outcome>, ran N ms, N bytes of output` when it ends, on quit and
+  at start alike (`managed-exec.js`). The outcome is `exit N`, `timed out after
+  N ms` (the 30 minute ceiling), `killed by <signal>` or `could not run`, and the
+  failure the app records and shows says the same (a timeout reads `timed out
+  after 30 minutes`): a timeout is never reported as `exited 1`. The output text itself is not logged, because an update tool can
+  print credential URLs or tokens. `checkCommand` runs log no such lines, so
+  the 30 second poll stays quiet. Pinned by
+  `test/managed-apply-log.test.js`.
 
 Windows shutdown, restart and sign-out end the app without a quit, so on Windows
 the app shows a "Kiro Crew update ready" notice at session end instead, telling
