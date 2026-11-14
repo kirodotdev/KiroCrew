@@ -543,6 +543,23 @@ class TestDiagnostics:
         # The ladder reads the target through the same splitter connect does.
         assert seen == [("crews", _TASK, "dev", "eu-west-2")]
 
+    def test_an_aws_cli_that_cannot_start_is_a_diagnosis_not_a_crash(self, monkeypatch):
+        """A start failure run_aws does not translate ends the ladder like a refused read."""
+        from kiro_crew.cloud import ssm as cloud_ssm
+        from kiro_crew.instances import diagnostics as d
+
+        def fake(cluster, task_id, profile="", region=""):
+            raise PermissionError(13, "Permission denied", "/usr/local/bin/aws")
+
+        monkeypatch.setattr(cloud_ssm, "task_exec_readiness", fake)
+        try:
+            result: object = asyncio.run(d.diagnose_instance_fargate(_ECS_TARGET, 5599))
+        except OSError as exc:
+            result = f"escaped as {type(exc).__name__}"
+        assert getattr(result, "code", result) == d.SSM_UNREACHABLE
+        assert "the aws CLI could not be started" in result.reason
+        assert result.probes == [{"name": "task_exec_ready", "ok": False}]
+
     def test_no_forward_is_not_connected_and_a_dead_forward_is_tunnel_down(self, monkeypatch):
         from kiro_crew.instances import diagnostics as d
 
