@@ -15,7 +15,8 @@ from kiro_crew.dashboard.chat_handlers import (
     api_chat_slot_approve,
     apply_approval_mode,
 )
-from kiro_crew.dashboard.handlers.cron import api_crons, api_lessons
+from kiro_crew.dashboard.handlers.cron import api_lessons
+from kiro_crew.dashboard.handlers.cron_board import _jobs_response
 from kiro_crew.dashboard.handlers.memory import api_memory_episodic_search
 from kiro_crew.dashboard.handlers.messaging import api_spawn_list
 from kiro_crew.dashboard.routes import register_all
@@ -237,7 +238,8 @@ def _executable_string_literals(handler: object) -> set[str]:
     ("handler", "key"),
     [
         (api_spawn_list, "agents"),
-        (api_crons, "jobs"),
+        # api_crons hands the request to the builder it shares with GET /api/crons/{id}.
+        (_jobs_response, "jobs"),
         (api_lessons, "lessons"),
         (api_memory_episodic_search, "results"),
     ],

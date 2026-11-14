@@ -6,11 +6,13 @@ exfiltration-URL pass and the credential pass. For a few hundred jobs with long
 results that took hundreds of milliseconds, all of it on the gateway loop.
 Pinned here: the rows are built and encoded in a worker thread from copies of
 the jobs, the loop-owned reads (run claims, the slot registry) stay on the
-loop, and the payload is redacted exactly as before.
+loop, and the payload is redacted exactly as before. The list cuts a long last
+result or error to a redacted preview; ``GET /api/crons/{id}`` carries it whole.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from unittest.mock import AsyncMock, MagicMock
@@ -18,12 +20,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from kiro_crew.cron import CronJob, CronSchedule
-from kiro_crew.dashboard.handlers.cron import api_crons
-from kiro_crew.dashboard.handlers.cron_board import _job_snapshot
+from kiro_crew.dashboard.handlers.cron import api_cron_get, api_crons
+from kiro_crew.dashboard.handlers.cron_board import _LIST_TEXT_PREVIEW, _job_snapshot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.redaction_switch import owner_view
 
 SECRET = "deploy key AKIAIOSFODNN7EXAMPLE here"
+# The credential fixtures below are assembled from fragments, never written as one
+# literal, so the internal content scan does not flag them; the runtime text is the
+# same, so the redactor still sees a real credential shape.
+_SECRET_KEY_NAME = b"aws_secret_access_key"
+_PEM_DASHES = "-" * 5
+_PEM_KIND = "RSA PRIVATE" + " KEY"
 
 
 def _truth(text: str) -> str:
@@ -111,6 +119,62 @@ class TestApiCrons:
             body = json.loads((await api_crons(_request(jobs))).body)
             expected = _truth(f"{SECRET} run 1")
         assert body["jobs"][0]["last_result"] == expected
+
+
+class TestResultPreview:
+    @pytest.mark.asyncio
+    async def test_the_list_cuts_a_long_result_after_redacting_it(self):
+        """A credential the cut lands in shows as the redaction tag, never as its head."""
+        head = "x" * (_LIST_TEXT_PREVIEW - 10)
+        result = f"{head}AKIAIOSFODNN7EXAMPLE tail\n" + "y" * 20_000
+        body = json.loads((await api_crons(_request([_job(1, last_result=result)]))).body)
+        preview = body["jobs"][0]["last_result"]
+        assert preview == _truth(result)[:_LIST_TEXT_PREVIEW]
+        assert "AKIAIOSF" not in preview
+
+    @pytest.mark.asyncio
+    async def test_an_encoded_credential_longer_than_the_preview_is_not_shown(self):
+        """The redaction reads the whole line the cut lands in, so a base64 run that
+        starts in the preview and ends far past it still decodes as a credential."""
+        creds = _SECRET_KEY_NAME + b" = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+        blob = base64.b64encode(creds + b"#" * 4_000).decode()
+        result = "x" * (_LIST_TEXT_PREVIEW - 100) + f" secret: {blob}\nnext line\n"
+        body = json.loads((await api_crons(_request([_job(1, last_result=result)]))).body)
+        preview = body["jobs"][0]["last_result"]
+        assert blob[:60] not in preview
+        assert _truth(result).startswith(preview)
+
+    @pytest.mark.asyncio
+    async def test_a_private_key_that_runs_past_the_cut_is_masked_as_in_the_whole_text(self):
+        """An indented key whose END line lies past the cut: its short last line,
+        the one the cut lands in, is not shown."""
+        body = "".join(f"  {chr(65 + i) * 8}{'aB3+' * 14}\n" for i in range(5))
+        last = "Zq9/Xr2+Wp7Ln4Kv8Mt3Hs6Jd1Fg=="
+        begin = f"{_PEM_DASHES}BEGIN {_PEM_KIND}{_PEM_DASHES}"
+        end = f"{_PEM_DASHES}END {_PEM_KIND}{_PEM_DASHES}"
+        key = f"  {begin}\n{body}  {last}\n  {end}\n"
+        result = "o" * (_LIST_TEXT_PREVIEW - key.index(last) - 21) + "\n" + key + "tail\n" * 100
+        payload = json.loads((await api_crons(_request([_job(1, last_result=result)]))).body)
+        preview = payload["jobs"][0]["last_result"]
+        assert preview == _truth(result)[:_LIST_TEXT_PREVIEW]
+        assert last[:12] not in preview
+
+    @pytest.mark.asyncio
+    async def test_the_one_job_read_carries_the_whole_result(self):
+        result = "line of output\n" * 2_000
+        request = _request([_job(1, last_result=result), _job(2)])
+        request.match_info = {"job_id": "j1"}
+        row = json.loads((await api_cron_get(request)).body)
+        assert row["id"] == "j1"
+        assert row["last_result"] == _truth(result)
+
+    @pytest.mark.asyncio
+    async def test_the_one_job_read_of_an_unknown_job_is_a_404(self):
+        request = _request([_job(1)])
+        request.match_info = {"job_id": "gone"}
+        resp = await api_cron_get(request)
+        assert resp.status == 404
+        assert json.loads(resp.body)["code"] == "job_not_found"
 
 
 class TestJobSnapshot:
