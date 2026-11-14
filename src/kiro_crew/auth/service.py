@@ -153,7 +153,14 @@ class InvalidRegionError(Exception):
 
 
 class InvalidStartUrlError(Exception):
-    """A caller-supplied Identity Center start URL is not one SSO-OIDC can take."""
+    """A caller-supplied Identity Center start URL is not one SSO-OIDC can take.
+
+    ``reason`` is the broken rule's name from ``LoginTargetError``.
+    """
+
+    def __init__(self, message: str, *, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 def _canonical_start_url(raw: str) -> str:
@@ -177,7 +184,8 @@ def _canonical_start_url(raw: str) -> str:
         reason = str(exc)
         raise InvalidStartUrlError(
             f"{reason[:1].upper()}{reason[1:]}. Use your company's AWS access portal "
-            "URL, which looks like https://your-company.awsapps.com/start."
+            "URL, which looks like https://your-company.awsapps.com/start.",
+            reason=exc.reason,
         ) from exc
 
 

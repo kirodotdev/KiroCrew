@@ -265,19 +265,28 @@ An Identity Center start URL is canonicalized before `StartDeviceAuthorization`
 `normalize_start_url`, so the vault and a cloud target record the same string): a
 missing `https://` and a missing `/start` are added and a `#/...` fragment is dropped,
 because SSO-OIDC answers `Invalid start url provided` to `<org>.awsapps.com/start`
-and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a query,
-a port, shell characters) is refused with `invalid_start_url` before AWS is called.
+and to `https://<org>.awsapps.com`. A URL it cannot canonicalize (`http://`, a port,
+shell characters, which include a query's `?`) is refused with `invalid_start_url`
+before AWS is called; the answer's `reason` names the broken rule (`characters`,
+`not_a_url`, `not_https`, `credentials`, `port`, `hostname`), carried from
+`LoginTargetError.reason`.
 A `400 invalid_request` from `StartDeviceAuthorization` for a company start URL is
 `StartUrlRejectedError` (HTTP 400, not the 502 of an auth-service failure): its
 message says to use the access portal URL when AWS names the start URL
 (`invalid_start_url`), and otherwise to check the start URL first and then the Region
 field, since a portal that does not exist and a portal looked up in the wrong region
 both answer a bare `Invalid request`; that answer names neither field, so it is
-`start_url_or_region_rejected`. The dashboard's company SSO form
+`start_url_or_region_rejected`; AWS's own refusal of the start URL answers
+`invalid_start_url` with `reason` `aws_rejected`. The dashboard's company SSO form
 reads the code, not the text: `invalid_region`, `invalid_start_url` and
 `start_url_or_region_rejected` get a headline naming the Region, the start URL or
 both, and those inputs are marked `aria-invalid` and described by the error; every
-other begin error keeps the "Check your connection" headline.
+other begin error keeps the "Check your connection" headline. Under the headline the
+form says the refusal in its own catalog sentence (plain words that call the field
+"the URL", not the gateway's wording), in the user's language and without AWS's raw
+answer; an `invalid_start_url` whose `reason` it has no sentence for shows the
+gateway's text. The `error` text is unchanged, so
+`kirocrew kas login` and the audit log still carry AWS's answer.
 
 An approved IdC token carries no profile ARN, so `_poll_oidc` resolves it with the
 control plane's `ListAvailableProfiles` (`auth/login/control_plane.py`). The Identity
