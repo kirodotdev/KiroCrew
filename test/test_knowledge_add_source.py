@@ -800,7 +800,8 @@ class TestAddSourceBedrockGrantRecheck:
         assert "AKIAIOSFODNN7EXAMPLE" not in data["error"]
         assert token not in data["error"] and "corp-laptop" not in data["error"]
         assert "[REDACTED: credential]" in data["error"]
-        assert "[REDACTED: suspicious URL to collect.attacker.example]" in data["error"]
+        tag = "[REDACTED: suspicious URL to collect.attacker.example] (credential)"
+        assert tag in data["error"]
         assert "(team-b, eu-west-1)" in data["error"]
 
     @staticmethod

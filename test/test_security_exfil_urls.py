@@ -44,7 +44,10 @@ class TestRedactExfiltrationUrls:
         result, warnings = redact_exfiltration_urls(f"Link: {url}")
         assert warnings, "fixture no longer trips the redactor; pick another URL"
         assert EXFILTRATION_REDACTION_TAG_PREFIX in result
-        assert f"{EXFILTRATION_REDACTION_TAG_PREFIX}evil.example.com]" in result
+        assert (
+            f"{EXFILTRATION_REDACTION_TAG_PREFIX}evil.example.com] (long query, may be legitimate)"
+            in result
+        )
 
     def test_url_tag_prefix_does_not_collide_with_credential_tags(self) -> None:
         """Prefix-counting the URL tag must never double-count a credential tag.

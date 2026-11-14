@@ -21,7 +21,7 @@ _URL = (
     "&s=wJalrXUtnFEMI%2FK7MDENG%2FbPxRfiCYEXAMPLEKEY&pad=" + "x" * 40
 )
 _TEXT = f"see {_URL} now"
-_EXPECTED = "see [REDACTED: suspicious URL to collector.example] now"
+_EXPECTED = "see [REDACTED: suspicious URL to collector.example] (credential) now"
 
 
 def test_composed_pass_removes_the_url_whole() -> None:

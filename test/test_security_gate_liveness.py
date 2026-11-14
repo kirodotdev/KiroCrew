@@ -164,6 +164,13 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again for the rule reason after the suspicious-URL placeholder:
+#: the fixed rule-id-to-words table ``EXFIL_RULE_LABELS``, its exact suffixes, the
+#: one function that builds the placeholder from it, and the restore loop removing
+#: the restored record's own suffix. No pattern changed.
+#: The placeholder, the table and the builder live in ``exfil_url_rules.py``,
+#: so ``exfil.py`` stays under the file-line cap; ``exfil`` re-exports them.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -809,7 +816,7 @@ def _url_payload_command(n: int) -> str:
 #: ``/`` and ``~`` read the full text. Re-measured.
 #: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
-_PACKAGE_LINE_BUDGET = 36_000
+_PACKAGE_LINE_BUDGET = 36_037
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
