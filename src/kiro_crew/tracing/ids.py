@@ -37,6 +37,10 @@ KIND_CHAT = "chat"  # turn_id, attempt
 KIND_USER_PROMPT = "user.prompt"  # turn_id, attempt
 KIND_TURN_COMPLETE = "turn.complete"  # turn_id, attempt
 KIND_TOOL = "tool"  # acp_session_id, tool_call_id
+KIND_STEP = "step"  # turn_id, attempt, n (the turn's n-th derived model-call step)
+KIND_COMPACTION = "compaction"  # turn_id, attempt, n
+KIND_STEER = "steer"  # turn_id, attempt, n
+KIND_APPROVAL = "approval"  # acp_session_id (subagent id for a spawn), tool_call_id or request id
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 _ZERO16 = "0" * 16

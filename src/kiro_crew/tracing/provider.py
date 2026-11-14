@@ -349,12 +349,14 @@ def start_span(
     parent: Any = None,
     attributes: Mapping[str, Any] | None = None,
     links: Sequence[Any] = (),
+    start_time: int | None = None,
 ) -> Any:
     """Start a span with the given hex ids under *parent* (``None`` = a root).
 
     A root is started under an EMPTY context, never whatever span happens to be
     current, so its trace id is always the pinned one. Under a parent the span
     takes the parent's trace id, which the caller passes as *trace_id* too.
+    *start_time* (epoch ns) backdates the start, for a step that began earlier.
     """
     from opentelemetry import trace
     from opentelemetry.context import Context
@@ -364,7 +366,11 @@ def start_span(
     _pins.span_id = int(span_id, 16)
     try:
         span = state.tracer.start_span(
-            name, context=context, attributes=dict(attributes or {}), links=list(links)
+            name,
+            context=context,
+            attributes=dict(attributes or {}),
+            links=list(links),
+            start_time=start_time,
         )
     finally:
         _pins.trace_id = None
