@@ -581,7 +581,7 @@ class TestRound7Fixes:
             async def __aexit__(self, *a):
                 return False
 
-            def head(self, url, allow_redirects=False):
+            def head(self, url, allow_redirects=False, *, proxy=None):
                 if self._raise:
                     raise OSError("boom")
                 return _Resp(self._h)
