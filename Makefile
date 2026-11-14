@@ -67,7 +67,7 @@ frontend:
 	  NBD="$$(cat "$${KIROCREW_HOME:-$$HOME/.kiro/crew}/node-bin-dir" 2>/dev/null || true)"; \
 	  { [ -z "$$NBD" ] || export PATH="$$NBD:$$PATH"; }; \
 	  if ! command -v npm >/dev/null 2>&1; then \
-	    echo "ERROR: npm not found. Install Node >= 18 (see ensure-node.sh) and re-run." >&2; \
+	    echo "ERROR: npm not found. Install Node 22.12 or newer (24 LTS recommended; see ensure-node.sh) and re-run." >&2; \
 	    exit 1; \
 	  fi; \
 	  if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi && \
