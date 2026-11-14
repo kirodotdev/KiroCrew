@@ -510,6 +510,21 @@ class TestTheEnvironmentChannelMayOwnTheAddress:
             governance.PolicyDistribution.from_dict({"refresh_interval_secs": 900})
         assert pd.POLICY_URL_ENV in str(caught.value), "the message must name the way out"
 
+    def test_settings_without_a_source_are_fine_in_a_cache_only_child(self, monkeypatch):
+        """A cache-only child is given no source by design: it adopts the gateway's cache."""
+        monkeypatch.delenv(pd.POLICY_URL_ENV, raising=False)
+        monkeypatch.setenv(pd.POLICY_CACHE_ONLY_ENV, "1")
+        parsed = governance.PolicyDistribution.from_dict({"max_cache_age_secs": 86400})
+        assert parsed.max_cache_age_secs == 86400
+
+    @pytest.mark.parametrize("value", ["0", "false", "no"])
+    def test_a_false_cache_only_value_keeps_the_refusal(self, monkeypatch, value):
+        """Only a value that turns cache-only mode on may lift the refusal."""
+        monkeypatch.delenv(pd.POLICY_URL_ENV, raising=False)
+        monkeypatch.setenv(pd.POLICY_CACHE_ONLY_ENV, value)
+        with pytest.raises(PlatformCompositionError):
+            governance.PolicyDistribution.from_dict({"max_cache_age_secs": 600})
+
     def test_a_source_less_declaration_reaches_the_engine_not_just_the_parser(self, monkeypatch):
         """``from_dict`` accepts such a block; discarding it for having no source would
         parse the settings and throw them away. ``on_unavailable`` is the one

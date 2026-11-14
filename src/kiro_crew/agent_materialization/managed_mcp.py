@@ -46,16 +46,90 @@ def _managed_mcp_env() -> dict[str, str]:
     not propagated to children that would then disagree with the gateway in the
     other direction.
 
-    Returns ``{}`` on a default install, which keeps the emitted spec
-    byte-for-byte what it is today: :func:`managed_mcp_spec_entry` sets ``env`` only
-    when this is non-empty, and :func:`_enforce_managed_mcp_ownership` pops an empty one.
-    That is safe only because a default-install child DERIVES the same home the
-    gateway did, from an inherited ``HOME``. Preserving a user's ``env`` puts
-    that inheritance in reach of a config, so the companion control lives in
-    ``_enforce_managed_mcp_ownership``: see ``_HOME_DERIVING_ENV_KEYS``.
+    Centrally governed children also receive cache-only policy markers, never
+    the source URL or request headers. Those markers let a managed server boot
+    its own platform context from the gateway's verified cache even when its
+    harness does not inherit the gateway environment. A default install with
+    no central ceiling still returns ``{}`` unless it needs the data-home pin;
+    that keeps the emitted spec free of an empty ``env`` block. Preserving a
+    user's ``env`` puts home inheritance in reach of a config, so the companion
+    control lives in ``_enforce_managed_mcp_ownership``: see
+    ``_HOME_DERIVING_ENV_KEYS``.
     """
     override = agent_mod._valid_override_home()
-    return {"KIROCREW_HOME": str(override)} if override else {}
+    env = {"KIROCREW_HOME": str(override)} if override else {}
+    env.update(policy_cache_only_env())
+    return env
+
+
+#: The env keys :func:`policy_cache_only_env` derives. A managed spec's own copies
+#: are never trusted: every reader replaces them from gateway state.
+POLICY_MARKER_KEYS = frozenset(
+    {
+        "KIROCREW_POLICY_CACHE_ONLY",
+        "KIROCREW_POLICY_MAX_CACHE_AGE_SECS",
+        "KIROCREW_POLICY_PROFILE_PIN",
+    }
+)
+
+
+def policy_cache_only_env() -> dict[str, str]:
+    """The cache-only policy markers for a child of a centrally governed gateway.
+
+    ``{}`` unless this process installed its ceiling from central distribution.
+    Never the source URL or its request headers: the child adopts the gateway's
+    verified cache and starts no fetch of its own. The gateway's profile pin is
+    forwarded when set: a cache-only child reads its profile only from that
+    variable, and an LTS cache recorded for a pinned profile is refused without it.
+    """
+    import os
+
+    from kiro_crew.platform.enterprise_policy_fetch import PROFILE_PIN_ENV
+    from kiro_crew.platform.policy_distribution import (
+        POLICY_CACHE_ONLY_ENV,
+        POLICY_MAX_AGE_ENV,
+        central_ceiling_installed,
+        effective_max_cache_age,
+    )
+
+    if not central_ceiling_installed():
+        return {}
+    env = {POLICY_CACHE_ONLY_ENV: "1"}
+    profile_pin = os.environ.get(PROFILE_PIN_ENV)
+    if profile_pin:
+        env[PROFILE_PIN_ENV] = profile_pin
+    max_cache_age = effective_max_cache_age()
+    if max_cache_age:
+        env[POLICY_MAX_AGE_ENV] = str(max_cache_age)
+    return env
+
+
+def drop_policy_markers(entry: dict[str, Any]) -> None:
+    """Remove a managed entry's own copies of the policy markers, in place.
+
+    Those copies come from a user-editable spec; :func:`add_policy_markers`
+    supplies the gateway's values instead. An ``env`` left empty is removed.
+    """
+    env = entry.get("env")
+    if not isinstance(env, dict):
+        return
+    kept = {k: v for k, v in env.items() if k not in POLICY_MARKER_KEYS}
+    if kept:
+        entry["env"] = kept
+    else:
+        entry.pop("env")
+
+
+def add_policy_markers(entry: dict[str, Any]) -> None:
+    """Put :func:`policy_cache_only_env` on a managed stdio entry's ``env``, in place.
+
+    A harness that starts the child with a minimal environment (KAS) gives it
+    only what the entry declares, so a centrally governed child needs the
+    markers here to adopt the gateway's verified cache.
+    """
+    policy_env = policy_cache_only_env()
+    if policy_env:
+        entry.setdefault("env", {}).update(policy_env)
 
 
 # Declaration discriminator kiro-cli reads for enterprise MCP governance. It is

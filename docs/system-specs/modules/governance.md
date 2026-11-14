@@ -1797,7 +1797,7 @@ either, which is how a bearer token reaches an agent-authored cron script. A tes
 the list against `POLICY_DISTRIBUTION_ENV_VARS` (which owns the set) and separately
 drives `_clean_cron_env` to prove the exact-match consumer really drops them.
 
-`apps/backend.py` puts an app backend in **cache-only mode** (`KIROCREW_POLICY_CACHE_ONLY`)
+`apps/backend.py`, the shared ACP launch tail, and managed MCP entries put child processes in **cache-only mode** (`KIROCREW_POLICY_CACHE_ONLY`)
 rather than forwarding the source at all. That resolves a real tension instead of picking
 a side: forwarding the settings would hand arbitrary third-party code the fleet's control
 plane (the header is a live token, and a pre-signed URL is itself the credential), while
@@ -1824,7 +1824,8 @@ flagging that child would refuse to start an app on a host running perfectly wel
 `KIROCREW_POLICY_CACHE_ONLY` is also in the tier's **entry** condition in
 `load_security_policy`: such a child has no source by design, so gating entry on one would
 skip the tier and drop it to a local ceiling — the failure cache-only mode exists to
-prevent.
+prevent. The policy parser also permits a source-less `distribution` declaration in this
+mode: the child inherits the gateway's verified cache and never starts its own fetch.
 
 ### Sandboxed processes in an LTS build
 

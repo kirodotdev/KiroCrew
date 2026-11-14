@@ -833,6 +833,8 @@ def _project_mcp_servers(
     absent" state this function exists to end — so the residue is accepted and
     stated rather than papered over.
     """
+    from kiro_crew import agent as agent_facade
+
     servers = spec.get("mcpServers")
     if not isinstance(servers, dict):
         return {}
@@ -974,9 +976,15 @@ def _project_mcp_servers(
                 "/".join(discarded),
             )
         dropped_env: list[str] = []
+        if managed:
+            # The spec's own marker copies are not a withheld credential to report.
+            agent_facade.drop_policy_markers(projected)
         withheld = _withhold_credential_fields(
             projected, managed=managed, relayed=relayed, dropped_env=dropped_env
         )
+        if managed and projected.get("command"):
+            # KAS starts managed stdio children with a minimal environment.
+            agent_facade.add_policy_markers(projected)
         stdio = bool(projected.get("command"))
         if managed:
             # Native MCP children do not inherit the gateway's environment.

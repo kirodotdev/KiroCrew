@@ -938,8 +938,9 @@ def wrap_argv(
 
     backend = detect_backend(config_mode=mode)
 
-    # An LTS build's sandboxed processes resolve the ceiling from the governance
-    # cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
+    # An LTS build's sandboxed processes, and the cache-only MCP children of a host
+    # whose ceiling came from central distribution, resolve the ceiling from the
+    # governance cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
     # delegation branch on purpose: a delegated sandbox applies none of Kiro Crew's masks,
     # and adding a path here would cost the delegation.
     cache_view = tuple(
