@@ -1613,10 +1613,9 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
         if not isinstance(html, str) or not isinstance(manifest, dict):
             raise InstanceError(f"instance version {to_version} holds no page to restore")
         checked = _check(manifest, html)
-        # THE VERSION'S OWN PAGE IN FORCE comes back with it: a package version
-        # restores its pinned package, and a template version -- including one written
-        # before packages could be applied -- restores the template, releasing any
-        # package. That is what makes one rollback the way back from either page.
+        # The version's own page comes back with it: a package version restores its
+        # pinned package; a template version (an old one included) restores the
+        # template and releases any package. So one rollback undoes either kind of page.
         slug_v, version_v, digest_v, _released = _package_field(payload)
         return _commit(
             slug,
@@ -1636,20 +1635,17 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
 
 #: The staged page, beside the record and never inside it.
 #:
-#: A preview is a page somebody is being SHOWN before anything is recorded, so it
-#: cannot be a version: a version is what a rollback can reach, and staging one would
-#: put a page the person then declined into their history as a change they made. It
-#: also means a preview never moves ``instance_version``, so a client that caches by
-#: version is not invalidated by a page that was only looked at.
+#: A preview is SHOWN before anything is recorded, so it is not a version: a version is
+#: what a rollback can reach, and a page the person then declined must not enter their
+#: history as a change they made. So a preview never moves ``instance_version``, and a
+#: client caching by version is not invalidated by a page that was only looked at.
 _PREVIEW_FILE: Final[str] = "preview.json"
 
 #: How long a staged preview stays applicable.
 #:
 #: Staging and applying are two agent cycles with a PERSON between them, so the window
-#: is minutes rather than seconds. Past it the preview is dropped rather than applied:
-#: "yes" to a page somebody looked at an hour ago is a yes to a page whose fold values
-#: have since moved, and applying it would install what they saw rather than what they
-#: agreed to.
+#: is minutes, not seconds. Past it the preview is dropped, not applied: a "yes" to a page
+#: seen an hour ago answers for fold values that have moved since.
 MAX_PREVIEW_AGE_MS: Final[int] = 30 * 60 * 1000
 
 
