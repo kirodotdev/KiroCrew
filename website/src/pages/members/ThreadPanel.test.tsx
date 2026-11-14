@@ -116,6 +116,40 @@ describe('ThreadPanel', () => {
     expect(screen.queryByTestId('thread-reply-live')).toBeNull()
   })
 
+  // The crewmate bubble's own class spans whatever column holds it, and the side
+  // panel has no Content Width clamp, so the thread's crewmate column carries
+  // the 72ch reading measure, at the bubble's 13px so `ch` is the bubble's.
+  it('keeps the crewmate side of the thread at a 72ch reading measure', async () => {
+    renderPanel()
+    await screen.findByTestId('thread-parent')
+    act(() => {
+      threadLiveStore.apply({ slot: 'member-radar', mid: 'm-1', run_id: 'run-7', role: 'assistant', content: 'Checking.' })
+    })
+    try {
+      const bubbles = [
+        screen.getByTestId('thread-parent-bubble'),
+        ...screen.getAllByTestId('thread-reply').filter((r) => r.dataset.replyFrom === 'assistant').map((r) => r.querySelector('.crewmate-bubble')),
+        screen.getByTestId('thread-reply-live').querySelector('.crewmate-bubble'),
+      ]
+      expect(bubbles).toHaveLength(4)
+      for (const bubble of bubbles) {
+        const column = bubble?.parentElement?.className ?? ''
+        expect(column).toMatch(/(^|\s)max-w-\[72ch\](\s|$)/)
+        expect(column).toMatch(/(^|\s)text-\[13px\](\s|$)/)
+        expect(bubble?.className).toMatch(/(^|\s)text-\[13px\](\s|$)/)
+        // One max-width per element: a second one on the bubble would be
+        // decided by stylesheet order, not by class order.
+        expect(bubble?.className).not.toMatch(/(^|\s)max-w-(?!full(\s|$))/)
+      }
+    } finally {
+      // The live store is module state: end the streamed reply whatever the
+      // assertions did, so no later test starts with it.
+      act(() => {
+        threadLiveStore.apply({ slot: 'member-radar', mid: 'm-1', run_id: 'run-7', role: 'assistant', content: 'Checking.', final: true })
+      })
+    }
+  })
+
   it('names the failure in plain words and keeps the draft', async () => {
     mockReply.mockRejectedValue(new ApiError(409, 'x', JSON.stringify({ error: 'x', code: 'thread_turn_in_flight' })))
     renderPanel()

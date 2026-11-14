@@ -52,6 +52,12 @@ const mintReplyId = () => (globalThis.crypto?.randomUUID?.() ?? `${Date.now().to
  *  the user's messages never group (components/chat/crewmateBubbles). */
 const USER_BUBBLE = 'bg-card border border-border px-3.5 py-1.5 rounded-2xl max-w-[85%]'
 
+/** The crewmate's column beside its avatar: author line, then bubble. The
+ *  bubble spans the column it sits in, and this panel has no Content Width
+ *  clamp, so the column carries the thread's reading measure: 72ch at the
+ *  bubble's 13px. */
+const MATE_COLUMN = 'min-w-0 flex-1 flex flex-col items-start max-w-[72ch] text-[13px]'
+
 /** One small bubble. The crewmate's (`side="left"`) takes the main chat's
  *  corner rule for its place in the run; the user's is always a single. */
 function Bubble({ pos = 'single', side, children, testId }: { pos?: CrewmateRunPosition; side: 'left' | 'right'; children: React.ReactNode; testId?: string }) {
@@ -89,7 +95,7 @@ function ReplyRow({ reply, pos, crewmateName, crewmateLabel, youLabel }: { reply
   return (
     <li className={`flex gap-2 ${opens ? 'mt-3' : 'mt-1'}`} data-testid="thread-reply" data-reply-from="assistant" data-thread-run={pos}>
       <div className="shrink-0" style={{ width: AVATAR_PX }}>{opens && <CrewAvatar seed={crewmateName} size={AVATAR_PX} />}</div>
-      <div className="min-w-0 flex-1 flex flex-col items-start">
+      <div className={MATE_COLUMN}>
         {opens && <AuthorLine name={crewmateLabel || crewmateName} ts={reply.ts} align="left" />}
         <Bubble pos={pos} side="left">
           <MessageErrorBoundary rawContent={reply.content}><MarkdownRenderer content={reply.content} softBreaks /></MessageErrorBoundary>
@@ -304,7 +310,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
           ) : (
             <div className="flex gap-2" data-testid="thread-parent">
               <div className="shrink-0" style={{ width: AVATAR_PX }}><CrewAvatar seed={crewmateName} size={AVATAR_PX} /></div>
-              <div className="min-w-0 flex-1 flex flex-col items-start">
+              <div className={MATE_COLUMN}>
                 <AuthorLine name={crewmateLabel || crewmateName} ts={parent.ts} align="left" />
                 <Bubble side="left" testId="thread-parent-bubble">
                   <MessageErrorBoundary rawContent={parent.content}><MarkdownRenderer content={parent.content} softBreaks /></MessageErrorBoundary>
@@ -332,7 +338,7 @@ export default function ThreadPanel({ slot, mid, crewmateName, crewmateLabel, on
             // gives way to the stored row the terminal frame refetches.
             <li className="flex gap-2 mt-3" data-testid="thread-reply-live" aria-live="polite">
               <div className="shrink-0" style={{ width: AVATAR_PX }}><CrewAvatar seed={crewmateName} size={AVATAR_PX} working="subtle" /></div>
-              <div className="min-w-0 flex-1 flex flex-col items-start">
+              <div className={MATE_COLUMN}>
                 <AuthorLine name={crewmateLabel || crewmateName} ts="" align="left" />
                 <Bubble side="left">
                   <MessageErrorBoundary rawContent={live.text}><MarkdownRenderer content={live.text} streaming softBreaks /></MessageErrorBoundary>

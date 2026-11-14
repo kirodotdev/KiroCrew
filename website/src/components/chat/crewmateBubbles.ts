@@ -301,7 +301,7 @@ const CORNERS: Record<CrewmateRunPosition, string> = {
   end: 'rounded-2xl rounded-tl-md',
 }
 
-/** Surface + padding + measure, every bubble alike. A FILLED neutral gray, no
+/** Surface + padding + width, every bubble alike. A FILLED neutral gray, no
  *  border: the iMessage pairing #17839 chose — the user's own bubble on the
  *  right is the filled accent one, the crewmate's on the left the gray one, so
  *  colour tells the two speakers apart before alignment does. The fill and its
@@ -317,9 +317,16 @@ const CORNERS: Record<CrewmateRunPosition, string> = {
  *  theme already keeps readable on `--bg-hover`. In forced-colors mode the fill
  *  is taken away, so a border is drawn there and only there. The markdown's
  *  outermost first/last block margins are zeroed so the bubble's own padding is
- *  the whole inset. */
+ *  the whole inset. The width is `max-w-full`, not a `ch` cap: the bubble is a
+ *  block and spans the content column the transcript row clamps to
+ *  --mc-content-width, so Settings → Chat → Content Width governs it as it
+ *  governs the user's bubble (#30200). Not `w-fit` like the user's bubble: a
+ *  reply can be only a widget frame or a change card, which take no intrinsic
+ *  width, and inside `w-fit` they collapse to a sliver. Inside a flex column
+ *  with `items-start` (the typing bubble, the reply thread) the bubble still
+ *  shrinks to its content. */
 const BUBBLE_BASE =
-  'crewmate-bubble forced-colors:border px-3.5 py-1.5 max-w-[72ch] [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
+  'crewmate-bubble forced-colors:border px-3.5 py-1.5 max-w-full [&>.group>:first-child]:mt-0 [&>.group>:last-child]:mb-0'
 
 /** Classes for the crewmate's message bubble at `pos`. */
 export function crewmateBubbleClass(pos: CrewmateRunPosition): string {
