@@ -105,6 +105,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         body_not_object_error,
         bounded_json_error_as_exception,
         bounded_json_error_code,
+        message_required_error,
         open_multipart,
         read_bounded_json,
         read_capped_response,
