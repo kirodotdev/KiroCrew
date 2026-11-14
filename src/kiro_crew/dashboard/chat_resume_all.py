@@ -53,8 +53,10 @@ not the gateway: a turn a person starts in another session never waits on it.
 A global cap on attended turns at the dispatch every send and Resume reaches
 is a design of its own, and replaces this bound once it lands.
 
-Every resumed turn keeps the person's provenance (the press is the owner's)
-but starts at BACKGROUND priority (``START_BACKGROUND_META_KEY`` on its queue
+A press's resumed turns keep the person's provenance (the press is the owner's);
+a run started with ``user_origin=False`` (the boot after a planned restart)
+carries none. Every resumed turn starts at BACKGROUND priority
+(``START_BACKGROUND_META_KEY`` on its queue
 entry). The request answers 202 at once, so nobody waits on any one of those
 starts, and a FOREGROUND claim would put each of them in the person-only start
 reserve ahead of the owner's next typed message
@@ -144,7 +146,10 @@ def _crew_roots(state: DashboardState) -> dict[str, str]:
 
 
 def collect_interrupted_idle(
-    state: DashboardState, *, crew_mode: bool = False
+    state: DashboardState,
+    *,
+    crew_mode: bool = False,
+    modes: frozenset[str] = CHAT_PAGE_MODES,
 ) -> list[tuple[str, _ChatSlot]]:
     """The ``(name, slot)`` pairs the button acts on, in registration order.
 
@@ -158,6 +163,11 @@ def collect_interrupted_idle(
     *crew_mode* is whether the pressing tab has the Crew Mode preview on
     (``crewModeEnabled``). Only then does the sidebar's ``crewModeView`` drop a
     worker whose root is listed, so only then is that worker left out here.
+
+    *modes* is the slot modes a candidate may have. The default is the chat
+    page's, the rows the button counts. A wider set adds candidates only: the
+    listed roots whose workers stay with their conductor are still the chat
+    page's rows.
     """
     now = time.time()
     subs = getattr(state, "subagents", None)
@@ -178,10 +188,10 @@ def collect_interrupted_idle(
     for name, slot in slots:
         if slot.key in under_construction or is_relay_archive(slot):
             continue
-        # The chat page's own sessions only, as the sidebar lists them
-        # (``isChatPageSurface``): a member's DM thread or a sub-agent row lives
-        # on another page, so the button never counts it.
-        if (getattr(slot, "mode", "") or "") not in CHAT_PAGE_MODES:
+        # *modes* only. By default the chat page's own sessions, as the sidebar
+        # lists them (``isChatPageSurface``): a member's DM thread or a sub-agent
+        # row lives on another page, so the button never counts it.
+        if (getattr(slot, "mode", "") or "") not in modes:
             continue
         # A Crew Mode worker whose root is listed: the sidebar's ``crewModeView``
         # drops it (the root's Crew panel lists it), so the button never counts
@@ -242,6 +252,8 @@ async def _resume_candidates(
     candidates: list[tuple[str, _ChatSlot]],
     claims: Mapping[str, Any],
     outcome: dict[str, Any],
+    *,
+    user_origin: bool = True,
 ) -> None:
     """Continue every candidate, at most ``RESUME_ALL_MAX_RUNNING`` turns at once.
 
@@ -262,7 +274,8 @@ async def _resume_candidates(
     ``failed`` carries ``{slot, error}`` with the exception's class name for
     anything else; the other slots are unaffected. *claims* is the caller's
     ``app`` claim, passed to the same replaced-while-queued probe the
-    single-slot route uses.
+    single-slot route uses. *user_origin* is whether each resumed turn counts
+    as one the person sent: a press does, being the owner's.
     """
     resumed: list[str] = outcome["resumed"]
     skipped: list[dict[str, str]] = outcome["skipped"]
@@ -306,7 +319,7 @@ async def _resume_candidates(
             await _ch.continue_slot_turn(
                 state,
                 slot,
-                directive_user_origin=True,
+                directive_user_origin=user_origin,
                 via=RESUME_ALL_VIA,
                 require_interrupted=True,
                 # The owner's press, as on the per-row Resume: an interrupted
@@ -399,6 +412,8 @@ async def _run_in_background(
     candidates: list[tuple[str, _ChatSlot]],
     claims: Mapping[str, Any],
     outcome: dict[str, Any],
+    *,
+    user_origin: bool = True,
 ) -> None:
     """The run the handler starts: every candidate, then one outcome frame.
 
@@ -415,7 +430,7 @@ async def _run_in_background(
     A tab waiting on the run is never left pending.
     """
     try:
-        await _resume_candidates(state, candidates, claims, outcome)
+        await _resume_candidates(state, candidates, claims, outcome, user_origin=user_origin)
     except asyncio.CancelledError:
         outcome["cancelled"] = True
         raise
@@ -446,12 +461,17 @@ def start_resume_all(
     *,
     crew_mode: bool = False,
     only: frozenset[str] | None = None,
+    modes: frozenset[str] = CHAT_PAGE_MODES,
+    user_origin: bool = True,
 ) -> tuple[int, dict[str, Any]]:
     """Start a run, or refuse when one is in flight. ``(status, body)`` for the route.
 
     *only*, when given, is the set of session keys the press counted (and the
     owner confirmed): a candidate outside it is left alone, so a session that
-    became interrupted after the press never joins its run.
+    became interrupted after the press never joins its run. *modes* is
+    :func:`collect_interrupted_idle`'s: the route keeps the chat page's.
+    *user_origin* is whether the resumed turns count as ones the person sent:
+    the route's press does; a caller that resumes on its own passes False.
 
     Synchronous end to end: the in-flight check, the collect and the task
     registration happen with no await between them, so of two presses landing
@@ -465,14 +485,16 @@ def start_resume_all(
             "run_id": current[1],
             "total": current[2],
         }
-    candidates = collect_interrupted_idle(state, crew_mode=crew_mode)
+    candidates = collect_interrupted_idle(state, crew_mode=crew_mode, modes=modes)
     if only is not None:
         candidates = [(name, slot) for name, slot in candidates if name in only]
     if not candidates:
         return 200, {"ok": True, "total": 0, "run_id": ""}
     run_id = uuid.uuid4().hex[:12]
     outcome = _new_outcome(len(candidates), run_id)
-    task = asyncio.ensure_future(_run_in_background(state, candidates, claims, outcome))
+    task = asyncio.ensure_future(
+        _run_in_background(state, candidates, claims, outcome, user_origin=user_origin)
+    )
     _track(state, task)
     setattr(state, _RUN_ATTR, (task, run_id, len(candidates)))
     task.add_done_callback(lambda t: _clear_run(state, t))

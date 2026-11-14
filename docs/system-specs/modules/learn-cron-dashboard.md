@@ -313,7 +313,14 @@ restart that never ran and resumes nothing. Otherwise the boot resumes only thos
 `chat_resume_all.start_resume_all(only=...)` with `crew_mode=True`: the same
 `RESUME_ALL_MAX_RUNNING` bound, memory-preparation wait and per-slot refusals
 (pending approval, queued message, running sub-agents) as the Resume-all button,
-and one `resume_all_done` frame. A crash writes no file, so its chats keep the
+and one `resume_all_done` frame. With `modes=CHAT_PAGE_MODES | {DM_SLOT_MODE}`, a
+Bot thread (slot `mode` `member`) resumes with the chat page's sessions; the button
+counts only the chat page's sessions, and an app's worker slot stays out of both.
+With `user_origin=False`, no resumed turn counts as one the person sent
+(`_turn_user_sent` stays false): the gateway resumes them, a cut turn may have been
+a check-in, a cron or a loop wake, and the record is a data-home file sandboxed code
+can write. So an operation only a person's turn may run refuses inside a resumed
+turn, as in a loop wake. A crash writes no file, so its chats keep the
 interruption row and the manual Resume, as before. Errors are logged, never raised.
 
 **A planned restart stops the cron service first** (`cron.stop_cron_before_restart`).
