@@ -615,6 +615,7 @@ export function useWebSocket() {
             }
             break
           case 'queue_pop':
+            chatStream.onQueuePop(data)
             dispatch(removeQueuedMessage(data))
             break
           case 'queue_push':

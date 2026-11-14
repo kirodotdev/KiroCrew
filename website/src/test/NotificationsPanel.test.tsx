@@ -106,6 +106,30 @@ describe('NotificationsPanel', () => {
     expect(mute().textContent).toBe('Off')
   })
 
+  it('chooses the shortest turn that earns a desktop toast, stays locked until the toast is on, and keeps a saved odd value visible', () => {
+    render(<NotificationsPanel />, 'alerts')
+    const minTurn = () => screen.getByRole('combobox', { name: 'Only notify for longer turns' })
+    expect(minTurn().textContent).toBe('Every turn')
+    expect(minTurn().hasAttribute('data-disabled')).toBe(true)
+
+    fireEvent.click(screen.getByRole('switch', { name: /Notify when a background chat finishes/i }))
+    expect(minTurn().hasAttribute('data-disabled')).toBe(false)
+    fireEvent.click(minTurn())
+    fireEvent.click(screen.getByRole('option', { name: /1\s+minute/ }))
+    expect(localStorage.getItem('mc-notify-min-turn-seconds')).toBe('60')
+    expect(minTurn().textContent).toMatch(/1\s+minute/)
+
+    fireEvent.click(minTurn())
+    fireEvent.click(screen.getByRole('option', { name: /^Every turn$/ }))
+    expect(localStorage.getItem('mc-notify-min-turn-seconds')).toBe('0')
+  })
+
+  it('shows a saved length that is not one of the presets', () => {
+    localStorage.setItem('mc-notify-min-turn-seconds', '45')
+    render(<NotificationsPanel />, 'alerts')
+    expect(screen.getByRole('combobox', { name: 'Only notify for longer turns' }).textContent).toMatch(/45\s+seconds/)
+  })
+
   it('changing volume persists the new value (0.5) to localStorage', () => {
     const { container } = render(<NotificationsPanel />)
     const slider = container.querySelector('input[type="range"]') as HTMLInputElement

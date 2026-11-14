@@ -30,12 +30,16 @@ import { sseSlots } from '../store/dashboardSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { MC_NOTIFICATION_EVENT, type McNotificationDetail } from '../hooks/notificationEvent'
 import {
+  CHAT_COMPLETE_MIN_SECONDS_KEY,
   CHAT_COMPLETE_NOTIFY_KEY,
+  loadChatCompleteMinSeconds,
   loadChatCompleteNotify,
+  saveChatCompleteMinSeconds,
   saveChatCompleteNotify,
   setChatCompleteHostReader,
   shouldNotifyOnChatComplete,
 } from '../hooks/chatCompleteNotify'
+import { _resetTurnClockForTest } from '../hooks/turnClock'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -180,6 +184,60 @@ describe('chatCompleteNotify preference and predicate', () => {
     expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false })).toBe(false)
     MockNotification.permission = 'denied'
     expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false })).toBe(false)
+  })
+
+  describe('minimum turn length', () => {
+    beforeEach(() => {
+      localStorage.removeItem(CHAT_COMPLETE_MIN_SECONDS_KEY)
+      saveChatCompleteNotify(true)
+      setHidden(true)
+    })
+    afterEach(() => { localStorage.removeItem(CHAT_COMPLETE_MIN_SECONDS_KEY) })
+
+    it('defaults to every turn, so a zero-second turn still toasts', () => {
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: 0 })).toBe(true)
+    })
+
+    it('skips a turn shorter than the chosen length and keeps one that reaches it', () => {
+      saveChatCompleteMinSeconds(30)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: 29 })).toBe(false)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: 30 })).toBe(true)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: 400 })).toBe(true)
+    })
+
+    it('toasts when the length is unknown, whatever the chosen minimum', () => {
+      saveChatCompleteMinSeconds(30)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false })).toBe(true)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: null })).toBe(true)
+    })
+
+    it.each(['abc', '-5', '1.5', '', '99999', '3601', ' 30'])('reads the stored value %j as every turn', raw => {
+      localStorage.setItem(CHAT_COMPLETE_MIN_SECONDS_KEY, raw)
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: 1 })).toBe(true)
+    })
+
+    it('stores only whole numbers in range', () => {
+      saveChatCompleteMinSeconds(60)
+      expect(loadChatCompleteMinSeconds()).toBe(60)
+      saveChatCompleteMinSeconds(3600)
+      expect(loadChatCompleteMinSeconds()).toBe(3600)
+      saveChatCompleteMinSeconds(2.5)
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+      saveChatCompleteMinSeconds(-1)
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+      saveChatCompleteMinSeconds(3601)
+      expect(loadChatCompleteMinSeconds()).toBe(0)
+    })
+
+    it('leaves every other gate in force for a long turn', () => {
+      saveChatCompleteMinSeconds(30)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: true, turnSeconds: 90 })).toBe(false)
+      expect(shouldNotifyOnChatComplete({ slot: undefined, reconnecting: false, turnSeconds: 90 })).toBe(false)
+      saveChatCompleteNotify(false)
+      expect(shouldNotifyOnChatComplete({ slot: 'slot-a', reconnecting: false, turnSeconds: 90 })).toBe(false)
+    })
   })
 })
 
@@ -361,5 +419,353 @@ describe('useWebSocket chat_done native toast', () => {
 
     expect(CONSTRUCTED).toEqual([])
     vi.restoreAllMocks()
+  })
+
+  describe('minimum turn length', () => {
+    const t0 = Date.UTC(2026, 10, 12, 12, 0, 0)
+
+    beforeEach(() => {
+      localStorage.removeItem('mc-notify-min-turn-seconds')
+      _resetTurnClockForTest()
+      // Both clocks are faked: the turn clock reads the wall clock and the monotonic one.
+      vi.useFakeTimers({ toFake: ['Date', 'performance'] })
+      vi.setSystemTime(t0)
+    })
+    afterEach(() => {
+      vi.useRealTimers()
+      localStorage.removeItem('mc-notify-min-turn-seconds')
+      _resetTurnClockForTest()
+    })
+
+    // Pins the persisted key itself: a rename would strand users' saved choice.
+    const pinMinSeconds = (n: number) => localStorage.setItem('mc-notify-min-turn-seconds', String(n))
+    const row = (slot: string, role: string) => ({ type: 'chat_message', data: { slot, role, content: 'x' } })
+    // Real time passing moves both clocks; `vi.setSystemTime` alone moves only the wall clock.
+    const advance = (ms: number) => { vi.advanceTimersByTime(ms) }
+
+    it('skips a finish that came sooner than the chosen length, and toasts the next long one', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(10_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      expect(CONSTRUCTED).toEqual([])
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(45_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      expect(CONSTRUCTED).toHaveLength(1)
+      expect(CONSTRUCTED[0].options?.body).toBe('Response ready')
+    })
+
+    it('starts the clock at the first row only, not at later ones', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(25_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'assistant')) })
+      advance(10_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('keeps each session on its own clock', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'First')
+      seedSlot('slot-b', 'Second')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(40_000)
+      act(() => { ws.simulateMessage(row('slot-b', 'user')) })
+      advance(5_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-b' } }) })
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED.map(c => c.options?.tag)).toEqual(['kirocrew-chat-done:slot-a'])
+    })
+
+    it('still toasts a quick turn that stopped to ask a question', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Choose the approach')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a', needs_input: true } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+      expect(CONSTRUCTED[0].options?.body).toBe('Waiting for your input')
+    })
+
+    it('still toasts a quick turn that failed', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      act(() => { ws.simulateMessage(row('slot-a', 'error')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+      expect(CONSTRUCTED[0].options?.body).toBe('This turn failed. Open the session to see why.')
+    })
+
+    it('toasts a turn whose start this window never saw', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('toasts a long turn the window joined late, from its reply or tool rows alone', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(60)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      // The window opened 20 minutes into the turn: it sees only rows that continue it.
+      act(() => { ws.simulateMessage(row('slot-a', 'tool_result')) })
+      act(() => { ws.simulateMessage(row('slot-a', 'assistant')) })
+      advance(10_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('does not start the clock on a passive note, so idle time is not counted', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => {
+        ws.simulateMessage({ type: 'chat_message', data: { slot: 'slot-a', role: 'inject', cls: 'reconcile-note', content: 'note' } })
+      })
+      advance(120_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toEqual([])
+    })
+
+    it('does not start the clock on a notice appended into a turn the window joined late', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(60)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      // A policy-block notice and a stop-hook halt card are `inject` rows with no
+      // turn-opening kind, and a steer is a `user` row sent into the running turn.
+      act(() => { ws.simulateMessage({ type: 'chat_message', data: { slot: 'slot-a', role: 'inject', cls: 'msg msg-inject', content: 'blocked' } }) })
+      act(() => { ws.simulateMessage({ type: 'chat_message', data: { slot: 'slot-a', role: 'user', content: 'also this', meta: { steer: true } } }) })
+      advance(5_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('starts the clock on an inject row that opens a turn of its own', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Nightly sweep')
+
+      act(() => { ws.simulateMessage({ type: 'chat_message', data: { slot: 'slot-a', role: 'inject', content: 'sweep', meta: { injectKind: 'cron' } } }) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toEqual([])
+    })
+
+    it('measures a long turn as long when the wall clock steps back during it', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(60)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(90_000)
+      vi.setSystemTime(Date.now() - 120_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('measures a run whose sub-agents finish after a continuing completion from its first prompt', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(60)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Survey the repos')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(1_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a', continuing: true } }) })
+      advance(20 * 60_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'subagent')) })
+      advance(10_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+      expect(CONSTRUCTED[0].options?.body).toBe('Response ready')
+    })
+
+    it('keeps the run clock when the session list alone says sub-agents are still running', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(60)
+      const ws = mountOpened()
+      const slotRow = (running: boolean) => ({ key: 'slot-a', title: 'Survey the repos', messages: 1, running: false, subagents_running: running })
+      act(() => { globalStore.dispatch(sseSlots([slotRow(true)])) })
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(1_000)
+      // No `continuing` hint on the frame: the slot's running children make it one.
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      expect(CONSTRUCTED).toEqual([])
+      act(() => { globalStore.dispatch(sseSlots([slotRow(false)])) })
+      advance(20 * 60_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'subagent')) })
+      advance(10_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('ends the run clock on a continuing completion that waits for input', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(60)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Choose the approach')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(90_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a', continuing: true, needs_input: true } }) })
+      expect(CONSTRUCTED).toHaveLength(1)
+      expect(CONSTRUCTED[0].options?.body).toBe('Waiting for your input')
+
+      // The answer starts a new turn, measured from its own row.
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    const pop = (extra: Record<string, unknown>) => ({ type: 'queue_pop', data: { slot: 'slot-a', queue_id: 'q-1', ...extra } })
+
+    it('starts the clock on a drained send that becomes the person\'s row', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Crewmate thread')
+
+      // An idle crewmate send: the drain's pop is the only frame that opens the turn.
+      act(() => { ws.simulateMessage(pop({ content: 'quick one', drain_writes_row: false })) })
+      advance(5_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      expect(CONSTRUCTED).toEqual([])
+
+      act(() => { ws.simulateMessage(pop({ queue_id: 'q-2', content: 'long one', drain_writes_row: false })) })
+      advance(45_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
+
+    it('does not start the clock on the pop of a cancelled or swept entry', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(pop({ content: '' })) })
+      act(() => { ws.simulateMessage(pop({ queue_id: 'q-2' })) })
+      advance(120_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toEqual([])
+    })
+
+    it('leaves the stamp to the row a drain writes for itself', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Survey the repos')
+
+      act(() => { ws.simulateMessage(pop({ content: 'result', drain_writes_row: true })) })
+      advance(120_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'subagent')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toEqual([])
+    })
+
+    it('starts no clock from an opener row or a drain pop replayed on reconnect', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      // A second open on the same socket is a reconnect: its frames are catch-up
+      // until the connect snapshot lands.
+      act(() => { ws.simulateOpen() })
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      act(() => { ws.simulateMessage(pop({ content: 'earlier', drain_writes_row: false })) })
+      act(() => { ws.simulateMessage({ type: 'slots', data: [{ key: 'slot-a', title: 'Refactor the planner', messages: 1, running: false }] }) })
+      advance(120_000)
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toEqual([])
+    })
+
+    it('ends a turn this window stamped when its completion is replayed on reconnect', () => {
+      saveChatCompleteNotify(true)
+      pinMinSeconds(30)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(120_000)
+      // The socket dropped and the turn finished meanwhile: its `chat_done` is replayed.
+      act(() => { ws.simulateOpen() })
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+      act(() => { ws.simulateMessage({ type: 'slots', data: [{ key: 'slot-a', title: 'Refactor the planner', messages: 1, running: false }] }) })
+      expect(CONSTRUCTED).toEqual([])
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      advance(2_000)
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toEqual([])
+    })
+
+    it('toasts every finish while no minimum is chosen', () => {
+      saveChatCompleteNotify(true)
+      const ws = mountOpened()
+      seedSlot('slot-a', 'Refactor the planner')
+
+      act(() => { ws.simulateMessage(row('slot-a', 'user')) })
+      act(() => { ws.simulateMessage({ type: 'chat_done', data: { slot: 'slot-a' } }) })
+
+      expect(CONSTRUCTED).toHaveLength(1)
+    })
   })
 })
