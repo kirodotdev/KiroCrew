@@ -834,7 +834,11 @@ edit.
   by `acp/default_crew_servers.with_default_crew_servers`. kiro-cli's skill view
   preparation calls the same helper, so the two backends add the same servers
   under the same opt-outs; the rules are in
-  [agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md).
+  [agent-spec-fields](../../../src/kiro_crew/docs/agent-spec-fields.md). On KAS the
+  added servers' tools stay off `toolSearch.neverDefer`
+  (`default_crew_servers.crew_added_servers`, `agent_sdk/tool_search.custom_agent_never_defer_ids`),
+  so they are deferred behind the loader; the author's own grants, a per-tool grant
+  of an added server, and `mcp_server_wait` stay direct.
 
 Switching backends is a config write plus a restart, and affects only new
 sessions; `restart` reaps the prior runtime process, and `kirocrew doctor` reports
