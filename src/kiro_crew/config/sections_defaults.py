@@ -145,7 +145,7 @@ DEFAULT_POOL_SIZE = 0
 # Per-session process-tree RSS ceiling (MiB) the cleanup watchdog recycles an
 # idle session at; 0 disables it. An agent with six MCP servers measured ~1.4 GB
 # of tree RSS thirteen seconds after start and workflow trees read 2.4-2.6 GB, so
-# the old 1536 default recycled ordinary sessions after one heavy turn. 4096
+# a 1536 ceiling recycles ordinary sessions after one heavy turn. 4096
 # sits above those healthy sizes and still bounds a runaway tree, which with no
 # ceiling at all grows until the host runs out of memory. A recycled session
 # keeps its history and restarts on its next message. No fixed figure sits above
@@ -154,8 +154,8 @@ DEFAULT_POOL_SIZE = 0
 # ceiling is held at that footprint instead (``session_rss_rebound``).
 DEFAULT_WATCHDOG_RSS_MAX_MB = 4096
 # session.reconcile_max_kills — root candidates the runtime reconciler may signal
-# the tree of in one pass. Defaults to the budget the arm already ships with, so an
-# unconfigured host behaves exactly as before; the field's ceiling equals that same
+# the tree of in one pass. Defaults to the budget the arm ships with, so an
+# unconfigured host keeps that budget; the field's ceiling equals that same
 # value, which makes the knob purely SUBTRACTIVE -- it can withhold signals and
 # cannot authorize any the product does not already authorize.
 #
