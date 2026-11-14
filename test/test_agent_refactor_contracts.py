@@ -73,7 +73,7 @@ BASE_SURFACE: dict[str, str] = {
     "_HOOK_SPEC_AUDIT_TAG": "value str 872be442e26c62c8",
     "_HOOK_SUPPRESSED_CONFIRM": "value str 287cc46175706b5e",
     "_HOOK_SUPPRESSED_DISABLED": "value str 3e7d4779ece7800e",
-    "_INTERNAL_HOOK_KEYS": "value frozenset 274d5b26dc7c6ca8",
+    "_INTERNAL_HOOK_KEYS": "value frozenset 0da4b5b0ac8fcf13",
     "_KAS_ACTION_TYPES": "value frozenset 903158b00413cba6",
     "_KAS_DOCUMENT_FIELD_LIMITS": "value tuple b80ab2c94d50d9dc",
     "_KAS_DOCUMENT_FIELD_TYPES": "value tuple 87ad0f01d8e8353c",
