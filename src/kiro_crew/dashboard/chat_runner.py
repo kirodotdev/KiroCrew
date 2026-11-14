@@ -744,6 +744,13 @@ def _hands_off_queue_on_exit(
         )
         if card_mark is not None:
             card_mark.__enter__()
+        # A Stop pressed while fair admission or the turn's preparation waits
+        # finds this runner here and ends it (``_preparing_turn``). An
+        # agent-started turn is left out: its cycle already runs natively, and
+        # only its own stream can cancel it.
+        turn_exit.runner = asyncio.current_task()
+        if kwargs.get("_agent_started") is not True:
+            slot._preparing_turn = turn_exit
         try:
             # Shared Crew fair admission for a turn no admitted work started
             # (shared_crew.turn_gate); a pass-through when admission is off.
@@ -773,6 +780,8 @@ def _hands_off_queue_on_exit(
             # over, and a cancel the tail below defers and re-raises must not skip it.
             if card_mark is not None:
                 card_mark.__exit__(None, None, None)
+            if getattr(slot, "_preparing_turn", None) is turn_exit:
+                slot._preparing_turn = None
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the

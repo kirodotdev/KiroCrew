@@ -58,10 +58,10 @@ def _is_running(row: Mapping[str, Any]) -> bool:
 
 
 #: ``stop_slot_turn`` answers that mean the turn did NOT stop: nothing ran, or the
-#: session's automatic compaction declined the cooperative cancel. "no active
-#: turn" is not among them: a turn still being prepared answers it, and the
-#: Stop it recorded aborts that turn before dispatch, so Resume all owes it its
-#: Continue.
+#: session's automatic compaction declined the cooperative cancel. A turn still
+#: being prepared answers ``{"ok": true}``: the press ends that runner before it
+#: reaches the provider, so Resume all owes it its Continue. "no active turn" is
+#: not among them: the slot still read running when the press came.
 _NOT_STOPPED = frozenset({"not running", "compacting"})
 
 
