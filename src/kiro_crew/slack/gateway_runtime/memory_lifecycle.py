@@ -401,9 +401,15 @@ async def _repair_member_memory(self: GatewayOrchestrator) -> None:
     """
     from kiro_crew import memory_dream
     from kiro_crew.executors import memory_background_executor
+    from kiro_crew.memory_provider.resolver import builtin_background_allowed
 
     loop = asyncio.get_running_loop()
     while not self._memory_repair_stop.is_set():
+        # Crew's own memory is left exactly as it is while a provider replaces it:
+        # no re-embedding and no Dreaming proposals until it is switched back.
+        if not await asyncio.to_thread(builtin_background_allowed):
+            await asyncio.sleep(30)
+            continue
         try:
             await loop.run_in_executor(
                 memory_background_executor(), self._repair_member_memory_once
@@ -479,6 +485,11 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
 
     if memory_store_startup_error():
         logger.warning("Global memory migration deferred until owner recovery and restart")
+        return
+    from kiro_crew.memory_provider.resolver import builtin_background_allowed
+
+    if not await asyncio.to_thread(builtin_background_allowed):
+        logger.info("Memory migration and re-embedding wait: a provider replaces Crew's memory")
         return
 
     # Every dereference lives inside the try so the "never raises" contract

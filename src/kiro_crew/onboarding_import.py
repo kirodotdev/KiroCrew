@@ -339,6 +339,54 @@ def _write_memory(
     return _WriteOutcome("rejected")
 
 
+def _write_to_provider(item: _Item, category: str, route: Any) -> _WriteOutcome:
+    """An imported directive or memory, handed to the provider that replaces Crew's memory.
+
+    Crew's own stores are not written. Each item goes through ``put`` with a key
+    built from its fingerprint, so a re-import writes nothing twice; Crew's lesson
+    screen still runs on a directive.
+    """
+    from kiro_crew.memory_provider.contract import NewItem, ProviderError, truncate_text
+    from kiro_crew.memory_provider.render import scope_for
+
+    payload = item.payload if isinstance(item.payload, dict) else {}
+    if category == "instructions":
+        rule = str(payload.get("rule", "")).strip()
+        if not rule or contains_volatile_lesson_fact(rule):
+            return _WriteOutcome("rejected")
+        new = NewItem(kind="rule", text=truncate_text(rule), source=item.source_id)
+    elif payload.get("kind") == "semantic":
+        key = str(payload.get("key", ""))
+        new = NewItem(
+            kind="preference" if key.startswith("pref.") else "fact",
+            text=truncate_text(json.dumps(payload.get("value"), ensure_ascii=False)),
+            title=key[:300] or None,
+            source=item.source_id,
+        )
+    elif payload.get("kind") == "episodic":
+        new = NewItem(
+            kind="episode", text=truncate_text(str(payload.get("text", ""))), source=item.source_id
+        )
+    else:
+        return _WriteOutcome("rejected")
+    from kiro_crew.memory_provider.migration import screen_refuses
+
+    # The screens Crew's own stores run before a write, so a provider never keeps
+    # an imported directive they would refuse.
+    if screen_refuses(new):
+        return _WriteOutcome("rejected")
+    scope = scope_for("default", session_key="onboarding-import")
+    if route.provider is None or scope is None:
+        return _WriteOutcome("rejected")
+    try:
+        result = route.provider.blocking_put(scope, new, f"onboarding:{item.fingerprint}")
+    except ProviderError:
+        return _WriteOutcome("rejected")
+    if result.outcome in ("inserted", "enriched"):
+        return _WriteOutcome("imported")
+    return _WriteOutcome("existing" if result.outcome in ("unchanged", "deduped") else "rejected")
+
+
 def _same_schedule(job: Any, payload: dict[str, Any]) -> bool:
     if getattr(job, "name", "") != payload["name"]:
         return False
@@ -500,6 +548,9 @@ def apply_import(
             _owner("_write_json")._write_json(ledger_path, ledger)
             ledger_dirty = False
 
+    from kiro_crew.memory_provider.resolver import route_for
+
+    memory_route = route_for("default")
     try:
         for source_id, category in sorted(selected):
             scan = scans.get(source_id)
@@ -526,7 +577,9 @@ def apply_import(
                     continue
                 written = _WriteOutcome("skipped")
                 try:
-                    if category == "instructions":
+                    if memory_route.replaces and category in ("instructions", "memories"):
+                        written = _write_to_provider(item, category, memory_route)
+                    elif category == "instructions":
                         written = _write_instruction(item, lesson_store, vector_store)
                     elif category == "memories":
                         written = _write_memory(item, destination, vector_store)

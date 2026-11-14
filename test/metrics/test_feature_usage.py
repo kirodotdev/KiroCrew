@@ -385,7 +385,8 @@ def _call_lines(fn: ast.AST, name: str) -> list[int]:
 
 
 def test_tool_recall_is_recorded_after_the_receipt_commit():
-    fn = _function(SRC / "dashboard/handlers/memory_member.py", "api_memory_recall")
+    # Both recall paths end in one helper, which commits and then records.
+    fn = _function(SRC / "dashboard/handlers/memory_member.py", "_commit_and_record_recall")
     (rec_line,) = _call_lines(fn, "record_memory_recalled")
     # commit_receipt runs through asyncio.to_thread, so find where it is named.
     (commit_line,) = [

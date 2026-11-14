@@ -431,6 +431,25 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.create")
     if refusal is not None:
         return refusal
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, sk or None)
+    if memory_route.replaces:
+        if replaces is not None:
+            return _lesson_replace_refusal("replace_vector_unsupported")
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.create(
+            state,
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=sk,
+            rule=rule,
+            category=category,
+            negative=negative,
+            repo_scope=repo_scope,
+            applies=applies,
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
@@ -971,6 +990,23 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.delete")
     if refusal is not None:
         return refusal
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, sk or None)
+    if memory_route.replaces:
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.delete(
+            state,
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=sk,
+            rule=rule_sub,
+            repo_scope=repo_scope,
+            scoped=_rs is not _no_scope_key,
+            exact=exact,
+            keep_one=keep_one,
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
@@ -1101,6 +1137,21 @@ async def api_lessons_update(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.update")
     if refusal is not None:
         return refusal
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, sk or None)
+    if memory_route.replaces:
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.update(
+            state,
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=sk,
+            rule=cleaned["rule"],
+            repo_scope=cleaned.get("repo_scope"),
+            applies=cleaned["applies"],
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
@@ -1352,6 +1403,20 @@ async def api_lessons(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.list")
     if refusal is not None:
         return refusal
+    list_key = request.headers.get("X-Session-Key", "")
+    from kiro_crew.memory_provider.chokepoints import session_route
+
+    memory_route = await asyncio.to_thread(session_route, _lesson_silo, list_key or None)
+    if memory_route.replaces:
+        from kiro_crew.memory_provider import lesson_routes
+
+        return await lesson_routes.list_page(
+            memory_route,
+            store=_lesson_silo or "",
+            session_key=list_key,
+            limit=limit,
+            offset=offset,
+        )
     memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal

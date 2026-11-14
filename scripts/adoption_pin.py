@@ -130,7 +130,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
     ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
     ``agentReadOnlyDirs``, an exact ``permissions.api`` entry and
-    ``permissions.chatSlots`` at level 7), the context seams any non-test ``.py``
+    ``permissions.chatSlots`` at level 7, ``contributes.memoryProviders`` and
+    ``permissions.memoryAdmin`` at level 8), the context seams any non-test ``.py``
     file reaches, and the backend SDK package (level 7) any of them names. A miss
     lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
     only asks for a higher ``--min-sdk-level``.
@@ -155,6 +156,11 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
         uses["app.json permissions.api exact entry"] = 7
     if permissions.get("chatSlots") is True:
         uses["app.json permissions.chatSlots"] = 7
+    contributes = raw.get("contributes")
+    if isinstance(contributes, dict) and contributes.get("memoryProviders"):
+        uses["app.json contributes.memoryProviders"] = 8
+    if permissions.get("memoryAdmin") is True:
+        uses["app.json permissions.memoryAdmin"] = 8
     for dirpath, dirnames, filenames in os.walk(tree):
         dirnames[:] = sorted(d for d in dirnames if d not in _UNSCANNED_DIRS)
         for filename in sorted(filenames):

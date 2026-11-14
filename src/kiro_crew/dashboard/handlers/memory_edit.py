@@ -138,14 +138,15 @@ async def _bulk(request: web.Request, *, apply: bool) -> web.Response:
     refusal = await require_owner_dashboard_request(request, operation)
     if refusal is not None:
         return refusal
-    refusal = await _memory_write_gate(request.app["state"], request, operation)
-    if refusal is not None:
-        return refusal
     body, refusal = await read_bounded_json(request, max_bytes=512 * 1024)
     if refusal is not None:
         return refusal
     assert body is not None
     name, refusal = await _admin_store(request, operation, body)
+    if refusal is not None:
+        return refusal
+    # Gated on the store the body names, which a provider can leave on Crew memory.
+    refusal = await _memory_write_gate(request.app["state"], request, operation, store=name)
     if refusal is not None:
         return refusal
     try:

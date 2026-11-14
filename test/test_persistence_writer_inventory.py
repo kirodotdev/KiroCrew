@@ -88,6 +88,9 @@ EXEMPT = {
     # An explicit semantic-memory write from the dashboard editor, like the
     # preference/project edits above.
     "dashboard/handlers/memory.py::api_memory_semantic_write": "explicit user edit",
+    # Crew's own memory through the provider contract: reached only from the owner's
+    # item routes, the owner's copy and import, and the conformance kit.
+    "memory_provider/builtin.py::blocking_put": "explicit user edit",
     # Internal helpers: they hold no policy and are reached through the callers
     # above, which are classified.
     "memory.py::add_preference": "internal helper, caller decides",

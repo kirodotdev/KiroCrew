@@ -12,6 +12,129 @@ import type { MemoryCarveEntry, MemoryStoreSummary, RetiredMemory, MemoryBackup 
 import type { MemoryRecordQuery, MemoryRecord, MemoryRecordSelection, MemoryEditOperation, MemoryEditPreview, MemoryRecordRef, MemoryRecordRevision } from '../../types/memoryEditing'
 import type { ClientTransport } from './transport'
 
+/** One provider's `connect` answer, as `GET /api/memory/provider` reports it. */
+export interface MemoryProviderCapabilities {
+  api_version: number
+  provider: { name: string; version: string }
+  egress: 'local' | 'remote'
+  read_only: boolean
+  ops: string[]
+  kinds: string[]
+  search: { lexical: boolean; semantic: boolean; filters: string[] }
+  writes: {
+    verbatim: boolean
+    preserves_timestamps: boolean
+    keeps_origin: boolean
+    idempotent: boolean
+    dry_run_put: boolean
+    max_batch: number
+    max_text: number
+  }
+  history: { revisions: boolean; retired: boolean; changes: boolean }
+  ingest: 'none' | 'raw' | 'items'
+  isolation: { multi_store: boolean; principal_auth: boolean }
+  documents: 'none' | 'read' | 'readwrite'
+  steering: 'none'
+  max_page: number
+}
+
+/** One installed provider an app declares. */
+export interface MemoryProviderRow {
+  id: string
+  app: string
+  app_version: string
+  display_name: string
+  description: string
+  settings_page: string
+  enabled: boolean
+  capabilities?: MemoryProviderCapabilities
+  replace_gaps?: string[]
+  /** What each mode lacks, by mode (`op:delete`, `kind:finding`, `writes.verbatim`, ...). */
+  mode_gaps?: { augment: string[]; replace: string[] }
+  egress_consented?: boolean
+  /** The provider did not answer `connect`: a failed call, not an eligibility refusal. */
+  connect_failed?: boolean
+  blocked_reason?: string
+  latency?: { calls: number; ops: Record<string, { p50_ms: number; p95_ms: number; count: number }> }
+}
+
+export interface MemoryProviderOverview {
+  mode: 'builtin' | 'replace' | 'augment'
+  id: string
+  switched_at: number
+  stop_learning_ack: boolean
+  builtin: { id: string; display_name: string }
+  providers: MemoryProviderRow[]
+  shared_crew: boolean
+  policy_allows: boolean
+  active: { mode: string; id: string; unavailable: string; health?: { ok: boolean; detail: string } }
+}
+
+export interface MemoryProviderSwitch {
+  mode: 'builtin' | 'replace' | 'augment'
+  id?: string
+  egress_consent?: boolean
+  stop_learning_ack?: boolean
+  pin_member_stores_builtin?: boolean
+}
+
+/** One planned sample of a move: never more than the first 300 characters. */
+export interface MemoryMoveSample {
+  id: string
+  kind: string
+  text: string
+  planned: string
+  created_at?: number | null
+}
+
+/** A move job (`/api/memory/provider/migrations/{id}`): a plan, a run, or a rollback. */
+export interface MemoryMove {
+  id: string
+  from: string
+  to: string
+  store: string
+  dry_run: boolean
+  state:
+    | 'planning'
+    | 'planned'
+    | 'running'
+    | 'paused'
+    | 'verifying'
+    | 'done'
+    | 'failed'
+    | 'cancelled'
+    | 'rolling_back'
+    | 'rolled_back'
+  checkpoint: { cursor: string | null; listed: number }
+  by_kind: Record<string, number>
+  outcomes: Record<string, number>
+  skipped_kinds: Record<string, number>
+  notes: string[]
+  verify: { checked?: number; matched?: number; mismatched?: number }
+  rolled_back: number
+  error: string
+  samples?: Record<string, MemoryMoveSample[]>
+}
+
+/** What `POST /api/memory/provider/migrations` takes. */
+export interface MemoryMoveRequest {
+  from: string
+  to: string
+  store?: string
+  kinds?: string[]
+  include_retired?: boolean
+  preserve_timestamps?: boolean
+  dry_run?: boolean
+}
+
+/** The states in which a move is still working. */
+export const MEMORY_MOVE_ACTIVE_STATES: ReadonlySet<MemoryMove['state']> = new Set([
+  'planning',
+  'running',
+  'verifying',
+  'rolling_back',
+])
+
 /**
  * The optional `store=` parameter on memory content routes.
  * Embedding configuration is installation-wide; legacy Markdown migration
@@ -213,6 +336,23 @@ export function createMemoryEndpoints({ get, post, put, del, j, jfetch: fetch }:
     vectorContextPreview: (query?: string) => fetch('/api/memory/context-preview' + (query ? '?q=' + encodeURIComponent(query) : '')).then(j),
     memoryGraph: () => fetch('/api/memory/graph').then(j),
     consolidateMemory: (key: string, includeHistory: boolean) => post('/api/memory/consolidate', { key, include_history: includeHistory }).then(j),
+    /** Which memory answers, every installed provider, and the active one's health. */
+    memoryProvider: (probe = false) =>
+      fetch('/api/memory/provider' + (probe ? '?probe=1' : '')).then(j) as Promise<MemoryProviderOverview>,
+    /** Switch. The owner's own dashboard session only; refusals carry a `code`. */
+    switchMemoryProvider: (body: MemoryProviderSwitch) =>
+      put('/api/memory/provider', body).then(j) as Promise<{ ok: boolean; mode: string; id?: string }>,
+    /** Plan (`dry_run`) or start a move between two providers; answers the job. */
+    startMemoryMove: (body: MemoryMoveRequest) =>
+      post('/api/memory/provider/migrations', body).then(j) as Promise<MemoryMove>,
+    memoryMove: (id: string) =>
+      fetch('/api/memory/provider/migrations/' + encodeURIComponent(id)).then(j) as Promise<MemoryMove>,
+    /** Continue a paused or failed move from its checkpoint. The owner only. */
+    resumeMemoryMove: (id: string) =>
+      post('/api/memory/provider/migrations/' + encodeURIComponent(id) + '/resume').then(j) as Promise<MemoryMove>,
+    /** Delete from the target what this move inserted, and nothing else. The owner only. */
+    rollbackMemoryMove: (id: string) =>
+      post('/api/memory/provider/migrations/' + encodeURIComponent(id) + '/rollback').then(j) as Promise<MemoryMove>,
   }
 
   const lessons = {

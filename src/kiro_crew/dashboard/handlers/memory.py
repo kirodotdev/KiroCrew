@@ -157,7 +157,7 @@ def _memory_document_undecodable_response(name: str) -> web.Response:
 
 
 async def _memory_write_gate(
-    state: DashboardState, request: web.Request, operation: str
+    state: DashboardState, request: web.Request, operation: str, *, store: str | None = None
 ) -> web.Response | None:
     """The memory-mutation authorization cascade, or ``None`` when the call may proceed.
 
@@ -210,6 +210,17 @@ async def _memory_write_gate(
             },
             status=403,
         )
+    # While a memory provider replaces Crew's memory for this store, Crew's own
+    # memory stays exactly as it was, so switching back loses nothing. The
+    # settings write and a manual consolidation are not writes to that memory.
+    # *store* is the store a route resolved from its body; the rest name it in the query.
+    if operation not in ("settings.write", "memory.consolidate"):
+        from kiro_crew.dashboard.handlers.memory_provider import provider_active_refusal
+
+        target = (request.query.get("store") or "") if store is None else store
+        refusal = await provider_active_refusal(target)
+        if refusal is not None:
+            return refusal
     return None
 
 
