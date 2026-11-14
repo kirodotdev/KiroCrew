@@ -1156,7 +1156,11 @@ control `kirocrew restart` names when it refuses a gateway the app supervises.
 
 When this launch ends with no usable gateway, the shell shows one dialog
 (`gateway-wait.js` renders it; the supervisor's start-failure record decides
-the state). It always offers **Retry**, plus the actions the state allows:
+the state). It always offers **Retry**, plus the actions the state allows. While
+the app waits for the gateway, the splash counts toward the deadline ("Waiting for gateway… 12s of
+120s"). A timeout on a gateway this app spawned and whose process is still
+running is titled "gateway is not answering" and points at the launch log;
+its Retry keeps that process and waits again. The actions:
 
 - **Add Remote Crew** / **Edit Remote Crew** opens the remote-crew form
   (`runtime/gateway/remote-crew-prompt.js`) to save or correct the crew this

@@ -8,6 +8,8 @@ const {
   gatewayWaitTimeoutMs,
   waitForGateway,
   describeGatewayFailure,
+  describeSpawnedGatewayTimeout,
+  isLiveSpawnedTimeout,
   tailLines,
   readLogTail,
   rotateLaunchLog,
@@ -756,3 +758,38 @@ test("rotateLaunchLog is a no-op on first launch when the file does not exist", 
   }
 }
 );
+
+// A long first launch counts toward a named deadline, and a timeout on the
+// app's own live child names that child instead of asking for a new gateway.
+test("the wait status names the deadline it counts toward", async () => {
+  const { p, statuses } = harness({
+    checkBackend: () => Promise.reject(new Error("not yet")),
+    maxWaitMs: 30_000,
+  });
+  await assert.rejects(p, (e) => e.kind === "timeout" && e.waitedMs === 30_000);
+  assert.strictEqual(statuses[0], "Waiting for gateway… 0s of 30s");
+  assert.ok(statuses.includes("Waiting for gateway… 30s of 30s"));
+});
+
+test("a spawned gateway that never answered is not sent to 'kirocrew gateway'", () => {
+  const msg = describeSpawnedGatewayTimeout(30_000);
+  assert.match(msg, /started its gateway, but it did not answer within 30 seconds/);
+  assert.match(msg, /Retry to keep waiting/);
+  assert.doesNotMatch(msg, /kirocrew gateway/);
+});
+
+test("only a timeout on our own still-running child gets the not-answering dialog", () => {
+  const live = { exitCode: null, signalCode: null };
+  const base = { error: { kind: "timeout" }, ownTarget: true, ownership: "spawned", child: live };
+  assert.strictEqual(isLiveSpawnedTimeout(base), true);
+  assert.strictEqual(isLiveSpawnedTimeout({ ...base, error: { kind: "failed" } }), false);
+  assert.strictEqual(isLiveSpawnedTimeout({ ...base, ownTarget: false }), false);
+  for (const ownership of ["none", "reused-local", "reused-service"]) {
+    assert.strictEqual(isLiveSpawnedTimeout({ ...base, ownership }), false, ownership);
+  }
+  assert.strictEqual(isLiveSpawnedTimeout({ ...base, child: null }), false);
+  assert.strictEqual(isLiveSpawnedTimeout({ ...base, child: { exitCode: 1, signalCode: null } }), false);
+  assert.strictEqual(isLiveSpawnedTimeout({ ...base, child: { exitCode: null, signalCode: "SIGKILL" } }), false);
+  const supervisor = fs.readFileSync(path.join(__dirname, "..", "gateway-supervisor.js"), "utf8");
+  assert.match(supervisor, /isLiveSpawnedTimeout\(\{\s*error,\s*ownTarget: targetBackendUrl === BACKEND_URL,\s*ownership: gatewayOwnership,\s*child: gatewayProcess,\s*\}\)\) \{[\s\S]{0,400}message = describeSpawnedGatewayTimeout\(error\.waitedMs\)/);
+});
