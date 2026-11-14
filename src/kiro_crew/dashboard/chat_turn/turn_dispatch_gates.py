@@ -170,6 +170,21 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
         except Exception:
             logger.debug("self-change undo block skipped", exc_info=True)
 
+    # ── Attached documents: uploaded .pdf/.docx/.pptx text for the model ──
+    # Each uploaded document in `meta.files` adds a `[Document: …]` block to
+    # the request-prefix context. `message` is not modified, so the user's
+    # text stays the prompt tail and the persisted row is unchanged.
+    # Runs off the loop: file reads, docx/pptx parsing, a parser child per PDF.
+    # Design: docs/request-for-change/rfc-chat-document-attachments.md.
+    _attached_files = (turn._attachment_meta or {}).get("files") or []
+    if _attached_files and _sends_prompt and not is_slash and _prompt_depth < 1:
+        from kiro_crew.dashboard.attachment_documents import attachment_document_context
+
+        _document_context = await asyncio.to_thread(attachment_document_context, _attached_files)
+        if _document_context:
+            _request_prefix_context += _document_context
+            turn._request_prefix_context = _request_prefix_context
+
     # Ensure the mirror-source message is always bound before both the Slack
     # and channel-neutral user-message mirror legs run. The assignment in _turn_build_prompt's
     # context build that refines it only executes for non-slash turns that have a
