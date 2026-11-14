@@ -630,5 +630,7 @@ export { useImeGuard } from '../hooks/useImeGuard'
 export { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export { activeLocale, fmtNumber, fmtCurrency, fmtDate, fmtTime, fmtDateTime, fmtRelative, compareText } from '../i18n/format'
 export type { NumberOptions, DateStyleOptions, RelativeStyle } from '../i18n/format'
+// An app's own site on the dashboard's port, for a backend that frames its own pages (level 8).
+export { appWebOrigin } from './webOrigin'
 // The App Kit seam level; an app feature-detects the seams above by it.
 export { APP_SDK_LEVEL } from './sdkLevel'

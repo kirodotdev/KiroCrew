@@ -504,6 +504,10 @@ class BackendConfig:
     # Only the literal JSON boolean true enables it: a string or a number keeps
     # the default off, so a malformed manifest never widens what a backend trusts.
     signedPrincipal: bool = False  # noqa: N815
+    # Opt in to an app web origin: the gateway serves this backend at
+    # ``http://<name>.apps.localhost:<dashboard port>`` (apps/app_web_origin.py).
+    # Same strict parse as signedPrincipal: only the JSON boolean true turns it on.
+    webOrigin: bool = False  # noqa: N815
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -520,6 +524,8 @@ class BackendConfig:
             d["type"] = self.type
         if self.signedPrincipal:
             d["signedPrincipal"] = True
+        if self.webOrigin:
+            d["webOrigin"] = True
         hooks_d = self.hooks.to_dict()
         if hooks_d:
             d["hooks"] = hooks_d
@@ -536,6 +542,7 @@ class BackendConfig:
             routes=str(data.get("routes", "")),
             type=str(data.get("type", "")),
             signedPrincipal=data.get("signedPrincipal") is True,  # noqa: N815
+            webOrigin=data.get("webOrigin") is True,  # noqa: N815
             hooks=hooks,
         )
 

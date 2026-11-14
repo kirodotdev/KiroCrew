@@ -5687,6 +5687,99 @@ Writers: `website/src/app-sdk/issues/`, `website/src/app-sdk/index.ts`,
 `website/src/types/index.sources.ts`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
 
+## 18i. An app web origin is the app's own site on the dashboard's port
+
+An app whose UI frames its own backend's pages (a local reverse proxy in front of
+a third-party site is the case this exists for) needs that frame to have a real
+origin, with its own cookies and storage, kept apart from the dashboard. Framing
+the backend's loopback port gives it one only when the browser runs on the
+gateway's machine: a dashboard reached through one `ssh -L` forward resolves that
+port on the browser's machine, so the frame goes blank.
+
+**Opt-in.** `backend.webOrigin: true` (`apps/manifest_sections.py`, parsed like
+`signedPrincipal`: only the JSON boolean turns it on). The app name becomes a DNS
+label, so `validate()` refuses it on a name longer than 63 characters.
+
+**Routing.** `apps/app_web_origin.py::app_web_origin_middleware` sits in the
+dashboard chain directly inside the deny-audit boundary and outside the host
+canonicalization and the `Host` barrier (§ the chain in
+`dashboard/server_runtime/middleware_chain.py`). A `Host` under `.apps.localhost`
+is decided there and reaches no dashboard layer:
+
+- served only to a direct local request (`is_direct_local_request`, and not
+  `is_proxied_request`): a loopback peer with no forwarding header, not relayed.
+  An `ssh -L` forward is served; a tailnet, relayed or proxied peer gets 421. A
+  request that arrived on the Session Manager listener's port gets 421 too,
+  checked by listener (`SsmGate.owns`) because this router runs before that
+  listener's gate;
+- only on a port the dashboard's own loopback origins in `allowed_origins` name
+  (the bound port and `KIROCREW_ALLOWED_LOOPBACK_PORTS`), else 421. A missing
+  `Host` port is the HTTP default, 80, and is served only when 80 is one of those
+  dashboard ports;
+- only for `<name>` that is installed, enabled, opted in, gateway-managed and has a
+  tracked backend port, else 404 with a body that names nothing; a name under the
+  suffix that is not one DNS label is 404 too;
+- relayed to `http://127.0.0.1:<backend port>` with path, query and body
+  unchanged, HTTP and WebSocket, streaming, with no total time bound (an idle
+  bound only), and with `Host` set to the canonical app name and explicit port.
+  A WebSocket message under 64 MiB is relayed in either direction
+  (`_MAX_WS_MESSAGE_BYTES`, above aiohttp's 4 MiB default because a live document
+  sync can send larger frames); a larger one closes the relay with 1009. aiohttp
+  checks the size once a frame is complete, so the cap bounds a message built
+  from many frames or a compressed one. When either side ends, both legs close
+  with the code that side reported: no status (an empty close frame, or 1005)
+  becomes 1000, a dropped connection (1006) becomes 1001, and a code outside
+  1000-4999 becomes 1002, because those codes are never sent.
+
+Every decision is audited: one SEL `api_access` row per served request
+(`outcome=granted`, `resources` the canonical app host and path) and per refusal
+(`outcome=denied`, the refusal reason in `error`), both `source=app_web_origin`.
+
+**Credentials.** Nothing the gateway trusts crosses: `Authorization`, the
+internal-auth headers, relay identity headers and every `X-KiroCrew-*` header are
+dropped, the dashboard's `mc_token*` / `mc_refresh_*` cookies are removed from
+`Cookie`, and the request is not signed. A backend treats `X-KiroCrew-Proxy` as
+proof that the API proxy (§24) forwarded a call; a page on the app origin may be
+a third party's scripts, so signing there would hand them the backend's
+gateway-only API. The app's own credential (for example a launch token traded
+for a host-only cookie) is the only one on this origin.
+
+**Response.** Hop-by-hop headers and `Clear-Site-Data` are dropped, every
+`Set-Cookie` loses its `Domain` (host-only, so one app's cookie never reaches
+another app's name), and each comma-separated CSP policy the backend sent loses
+only its `frame-ancestors` directive. Every other directive and every non-empty
+policy stays enforced. One more policy carries `frame-ancestors 'self'` plus the
+dashboard's loopback origins (`frame_ancestors_value`). The dashboard's own
+security headers are not applied.
+
+**Dashboard side.** `APP_WEB_ORIGIN_CSP_SOURCE` (`http://*.apps.localhost:*`) is in the
+dashboard's `frame-src` and `connect-src` always (the frame, and the no-cors
+reachability probe an app runs on it). The CSRF allowlist does not gain it, so a
+page on an app origin cannot post to a dashboard API: `check_origin` refuses its
+Origin. `.apps.localhost` is two labels below `localhost`, apart from the
+single-label Remote Crew pane names and from `kirocrew.localhost`.
+
+**Discovery.** `appWebOrigin(name)` on `@kirocrew/app-sdk`
+(`website/src/app-sdk/webOrigin.ts`), App Kit seam level 8, answers
+`http://<name>.apps.localhost:<location.port>` when the dashboard is on
+`localhost`, `127.0.0.1` or `kirocrew.localhost` over http, and `null` otherwise.
+That includes an IPv6 dashboard: CSP `frame-ancestors` cannot express its
+bracketed host source, so the app origin cannot be framed there. A published
+HTTPS host and a Remote Crew pane also have no app origin. An app on an older
+host finds no such export and keeps its own loopback frame.
+
+Not covered: a dashboard reached over a published HTTPS host (it has no wildcard
+name or certificate for app hosts), a Remote Crew pane whose forward port differs
+from the remote gateway's, and Session Manager forwards. Each keeps what the app
+did before.
+
+Writers: `apps/app_web_origin.py`, `apps/manifest_sections.py`, `apps/manifest.py`,
+`dashboard/server_runtime/middleware_chain.py`,
+`dashboard/server_runtime/security_headers.py`, `website/src/app-sdk/webOrigin.ts`,
+`website/src/app-sdk/index.ts`, `website/public/vendor/kirocrew-app-sdk.mjs`,
+`website/src/app-sdk/sdkLevel.ts`, `apps/app_sdk_level.py`.
+Tests: `test/test_app_web_origin.py`, `website/src/app-sdk/webOrigin.test.ts`.
+
 ## 19. Spec Builder's backend is composed by lifecycle owner
 
 Spec Builder's backend carries more orchestration than a typical app: agent turns
