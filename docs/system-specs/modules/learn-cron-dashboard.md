@@ -5371,8 +5371,16 @@ still refresh while the dashboard body is blocked. On a new gateway it:
    unenforced harnesses do not acquire that refusal. Unknown or failed probes
    do not claim a harness is ready. A missing probe response does not label the configured
    agent as not ready or offer a switch back to Kiro CLI; that warning requires
-   a returned probe. The picker's Use action applies the same sandbox eligibility
-   as the dashboard bypass; it cannot switch to a harness the gate would then
+   a returned probe. The warning also says why, in the picker rows' own words
+   (`agentHarness/AgentNotReadyDetail.tsx`): one explicit branch per cause that
+   can reach it (not offered, not installed, restart needed, unverified, sandbox
+   off by setting, sandbox blocked with `kirocrew doctor`, and for KAS missing
+   specs with `kirocrew setup --agent-only` or rejected specs with `--clean`), no
+   catch-all, and nothing while the configured agent's own open row already says
+   it. The recheckable reasons (not installed, restart needed, unverified) carry
+   their own Check again for the configured agent, with its failure shown there
+   and not under the open row. The picker's Use action applies the same sandbox
+   eligibility as the dashboard bypass; it cannot switch to a harness the gate would then
    refuse, and shows a sandbox warning for that state. Failed config switches
    name the attempted agent even if the picker selection changes afterward,
    and switch/re-check notices have their own retry controls. Settings and this

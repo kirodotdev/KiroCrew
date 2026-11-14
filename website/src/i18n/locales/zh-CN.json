@@ -7878,6 +7878,8 @@
       "could_not_save_agent_choice": "无法保存代理选择。请点击“使用 {{name}}”再试一次。",
       "agent_recheck_failed": "{{name}} 检查失败。请点击“重新检查”。",
       "configured_agent_not_ready": "{{productName}} 已设置为使用 {{name}}，但它在此主机上尚未就绪。",
+      "configured_agent_specs_missing": "{{name}} 依赖 {{productName}} 的代理规范，但网关主机上未安装这些规范。请在该主机上运行以下命令来写入它们。",
+      "configured_agent_specs_rejected": "{{name}} 依赖 {{productName}} 的代理规范。这些规范位于网关主机上，但无法加载。",
       "use_kiro_cli_instead": "改用 Kiro CLI",
       "switch_agent_later_in_settings": "你可以随时在“设置 > 代理运行框架”中切换代理。",
       "remote_only_question": "你的 Crew 在另一台电脑上运行？",

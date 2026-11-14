@@ -7878,6 +7878,8 @@
       "could_not_save_agent_choice": "에이전트 선택을 저장하지 못했습니다. ‘{{name}} 사용’을 눌러 다시 시도하세요.",
       "agent_recheck_failed": "{{name}} 확인에 실패했습니다. ‘다시 확인’을 누르세요.",
       "configured_agent_not_ready": "{{productName}}은(는) {{name}}을(를) 사용하도록 설정되어 있지만, 이 호스트에서는 아직 준비되지 않았습니다.",
+      "configured_agent_specs_missing": "{{name}}은(는) {{productName}}의 에이전트 사양으로 실행되지만, 게이트웨이 호스트에 설치되어 있지 않습니다. 해당 호스트에서 다음을 실행해 사양을 작성하세요.",
+      "configured_agent_specs_rejected": "{{name}}은(는) {{productName}}의 에이전트 사양으로 실행됩니다. 사양이 게이트웨이 호스트에 있지만 불러올 수 없었습니다.",
       "use_kiro_cli_instead": "대신 Kiro CLI 사용",
       "switch_agent_later_in_settings": "설정 > 에이전트 하네스에서 언제든지 에이전트를 전환할 수 있습니다.",
       "remote_only_question": "크루가 다른 컴퓨터에서 실행되나요?",

@@ -3042,6 +3042,8 @@
       "could_not_save_agent_choice": "Could not save the agent choice. Press Use {{name}} to try again.",
       "agent_recheck_failed": "The check for {{name}} failed. Press Check again.",
       "configured_agent_not_ready": "{{productName}} is set to use {{name}}, which isn't ready on this host yet.",
+      "configured_agent_specs_missing": "{{name}} runs on {{productName}}'s agent specs, which are not installed on the gateway host. Run this there to write them.",
+      "configured_agent_specs_rejected": "{{name}} runs on {{productName}}'s agent specs. They are on the gateway host, but they could not be loaded.",
       "use_kiro_cli_instead": "Use Kiro CLI instead",
       "switch_agent_later_in_settings": "You can switch agents at any time in Settings > Agent Harness.",
       "remote_only_question": "Your crews run on another computer?",

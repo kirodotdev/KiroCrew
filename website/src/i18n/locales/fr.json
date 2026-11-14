@@ -8296,6 +8296,8 @@
       "could_not_save_agent_choice": "Impossible d’enregistrer le choix de l’agent. Appuie sur « Utiliser {{name}} » pour réessayer.",
       "agent_recheck_failed": "La vérification de {{name}} a échoué. Appuie sur « Revérifier ».",
       "configured_agent_not_ready": "{{productName}} est configuré pour utiliser {{name}}, qui n’est pas encore prêt sur cet hôte.",
+      "configured_agent_specs_missing": "{{name}} s’appuie sur les spécifications d’agent de {{productName}}, qui ne sont pas installées sur l’hôte de la passerelle. Exécute ceci sur cet hôte pour les écrire.",
+      "configured_agent_specs_rejected": "{{name}} s’appuie sur les spécifications d’agent de {{productName}}. Elles sont présentes sur l’hôte de la passerelle, mais n’ont pas pu être chargées.",
       "use_kiro_cli_instead": "Utiliser Kiro CLI à la place",
       "switch_agent_later_in_settings": "Tu peux changer d’agent à tout moment dans Paramètres > Harness de l’agent.",
       "remote_only_question": "Tes Crews tournent sur un autre ordinateur ?",

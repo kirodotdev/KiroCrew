@@ -8087,6 +8087,8 @@
       "could_not_save_agent_choice": "এজেন্ট বাছাই সংরক্ষণ করা যায়নি। আবার চেষ্টা করতে “{{name}} ব্যবহার করো” চাপো।",
       "agent_recheck_failed": "{{name}}-এর পরীক্ষা ব্যর্থ হয়েছে। “আবার পরীক্ষা করো” চাপো।",
       "configured_agent_not_ready": "{{productName}} {{name}} ব্যবহারের জন্য সেট করা আছে, কিন্তু এটি এই হোস্টে এখনো প্রস্তুত নয়।",
+      "configured_agent_specs_missing": "{{name}} {{productName}}-এর এজেন্ট স্পেকের উপর চলে, যেগুলো গেটওয়ে হোস্টে ইনস্টল করা নেই। সেগুলো লিখতে সেখানে এটি চালান।",
+      "configured_agent_specs_rejected": "{{name}} {{productName}}-এর এজেন্ট স্পেকের উপর চলে। সেগুলো গেটওয়ে হোস্টে আছে, কিন্তু লোড করা যায়নি।",
       "use_kiro_cli_instead": "এর বদলে Kiro CLI ব্যবহার করো",
       "switch_agent_later_in_settings": "সেটিংস > এজেন্ট হারনেস থেকে যেকোনো সময় এজেন্ট বদলাতে পারো।",
       "remote_only_question": "তোমার ক্রু কি অন্য কম্পিউটারে চলে?",

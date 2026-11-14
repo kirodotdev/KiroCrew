@@ -7878,6 +7878,8 @@
       "could_not_save_agent_choice": "エージェントの選択を保存できませんでした。「{{name}} を使用」を押してもう一度試してください。",
       "agent_recheck_failed": "{{name}} の確認に失敗しました。「再度確認」を押してください。",
       "configured_agent_not_ready": "{{productName}} は {{name}} を使用するよう設定されていますが、このホストではまだ準備ができていません。",
+      "configured_agent_specs_missing": "{{name}} は {{productName}} のエージェント仕様で動作しますが、ゲートウェイホストにインストールされていません。ホストで次のコマンドを実行して書き込んでください。",
+      "configured_agent_specs_rejected": "{{name}} は {{productName}} のエージェント仕様で動作します。仕様はゲートウェイホストにありますが、読み込めませんでした。",
       "use_kiro_cli_instead": "代わりに Kiro CLI を使用",
       "switch_agent_later_in_settings": "エージェントは「設定 > エージェントハーネス」でいつでも切り替えられます。",
       "remote_only_question": "クルーは別のコンピューターで動いていますか？",

@@ -8296,6 +8296,8 @@
       "could_not_save_agent_choice": "Impossibile salvare la scelta dell’agente. Premi «Usa {{name}}» per riprovare.",
       "agent_recheck_failed": "Il controllo di {{name}} non è riuscito. Premi «Controlla di nuovo».",
       "configured_agent_not_ready": "{{productName}} è impostato per usare {{name}}, che non è ancora pronto su questo host.",
+      "configured_agent_specs_missing": "{{name}} funziona con le specifiche degli agenti di {{productName}}, che non sono installate sull’host del gateway. Esegui questo comando sull’host per scriverle.",
+      "configured_agent_specs_rejected": "{{name}} funziona con le specifiche degli agenti di {{productName}}. Sono presenti sull’host del gateway, ma non è stato possibile caricarle.",
       "use_kiro_cli_instead": "Usa invece Kiro CLI",
       "switch_agent_later_in_settings": "Puoi cambiare agente in qualsiasi momento in Impostazioni > Harness dell’agente.",
       "remote_only_question": "Le tue Crew girano su un altro computer?",

@@ -8087,6 +8087,8 @@
       "could_not_save_agent_choice": "Die Agentenauswahl konnte nicht gespeichert werden. Drücke „{{name}} verwenden“, um es erneut zu versuchen.",
       "agent_recheck_failed": "Die Prüfung von {{name}} ist fehlgeschlagen. Drücke „Erneut prüfen“.",
       "configured_agent_not_ready": "{{productName}} ist auf {{name}} eingestellt, das auf diesem Host noch nicht bereit ist.",
+      "configured_agent_specs_missing": "{{name}} läuft mit den Agentenspezifikationen von {{productName}}, die auf dem Gateway-Host nicht installiert sind. Führe dies dort aus, um sie zu schreiben.",
+      "configured_agent_specs_rejected": "{{name}} läuft mit den Agentenspezifikationen von {{productName}}. Sie liegen auf dem Gateway-Host, konnten aber nicht geladen werden.",
       "use_kiro_cli_instead": "Stattdessen Kiro CLI verwenden",
       "switch_agent_later_in_settings": "Du kannst den Agenten jederzeit unter Einstellungen > Agent-Harness wechseln.",
       "remote_only_question": "Laufen deine Crews auf einem anderen Computer?",
