@@ -193,7 +193,10 @@
   .pr-todo-brief dd { margin: 0; color: var(--text, #e4e4e7); }
   /* The card's choices. Real buttons: picking one puts a reply in the chat box. */
   .pr-todo-opts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
-  .pr-todo-opt { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  /* A choice shows its whole text, so a long one wraps inside the card instead of
+     running past it on a narrow screen. */
+  .pr-todo-opt { font: inherit; font-size: 11px; padding: 3px 9px; border-radius: 12px;
+    max-width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere;
     border: 1px solid var(--border, #3a3a40); background: var(--bg, transparent);
     color: var(--text, #e4e4e7); cursor: pointer;
     transition: border-color var(--pr-motion-fast) var(--pr-ease), background var(--pr-motion-fast) var(--pr-ease); }
@@ -2042,10 +2045,6 @@
     }
     return { question: m[1].trim(), options: opts, rec: recIdx };
   }
-  function shortLabel(s) {
-    var t = txt(s) || '';
-    return t.length > 48 ? t.slice(0, 47).trimEnd() + '\u2026' : t;
-  }
   function refOf(title, id) {
     return '"' + (title || 'this item') + '"' + (id ? ' (' + id + ')' : '');
   }
@@ -2058,7 +2057,7 @@
       var wo = written.options.slice(0, OPT_MAX);
       for (k = 0; k < wo.length; k++) {
         if (!txt(wo[k])) continue;
-        out.push({ label: shortLabel(wo[k]), say: ref + ': ' + txt(wo[k]), rec: k === 0 });
+        out.push({ label: txt(wo[k]), say: ref + ': ' + txt(wo[k]), rec: k === 0 });
       }
     } else if (kind === 'approve') {
       out.push({ label: W('go'), say: ref + ': ' + W('go'), rec: true });
@@ -2070,7 +2069,7 @@
       var r = parseRuling(raw);
       if (r) {
         for (k = 0; k < r.options.length; k++) {
-          out.push({ label: shortLabel(r.options[k]), say: ref + ': ' + r.options[k],
+          out.push({ label: r.options[k], say: ref + ': ' + r.options[k],
             rec: k === r.rec });
         }
       } else {
