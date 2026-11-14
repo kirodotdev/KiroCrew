@@ -220,10 +220,12 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     // to be treated as fail-open rather than as a verdict.
     // `kiro_selection_runs_on_kas`: `agent.acp_backend` is stored as Kiro CLI and
     // sessions run it on KAS, so the Agent Harness panel offers to save KAS.
+    // `kiro_cli_runs_on_kas`: a Kiro CLI pick would run on KAS here, whatever is saved.
     acpBackends: () =>
       fetch('/api/acp-backends').then(j) as Promise<{
         backends: AcpBackendProbe[]
         kiro_selection_runs_on_kas?: boolean
+        kiro_cli_runs_on_kas?: boolean
         crewmate_harness?: CrewmateHarnessReadout
       }>,
     // Re-take ONE backend's verdict with this gateway's cached absence dropped first,

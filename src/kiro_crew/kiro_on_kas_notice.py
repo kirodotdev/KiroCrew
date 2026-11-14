@@ -60,6 +60,18 @@ def kiro_selection_runs_on_kas() -> bool:
     return KiroCrewConfig.load().agent.acp_backend == ACP_BACKEND_KAS
 
 
+def kiro_cli_runs_on_kas() -> bool:
+    """Whether a Kiro CLI pick would run on KAS here, whatever is stored. Blocking.
+
+    The remap's own conditions (``_read_backend_choice``): off the bundle route, and
+    :func:`~kiro_crew.acp_backends.kiro_cli_pick_backend` answers KAS.
+    """
+    from kiro_crew.acp_backends import ACP_BACKEND_KAS, kiro_cli_pick_backend
+    from kiro_crew.config.loader_document import acp_backend_bundle_route
+
+    return not acp_backend_bundle_route() and kiro_cli_pick_backend() == ACP_BACKEND_KAS
+
+
 def _claim() -> bool:
     """Create the marker exclusively. ``True`` only for the caller that made it."""
     from kiro_crew.config.loader import config_dir
