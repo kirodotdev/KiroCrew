@@ -1633,6 +1633,18 @@ return a failed `DriverResult` naming what did *not* happen ("the keystrokes wer
 NOT sent"), because a model told only "focus failed" would assume the input landed
 and go verify a change that never occurred.
 
+**A Cmd shortcut to a background app is sent with a caveat on macOS.** macOS hands a
+Cmd shortcut to the frontmost app's menu bar and key window, so one posted to a
+background app can do nothing while a bare "sent" reads as success. Measured: Cmd+A
+posted to a background TextEdit left the selection unchanged, pressing Edit > Select
+All through `AXPress` did nothing either, and the same Cmd+A selected all the text
+once TextEdit was frontmost. Other apps and shortcuts were not measured, and the key
+goes to the target app's pid either way, so it is never delivered to the wrong app.
+So the macOS driver still posts the key, then reads the app's `AXFrontmost` for any
+key carrying the Cmd modifier and, when it is not `true` (an unreadable value counts
+as background), keeps `ok=True` but says macOS may have ignored it and names the
+element routes. Plain keys get no caveat.
+
 ### Threading
 
 The gateway is async and the native work is blocking, so every accessibility
