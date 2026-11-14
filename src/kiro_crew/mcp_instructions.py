@@ -58,8 +58,10 @@ GUIDE = (
     "Answers where-is, how-to and settings questions about Kiro Crew itself, and "
     "opens guides and cards in the dashboard.\n"
     "- `find_ui`, `search_docs`, guides, cards: for where-is, how-to and setting "
-    "questions about Kiro Crew itself, call these first and follow each result's "
-    "`next`; guides and cards need a message the user sent from the dashboard.\n"
+    "questions about Kiro Crew itself (including why a tool keeps asking for "
+    "approval), call these first and follow each result's `next`; answer from what "
+    "they return, never from a config key you recall. Guides and cards need a "
+    "message the user sent from the dashboard.\n"
     "- Write no text before these calls: the user reads every word, so a line such "
     'as "Let me check the layout first" is shown to them. Call the tool, then write '
     "only the answer, or offer the guide or card."
