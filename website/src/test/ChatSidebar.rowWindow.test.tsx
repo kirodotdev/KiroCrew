@@ -76,7 +76,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar, { SIDEBAR_DISPLACEMENT_WINDOW } from '../pages/ChatSidebar'
-import { _resetSessionRowWindowHeights } from '../pages/chat/sessionRowWindow'
+import { _resetSessionRowWindowHeights, sessionRowInitialMountBudget } from '../pages/chat/sessionRowWindow'
 
 type Cb = (entries: Array<Partial<IntersectionObserverEntry>>) => void
 let observers: Array<{ cb: Cb; els: Set<Element>; root: Element | null }> = []
@@ -138,21 +138,22 @@ describe('ChatSidebar row windowing', () => {
   })
   afterEach(() => { vi.unstubAllGlobals() })
 
-  it('stubs rows past the displacement window but keeps every row in DOM order', () => {
+  it('stubs rows past the initial mount budget but keeps every row in DOM order', () => {
     renderSidebar(null)
+    const budget = sessionRowInitialMountBudget()
     expect(rowIds()).toEqual(slots.map(s => s.key))
     expect(isStub('k-0')).toBe(false)
-    expect(isStub(`k-${SIDEBAR_DISPLACEMENT_WINDOW - 1}`)).toBe(false)
-    expect(isStub(`k-${SIDEBAR_DISPLACEMENT_WINDOW}`)).toBe(true)
+    expect(isStub(`k-${budget - 1}`)).toBe(false)
+    expect(isStub(`k-${budget}`)).toBe(true)
     expect(isStub(`k-${N - 1}`)).toBe(true)
     // Real rows exist only for the mounted ones.
-    expect(document.querySelectorAll('.session-row')).toHaveLength(SIDEBAR_DISPLACEMENT_WINDOW)
+    expect(document.querySelectorAll('.session-row')).toHaveLength(budget)
   })
 
   it('keeps stub and real rows on the same DOM identity contract', () => {
     renderSidebar(null)
     const realKey = 'k-0'
-    const stubKey = `k-${SIDEBAR_DISPLACEMENT_WINDOW}`
+    const stubKey = `k-${sessionRowInitialMountBudget()}`
     const real = document.querySelector<HTMLElement>(`.session-row[data-session-row="${realKey}"]`)!
     const stub = document.querySelector<HTMLElement>(`[data-session-window="stub"] [data-session-row="${stubKey}"]`)!
     const identityAttributes = (el: HTMLElement) => Array.from(el.attributes)
