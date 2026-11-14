@@ -208,12 +208,13 @@ def _read_dump_head(dump_path: Path) -> tuple[str, bool]:
 
     Returns ``(text, truncated)`` — ``truncated`` is computed on BYTES before
     decoding (multibyte characters shrink the decoded length, so a character
-    count cannot detect the cut). Opens with ``O_NOFOLLOW`` (symlink ->
-    ``ELOOP``) and ``O_NONBLOCK`` (a FIFO's open returns instead of waiting for
-    a writer) and verifies the fd is a regular file, so a ``loopstall-*.txt``
-    symlinked at ``/dev/zero`` (or a FIFO) cannot pull an unbounded read into
-    the startup sweep. Raises ``OSError`` on refusal or read failure — callers
-    already treat that as "leave the file alone".
+    count cannot detect the cut). The open refuses a symbolic link at the
+    name with ``ELOOP`` on every OS (a Windows junction included), is
+    non-blocking on POSIX (a FIFO's open returns instead of waiting for a
+    writer), and the fd must be a regular file, so a ``loopstall-*.txt``
+    symlinked at another file or ``/dev/zero``, or a FIFO, is never read.
+    Raises ``OSError`` on refusal or read failure — callers already treat that
+    as "leave the file alone".
     """
     return _read_dump_bytes(dump_path, _HEADER_SCAN_BYTES)
 
@@ -228,13 +229,7 @@ _DUMP_READ_MAX_BYTES = 4 * 1024 * 1024
 def _read_dump_bytes(dump_path: Path, max_bytes: int) -> tuple[str, bool]:
     """``(text, truncated)`` for at most *max_bytes* of a REGULAR dump file;
     see :func:`_read_dump_head` for the refusals."""
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_BINARY", 0)
-    )
-    fd = os.open(str(dump_path), flags)
+    fd = platform_compat.open_file_no_reparse(dump_path, nonblocking=True, links_only=True)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise OSError(f"not a regular file: {dump_path}")
