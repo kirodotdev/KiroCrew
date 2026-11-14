@@ -99,6 +99,11 @@ export interface Surface {
   /** Accessibility label for the badge ("X unread conversations"). */
   badgeLabel?: string
   /**
+   * Catalog key for the badge label, resolved when the badge renders so it
+   * follows the active language. Wins over `badgeLabel` when both are set.
+   */
+  badgeLabelKey?: string
+  /**
    * Optional live-activity count, rendered as a small pulsing dot on the rail
    * item rather than folded into the unread badge. Use for "something is
    * happening on this surface right now" signals whose semantics differ from
