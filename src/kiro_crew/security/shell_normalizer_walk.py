@@ -1575,3 +1575,11 @@ _EMPTY_QUOTE_RE = re.compile(r'""|\'\'')
 
 # Regex for $HOME or ${HOME} variable expansion.
 _HOME_VAR_RE = re.compile(r"\$\{HOME\}|\$HOME", re.IGNORECASE)
+
+
+def _subshell_bodies(command: str) -> "list[tuple[str, int, list[str]]]":
+    """Re-exported from ``shell_normalizer_subshell`` (split out to stay under the line cap);
+    kept importable here because callers and tests reach it through ``_walk``."""
+    from .shell_normalizer_subshell import _subshell_bodies as _impl
+
+    return _impl(command)

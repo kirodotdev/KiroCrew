@@ -17,6 +17,7 @@ import string
 import token
 import tokenize
 
+from . import shell_normalizer_self as _self_mod
 from .call_views import once_per_call
 from .shell_normalizer import (
     _NESTED_SHELL_PROGRAMS,
@@ -24,7 +25,6 @@ from .shell_normalizer import (
     _PYTHON_OPERAND_FLAGS,
     _PYTHON_PROGRAM_RE,
     _SHELL_WRAPPER_CHARS,
-    _normalize_operand,
     _program_basename,
     _python_reads_stdin,
     _shell_tokens,
@@ -932,7 +932,7 @@ def _has_self_importing_inline_program(
     expect_payload = False
     skip_next = False
     for later in later_tokens:
-        # The PAYLOAD is matched RAW, not through `_normalize_operand`. That helper truncates at
+        # The PAYLOAD is matched RAW, not through `_self_mod._normalize_operand`. That helper truncates at
         # the first control operator, which is correct for an operand the shell will split — but
         # a `-c` payload is a quoted program, so its `;` is Python, not a command separator.
         # Normalising `"import sys; ...; from kiro_crew.cli import main; main()"` down to
@@ -948,7 +948,7 @@ def _has_self_importing_inline_program(
             expect_payload = False
             continue
         # The FLAG itself is a plain token, so it is safe (and more accurate) to normalise.
-        stripped = _normalize_operand(later).strip("\"'")
+        stripped = _self_mod._normalize_operand(later).strip("\"'")
         if skip_next:
             skip_next = False
             continue  # value consumed by an operand-taking flag (`-X dev`)

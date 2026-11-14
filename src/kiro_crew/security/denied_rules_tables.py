@@ -209,7 +209,11 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "the product CLI is invoked to mint a dashboard token, or an inline "
         "interpreter program names the mint surface -- the CLI module, the token "
         "subcommand's module, or a token-producing product import (an imported CLI can "
-        "construct the token verb itself, so no 'token' argv word need appear)."
+        "construct the token verb itself, so no 'token' argv word need appear). "
+        "A credential verb named inside a substitution is refused too, including one "
+        "assigned to a variable the command then runs; write the verb as a plain word "
+        "outside $( ) or backticks, or move the mint out of the substituted variable, "
+        "to clear it."
     ),
     "self-protection-kill": (
         "Matched structurally on the command's argv, not by the pattern text above: "

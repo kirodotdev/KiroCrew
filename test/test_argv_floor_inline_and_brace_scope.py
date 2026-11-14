@@ -32,12 +32,10 @@ import pytest
 from named_cases_helpers import named_cases
 
 from kiro_crew import security
-from kiro_crew.security import argv_floor, inline_payload
+from kiro_crew.security import _glob_could_expand_to, _glob_to_regex, argv_floor, inline_payload
 from kiro_crew.security.shell_normalizer import (
     _SCRIPT_EXECUTES_RE,
     _data_consumer_command_disqualified,
-    _glob_could_expand_to,
-    _glob_to_regex,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1010,7 +1008,7 @@ class TestBraceExpansionMirrorsBash:
         aborts.  Past ``_BRACE_NESTING_CAP`` a group reads as ``.*`` -- the fail-closed
         direction -- and the command is still judged.
         """
-        from kiro_crew.security.shell_normalizer import _BRACE_NESTING_CAP
+        from kiro_crew.security.shell_normalizer_self import _BRACE_NESTING_CAP
 
         # Literal groups all the way down: bash leaves every one of them literal, so
         # the word starts with ``{`` and cannot be the program -- and the gate says so
@@ -1027,7 +1025,7 @@ class TestBraceExpansionMirrorsBash:
         # conservatively.
         # (Nested alternations also spend the alternation budget, so "under" is under
         # both caps.)
-        from kiro_crew.security.shell_normalizer import _BRACE_GROUP_BUDGET
+        from kiro_crew.security.shell_normalizer_self import _BRACE_GROUP_BUDGET
 
         levels = min(_BRACE_NESTING_CAP, _BRACE_GROUP_BUDGET) - 1
         under = "{a," * levels + "b" + "}" * levels
@@ -1056,9 +1054,9 @@ class TestBraceExpansionMirrorsBash:
         pair lookup per ``{``, whether it re-derives the table or rescans a suffix)
         reads 16x for 4x the input and fails here at any size, on any host.
         """
-        from kiro_crew.security import shell_normalizer
+        from kiro_crew.security import shell_normalizer_self
 
-        assert shell_normalizer._brace_pairs("{a,{b}}c{") == {0: 6, 3: 5}
+        assert shell_normalizer_self._brace_pairs("{a,{b}}c{") == {0: 6, 3: 5}
         assert _glob_to_regex("{{{kirocrew") == re.escape("{{{kirocrew")
 
         # Delegating stand-ins on the two module globals the translation is wired through:
@@ -1069,8 +1067,8 @@ class TestBraceExpansionMirrorsBash:
         # ``count`` scan -- so work done INSIDE a single pass is measured, not only the
         # number of passes: a table built with a scan to the end of the word from each
         # ``{`` visits O(N^2) characters in one call.  Deterministic, unlike a clock.
-        real_pairs = shell_normalizer._brace_pairs
-        real_to_regex = shell_normalizer._glob_to_regex
+        real_pairs = shell_normalizer_self._brace_pairs
+        real_to_regex = shell_normalizer_self._glob_to_regex
         visits = [0]
 
         class _CountingStr(str):
@@ -1106,8 +1104,8 @@ class TestBraceExpansionMirrorsBash:
         def counting_to_regex(pattern: str, depth: int = 0, budget: list[int] | None = None) -> str:
             return real_to_regex(_CountingStr(pattern), depth, budget)
 
-        monkeypatch.setattr(shell_normalizer, "_brace_pairs", counting_pairs)
-        monkeypatch.setattr(shell_normalizer, "_glob_to_regex", counting_to_regex)
+        monkeypatch.setattr(shell_normalizer_self, "_brace_pairs", counting_pairs)
+        monkeypatch.setattr(shell_normalizer_self, "_glob_to_regex", counting_to_regex)
 
         def judge(braces: int) -> int:
             hostile = "{" * braces + "kirocrew"
@@ -1153,7 +1151,7 @@ class TestBraceExpansionMirrorsBash:
         exit.  Past ``_BRACE_GROUP_BUDGET`` a group reads as ``.*``, so the word is judged
         as "could be anything" -- over-matching a protected name, never missing one.
         """
-        from kiro_crew.security.shell_normalizer import _BRACE_GROUP_BUDGET
+        from kiro_crew.security.shell_normalizer_self import _BRACE_GROUP_BUDGET
 
         def judge() -> None:
             for shape in ("{*,*}", "{*,**}", "{*,a*}"):

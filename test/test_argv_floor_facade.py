@@ -74,7 +74,7 @@ _KNOWN_SEAMS: dict[str, frozenset[str]] = {
             "socket",
         }
     ),
-    PACKAGE: frozenset({"_self_token_frames", "_own_interface_addresses", "_is_self_module_flag"}),
+    PACKAGE: frozenset({"_self_token_frames", "_own_interface_addresses"}),
 }
 
 

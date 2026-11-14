@@ -274,12 +274,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _PYTHON_INERT_CTORS,
         _PYTHON_WRITE_METHODS,
         _RAW_ASSIGNMENT_RE,
+        _REDIRECT_OP_PREFIX,
         _SELF_CLOUD_DESTRUCTIVE_VERBS,
         _SELF_FLOOR_MACHINERY_RE,
         _SELF_FLOOR_NAME_HINT_RE,
         _SELF_FLOOR_QUOTE_JUNK_RE,
-        _SELF_IMPORT_RE,
-        _SELF_MODULE_SPELLINGS,
         _VALUE_REWRITE_RE,
         _any_decorated_heredoc_tag,
         _assign_target_rebinds,
@@ -296,7 +295,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_self_cloud_destructive,
         _is_self_gateway_restart,
         _is_self_kill,
-        _is_self_module_flag,
         _is_self_module_invocation,
         _is_self_restart,
         _is_self_skills_authority_retire,
@@ -308,15 +306,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _powershell_tokens,
         _python_body_is_data,
         _quoted_assignment_scripts,
-        _self_cli_operands,
         _self_floor_can_fire,
         _self_frames,
         _self_kill_span,
-        _self_module_flag_scan,
-        _self_module_name_index,
-        _self_program_index,
         _self_token_frames,
-        _SelfModuleScan,
         _shell_payload_sources,
         _static_substitution_output,
     )
@@ -443,6 +436,8 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
     from kiro_crew.atomic_write import on_event_loop as _event_loop_running  # noqa: F401
     from kiro_crew.security import argv_rules as _argv_rules  # noqa: F401
     from kiro_crew.security import shell_normalizer as _shell_normalizer  # noqa: F401
+    from kiro_crew.security import shell_normalizer_programs as _programs  # noqa: F401
+    from kiro_crew.security import shell_normalizer_self as _self_mod  # noqa: F401
     from kiro_crew.security.denied_rules import (  # noqa: F401
         _GIT_PUBLISH_UNGATED,
     )
@@ -491,9 +486,7 @@ if TYPE_CHECKING:  # names it serves from outside its owners, from their homes
         _decode_shell_quoted_literals,
         _dequote_token,
         _ends_argv,
-        _glob_could_expand_to,
         _is_mint_verb,
-        _is_self_program,
         _iter_shell_chars,
         _matching_close_paren,
         _nested_shell_payloads,
