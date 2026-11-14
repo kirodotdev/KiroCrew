@@ -396,7 +396,7 @@ def _read_model(r: _Read) -> None:
     # tools, so a value read back from this file would let a prompt-injected
     # agent grant itself routing the owner never selected. The flag lives in
     # memory only: a restart leaves the slot on its persisted model -- the
-    # documented refusal -- and the owner re-picks "Auto (Jev)" to route again.
+    # documented refusal -- and the owner re-picks "Auto (decision model)" to route again.
     from kiro_crew.dashboard import chat_persistence as cp  # circular import: facade imports owners
 
     purpose = r.purpose

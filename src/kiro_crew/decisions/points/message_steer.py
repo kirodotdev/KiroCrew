@@ -17,7 +17,7 @@ shipped paths a send takes.
 Never behind the sender's back
 -----------------------------
 It runs only when the sender SELECTED it. The split send button carries a third
-mode, ``Auto (Jev)``, drawn only while the seam is consented and the governance
+mode, ``Auto (decision model)``, drawn only while the seam is consented and the governance
 ceiling permits it, and choosing it sends ``steer: "auto"`` instead of
 ``steer: true``. A manual Steer or Queue never reaches this module: that pick IS
 the answer to the question this point asks.

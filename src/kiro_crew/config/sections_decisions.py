@@ -115,7 +115,7 @@ class NudgeWakeConfig:
             "Which judge answers at nudge.wake: 'jev' (the System One model this "
             "card's consent switch covers), 'llm' (a small text-only model on the "
             "provider this machine already uses, no extra key needed), or 'auto' "
-            "-- Jev when consent stands for it, otherwise the small model. "
+            "-- the decision model when consent stands for it, otherwise the small model. "
             "Anything else reads as 'auto'. Choosing 'jev' without that consent "
             "sends nothing and every tick fires as it does today.",
         ),
@@ -251,7 +251,7 @@ class DecisionsConfig:
     ``DECISION_POINT_NAMES`` (``decisions/gate.py``); each module under
     ``decisions/points/`` owns how its point is reached -- for example a
     non-zero ``skills.max_triggered`` for ``skills.select`` and the picker's
-    ``Auto (Jev)`` entry for ``model.route``.
+    ``Auto (decision model)`` entry for ``model.route``.
 
     Every field is hot-applied (no ``restart=True`` anywhere): the gate reads the
     live snapshot per call, so a bucket change takes effect on the next decision
@@ -288,20 +288,20 @@ class DecisionsConfig:
         default_factory=lambda: dict(DECISION_MODEL_ROUTE_DEFAULT),
         metadata=_meta(
             "Model per difficulty tier",
-            "Which model answers a chat turn Jev put in each difficulty tier, for "
-            "a session whose model is set to 'Auto (Jev)' in the chat model "
+            "Which model answers a chat turn the decision model put in each difficulty tier, for "
+            "a session whose model is set to 'Auto (decision model)' in the chat model "
             "picker. Keys are the three tiers the question offers -- 'simple', "
             "'medium', 'complex' -- and each value is a model id the provider "
             "advertises to your account, exactly as the chat model picker spells "
             "it. Every tier is EMPTY by default, which means inherit: the turn "
             "keeps the model its session is already on, and the decision is still "
-            "recorded so you can see which tier Jev chose before you pin anything. "
+            "recorded so you can see which tier the decision model chose before you pin anything. "
             "No model id is named for you, because an id your account is not "
             "offered would fail on the first prompt. 'auto' means the same as empty. "
             "An id your account cannot run keeps the session's model too and "
             "records why in the decision log. Routing a turn to a dearer model "
             "costs more, which is why it happens only for a session whose owner "
-            "picked 'Auto (Jev)' -- a manual model choice is never overridden.",
+            "picked 'Auto (decision model)' -- a manual model choice is never overridden.",
         ),
     )
     model_route_derive: bool = field(
@@ -333,7 +333,7 @@ class DecisionsConfig:
             "Wake judge",
             "Per-point settings for nudge.wake: which judge answers, the model "
             "id for the small-model lane, and how long a judge may keep a loop "
-            "quiet before one fires anyway. The Jev lane still needs this point's "
+            "quiet before one fires anyway. The decision model lane still needs this point's "
             "consent scope on the Decisions card; the small-model lane needs no "
             "consent row, because it sends to the model provider your sessions "
             "already use, so picking it here is what runs it.",

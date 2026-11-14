@@ -626,7 +626,7 @@ def _shape_fork_child(
     new_slot.reasoning_effort = slot.reasoning_effort
     # Inherited beside the model it belongs to: the constructor takes `model` and
     # the routing choice is the other half of the same answer, so a fork of an
-    # "Auto (Jev)" session that arrived pinned would run the parent's next turns
+    # "Auto (decision model)" session that arrived pinned would run the parent's next turns
     # on a model the parent had explicitly stopped choosing by hand.
     # Inheriting is arming a SECOND routed session, so it answers to the same owner
     # predicate as the arm itself; the caller says whether it passed that predicate.
