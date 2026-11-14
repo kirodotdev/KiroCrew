@@ -194,7 +194,7 @@ _ROUTED_TOKENS = (
 
 # Token marking a routed function as also applying a kernel resource ceiling
 # (RLIMIT_NPROC/NOFILE/CPU/AS) to its child — the second layer of the spawn
-# guarantee (security-review bdf0d7e5). Every sandbox-routed function must
+# guarantee. Every sandbox-routed function must
 # reference one: the sandbox gives the child filesystem + credential isolation,
 # this gives it a fork-bomb / resource ceiling. Functions whose ONLY spawns are
 # fixed-argv internal probes (no agent-influenced child) are exempted in
@@ -210,7 +210,7 @@ _ROUTED_TOKENS = (
 # check scans the enclosing function's raw source, docstrings and comments
 # included, so a bare-name match lets prose like "routed through run_limited"
 # satisfy the gate while the actual spawn silently reverts to a bare
-# ``subprocess.run`` (verified by mutation before the parens were added).
+# ``subprocess.run``.
 _PREEXEC_TOKENS = (
     "create_subprocess_limited(",
     "run_limited(",
