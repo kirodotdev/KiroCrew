@@ -399,8 +399,8 @@ class AgentConfig:
     crew_mode_agent: str = field(
         default=_CREW_MODE_AGENT_DEFAULT,
         metadata=_meta(
-            "Ultra Mode agent",
-            "The agent template a chat runs when Ultra Mode is turned on. "
+            "Conductor mode agent",
+            "The agent template a chat runs when conductor mode is turned on. "
             "Empty falls back to the default. Takes effect live for new chats; "
             "no gateway restart.",
         ),
@@ -1452,7 +1452,7 @@ class AgentConfig:
         default=True,
         metadata=_meta(
             "Conductor Own-Child Sends",
-            "Let the Conductor and the Ultra Mode team lead send to and close a "
+            "Let the Conductor and the conductor mode team lead send to and close a "
             "session they created themselves without an approval prompt, the way a "
             "Bot already does. A send or close aimed at any other session still "
             "prompts, and the child keeps its own approval mode. Turn this off to "

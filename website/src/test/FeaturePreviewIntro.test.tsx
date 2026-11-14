@@ -207,12 +207,12 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     expect(screen.queryByRole('switch', { name: /Run KAS on .*own engine/ })).toBeNull()
   })
 
-  it('offers Ultra Mode as a plain switch, off by default, that writes the one Crew Mode flag', () => {
+  it('offers conductor mode as a plain switch, off by default, that writes the one Crew Mode flag', () => {
     renderSection()
-    const toggle = screen.getByRole('switch', { name: 'Ultra Mode' })
+    const toggle = screen.getByRole('switch', { name: 'Conductor mode' })
     expect(toggle).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByTitle('Lets a chat hand tasks to a crew and track them on a Board.')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /See what (Ultra|Crew) Mode looks like/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /See what (Conductor mode|Crew Mode) looks like/ })).toBeNull()
     fireEvent.click(toggle)
     expect(localStorage.getItem('mc-preview-crew-mode')).toBe('1')
     expect(crewModeEnabled()).toBe(true)

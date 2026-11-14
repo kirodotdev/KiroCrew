@@ -33,7 +33,7 @@ function newClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } })
 }
 
-/** Mount the sync next to a reader of the Ultra Mode flag, as the app shell does. */
+/** Mount the sync next to a reader of the conductor mode flag, as the app shell does. */
 function mountSync(qc: QueryClient) {
   return renderHook(() => {
     usePreviewFlagServerSync()
@@ -79,7 +79,7 @@ describe('preview flag config paths', () => {
 })
 
 describe('usePreviewFlagServerSync', () => {
-  it('turns Ultra Mode on from the server when this browser has no copy', async () => {
+  it('turns conductor mode on from the server when this browser has no copy', async () => {
     server = { crew_mode: true }
     const { result } = mountSync(newClient())
     await waitFor(() => expect(result.current).toBe(true))

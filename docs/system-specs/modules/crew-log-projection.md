@@ -2718,7 +2718,7 @@ The question "was this unit retired between the scans" is asked of the UNIT, nev
 of its slot. A slot present in the lineage says only that SOME unit holds it now,
 and a slot is reused the moment a new session takes the vacancy, so a probe keyed
 on the slot skips exactly the retirement it is looking for whenever the vacancy was
-filled -- which in Ultra Mode is the normal case rather than the exception.
+filled -- which in conductor mode is the normal case rather than the exception.
 
 The window is applied on the way OUT and never while caching. A read position
 advances on the bytes CONSUMED, not on the records kept, so filtering while

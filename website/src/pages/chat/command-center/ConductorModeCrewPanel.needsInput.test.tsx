@@ -1,5 +1,5 @@
 /**
- * Ultra Mode Board > Status > Needs your input: each ledger item a worker said
+ * Conductor mode Board > Status > Needs your input: each ledger item a worker said
  * waits on the PERSON (goal-board's "needs you" rule) shows its task and what it
  * asks, with goal-board's Reply buttons -- the conductor's offered answers from the
  * board read's `asks`. A button fills the chat box and never sends.
@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({ crewWorkers: vi.fn(), resumeChatSlot: vi.fn(), c
 vi.mock('../../../api/client', () => ({ api }))
 vi.mock('../../../hooks/usePanelTabs', () => ({ openPanelView: vi.fn() }))
 
-import UltraCrewPanel, { personAsks } from './UltraCrewPanel'
+import ConductorModeCrewPanel, { personAsks } from './ConductorModeCrewPanel'
 import { CrewWorkersTab } from './CrewWorkerList'
 import type { WorkBoardItem } from '../../../api/crewBoard'
 import { crewModePreviewOn } from '../../../test/crewModePreview'
@@ -41,7 +41,7 @@ function renderWith(ui: React.ReactElement, slots: unknown[] = []) {
   return { store, qc, view }
 }
 
-describe('Ultra Mode Needs your input', () => {
+describe('Conductor mode Needs your input', () => {
   beforeEach(() => {
     api.crewWorkers.mockResolvedValue({ root: 'root-1', workers: [] })
     api.sessionSummary.mockResolvedValue({ enabled: false, stale: false, intents: [], constraints: [], generated_at: null, user_turns: null, last_activity: null })
@@ -50,87 +50,87 @@ describe('Ultra Mode Needs your input', () => {
 
   it('shows a waiting item: which task and what it asks, counted', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    const row = await screen.findByTestId('ultra-person-ask')
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    const row = await screen.findByTestId('conductor-mode-person-ask')
     expect(row).toHaveTextContent('Pick a tea')
-    expect(within(row).getByTestId('ultra-person-ask-text')).toHaveTextContent('Which tea goes on the menu: oolong or green?')
-    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 1')
-    expect(screen.queryByTestId('ultra-needs-you-none')).toBeNull()
+    expect(within(row).getByTestId('conductor-mode-person-ask-text')).toHaveTextContent('Which tea goes on the menu: oolong or green?')
+    expect(screen.getByTestId('conductor-mode-needs-you')).toHaveTextContent('· 1')
+    expect(screen.queryByTestId('conductor-mode-needs-you-none')).toBeNull()
     // Its milestone and the recap say it waits on the person, not on the main chat.
-    expect(screen.getByTestId('ultra-milestone')).toHaveTextContent('Waiting on your answer above')
-    expect(screen.getByTestId('ultra-recap')).toHaveTextContent('Pick a tea waits on you')
+    expect(screen.getByTestId('conductor-mode-milestone')).toHaveTextContent('Waiting on your answer above')
+    expect(screen.getByTestId('conductor-mode-recap')).toHaveTextContent('Pick a tea waits on you')
   })
 
   it("puts the conductor's offered answers in one menu beside Reply: two controls in the row", async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})], asks: { it_q: ['Oolong', 'Green'] } })
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    const row = await screen.findByTestId('ultra-person-ask')
-    const actions = within(row).getByTestId('ultra-person-ask-actions')
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    const row = await screen.findByTestId('conductor-mode-person-ask')
+    const actions = within(row).getByTestId('conductor-mode-person-ask-actions')
     expect(within(actions).getAllByRole('button')).toHaveLength(2)
-    expect(within(row).getByTestId('ultra-person-ask-reply')).toHaveTextContent('Write a reply')
+    expect(within(row).getByTestId('conductor-mode-person-ask-reply')).toHaveTextContent('Write a reply')
     // The visible line says the buttons send nothing.
-    expect(within(row).getByTestId('ultra-person-ask-hint')).toHaveTextContent('Puts this in your chat box to check and send')
-    openMenu(within(row).getByTestId('ultra-person-ask-answers'))
-    expect((await screen.findAllByTestId('ultra-person-ask-option')).map(b => b.textContent)).toEqual(['Oolong', 'Green'])
+    expect(within(row).getByTestId('conductor-mode-person-ask-hint')).toHaveTextContent('Puts this in your chat box to check and send')
+    openMenu(within(row).getByTestId('conductor-mode-person-ask-answers'))
+    expect((await screen.findAllByTestId('conductor-mode-person-ask-option')).map(b => b.textContent)).toEqual(['Oolong', 'Green'])
   })
 
   it('a button fills the chat box with the item reference and never sends', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})], asks: { it_q: ['Oolong'] } })
     const onAct = vi.fn()
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={onAct} />)
-    openMenu(await screen.findByTestId('ultra-person-ask-answers'))
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={onAct} />)
+    openMenu(await screen.findByTestId('conductor-mode-person-ask-answers'))
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Oolong' }))
     expect(onAct).toHaveBeenLastCalledWith('About "Pick a tea" (it_q): Oolong')
-    fireEvent.click(screen.getByTestId('ultra-person-ask-reply'))
+    fireEvent.click(screen.getByTestId('conductor-mode-person-ask-reply'))
     expect(onAct).toHaveBeenLastCalledWith('About "Pick a tea" (it_q): ')
     expect(api.sendMessage).not.toHaveBeenCalled()
   })
 
   it('no offered answers: Reply alone, no menu', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    await screen.findByTestId('ultra-person-ask-reply')
-    expect(screen.queryByTestId('ultra-person-ask-answers')).toBeNull()
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    await screen.findByTestId('conductor-mode-person-ask-reply')
+    expect(screen.queryByTestId('conductor-mode-person-ask-answers')).toBeNull()
   })
 
   it('says nothing waits when nothing does', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ status: 'progress', reason: null, outstanding: false, awaits_person: false })] })
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    expect(await screen.findByTestId('ultra-milestone')).toBeInTheDocument()
-    expect(screen.getByTestId('ultra-needs-you-none')).toBeInTheDocument()
-    expect(screen.queryByTestId('ultra-person-ask')).toBeNull()
-    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    expect(await screen.findByTestId('conductor-mode-milestone')).toBeInTheDocument()
+    expect(screen.getByTestId('conductor-mode-needs-you-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('conductor-mode-person-ask')).toBeNull()
+    expect(screen.getByTestId('conductor-mode-needs-you')).toHaveTextContent('· 0')
   })
 
   it('an item leaves once answered', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
-    const { qc } = renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    await screen.findByTestId('ultra-person-ask')
+    const { qc } = renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    await screen.findByTestId('conductor-mode-person-ask')
     // Answered (a decision, or the person's steer): the board read stops flagging it.
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ decided_at: '2026-10-30T00:06:00Z', outstanding: false, awaits_person: false })] })
     await qc.invalidateQueries()
-    expect(await screen.findByTestId('ultra-needs-you-none')).toBeInTheDocument()
-    expect(screen.queryByTestId('ultra-person-ask')).toBeNull()
+    expect(await screen.findByTestId('conductor-mode-needs-you-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('conductor-mode-person-ask')).toBeNull()
   })
 
   it('with a crew member on screen the item shows and offers to open the main chat', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})], asks: { it_q: ['Oolong'] } })
-    const { store } = renderWith(<UltraCrewPanel root="root-1" viewing="w-1" active onAct={vi.fn()} />, [{ key: 'root-1', title: 'Root', crew_mode_root: true, messages: 2 }, { key: 'w-1', title: 'Worker', crew_root: 'root-1' }])
-    const row = await screen.findByTestId('ultra-person-ask')
+    const { store } = renderWith(<ConductorModeCrewPanel root="root-1" viewing="w-1" active onAct={vi.fn()} />, [{ key: 'root-1', title: 'Root', crew_mode_root: true, messages: 2 }, { key: 'w-1', title: 'Worker', crew_root: 'root-1' }])
+    const row = await screen.findByTestId('conductor-mode-person-ask')
     expect(row).toHaveTextContent('Pick a tea')
-    expect(within(row).queryByTestId('ultra-person-ask-reply')).toBeNull()
-    expect(within(row).getByTestId('ultra-person-ask-open-main')).toHaveTextContent('Back to main chat')
-    fireEvent.click(within(row).getByTestId('ultra-person-ask-open-main'))
+    expect(within(row).queryByTestId('conductor-mode-person-ask-reply')).toBeNull()
+    expect(within(row).getByTestId('conductor-mode-person-ask-open-main')).toHaveTextContent('Back to main chat')
+    fireEvent.click(within(row).getByTestId('conductor-mode-person-ask-open-main'))
     expect(store.getState().chat.activeSlot).toBe('root-1')
   })
 
   it('with the main chat closed, the row reopens it from its saved transcript', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
     api.resumeChatSlot.mockResolvedValue({ ok: false })
-    renderWith(<UltraCrewPanel root="root-1" viewing="w-1" active onAct={vi.fn()} />, [{ key: 'w-1', title: 'Worker', crew_root: 'root-1' }])
-    const row = await screen.findByTestId('ultra-person-ask')
-    expect(within(row).getByTestId('ultra-person-ask-open-main')).toHaveTextContent('Open main chat')
-    fireEvent.click(within(row).getByTestId('ultra-person-ask-open-main'))
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="w-1" active onAct={vi.fn()} />, [{ key: 'w-1', title: 'Worker', crew_root: 'root-1' }])
+    const row = await screen.findByTestId('conductor-mode-person-ask')
+    expect(within(row).getByTestId('conductor-mode-person-ask-open-main')).toHaveTextContent('Open main chat')
+    fireEvent.click(within(row).getByTestId('conductor-mode-person-ask-open-main'))
     expect(api.resumeChatSlot).toHaveBeenCalled()
   })
 
@@ -138,10 +138,10 @@ describe('Ultra Mode Needs your input', () => {
     const report = { id: 'r1', ts: '2026-10-30T00:05:00Z', item_id: 'it_q', kind: 'report', status: 'question', text: '' }
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ events: [report] as never })] })
     api.crewBoardAction.mockRejectedValue(new Error('Nothing was skipped: this ask changed or was answered since the page loaded.'))
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    fireEvent.click(await screen.findByTestId('ultra-person-ask-dismiss'))
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    fireEvent.click(await screen.findByTestId('conductor-mode-person-ask-dismiss'))
     expect(await screen.findByRole('alert')).toHaveTextContent('Nothing was skipped: this ask changed or was answered since the page loaded.')
-    expect(screen.getByTestId('ultra-person-ask')).toBeInTheDocument()
+    expect(screen.getByTestId('conductor-mode-person-ask')).toBeInTheDocument()
   })
 
   it('"Skip question" dismisses the ask it shows on the server and the card leaves', async () => {
@@ -152,30 +152,30 @@ describe('Ultra Mode Needs your input', () => {
       api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ awaits_person: false, outstanding: false, events: [{ id: 'e1', ts: '2026-10-30T00:06:00Z', item_id: 'it_q', kind: 'steer', status: null, text: '' }] as never })] })
       return { ok: true, action: 'dismiss', item_id: 'it_q' }
     })
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
     const close = await screen.findByRole('button', { name: 'Skip "Pick a tea" without replying' })
     expect(close).toHaveTextContent('Skip question')
     // What skipping does is on the card, not only in a tooltip.
-    expect(screen.getByTestId('ultra-person-ask-dismiss-note')).toHaveTextContent('It comes back only if it asks again.')
+    expect(screen.getByTestId('conductor-mode-person-ask-dismiss-note')).toHaveTextContent('It comes back only if it asks again.')
     fireEvent.click(close)
     await waitFor(() => expect(api.crewBoardAction).toHaveBeenCalledWith('root-1', 'it_q', 'dismiss', 'r1'))
-    expect(await screen.findByTestId('ultra-needs-you-none')).toBeInTheDocument()
-    expect(screen.queryByTestId('ultra-person-ask')).toBeNull()
-    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
+    expect(await screen.findByTestId('conductor-mode-needs-you-none')).toBeInTheDocument()
+    expect(screen.queryByTestId('conductor-mode-person-ask')).toBeNull()
+    expect(screen.getByTestId('conductor-mode-needs-you')).toHaveTextContent('· 0')
   })
 
   it('a worker running again is working, not waiting on you', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ alive: 'running', awaits_person: false })] })
-    renderWith(<UltraCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
-    expect(await screen.findByTestId('ultra-milestone')).toHaveAttribute('data-state', 'running')
-    expect(screen.getByTestId('ultra-needs-you')).toHaveTextContent('· 0')
+    renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active onAct={vi.fn()} />)
+    expect(await screen.findByTestId('conductor-mode-milestone')).toHaveAttribute('data-state', 'running')
+    expect(screen.getByTestId('conductor-mode-needs-you')).toHaveTextContent('· 0')
   })
 
   it('the Board tab hands its composer insert to the panel', async () => {
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({})] })
     const onAct = vi.fn()
     renderWith(<CrewWorkersTab slot="root-1" active onAct={onAct} />, [{ key: 'root-1', title: 'Root' }])
-    fireEvent.click(await screen.findByTestId('ultra-person-ask-reply'))
+    fireEvent.click(await screen.findByTestId('conductor-mode-person-ask-reply'))
     expect(onAct).toHaveBeenCalledWith('About "Pick a tea" (it_q): ')
   })
 })
@@ -193,5 +193,5 @@ describe('personAsks', () => {
   })
 })
 
-// Last, after the file's own hooks: Ultra Mode is a feature preview.
+// Last, after the file's own hooks: conductor mode is a feature preview.
 crewModePreviewOn()

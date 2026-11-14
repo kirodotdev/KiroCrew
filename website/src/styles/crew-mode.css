@@ -1,14 +1,14 @@
-/* ── Ultra Mode surfaces (code name: Crew Mode) ──
-   One solid accent from the theme, `--ultra-accent`, is the ghost's colour and
+/* ── Conductor mode surfaces (code name: Crew Mode) ──
+   One solid accent from the theme, `--conductor-mode-accent`, is the ghost's colour and
    every icon's. It is the theme's `--aim` pulled toward the strongest text
    colour so it holds contrast on idle, hover and selected rows in light and
-   dark (the composer chip while off stays grey). The words "Ultra Mode" alone (the sidebar eyebrow, the composer chip
+   dark (the composer chip while off stays grey). The words "Conductor mode" alone (the sidebar eyebrow, the composer chip
    while on, the welcome title) wear a purple-to-blue text gradient, from the
    theme's `--aim` to its `--info`. Nothing here covers other UI: each rule
    colours the element it is set on. */
 
 :root {
-  --ultra-accent: color-mix(in srgb, var(--aim) 72%, var(--text-strong, var(--text)));
+  --conductor-mode-accent: color-mix(in srgb, var(--aim) 72%, var(--text-strong, var(--text)));
 }
 
 /* The ghost badge: a solid accent disc. */
@@ -17,7 +17,7 @@
   color: var(--aim-fg);
 }
 
-/* The "Ultra Mode" words. The purple stop is the theme's `--aim` and the blue
+/* The "Conductor mode" words. The purple stop is the theme's `--aim` and the blue
    stop its `--info`, pulled 15% and 40% toward the strongest text colour, so
    the two ends stay far apart in hue. Measured >= 4.5:1 for each stop on the
    page and on idle, hover and selected rows in the light, dark, kiro-light and
@@ -25,7 +25,7 @@
    (12%, 16% on hover or press) for it. */
 .crew-grad-text,
 .crew-eyebrow-text,
-.ultra-title-text,
+.conductor-mode-title-text,
 html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
   background-image: linear-gradient(
     90deg,
@@ -41,14 +41,14 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
 @media (forced-colors: active) {
   .crew-grad-text,
   .crew-eyebrow-text,
-  .ultra-title-text,
+  .conductor-mode-title-text,
   html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
     background-image: none;
     color: CanvasText;
   }
 }
 
-/* The Sessions row's ULTRA MODE tag: the same two stops, laid out
+/* The Sessions row's CONDUCTOR MODE tag: the same two stops, laid out
    purple -> blue -> purple on a tile twice the tag's width. While the crew
    works, `CrewEyebrow` slides the tile one width per loop (Framer Motion,
    background-position only), so every frame shows only colours between the
@@ -76,12 +76,12 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
 @supports not ((background-clip: text) or (-webkit-background-clip: text)) {
   .crew-eyebrow-text {
     background-image: none;
-    color: var(--ultra-accent);
+    color: var(--conductor-mode-accent);
   }
 }
 
-.ultra-accent {
-  color: var(--ultra-accent);
+.conductor-mode-accent {
+  color: var(--conductor-mode-accent);
 }
 
 /* The current worker in a list: a flat accent tint with an accent border. */
@@ -91,7 +91,7 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"] .crew-chip-text {
   border-radius: var(--radius-lg, 12px);
 }
 
-/* The composer's Ultra Mode chip. Off and on must differ in the edge and the
+/* The composer's conductor mode chip. Off and on must differ in the edge and the
    fill, not only in the label, so a glance tells them apart.
    Off: an untinted glass chip with the app's plain 1px border and a grey bolt
    and label, like any other composer chip.
@@ -145,7 +145,7 @@ html:root .liquid-glass.crew-chip:not(:disabled):not([aria-disabled="true"]):act
 }
 
 /* Pressed stays light on hover and press too, so its gradient label keeps
-   its contrast (see the "Ultra Mode" words above). */
+   its contrast (see the "Conductor mode" words above). */
 html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):hover,
 html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-disabled="true"]):active {
   --crew-chip-mix: 16%;
@@ -163,7 +163,7 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-
 }
 
 .crew-tone-aim {
-  color: var(--ultra-accent);
+  color: var(--conductor-mode-accent);
 }
 
 .crew-tone-muted {
@@ -181,7 +181,7 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-
   background-color: color-mix(in srgb, var(--info) 8%, transparent);
 }
 
-/* The session list's Ultra Mode root row while the chat pane shows one of its
+/* The session list's conductor mode root row while the chat pane shows one of its
    crew members. They are not listed, so the root stays marked as the member's
    parent: a light tint and an accent edge, weaker than the active row's fill.
    No glow, no shadow. */
@@ -191,29 +191,29 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-
   outline-offset: -1px;
 }
 
-/* Progress bars (Ultra panel and V3 row): a flat track and fill. */
-.ultra-track {
+/* Progress bars (conductor mode panel and V3 row): a flat track and fill. */
+.conductor-mode-track {
   background-color: color-mix(in srgb, var(--text) 12%, transparent);
   border-radius: 999px;
   overflow: hidden;
 }
 
-.ultra-fill {
+.conductor-mode-fill {
   background-color: var(--aim);
   height: 100%;
   border-radius: 999px;
 }
 
-.ultra-fill-running {
+.conductor-mode-fill-running {
   background-color: color-mix(in srgb, var(--aim) 40%, transparent);
   height: 100%;
 }
 
-/* The Ultra Mode turn-on effect (components/crew/UltraModeEffect.tsx): a
+/* The conductor mode turn-on effect (components/crew/ConductorModeEffect.tsx): a
    transient, pointer-events-none overlay. The band of light that sweeps the
    chat, the flash at the switch, the Board tab's one glow, and the
    reduced-motion tint. */
-.ultra-fx-band {
+.conductor-mode-fx-band {
   background-image: linear-gradient(
     90deg,
     transparent,
@@ -223,7 +223,7 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-
   );
 }
 
-.ultra-fx-flash {
+.conductor-mode-fx-flash {
   background-image: radial-gradient(
     circle,
     var(--aim) 0%,
@@ -234,16 +234,16 @@ html:root .liquid-glass.crew-chip[aria-pressed="true"]:not(:disabled):not([aria-
 }
 
 /* The flash's bolt: the solid accent with a light halo, so it reads on any chat. */
-.ultra-fx-bolt {
+.conductor-mode-fx-bolt {
   color: var(--aim);
   filter: drop-shadow(0 0 6px color-mix(in srgb, var(--aim) 80%, transparent))
     drop-shadow(0 0 2px var(--bg));
 }
 
-.ultra-fx-glow {
+.conductor-mode-fx-glow {
   box-shadow: 0 0 0 2px var(--aim), 0 0 14px 2px color-mix(in srgb, var(--info) 70%, transparent);
 }
 
-.ultra-fx-fade {
+.conductor-mode-fx-fade {
   background-color: color-mix(in srgb, var(--aim) 10%, transparent);
 }

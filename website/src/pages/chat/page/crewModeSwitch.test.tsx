@@ -72,11 +72,11 @@ describe('useCrewModeSwitch pending switches', () => {
   })
 })
 
-describe('useCrewModeSwitch turning Ultra Mode off', () => {
+describe('useCrewModeSwitch turning conductor mode off', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
-  // Ultra Mode turned on in a closed panel, so turning it off again closes the panel.
+  // Conductor mode turned on in a closed panel, so turning it off again closes the panel.
   const turnedOn = async () => {
     const s = setup(vi.fn<(kind: ViewKind) => void>())
     act(() => { s.hook.result.current.turnOnCrewMode() })
@@ -127,7 +127,7 @@ describe('useCrewModeSwitch turning Ultra Mode off', () => {
   it("keeps chat B's closed panel to restore when chat A's switch back lands meanwhile", async () => {
     const { hook, pending, store } = await turnedOn()
     act(() => { hook.result.current.turnOffCrewMode?.() })
-    // On chat B, with its panel closed, turn Ultra Mode on before A's switch lands.
+    // On chat B, with its panel closed, turn conductor mode on before A's switch lands.
     hook.rerender({ slot: plain('b') })
     act(() => { store.dispatch(closeActivityPanel()) })
     act(() => { hook.result.current.turnOnCrewMode() })
@@ -140,7 +140,7 @@ describe('useCrewModeSwitch turning Ultra Mode off', () => {
   })
 })
 
-describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
+describe('useCrewModeSwitch turning conductor mode on fails', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear(); localStorage.clear(); turnOnCrewModePreview(); __resetPanelTabs() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
@@ -183,7 +183,7 @@ describe('useCrewModeSwitch turning Ultra Mode on fails', () => {
   })
 })
 
-describe('useCrewModeSwitch entering an Ultra Mode root', () => {
+describe('useCrewModeSwitch entering a conductor mode root', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); localStorage.clear(); turnOnCrewModePreview() })
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 
@@ -222,7 +222,7 @@ describe('useCrewModeSwitch entering an Ultra Mode root', () => {
   })
 })
 
-describe('useCrewModeSwitch a new chat created in Ultra Mode', () => {
+describe('useCrewModeSwitch a new chat created in conductor mode', () => {
   beforeEach(() => { setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']); vi.mocked(dropPanelViews).mockClear() })
   afterEach(() => setCrewModeCatalog(undefined, undefined))
 
@@ -248,7 +248,7 @@ describe('useCrewModeSwitch a new chat created in Ultra Mode', () => {
   })
 })
 
-describe('useCrewModeSwitch turning Ultra Mode on', () => {
+describe('useCrewModeSwitch turning conductor mode on', () => {
   beforeEach(() => setCrewModeCatalog('kirocrew-conductor', ['kirocrew-conductor']))
   afterEach(() => { setCrewModeCatalog(undefined, undefined); mobile.value = false })
 

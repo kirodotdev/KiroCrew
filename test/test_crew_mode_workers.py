@@ -908,7 +908,7 @@ def test_the_routes_are_registered_under_the_slot():
         "/api/chat/slots/{slot}/crew-workers/{worker}/approve": ["POST"],
         # A session's in-place recap on the crewmate Sessions tab.
         "/api/chat/slots/{slot}/crew-workers/{worker}/recap": ["GET"],
-        # Ultra Mode Pause all / Resume all.
+        # Conductor mode Pause all / Resume all.
         "/api/chat/slots/{slot}/crew-workers/pause": ["POST"],
         "/api/chat/slots/{slot}/crew-workers/resume": ["POST"],
     }

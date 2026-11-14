@@ -833,7 +833,7 @@ describe('usePanelTabs — per-slot isolation', () => {
   })
 
   it('a held view keeps the focus against a discovery open until the next tab choice', () => {
-    // The Ultra Mode board opens a worker with Workers held in front; the
+    // The conductor mode board opens a worker with Workers held in front; the
     // worker's history then loads and its PR link opens Changes for discovery.
     act(() => openPanelView('worker-slot', 'workers', { hold: true }))
     const { result } = renderHook(() => usePanelTabs('worker-slot', mock.descriptors))

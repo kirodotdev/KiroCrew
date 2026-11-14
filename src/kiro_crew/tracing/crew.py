@@ -1,8 +1,8 @@
-"""Ultra Mode and Bot attributes on a turn: which crew root it belongs to, and its item (§5.5).
+"""Conductor mode and Bot attributes on a turn: which crew root it belongs to, and its item (§5.5).
 
-A conductor (an Ultra Mode root, or a Bot thread) and every worker it dispatched
+A conductor (a conductor mode root, or a Bot thread) and every worker it dispatched
 carry the same ``kirocrew.crew.root``, so one filter selects a whole run;
-``kirocrew.crew.root_kind`` says which kind (``ultra`` or ``mate``). A worker
+``kirocrew.crew.root_kind`` says which kind (``ultra`` for conductor mode, or ``mate``). A worker
 also carries the work item it is bound to, so ``kirocrew.work.item_id`` selects
 one item across the conductor and the worker. Session keys are hashed; the item
 id and round are raw (random and a counter). No goal, title or other ledger text.
@@ -19,7 +19,9 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
-ROOT_KIND_ULTRA = "ultra"
+# The attribute value stays "ultra": exported spans carry it and saved trace
+# queries filter on it.
+ROOT_KIND_CONDUCTOR_MODE = "ultra"
 ROOT_KIND_MATE = "mate"
 
 
@@ -29,9 +31,9 @@ def root_of(slot_key: str, row: Mapping[str, Any]) -> tuple[str, str, str]:
 
     worker_of = str(row.get(crew_mode.WORKER_FIELD) or "")
     if worker_of:
-        return worker_of, str(row.get(crew_mode.DISPATCHER_FIELD) or ""), ROOT_KIND_ULTRA
+        return worker_of, str(row.get(crew_mode.DISPATCHER_FIELD) or ""), ROOT_KIND_CONDUCTOR_MODE
     if row.get(crew_mode.ROOT_FIELD):
-        return slot_key, "", ROOT_KIND_ULTRA
+        return slot_key, "", ROOT_KIND_CONDUCTOR_MODE
     mate_of, mate_by = crew_mode.mate_stamps_of(row)
     if mate_of:
         return mate_of, mate_by, ROOT_KIND_MATE

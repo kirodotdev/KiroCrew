@@ -825,7 +825,7 @@ def _install_team_lead_agent() -> None:
     skill_resources.map_prompt_skills(
         config, "team-lead", "goal-conductor", "dashboard", *skill_resources.WIDGET_POINTER_SKILLS
     )
-    # Ultra Mode chats run on this spec: expose the edition servers it mounts, as the
+    # Conductor mode chats run on this spec: expose the edition servers it mounts, as the
     # default spec does, with every call still behind the approval prompt.
     _register_edition_refs(config)
     _mount_team_lead_dispatch(config)

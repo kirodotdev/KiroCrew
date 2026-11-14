@@ -217,7 +217,7 @@ _LIVE_STATE_RULE = (
 
 
 # Every variant carries this rule, so every Crew agent (conductor, worker, Bot,
-# Ultra Mode, sub-agent) gets it from this one place.
+# Conductor mode, sub-agent) gets it from this one place.
 _ASK_ONLY_WHEN_NEEDED_RULE = (
     "Ask a person only when human involvement is truly required. When you have a "
     "clear recommendation, act on it and report what you did. Ask only when the "

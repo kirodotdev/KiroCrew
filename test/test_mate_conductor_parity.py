@@ -336,7 +336,7 @@ def test_a_mapped_crewmate_conductor_loads_only_its_mapped_skills(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A crewmate's chat maps ``goal-conductor`` for the ledger, and that mapping is
-    its whole skill scope, as on the Ultra Mode conductor: the user's
+    its whole skill scope, as on the conductor in conductor mode: the user's
     ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` are not added
     (the decision entry ``conductors-stay-simple-and-new-abilities-go-to-workers``).
     Both trees exist here, so the inherited set is not empty and the check cannot

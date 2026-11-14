@@ -294,7 +294,7 @@ export function FeaturePreviewsSection() {
       )}
 
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_crew_and_bots')}>
-        {/* Ultra Mode (flag key `mc-preview-crew-mode`): every Crew Mode surface
+        {/* Conductor mode (flag key `mc-preview-crew-mode`): every Crew Mode surface
             reads this one flag through `lib/crewMode.ts`. A plain switch only,
             with no preview dialog and no ingress link. Off, a chat already in
             Crew Mode stays an ordinary chat on its agent. */}
@@ -414,7 +414,7 @@ export function FeaturePreviewsSection() {
       <PreviewGroup title={i18nT('pages.settings.developerPanel.group_chats_and_dashboards')}>
         {/* Explore (flag key `mc-preview-explore`): the top-bar pill, its sheet,
             the milestone notice, the Try today card and Display > Explore. A
-            plain switch, like Ultra Mode's; on, Display > Explore is the inner
+            plain switch, like conductor mode's; on, Display > Explore is the inner
             switch. */}
         {!previewsOff && (
           <SettingsToggle

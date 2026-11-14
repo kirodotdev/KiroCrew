@@ -1,5 +1,5 @@
 /**
- * An Ultra Mode chat keeps the Board (`workers`) in front: no automatic open
+ * A conductor mode chat keeps the Board (`workers`) in front: no automatic open
  * moves the focus. Only a tab the person clicks does, and that tab then stays
  * in front until the next click. A normal chat keeps today's behaviour, where
  * a newly found PR or issue link brings its tab to the front.
@@ -24,8 +24,8 @@ function strip(slot: string, boardFirst: boolean) {
   return hook
 }
 
-describe('usePanelTabs — Ultra Mode keeps the Board in front', () => {
-  it('a fresh Ultra Mode chat opens on the Board and a PR link found stays behind it', () => {
+describe('usePanelTabs — conductor mode keeps the Board in front', () => {
+  it('a fresh conductor mode chat opens on the Board and a PR link found stays behind it', () => {
     const { result } = strip('crew', true)
     expect(result.current.activeId).toBe('workers')
     act(() => result.current.openView('changes', { automatic: true }))
@@ -103,7 +103,7 @@ describe('usePanelTabs — a normal chat is unchanged', () => {
     expect(result.current.activeId).toBe('app:call-3')
   })
 
-  it('switching from an Ultra Mode chat to a normal one keeps each chat on its own rule', () => {
+  it('switching from a conductor mode chat to a normal one keeps each chat on its own rule', () => {
     const crew = strip('crew', true)
     const plain = strip('plain', false)
     act(() => crew.result.current.openView('changes', { automatic: true }))

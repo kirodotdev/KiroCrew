@@ -432,7 +432,7 @@ def test_a_failed_research_install_holds_the_ceiling_instead_of_syncing(
 
 
 def test_both_conductor_charters_carry_the_ask_only_when_needed_rule() -> None:
-    """Ultra Mode runs on the team lead, a goal on the conductor: both agent prompts
+    """Conductor mode runs on the team lead, a goal on the conductor: both agent prompts
     (not session context, which ranks below the skill) say when to stop and ask."""
     from kiro_crew.agent_parts.spec_prompts import _ASK_ONLY_WHEN_NEEDED_RULE
 

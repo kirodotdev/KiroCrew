@@ -15,7 +15,7 @@ import { useCrewBack } from '../../../components/crew/useCrewBack'
 import { crewRouteNotServed, liveCrewWorkers, mergeCrewWorkers } from '../../../lib/crewWorkers'
 import { crewWorkersGapMs, readCrewWorkers } from '../../../lib/crewWorkersPoll'
 import { crewModeRoot, crewRootOf, runsCrewMode } from '../../../lib/crewMode'
-import UltraCrewPanel from './UltraCrewPanel'
+import ConductorModeCrewPanel from './ConductorModeCrewPanel'
 
 /** The status labels, keyed by the wire value `GET .../crew-workers` sends. */
 export const CREW_WORKER_STATUS_KEY: Record<CrewWorker['status'], string> = {
@@ -270,18 +270,18 @@ export function CrewPanelBack({ root }: { root: string }) {
   </div>
 }
 
-/** The side panel's Crew tab for `slot`: its root's Ultra Mode panel when the slot
- *  is an Ultra Mode root or one of its crew members, and one line saying so otherwise. */
+/** The side panel's Crew tab for `slot`: its root's conductor mode panel when the slot
+ *  is a conductor mode root or one of its crew members, and one line saying so otherwise. */
 export function CrewWorkersTab({ slot, active, onAct }: { slot: string | null; active: boolean; onAct?: (text: string) => void }) {
   const { t } = useTranslation()
   const row = useAppSelector(s => (slot ? s.dashboard.slots.find(item => item.key === slot) : undefined))
   const root = crewModeRoot(row) && row ? row.key : crewRootOf(row)
-  // A brand-new chat whose Ultra Mode switch is landing has no root
-  // stamp yet; show its (empty) Ultra panel instead of "not an Ultra Mode chat".
+  // A brand-new chat whose conductor mode switch is landing has no root
+  // stamp yet; show its (empty) conductor mode panel instead of "not a conductor mode chat".
   // A chat with messages that was just switched on is in the same gap: it already
-  // runs Ultra Mode while the root stamp has not reached the row.
+  // runs conductor mode while the root stamp has not reached the row.
   if (!root && row && !row.crew_root && (!row.messages
-    || (!row.created_by && !row.parent && runsCrewMode(row.agent, row.agent_kind, row.crew_mode_agent)))) return <UltraCrewPanel root={row.key} viewing={slot} active={active} onAct={onAct} />
+    || (!row.created_by && !row.parent && runsCrewMode(row.agent, row.agent_kind, row.crew_mode_agent)))) return <ConductorModeCrewPanel root={row.key} viewing={slot} active={active} onAct={onAct} />
   if (!root) return <p className="p-3 text-sm text-muted" data-testid="crew-workers-none">{t('commandCenter.workers_not_crew')}</p>
-  return <UltraCrewPanel root={root} viewing={slot} active={active} onAct={onAct} />
+  return <ConductorModeCrewPanel root={root} viewing={slot} active={active} onAct={onAct} />
 }
