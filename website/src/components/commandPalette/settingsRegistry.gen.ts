@@ -2470,7 +2470,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Send pending approvals to chat apps",
     "labelKey": "pages.developer.featurePreviewsTab.bridge_approvals",
     "description": "Tells a connected chat app when a tool needs approval.",
-    "hint": "When a tool approval opens, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it, and the note has no buttons yet, so answer the approval in the dashboard.",
+    "hint": "When a tool approval opens or an agent asks you a question, Kiro Crew sends a note about it to the chat apps the notification bridge delivers to. The dashboard bell does not ring for it. On Slack, answer with the note's buttons. On Telegram or Discord, reply to an approval note to approve or deny it. Answer anything else in the dashboard.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

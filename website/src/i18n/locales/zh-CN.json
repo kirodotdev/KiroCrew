@@ -15346,7 +15346,7 @@
         "dashboard_stale_wake_desc": "Bot 在 Dashboard 页面上写的字段过期时，即使没开任何定时检查，{{productName}} 也会在这个 Bot 的聊天里发起一轮简短对话，请它重新写这些字段。每个 Bot 每 30 分钟最多一轮，每轮都会消耗额度。",
         "dashboard_stale_wake_desc_summary": "请 Bot 更新它的过期字段。",
         "bridge_approvals": "把待处理的审批发到聊天应用",
-        "bridge_approvals_desc": "工具审批打开时，{{productName}} 会把一条相关提示发到通知桥接所投递的聊天应用。仪表板的铃铛不会为此响起，提示里也还没有按钮，请在仪表板中处理审批。",
+        "bridge_approvals_desc": "工具审批打开或代理向你提问时，{{productName}} 会把一条相关提示发到通知桥接所投递的聊天应用。仪表板的铃铛不会为此响起。在 Slack 中，用提示里的按钮回答。在 Telegram 或 Discord 中，回复审批提示即可批准或拒绝。其他情况请在仪表板中处理。",
         "bridge_approvals_desc_summary": "工具需要审批时，通知已连接的聊天应用。",
         "chat_runtime_sharing": "多个聊天共用一个后台程序",
         "chat_runtime_sharing_desc": "聊天会轮流回复，一个聊天回复得久，其他聊天就要等。共用的程序停止时，里面的所有聊天都会重启。聊天之间永远看不到彼此的消息。默认一个程序最多运行 10 个聊天。只对更改之后开始的聊天生效。关闭后，每个新聊天各开一个程序，会占用更多内存。",
