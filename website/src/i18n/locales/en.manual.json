@@ -8918,6 +8918,8 @@
         "copied": "Copied",
         "update_check_managed_by_app": "This build updates through the app, not the gateway.",
         "update_check_managed_by_image": "This container updates by pulling a newer image.",
+        "update_check_image_available": "Version {{version}} is available as a container image.",
+        "update_check_image_release_notes": "Release notes",
         "not_checked_yet": "Not checked yet",
         "auto_update_notify_only_on_this_install": "This install cannot apply updates itself, so it only notifies.",
         "auto_update_notify_manual_apply": "Updates are not installed automatically here. When one is available, use Update to install it.",

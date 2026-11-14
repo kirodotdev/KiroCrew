@@ -18309,6 +18309,8 @@
         "update_check_error_version_unparseable": "バージョン番号を比較できませんでした。",
         "update_check_managed_by_app": "このビルドはゲートウェイではなくアプリ経由で更新します。",
         "update_check_managed_by_image": "このコンテナは新しいイメージを取得して更新します。",
+        "update_check_image_available": "バージョン {{version}} のコンテナイメージが利用できます。",
+        "update_check_image_release_notes": "リリースノート",
         "update_error_install_unknown": "アップデートのインストール中に問題が発生しました。",
         "update_error_gateway_still_running": "{{productName}} が以前に起動したバックグラウンドのゲートウェイが、このアップデートで置き換えられるファイルをまだ使用しています。アップデートをインストールするには、{{productName}} を終了し、ターミナルで下のコマンドを実行してから、{{productName}} をもう一度開いてください。このコマンドが停止するのはそのバックグラウンドのゲートウェイだけで、チャットと設定はそのまま残ります。",
         "update_error_integrity": "ダウンロードは整合性チェックに失敗し、破棄されました。",

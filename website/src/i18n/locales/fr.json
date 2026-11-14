@@ -19297,6 +19297,8 @@
         "update_check_error_version_unparseable": "Impossible de comparer les numéros de version.",
         "update_check_managed_by_app": "Cette version se met à jour via l'application, pas via la passerelle.",
         "update_check_managed_by_image": "Ce conteneur se met à jour en récupérant une image plus récente.",
+        "update_check_image_available": "La version {{version}} est disponible en image de conteneur.",
+        "update_check_image_release_notes": "Notes de version",
         "update_error_install_unknown": "Une erreur s'est produite lors de l'installation de la mise à jour.",
         "update_error_gateway_still_running": "La passerelle en arrière-plan que {{productName}} a lancée plus tôt utilise encore les fichiers que cette mise à jour remplace. Pour installer la mise à jour, quitte {{productName}}, exécute la commande ci-dessous dans le Terminal, puis rouvre {{productName}}. La commande arrête uniquement cette passerelle en arrière-plan ; tes discussions et tes paramètres sont conservés.",
         "update_error_integrity": "Le téléchargement a échoué au contrôle d'intégrité et a été supprimé.",

@@ -19297,6 +19297,8 @@
         "update_check_error_version_unparseable": "No se pudieron comparar los números de versión.",
         "update_check_managed_by_app": "Esta versión se actualiza a través de la aplicación, no de la puerta de enlace.",
         "update_check_managed_by_image": "Este contenedor se actualiza descargando una imagen más reciente.",
+        "update_check_image_available": "La versión {{version}} está disponible como imagen de contenedor.",
+        "update_check_image_release_notes": "Notas de la versión",
         "update_error_install_unknown": "Algo salió mal al instalar la actualización.",
         "update_error_gateway_still_running": "La puerta de enlace en segundo plano que {{productName}} inició antes todavía usa los archivos que reemplaza esta actualización. Para instalar la actualización, cierra {{productName}}, ejecuta el comando de abajo en Terminal y vuelve a abrir {{productName}}. El comando solo detiene esa puerta de enlace en segundo plano; tus chats y tu configuración se conservan.",
         "update_error_integrity": "La descarga no pasó la comprobación de integridad y se descartó.",

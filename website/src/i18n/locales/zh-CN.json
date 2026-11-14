@@ -18309,6 +18309,8 @@
         "update_check_error_version_unparseable": "无法比较版本号。",
         "update_check_managed_by_app": "此版本通过应用自身更新，不经由网关。",
         "update_check_managed_by_image": "此容器通过拉取更新的镜像来升级。",
+        "update_check_image_available": "版本 {{version}} 的容器镜像已可用。",
+        "update_check_image_release_notes": "发行说明",
         "update_error_install_unknown": "安装更新时出了点问题。",
         "update_error_gateway_still_running": "{{productName}} 之前启动的后台网关仍在使用此更新将替换的文件。要安装此更新，请退出 {{productName}}，在终端中运行下方的命令，然后重新打开 {{productName}}。该命令只会停止这个后台网关，你的聊天和设置都会保留。",
         "update_error_integrity": "下载的更新未通过完整性校验，已丢弃。",

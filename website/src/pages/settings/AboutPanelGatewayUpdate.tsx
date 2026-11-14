@@ -112,6 +112,10 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   // rendering a deferral under "Couldn't check for updates" would be its own
   // lie — nothing broke, the update arrives through a different surface.
   const [gwUnavailableReason, setGwUnavailableReason] = useState('')
+  // A container's newer release, named only when the gateway confirmed its
+  // image can be pulled. Availability only: nothing here can apply it.
+  const [gwImageVersion, setGwImageVersion] = useState('')
+  const [gwImageNotesUrl, setGwImageNotesUrl] = useState('')
   // Null = not yet known from a check; the redux status flag AboutPanel.tsx reads carries the
   // same fact for the pre-check case.
   const [gwSelfUpdatable, setGwSelfUpdatable] = useState<boolean | null>(null)
@@ -158,6 +162,13 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
       setGwUnavailableReason(
         typeof d?.unavailable_reason === 'string' ? d.unavailable_reason : ''
       )
+      setGwImageVersion(typeof d?.image_available_version === 'string' ? d.image_available_version : '')
+      setGwImageNotesUrl(
+        typeof d?.image_release_notes_url === 'string'
+          && d.image_release_notes_url.startsWith('https://github.com/kirodotdev/KiroCrew/releases/tag/')
+          ? d.image_release_notes_url
+          : ''
+      )
       setGwChannel(typeof d?.channel === 'string' ? d.channel : '')
       setGwCommand(
         typeof d?.remediation?.command === 'string' ? d.remediation.command : ''
@@ -178,6 +189,8 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
       setGwBehind(0)
       setGwError('')
       setGwUnavailableReason('')
+      setGwImageVersion('')
+      setGwImageNotesUrl('')
       recordLocal(true)
     },
   })
@@ -302,7 +315,7 @@ export function useAboutPanelGatewayUpdate(queryClient: QueryClient, background:
   return {
     newestIsLocal, newestCheckFailed, newestCheckSucceeded,
     gwChanges, gwTarget, gwTargetDisplay, gwFound, gwAhead, gwBehind, gwChecked, gwError,
-    gwUnavailableReason, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
+    gwUnavailableReason, gwImageVersion, gwImageNotesUrl, gwSelfUpdatable, gwChannel, gwChannelError, gwCommand, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, showConfirm, setShowConfirm,
     applyError, setApplyError, applyDirty, restarting, setRestarting, gwCheck, gwApply, gwRestart,
     gwChannelMutation, gwCancelArm,
@@ -363,7 +376,8 @@ export function AboutPanelGatewayUpdates({
   restartControls?: boolean
 }) {
   const {
-    gwChanges, gwTarget: localTarget, gwTargetDisplay: localTargetDisplay, gwChecked, gwError, gwUnavailableReason, gwCommandCopied,
+    gwChanges, gwTarget: localTarget, gwTargetDisplay: localTargetDisplay, gwChecked, gwError, gwUnavailableReason,
+    gwImageVersion, gwImageNotesUrl, gwCommandCopied,
     setGwCommandCopied, gwCommandCopyFailed, setGwCommandCopyFailed, setShowConfirm, applyError,
     setApplyError, restarting, setRestarting, gwCheck, gwRestart, newestIsLocal, newestCheckFailed,
   } = gwUpdate
@@ -570,6 +584,17 @@ export function AboutPanelGatewayUpdates({
             ) : (
               <span className="text-ok text-[13px] flex items-center gap-1.5" data-testid="up-to-date"><CheckCircle2 size={13} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.you_re_on_the_latest_version')}</span>
             )
+          )}
+          {gwCheck.isSuccess && newestIsLocal && !!gwUnavailableReason && gwImageVersion && (
+            <span className="text-sm text-muted flex items-center gap-1.5 flex-wrap" data-testid="container-image-available">
+              <ArrowUp size={13} className="lucide-inline text-accent" aria-hidden />
+              {i18nT('pages.settings.aboutPanel.update_check_image_available', { version: gwImageVersion })}
+              {gwImageNotesUrl && (
+                <a href={gwImageNotesUrl} target="_blank" rel="noopener noreferrer" className="underline hover:text-text">
+                  {i18nT('pages.settings.aboutPanel.update_check_image_release_notes')}
+                </a>
+              )}
+            </span>
           )}
           {gwCheck.isSuccess && newestIsLocal && !!gwUnavailableReason && (
             <span className="text-muted text-[13px] flex items-center gap-1.5" data-testid="check-not-applicable"><Package size={13} className="lucide-inline" /> {gwCheckErrorText(gwUnavailableReason)}</span>

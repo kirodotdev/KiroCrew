@@ -1100,7 +1100,12 @@ class TestExternallyManagedInstalls:
         def _boom(url: str):  # pragma: no cover - must not be called
             raise AssertionError(f"{dist} must not read the CLI release feed")
 
-        monkeypatch.setattr(updates, "_fetch_feed_bytes", _boom)
+        if dist == "docker":
+            # A container reads the feed only to NAME a newer pullable image
+            # (test_update_check_container_image.py); its verdict still defers.
+            _stub_feed(monkeypatch, body=_manifest(version="0.0.1"))
+        else:
+            monkeypatch.setattr(updates, "_fetch_feed_bytes", _boom)
         monkeypatch.setattr(update_capability, "distribution", lambda: dist)
         asyncio.run(updates._do_update_check())
 

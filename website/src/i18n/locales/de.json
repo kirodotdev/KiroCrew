@@ -18803,6 +18803,8 @@
         "update_check_error_version_unparseable": "Die Versionsnummern konnten nicht verglichen werden.",
         "update_check_managed_by_app": "Dieser Build wird über die App aktualisiert, nicht über das Gateway.",
         "update_check_managed_by_image": "Dieser Container wird durch ein neueres Image aktualisiert.",
+        "update_check_image_available": "Version {{version}} ist als Container-Image verfügbar.",
+        "update_check_image_release_notes": "Versionshinweise",
         "update_error_install_unknown": "Beim Installieren des Updates ist ein Fehler aufgetreten.",
         "update_error_gateway_still_running": "Das Hintergrund-Gateway, das {{productName}} zuvor gestartet hat, verwendet noch die Dateien, die dieses Update ersetzt. Um das Update zu installieren, beende {{productName}}, führe den Befehl unten im Terminal aus und öffne {{productName}} dann erneut. Der Befehl beendet nur dieses Hintergrund-Gateway; deine Chats und Einstellungen bleiben erhalten.",
         "update_error_integrity": "Der Download hat die Integritätsprüfung nicht bestanden und wurde verworfen.",

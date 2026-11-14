@@ -18803,6 +18803,8 @@
         "update_check_error_version_unparseable": "সংস্করণ নম্বর তুলনা করা যায়নি।",
         "update_check_managed_by_app": "এই বিল্ডটি অ্যাপের মাধ্যমে আপডেট হয়, গেটওয়ের মাধ্যমে নয়।",
         "update_check_managed_by_image": "এই কনটেইনারটি নতুন ইমেজ টেনে আপডেট হয়।",
+        "update_check_image_available": "সংস্করণ {{version}} কনটেইনার ইমেজ হিসেবে উপলব্ধ।",
+        "update_check_image_release_notes": "রিলিজ নোট",
         "update_error_install_unknown": "আপডেট ইনস্টল করার সময় কিছু ভুল হয়েছে।",
         "update_error_gateway_still_running": "{{productName}} আগে যে ব্যাকগ্রাউন্ড গেটওয়ে চালু করেছিল, সেটি এখনও এই আপডেট যে ফাইলগুলো বদলায় সেগুলো ব্যবহার করছে। আপডেটটি ইনস্টল করতে {{productName}} বন্ধ করো, টার্মিনালে নিচের কমান্ডটি চালাও, তারপর {{productName}} আবার খোলো। এই কমান্ডটি শুধু সেই ব্যাকগ্রাউন্ড গেটওয়েটি থামায়; তোমার চ্যাট আর সেটিংস থেকে যায়।",
         "update_error_integrity": "ডাউনলোডটি ইন্টিগ্রিটি যাচাইয়ে ব্যর্থ হয়েছে এবং বাতিল করা হয়েছে।",
