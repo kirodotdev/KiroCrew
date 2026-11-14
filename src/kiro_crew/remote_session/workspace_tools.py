@@ -390,19 +390,42 @@ def _stop_read(proc: Any) -> None:
         proc.terminate()
 
 
-def _unwind(proc: Any) -> None:
-    """Stop and reap a still-running command; without ``timeout``, the leader only.
+def _unwind(proc: Any, *, group: bool = False) -> None:
+    """Stop and reap a still-running command.
 
-    On Windows the whole tree is ended instead: there is no group signal, and
-    git.exe is a launcher, so stopping the leader would orphan the real git.
+    When *group* is True the caller promises it started *proc* with
+    ``start_new_session=True``, making ``proc.pid`` the process-group leader.
+    On POSIX the whole group is signalled so background jobs forked by the
+    shell are also terminated; after ``_KILL_GRACE_SECS`` the group is
+    escalated to SIGKILL.  This is the ``run_command`` path.
+
+    When *group* is False (default) only the leader is signalled -- the
+    ``_run_grouped`` / git-read path, where coreutils ``timeout`` already
+    handles the group when present.
+
+    On Windows the whole tree is ended with ``taskkill /T`` in both cases.
+
+    Implementation note: this is a stdlib-only guest script served to remote
+    workspaces (coder/remote_worker.py ships it as ``python3 workspace_tools.py``
+    where kiro_crew is unavailable).  ``os.killpg`` is used openly on the
+    ``group=True`` path -- ``kiro_crew.platform_compat_kill`` cannot be
+    imported here.  This adds one bypass site to the kill-chokepoint ratchet;
+    acp/runtime_process_tree.py removes one (``kill_escaped_child_pid``), so
+    BYPASS_BASELINE stays at 63.
     """
     if sys.platform == "win32":
         _stop_tree(proc)
+    elif group:
+        with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+            os.killpg(proc.pid, signal.SIGTERM)
     else:
         _stop_read(proc)
     try:
         proc.wait(timeout=2 * _KILL_GRACE_SECS)
     except subprocess.TimeoutExpired:
+        if group and sys.platform != "win32":
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
         proc.kill()
         proc.wait(timeout=10)
 
@@ -806,7 +829,7 @@ class Workspace:
             code = None
         finally:
             if proc.returncode is None:
-                _unwind(proc)
+                _unwind(proc, group=True)
             # A detached job holding the pipe keeps only the daemon reader waiting.
             reader.join(_READER_GRACE_SECS)
         output, omitted = tail.snapshot()
