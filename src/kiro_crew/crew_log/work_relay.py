@@ -97,13 +97,81 @@ def relay(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any])
 
 def forget_for_tests() -> None:
     """Drop the relay memory, so one test's relays cannot hide another's."""
-    from kiro_crew.crew_log import work_relay_feed
+    from kiro_crew.crew_log import work_relay_cursor, work_relay_feed
 
     work_relay_feed.forget_for_tests()
+    work_relay_cursor.forget_for_tests()
     with _recent_guard:
         _RECENT.clear()
         _UNIT_SLOTS.clear()
         _BINDINGS.clear()
+
+
+def replay_on_start() -> int:
+    """Re-relay every charge a crash left without a board copy. Returns copies queued.
+
+    For each worker the relay recorded a binding boundary for, ask the cursor module for
+    the window it can PROVE is safe to replay (:func:`work_relay_cursor.replayable_window`
+    refuses every case it cannot). Scan that worker unit for charge closers past the
+    cursor, decide each the way a live charge is decided, and hand the copies to the
+    writer. The copies the writer lands advance the cursor, so a second start replays
+    nothing already copied, and the reader dedupes by ``closer`` across the crash window.
+
+    Safe to call once on start, before or after the writer exists; never raises.
+    """
+    from kiro_crew.crew_log import work_relay_cursor
+
+    queued = 0
+    try:
+        workers = work_relay_cursor.workers_with_boundaries()
+    except Exception as exc:  # pragma: no cover - a listing fault must not stop the boot
+        # Type and message, never ``exc_info``: ``_replay_worker`` opens a crew-log
+        # handle, and a traceback record would keep that handle's write lease alive
+        # (``test_crew_log_exc_info_sites``).
+        logger.debug("work relay: could not list relay boundaries on start: %r", exc)
+        return 0
+    for worker in workers:
+        try:
+            queued += _replay_worker(worker)
+        except Exception as exc:  # pragma: no cover - one worker must not stop the rest
+            logger.debug("work relay: replay for a worker failed on start: %r", exc)
+    return queued
+
+
+def _replay_worker(worker_slot_key: str) -> int:
+    """Queue the provable unrelayed charges for one worker; the count queued."""
+    from kiro_crew.crew_log import work_relay_cursor
+    from kiro_crew.crew_log.read import read_page
+    from kiro_crew.crew_log.work_relay_feed import Wake
+
+    window = work_relay_cursor.replayable_window(worker_slot_key)
+    if window is None:
+        return 0
+    out: "list[Copy]" = []
+    start = window.after_seq + 1
+    page = read_page(window.unit, start, 2**62)
+    for row in page.get("entries", []):
+        if str(row.get("type") or "") not in CHARGE_SOURCES:
+            continue
+        seq = int(row.get("seq") or 0)
+        if seq < start:
+            continue
+        # ``own`` is the worker's slot key (what the board bills and the cursor is keyed
+        # by), NOT the unit id; they differ whenever a session's key is not its unit id.
+        wake = Wake(
+            window.unit,
+            str(row["type"]),
+            seq,
+            row.get("data") or {},
+            window.worker_slot_key,
+            window.board,
+        )
+        decide(wake, out)
+    if out:
+        # Replay walks this unit's charges in ascending seq order, so a landed replay
+        # copy may advance the cursor's contiguous frontier (``from_replay=True``).
+        hand_over([copy._replace(from_replay=True) for copy in out])
+    return len(out)
 
 
 def _capture(entry: Any, entry_type: str, session_id: str, data: Mapping[str, Any]) -> None:
@@ -139,6 +207,10 @@ class Copy(NamedTuple):
     unit: str
     entry_type: str
     payload: "dict[str, Any]"
+    #: True for a copy made by crash replay, which walks a unit's charges in ascending
+    #: order: its landing may advance the durable cursor's contiguous frontier. A live
+    #: copy (False) only records its seq as copied, never moving the frontier (F1).
+    from_replay: bool = False
 
 
 #: Copies one follow-on job writes with one ``append_many``.
@@ -246,9 +318,36 @@ def _queue_run(unit: str, run: "list[Copy]") -> None:
             # board's log, so this board's folds are the ones to advance.
             board_of = copy.board if copy.entry_type == _WORK_TYPE else None
             _note_eager(entry, copy.entry_type, unit, copy.payload, board=board_of)
+            # The copy is on disk now, so the relay cursor may remember it: a restart
+            # past this point does not replay it. Advancing only after the append keeps
+            # the crash window one-sided -- a crash before this replays and the reader
+            # dedupes by ``closer``. Charge copies only; a relayed record is deduped on
+            # read by its origin and needs no durable cursor.
+            _remember_charge_copy(copy)
 
     what = f"relaying {len(run)} board cop{'y' if len(run) == 1 else 'ies'}"
     _hand_over(unit, WriteJob.follow_on(_job, what))
+
+
+def _remember_charge_copy(copy: Copy) -> None:
+    """Advance the durable relay cursor for a landed charge copy. Never raises.
+
+    The worker slot and source seq are the copy's own ``by`` and ``closer``; the
+    cursor is keyed by the SOURCE unit and the target board, so the source unit is the
+    closer's unit, not the board unit the copy landed in.
+    """
+    if copy.entry_type != _CHARGE_TYPE:
+        return
+    worker = str(copy.payload.get("by") or "")
+    closer = str(copy.payload.get("closer") or "")
+    source_unit, _, seq_text = closer.rpartition(":")
+    if not worker or not source_unit or not seq_text.isdigit():
+        return
+    from kiro_crew.crew_log import work_relay_cursor
+
+    work_relay_cursor.advance_cursor(
+        worker, source_unit, copy.board, int(seq_text), contiguous=copy.from_replay
+    )
 
 
 def _append_run(log: "CrewLog", run: "list[Copy]") -> "list[Any]":
