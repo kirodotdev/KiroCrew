@@ -444,6 +444,7 @@ async def _turn_persist_and_settle(turn: _ChatTurn) -> None:
             turn_boundary=_turn_msg_boundary,
             model=_turn_model,
             reasoning_effort=turn._turn_reasoning_effort,
+            model_source=turn.client,
             ttft_ms=_ttft_visible.ms,
             turn_start_mid=_turn_start_mid,
             retries=sum(slot._turn_retries.values()) if _prompt_depth == 0 else 0,

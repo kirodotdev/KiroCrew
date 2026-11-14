@@ -235,6 +235,7 @@ def _attach_turn_stats(
     retries: int = 0,
     cache_rewrite: bool = False,
     reasoning_effort: str | None = None,
+    model_source: object = None,
 ) -> bool:
     """Attach per-turn stats to the turn's last reply row.
 
@@ -279,7 +280,11 @@ def _attach_turn_stats(
         cost_usd,
         model,
         cache_rewrite=cache_rewrite,
-        model_source=getattr(slot, "_acp_client", None),
+        # The provider, not slot._acp_client: that is the inner AcpClient,
+        # whose harness reads as unknown, so the pair-id rewrite would skip.
+        model_source=(
+            model_source if model_source is not None else getattr(slot, "_acp_client", None)
+        ),
         reasoning_effort=reasoning_effort,
     )
     if stats is None:
@@ -644,8 +649,6 @@ def turn_stats_meta(
     effort = _read_reported_effort(model_source) if reasoning_effort is None else reasoning_effort
     accepted = cap_effort_capability_levels([effort], source="turn footer")
     effort = accepted[0] if accepted else ""
-    if effort:
-        stats["reasoning_effort"] = effort
     if model:
         safe_model = _redact_acp_string(model)
         if len(safe_model) <= _MAX_MODEL_ID_LEN:
@@ -705,6 +708,10 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     session_key = turn.session_key
     slot = turn.slot
     state = turn.state
+    # Snapshot the harness-reported effort before the first await below:
+    # once the turn is done, a picker change can land during those awaits
+    # and must not relabel this completed reply.
+    turn._turn_reasoning_effort = _read_reported_effort(client)
     # Latch the terminal reason the INSTANT the completion arrives,
     # before any cancellable await in this arm runs. The full
     # assignment (with the slot mirror and the tool-stall/timeout
@@ -861,7 +868,6 @@ async def _on_complete(turn: _ChatTurn, event) -> Literal[_Flow.BREAK] | None:
     # unattributable turn stays "" and the footer omits the field.
     _turn_model = read_turn_model(client) or _session_selected_auto(slot)
     turn._turn_model = _turn_model
-    turn._turn_reasoning_effort = _read_reported_effort(client)
     _turn_stats_captured = True
     turn._turn_stats_captured = _turn_stats_captured
     # ── Turn outcome for this turn's histogram sample ──

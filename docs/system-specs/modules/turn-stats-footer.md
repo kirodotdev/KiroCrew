@@ -43,10 +43,10 @@ When `EVENT_COMPLETE` already billed the turn (`_turn_usage_persisted`) and the 
 
 `chat_turn.turn_stats.turn_stats_meta` builds the same `turn_stats` dict for both writers. The single-agent cron run in `slack/gateway_runtime/cron_turn.py` builds it from the run's `provider_last_turn_usage` and `read_turn_model`, and `cron_inject.inject_cron_result_to_dashboard` passes it as `meta` on the result row's `slot.append`, so the live broadcast and the slot window both carry it. It also passes it (as `row_meta`) to the durable `cron:{id}` append, so a restart before the slot save keeps the footer. Cron results have no `chat_done`; the broadcast is what an open tab renders. `test/test_cron_turn_stats_footer.py` pins all three — the broadcast row, the durable `cron:{id}` row (`test_durable_cron_row_carries_turn_stats`), and that an inject with no stats stamps nothing.
 
-A footer records `reasoning_effort` only from the harness's reported effort option.
-It never treats a configured level or a model selection's bracketed suffix as
-proof of what ran. On a pair-id harness such as Codex, the displayed model uses
-that confirmed level (`model[xhigh]`); without a report it shows the bare model.
+On a pair-id harness such as Codex, the footer's model suffix comes only from the
+harness's reported effort option (`model[xhigh]`); without a report it shows the
+bare model. A configured level or a model selection's bracketed suffix is never
+treated as proof of what ran.
 Context-window suffixes such as `[1m]` stay intact. The selected model id and
 usage records keep their own identity. A completed dashboard turn captures the
 effort before its asynchronous usage write, so a later picker change cannot

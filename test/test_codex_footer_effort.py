@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_runner_coverage_helpers import (
+    _complete,
     _drive,
     _errors,
     _runner_state,
@@ -23,7 +24,8 @@ from kiro_crew.providers.base import LLMEvent
 
 def _slot(provider):
     slot = _ChatSlot("codex-footer-effort")
-    slot._acp_client = provider
+    # As turn admission publishes it: the inner AcpClient, not the provider.
+    slot._acp_client = provider._client
     row = slot.append("assistant", "Done.", "reply", broadcast=False)
     slot._turn_reply_mids.append(row["meta"]["mid"])
     return slot
@@ -67,12 +69,14 @@ async def test_confirmed_effort_change_does_not_leave_low_on_the_reply(
         )
         attached = chat_runner._attach_abnormal_turn_stats(turn, TurnUsage(), 1000)
     else:
-        attached = chat_runner._attach_turn_stats(slot, 1000, 0.0, 0.0, model=selected)
+        attached = chat_runner._attach_turn_stats(
+            slot, 1000, 0.0, 0.0, model=selected, model_source=provider
+        )
 
     assert attached
     stats = slot.messages[-1]["meta"]["turn_stats"]
     assert stats["model"] == "test-model[xhigh]"
-    assert stats["reasoning_effort"] == "xhigh"
+    assert "reasoning_effort" not in stats
     assert client.acp_config_options[0]["currentValue"] == "xhigh"
     assert read_turn_model(provider) == selected == "test-model[low]"
 
@@ -135,7 +139,7 @@ def test_a_later_effort_change_does_not_rewrite_the_captured_level(tmp_path, sna
 
     expected = {"elapsed_ms": 1000, "model": "test-model"}
     if snapshot:
-        expected.update(model="test-model[xhigh]", reasoning_effort="xhigh")
+        expected.update(model="test-model[xhigh]")
     assert stats == expected
     assert provider.reported_effort == "low"
 
@@ -145,7 +149,7 @@ def test_auto_is_not_turned_into_a_model_id(tmp_path):
     stats = chat_runner.turn_stats_meta(
         1000, 0.0, 0.0, "auto", model_source=provider, reasoning_effort="xhigh"
     )
-    assert stats == {"elapsed_ms": 1000, "model": "auto", "reasoning_effort": "xhigh"}
+    assert stats == {"elapsed_ms": 1000, "model": "auto"}
 
 
 def test_a_confirmed_suffix_cannot_put_the_model_over_its_bound(tmp_path):
@@ -158,7 +162,7 @@ def test_a_confirmed_suffix_cannot_put_the_model_over_its_bound(tmp_path):
         model_source=provider,
         reasoning_effort="xhigh",
     )
-    assert stats == {"elapsed_ms": 1000, "reasoning_effort": "xhigh"}
+    assert stats == {"elapsed_ms": 1000}
 
 
 def test_a_failed_harness_report_does_not_drop_the_reply_footer(tmp_path):
@@ -188,3 +192,53 @@ async def test_a_stream_without_completion_keeps_its_reply(tmp_path):
         row.get("role") == "assistant" and row.get("content") == "The requested answer."
         for row in slot.messages
     )
+
+
+@pytest.mark.asyncio
+async def test_an_effort_change_during_completion_awaits_keeps_the_turn_level(
+    tmp_path, monkeypatch
+):
+    # The turn is done once its completion arrives, so a picker change can land
+    # while the completion arm awaits; the footer must keep the level that ran.
+    state, client = _runner_state(tmp_path)
+    slot = _runner_slot("effort-during-completion")
+    client.client.pop_pending_oauth_requests = MagicMock(return_value=[])
+    client.reported_effort = "low"
+    real_report = chat_runner._report_consumed
+
+    async def _change_effort_mid_await(turn, *args, **kwargs):
+        # Only the completion arm's call (no flags); the first-output call
+        # passes irreversible=True and runs before the turn is done.
+        if not args and not kwargs:
+            client.reported_effort = "xhigh"
+        return await real_report(turn, *args, **kwargs)
+
+    monkeypatch.setattr(chat_runner, "_report_consumed", _change_effort_mid_await)
+    # The level the footer's model suffix is built from.
+    footer_levels = []
+    real_meta = chat_runner.turn_stats_meta
+
+    footer_sources = []
+
+    def _record_level(*args, **kwargs):
+        footer_levels.append(kwargs.get("reasoning_effort"))
+        footer_sources.append(kwargs.get("model_source"))
+        return real_meta(*args, **kwargs)
+
+    monkeypatch.setattr(chat_runner, "turn_stats_meta", _record_level)
+    _set_stream(
+        client,
+        [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Done at low."),
+            _complete(usage=TurnUsage(duration_ms=1000)),
+        ],
+    )
+
+    await _drive(state, slot)
+
+    assert any((row.get("meta") or {}).get("turn_stats") for row in slot.messages), slot.messages
+    assert footer_levels and footer_levels[-1] == "low"
+    # The harness is read off the provider the turn ran on, not the slot's
+    # published inner client, whose harness reads as unknown.
+    assert footer_sources[-1] is client
+    assert slot._acp_client is not client
