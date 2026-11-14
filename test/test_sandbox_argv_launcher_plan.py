@@ -65,7 +65,6 @@ _LINUX_ONLY = pytest.mark.skipif(
 #: The stages ``sandbox_launcher_program.place_masks`` runs.
 _MASK_STAGES = (
     "stage_private_windows",
-    "pin_seal_parents",
     "seal_readonly",
     "mask_sensitive",
     "apply_carveouts",

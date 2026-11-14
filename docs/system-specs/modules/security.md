@@ -571,8 +571,9 @@ write allowlist; a whole-filesystem allowlist is not this feature, and `/` is re
   absent, `/`, or holds `/run/user/<uid>` or `/dev/shm` (where the Linux launcher creates
   every mask's stand-in) is refused too.
 - **Crew rules win by order.** The launcher runs `seal_operator_readonly` right after
-  window staging and before `seal_readonly`, `mask_sensitive` and `apply_carveouts`, so
-  every crew seal, mask and carve-out is a mount placed on top of the layer. The Seatbelt
+  window staging and before the pins of the seals' parents that land inside the layer,
+  `seal_readonly`, `mask_sensitive` and `apply_carveouts`, so every crew pin, seal, mask
+  and carve-out inside the layer is a mount placed on top of it. The Seatbelt
   profile emits the layer's rules first and every crew rule after them, and Seatbelt is
   last-match-wins between an allow and a deny. The plan-time refusals are therefore the
   log line an operator sees, not the only thing between an exception and a crew seal.
@@ -589,7 +590,8 @@ write allowlist; a whole-filesystem allowlist is not this feature, and `/` is re
   writable mount. A read-only entry the gateway cannot probe for any reason but absence
   stays in the plan, so it is still sealed rather than dropped. Each accepted read-only
   entry's parents the agent could rename join the crew seals' parent pins (`parent_pins`, bound
-  over themselves by `pin_seal_parents` after this layer), because a session's bind moves
+  over themselves by `pin_seal_parents`: on top of this layer when the pin lands inside it,
+  before the stand-in stage otherwise), because a session's bind moves
   with its directory but the next session resolves the entry by name again: a parent
   renamed in between would leave the real tree unsealed. Seatbelt covers the same rename
   with `operator_ancestor_guards`. An exception is re-opened like a crew carve-out -- a
@@ -1485,6 +1487,121 @@ backend: one flat mask list folded onto the resolved data-home spelling for the
 launcher, which re-applies a mask nested inside a private window; a rule set per masked
 tree for Seatbelt, which cannot, so it refuses that window.
 
+**A write under the scratch root outside the process's windows fails on both backends.**
+The launcher hides a masked directory by binding an empty stand-in over it, and that
+stand-in is a writable tmpfs directory no other process sees, discarded once its writer
+exits. A spawn's own scratch directory and its session tree's directory are
+private windows bound back inside the scratch root's stand-in, and they are the only places
+a sandboxed process writes under it, so the planner marks that mask
+`Mask.seal_around_windows` (the leaves in `sandbox_leaves._CREW_SEALED_MASK_LEAVES`, under
+every spelling `_live_plan_host` lists in `PlanHost.sealed_mask_dirs`) and carries it as
+`seal_windowed_masks`. `mask_sensitive` binds every window first and then remounts the
+stand-in `MS_RDONLY` with its nosuid/nodev/noexec re-asserted, which a host root's locked
+flags require and which keeps the private stage's nosuid/nodev on the sealed mount. The
+remount changes only the stand-in's own mount; each window is a mount of its own and stays
+read-write, and `retire_stand_in_stage` detaches the stage afterwards without touching
+either. A mask that contains the root does not cover the seal, whatever the order of the
+list: a data home under `~/.aws` puts the scratch root inside the `.aws` mask, which a
+Codex session adds after every tier mask and the strict and cc tiers list ahead of it. A
+mask contains the root when the root's written spelling (normalized) is below the mask's,
+or its `realpath` below the mask's `realpath` (`_held_below`), so a `~/.aws` or `~/.ssh`
+that is a link, or a data home reached through one, counts too; every spelling is read
+before the first mask is mounted. The root is placed ahead of every container
+(`_mask_order`), each container's stand-in gets a directory for it at the part below that
+the matching pair names, and once a container is placed the root's sealed mount, windows
+and re-hides included, is bound back on top of it recursively from a descriptor held since
+it was placed (`_reattach_sealed_masks`), then sealed again; `~/.ssh`, which the strict
+tier masks last, is handled the same way. The seal is a flag on the bind at the root's
+name, so the stand-in's own entry must give no writable way in either: wherever the
+stand-in was made, on the private stand-in stage or, when the stage was refused, on
+`/run/user/<uid>`, `/dev/shm` or the system temp directory, `_close_stand_in_source` binds
+the sealed root's own read-only mount over that entry, through a descriptor held on it
+since it was made. A stage that detaches takes the cover with it; one that will not stays
+mounted with a warning, as before, its sealed entry covered. The seals' parents are pinned
+before the stage is mounted (`run_child`): a pin is a recursive bind, so one placed later
+would copy the stage, and the copy, which the stage's host path then reaches, would keep
+the entry writable past the cover and the detach, which reach the stage by descriptor. A
+parent whose pin lands inside the operator's read-only layer is pinned on top of that layer
+instead (`place_masks`): the layer has made every mount below it read-only, a copy of the
+stage included, and a pin under it would be copied read-only too, so a write exception
+around it would lose its write access.
+Once the stage is retired,
+`confirm_sealed_roots` opens each sealed root by its name, as the child will reach it, and
+refuses the spawn unless it is the stand-in this spawn sealed there, on a read-only mount,
+with each of its windows still the directory staged for it, and the stand-in's entry
+covered and, if it still reaches the stand-in, read-only. So a seal some later mount
+covered (a link swapped and put back while the spellings were read, for one), or a cover
+that did not land, ends the spawn instead of losing writes. An identity or mount-flag
+read these checks need that fails (a staged window, a stand-in reached by name, a mount's
+read-only flag) refuses with a `sandbox: BLOCKED` line naming the path, as a failed pin of
+a stand-in does (#34181). A create
+anywhere else under the root (a stale `$KIROCREW_SCRATCH`, another session's path) fails
+with `EROFS`, as Seatbelt's `file-write*` deny outside the windows refuses it with `EPERM`,
+so the backends agree and `CAPABILITIES` declares nothing for it. Every tier masks the
+scratch root, so every Linux spawn takes this remount, and one that fails refuses the
+spawn through `_mount_or_die`, as every hiding mount and `seal_readonly` already do. A
+window the launcher skips (one nothing vouched for, whose directory vanished or became a
+link) has no mount point in the sealed stand-in, so a write by its path fails the same way.
+`scrub_env` then drops `TMPDIR`, `TMP`, `TEMP` and `KIRO_CHAT_LOG_FILE` when one names a
+path under a sealed root outside every bound window (`_drop_sealed_temp_env`): such a
+value comes from that skipped window or from an agent shell's environment under a spelling
+the gateway's own drop keeps (`agent_scratch.drop_inherited_scratch_env`, at gateway start
+and in `acp.launch`, compares paths as written, so a link, a `$HOME` alias of the data home
+or a relative path passes it). Tools write there unasked, and with the variable absent they
+use their own default (`/tmp`).
+`KIROCREW_SCRATCH` is kept, so a deliberate write there fails at the path the agent named.
+The launcher's own stage and stand-ins never land under the sealed root outside a bound
+window either: with no stand-in root the private stage goes to `tempfile`'s default
+directory, and so does every stand-in when the stage is refused. A `TMPDIR` outside every
+window would put that directory under the scratch root, where the root's mask hides the
+stage, so it stays in the host's scratch root, and a stand-in made there ends the launch. So `pick_stand_in_root` sets aside every `TMPDIR`,
+`TEMP` or `TMP` that names a path inside a tree the launcher hides or seals (every mask,
+every seal, and `~/.ssh` on the strict tier), lets `tempfile` pick and cache its directory
+from what is left (`/tmp` and the platform defaults), and puts the values back for
+`scrub_env` (`_pin_tempdir_outside_masks`). Only when nothing outside those trees is usable
+is a variable naming a window `stage_private_windows` will bind tried: the window is bound
+back read-write, so the stage's host directory is still removed through it, and a stage
+refused after that ends the launch at the window bind. The working directory,
+which `tempfile` falls back to last, is never taken, and with nothing left the launch
+refuses, naming `/run/user/<uid>`, `/dev/shm` and `/tmp` as the fix (setting `TMPDIR` would
+not hold, since `scratch_env` sets it on every spawn). An operator read-only directory
+(`agent.sandbox_readonly_paths`) is avoided the same way but never refused: the layer binds
+it recursively after the stage is mounted, which copies the stage and its window stages
+read-only, inside a write exception too, and the copy stays at the stage's host path once
+the stage is detached. A value inside one is set aside with the trees. Each pass judges
+`tempfile`'s one pick and tries nothing after it: `tempfile` stops at the first writable
+directory among the variables left in place and then `/tmp`, `/var/tmp` and `/usr/tmp`. So
+when no variable left in place is usable, a writable `/tmp` inside an operator entry ends
+both passes even where `/var/tmp`, outside it, would be usable. When no earlier pass
+accepted its pick and the layer is set, a last pass leaves every value outside the trees in
+place and accepts `tempfile`'s pick from them and the platform defaults when it lies
+outside the trees, in a window or inside the layer, so that spawn runs with its stage
+there. Both checks apply one rule
+(`_held_in`): an empty value is skipped; a relative one is read from the directory that
+resolves it, the launcher's own working directory for the pin (as `tempfile` does) and the
+directory the child starts in for the drop; and the value is judged under two spellings,
+as written (normalized, and folded onto the data home's canonical spelling through
+`crew_home_aliases` as the planner folded the masks and windows) and as `os.path.realpath`
+resolves it, against the trees and windows resolved the same way. A value inside a tree
+under either spelling counts as inside, so a `~/.kirocrew` alias, a plain symlink to the
+data home or a relative `TMPDIR` is judged as the path the kernel reaches.
+Every other mask keeps the caller opt-in (`seal_windowless_masks`): sealed only when its
+creator asked and it carries no window. Pinned by `test/test_scratch_root_seal.py`, and in
+the namespace-sandbox CI job by `test/test_scratch_root_seal_real_sandbox.py` under a real
+kernel (its stand-ins in the launcher's own temp directory under the test's `tmp_path`, never
+in `/dev/shm`; the last check passes the Codex layout and refuses it with the re-attach
+removed; with the stage refused, a write through the stand-in's own entry fails with
+`EROFS`, as it does on a stage left mounted, and a stage left mounted in the own window is
+out of the agent's reach; the sealed mount is checked to be read-only, and a tmpfs that kept nosuid/nodev when the private stage was used; the own
+window holds the stage and keeps nothing of it when no other temp directory is usable) and
+by `test/test_scratch_root_seal_locked_flags_real_sandbox.py`, which seals on a
+flag-locked tmpfs in nested namespaces, as a stand-in left on a host root is sealed.
+`test/test_scratch_root_seal_stage_mounts.py` judges the launcher's order against a model of
+the kernel's mount table (a bind leaves its source's entry, the read-only flag is per mount, a
+recursive bind copies the mounts below it, a descriptor keeps naming the mount it was opened
+on), which the real-kernel file checks against the kernel, and the launcher writes a mount
+report to stderr when `KIROCREW_SANDBOX_MOUNT_REPORT=1`, which only those tests set.
+
 Two renderers read the plan. `sandbox_launcher.render_namespace_launcher` returns the
 source of `sandbox_launcher_program` -- the stdlib-only Linux launcher, a real module
 run as `main(plan, libc=None, argv=None)`, whose child enters the namespaces
@@ -2069,7 +2186,7 @@ transfer may hold its worker for a long time on a healthy mount.
 - **Decision-seam consent (keystone leaf `decisions_consent.json`)** — the switch that lets the decision seam send message text and skill descriptions to the external Jev provider (see [decisions.md](decisions.md)) is `~/.kiro/crew/decisions_consent.json`, on `_CREW_SECRET_LEAVES` (agent file tools refuse read and write), `sandbox._CREW_READONLY_LEAVES` (mounted read-only in every mode) and the absent-ceiling pre-create list. Same class and same reasoning as `aws_service_consent.json`: consent to send the operator's data to a paid external service is an authorization, and `config.json` is a hot-applied SETTINGS file: the sandbox seals it read-only (`sandbox._CREW_READONLY_LEAVES`), so an in-sandbox agent shell can no longer write it, but every ordinary settings writer (the config PATCH, `kirocrew config set`) still reaches it without the owner-only handler a consent needs, so a `decisions.enabled` there would be one settings edit away from taking effect on the next message. `DecisionsConfig` therefore carries no `enabled` field and the config PATCH refuses the path. Consent is bound to a destination: the keystone records the `provider.endpoint` the config named when the owner consented, and `consent.permits()` sends only while the configured endpoint still equals it — `provider.endpoint` lives in that same settings file, so a bare yes/no would let an endpoint edit the owner never reviewed redirect consented messages to another server. Reads fail soft to `{}` → not consented, with a strict `is True` identity test; the only writer is the owner-only, browser-called `PUT /api/decisions/consent` handler, which refuses app tokens and allow-listed non-owner users on the read as well as the write, audits every grant/revocation to SEL, and leaves a corrupt file byte-identical rather than resetting it.
 - **Browsing has no keystone capability toggle, deliberately (see [browser.md](browser.md)); its driver's prefix is a READONLY keystone leaf.** The agent's browser driver is installed under the data home (the browser live harness's own virtual environment, `browser-harness`; an earlier version's browser CLI prefix left on disk is only named by `kirocrew doctor`). The prefix is on `_CREW_SECRET_LEAVES` for agent file tools and `_CREW_READONLY_LEAVES` for every OS sandbox: in-sandbox code can read and execute it, while a write to it that would choose the binary the gateway runs is refused in both layers. The driver's code is in the sealed prefix in every case. When the runtime ships the pinned harness, the gateway copies its recorded package files into a fresh venv there at install time, without hash-checking them; it does not link the venv to the runtime's site-packages. Until that copy is taken, the runtime tree has the gateway's own exposure: only the `kiro_crew` package directory is sealed (next entry). A sandboxed child that can write the runtime's site-packages can affect a future install's source, as it can affect what the gateway itself loads, but runtime edits after installation cannot change the driver's installed copy. Browsing itself is governed by `capabilities.browse`, checked on every `browser` tool call, and a denial never falls back to another driver. The keystone decides what RUNS; governance decides whether the agent may browse.
 - **The packaged install directory is sealed read-only for every sandboxed child.** When the running gateway imports `kiro_crew` from a package directory sitting directly in `site-packages` (or `dist-packages`) -- a wheel install, or the desktop bundle's embedded interpreter -- `sandbox._resolved_install_root_targets` returns that directory (lexical and canonical spellings) and the plan adds it to the same read-only floor as the crew-home ceilings: `readonly_dirs` on the Linux namespace launcher, `file-write*` and `file-link` denies on Seatbelt, plus a `literal` write deny on every ancestor directory so a parent cannot be renamed around the path-based rule (the namespace launcher pins them instead; see the next entry). It holds in every tier, an `extra_visible_dirs` entry does not lift it, and an `extra_writable_dirs` carve-out inside it is refused. On a delegated spawn (Windows, macOS with kiro-cli's own sandbox) a workspace at or inside it is refused; a workspace that merely contains it (a project holding its own venv) is allowed. An editable or from-source checkout is never sealed, so a developer's working copy stays writable. The surrounding `site-packages` and the rest of the environment (`.pth` files, `sitecustomize.py`, dependency packages, the venv's `bin/` and `pyvenv.cfg`, and the managed install's `crew-venv-current` link, which a child that can write its parent can repoint at another tree) are not sealed, because sandboxed provisioning steps install into that same `site-packages`; a child can still change what the gateway loads at start-up through those paths, so this seal closes direct edits to the package directory only. Closing the rest needs those provisioning steps moved to target directories first. The updater writes the install directory from the gateway process, which no seal reaches. **The desktop app's staged KAS engine root rides the same seal.** When the Electron shell exports `KIROCREW_BUNDLED_KAS_DIR` (`constants.BUNDLED_KAS_DIR_ENV`; only a `BUNDLE_KAS` build that staged the root with a well-formed record does, and the shell runs nothing from it at boot), `sandbox_tiers._resolved_install_root_targets` adds that directory too, both spellings, so it reaches every launcher's read-only floor, the Seatbelt ancestor guards and the delegated-spawn overlap refusal exactly as the package directory does. Its `install.json` names the Node binary the gateway spawns, outside any sandbox, for every `agent.kas_bundle` session, re-reading the record on each spawn (`acp.kas_bundle._read_installed`), and the binary sits beside it; the tree has no legitimate in-process writer (the build wrote it, `kirocrew kas install` writes the data home). Three layers, each holding one thing: the shell refuses to export a root whose `BUNDLED-VERSION` is not a single plain segment, or whose `<version>/install.json` names a `node_bin` that is absolute or carries a `.`/`..`/empty segment, checked once at gateway start (`gateway-env.js`, `staysWithinStagedTree`); the per-spawn reader `_read_installed` refuses an `acp_server` or `node_bin` that is absolute (POSIX, drive-lettered or rooted) or carries a `..` segment, so the program the gateway runs is always inside the root it read; and the seal is what keeps sandboxed children from rewriting the record after boot. None of them re-hashes the tree at read time, the same as for the data home's own install. **So does the desktop app's bundled kiro-cli directory.** When the shell exports `KIROCREW_BUNDLED_KIRO_DIR` (`kiro_cli_bundle.BUNDLED_KIRO_DIR_ENV`, re-exported by `kiro_cli`; only a build that shipped the payload does), `_resolved_install_root_targets` adds that directory the same way, both spellings. The shell runs its `kiro-cli-chat --version` at every gateway start and the gateway spawns it, outside any sandbox, for every relay session; it sits beside the package directory in `backend-dist/`, not inside it, so the package seal does not reach it on any layout. Nothing writes it in normal operation: the shell also exports `KIRO_NO_AUTO_UPDATE=1`, and the app's own update replaces the bundle from outside every sandbox.
-- **A read-only seal's parent directories cannot be renamed, on either backend.** A seal holds only while every directory above it stays put: a renamed parent carries the namespace launcher's bind away with it and moves the object out from under a Seatbelt path rule, and either way the sealed name is free for the agent to fill with what the unsandboxed gateway reads next (the specs under `~/.kiro/agents`, the crew-home ceilings). `sandbox_argv._live_plan_host` collects, for every seal -- the `run` directory, the kiro agents tree, the crew-home ceilings in their default and relocated spellings, the install tree -- every entry resolving its path steps on, one name at a time and up to the first name that does not exist (`sandbox_workspace._resolution_entries`), plus the parents of the seal's own spelling, which keep a name not created yet guarded on Seatbelt when no link comes before it, into `PlanHost.readonly_ancestor_guards`. Seatbelt write-denies every ancestor of each as a `literal`. The namespace launcher binds each ancestor this uid could rename (`sandbox_workspace._caller_can_rename`) over itself, recursively and with no added flag, before any seal (`sandbox_launcher_parts.mask_stages.pin_seal_parents`), so each is a mountpoint and its `rename(2)` returns `EBUSY` while its other entries stay writable; a pin whose name reaches another object after the bind refuses the spawn. Each pin is its own mount, so inside the sandbox a `rename(2)` or `link(2)` that crosses one fails with `EXDEV`, as between two filesystems: `mv` and `shutil.move` copy instead, a hard-linking installer falls back to copying, and a bare `os.replace` or `git mv` across one fails. Every symlink that walk meets, wherever it sits on the path (`~/links/current` in `~/.kiro -> ~/links/current -> ~/dotfiles/kiro`), is held the same way: Seatbelt write-denies it, and the namespace launcher, when this uid could rename it, binds it over its own no-follow `O_PATH` descriptor (`mask_stages._hold_seal_parent`), so it cannot be moved or removed either.
+- **A read-only seal's parent directories cannot be renamed, on either backend.** A seal holds only while every directory above it stays put: a renamed parent carries the namespace launcher's bind away with it and moves the object out from under a Seatbelt path rule, and either way the sealed name is free for the agent to fill with what the unsandboxed gateway reads next (the specs under `~/.kiro/agents`, the crew-home ceilings). `sandbox_argv._live_plan_host` collects, for every seal -- the `run` directory, the kiro agents tree, the crew-home ceilings in their default and relocated spellings, the install tree -- every entry resolving its path steps on, one name at a time and up to the first name that does not exist (`sandbox_workspace._resolution_entries`), plus the parents of the seal's own spelling, which keep a name not created yet guarded on Seatbelt when no link comes before it, into `PlanHost.readonly_ancestor_guards`. Seatbelt write-denies every ancestor of each as a `literal`. The namespace launcher binds each ancestor this uid could rename (`sandbox_workspace._caller_can_rename`) over itself, recursively and with no added flag, before the stand-in stage and every other mount it places (`sandbox_launcher_parts.mask_stages.pin_seal_parents`, called by `run_child`), or, for one whose pin lands inside the operator's read-only layer, on top of that layer (`place_masks`), so each is a mountpoint and its `rename(2)` returns `EBUSY` while its other entries stay writable; a pin whose name reaches another object after the bind refuses the spawn. Each pin is its own mount, so inside the sandbox a `rename(2)` or `link(2)` that crosses one fails with `EXDEV`, as between two filesystems: `mv` and `shutil.move` copy instead, a hard-linking installer falls back to copying, and a bare `os.replace` or `git mv` across one fails. Every symlink that walk meets, wherever it sits on the path (`~/links/current` in `~/.kiro -> ~/links/current -> ~/dotfiles/kiro`), is held the same way: Seatbelt write-denies it, and the namespace launcher, when this uid could rename it, binds it over its own no-follow `O_PATH` descriptor (`mask_stages._hold_seal_parent`), so it cannot be moved or removed either.
 - **A sandboxed child starts in its directory as the seals show it.** The Linux namespace launcher records the name of the directory it was started in before it places any mount, and enters that name again after the seals and masks (`sandbox_launcher_program.enter_exec_cwd`), so a spawn that names no launch directory -- a script cron, a command cron -- sees that directory through every seal and mask. A name that does not reach a directory starts the command in `/`. A plan's `exec_cwd`, when set, is entered instead and must read back read-only and empty.
 - **The KAS engine bundle is a READONLY keystone leaf of the same class.** `<data-home>/engines` holds the `@kiro/agent` build and Node runtime `kirocrew kas install` lays down (`acp/kas_bundle.py`; the route is [acp-client.md](acp-client.md) § KAS bundle route). It is on `_CREW_SECRET_LEAVES` for agent file tools and `_CREW_READONLY_LEAVES` for every OS sandbox: a sandboxed KAS process reads and executes its engine, while a write that would choose the code every later session runs fails at the kernel boundary. It is in `_CREW_PRECREATE_READONLY_DIR_LEAVES` (an install that has never run `kirocrew kas install` has no directory, and an absent target is a skipped seal and a name the agent may create) and `_CREW_NOFOLLOW_READONLY_DIR_LEAVES` (a resolving link would seal the target and leave the name replaceable), and it is classified child-readable so an enforced foreign harness's mask is unchanged by it. The installer runs in the operator's own terminal, outside the sandbox, and every artifact it installs was sha256-pinned by the manifest before it landed (`asset_downloader`).
 

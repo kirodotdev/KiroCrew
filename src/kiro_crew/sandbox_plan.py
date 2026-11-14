@@ -159,6 +159,11 @@ class PlanHost:
     crew_readonly_targets: tuple[str, ...] = ()
     #: ``$HOME``-relative crew-home leaves the sandbox hides.
     crew_hidden_dirs: tuple[str, ...] = ()
+    #: Masked trees whose namespace stand-in is sealed read-only, private windows
+    #: included (:attr:`Mask.seal_around_windows`), as absolute paths in every spelling
+    #: the mask list can carry: both ``$HOME`` spellings of the data home and a relocated
+    #: one.
+    sealed_mask_dirs: tuple[str, ...] = ()
     #: Crew-home leaves masked with an unreadable stand-in rather than an empty one.
     unreadable_mask_leaves: tuple[str, ...] = ()
     #: Environment prefixes scrubbed in every tier.
@@ -261,6 +266,13 @@ class Mask:
     #: stand-in, which is what the launcher's own ``restore_exposed_files`` and the vendor
     #: CLIs depend on. The seal is NOT inferred from exposure or path.
     seal_readonly: bool = False
+    #: The stand-in is sealed read-only whether or not private windows are bound inside it
+    #: (:attr:`PlanHost.sealed_mask_dirs`, the scratch root). Its windows are the only
+    #: write surface the tree has, and each is a mount of its own that the seal leaves
+    #: read-write; a write anywhere else under the tree then fails with EROFS instead of
+    #: landing in the stand-in, as Seatbelt's write deny already refuses it on macOS.
+    #: Namespace only.
+    seal_around_windows: bool = False
     #: An ``extra_visible_dirs`` entry at or below this path lifted the mask.
     cancelled: bool = False
     #: A lifted governance cache stays read-only: its write and hardlink denies hold.
@@ -415,6 +427,18 @@ class ConfinementPlan:
         """
         return tuple(
             dict.fromkeys(m.path for m in self.masks if not m.cancelled and m.seal_readonly)
+        )
+
+    @property
+    def seal_windowed_masks(self) -> tuple[str, ...]:
+        """Masked trees to seal read-only even when they carry a writable window.
+
+        The masks marked :attr:`Mask.seal_around_windows`. The launcher binds every window
+        before it seals, and the read-only remount changes the stand-in's own mount only,
+        so the windows stay read-write. Cancelled masks are excluded.
+        """
+        return tuple(
+            dict.fromkeys(m.path for m in self.masks if not m.cancelled and m.seal_around_windows)
         )
 
     @property
@@ -1102,11 +1126,13 @@ def _namespace_plan(
         path for path in hidden if hidden_path_contains_visible_path(path, visible, host.cwd)
     ]
     kept = [path for path in hidden if path not in unhidden]
+    sealed_around_windows = {fold(path) for path in host.sealed_mask_dirs}
     masks = tuple(
         Mask(
             path=path,
             origin=origin,
             seal_readonly=request.seal_hidden_dirs and origin == "caller",
+            seal_around_windows=path in sealed_around_windows,
             cancelled=path in unhidden,
             read_only_when_cancelled=path in unhidden and is_policy_cache_dir(path),
         )
@@ -1478,6 +1504,7 @@ def namespace_payload(plan: ConfinementPlan) -> dict[str, Any]:
         "real_gid": plan.gid,
         "sensitive_dirs": list(plan.sensitive_dirs),
         "seal_windowless_masks": list(plan.seal_windowless_masks),
+        "seal_windowed_masks": list(plan.seal_windowed_masks),
         "sensitive_dir_ids": {path: list(pair) for path, pair in ids.hidden_dir_ids.items()},
         "private_dirs": list(plan.windows),
         "private_dir_ids": {path: list(pair) for path, pair in ids.private_dir_ids.items()},

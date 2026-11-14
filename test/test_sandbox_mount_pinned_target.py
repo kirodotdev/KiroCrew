@@ -37,6 +37,7 @@ import shutil
 import stat
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
 
 import pytest
@@ -1525,3 +1526,52 @@ def test_a_stand_in_whose_identity_cannot_be_read_refuses_with_the_blocked_line(
     assert message is not None
     assert message.startswith("sandbox: BLOCKED -- cannot pin the stand-in"), message
     assert str(stand_in) in message and "I/O error" in message
+
+
+@pytest.mark.parametrize("pin", ["identity", "sealed root's entry"])
+def test_every_pin_of_a_stand_in_refuses_an_unreadable_identity_and_closes_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pin: str
+) -> None:
+    """Both pins of a stand-in refuse a failed ``fstat`` with the BLOCKED line, closing once.
+
+    A root sealed around its windows pins its stand-in a second time, to hold the
+    stand-in's own entry (``_record_sealed_source``). That pin reads the identity in the
+    same handler as the identity pin does, so it refuses the same way, and the descriptor
+    the failed read was taken on is closed exactly once in either.
+    """
+    stand_in = tmp_path / "stand-in"
+    stand_in.mkdir()
+    real_open, real_fstat, real_close = os.open, os.fstat, os.close
+    opened: list[int] = []
+    closed: list[int] = []
+
+    def tracking_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        fd = real_open(path, flags, *args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def failing_fstat(fd: int) -> os.stat_result:
+        if fd in opened:
+            raise OSError(errno.EIO, "I/O error")
+        return real_fstat(fd)
+
+    def tracking_close(fd: int) -> None:
+        if fd in opened:
+            closed.append(fd)
+        real_close(fd)
+
+    monkeypatch.setattr(os, "open", tracking_open)
+    monkeypatch.setattr(os, "fstat", failing_fstat)
+    monkeypatch.setattr(os, "close", tracking_close)
+    if pin == "identity":
+        message = refusal(program._stand_in_identity, str(stand_in).encode())
+    else:
+        run = SimpleNamespace(stand_in_stage=None, stand_in_sources={})
+        message = refusal(
+            program._record_sealed_source, run, "/sealed/root", str(stand_in).encode(), (1, 2)
+        )
+
+    assert message is not None
+    assert message.startswith("sandbox: BLOCKED -- cannot pin the stand-in"), message
+    assert str(stand_in) in message and "I/O error" in message
+    assert len(opened) == 1 and closed == opened

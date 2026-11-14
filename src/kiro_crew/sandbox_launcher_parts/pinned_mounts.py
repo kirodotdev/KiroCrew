@@ -723,6 +723,29 @@ def _mask_required(launch, name):
     return name in launch.required_mask_targets
 
 
+def _pin_stand_in(stand_in):
+    """``(fd, stat)`` of a no-follow ``O_PATH`` pin on a stand-in just created, or refuse.
+
+    The descriptor holds the stand-in's own entry, wherever another process renames it.
+    Its identity is read inside the same handler as the open, so a failed ``fstat``
+    refuses with the same line as a failed open and closes the descriptor once.
+    """
+    try:
+        fd = os.open(stand_in, os.O_RDONLY | _O_PATH | os.O_NOFOLLOW)
+        try:
+            return fd, os.fstat(fd)
+        except OSError:
+            os.close(fd)
+            raise
+    except OSError as exc:
+        sys.exit(
+            "sandbox: BLOCKED -- cannot pin the stand-in %s this launcher just "
+            "created (%s), so the mask it is about to place could not be verified. "
+            "Lower agent.sandbox to run without this control deliberately."
+            % (os.fsdecode(stand_in), exc)
+        )
+
+
 def _stand_in_identity(stand_in):
     """The ``(dev, ino)`` of a stand-in this launcher just created, pinned no-follow.
 
@@ -735,19 +758,8 @@ def _stand_in_identity(stand_in):
     no-follow descriptor cannot be re-aimed. A bind mount presents its source's device
     and inode, so the name, once masked, reads back as exactly this pair.
     """
-    try:
-        fd = os.open(stand_in, os.O_RDONLY | _O_PATH | os.O_NOFOLLOW)
-        try:
-            st = os.fstat(fd)
-        finally:
-            os.close(fd)
-    except OSError as exc:
-        sys.exit(
-            "sandbox: BLOCKED -- cannot pin the stand-in %s this launcher just "
-            "created (%s), so the mask it is about to place could not be verified. "
-            "Lower agent.sandbox to run without this control deliberately."
-            % (os.fsdecode(stand_in), exc)
-        )
+    fd, st = _pin_stand_in(stand_in)
+    os.close(fd)
     return (st.st_dev, st.st_ino)
 
 
