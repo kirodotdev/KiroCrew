@@ -89,6 +89,7 @@ from kiro_crew.acp.types import ACP_BACKEND_KAS
 from kiro_crew.agent import AGENT_FILENAME, agent_spec_path
 from kiro_crew.agent_discovery import (
     _read_agent_spec,
+    plain_markdown_document,
     project_agent_files,
     project_agent_name,
 )
@@ -100,6 +101,8 @@ from kiro_crew.agent_spec_format import (  # noqa: F401
     SKILL_VIEW_PROJECTION_CEILING,
     count_authored_agent_files,
     is_agent_spec_name,
+    is_markdown_spec,
+    iter_agent_spec_files_strict,
     shadowed_markdown_specs,
     skill_view_ceiling,
 )

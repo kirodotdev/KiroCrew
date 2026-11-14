@@ -211,6 +211,41 @@ class TestDoctorFlagsSpecPins:
 
         assert cli_doctor._agent_spec_model_problems(agents_dir=agents_dir) == []
 
+    def test_a_plain_markdown_document_is_not_an_unreadable_spec(self, tmp_path):
+        """A README without a frontmatter fence is not a spec, so the check still runs."""
+        from kiro_crew import cli_doctor
+
+        agents_dir = tmp_path / "agents"
+        self._spec(agents_dir, "fine", "claude-opus-4.8")
+        (agents_dir / "README.md").write_text("# My agents\n\nNotes.\n", encoding="utf-8")
+
+        result = cli_doctor._agent_spec_model_problems(agents_dir=agents_dir)
+
+        assert result == [], f"a plain README.md made the pin audit report {result!r}"
+
+    def test_a_fenced_markdown_spec_that_fails_to_parse_still_reports_unchecked(self, tmp_path):
+        from kiro_crew import cli_doctor
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "half.md").write_text("---\nname: half\nmodel: x\n", encoding="utf-8")
+
+        assert cli_doctor._agent_spec_model_problems(agents_dir=agents_dir) is None
+
+    def test_a_markdown_twin_shadowed_by_its_json_spec_is_not_audited(self, tmp_path):
+        """The ``.json`` wins over a ``.md`` of the same stem, so only its pin counts."""
+        from kiro_crew import cli_doctor
+
+        agents_dir = tmp_path / "agents"
+        self._spec(agents_dir, "reviewer", "claude-opus-4.8")
+        (agents_dir / "reviewer.md").write_text(
+            "---\nname: reviewer\nmodel: claude-opus-4-8\n---\nprompt\n", encoding="utf-8"
+        )
+
+        result = cli_doctor._agent_spec_model_problems(agents_dir=agents_dir)
+
+        assert result == [], f"the never-read .md twin was audited: {result!r}"
+
     def test_unreadable_project_enumeration_reports_unchecked(self, tmp_path, monkeypatch):
         from kiro_crew import cli_doctor
         from kiro_crew.config.paths import project_agents_dir
