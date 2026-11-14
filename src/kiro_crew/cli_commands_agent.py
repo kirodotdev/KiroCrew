@@ -171,6 +171,12 @@ def _handle_agent(args: argparse.Namespace) -> None:
     """Dispatch agent subcommands: list, create, update, delete."""
 
     action = getattr(args, "agent_action", None)
+    if action == "validate":
+        # Offline by design: a config that does not load must not stop a spec check.
+        from kiro_crew.cli_agent_validate import agent_validate
+
+        agent_validate(args)
+        return
     cfg = KiroCrewConfig.load()
 
     if action == "list":
@@ -489,7 +495,7 @@ def _handle_agent(args: argparse.Namespace) -> None:
         # exit 2, the argparse convention, so a script does not read 0 after a
         # typo.
         print(
-            "Usage: kirocrew agent {list|create|update|delete|pin|reset-model}",
+            "Usage: kirocrew agent {list|create|update|delete|pin|validate|reset-model}",
             file=sys.stderr,
         )
         sys.exit(2)
