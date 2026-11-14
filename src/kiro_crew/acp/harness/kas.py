@@ -103,6 +103,8 @@ from kiro_crew.kiro_cli import (
     chat_sibling,
     installed_kiro_cli_version,
     kas_auth_client_flag_supported,
+    resolved_kiro_cli_version,
+    standalone_kiro_cli,
 )
 from kiro_crew.mate_worker import MATE_WORKER_AGENT
 from kiro_crew.mcp_gateway import session_servers as session_servers_mod
@@ -862,10 +864,15 @@ class KasHarness(MembershipHarness):
             # needs kiro-cli signed in anyway, so the gate costs it nothing.
             # An operator's KIROCREW_KIRO_BIN is exactly what they asked for --
             # a wrapper of theirs named `kiro-cli` is never swapped out from
-            # under them.
+            # under them. From 3.0.0 `kiro-cli` is the chat binary itself, so a
+            # `kiro-cli-chat` an older install left beside it is never entered.
+            # The version is that of the binary spawned (not only the pin), read
+            # as the route and doctor read it, so the three agree.
             if not operator_override:
                 chat_bin = await asyncio.to_thread(chat_sibling, kas_bin)
-                if chat_bin:
+                if chat_bin and not standalone_kiro_cli(
+                    await asyncio.to_thread(resolved_kiro_cli_version, kas_bin)
+                ):
                     kas_bin = chat_bin
             logger.info(
                 "KAS auth owner=crew — Crew vault holds an identity; relay spawned "

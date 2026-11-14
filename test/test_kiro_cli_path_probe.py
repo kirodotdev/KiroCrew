@@ -257,6 +257,39 @@ class TestNeverWaitedFor:
         assert threads.pending == []
 
 
+class TestVersionNow:
+    """``kirocrew doctor`` is one blocking run whose process never warms the cache."""
+
+    def test_a_miss_is_read_inline_and_kept(self, tmp_path, threads, monkeypatch):
+        binary = _install(tmp_path)
+        probed: list[str] = []
+        monkeypatch.setattr(
+            kiro_cli_path_probe, "_sandboxed_version", lambda b: probed.append(b) or (3, 0, 0)
+        )
+
+        assert kiro_cli_path_probe.version_now(binary) == (3, 0, 0)
+        assert threads.pending == [], "read on the caller's thread, not in the background"
+        assert kiro_cli_path_probe.version_if_known(binary) == (3, 0, 0)
+        assert kiro_cli_path_probe.version_now(binary) == (3, 0, 0)
+        assert probed == [binary]
+
+    def test_a_read_with_no_answer_is_unknown_and_not_kept(self, tmp_path, threads, monkeypatch):
+        binary = _install(tmp_path)
+
+        def _probe(_binary):
+            raise kiro_cli_path_probe._NoAnswer
+
+        monkeypatch.setattr(kiro_cli_path_probe, "_sandboxed_version", _probe)
+        assert kiro_cli_path_probe.version_now(binary) is None
+        assert kiro_cli_path_probe._versions == {}
+
+    def test_a_missing_file_is_unknown(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            kiro_cli_path_probe, "_sandboxed_version", lambda _b: pytest.fail("nothing to run")
+        )
+        assert kiro_cli_path_probe.version_now(str(tmp_path / "gone")) is None
+
+
 class TestWarm:
     def test_it_probes_the_path_only_install(self, tmp_path, threads, monkeypatch):
         binary = _install(tmp_path)
