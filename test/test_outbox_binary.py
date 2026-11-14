@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
 import mimetypes
 from pathlib import Path
@@ -147,6 +148,10 @@ class TestOutboxNotifyFieldTypes:
             )
 
 
+#: A zip's local-file signature followed by bytes that are never valid UTF-8.
+_ZIP = b"PK\x03\x04" + b"\xff\xfe\x80\x81" * 16
+
+
 class TestOutboxNotifyBinary:
     @pytest.mark.asyncio
     async def test_binary_mp3_accepted(self, outbox, mock_sel):
@@ -168,23 +173,22 @@ class TestOutboxNotifyBinary:
             assert data["ok"] is True
 
     @pytest.mark.asyncio
-    async def test_binary_exe_rejected(self, outbox, mock_sel):
-        """Binary EXE file rejected (not in allowlist)."""
-        exe = outbox / "payload.exe"
-        exe.write_bytes(b"\x4d\x5a\x90\x00\x03\x00\xff\xfe\x80\x81" * 10)  # non-UTF-8 PE header
+    async def test_binary_outside_the_allowlist_accepted(self, outbox, mock_sel):
+        """Notify posts the owner's card for a zip and leaves its disposition to the download route."""
+        zipped = outbox / "bundle.zip"
+        zipped.write_bytes(_ZIP)
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post(
                 "/api/outbox/notify",
                 json={
-                    "path": str(exe),
-                    "filename": "payload.exe",
-                    "description": "bad file",
-                    "size": exe.stat().st_size,
+                    "path": str(zipped),
+                    "filename": "bundle.zip",
+                    "description": "export",
+                    "size": zipped.stat().st_size,
                 },
             )
-            assert resp.status == 400
-            data = await resp.json()
-            assert "not allowed" in data["error"]
+            assert resp.status == 200
+            assert (await resp.json())["ok"] is True
 
     @pytest.mark.asyncio
     async def test_text_with_secrets_is_delivered(self, outbox, mock_sel):
@@ -219,8 +223,68 @@ class TestOutboxDownloadBinary:
             assert resp.headers["X-Content-Type-Options"] == "nosniff"
 
     @pytest.mark.asyncio
-    async def test_download_exe_rejected(self, outbox, mock_sel):
-        """EXE file rejected by download handler (not in allowlist).
+    @pytest.mark.parametrize("name", ["bundle.zip", "scan.tiff"])
+    async def test_download_serves_an_unlisted_binary_to_the_owner_as_attachment(
+        self, outbox, mock_sel, name
+    ):
+        """The owner gets any binary type, as an attachment.
+
+        The ``image/tiff`` case shares the ``image/`` prefix that the route serves
+        inline, so it fails if the prefix instead of the allowlist decides the
+        disposition. The expected type comes from the ``mimetypes`` call that the
+        route makes, because a host's MIME table can map ``.zip`` to another type.
+        """
+        from kiro_crew.security import BINARY_MIME_ALLOWLIST
+
+        expected_type = mimetypes.guess_type(name)[0]
+        assert expected_type and expected_type not in BINARY_MIME_ALLOWLIST
+        target = outbox / name
+        target.write_bytes(_ZIP)
+        with patch(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            return_value=True,
+        ):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get(f"/api/outbox/{name}")
+                assert resp.status == 200
+                assert await resp.read() == _ZIP
+                assert resp.headers["Content-Type"] == expected_type
+                assert resp.headers["Content-Disposition"].startswith("attachment;")
+                assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+    @pytest.mark.asyncio
+    async def test_a_compressed_pdf_reaches_the_owner_as_an_octet_stream_attachment(
+        self, outbox, mock_sel
+    ):
+        """A gzip file named like a PDF is served as an attachment, not as an inline PDF."""
+        gz = gzip.compress(b"%PDF-1.4\n" + bytes(range(256)))
+        (outbox / "report.pdf.gz").write_bytes(gz)
+        with patch(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            return_value=True,
+        ):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/outbox/report.pdf.gz")
+                assert resp.status == 200
+                assert await resp.read() == gz
+                assert resp.headers["Content-Type"] == "application/octet-stream"
+                assert resp.headers["Content-Disposition"].startswith("attachment;")
+                assert resp.headers["X-Content-Type-Options"] == "nosniff"
+
+    @pytest.mark.asyncio
+    async def test_a_compressed_pdf_is_refused_to_a_non_owner(self, outbox, mock_sel):
+        """The credential scan cannot read compressed bytes.
+
+        A non-owner gets the 403 that any type outside the allowlist gets.
+        """
+        (outbox / "report.pdf.gz").write_bytes(gzip.compress(b"%PDF-1.4\n" + bytes(range(256))))
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/outbox/report.pdf.gz")
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_download_exe_rejected_for_a_non_owner(self, outbox, mock_sel):
+        """A caller who is not the owner gets only allow-listed binary types.
 
         macOS ships /etc/apache2/mime.types which classifies .exe as
         application/x-msdownload; Linux CI lacks that file and falls

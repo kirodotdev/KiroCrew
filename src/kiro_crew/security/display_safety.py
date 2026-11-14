@@ -6,8 +6,7 @@ query, fragment, port or userinfo and without echoing a component that carries a
 credential at any percent-decode layer. :func:`sanitized_oauth_endpoint_display`
 joins that pair into one copy-ready ``host/path`` only when writing it into
 ``oauth_endpoints.json`` would clear the rejection. ``BINARY_MIME_ALLOWLIST`` is the
-deny-by-default list of binary file types ``file_send`` and the outbox accept,
-because the dashboard origin renders them.
+deny-by-default list of binary file types the dashboard origin may render inline.
 
 ``kiro_crew.security`` is the import path. This module reads the package's
 ``_submodule`` resolver, so the package imports it at its foot, once that is bound.
@@ -231,11 +230,12 @@ def sanitized_oauth_endpoint_display(url: str) -> str | None:
 
 
 # ── Binary File MIME Allowlist ──
-# Files whose UTF-8 decode fails are accepted by file_send / outbox only when
-# their guessed MIME type is in this allowlist. Deny-by-default; expand only
-# when a use case is reviewed for safe rendering on the dashboard origin.
-# SVG is intentionally excluded (can carry inline scripts); served as
-# attachment by the download handler for defense-in-depth.
+# Binary (non-UTF-8) types reviewed as safe to render on the dashboard origin.
+# The outbox download serves them inline and gives the owner every other binary
+# type as an attachment. A non-owner's download and the Slack and channel upload
+# legs accept these types alone. A new type needs the same review. SVG is left
+# out because it can carry inline scripts, and the download handler serves it
+# as an attachment.
 BINARY_MIME_ALLOWLIST: frozenset[str] = frozenset(
     {
         "audio/mpeg",

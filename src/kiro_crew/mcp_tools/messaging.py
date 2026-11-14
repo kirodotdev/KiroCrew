@@ -17,7 +17,6 @@ every existing patch site.
 from __future__ import annotations
 
 import json
-import mimetypes
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -31,7 +30,7 @@ from kiro_crew.mcp_tools.catalog.messaging import (  # noqa: F401
     schemas,
 )
 from kiro_crew.platform import redact_via_context as redact
-from kiro_crew.security import BINARY_MIME_ALLOWLIST, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 
 #: Options that exist only in Slack's protocol: a Block Kit layout, a Slack
@@ -661,22 +660,9 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             error=f"sensitive_filename: {redact(clean_name)}",
         )
         return "Error: filename contains sensitive content. Rename the file first."
-    # The owner's own outbox and dashboard get the bytes as-is: no content scan
-    # here. Binary still needs an allow-listed MIME type. The Slack and channel
-    # upload legs scan on their own in ``_gate_upload_file``.
-    try:
-        raw.decode("utf-8")
-    except UnicodeDecodeError:
-        guessed = mimetypes.guess_type(clean_name)[0] or ""
-        if guessed not in BINARY_MIME_ALLOWLIST:
-            mcp_core.sel().log_tool_invocation(
-                session_key="mcp_core",
-                source="mcp",
-                tool_name="file_send",
-                outcome="denied",
-                error=f"binary_mime_not_allowed: {guessed}",
-            )
-            return f"Error: binary file type not allowed: {guessed or 'unknown'}. Allowed: audio, video, image, PDF."
+    # The owner's outbox and dashboard get the bytes unchanged, and this tool
+    # checks neither their content nor their type. The Slack and channel upload
+    # legs check both in ``_gate_upload_file``.
     dest = mcp_core.outbox_dir() / clean_name
     try:
         with dest.open("xb") as f:

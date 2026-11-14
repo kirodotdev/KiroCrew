@@ -5182,11 +5182,11 @@ When writing new code, these rules MUST be followed:
 
 ### Binary File Handling (`security/`, `handlers/files.py`, `file_api/outbox.py`, `file_api/channel_upload.py`, `mcp_core.py`)
 
-The `file_send` MCP tool and outbox handlers support binary media files with a deny-by-default MIME allowlist.
+The `file_send` MCP tool and outbox handlers deliver binary files of any type to the owner. A deny-by-default MIME allowlist decides which binary types the dashboard origin serves inline, and which types reach anyone other than the owner.
 
 #### BINARY_MIME_ALLOWLIST
 
-Module-level constant in `security/`. Only these MIME types are accepted for binary (non-UTF-8) files:
+Module-level constant in `security/`. These binary (non-UTF-8) types are served `inline` on `GET /api/outbox/{filename}`, and only these are accepted on the Slack and channel upload legs and on a non-owner's outbox download:
 
 | Category | Types |
 |----------|-------|
@@ -5205,21 +5205,24 @@ the Slack and channel upload legs (`_gate_upload_file`), `/api/file-stream`, and
 dashboard owner. The owner's own delivery surfaces do not scan content:
 `file_send` copies to the outbox without a scan, `POST /api/outbox/notify` does
 not scan, and `GET /api/outbox/{filename}` serves the bytes as-is when
-`is_owner_dashboard_request` holds. The MIME allowlist and the filename check
-apply on every surface.
+`is_owner_dashboard_request` holds. The filename check applies on every
+surface. The MIME allowlist refuses a binary type only on the upload legs and on
+a non-owner's outbox download; the owner's outbox download serves every other
+binary type as `attachment`.
 
 | File type | Content scan | MIME check | Disposition |
 |-----------|-------------|------------|-------------|
 | Text (UTF-8 decodable) | `redact()` for credentials/exfiltration | N/A | `attachment` |
 | Binary (in allowlist) | Scanned, not redacted: `binary_content_is_flagged` (non-UTF-8) and `wide_content_is_flagged` (every file) | Must be in `BINARY_MIME_ALLOWLIST` | `inline` (browser renders natively) |
-| Binary (not in allowlist) | N/A | Rejected with 400/403 | N/A |
+| Binary (not in allowlist), owner | Not scanned | Accepted | `attachment` |
+| Binary (not in allowlist), non-owner or upload leg | N/A | Rejected with 400/403 | N/A |
 | SVG (UTF-8 decodable) | `redact()` for credentials/exfiltration | Not in allowlist (text path) | `attachment` (never inline — defense-in-depth against XSS) |
 
 #### Response Headers
 
 All outbox downloads include:
 - `Content-Type`: from `mimetypes.guess_type()` or `application/octet-stream`
-- `Content-Disposition`: `inline` for media, `attachment` for others. On `GET /api/outbox/{filename}`, `?download=1` forces `attachment` for every type; it can only narrow, never make a type inline, and every check above still runs first. The file card's Save uses it, because a browser that ignores the `download` attribute follows this header
+- `Content-Disposition`: `inline` for allow-listed binary types, `attachment` for others, including a media type outside the allowlist such as `image/tiff`. On `GET /api/outbox/{filename}`, `?download=1` forces `attachment` for every type; it can only narrow, never make a type inline, and every check above still runs first. The file card's Save uses it, because a browser that ignores the `download` attribute follows this header
 - `X-Content-Type-Options: nosniff`: prevents MIME sniffing attacks
 
 #### Invariants
@@ -5227,7 +5230,7 @@ All outbox downloads include:
 - Path traversal protection unchanged (resolved path must be under `outbox_dir()`)
 - Filename sensitivity check unchanged (`redact(filename) == filename`)
 - Text content redaction unchanged for UTF-8 files
-- Binary files: filename validated on every `file_send` gate and the MIME allowlist enforced. Content is SCANNED only on the upload legs and on a non-owner outbox read (binary data cannot be meaningfully redacted, so a hit refuses rather than rewrites): the upload legs refuse a hit unconditionally, and a non-owner `GET /api/outbox/{filename}` gets 400. The owner's own outbox copy, notify and read carry no content scan
+- Binary files: filename validated on every `file_send` gate. The MIME allowlist is enforced on the upload legs and on a non-owner outbox read; the owner's outbox copy, notify and read accept every binary type. Content is SCANNED only on the upload legs and on a non-owner outbox read (binary data cannot be meaningfully redacted, so a hit refuses rather than rewrites): the upload legs refuse a hit unconditionally, and a non-owner `GET /api/outbox/{filename}` gets 400. The owner's own outbox copy, notify and read carry no content scan
 - Dashboard multipart uploads open their destination with `O_BINARY` when the
   host provides it, so Windows cannot translate embedded LF bytes to CRLF and
   corrupt archives or media between validation and the restricted write.
