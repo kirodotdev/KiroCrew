@@ -131,7 +131,11 @@ class TestDeclarationParsing:
             "exclude = ['crates/legacy']\n",
         )
 
-        assert declared_patterns(str(path), str(tmp_path)) == ["crates/*", "tools/cli"]
+        assert declared_patterns(str(path), str(tmp_path)) == [
+            "crates/*",
+            "tools/cli",
+            "!crates/legacy/**",
+        ]
 
     def test_cargo_without_a_workspace_table_declares_nothing(self, tmp_path: Path) -> None:
         path = _write(tmp_path / "Cargo.toml", "[package]\nname = 'app'\n")
@@ -198,8 +202,17 @@ class TestCargoFallbackParser:
         )
         path = _write(tmp_path / "Cargo.toml", text)
 
-        assert _scan_cargo_members(text) == ["crates/*", "tools/cli"]
+        assert _scan_cargo_members(text) == ["crates/*", "tools/cli", "!crates/legacy/**"]
         assert _scan_cargo_members(text) == declared_patterns(str(path), str(tmp_path))
+
+    def test_an_exclude_that_is_not_an_array_costs_only_itself(self, tmp_path: Path) -> None:
+        # Both parsers keep the members and ignore the malformed exclude, and
+        # the fallback does not read the next key's array as excluded paths.
+        text = "[workspace]\nmembers = ['crates/*']\nexclude = 'crates/old'\nother = ['x']\n"
+        path = _write(tmp_path / "Cargo.toml", text)
+
+        assert declared_patterns(str(path), str(tmp_path)) == ["crates/*"]
+        assert _scan_cargo_members(text) == ["crates/*"]
 
     def test_a_single_line_array_is_read(self) -> None:
         assert _scan_cargo_members("[workspace]\nmembers = ['a', 'b']\n") == ["a", "b"]
@@ -248,6 +261,77 @@ class TestMemberCandidates:
 
         assert _relative_paths(tree, tmp_path) == ["crates/cli", "crates/engine"]
         assert {candidate.tier for candidate in tree.candidates} == {Tier.OFFERED}
+
+    def test_cargo_workspace_exclude_withdraws_the_member_claim(self, tmp_path: Path) -> None:
+        # Cargo's ``exclude`` removes paths the ``members`` globs would match.
+        # "crates/scratch" has no manifest, so the member list was its only
+        # reason to be offered; "crates/legacy" stays a package by its own
+        # manifest but loses the member signal.
+        _write(
+            tmp_path / "Cargo.toml",
+            "[workspace]\nmembers = ['crates/*']\nexclude = ['crates/scratch', 'crates/legacy']\n",
+        )
+        _write(tmp_path / "crates" / "core" / "Cargo.toml", "[package]\nname = 'core'\n")
+        _write(tmp_path / "crates" / "legacy" / "Cargo.toml", "[package]\nname = 'legacy'\n")
+        _make(tmp_path, "crates/scratch/notes/")
+
+        tree = scan(tmp_path)
+        signals = {
+            Path(candidate.path).relative_to(tmp_path).as_posix(): candidate.signals
+            for candidate in tree.candidates
+        }
+
+        assert sorted(signals) == ["crates/core", "crates/legacy"]
+        assert "member" in signals["crates/core"]
+        assert "member" not in signals["crates/legacy"]
+
+    def test_cargo_exclude_covers_the_whole_subtree(self, tmp_path: Path) -> None:
+        # An exclude entry is a path prefix in Cargo, so a recursive member glob
+        # cannot bring back a directory beneath an excluded one.
+        _write(
+            tmp_path / "Cargo.toml",
+            "[workspace]\nmembers = ['crates/**']\nexclude = ['crates/vendor']\n",
+        )
+        _make(tmp_path, "crates/core/src/", "crates/vendor/inner/deep/")
+
+        assert _relative_paths(scan(tmp_path), tmp_path) == [
+            "crates",
+            "crates/core",
+            "crates/core/src",
+        ]
+
+    @pytest.mark.parametrize("fallback", [False, True], ids=["toml", "fallback"])
+    def test_a_literal_member_beneath_an_exclude_stays_a_member(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallback: bool
+    ) -> None:
+        # Cargo excludes a path only when no literal ``members`` entry is also
+        # its prefix. A glob member under the same exclude stays excluded.
+        if fallback:
+            monkeypatch.setattr(project_scan, "_toml", None)
+        _write(
+            tmp_path / "Cargo.toml",
+            "[workspace]\nmembers = ['crates/legacy/inner', 'crates/legacy/*']\n"
+            "exclude = ['crates/legacy']\n",
+        )
+        _make(tmp_path, "crates/legacy/inner/", "crates/legacy/other/")
+
+        assert _relative_paths(scan(tmp_path), tmp_path) == ["crates/legacy/inner"]
+
+    @pytest.mark.parametrize("fallback", [False, True], ids=["toml", "fallback"])
+    def test_a_malformed_exclude_keeps_every_member(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallback: bool
+    ) -> None:
+        if fallback:
+            monkeypatch.setattr(project_scan, "_toml", None)
+        _write(
+            tmp_path / "Cargo.toml", "[workspace]\nmembers = ['crates/*']\nexclude = 'crates/old'\n"
+        )
+        _make(tmp_path, "crates/core/", "crates/old/")
+
+        tree = scan(tmp_path)
+
+        assert _relative_paths(tree, tmp_path) == ["crates/core", "crates/old"]
+        assert not any("Cargo.toml" in warning for warning in tree.warnings)
 
     def test_go_work_uses_are_offered(self, tmp_path: Path) -> None:
         _write(tmp_path / "go.work", "go 1.22\n\nuse (\n\t./api\n\t./web\n)\n")
