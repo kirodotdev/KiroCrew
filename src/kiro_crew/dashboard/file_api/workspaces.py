@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 # ── Workspace API ──
 async def api_workspaces(request: web.Request) -> web.Response:
     """GET /api/workspaces — list configured workspaces."""
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     default_ws = cfg.default_workspace
     result = []
     for name, ws in cfg.workspaces.items():
@@ -131,7 +131,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
             {"error": "Invalid workspace name (use alphanumeric, hyphens, underscores)"},
             status=400,
         )
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if name in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' already exists"}, status=409)
     copy_from = body.get("copy_from", "")
@@ -468,7 +468,7 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
         return owner_denied
 
     name = request.match_info["name"]
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if name not in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' not found"}, status=404)
     # Default cap: the body is a single directory field.
@@ -601,7 +601,7 @@ async def api_workspaces_delete(request: web.Request) -> web.Response:
         return owner_denied
 
     name = request.match_info["name"]
-    cfg = KiroCrewConfig.load()
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if name not in cfg.workspaces:
         return web.json_response({"error": f"Workspace '{name}' not found"}, status=404)
     if name == cfg.default_workspace:
