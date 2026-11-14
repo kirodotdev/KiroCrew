@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
@@ -371,6 +372,47 @@ def _record_eligible(name: str) -> bool:
     return not _temp_data_name_obstruction(tmp_data)
 
 
+def _nothing_beside_the_manifest(name: str, tree: Path) -> bool:
+    """Whether the swap of *name* onto *tree* would retire only what is rebuilt. Blocking.
+
+    The swap carries ``data/`` and ``.app_secret`` and rewrites the record and the
+    manifest copy; the approved-grants file left from before the protected store
+    is never read again; the gateway rewrites ``app-crons.json`` from the manifest
+    at its next registration; and an entry *tree* ships at its root replaces the
+    old one, as an update replaces it (files an app renders from its own package
+    at that name, such as agent configs). Anything else at the root is the app's
+    or the operator's, and the swap would delete it with the old tree, so the
+    record keeps running the built-in until that state is in ``data/``.
+    """
+    from kiro_crew.apps.bridges import _CRON_MANIFEST_NAME
+    from kiro_crew.apps.manager import (
+        APP_MANIFEST_FILENAME,
+        APPROVED_GRANTS_FILENAME,
+        INSTALLED_META_FILENAME,
+        app_dir,
+    )
+
+    kept = {INSTALLED_META_FILENAME, APP_MANIFEST_FILENAME, APPROVED_GRANTS_FILENAME}
+    kept |= {"data", ".app_secret", _CRON_MANIFEST_NAME}
+    try:
+        with os.scandir(tree) as shipped:
+            kept |= {entry.name for entry in shipped}
+        with os.scandir(app_dir(name)) as entries:
+            beside = sorted(entry.name for entry in entries if entry.name not in kept)
+    except OSError:
+        logger.warning("Adoption of %s skipped: its directory cannot be listed", name)
+        return False
+    if beside:
+        logger.warning(
+            "Adoption of %s skipped: the swap would delete %s beside app.json; "
+            "the built-in keeps running until that is in data/",
+            name,
+            ", ".join(beside[:5]),
+        )
+        return False
+    return True
+
+
 def _record_matches_pin(name: str, pin: AdoptionPin) -> bool:
     from kiro_crew.apps.builtin_adoption import record_is_adopted_from
     from kiro_crew.apps.manager import _read_installed
@@ -484,6 +526,9 @@ async def _apply_one(pin: AdoptionPin, marker: AdoptionMarker | None) -> str:
         await asyncio.to_thread(_set_ledger, ledger, "pending")
         return "not_staged"
     try:
+        if not await asyncio.to_thread(_nothing_beside_the_manifest, name, tree):
+            await _release_reused(name, pin, reused)
+            return "skipped"
         return await _apply_verified(pin, ledger, reused, tree, manifest, staged.kind)
     finally:
         await asyncio.to_thread(shutil.rmtree, tmp, True)
