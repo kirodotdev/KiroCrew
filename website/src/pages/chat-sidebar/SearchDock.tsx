@@ -713,13 +713,8 @@ export function renderSearchDock(shell: SidebarScope): { field: React.ReactNode;
                       role="menuitemcheckbox"
                       aria-checked={unfiledAboveFolders}
                     >
-                      <span
-                        aria-hidden="true"
-                        className={`w-3.5 h-3.5 shrink-0 rounded-[3px] border flex items-center justify-center ${unfiledAboveFolders ? 'border-accent bg-accent text-accent-fg' : 'border-border bg-transparent'}`}
-                      >
-                        {unfiledAboveFolders && <Check size={10} strokeWidth={3} />}
-                      </span>
                       <span className="flex-1">{i18nT('pages.chatSidebar.unfiled_sessions_above_folders')}</span>
+                      {unfiledAboveFolders && <Check size={14} className="text-accent shrink-0" aria-hidden="true" />}
                     </DropdownMenuItem>
                   </>
                 )}
