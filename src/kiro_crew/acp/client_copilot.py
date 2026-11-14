@@ -4,7 +4,8 @@ Copilot CLI names a write's targets only in its per-file permission frame, an MC
 call's server only in its ``tool_call`` title, and is verified on one release, so
 three things here make its requests judgeable by the shared gates: the edit-target
 seed (and its restore), the MCP-identity confirmation against the permission frame,
-and the handshake refusal of an unverified release. Every function is reached only
+and the handshake refusal of an unverified release. The attached-async-shell tracker
+lets the read loop recognise a turn Copilot holds open for such a shell. Every function is reached only
 on a Copilot session (harness-parity H13).
 
 Each function here whose first parameter is ``self`` is an ``AcpClient`` method: the
@@ -14,18 +15,19 @@ and a patch of the method on the class or on an instance reaches every caller.
 Instance fields written: ``_tool_call_diff_path``, ``_tool_call_mcp_server``,
 ``_tool_call_params``, ``_tool_call_tool_name``.
 
-Instance fields read: ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``,
-``_tool_call_is_shell``.
+Instance fields read: ``_copilot_ambiguous_mcp_calls``, ``_copilot_async_shell_calls``,
+``_copilot_live_shells``, ``_copilot_unmatched_titles``, ``_tool_call_is_shell``.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.acp.harness.copilot import note_copilot_identity_record
 from kiro_crew.acp.transport_errors import AcpToolGateUnroutable
-from kiro_crew.acp.types import JsonRpcMessage
+from kiro_crew.acp.types import TERMINAL_TOOL_STATUSES, JsonRpcMessage
 from kiro_crew.agent_sdk.backends import COPILOT_VERIFIED_VERSION
 from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS, target_paths
 
@@ -290,3 +292,54 @@ def _restore_copilot_edit_seed(self: AcpClient, restore: tuple[str, object, obje
             cache.pop(tool_call_id, None)
         else:
             cache[tool_call_id] = original
+
+
+# Copilot CLI's text for an attached async shell it started. A detached shell reads
+# "started in detached background" and does not hold the turn, so it never matches.
+_ATTACHED_SHELL_STARTED = re.compile(r"<command started in background with shellId: (\S+?)>")
+
+
+def _track_copilot_async_shell(self: AcpClient, msg: JsonRpcMessage) -> None:
+    """Keep the set of this session's attached async shells still running.
+
+    Copilot CLI holds a turn's ``session/prompt`` result for as long as an attached
+    async shell of the session runs, even after the model's answer is complete, and
+    a cancel does not stop that shell. The set lets the read loop recognise such a
+    hold. A shell enters it when the ``tool_call`` asked ``mode: "async"`` without
+    ``detach`` and its completion names the shellId; it leaves when any
+    ``tool_call_update`` reports its ``shell_exit``. The set outlives the turn, as the
+    shell does, and is cleared with the process. Copilot only (harness-parity H13).
+    """
+    params = msg.params if isinstance(msg.params, dict) else {}
+    update = params.get("update")
+    if not isinstance(update, dict):
+        return
+    call_id = update.get("toolCallId")
+    if not isinstance(call_id, str):
+        return
+    pending: set[str] = self._copilot_async_shell_calls
+    live: set[str] = self._copilot_live_shells
+    kind = update.get("sessionUpdate")
+    raw_input = update.get("rawInput")
+    if (
+        kind == "tool_call"
+        and isinstance(raw_input, dict)
+        and raw_input.get("mode") == "async"
+        and not raw_input.get("detach")
+    ):
+        pending.add(call_id)
+        return
+    if kind != "tool_call_update":
+        return
+    raw_output = update.get("rawOutput")
+    if not isinstance(raw_output, dict):
+        return
+    for item in raw_output.get("contents") or ():
+        if isinstance(item, dict) and item.get("type") == "shell_exit":
+            live.discard(str(item.get("shellId")))
+    if call_id in pending and update.get("status") in TERMINAL_TOOL_STATUSES:
+        pending.discard(call_id)
+        text = raw_output.get("content")
+        started = _ATTACHED_SHELL_STARTED.search(text) if isinstance(text, str) else None
+        if started:
+            live.add(started.group(1))

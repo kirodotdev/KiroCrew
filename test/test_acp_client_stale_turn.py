@@ -1131,3 +1131,205 @@ class TestToolStallKeepalive:
         assert actions == []
         client._kill_process.assert_awaited_once()
         assert client._turn_done.is_set()
+
+
+class TestRejectHeldTurn:
+    """Copilot ends the turn on any rejected permission but holds the
+    ``session/prompt`` result while a background shell of the session runs
+    (acp_frames/copilot/reject-background-shell-live.jsonl). The read loop must
+    cancel such a turn so its ``cancelled`` ack ends it, rather than wait on a
+    shell that may run for hours."""
+
+    def _held_client(self, tmp_path, monkeypatch, *, backend, denied):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(
+            acp_client, "_REJECTED_TURN_SETTLE_SECS", 0.1
+        )  # flake-ok: the read loop is faked, so no real event races this value
+        monkeypatch.setattr(
+            acp_client, "_READ_TIMEOUT", 0.02
+        )  # flake-ok: the read loop is faked, so no real event races this value
+        client = AcpClient(work_dir=tmp_path, acp_backend=backend)
+        client._turn_done.clear()
+        client._turn_permission_denied = denied
+        client._stale_eligible = False
+        client._is_process_alive = lambda: True
+        ack = JsonRpcMessage(id=1, result={"stopReason": "cancelled"})
+
+        async def read(timeout):
+            if client._cancelled:
+                return ack
+            await asyncio.sleep(timeout)
+            return None
+
+        async def cancel(grace_secs=0.0):
+            client._cancelled = True
+            client._cancel_ts = time.monotonic()
+
+        client._read_message = read
+        client.cancel_session = AsyncMock(side_effect=cancel)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_held_turn_after_reject_is_cancelled(self, tmp_path, monkeypatch):
+        client = self._held_client(tmp_path, monkeypatch, backend="copilot", denied=True)
+
+        events = []
+        async for action, msg in client._prompt_loop(req_id=1, timeout=FALLBACK_TIMEOUT_SECS):
+            events.append((action, msg.result))
+            if action == "complete":
+                break
+
+        client.cancel_session.assert_awaited_once()
+        assert events == [("complete", {"stopReason": "cancelled"})]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("backend", "denied"), [("copilot", False), ("claude", True)])
+    async def test_other_turns_are_not_cancelled(self, tmp_path, monkeypatch, backend, denied):
+        client = self._held_client(tmp_path, monkeypatch, backend=backend, denied=denied)
+
+        async for _ in client._prompt_loop(
+            req_id=1, timeout=0.5
+        ):  # flake-ok: a short window that only proves no cancel is sent
+            pass
+
+        client.cancel_session.assert_not_awaited()
+
+
+class TestShellHeldTurn:
+    """Copilot also holds a turn whose answer is complete for as long as an
+    attached async shell of the session runs, rejected call or not
+    (acp_frames/copilot/README.md, bug-for-bug with the reject hold). The read
+    loop cancels such a turn and reports its ack as end_turn; a detached shell,
+    or one that has exited, holds nothing."""
+
+    @staticmethod
+    def _update(update):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        return JsonRpcMessage(method="session/update", params={"sessionId": "s", "update": update})
+
+    def _start_shell(self, client, call_id="t1", shell_id="0", detach=False):
+        raw_input = {"command": "sleep 177", "mode": "async"}
+        if detach:
+            raw_input["detach"] = True
+        client._track_copilot_async_shell(
+            self._update(
+                {"sessionUpdate": "tool_call", "toolCallId": call_id, "rawInput": raw_input}
+            )
+        )
+        where = "detached background" if detach else "background"
+        text = f"<command started in {where} with shellId: {shell_id}>"
+        client._track_copilot_async_shell(
+            self._update(
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": call_id,
+                    "status": "completed",
+                    "rawOutput": {"content": text, "detailedContent": text},
+                }
+            )
+        )
+
+    def test_tracker_reads_the_live_capture(self, tmp_path):
+        import json
+        from pathlib import Path
+
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        fixture = (
+            Path(__file__).parent
+            / "fixtures/acp_frames/copilot/background-shell-holds-next-turn-live.jsonl"
+        )
+        client = AcpClient(work_dir=tmp_path, acp_backend="copilot")
+        for line in fixture.read_text().splitlines()[1:]:
+            client._track_copilot_async_shell(JsonRpcMessage.from_dict(json.loads(line)))
+        assert client._copilot_live_shells == {"0"}
+        assert client._copilot_async_shell_calls == set()
+
+    def test_tracker_follows_attached_shells_only(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path, acp_backend="copilot")
+        self._start_shell(client, "t1", "0")
+        self._start_shell(client, "t2", "1", detach=True)
+        assert client._copilot_live_shells == {"0"}
+        assert client._copilot_async_shell_calls == set()
+
+        text = "\n<shellId: 0 completed with exit code 0>"
+        client._track_copilot_async_shell(
+            self._update(
+                {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "read-1",
+                    "status": "completed",
+                    "rawOutput": {
+                        "content": text,
+                        "contents": [{"type": "shell_exit", "shellId": "0", "exitCode": 0}],
+                    },
+                }
+            )
+        )
+        assert client._copilot_live_shells == set()
+
+    def _held_client(self, tmp_path, monkeypatch, *, backend, live):
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        monkeypatch.setattr(
+            acp_client, "_SHELL_HELD_TURN_SETTLE_SECS", 0.1
+        )  # flake-ok: the read loop is faked, so no real event races this value
+        monkeypatch.setattr(
+            acp_client, "_READ_TIMEOUT", 0.02
+        )  # flake-ok: the read loop is faked, so no real event races this value
+        client = AcpClient(work_dir=tmp_path, acp_backend=backend)
+        client._turn_done.clear()
+        client._is_process_alive = lambda: True
+        client._consult_liveness_model_wait = AsyncMock(return_value=(VERDICT_WORKING, "cpu"))
+        if live:
+            client._copilot_live_shells.add("0")
+        ack = JsonRpcMessage(id=1, result={"stopReason": "cancelled"})
+        answer = self._update(
+            {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "OK"}}
+        )
+        frames = [answer]
+
+        async def read(timeout):
+            if frames:
+                return frames.pop()
+            if client._cancelled:
+                return ack
+            await asyncio.sleep(timeout)
+            return None
+
+        async def cancel(grace_secs=0.0):
+            client._cancelled = True
+            client._cancel_ts = time.monotonic()
+
+        client._read_message = read
+        client.cancel_session = AsyncMock(side_effect=cancel)
+        return client
+
+    @pytest.mark.asyncio
+    async def test_answered_turn_held_for_shell_ends_as_end_turn(self, tmp_path, monkeypatch):
+        client = self._held_client(tmp_path, monkeypatch, backend="copilot", live=True)
+
+        events = []
+        async for event in client._dispatch_events(req_id=1, timeout=FALLBACK_TIMEOUT_SECS):
+            events.append(event)
+
+        client.cancel_session.assert_awaited_once()
+        assert events[-1].kind == "complete"
+        assert events[-1].stop_reason == "end_turn"
+        assert client._cancelled is False
+        assert client._last_stop_reason == "end_turn"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("backend", "live"), [("copilot", False), ("claude", True)])
+    async def test_other_turns_are_not_cancelled(self, tmp_path, monkeypatch, backend, live):
+        client = self._held_client(tmp_path, monkeypatch, backend=backend, live=live)
+        monkeypatch.setattr(acp_client, "_STALE_TURN_TIMEOUT", FALLBACK_TIMEOUT_SECS)
+
+        async for _ in client._dispatch_events(
+            req_id=1, timeout=0.5
+        ):  # flake-ok: a short window that only proves no cancel is sent
+            pass
+
+        client.cancel_session.assert_not_awaited()

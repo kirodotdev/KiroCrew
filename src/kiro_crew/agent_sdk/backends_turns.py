@@ -805,6 +805,31 @@ ACP_BACKENDS_STRUCTURED_REFUSAL = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # provider failure as message text.
 ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR = frozenset({ACP_BACKEND_CODEX})
 
+# Backends that abort the whole turn on ANY rejected permission, yet hold back the
+# ``session/prompt`` result while a background shell the session started is still
+# running, so the turn sits open with nothing more to say until that shell exits.
+# Membership makes the direct client answer that silence with ``session/cancel``
+# after ``_REJECTED_TURN_SETTLE_SECS``, which the backend acks at once with
+# ``stopReason: "cancelled"`` (``acp/client_turn.py::_prompt_loop``).
+#
+# copilot is the member: Copilot CLI 1.0.100 (and 1.0.107) answers ``reject_once`` with a failed
+# ``tool_call_update`` (``code: rejected``) and an ``Info: Operation cancelled by
+# user`` chunk, then ``end_turn`` within milliseconds -- unless an async ``bash``
+# from the session is live, when ``end_turn`` waits for that shell
+# (acp_frames/copilot/reject-background-shell-live.jsonl). A 400s background sleep
+# held a policy-refused dashboard turn open until the user pressed Stop.
+# The same hold applies with no rejection at all: a turn whose answer has streamed
+# keeps its ``end_turn`` back while an attached (not ``detach: true``) async shell
+# runs, and the shell survives the cancel
+# (acp_frames/copilot/background-shell-holds-next-turn-live.jsonl). So membership also makes the client
+# track the session's attached async shells and, once an answered turn has been
+# silent ``_SHELL_HELD_TURN_SETTLE_SECS`` with one live, cancel it and report the
+# ack as ``end_turn``.
+# Read only by the direct client (``AcpClient``); kiro, kas and codex run on the
+# shared runtime and never reach it. No other direct-client harness was read
+# holding a turn after a reject.
+ACP_BACKENDS_REJECT_HOLDS_TURN = frozenset({ACP_BACKEND_COPILOT})
+
 # Each lands its turns' billing or token counts in TurnUsage (agent-host-contract.md §6), so a
 # turn reporting none billed none. §6 establishes no count for codex or pi; deepseek reports occupancy.
 # Live captures, one per member: kiro-cli 2.32.0 bills each turn as a ``_kiro.dev/metadata``

@@ -497,6 +497,7 @@ HARNESS_EXEMPT_SETS: dict[str, str] = {
     "ACP_BACKENDS_UNASKED_NATIVE_TOOLS": "standard ACP: tool_call with no request_permission",
     "ACP_BACKENDS_INLINE_COMPACTION": "standard ACP: session/prompt terminal frame",
     "ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR": "standard ACP: agent_message_chunk shape",
+    "ACP_BACKENDS_REJECT_HOLDS_TURN": "standard ACP: session/prompt result timing after a reject",
     "ACP_BACKENDS_SERIAL_SESSION_STARTS": "standard ACP timing; changes only error text",
     "ACP_BACKENDS_EFFORT_OVERLAY": "off the wire: workspace cli.json at spawn",
     "ACP_BACKENDS_TOOL_SEARCH_OVERLAY": "off the wire: workspace cli.json at spawn",

@@ -701,6 +701,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether an edited message's rewind forks the native session or replays "
         "the transcript as text. The edit runs either way"
     ),
+    "ACP_BACKENDS_REJECT_HOLDS_TURN": (
+        "whether Crew cancels a turn the harness has already aborted on a rejected "
+        "permission, or already answered, but keeps open while a background shell "
+        "runs. Recovery from a "
+        "harness's failure mode, not a feature: every harness ends such a turn once "
+        "this is right, and a harness without that failure mode loses nothing by "
+        "being outside the set"
+    ),
     "ACP_BACKENDS_RELOAD_DISPOSED_SESSION": (
         "whether Crew reads one harness's own error for a session it disposed in a "
         "live process, and reloads that session in a fresh one before the next "

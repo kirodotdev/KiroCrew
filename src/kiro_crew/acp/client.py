@@ -207,7 +207,9 @@ from kiro_crew.acp.client_timeouts import _OPENCODE_PERMISSION_REFINEMENT_TIMEOU
 from kiro_crew.acp.client_timeouts import _POST_COMPACTION_METADATA_GRACE_SECS  # noqa: F401
 from kiro_crew.acp.client_timeouts import _PROMPT_TIMEOUT_MARGIN_SECS  # noqa: F401
 from kiro_crew.acp.client_timeouts import _READ_TIMEOUT  # noqa: F401
+from kiro_crew.acp.client_timeouts import _REJECTED_TURN_SETTLE_SECS  # noqa: F401
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS  # noqa: F401
+from kiro_crew.acp.client_timeouts import _SHELL_HELD_TURN_SETTLE_SECS  # noqa: F401
 from kiro_crew.acp.client_timeouts import _STALE_TURN_TIMEOUT  # noqa: F401
 from kiro_crew.acp.client_timeouts import _STEERING_WAIT_SLICE_SECS  # noqa: F401
 from kiro_crew.acp.client_timeouts import _SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS  # noqa: F401

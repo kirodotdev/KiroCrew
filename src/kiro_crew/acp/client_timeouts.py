@@ -241,6 +241,20 @@ _CANCEL_GRACE_SECS = 10.0  # grace window for cooperative cancel ack
 # several times over and is not sized to outlast the slow exit: a child still
 # running at the deadline is killed.
 _EOF_EXIT_GRACE_SECS = 2.0
+# After a rejected permission on a backend that aborts the turn on any reject
+# but may hold its prompt result for a live background shell
+# (``ACP_BACKENDS_REJECT_HOLDS_TURN``), this much backend silence means the turn
+# is over and only waiting on that shell: send ``session/cancel`` so it ends now
+# and refusal recovery runs, instead of when the shell exits (or never). An
+# unheld turn ends milliseconds after the reject, so this is pure margin.
+_REJECTED_TURN_SETTLE_SECS = 15.0
+# The same backend also holds a turn whose answer is complete (text streamed,
+# no tool open) for as long as an attached async shell of the session runs,
+# with no rejection involved. Past this much silence, with such a shell live,
+# the turn is cancelled and its ack reported as ``end_turn``. Equal to
+# _STALE_TURN_TIMEOUT so a long tool input still being generated after text is
+# cut no sooner than the stale-turn check would cut it.
+_SHELL_HELD_TURN_SETTLE_SECS = _STALE_TURN_TIMEOUT
 # Absolute safety cap for _wait_for_response's activity-based deadline. The
 # per-call deadline resets on every received frame (so a long session/load
 # replay that streams the whole transcript as notifications is not killed),
