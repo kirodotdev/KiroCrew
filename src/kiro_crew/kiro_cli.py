@@ -34,7 +34,7 @@ KIRO_CLI_NAME = "kiro-cli"
 def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
     """The ``kiro-cli-chat`` beside a resolved ``kiro-cli`` launcher, or ``None``.
 
-    The POSIX ``kiro-cli`` is the q_cli launcher (install, update, doctor,
+    The POSIX ``kiro-cli`` below 3.0.0 is the q_cli launcher (install, update, doctor,
     login, shell completion). It ``exec``s ``kiro-cli-chat`` for ``chat`` and
     ``acp`` -- but only after checking ITS OWN sign-in, so ``kiro-cli acp
     --agent-engine v3`` with no ``--auth-method cli`` exits ``You are not logged
@@ -43,7 +43,10 @@ def chat_sibling(binary: str, platform_name: str | None = None) -> str | None:
     (verified on 2.25.0: the chat binary starts KAS in ``--auth=acp-callback``
     and asks the host). A KAS spawn that Crew's vault is about to authenticate
     therefore has to enter through the chat binary, which is what the desktop
-    bundle already does (:data:`BUNDLED_KIRO_CLI_ENTRY`).
+    bundle already does (:data:`BUNDLED_KIRO_CLI_ENTRY`). From 3.0.0
+    (:func:`standalone_kiro_cli`) ``kiro-cli`` is the chat binary itself; this
+    function does not read the version, so the KAS spawn and doctor skip the
+    swap there themselves.
 
     ``None`` whenever the swap does not apply, so callers fall back to *binary*
     unchanged: on Windows (one self-contained ``kiro-cli.exe``), when *binary*
@@ -264,6 +267,31 @@ def kas_auth_client_flag_supported(version: tuple[int, int, int] | None) -> bool
 def standalone_kiro_cli(version: tuple[int, int, int] | None) -> bool:
     """Whether a ``kiro-cli`` at *version* is the standalone chat binary, not a launcher."""
     return version is not None and version >= STANDALONE_KIRO_CLI_MIN_VERSION
+
+
+def resolved_kiro_cli_version(binary: str, *, wait: bool = False) -> tuple[int, int, int] | None:
+    """The version of a resolved *binary*, read the way its trust allows.
+
+    The pinned install (:func:`pin_kiro_cli`, compared by real path) is read by
+    :func:`kiro_cli_version_at`. Any other file, such as one found only through
+    ``PATH``, is read only inside the strict sandbox
+    (:mod:`kiro_crew.kiro_cli_path_probe`): never waited for, so its first call
+    answers ``None``, unless *wait* is set, which reads a miss inline. Only
+    ``kirocrew doctor`` sets *wait*: its process never warms the cache. The KAS
+    spawn, its route and doctor all ask this, so the three agree on whether a
+    ``kiro-cli`` is the standalone chat binary. Blocking: stats directories,
+    and the pin's ``--version`` on its first read.
+    """
+    pinned, _unpinned = pin_kiro_cli()
+    if pinned is not None and os.path.normcase(os.path.realpath(pinned)) == os.path.normcase(
+        os.path.realpath(binary)
+    ):
+        return kiro_cli_version_at(pinned)
+    from kiro_crew import kiro_cli_path_probe  # noqa: PLC0415
+
+    if wait:
+        return kiro_cli_path_probe.version_now(binary)
+    return kiro_cli_path_probe.version_if_known(binary)
 
 
 def mandatory_mcps_drop_allowed(spawned_binary: str | None) -> bool:

@@ -18,7 +18,8 @@
 > spawn enters through `kiro-cli-chat` when one sits beside the resolved `kiro-cli`
 > (`kiro_cli.chat_sibling`, consulted by `acp/harness/kas.py` on the Crew-owned
 > branch only, never for an explicit `KIROCREW_KIRO_BIN`, never on Windows whose one
-> `kiro-cli.exe` is the chat-cli crate itself): the POSIX `kiro-cli` is the q_cli launcher, and it checks its OWN
+> `kiro-cli.exe` is the chat-cli crate itself, never for a `kiro-cli` 3.0.0 or later,
+> which is the chat binary itself, `kiro_cli.standalone_kiro_cli`): below 3.0.0 the POSIX `kiro-cli` is the q_cli launcher, and it checks its OWN
 > sign-in before exec'ing `kiro-cli-chat` for `acp` regardless of `--auth-method`, so
 > through it a Crew-owned spawn on a host where kiro-cli is signed out -- the host
 > this mode exists for -- exits `You are not logged in` before the engine ever asks
@@ -37,8 +38,8 @@
 > **Choosing KAS means Kiro Crew's own sign-in** (decision
 > [2026-10-30](../../decisions/2026-10-30-choosing-kas-runs-kiro-crews-own-engine-when-kiro-cli-cannot.md)).
 > Where the relay cannot run -- no kiro-cli, or a kiro-cli whose own sign-in is
-> proven absent and through which the vault cannot reach the engine (no
-> `kiro-cli-chat` entry) -- a KAS spawn takes the bundle route automatically
+> proven absent and through which the vault cannot reach the engine (a `kiro-cli`
+> below 3.0.0 with no `kiro-cli-chat` entry) -- a KAS spawn takes the bundle route automatically
 > (`acp/kas_route.py`), and the gateway installs the pinned engine when it is missing.
 > So the vault sign-in always takes effect on the next spawn, and every KAS prompt
 > points at the Kiro sign-in card and never at `kiro-cli login`: the declaration's
