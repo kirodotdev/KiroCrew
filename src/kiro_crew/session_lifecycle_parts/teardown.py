@@ -131,6 +131,7 @@ async def reset(
     clear_conversation: bool = False,
     ends_conversation: bool = False,
     stop_shared_children: bool = False,
+    forget_unused_start: bool = False,
     scope: _TeardownScope | None = None,
 ) -> bool:
     """Kill a live session while preserving the exact reset semantics.
@@ -180,6 +181,15 @@ async def reset(
     popped permit is already recorded as orphaned, and before the shutdown so each
     run ends through its own teardown. Runs on a dedicated process keep running.
     Ignored with ``ends_conversation``, which stops every run of the parent.
+
+    ``forget_unused_start=True`` drops the resume sid too, but only when the session
+    popped here still holds its fresh first-turn observation (``FirstTurnState.FRESH``):
+    a fresh start, an eager prewarm above all, that no turn ever prompted. Its native
+    session holds no turn, so the pointer can only cost the successor a refused
+    ``session/load`` and make a speculative start refuse the key as resumable. Decided
+    from the popped session in the pop's lock hold, so a turn that claimed it first
+    keeps the pointer. Unlike ``clear_conversation`` it arms no replay suppression:
+    nothing is being thrown away.
 
     ``refuse_only_on_active_turn`` narrows ``skip_if_busy`` to a DECLARED turn, which a
     caller acting on an explicit user request needs: a channel member holds its lease for
@@ -233,6 +243,13 @@ async def reset(
         if scope is not None and current is not None:
             scope.note_pop(key, current)
         session = owner._sessions.pop(key, None)
+        drop_sid = session is not None and (
+            clear_conversation
+            or (
+                forget_unused_start
+                and session.first_turn is self._deps.constants().first_turn_fresh
+            )
+        )
         # Snapshotted in the SAME lock hold as the pop, and only when the caller says
         # the conversation is ending: every await below is a window a cold start can
         # register a successor under this key in, and a selection made after one would
@@ -311,7 +328,7 @@ async def reset(
                 END_REASON_RESET,
             )
             await record_session_ended(key, end_reason=END_REASON_RESET)
-    if clear_conversation and session is not None:
+    if drop_sid:
         # The registry lock, not an absence of suspension points, is what makes
         # this safe: the end record above awaits, but it awaits while this
         # coroutine still holds ``owner._lock`` -- the lock a racing cold start

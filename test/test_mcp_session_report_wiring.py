@@ -414,7 +414,9 @@ class TestResetInvalidation:
     def _state(reset_result: bool) -> MagicMock:
         state = MagicMock()
 
-        async def _reset(_key: str, *, skip_if_busy: bool = False) -> bool:
+        async def _reset(
+            _key: str, *, skip_if_busy: bool = False, forget_unused_start: bool = False
+        ) -> bool:
             return reset_result
 
         state.sessions.reset = _reset

@@ -523,7 +523,10 @@ class TestBulkModelSwitchAtomicity:
             assert data["skipped_running"] == ["test"]
             assert data["switched"] == []
             assert slot.model == _MODEL_A
-            assert state.sessions.reset.await_args.kwargs == {"skip_if_busy": True}
+            assert state.sessions.reset.await_args.kwargs == {
+                "skip_if_busy": True,
+                "forget_unused_start": True,
+            }
 
     @pytest.mark.asyncio
     async def test_live_turn_on_effective_session_is_skipped_before_the_reset(self):

@@ -647,7 +647,10 @@ class TestLinkedSlotSessionKey:
             assert resp.status == 409
             assert data["code"] == "turn_in_flight"
             assert slot.agent == "old-agent"
-            assert state.sessions.reset.await_args.kwargs == {"skip_if_busy": True}
+            assert state.sessions.reset.await_args.kwargs == {
+                "skip_if_busy": True,
+                "forget_unused_start": True,
+            }
             state.conversation_log.update_metadata.assert_not_called()
 
     @pytest.mark.asyncio
@@ -670,7 +673,10 @@ class TestLinkedSlotSessionKey:
             assert resp.status == 409
             assert data["code"] == "turn_in_flight"
             assert slot.reasoning_effort == ""
-            assert state.sessions.reset.await_args.kwargs == {"skip_if_busy": True}
+            assert state.sessions.reset.await_args.kwargs == {
+                "skip_if_busy": True,
+                "forget_unused_start": True,
+            }
 
     @pytest.mark.asyncio
     async def test_rebind_during_metadata_persist_rolls_back_and_answers_409(self, monkeypatch):

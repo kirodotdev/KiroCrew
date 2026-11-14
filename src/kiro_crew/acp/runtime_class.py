@@ -441,6 +441,9 @@ class AcpRuntime:
         # opts out so hot one-liner paths (chat titles, suggestions, STT
         # endpointing) don't pay a full ceiling wait that can never be armed.
         self._expect_mcp_reports = expect_mcp_reports
+        # Set at each spawn: True once this process switched MCP off for a
+        # tool-less agent, so no server of any session on it can report.
+        self._mcp_switched_off = False
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
