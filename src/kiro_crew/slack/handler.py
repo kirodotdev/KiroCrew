@@ -293,6 +293,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _build_approval_blocks,
     _grant_late_trust,
     _grant_linked_trust,
+    _linked_git_confirm,
     _linked_slots_for,
     _linked_trust_grantable,
     _LinkedApproval,

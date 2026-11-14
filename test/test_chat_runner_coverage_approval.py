@@ -572,7 +572,16 @@ class TestRunChatAutoApproveRungs:
         slot._trust = True  # falls through to the trust rung instead
         _set_stream(client, [_permission(tool_input="{}"), _complete()])
 
-        with patch.object(chat_runner, "_matches_trusted_pattern") as matcher:
+        from kiro_crew.dashboard.chat_turn import tool_approval
+
+        # No hook gate here, so a shell call with no readable command would go
+        # to the git-write confirm card (hooks.confirm_git_writes); this test is
+        # about the pattern rung, so that confirm is taken out of its way.
+        decider_globals = tool_approval._decide_permission_request.__globals__
+        with (
+            patch.dict(decider_globals, {"_git_write_needing_confirm": lambda *_a: ""}),
+            patch.object(chat_runner, "_matches_trusted_pattern") as matcher,
+        ):
             await _drive(state, slot)
 
         matcher.assert_not_called()

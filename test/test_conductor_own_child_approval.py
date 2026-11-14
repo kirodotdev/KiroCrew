@@ -264,6 +264,8 @@ def _decide(
     event = MagicMock(**vars(_event(target=target)))
     event.tool_call_id, event.title, event.request_id, event.tool_kind = "", "send", "r1", "other"
     event.child_unconditional_grant_eligible, event.child_low_fidelity = True, False
+    # An MCP call, not a shell call (a bare MagicMock attribute is truthy).
+    event.is_shell = False
     event.native_child_call = native_child
     rows: list[dict] = []
     sel = MagicMock()

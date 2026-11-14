@@ -809,7 +809,14 @@ def _url_payload_command(n: int) -> str:
 #: ``/`` and ``~`` read the full text. Re-measured.
 #: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
-_PACKAGE_LINE_BUDGET = 36_000
+#: Raised by 1,263, from 36,000, to 37,263, for ``git_write``: the git write
+#: classifier the dashboard approval ladder asks before a trust, YOLO or pattern
+#: grant approves a shell call (``hooks.confirm_git_writes``), with its
+#: per-subcommand option allow-lists, a scan that asks on any shell expansion in a
+#: command that names git, and the positive shape a git-free command's expansions
+#: must fit to keep its approval. A new confirm classifier, not a deny tier: no
+#: existing floor or pattern changed. Re-measured.
+_PACKAGE_LINE_BUDGET = 37_263
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

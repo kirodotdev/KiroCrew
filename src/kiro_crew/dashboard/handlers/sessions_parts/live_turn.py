@@ -20,6 +20,7 @@ from kiro_crew import session_directive
 from kiro_crew.agent_sdk.mcp_problems import mcp_server_state
 from kiro_crew.dashboard import directive_queue
 from kiro_crew.dashboard.body_numbers import body_int
+from kiro_crew.dashboard.git_confirm_card import git_confirm_refuses
 from kiro_crew.dashboard.handlers._shared import guard_owner_surface_routes, internal_memory_scope
 from kiro_crew.dashboard.handlers.sessions_parts.app_scope import (
     _STATE_APPROVALS_NOT_APP_VISIBLE,
@@ -103,6 +104,12 @@ async def _resolve_app_approval(
             and approval_id not in _pending_elicitation_ids(slot)
         ]
     controllable = [pair for pair in live if await _app_may_send_to_slot(request_app, pair[0])]
+    if len(controllable) == 1 and git_confirm_refuses(
+        controllable[0][0].messages, approval_id, action, from_app=True
+    ):
+        # A git-confirm card (hooks.confirm_git_writes) is a person's to answer;
+        # it stays open, and the refusal reads like every other one here.
+        controllable = []
     if len(controllable) == 1:
         slot, future = controllable[0]
         approved, rejected_once = action == "approve", action == "reject_once"

@@ -1178,6 +1178,53 @@ An in-app restart keeps the environment of the process it replaces, including th
 `.env` values that process loaded, so a `.env` edit only takes effect after the
 gateway is stopped and started; until then the same warning names the edited key.
 
+## Git Writes Ask First
+
+In a dashboard session, a shell command that runs git in any way other than a
+known read shows an approval card, even when the session is trusted, YOLO is
+on, a crew is running or a trusted pattern covers it. Only a short list of reads
+runs without asking: `git status`, `git log`, `git diff`, `git show`,
+`git rev-parse`, `git config --get <key>` / `git config --list`, and `git --version`
+on its own. Every `git branch` command asks. A known read must be the
+whole command, on its own: a git read piped into another command, chained with
+`&&` or `;`, redirected (even to `/dev/null`), wrapped in `env`, `timeout` or a
+group, or holding a `$` expansion, wildcard or backquote asks. Each read also
+accepts only the options listed for it (`--oneline`, `--stat`, `--short` and the
+like, spelled in full): an option that is not listed asks, as do options that
+start another program (`--ext-diff`, `--textconv`, `--show-signature`),
+`--format` and `--pretty`, `git -C <dir>`, `git help`, and `git -p`. Everything else
+asks too: `commit`, `merge`, `rebase`, `reset`, `push`, `pull`, `fetch`,
+`checkout`, `switch`, `add`, `tag`, `stash`, `grep`, `blame`, creating a branch,
+and a repository alias.
+
+The check does not expand anything. A command that names git asks when it
+holds an unquoted `$`, backquote, wildcard or brace, a heredoc (`<<`, `<<-`,
+`<<<`), an open quote or a trailing backslash. A command that names no git
+asks whenever it holds a `$` or a backquote at all (quoted or not), because
+bash can rebuild an expansion from quoted pieces or run one through a value
+whatever the program is. Its other expansions ask only when they could change
+which program runs: a wildcard or brace under one of a short list of everyday
+programs (`echo`, `ls`, `cat`, `cd`, `cp`, `grep`, `mkdir` and the like, plus
+`python3` and `node` with no `$`, backquote or pipe) keeps running without a
+card, while anything else asks. So `ls *.py`, `mkdir -p src/{a,b}` and
+`python3 - <<'EOF'` run as before, while `echo $HOME > notes.txt`, `$X commit`
+and `awk '{print $1}'` ask.
+
+Each such command asks once, every time, on a card with Allow once and Reject
+only: no Trust tier lifts it, switching the session to Trust or YOLO leaves a
+pending card open, and a worker dispatched to commit asks for each commit. An
+app's approval grant does not answer it, and in a Slack Code channel the card
+shows Approve and Reject without "Trust this channel".
+
+To turn the confirm off everywhere:
+
+```bash
+kirocrew config set hooks.confirm_git_writes false
+```
+
+This setting covers dashboard sessions. Slack, other messaging channels,
+`spawn_run` subagents and task runs keep their own approval settings.
+
 ## Denied Commands
 
 The built-in destructive-command deny rules are enforced at Kiro Crew's own
