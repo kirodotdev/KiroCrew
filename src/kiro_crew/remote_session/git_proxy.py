@@ -33,9 +33,11 @@ import json
 import os
 import queue
 import re
+import socket
 import socketserver
 import sys
 import threading
+import time
 from typing import Callable, Dict, List, Optional
 
 #: Raw bytes per body frame: base64 grows it by a third, and the result stays
@@ -53,6 +55,9 @@ MAX_LIVE_REQUESTS = 16
 UPLOAD_WINDOW = 64
 #: How often a request waiting for credit checks that its git client is still there.
 CREDIT_POLL_SECS = 1.0
+#: How long a connection answered mid-upload keeps reading git's unsent body
+#: (and discarding it) before it closes.
+LINGER_SECS = 5.0
 #: How long a request waits for the gateway's next frame. A little past the
 #: gateway's own 30-minute upstream timeout, so its error arrives first.
 ANSWER_TIMEOUT = 35 * 60.0
@@ -246,7 +251,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         """Whether git is still connected. A reset discards what git had sent,
         so a peek then fails; a close with nothing pending reads as EOF."""
         import select
-        import socket
 
         try:
             readable, _, _ = select.select([self.connection], [], [], 0)
@@ -303,6 +307,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     # the connection cannot be reused with the rest unread.
                     self.close_connection = True
                     delivered = self._answer(q)
+                    if delivered:
+                        self._linger_close()
                     return
             gw.send({"t": "end", "id": rid})
             delivered = self._answer(q)
@@ -314,6 +320,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.close_connection = True
                 with contextlib.suppress(BrokenPipeError, ConnectionError):
                     gw.send({"t": "cancel", "id": rid})
+
+    def _linger_close(self) -> None:
+        """Let git finish sending before the connection closes (a lingering close).
+
+        Closing a socket with unread request bytes resets the connection, and a
+        reset discards the answer git has not read yet (macOS does it readily). So
+        send the end of our side, then read and drop what git still sends, up to
+        ``LINGER_SECS``; git then reads the whole answer followed by a clean EOF.
+        """
+        deadline = time.monotonic() + LINGER_SECS
+        try:
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+            while time.monotonic() < deadline:
+                self.connection.settimeout(max(deadline - time.monotonic(), 0.01))
+                if not self.connection.recv(65536):
+                    return
+        except OSError:  # includes the timeout: the deadline is the limit
+            pass
 
     def _answer(self, q: "queue.Queue[dict]") -> bool:
         try:
