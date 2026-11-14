@@ -294,12 +294,12 @@ class TestApplySecurityHeaders:
             assert "*.cloudfront.net" not in connect_src
 
     def test_csp_connect_src_stays_local_with_public_origin_configured(self) -> None:
-        """connect-src is a fixed list: 'self', loopback and esm.sh. A
-        public dashboard origin in the allowed-origin set does not reach it.
+        """connect-src is a fixed list: 'self', loopback, app web origins and
+        esm.sh. A public dashboard origin in the allowed-origin set does not reach it.
         A dashboard behind a reverse proxy is served same-origin, so 'self'
         already admits its own wss:// socket (docs/guides/remote-and-mobile.md,
         "Behind a reverse proxy")."""
-        allowed = {"'self'", "https://esm.sh"}
+        allowed = {"'self'", "https://esm.sh", "http://*.apps.localhost:*"}
         for host in ("localhost", "127.0.0.1", "0.0.0.0"):
             allowed |= {f"{scheme}://{host}:*" for scheme in ("http", "https", "ws")}
         for with_instances in (False, True):

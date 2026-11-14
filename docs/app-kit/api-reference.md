@@ -137,6 +137,7 @@ resolves through:
 |---|---|---|
 | `fmtCurrency(value, currency = 'USD', options?)` | `@kirocrew/app-sdk` | Money in the host's locale. |
 | `APP_SDK_LEVEL` | `@kirocrew/app-sdk` | The seam level, equal to the gateway's `ctx.sdk_level`. |
+| `appWebOrigin(name)` | `@kirocrew/app-sdk` | The app's own site on the dashboard's port, `http://<name>.apps.localhost:<port>`, for a backend with `backend.webOrigin: true`; available when the dashboard uses http on `localhost`, `127.0.0.1` or `kirocrew.localhost`, and `null` on IPv6 or any other dashboard host. Level 8. |
 | `Select` | `@kirocrew/app-sdk/ui` | A themed inline dropdown: `options`, `optionLabels?`, `value`, `onChange`, `clearLabel?`, `disabled?`, `aria-label?`, `title?`, `className?`. Native list on touch devices. |
 | `guideCaution` | `@kirocrew/app-sdk/ui` | Spread onto a control that removes something (`<Btn {...guideCaution}>`), so a dashboard guide shows its caution line before a press there. |
 
@@ -1924,9 +1925,10 @@ and level 7 adds the manifest's `agentReadOnlyDirs` (see
 `permissions.desktopCapabilities`, the dashboard's
 [project picker](#project-picker) (`ProjectPicker`) and
 [`ctx.webhook_source`](#webhook-source-ctxwebhook_source), and level 8 adds
-directory entries in `credentialMasks` (`"state/"`) and the dashboard's
-[host sessions](#host-sessions) (`useHostSessions`); each level
-includes every level below it. Several seams share level 7, and two share level 8, so an app that needs one
+directory entries in `credentialMasks` (`"state/"`), the dashboard's
+[host sessions](#host-sessions) (`useHostSessions`), and the manifest's
+`backend.webOrigin` with the dashboard's `appWebOrigin(name)`; each level
+includes every level below it. Several seams share level 7, and three share level 8, so an app that needs one
 feature-detects it, never the level alone. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
