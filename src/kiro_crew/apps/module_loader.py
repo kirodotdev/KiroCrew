@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.apps import seams
 from kiro_crew.apps.execution import app_execution_denied, is_builtin_app
 from kiro_crew.sel import sel
 
@@ -582,6 +583,9 @@ def unload_app_modules(app_name: str) -> int:
                 delattr(parent, leaf_name)
     to_remove = [*synthetic, *real_name]
     clear_shutdown_callable(app_name)
+    # A seam provider the app registered from its installed code now imports
+    # modules that are gone; a builtin's provider for the same seam takes it back.
+    seams.release_app(app_name)
     # Bump the load generation so a NEXT enable's cache entry is distinguishable
     # from this one -- any callable still cached under the old generation (e.g.
     # captured by a concurrent path) is treated as stale by resolve_loaded_callable.
