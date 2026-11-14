@@ -811,7 +811,15 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 79, from 36,018, to 36,097, for the payload walk reading the caller's
+#: own command line with single quotes as literal when it is one simple ``git
+#: commit|tag -m`` or ``gh pr|issue create|edit|comment --body|--title`` command whose
+#: every substitution opener sits inside one bare single-quoted message value
+#: (``_only_single_quoted_openers``, ``_is_message_flag_command``), so
+#: ``gh pr edit 1 --body 'run `ssh x`'`` opens no nested command. Text with a live
+#: opener, a ``$``, ``#``, ``<<``, a backslash, a control byte or an unclosed quote
+#: keeps the quote-blind reading. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_097
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

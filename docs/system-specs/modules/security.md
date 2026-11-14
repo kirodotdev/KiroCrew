@@ -1082,6 +1082,28 @@ Two mechanisms make "the split changed nothing for a caller" a tested claim rath
   views in `deny_gate.py` and to `shell_normalizer._shell_payload_walk` (the
   self-protection and git-publish floors), which add them to the frame's own payloads, so
   `sh -c 2>/dev/null '<script>'` hides no script and the frame's exemptions still apply.
+  The walk reads the caller's own command line with single quotes as literal
+  (`_substitution_bodies(..., raw_source=True)`) only when that line is one simple
+  `git commit`/`git tag` or `gh pr|issue create|edit|comment` command
+  (`_is_message_flag_command`): its first word is literally `git` or `gh`, no global
+  option such as `git -c` comes before the subcommand, it holds no `;`, `&`, `|`,
+  `(`, `)`, `{`, `}` or newline outside quotes, and every word holding a
+  substitution opener (a backtick, `$(`, `<(`, `>(`) is the value of a message flag
+  (`-m`/`--message` for git; `-b`/`--body`/`-t`/`--title` for gh). Every opener must
+  also sit inside one bare single-quoted value: the value starts with `'` and ends
+  at its matching closing `'`, with no prefix, suffix or concatenation (including
+  after `=` or glued flag letters). The whole command text must contain no `$`
+  anywhere, so `$'...'`, `$[...]`, `$((...))`, `$(...)` and `${...}` do not qualify.
+  That text opens no nested frame, as in bash
+  (``gh pr edit 1 --body 'run `ssh x`'`` runs no ssh). Every other command, such as
+  `trap '...'`, `bash -c 'eval "$1"' _ '...'`, `git -c alias.x='!...'` or
+  `gh alias set`, gets the quote-blind openers for the whole text, because a later
+  program may run its single-quoted text as shell. So does a nested or decoded
+  payload (a `-c` script, an `eval` string, a
+  quoted assignment script), any text that holds a `#`, `<<`, `$`, a backslash or a
+  control byte (a newline, or a separator the ssh floor masked), and any text whose
+  quotes do not all close.
+  A catalog row still matches its raw text either way.
   Within one `is_denied` call (`call_views.sharing_views`, which this module also serves
   to its importers) both walks share one result per frame text, and `_shell_payload_walk`
   and `argv_floor_self._quoted_assignment_scripts` keep theirs in the same memo, so every
