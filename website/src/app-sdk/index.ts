@@ -608,6 +608,10 @@ export type { PullRequestLink } from '../utils/pullRequestLinks'
 export { useIssues, IssueList, IssueCard } from './issues'
 export type { UseIssuesOptions, UseIssuesResult, IssueCardProps, IssueListProps, IssueView } from './issues'
 export type { IssueSearchRequest, IssueSearchResponse, IssueSummary, IssuePerson, IssueLabel, IssueLinkedChange } from '../types'
+// The dashboard's project picker behind the app's declared listing paths (see
+// ./ProjectPicker).
+export { default as ProjectPicker } from './ProjectPicker'
+export type { AppProjectPickerProps } from './ProjectPicker'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {

@@ -362,6 +362,9 @@
     "pullRequestPanel": {
       "not_declared": "Questa app non può mostrare pull request: le sue autorizzazioni non dichiarano {{path}}."
     },
+    "projectPicker": {
+      "not_declared": "Questa app non può mostrare il selettore di progetti: le sue autorizzazioni non dichiarano {{path}}."
+    },
     "issues": {
       "assigned_to": "Assegnata a {{names}}",
       "assigned_to_me": "Assegnate a me",

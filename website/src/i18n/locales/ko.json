@@ -332,6 +332,9 @@
     "pullRequestPanel": {
       "not_declared": "이 앱은 풀 리퀘스트를 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다."
     },
+    "projectPicker": {
+      "not_declared": "이 앱은 프로젝트 선택기를 표시할 수 없습니다. 권한에 {{path}}이(가) 선언되어 있지 않습니다."
+    },
     "issues": {
       "assigned_to": "담당자: {{names}}",
       "assigned_to_me": "나에게 할당됨",

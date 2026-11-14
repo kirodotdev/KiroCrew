@@ -332,6 +332,9 @@
     "pullRequestPanel": {
       "not_declared": "このアプリはプルリクエストを表示できません。権限に {{path}} が宣言されていません。"
     },
+    "projectPicker": {
+      "not_declared": "このアプリはプロジェクトピッカーを表示できません。権限に {{path}} が宣言されていません。"
+    },
     "issues": {
       "assigned_to": "担当者: {{names}}",
       "assigned_to_me": "自分が担当",
