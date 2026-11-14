@@ -32,9 +32,9 @@ const json = (body) => ({ status: 200, contentType: 'application/json', body: JS
  * `thread` is the slot's message list (defaults to THREAD).
  */
 export async function routeRadarDm(page, { thread = THREAD } = {}) {
-  await page.route(u => new URL(u).pathname.startsWith('/api/'), route => {
+  await page.route(u => /^\/api\/|^\/v1\/crew\/owner\/members$/.test(new URL(u).pathname), route => {
     const path = new URL(route.request().url()).pathname
-    if (path === '/api/members') return route.fulfill(json({ members: MEMBERS, default_agent: 'kirocrew' }))
+    if (path === '/api/members' || path === '/v1/crew/owner/members') return route.fulfill(json({ members: MEMBERS, default_agent: 'kirocrew' }))
     if (path === '/api/teams') return route.fulfill(json({ teams: [] }))
     if (path === '/api/autonudge') return route.fulfill(json({ enabled: true, loops: [] }))
     if (path === '/api/config/default-agent') return route.fulfill(json({ default_agent: 'kirocrew' }))

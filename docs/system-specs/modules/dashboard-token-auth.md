@@ -133,7 +133,8 @@ graph LR
 6. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
    until the workflow service is ready, and `_crewmate_prune_gate`
    (`_register_crewmate_prune_gate`, dashboard only) holds every mutating request,
-   and any request under `/api/members`, until the Bot prune settles, 503
+   and any request under `/api/members` or its Crew API twin
+   `/v1/crew/owner/members`, until the Bot prune settles, 503
    past its timeout.
    Both RETURN their refusal, inner to `sel_audit`.
 
@@ -1209,9 +1210,15 @@ HTML 403 page directs users to create a mobile sign-in link from an existing
 dashboard session; if no other device is signed in, it restores the
 `kirocrew token` CLI recovery path. The middleware never raises unhandled exceptions.
 
-The dashboard client reads a refusal by its shape. A 403 carrying
-`X-Auth-Required: true` is this middleware's own denial (JSON with `error` and
-`code` on `/api/*`): `website/src/api/client.ts` tries one silent refresh and
+The dashboard client reads a refusal by its shape. A response carrying
+`X-Auth-Required: true` is this middleware's own denial. It is a 403 everywhere
+except `/v1/*`: JSON with `error` and `code` on `/api/*`, an HTML page
+elsewhere, the frozen `POST /v1/chat/completions` included. On every other `/v1/*`
+path, one with no route yet included, it is the Crew API error
+body `{"error": {"type", "code", "message", "param", "request_id"}}` with
+`X-Request-Id`: a 401 `authentication_error` whose `code` defaults to
+`invalid_token`, carrying `WWW-Authenticate: Bearer error="invalid_token"`, except
+an app token refused on `/v1/crew/owner/*`, which is a 403 `owner_only`. On either status `website/src/api/client.ts` tries one silent refresh and
 raises the re-auth banner only when that refresh is terminal; an embedded pane
 tries the same refresh and, when it fails, hands recovery to its hub instead of
 raising the banner. A 401 or 403 without the header whose
