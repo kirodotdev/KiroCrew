@@ -330,11 +330,14 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
     # restore/open/rebuild work after READY. Wait at the one dashboard turn
     # admission seam before expiring controls, resolving bindings,
     # allocating a provider or writing metadata. The turn's grace period
-    # is bounded; timeout and Stop leave the shared worker alive and
-    # retain queued intent until a later admitted turn.
+    # is unbounded: the turn runs once preparation finishes, and is refused only
+    # when preparation failed or stopped. Stop leaves the shared worker alive and
+    # retains queued intent until a later admitted turn.
     from kiro_crew.memory_startup import wait_for_memory_preparation
 
-    await wait_for_memory_preparation(lambda: getattr(state, "memory_startup_task", None))
+    await wait_for_memory_preparation(
+        lambda: getattr(state, "memory_startup_task", None), bounded=False
+    )
     turn_timing.mark("memory_ready")
     _memory_preparation_admitted = True
     turn._memory_preparation_admitted = _memory_preparation_admitted
