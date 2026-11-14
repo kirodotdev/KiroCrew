@@ -1293,7 +1293,7 @@ def test_a_fresh_facade_import_loads_every_owner(tmp_path: Path) -> None:
 #: guards at its new home (``slack-gateway.md``, Composition).
 _GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
     "persist_token_record": frozenset({"cron_turn", "gateway", "heartbeat_turns"}),
-    ".read_messages": frozenset({"cron_delivery", "nudge_wiring"}),
+    ".read_messages": frozenset({"nudge_wiring"}),
     "begin_turn": frozenset({"nudge_channel_fire"}),
     "os._exit": frozenset({"exit_path"}),
     "save_conversation_turn_off_loop": frozenset(

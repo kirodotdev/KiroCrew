@@ -115,7 +115,6 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/dashboard/session_files.py", "read_messages"),
         # SEL audit log `recent`, not a transcript.
         ("kiro_crew/dashboard/handlers/core_security.py", "recent"),
-        ("kiro_crew/dashboard/handlers/cron_runs.py", "read_messages"),
         ("kiro_crew/dashboard/handlers/session_control.py", "read_messages"),
         # The History browser showing the user their own transcript. Its
         # list_sessions(summarize=true) leg goes through the seam (derive_recent).
@@ -157,7 +156,6 @@ PLUMBING: frozenset[tuple[str, str]] = frozenset(
         ("kiro_crew/history_projection_reads.py", "read_messages_chained"),
         # SEL audit log `recent` (the class binds sel_reader's), not a transcript.
         ("kiro_crew/sel.py", "recent"),
-        ("kiro_crew/slack/gateway_runtime/cron_delivery.py", "read_messages"),
         ("kiro_crew/slack/gateway_runtime/nudge_wiring.py", "read_messages"),
         # A yes/no "does this session already have turns" check on its OWN
         # transcript, gating a write to that transcript; no rows leave.

@@ -235,6 +235,15 @@ def _list_tools() -> list[dict[str, Any]]:
                         "Use it only for infrequent jobs: every run keeps a tab, so the "
                         "schedule must leave at least 24 hours between runs or it is refused.",
                     },
+                    "on_tab_close": {
+                        "type": "string",
+                        "enum": ["resume", "fresh"],
+                        "description": "What the job's chat tab shows when a run reopens it "
+                        "after the user closed it: 'resume' (default) brings its history back; "
+                        "'fresh' reopens the tab empty, and messages it hid stay hidden. The "
+                        "agent's memory of earlier runs is unchanged. Applies to the job's own "
+                        "tab (a persistent job).",
+                    },
                     "minimal_context": {
                         "type": "boolean",
                         "description": "When true, skip memory, lessons, skills, and "
@@ -392,6 +401,15 @@ def _list_tools() -> list[dict[str, Any]]:
                         "when that is omitted; persistent_session true turns it off. "
                         "Use it only for infrequent jobs: every run keeps a tab, so the "
                         "schedule must leave at least 24 hours between runs or it is refused.",
+                    },
+                    "on_tab_close": {
+                        "type": "string",
+                        "enum": ["resume", "fresh"],
+                        "description": "What the job's chat tab shows when a run reopens it "
+                        "after the user closed it: 'resume' (default) brings its history back; "
+                        "'fresh' reopens the tab empty, and messages it hid stay hidden. The "
+                        "agent's memory of earlier runs is unchanged. Applies to the job's own "
+                        "tab (a persistent job).",
                     },
                     "minimal_context": {
                         "type": "boolean",

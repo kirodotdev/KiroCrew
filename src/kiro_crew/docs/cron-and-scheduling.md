@@ -239,6 +239,16 @@ cron_add(
 
 It implies `persistent_session: false` when that is omitted, and `persistent_session: true` turns it off. It applies to a single-agent (message) job; a script, command or multi-agent job refuses it. `hide_in_chat` still wins, and a run whose result is a duplicate or that is `silent` opens no tab. A run's tab is kept like any other chat; a run that opened none is removed with the other stateless run transcripts after 7 days. It is for infrequent jobs, because every run keeps a tab: a schedule that can run twice within 24 hours is refused, on create and on an update that turns the switch on or changes the schedule.
 
+### A Fresh Tab After You Close It (`on_tab_close`)
+
+A job's tab, `Cron: <name>`, keeps the job's conversation. Close it and, by default (`on_tab_close: "resume"`), the next run reopens it with that history. Set `on_tab_close: "fresh"` for a report-style job whose tab you close because it grew too long: the next run reopens the tab empty and keeps posting there until you close it again.
+
+```
+cron_update(job_id="<id>", on_tab_close="fresh")
+```
+
+It changes only what the tab shows. Nothing is deleted: the job's agent keeps what `persistent_session` gives it, and a reply in the reopened tab still has the earlier runs as context. The earlier messages are not shown in the tab, and History does not list them as a chat of their own yet. It applies to the job's own tab (a persistent job that is not `hide_in_chat`), and only a run reopens the tab fresh, after you closed it yourself: a tab archived automatically because it sat idle comes back with its history. `cron_add`, `cron_update` and the REST routes take it; the CLI and the Schedule page do not yet.
+
 ## Skipping Dates
 
 Jobs can skip specific dates — useful for holidays, vacation, or one-off exceptions. Two optional fields control this:

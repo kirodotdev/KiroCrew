@@ -38,6 +38,16 @@ _NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
 # Default consecutive failures before a failure alert leaves the dashboard bell
 # for the job's channel or the owner's DM: 1 alerts on the first failure.
 _ALERT_AFTER_DEFAULT = 1
+# What the job's own ``cron-<id>`` tab shows when a run re-creates it after the
+# person closed it: its history (``resume``) or none of it (``fresh``).
+ON_TAB_CLOSE_VALUES = ("resume", "fresh")
+
+
+def validate_on_tab_close(value: object) -> str:
+    """Return *value* when it is one of :data:`ON_TAB_CLOSE_VALUES`, else raise ``ValueError``."""
+    if value not in ON_TAB_CLOSE_VALUES:
+        raise ValueError(f"on_tab_close must be 'resume' or 'fresh', got {value!r}")
+    return str(value)
 
 
 def parked_by_its_run(
@@ -309,6 +319,10 @@ class CronJob:
     # one run alone. The store refuses it with ``persistent_session=True``, whose
     # one tab already holds every run. ``hide_in_chat`` still wins.
     new_chat_per_run: bool = False
+    # ``fresh`` → the first run after the person closed the job's tab reopens it
+    # empty: the rows stay in ``cron:<id>`` below the tab's display floor
+    # (``cron_inject.start_fresh_cron_tab``). ``resume`` shows them again.
+    on_tab_close: str = "resume"
     # Cron folder grouping; "" = unfiled. CONTRACT for all consumers
     # (Schedule UI, calendar, CLI, MCP): an id that does not match a folder
     # in cron_folders.json MUST be treated as ungrouped — folder deletion

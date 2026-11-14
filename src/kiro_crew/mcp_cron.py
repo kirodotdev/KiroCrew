@@ -1027,6 +1027,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 strict_schedule=strict_schedule if isinstance(strict_schedule, bool) else False,
                 hide_in_chat=hide_in_chat if isinstance(hide_in_chat, bool) else False,
                 new_chat_per_run=new_chat_per_run,
+                on_tab_close=args.get("on_tab_close", "resume"),
                 folder_id=folder_id,
                 command=command or "",
                 script=script or "",
@@ -1148,6 +1149,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             mc = args["minimal_context"]
             if isinstance(mc, bool):
                 kwargs["minimal_context"] = mc
+        if "on_tab_close" in args:
+            kwargs["on_tab_close"] = args["on_tab_close"]
         if "hide_in_chat" in args:
             hic = args["hide_in_chat"]
             if isinstance(hic, bool):

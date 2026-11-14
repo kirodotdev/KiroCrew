@@ -28,6 +28,7 @@ from kiro_crew.cron_service.model import (
     CronSchedule,
     validate_alert_after_failures,
     validate_auto_pause_after_failures,
+    validate_on_tab_close,
 )
 from kiro_crew.cron_service.schedule import (
     LOCAL_TIMEZONE,
@@ -305,6 +306,7 @@ def build_job(
     strict_schedule: bool = False,
     hide_in_chat: bool = False,
     new_chat_per_run: bool = False,
+    on_tab_close: str = "resume",
     folder_id: str = "",
     chat_folder_id: str = "",
     project_path: str = "",
@@ -389,6 +391,7 @@ def build_job(
         raise ValueError(_CHAT_FOLDER_NEEDS_PERSISTENT)
     if new_chat_per_run and persistent_session:
         raise ValueError(_NEW_CHAT_PER_RUN_NEEDS_STATELESS)
+    on_tab_close = validate_on_tab_close(on_tab_close)
     if new_chat_per_run and (command or script or agent_sequence_dispatches(agent_sequence or [])):
         raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
     if project_path and (command or script):
@@ -449,6 +452,7 @@ def build_job(
         strict_schedule=strict_schedule,
         hide_in_chat=hide_in_chat,
         new_chat_per_run=bool(new_chat_per_run),
+        on_tab_close=on_tab_close,
         folder_id=folder_id,
         chat_folder_id=chat_folder_id,
         project_path=project_path,
@@ -516,6 +520,8 @@ def apply_job_update(
         job.command or job.script or agent_sequence_dispatches(job.agent_sequence)
     ):
         raise ValueError(_NEW_CHAT_PER_RUN_AGENT_ONLY)
+    if "on_tab_close" in kwargs:
+        validate_on_tab_close(kwargs["on_tab_close"])
     if (
         "cron_expr" in kwargs
         and kwargs["cron_expr"]
@@ -720,6 +726,8 @@ def apply_job_update(
     elif job.persistent_session:
         # One shared session again: every run lands in the job's one tab.
         job.new_chat_per_run = False
+    if "on_tab_close" in kwargs:
+        job.on_tab_close = kwargs["on_tab_close"]
     if "folder_id" in kwargs:
         job.folder_id = kwargs["folder_id"] or ""
     if "chat_folder_id" in kwargs:
