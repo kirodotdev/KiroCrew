@@ -378,6 +378,13 @@ describe('chatImportLines', () => {
     ])
   })
 
+  it('reports the chats whose folder this computer does not have', () => {
+    expect(chatImportLines({ sessions_added: 2, sessions_skipped_existing: 0, sessions_project_cleared: 1 })).toEqual([
+      'Chats added: 2. Already on this install: 0.',
+      "Imported chats whose folder this computer doesn't have: 1. They open in the default workspace instead.",
+    ])
+  })
+
   it('ignores a malformed count rather than rendering it', () => {
     expect(chatImportLines({ sessions_added: '3' })).toEqual([])
     expect(chatImportLines({ sessions_added: 1, sessions_skipped_existing: -4 })).toEqual([

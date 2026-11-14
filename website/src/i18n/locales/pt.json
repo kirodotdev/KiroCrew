@@ -17687,6 +17687,7 @@
         "export_chats_skipped_size": "Conversas mais antigas deixadas de fora porque não couberam neste arquivo: {{chats}}.",
         "import_chats_result": "Conversas adicionadas: {{added}}. Já estavam nesta instalação: {{existing}}.",
         "import_chats_withheld": "Conversas não importadas por estarem no modo Anônimo ou Temporário ou por serem ilegíveis: {{withheld}}.",
+        "import_chats_folder_missing": "Conversas importadas cuja pasta não existe neste computador: {{cleared}}. Elas abrem no espaço de trabalho padrão.",
         "export_memory_only": "Exportar apenas a memória",
         "export_memory_only_hint": "Use para compartilhar o que o agente aprendeu com outra pessoa.",
         "share_memory_title": "Exportar esta memória?",

@@ -422,7 +422,7 @@ class TestSweep:
 
 class TestTheLargeSitesStageUnderTheDataHome:
     """The regression lock: the three large-staging callers pass ``dir=`` resolving
-    under ``<data home>/staging``, never the system temp dir.
+    under the data home, never the system temp dir.
 
     Driven through the real command entrypoint rather than asserted on source, and
     through a spy on the module's own ``tempfile`` so a revert to a bare
@@ -464,7 +464,7 @@ class TestTheLargeSitesStageUnderTheDataHome:
     def test_import_extraction_stages_under_the_staging_root(
         self, patched_config_dir, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The import EXTRACTION stages under ``<data home>/staging``.
+        """The import EXTRACTION stages under ``<data home>/import-staging``.
 
         This lock is on ``portability.apply_import_zip``'s own ``TemporaryDirectory``;
         the uploaded ``.zip`` spool beside it is covered by
@@ -482,7 +482,7 @@ class TestTheLargeSitesStageUnderTheDataHome:
         target.mkdir()
         zip_path = tmp_path / "export.zip"
         zip_path.write_bytes(zip_bytes)
-        expected_root = (target / staging.STAGING_DIRNAME).resolve()
+        expected_root = (target / "import-staging").resolve()
 
         seen_dirs: list[str | None] = []
         real_tempdir = portability.tempfile.TemporaryDirectory
