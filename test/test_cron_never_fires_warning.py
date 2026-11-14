@@ -224,3 +224,39 @@ async def test_dashboard_create_and_update_carry_a_warnings_list(tmp_path) -> No
         assert resp.status == 200, fine
         assert "warnings" not in fine
     assert [j.schedule.cron_expr for j in svc.list_jobs()] == ["*/5 * * * *"]
+
+
+# -- an interval raised to the store minimum --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "requested, sched, expected",
+    [
+        (5, CronSchedule(kind="every", every_secs=60), "an interval of 5s is below the 60s"),
+        (60, CronSchedule(kind="every", every_secs=60), ""),
+        (300, CronSchedule(kind="every", every_secs=300), ""),
+        (None, CronSchedule(kind="every", every_secs=60), ""),
+        (True, CronSchedule(kind="every", every_secs=60), ""),
+        (5, CronSchedule(kind="cron", cron_expr="*/5 * * * *"), ""),
+    ],
+)
+def test_raised_interval_warning_names_only_a_raised_interval(requested, sched, expected) -> None:
+    warning = schedule.raised_interval_warning(requested, sched)
+    assert warning.startswith(expected) if expected else warning == ""
+
+
+@pytest.mark.asyncio
+async def test_dashboard_create_names_an_interval_raised_to_the_minimum(tmp_path) -> None:
+    svc = CronService(base_dir=tmp_path)
+    async with TestClient(TestServer(_app(svc))) as client:
+        resp = await client.post("/api/crons", json={"name": "n", "message": "m", "every": 5})
+        body = json.loads(await resp.text())
+        assert resp.status == 200, body
+        (warning,) = body.get("warnings", [None])
+        assert warning == "an interval of 5s is below the 60s minimum, so this job runs every 60s"
+
+        resp = await client.post("/api/crons", json={"name": "k", "message": "m", "every": 120})
+        fine = json.loads(await resp.text())
+        assert resp.status == 200, fine
+        assert "warnings" not in fine
+    assert sorted(j.schedule.every_secs for j in svc.list_jobs()) == [60, 120]

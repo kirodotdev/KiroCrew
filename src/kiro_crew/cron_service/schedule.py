@@ -170,6 +170,26 @@ def never_fires_warning(schedule: CronSchedule) -> str:
     return ""
 
 
+def raised_interval_warning(requested: object, schedule: CronSchedule) -> str:
+    """A one-line caveat when *schedule* runs less often than the interval asked for, else ``""``.
+
+    ``build_job`` raises an ``every`` interval below its minimum rather than refusing
+    it, because a stored job with such an interval must still load and save. The add
+    surfaces that clamp instead of refuse show this beside their success answer, so the
+    caller learns the rate the job actually runs at.
+    """
+    if schedule.kind != "every" or not schedule.every_secs:
+        return ""
+    if not isinstance(requested, int) or isinstance(requested, bool):
+        return ""
+    if schedule.every_secs == requested:
+        return ""
+    return (
+        f"an interval of {requested}s is below the {schedule.every_secs}s minimum, "
+        f"so this job runs every {schedule.every_secs}s"
+    )
+
+
 def runs_more_than_once_a_day(schedule: CronSchedule) -> bool:
     """Whether two runs of *schedule* can start less than 24 hours apart.
 

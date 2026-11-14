@@ -907,6 +907,12 @@ async def api_crons_create(request: web.Request) -> web.Response:
     # The fingerprint of the job as this write made it: a card step records it,
     # so its Undo's baseline is what the card made, not a later edit.
     created: dict[str, Any] = {"ok": True, "id": job.id, "revision": cron_job_revision(job)}
+    job_schedule = getattr(job, "schedule", None)
+    if every and job_schedule is not None:
+        from kiro_crew.cron_service.schedule import raised_interval_warning
+
+        if raised := raised_interval_warning(every, job_schedule):
+            flag_warnings.append(raised)
     return web.json_response(_with_schedule_warnings(created, job, flag_warnings))
 
 
