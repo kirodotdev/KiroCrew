@@ -844,8 +844,8 @@ async def _notice_unread_steering(
 
 def _notice_steer_upgrade(state: "DashboardState", slot: "_ChatSlot", client: Any) -> None:
     """One notice row on a new session whose adapter is too old to take a mid-turn
-    message, one whose KAS drops its agent's prompt, and one whose goose or codex is
-    outside its tested range: the chat runs, and each row names the installed version, the
+    message, one whose KAS drops its agent's prompt, and one whose goose, codex, claude or
+    pi adapter is outside its tested range: the chat runs, and each row names the installed version, the
     tested one and the command that installs it. One more on a session whose MCP
     servers start without part of their env or headers, naming each server and the
     key names it lost, never a value. One more on a KAS session told to turn telemetry
