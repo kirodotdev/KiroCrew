@@ -10,7 +10,7 @@
 import { useQuery, useQueryClient, useMutation, type QueryClient } from '@tanstack/react-query'
 import { DndContext, DragOverlay, closestCenter, type DragEndEvent, type DragStartEvent } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from 'react'
 import { shallowEqual } from 'react-redux'
 import { useLocation } from 'react-router-dom'
 
@@ -20,10 +20,8 @@ import { MEMBERS_ROSTER_QUERY_KEY, membersRosterQuery } from '../../api/membersQ
 import { crewDisplayName } from '../../components/AgentSelector'
 import CrewAvatar from '../../components/CrewAvatar'
 import ErrorNotice from '../../components/ErrorNotice'
-import { MORE_BELOW_MASK } from '../../components/ModelEffortDropdown'
 import { OverlayPortal } from '../../components/overlayRoot'
 import { useDndSensors } from '../../hooks/useDndSensors'
-import { useScrollEdgesY } from '../../hooks/useScrollEdges'
 import { railWidthFor } from '../../hooks/useRailWidth'
 import { busySlotKeys } from '../../lib/crewMode'
 import { haptic } from '../../lib/haptic'
@@ -169,8 +167,7 @@ function DockMatesNotice({ collapsed, isMobile, message, report, testId, onDismi
 /**
  * The same starred mates as tiles on the phone rail, which the chat and Mates
  * pages show beside their drawer. They follow the app tiles in that rail's
- * Apps scroller, behind a divider: the rail already guards a floor of app
- * tiles (`APPS_FLOOR_PX`), and putting mates first would spend it. The Mates
+ * scroll region, so the apps stay first on a short phone. The Mates
  * tile in the pinned top already opens the full roster, so there is no
  * "N more" tile here; the open mate's tile joins the three when it sits past
  * them, as on the wide rail. No drag either: the order is the one set on a
@@ -204,7 +201,16 @@ export function DockMatesTiles({ onActivate }: { onActivate: () => void }) {
   )
 }
 
-export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapsed: boolean; isMobile: boolean; onNavigate?: () => void }) {
+/** The starred mates in the nav rail. The group does not scroll on its own: the
+ *  rail scrolls it together with the rows above and the Apps list below, and
+ *  `onDragActiveChange` tells the rail when a row is being dragged so its
+ *  bottom fade does not dim the drag ghost. */
+export function DockMatesSection({ collapsed, isMobile, onNavigate, onDragActiveChange }: {
+  collapsed: boolean
+  isMobile: boolean
+  onNavigate?: () => void
+  onDragActiveChange?: (active: boolean) => void
+}) {
   const queryClient = useQueryClient()
   const { ordered, top, pulledIn, open, loadFailed, loadError, errorUpdatedAt, dataUpdatedAt } = useDockMates()
   // Folded behind the same "N more" / "Show less" toggle as the Apps list.
@@ -219,14 +225,14 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
   const sortableRows = overflowing ? top : ordered
   const staticRows = overflowing ? pulledIn : []
   const hiddenCount = ordered.length - sortableRows.length - staticRows.length
-  // A short window shrinks the group to its header and one row; the rest
-  // scroll under a hidden scrollbar, so fade the bottom edge while anything
-  // is below the fold. Rows changing inside an already-clipped box resize
-  // nothing the observer watches, hence the explicit remeasure.
-  const [attachScroller, edges, remeasure] = useScrollEdgesY<HTMLDivElement>()
-  useLayoutEffect(() => { remeasure() }, [remeasure, sortableRows.length, staticRows.length, collapsed])
   const sensors = useDndSensors({ distance: 8 })
   const [dragId, setDragId] = useState<string | null>(null)
+  const dragActive = dragId !== null
+  useEffect(() => {
+    onDragActiveChange?.(dragActive)
+  }, [dragActive, onDragActiveChange])
+  // An unmount mid-drag must not leave the rail's fade switched off.
+  useEffect(() => () => onDragActiveChange?.(false), [onDragActiveChange])
   const loadNotice = useDockMatesLoadNotice({ errorUpdatedAt, dataUpdatedAt })
   // Also closes the gap before React publishes the pending mutation state.
   const reorderInFlight = useRef(false)
@@ -286,10 +292,9 @@ export function DockMatesSection({ collapsed, isMobile, onNavigate }: { collapse
     <MateNavItem m={m} active={open === m.name} collapsed={collapsed} onClick={onNavigate} />
   )
   const dragged = dragId ? ordered.find(m => m.name === dragId) : undefined
-  // The drag ghost renders inside this box; a mask would fade or clip it.
 
   return (
-    <div ref={attachScroller} data-testid="dock-mates" aria-busy={reorder.isPending} className={`flex flex-col gap-0.5 px-2 shrink ${collapsed ? 'min-h-[56px]' : 'min-h-[76px]'} overflow-y-auto overflow-x-hidden overscroll-y-none scrollbar-none [&_.app-icon-nav]:opacity-100 ${edges.bottom && !dragId ? MORE_BELOW_MASK : ''}`} style={{ scrollbarWidth: 'none' }}>
+    <div data-testid="dock-mates" aria-busy={reorder.isPending} className="shrink-0 flex flex-col gap-0.5 px-2 [&_.app-icon-nav]:opacity-100">
       {collapsed
         ? <div aria-hidden="true" className="h-px bg-border mx-2 my-2" />
         : (
