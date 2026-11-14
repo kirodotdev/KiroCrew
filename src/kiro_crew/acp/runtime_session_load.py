@@ -48,6 +48,7 @@ from kiro_crew.acp.runtime_session_setup import (
     _drop_withdrawn_stubs,
     _kas_worker_stub_names,
     _pooled_session_servers_and_ref_spec,
+    _with_runtime_ipc_pickups,
 )
 from kiro_crew.acp.session_handle import (
     AcpFrameTooLarge,
@@ -246,6 +247,7 @@ async def load_session(
         )
         member_mounted = member_entry is not None
         if member_entry is not None:
+            member_entry = _with_runtime_ipc_pickups(self, [member_entry], stub_token)[0]
             mcp_servers = [e for e in mcp_servers if e.get("name") != member_entry["name"]] + [
                 member_entry
             ]

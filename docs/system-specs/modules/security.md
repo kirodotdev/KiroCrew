@@ -4081,8 +4081,16 @@ Issuance and the client half: both array builders call `acp/ipc_pickup.py` -- th
 runtime's mirrored projection (`acp/runtime_session_setup._mirrored_session_mcp`, the
 create and resume path of the shared-runtime backends, codex included) and
 `AcpClient._resolve_session_mcp_servers` (opencode, goose and the other client-driven
-backends). It puts a fresh pickup on the
-`kirocrew-core` element only when the session's backend is enforced
+backends). The runtime also passes each late member dashboard/panel entry through
+its shared `_with_runtime_ipc_pickups` helper after constructing it, on both create
+and resume, without reissuing pickups for the earlier projected array. The same
+eligibility, direct-launch and backend checks apply to those entries; a disabled
+panel does not skip issuance for the dashboard. It puts a fresh pickup on each
+element whose name is in `ipc_pickup.PICKUP_SERVERS` -- `kirocrew-core`, and the
+member mounts `kirocrew-dashboard` and `kirocrew-panel`, the last two because a
+member session mounts them LATE as direct launches, so under the mask they would
+otherwise have neither secret nor capability and their `tools/list` would be
+refused -- only when the session's backend is enforced
 (`tool_gate.is_enforced`, the same predicate that applies the credential mask), the
 session holds a stub token, and this process serves an agent socket; every other
 harness's array is unchanged. A broker-stub element of that name gets none

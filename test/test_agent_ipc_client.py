@@ -135,6 +135,8 @@ def test_the_runtime_session_path_issues_the_pickup():
     from kiro_crew.acp import runtime_session_setup
 
     source = inspect.getsource(runtime_session_setup._mirrored_session_mcp)
+    assert "_with_runtime_ipc_pickups(self, servers, stub_token)" in source
+    source = inspect.getsource(runtime_session_setup._with_runtime_ipc_pickups)
     assert "with_ipc_pickups(" in source and "session_token=stub_token" in source
 
 
