@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import { OverflowMenu } from '../components/MarkdownPanel'
 import FilePathMenu from '../components/FilePathMenu'
 import { remoteEditorUrl } from '../utils/remoteEditorUrl'
+import { api } from '../api/client'
+import { i18nT } from '../i18n/t'
 
 /**
  * "Open in <editor>" in the Markdown panel's ⋯ menu: the gateway file the panel
@@ -31,13 +33,14 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-const brandingEnv = vi.hoisted(() => ({ remoteEditor: 'vscode', remoteEditorHost: 'dev-box' }))
+const brandingEnv = vi.hoisted(() => ({ remoteEditor: 'vscode', remoteEditorHost: 'dev-box', editorAvailable: false }))
 vi.mock('../hooks/useBranding', () => ({
   useBranding: () => ({
     botName: 'Test', avatar: '',
     // A gateway on another machine: no gateway open/reveal rows.
     directLocal: false,
     desktopLauncher: false,
+    editorAvailable: brandingEnv.editorAvailable,
     remoteEditor: brandingEnv.remoteEditor,
     remoteEditorHost: brandingEnv.remoteEditorHost,
   }),
@@ -62,14 +65,16 @@ const wrapper = ({ children }: { children: React.ReactNode }) => (
   </MemoryRouter>
 )
 
-function openMenu(filePath: string) {
-  render(<OverflowMenu onError={vi.fn()} filePath={filePath} content="x" />, { wrapper })
+function openMenu(filePath: string, onError = vi.fn()) {
+  render(<OverflowMenu onError={onError} filePath={filePath} content="x" />, { wrapper })
   fireEvent.click(screen.getByTestId('markdown-panel-more-options'))
 }
 
 beforeEach(() => {
   brandingEnv.remoteEditor = 'vscode'
   brandingEnv.remoteEditorHost = 'dev-box'
+  brandingEnv.editorAvailable = false
+  vi.mocked(api.revealPath).mockReset().mockResolvedValue({})
   paneEnv.embedded = false
   paneEnv.electron = false
   queryClient.clear()
@@ -113,6 +118,49 @@ describe('Markdown panel ⋯ menu: Open in VS Code', () => {
     fireEvent.contextMenu(screen.getByTestId('trigger'))
     expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Open in VS Code' })).toBeNull()
+  })
+})
+
+describe('Markdown panel ⋯ menu: Open in Kiro (attached window)', () => {
+  beforeEach(() => { brandingEnv.editorAvailable = true })
+
+  it('opens the file through the attached window', async () => {
+    openMenu('/home/u/a.md')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Kiro' }))
+    await waitFor(() => expect(api.revealPath).toHaveBeenCalledWith('/home/u/a.md', 'editor'))
+  })
+
+  it('replaces the configured link while a window is attached', () => {
+    openMenu('/home/u/a.md')
+    expect(screen.getByRole('menuitem', { name: 'Open in Kiro' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Open in VS Code' })).toBeNull()
+  })
+
+  it('needs no editor or host setting', () => {
+    brandingEnv.remoteEditor = ''
+    brandingEnv.remoteEditorHost = ''
+    openMenu('/home/u/a.md')
+    expect(screen.getByRole('menuitem', { name: 'Open in Kiro' })).toBeInTheDocument()
+  })
+
+  it('reports a failed open through onError', async () => {
+    vi.mocked(api.revealPath).mockRejectedValueOnce(new Error('no window attached'))
+    const onError = vi.fn()
+    openMenu('/home/u/a.md', onError)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Kiro' }))
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed')))
+  })
+
+  it('is not in a path chip menu either', () => {
+    render(
+      <FilePathMenu filePath="/etc/hosts">
+        <span data-testid="trigger">/etc/hosts</span>
+      </FilePathMenu>,
+      { wrapper },
+    )
+    fireEvent.contextMenu(screen.getByTestId('trigger'))
+    expect(screen.getByRole('menuitem', { name: 'Copy path' })).toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Open in Kiro' })).toBeNull()
   })
 })
 
