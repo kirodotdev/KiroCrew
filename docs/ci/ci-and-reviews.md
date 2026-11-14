@@ -3107,7 +3107,13 @@ the wheel copy of an app `src/kiro_crew/apps/adoption-pins.json` pins
 must carry an `App repo: <owner>/<repo>@<sha>` or `App repo: <owner>/<repo>#<PR>`
 line naming the app repository's matching change, because adopted hosts never run
 the wheel copy (`.github/scripts/adopted_wheel_copy_check.py`, run from the base
-ref; see app-kit-platform.md § Former built-in adoption). Last, a
+ref; see app-kit-platform.md § Former built-in adoption). The same step holds a PR
+that adds or changes a pin row to a `Wheel-copy base: <name>@<sha>` line per changed
+row, naming the core commit the pinned app-repo commit was ported from, and fails it
+while that app's non-test wheel copy at the base tip differs from the one at the
+base. The base tip is the one at the PR's last event: nothing re-runs the check when
+main moves, so whoever approves a pin PR edits its body (or pushes) right before
+approving, which re-runs it against the current tip. Last, a
   `fix`/`revert` PR is checked for a `## Sibling sweep` section listing the other
   places with the same defect (`.github/scripts/sibling_list_check.py`, run from the
   base ref so a branch cannot weaken it; shape and path existence only, never

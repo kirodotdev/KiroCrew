@@ -242,9 +242,14 @@ jobs:
       # an `App repo:` line (format and exemptions: the script). Pins are
       # read at the merge base, the base tip and the head: the head so a PR
       # cannot drop its own pin to pass, the base tip so a branch cut before
-      # a pin landed is still held to it. The script is read from the base
-      # ref so a branch cannot weaken its own check; the checkout copy runs
-      # only while the base tip has no such file.
+      # a pin landed is still held to it. A PR that adds or changes a pin row
+      # also names the core commit its app-repo port started from as a
+      # `Wheel-copy base:` line, and the app's wheel copy at the base tip must
+      # equal it. That tip is the one at this PR event: a later main push does
+      # not re-run the step, so a pin PR's approver edits the body (or pushes)
+      # right before approving. The script is read from the base ref so a
+      # branch cannot weaken its own check; the checkout copy runs only while
+      # the base tip has no such file.
       - name: Require an app-repo commit for an adopted app's wheel copy
         env:
           MERGE_BASE: ${{ steps.diffbase.outputs.sha }}
