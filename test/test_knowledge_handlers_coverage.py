@@ -828,6 +828,41 @@ class TestImportBundle:
         assert store.db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "table,field",
+        [
+            ("items", "title"),
+            ("items", "content"),
+            ("entities", "name"),
+            ("relations", "description"),
+        ],
+    )
+    async def test_a_lone_surrogate_in_a_text_field_is_400_not_500(self, store, table, field):
+        # JSON allows an escaped lone surrogate, which SQLite cannot bind as
+        # UTF-8: UnicodeEncodeError at bind time, the text twin of the
+        # oversized-integer case above.
+        bundle = {
+            "items": [{"id": "i1", "title": "t", "content": "c", "item_type": "note"}],
+            "entities": [{"id": "e1", "name": "Alice", "entity_type": "person"}],
+            "relations": [
+                {
+                    "id": "r1",
+                    "source_id": "e1",
+                    "target_id": "e1",
+                    "relation_type": "self",
+                    "description": "d",
+                }
+            ],
+        }
+        bundle[table][0][field] += "\ud800"
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body == {"error": "malformed bundle", "code": "malformed_knowledge_bundle"}
+        assert store.db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
+
+    @pytest.mark.asyncio
     async def test_source_with_non_json_properties_is_400_not_500(self, store):
         # The store writes properties through unparsed but every reader
         # json.loads it, so a non-JSON string would break a later request.
