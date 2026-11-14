@@ -11160,6 +11160,24 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}}（一時停止中）— {{time}} {{tz}}",
       "job_name_paused": "{{name}}（一時停止中）"
+    },
+    "grillCard": {
+      "decline": "やめておく",
+      "label": "ディスカッションの提案",
+      "minutes_other": "約 {{count}} 分",
+      "must": "必須",
+      "not_sent": "この画面には送信先のチャット欄がありません。",
+      "question": "問い",
+      "send_decline": "ディスカッションは不要",
+      "send_must": "必須：{{text}}",
+      "send_question": "問い：{{text}}",
+      "send_skip": "話さないこと：{{text}}",
+      "send_start": "ディスカッションを始めて",
+      "sent": "送信しました。",
+      "skip": "話さないこと",
+      "staged": "チャット欄に入れました。そこから送信してください。",
+      "start": "開始",
+      "who": "参加者"
     }
   },
   "hooks": {

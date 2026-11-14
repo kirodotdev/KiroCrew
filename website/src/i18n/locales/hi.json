@@ -11415,6 +11415,25 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (रुका हुआ) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (रुका हुआ)"
+    },
+    "grillCard": {
+      "decline": "रहने दो",
+      "label": "चर्चा का प्रस्ताव",
+      "minutes_one": "लगभग {{count}} मिनट",
+      "minutes_other": "लगभग {{count}} मिनट",
+      "must": "ज़रूरी",
+      "not_sent": "इस दृश्य में भेजने के लिए चैट बॉक्स नहीं है।",
+      "question": "सवाल",
+      "send_decline": "चर्चा की ज़रूरत नहीं",
+      "send_must": "ज़रूरी: {{text}}",
+      "send_question": "सवाल: {{text}}",
+      "send_skip": "चर्चा नहीं: {{text}}",
+      "send_start": "चर्चा शुरू करो",
+      "sent": "भेज दिया गया।",
+      "skip": "चर्चा नहीं",
+      "staged": "चैट बॉक्स में डाल दिया गया। वहीं से भेजो।",
+      "start": "शुरू करो",
+      "who": "कौन बात करेगा"
     }
   },
   "hooks": {

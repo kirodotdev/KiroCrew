@@ -11160,6 +11160,24 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (일시 중지됨) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (일시 중지됨)"
+    },
+    "grillCard": {
+      "decline": "괜찮아요",
+      "label": "토론 제안",
+      "minutes_other": "약 {{count}}분",
+      "must": "반드시",
+      "not_sent": "이 화면에는 보낼 채팅 입력란이 없습니다.",
+      "question": "질문",
+      "send_decline": "토론은 필요 없어",
+      "send_must": "반드시: {{text}}",
+      "send_question": "질문: {{text}}",
+      "send_skip": "다루지 않음: {{text}}",
+      "send_start": "토론을 시작해 줘",
+      "sent": "보냈습니다.",
+      "skip": "다루지 않음",
+      "staged": "채팅 입력란에 넣었습니다. 거기서 보내세요.",
+      "start": "시작",
+      "who": "참여자"
     }
   },
   "hooks": {

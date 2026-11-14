@@ -87,6 +87,7 @@ function harness(overrides: Partial<BridgeOpts> = {}, placement: SlotEnvironment
     terminalCfgUnsettledRef: { current: false },
     terminalCfgReadFailedRef: { current: false },
     inputRef: { current: '' },
+    composeSend: vi.fn(() => null),
     ...overrides,
   }
   const wrapper = ({ children }: { children: ReactNode }) => (
@@ -214,6 +215,19 @@ describe('redaction-card bridges', () => {
     act(() => { window.dispatchEvent(new CustomEvent('mc:prefill-composer', { detail: { text: '' } })) })
     expect(opts.dispatch).toHaveBeenCalledTimes(1)
     expect(opts.dispatch).toHaveBeenCalledWith(setPendingInput('draft so far\n\nplease fetch it'))
+  })
+
+  it('hands a reply card\'s text and chat to the page send and reports what the page did', () => {
+    const composeSend = vi.fn((_text: string, slot: string) => (slot === 'slot-a' ? 'staged' as const : null))
+    harness({ composeSend })
+    const mine = { text: '不用讨论了', slot: 'slot-a', result: null }
+    const other = { text: '不用讨论了', slot: 'slot-b', result: null }
+    const empty = { text: '', slot: 'slot-a', result: null }
+    const noSlot = { text: '不用讨论了', result: null }
+    const taken = { text: '不用讨论了', slot: 'slot-a', result: 'sent' }
+    for (const detail of [mine, other, empty, noSlot, taken]) act(() => { window.dispatchEvent(new CustomEvent('mc:compose-send', { detail })) })
+    expect(composeSend.mock.calls).toEqual([['不用讨论了', 'slot-a'], ['不用讨论了', 'slot-b']])
+    expect([mine.result, other.result, empty.result, noSlot.result, taken.result]).toEqual(['staged', null, null, null, 'sent'])
   })
 
   it('reloads the named slot when a host is allowed, and ignores a malformed event', () => {

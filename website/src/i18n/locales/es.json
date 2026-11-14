@@ -11670,6 +11670,26 @@
       "job_title": "{{name}} — {{time}} {{tz}}",
       "job_title_paused": "{{name}} (en pausa) — {{time}} {{tz}}",
       "job_name_paused": "{{name}} (en pausa)"
+    },
+    "grillCard": {
+      "decline": "No, gracias",
+      "label": "Propuesta de discusión",
+      "minutes_many": "Unos {{count}} minutos",
+      "minutes_one": "Unos {{count}} minuto",
+      "minutes_other": "Unos {{count}} minutos",
+      "must": "Debe",
+      "not_sent": "Esta vista no tiene un cuadro de chat al que enviar.",
+      "question": "Pregunta",
+      "send_decline": "No hace falta discutir",
+      "send_must": "Debe: {{text}}",
+      "send_question": "Pregunta: {{text}}",
+      "send_skip": "No se discute: {{text}}",
+      "send_start": "Empieza la discusión",
+      "sent": "Enviado.",
+      "skip": "No se discute",
+      "staged": "Se puso en el cuadro de chat. Envíalo desde allí.",
+      "start": "Empezar",
+      "who": "Quién participa"
     }
   },
   "hooks": {
