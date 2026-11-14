@@ -43,7 +43,7 @@ from kiro_crew.dashboard.handlers.core_config_view import (
     _kas_in_use,
 )
 from kiro_crew.dashboard.handlers.core_security import _sel
-from kiro_crew.metrics import provider as _metrics_provider
+from kiro_crew.metrics import kiro_export as _kiro_export
 from kiro_crew.update_deferral import SkipListFull, merge_update_nudge_record
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.core")
@@ -615,7 +615,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             # established, which the handler below turns into a refusal: reading a
             # transient provider error as "no egress" would permit an enable that
             # the recovered provider then turns into egress.
-            egress = await asyncio.to_thread(_metrics_provider.otlp_egress_active, cfg.telemetry)
+            # The built-in Kiro destination does not count: the privacy notice
+            # names it, and it exports only once that notice was shown.
+            egress = await asyncio.to_thread(
+                _kiro_export.egress_needs_written_opt_in, cfg.telemetry
+            )
         except Exception:
             # Unreadable config, or egress posture that could not be resolved:
             # fail closed rather than enabling collection whose egress posture

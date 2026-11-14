@@ -395,7 +395,7 @@ async def _gateway(
     # is a frozen facade inventory.
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg)
+    usage_notice.print_notice_in_background(cfg, headless=no_dashboard)
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
@@ -426,7 +426,7 @@ async def _run_task(args: argparse.Namespace) -> None:
     cfg = KiroCrewConfig.load()
     from kiro_crew.metrics import notice as usage_notice
 
-    usage_notice.print_notice_in_background(cfg)
+    usage_notice.print_notice_in_background(cfg, headless=True)
     factory = build_provider_factory(cfg)
     sessions = SessionManager(cfg, provider_factory=factory)  # type: ignore[arg-type]
 

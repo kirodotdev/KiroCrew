@@ -1126,6 +1126,18 @@ class DashboardConfig:
             "Written by the Privacy chapter and by kirocrew telemetry enable.",
         ),
     )
+    kiro_telemetry_ack_version: int = field(
+        default=0,
+        metadata=_meta(
+            "Kiro Telemetry Notice Version Acknowledged",
+            "The privacy notice version the user acknowledged while its text named "
+            "the built-in Kiro telemetry destination (0 = none). Product usage "
+            "metrics go to that destination only once this is at least the version "
+            "that names it, or a start with no dashboard printed the line naming it "
+            "on a terminal. Written by the Privacy chapter and by kirocrew telemetry "
+            "enable.",
+        ),
+    )
     crewmates_onboarded: bool = field(
         default=False,
         metadata=_meta(

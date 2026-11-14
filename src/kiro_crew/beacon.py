@@ -150,7 +150,8 @@ DO_NOT_TRACK_ENV = "DO_NOT_TRACK"
 # once to everyone who saw an older text. The dashboard keeps the same number as
 # ``PRIVACY_NOTICE_VERSION`` in ``website/src/components/privacyNotice.ts``; a
 # test pins the two together. Bump both when the notice says something new.
-PRIVACY_NOTICE_VERSION = 2
+# Version 3 names the built-in Kiro telemetry destination (metrics/kiro_export.py).
+PRIVACY_NOTICE_VERSION = 3
 
 # Env vars marking an automated environment. CI installs are not humans using
 # the product; counting them would inflate DAU with every pipeline run.

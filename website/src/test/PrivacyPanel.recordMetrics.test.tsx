@@ -174,6 +174,38 @@ describe('PrivacyPanel metric-recording switch', () => {
     expect(patchConfig).not.toHaveBeenCalled()
   })
 
+  it('lets recording be turned on when the only destination is the build\'s Kiro telemetry', async () => {
+    // The privacy notice names that destination, so the server accepts the write.
+    mount({
+      otlp_configured: true,
+      enable_refused: false,
+      otlp_destinations: [{ name: 'kiro-telemetry', source: 'provider', locked: true }],
+    })
+    const sw = await screen.findByRole('switch', { name: LABEL })
+    await waitFor(() => expect(sw).not.toHaveAttribute('aria-disabled', 'true'))
+    expect(await screen.findByText('Turning recording on also sends product usage metrics to Kiro telemetry.')).toBeInTheDocument()
+    await userEvent.click(sw)
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('telemetry.enabled', true))
+  })
+
+  it('names the Kiro telemetry export apart from a collector still waiting for the opt-in', async () => {
+    mount({
+      enabled: true,
+      otlp_configured: true,
+      export_permitted: false,
+      enable_refused: true,
+      otlp_destinations: [
+        { name: 'ops', source: 'otlp_endpoints', locked: false },
+        { name: 'kiro-telemetry', source: 'provider', locked: true },
+      ],
+    })
+    await screen.findByRole('switch', { name: LABEL })
+    expect(await screen.findByText(/Your own collectors get nothing until telemetry.enabled: true/)).toBeInTheDocument()
+    expect(screen.queryByText(/nothing is sent to them/)).not.toBeInTheDocument()
+    expect(screen.getByText('Product usage metrics are being sent to Kiro telemetry.')).toBeInTheDocument()
+    expect(screen.queryByText(/being sent off this machine, to the collectors/)).not.toBeInTheDocument()
+  })
+
   it('still lets an exporting host turn recording OFF', async () => {
     // Reachable: an endpoint added after enabling, or enabled via the CLI/env with
     // one already set. Disabling is exactly what such a host most needs, and the

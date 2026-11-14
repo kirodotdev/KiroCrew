@@ -459,7 +459,7 @@ describe('App routing', () => {
       fireEvent.click(await keepOnWhenReady(dialog))
 
       await waitFor(() =>
-        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 2 }))
+        expect(api.updateThemeConfig).toHaveBeenCalledWith({ privacy_acked: true, privacy_ack_version: 3 }))
       await waitFor(() =>
         expect(screen.queryByRole('dialog', { name: 'Privacy' })).not.toBeInTheDocument())
       // An existing user is not sent back through the tour.
@@ -567,7 +567,7 @@ describe('App routing', () => {
     })
 
     it('does not show the notice again once the current version is acknowledged', async () => {
-      const api = await existingUser(2)
+      const api = await existingUser(3)
       renderWithProviders(<App />, { route: '/chat' })
 
       await waitFor(() => expect(api.themeBoot).toHaveBeenCalled())

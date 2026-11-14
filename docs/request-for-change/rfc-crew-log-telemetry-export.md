@@ -251,12 +251,16 @@ the dashboard reports the current notice as already seen. A CLI or headless
 start prints a one-line notice once per install, only while recording is on and
 the current notice is not acknowledged.
 
-With the gate on, aggregated metrics go to a local sink under the data home and
-**no network egress happens**. Export needs both a destination and an explicit
-opt-in. The destination is `otlp_endpoint`, empty by default. The opt-in is
-`KIROCREW_TELEMETRY` set to a true value, or `telemetry.enabled: true` written in
-a config file. The on default alone never exports, and neither Keep on in the
-Privacy chapter nor the CLI notice counts as the opt-in. An enterprise policy
+With the gate on, aggregated metrics go to a local sink under the data home.
+Export to a destination the operator configures (`otlp_endpoint` or
+`otlp_endpoints`, empty by default) needs an explicit opt-in: `KIROCREW_TELEMETRY`
+set to a true value, or `telemetry.enabled: true` written in a config file; the
+on default, Keep on in the Privacy chapter and the CLI notice do not count. The
+one exception is the public build's own Kiro telemetry destination
+(`metrics/kiro_export.py`, owner decision of 2026-11-14): it gets the reviewed
+`PRODUCT_METRICS` under the recording default, once the Privacy chapter (notice
+version 3, which names it) or the CLI notice has been shown, and never in an LTS
+build, on CI or under a non-default `KIROCREW_HOME`. An enterprise policy
 can pin the whole thing off through the `capabilities.telemetry` governance
 scope. The enterprise build never shows the Privacy chapter, refuses the
 heartbeat, and applies the same export rule to the collector the admin policy

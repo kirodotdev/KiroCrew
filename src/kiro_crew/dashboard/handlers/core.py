@@ -545,10 +545,29 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "privacy_ack_version": (
             max(cfg.dashboard.privacy_ack_version, PRIVACY_NOTICE_VERSION)
             if notice_current
-            else cfg.dashboard.privacy_ack_version
+            else _ack_version_for_the_chapter(cfg)
         ),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
+
+
+def _ack_version_for_the_chapter(cfg: Any) -> int:
+    """The acknowledged notice version, held back while Kiro telemetry is owed.
+
+    An acknowledgement whose text never named the build's Kiro telemetry
+    destination (a chapter shown under a non-default home, a redirected
+    ``kirocrew telemetry enable``) leaves that destination waiting, so the
+    chapter, which names it, shows once more. Unreadable: the stored value.
+    """
+    stored = cfg.dashboard.privacy_ack_version
+    try:
+        from kiro_crew.metrics import kiro_export
+
+        if kiro_export.destinations() and not kiro_export.notice_shown(cfg):
+            return min(stored, cfg.dashboard.kiro_telemetry_ack_version)
+    except Exception:  # noqa: BLE001 - the stored value, as before
+        logger.debug("kiro telemetry notice state unreadable", exc_info=True)
+    return stored
 
 
 async def api_theme_boot(request: web.Request) -> web.Response:
@@ -638,17 +657,19 @@ async def api_theme_config(request: web.Request) -> web.Response:
             updates[flag] = body[flag]
     # A real int only, for the same reason: ``True`` is an int in Python and
     # would store as 1.
-    if "privacy_ack_version" in body:
-        version = body["privacy_ack_version"]
+    for key in ("privacy_ack_version", "kiro_telemetry_ack_version"):
+        if key not in body:
+            continue
+        version = body[key]
         if (
             not isinstance(version, int)
             or isinstance(version, bool)
             or not 0 <= version <= PRIVACY_ACK_VERSION_MAX
         ):
             raise web.HTTPBadRequest(
-                text=f"privacy_ack_version must be an integer from 0 to {PRIVACY_ACK_VERSION_MAX}"
+                text=f"{key} must be an integer from 0 to {PRIVACY_ACK_VERSION_MAX}"
             )
-        updates["privacy_ack_version"] = version
+        updates[key] = version
 
     if updates:
 

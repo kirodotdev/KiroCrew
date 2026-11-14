@@ -581,6 +581,7 @@ def test_a_dashboard_route_key_links_to_its_control() -> None:
         "dashboard.language",
         "dashboard.theme_color",
         "dashboard.privacy_ack_version",
+        "dashboard.kiro_telemetry_ack_version",
     ],
 )
 def test_a_key_the_theme_route_writes_is_never_edited_here(path: str) -> None:

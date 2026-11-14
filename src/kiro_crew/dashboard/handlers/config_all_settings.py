@@ -121,6 +121,7 @@ READONLY_REASONS: dict[str, str] = {
     # Markers the product sets; flipping one by hand skips a step a person must see.
     "dashboard.privacy_acked": WHY_MARKER,
     "dashboard.privacy_ack_version": WHY_MARKER,
+    "dashboard.kiro_telemetry_ack_version": WHY_MARKER,
     "dashboard.onboarded": WHY_MARKER,
     "dashboard.import_onboarded": WHY_MARKER,
     "dashboard.crewmates_onboarded": WHY_MARKER,

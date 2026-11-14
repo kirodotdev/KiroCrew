@@ -101,9 +101,9 @@ _ACKED_OLD = {"onboarded": True, "privacy_acked": True, "privacy_ack_version": 1
         # An existing user with the heartbeat on: on, and told once.
         ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, False, True, 1),
         # Existing users who opted out stay off and are not asked again.
-        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": False}}, False, False, 2),
-        ({"dashboard": _ACKED_OLD, "telemetry": {"enabled": False}}, False, False, 2),
-        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, True, False, 2),
+        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": False}}, False, False, 3),
+        ({"dashboard": _ACKED_OLD, "telemetry": {"enabled": False}}, False, False, 3),
+        ({"dashboard": _ACKED_OLD, "telemetry": {"beacon_enabled": True}}, True, False, 3),
     ],
     ids=["new-install", "heartbeat-on", "heartbeat-off", "enabled-false", "do-not-track"],
 )
@@ -117,7 +117,7 @@ def test_existing_opt_outs_stay_off_and_are_not_asked_again(
 ) -> None:
     from kiro_crew.dashboard.handlers import core as core_handlers
 
-    assert beacon.PRIVACY_NOTICE_VERSION == 2
+    assert beacon.PRIVACY_NOTICE_VERSION == 3
     if dnt:
         monkeypatch.setenv("DO_NOT_TRACK", "1")
     _write_config(home, doc)

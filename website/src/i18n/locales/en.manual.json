@@ -3996,12 +3996,16 @@
       "turnOffPinnedOverlay": "It is still on: the file config.local.json in the {{productName}} data folder (~/.kiro/crew unless KIROCREW_HOME is set) keeps it on. Ask the agent to remove its telemetry section, or remove it yourself, then try again.",
       "turnOffUnconfirmed": "Turn off could not be finished or confirmed, so some usage data may still be on. Try again.",
       "turnOffScope": "Turn off stops performance metrics, the daily heartbeat, and official app install receipts.",
+      "turnOffScopeKiro": "Turn off stops performance metrics, the product usage metrics sent to Kiro telemetry, the daily heartbeat, and official app install receipts.",
       "turnOffScopeHeartbeatOnly": "Turn off stops the daily heartbeat and official app install receipts.",
       "whereBody": "Performance metrics stay on this machine. Once a day, {{productName}} sends a short anonymous heartbeat with the five fields listed under Anonymous daily heartbeat below.",
       "whereBodyHeartbeatOnly": "No performance metrics are recorded on this machine. Once a day, {{productName}} sends a short anonymous heartbeat with the five fields listed under Anonymous daily heartbeat below.",
       "whereBodyNoHeartbeat": "Performance metrics stay on this machine. No heartbeat is sent.",
       "whereBodyExport": "Performance metrics are recorded on this machine and also sent to the metrics destination set up for it. Once a day, {{productName}} sends a short anonymous heartbeat with the five fields listed under Anonymous daily heartbeat below.",
       "whereBodyExportNoHeartbeat": "Performance metrics are recorded on this machine and also sent to the metrics destination set up for it. No heartbeat is sent.",
+      "whereBodyKiro": "{{productName}} also sends product usage metrics, such as which features are used and how long things take, to Kiro telemetry, labelled with a hashed form of the random install ID.",
+      "whereBodyRecorded": "Performance metrics are recorded on this machine. Once a day, {{productName}} sends a short anonymous heartbeat with the five fields listed under Anonymous daily heartbeat below.",
+      "whereBodyRecordedNoHeartbeat": "Performance metrics are recorded on this machine. No heartbeat is sent.",
       "whereBodyOff": "No performance metrics are recorded on this machine and no heartbeat is sent.",
       "whereBodyUnknown": "Performance metrics stay on this machine unless a metrics destination is set up for it. When the heartbeat is on, {{productName}} sends the five fields listed under Anonymous daily heartbeat below once a day.",
       "whereTitle": "Where it goes"
@@ -9595,6 +9599,9 @@
         "recordMetricsEgressLockedNameOff": "{{name}} (included by this build)",
         "recordMetricsEgressLegacyName": "Your collector (config.json)",
         "recordMetricsEgressOff": "Metrics collectors are configured, so recording would also send metrics off this machine. Turn it on in config.json if that is what you want.",
+        "recordMetricsEgressOffBuiltin": "Turning recording on also sends product usage metrics to Kiro telemetry.",
+        "recordMetricsEgressKiroOn": "Product usage metrics are being sent to Kiro telemetry.",
+        "recordMetricsEgressWaitingOwn": "Your own collectors get nothing until telemetry.enabled: true is written in config.json.",
         "recordMetricsStatusUnavailable": "Could not load the metric-recording setting. The switch is locked until it loads."
       },
       "notificationsPanel": {
@@ -10890,8 +10897,8 @@
       "profile_harness_choose": "Choose an agent harness"
     },
     "telemetryPanel": {
-      "window_footer_shards_one": "OTEL sections · period: {{period}} · {{n}} shard · source: <dir/> · local-only, no egress",
-      "window_footer_shards_other": "OTEL sections · period: {{period}} · {{n}} shards · source: <dir/> · local-only, no egress"
+      "window_footer_shards_one": "OTEL sections · period: {{period}} · {{n}} shard · source: <dir/>",
+      "window_footer_shards_other": "OTEL sections · period: {{period}} · {{n}} shards · source: <dir/>"
     }
   },
   "privacyDisclosure": {

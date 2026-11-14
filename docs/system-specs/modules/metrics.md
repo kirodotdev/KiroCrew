@@ -239,8 +239,29 @@ host must also pass the security policy's `capabilities.telemetry` `otlp_hosts`
 list (`otlp_governance.governed_destinations` before the reader is built and `otlp_governance.gate_exporter` before each export; see [governance.md](governance.md)), and a
 policy that pins `capabilities.telemetry` off drops every destination. The public
 `DefaultTelemetryProvider` turns a non-empty `otlp_endpoint` into exactly one
-destination and returns none when it is empty, so a standalone build behaves as it
-did when this module constructed that exporter itself. Readers are appended AFTER
+destination, so a standalone build behaves as it
+did when this module constructed that exporter itself. It then adds each
+`otlp_endpoints` entry and the built-in `kiro-telemetry` destination
+(`metrics/kiro_export.py`): the `PRODUCT_METRICS` preset to a fixed Kiro telemetry
+endpoint, with `ClientType=kiro-crew` on every point, a reduced resource (no
+install id, pid, `os.type` or `host.*`), delta temporality, no process-wide OTel credentials,
+and a session that adds only `x-kiro-machineid` (a hash of the install id). It is
+the one destination that exports under the recording default
+(`kiro_export.exported`, applied in `_build_recorder`): an operator entry still
+needs `outbound_consented`, while this one needs recording on plus
+`kiro_export.notice_shown` -- `dashboard.kiro_telemetry_ack_version` at least
+`kiro_export.NOTICE_VERSION` (3), written only when the chapter's or
+`kirocrew telemetry enable`'s text named this destination, or the separate
+`kiro_telemetry_notice_shown` stamp that `metrics/notice.py` writes only when a
+start with no dashboard printed the Kiro line to a terminal. `privacy_ack_version`
+alone does not count, nor does a notice of version 2 or lower, which said metrics
+stay on this machine. Whether the notice was shown is part of
+`_endpoints_key`, so a Keep on in a running gateway attaches the reader at the next
+consent recheck. It is not returned in an LTS build, on a CI runner, or under a
+non-default `KIROCREW_HOME`. Because the notice names it, the enable refusals (the
+dashboard's `telemetry.enabled` PATCH and `kirocrew telemetry enable`) ask
+`kiro_export.egress_needs_written_opt_in`, which ignores it, and the collection
+status reports that as `enable_refused`. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a

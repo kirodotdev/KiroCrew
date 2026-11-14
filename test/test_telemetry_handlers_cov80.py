@@ -707,6 +707,7 @@ async def test_collection_status_reports_the_effective_switch_state(
         "overlay_override": False,
         "otlp_configured": True,
         "export_permitted": True,
+        "enable_refused": True,
         "otlp_destinations": [{"name": "ops", "source": "otlp_endpoints", "locked": False}],
         "metrics_dir": str(tmp_path / "m"),
     }
