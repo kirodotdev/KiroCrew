@@ -49,6 +49,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         old_project = getattr(slot, "project", "") or ""
         slot.project = ""
         if old_project:
+            slot._dirty = True
             session_key = effective_session_key(slot)
             state.sessions.retract_cwd(session_key)
             arm_project_reset(state, slot, session_key, clears_cwd=True)
@@ -102,6 +103,7 @@ async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:
         return f"Error: {overlap}"
     slot.project = rp
     if rp != old_project:
+        slot._dirty = True
         arm_project_reset(state, slot, effective_session_key(slot))
         try:
             from kiro_crew.dashboard.chat_handlers import _save_recent_project
