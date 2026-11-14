@@ -188,6 +188,7 @@ export default function AgentImportFlow({
   keepOpenWhenEmpty = false,
   onComplete,
   onSkipAll,
+  onDismiss,
 }: {
   initialOpen: boolean
   // First run finishes this chapter by itself when the scan finds nothing to
@@ -199,6 +200,10 @@ export default function AgentImportFlow({
   // drops the user straight into the product. Falls back to onComplete when the
   // host does not provide a distinct skip-all path.
   onSkipAll?: () => void
+  // The flow closed itself without finishing: an "Ask the agent" hand-off took the
+  // user to chat. The host drops its open signal so the flow can open again, and
+  // does NOT mark the chapter done, because nothing was imported or skipped.
+  onDismiss?: () => void
 }) {
   const [open, setOpen] = useState(initialOpen)
   const [stage, setStage] = useState<Stage>(1)
@@ -484,6 +489,14 @@ export default function AgentImportFlow({
     if (failedExit === 'skipAll' && onSkipAll) onSkipAll()
     else onComplete()
   }
+
+  // Every "Ask the agent" in this flow opens chat, so every one closes the dialog
+  // (or the chat sits under its focus trap) and tells the host it is closed (or a
+  // later "Import setup" opens nothing, because the host's signal never changed).
+  const handOffToChat = () => {
+    setOpen(false)
+    onDismiss?.()
+  }
   const isBusy = completionMutation.isPending || applyMutation.isPending || skipAllMutation.isPending
   // Disabled while ANY request is in flight, like every sibling control: leaving
   // mid-import would unmount the flow before its results (and any conflict to
@@ -637,7 +650,7 @@ export default function AgentImportFlow({
               or the chat it opens would sit underneath it. */}
           <ErrorNotice
             askAgent
-            onHandoff={() => setOpen(false)}
+            onHandoff={handOffToChat}
             testId="agent-import-scan-error"
             className="mt-2 max-w-lg text-left"
             message={errorMessage(scanQuery.error, i18nT('components.agentImportFlow.the_gateway_returned_an_unexpected_error'))}
@@ -674,6 +687,7 @@ export default function AgentImportFlow({
               agent can diagnose. No selections exist in this full-panel state. */}
           <ErrorNotice
             askAgent
+            onHandoff={handOffToChat}
             testId="agent-import-unreadable-error"
             className="mt-2 max-w-lg text-left"
             message={i18nT('components.agentImportFlow.found_setup_but_could_not_read_it', {
@@ -703,6 +717,7 @@ export default function AgentImportFlow({
           {/* Full-panel state: nothing selected yet, so the hand-off loses nothing. */}
           <ErrorNotice
             askAgent
+            onHandoff={handOffToChat}
             testId="agent-import-completion-error"
             className="mt-4 max-w-lg text-left"
             message={completionMessage}
@@ -733,6 +748,7 @@ export default function AgentImportFlow({
           {/* Full-panel state: nothing selected yet, so the hand-off loses nothing. */}
           <ErrorNotice
             askAgent
+            onHandoff={handOffToChat}
             testId="agent-import-completion-error"
             className="mt-4 max-w-lg text-left"
             message={completionMessage}
@@ -1021,6 +1037,7 @@ export default function AgentImportFlow({
             the hand-off loses nothing. */}
         <ErrorNotice
           askAgent
+          onHandoff={handOffToChat}
           testId="agent-import-completion-error"
           className="mt-5"
           message={completionMessage}
