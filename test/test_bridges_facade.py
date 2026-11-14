@@ -84,7 +84,7 @@ _BASE_MODULE_NAMES = frozenset("""
     registered_app_mcp_servers reregister_app_mcp_servers resolve_app_python
     resolve_script_path resolve_stdio_command schedule_materialized_agents_refresh
     screen_app_path scrub_backend_mcp_url sel shipped_builtin_app_root shutil stat
-    strip_ungoverned_auto_approve sys urlparse urlunparse venv_provided_command
+    strip_ungoverned_auto_approve strip_utf8_bom sys urlparse urlunparse venv_provided_command
     vet_zip_inventory without_mcp_refs zipfile
     """.split())
 

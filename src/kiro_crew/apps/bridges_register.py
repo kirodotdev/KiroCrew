@@ -50,6 +50,7 @@ from kiro_crew.config.loader import config_dir
 from kiro_crew.gateway_lock import GatewayLock, GatewayLockError, LockFileError
 from kiro_crew.history import ConversationLog
 from kiro_crew.session_map import SUPPRESS_REPLAY_FLAG, SessionMap
+from kiro_crew.user_json import loads_user_json
 
 logger = logging.getLogger("kiro_crew.apps.bridges")
 
@@ -106,7 +107,7 @@ def _prune_stale_app_resources(app_name: str, manifest: AppManifest, app_root: P
                 # Outside the root or refused by the path screen: registration
                 # never links it, so it carries no current name either.
                 continue
-            data = json.loads(agent_path.read_text(encoding="utf-8"))
+            data = loads_user_json(agent_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
             # A declared agent we CANNOT read is not the same as a removed one. If
             # we skipped it, its name would be absent from `current_links` and the
