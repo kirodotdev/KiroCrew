@@ -1009,6 +1009,7 @@ from kiro_crew.work_ledger_records import (  # noqa: E402, F401
     CODE_DUPLICATE_ITEM,
     CODE_FIELD_TOO_LONG,
     CODE_GOAL_CONCURRENCY_CAP_REACHED,
+    CODE_HOST_PRESSURE_CRITICAL,
     CODE_INVALID_ACTION,
     CODE_INVALID_STATUS,
     CODE_INVALID_VALUE,
@@ -1211,6 +1212,7 @@ from kiro_crew.work_ledger_writes import (  # noqa: E402, F401
     _create_item,
     _header_under_lock,
     _read_binding_text,
+    _refuse_if_host_critical,
     _refuse_if_worker_holds_open_item,
     _require_ask_options,
     _restore_binding_text,
@@ -1249,7 +1251,7 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 
 if TYPE_CHECKING:  # the project names this module imported that only its owners read
-    from kiro_crew import work_preview  # noqa: F401
+    from kiro_crew import resource_status, work_preview  # noqa: F401
     from kiro_crew.atomic_write import read_bytes_with_retry  # noqa: F401
     from kiro_crew.config.paths import data_home  # noqa: F401
     from kiro_crew.platform_compat import (  # noqa: F401
