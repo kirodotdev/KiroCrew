@@ -936,6 +936,7 @@ class KasHarness(MembershipHarness):
             spawn_label=KAS_BUNDLE_SPAWN_LABEL,
             stderr_label=KAS_BUNDLE_SPAWN_LABEL,
             host_auth=True,
+            engine_bundle=True,
         )
 
     def apply_spawn_env(
