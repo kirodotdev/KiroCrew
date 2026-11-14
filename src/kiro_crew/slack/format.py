@@ -1314,16 +1314,43 @@ def _fenced_cut(text: str, chunk_limit: int, limit: int) -> tuple[int, str, str]
         # ``limit`` still goes out whole after an early line break.
         early = text.rfind("\n", 0, chunk_limit)
         fits = early > 0 and len(text[early:].lstrip("\n")) <= limit
-        cut = early if fits else chunk_limit
+        cut = early if fits else _hard_cut(text, chunk_limit)
     sealed = _sealed_at(text, cut)
     if sealed is None and cut < chunk_limit:
         # The cut holds no more than the reopened opener, so the next line is too
         # long for one post: cut inside it, as a line with no break is cut.
-        cut = chunk_limit
+        cut = _hard_cut(text, chunk_limit, past=cut)
         sealed = _sealed_at(text, cut)
+        if sealed is None and cut < chunk_limit:
+            # Moving back to a token's ``<`` still left only the opener, so the
+            # token cannot be kept whole here: cut at the limit and seal it.
+            cut = chunk_limit
+            sealed = _sealed_at(text, cut)
     if sealed is None:
         return cut, "", text[cut:].lstrip("\n")
     return cut, *sealed
+
+
+def _hard_cut(text: str, chunk_limit: int, past: int = 0) -> int:
+    """Where a line too long for one post is cut: at the limit, never in a token.
+
+    A cut inside a Slack ``<...>`` token (a link, a mention, a channel) moves
+    back to its ``<``, because either half of a torn token posts as raw text: the
+    head's link is no link and the next post opens with ``label>``. A token
+    longer than a whole post cannot move whole, so it is cut where the limit
+    falls. The move never goes back to *past* or before it, so a cut already
+    ruled out stays ruled out.
+    """
+    cut = chunk_limit
+    opened = text.rfind("<", 0, cut)
+    line_start = text.rfind("\n", 0, cut)
+    if opened > max(text.rfind(">", 0, cut), line_start, past, 0):
+        closed = text.find(">", cut)
+        newline = text.find("\n", cut)
+        fits = closed - opened < chunk_limit
+        if closed != -1 and (newline == -1 or closed < newline) and fits:
+            cut = opened
+    return cut
 
 
 def _sealed_at(text: str, cut: int) -> tuple[str, str] | None:
