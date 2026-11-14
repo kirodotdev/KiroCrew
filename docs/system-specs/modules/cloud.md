@@ -71,6 +71,7 @@ claim that a hostile in-process agent is fully contained.
 |--------|------|
 | `aws.py` | The `run_aws` chokepoint for captured AWS CLI calls — fixed argv, no shell, sandbox-wrapped, `--profile` only (never boto3, never a raw key), and a child environment without the gateway's Python interpreter settings (`sandbox.without_python_env`), because aws-cli v1 is a Python program. `checked`/`checked_json`; `AccessDenied → exact IAM action` mapping; `env_credentials_hint()`; `configured_region(profile)`, the profile's own Region from the AWS config file (`aws configure get region`, "" when unset or in an agent session), which `cloud doctor` compares with the default Region it checks; `warn_if_started_from_agent_session()`, the gateway's log-only post-READY WARNING when its own process reads as an agent session (`_in_agent_session`, the check `assert_human_action` refuses on), e.g. restarted from an agent's shell. |
 | `ec2.py` | `deploy`/`status`/`stop`/`start`/`destroy` via `aws cloudformation` + `ec2`; AZ- **and egress-**aware `discover_network` + `resolve_explicit_subnet` (`--subnet` pin, same guarantees); tag-based stateless discovery (`list_instances` drops an instance EC2 reports terminated, shutting down, or no longer has, so a crew whose stack was deleted leaves `list` as `status`/`destroy` already report it absent); `_validate_cidr`. `find_stack` verifies BOTH `kirocrew:managed=true` AND `kirocrew:instance==<tag>` before status/stop/start/destroy touch a stack — so a same-prefix managed stack with a different instance tag can't be acted on by the wrong `--tag`. |
+| `github_tag_probe.py` | `public_tag_exists`: confirms a release tag on the default public repository with one HTTPS GET of GitHub's exact-ref API, for `ec2.release_tag_exists` when this machine has no trusted `git`. Spawns nothing; any non-200 or error is a WARNING and a miss. |
 | `iam.py` | Least-privilege launcher policy generator (applied by the user, never by KiroCrew) + read-only reachability check + the **content-fixed instance permissions-boundary document** (`boundary_policy_document`/`boundary_arn`) and its constants (`BOUNDARY_NAME`). |
 | `host_policy.py` | Reads and validates the edition's `cloud_instance_policy` seam (managed policies for the EC2 instance role, plus the boundary statements they need). The one reader for the boundary document, the second launcher policy (`iam.host_policy_document`) and the template's `ExtraManagedPolicyArns`; also checks before the deploy that the launch account holds each of those policies (`require_managed_policies`); see Security model. |
 | `ssm.py` | SSM `send-command` run-and-poll (base64-wrapped remote scripts) + `start-session` port-forward; `open_port_forward()` directly spawns the streaming `aws ssm start-session` child because `run_aws` captures output, calls `aws.assert_human_action()` before doing so, and passes the same `env=` that `run_aws` does (`aws_spawn_env` without the gateway's Python interpreter settings); `port_is_free` / `wait_for_local_port`. The local plugin installer (`install_session_manager_plugin()`) and the copy-paste command the dashboard shows (`session_manager_plugin_install_command()`, except its Homebrew line, which Homebrew checks against its own cask) fetch the plugin release pinned in `_SSM_PLUGIN_VERSION` and check the package's sha256 before any `sudo` step (the dashboard's command runs in a subshell and exits with the status of the step that ended it, so a failed `sudo` reads as a failure); the pins are a copy of `packaging/pins/aws-tools.env`, which the wheel does not ship, kept equal by `test/test_installer_tool_pins.py`. |
@@ -140,10 +141,15 @@ have no checkout to package, so `ec2.deploy` omits `SourceBucket` by default and
 the template clones the public repository instead. With no explicit ref and not a
 dry run, `ec2.resolve_public_ref` pins the first release tag this build's version
 names (`release_channel.release_refs`) that the remote confirms with `git ls-remote`
-(`release_tag_exists`), so the instance runs the same release as this machine. When no
-tag maps onto the version, or the remote has none of them, the template's `main`
-stands and a WARNING says which. An explicit ref always wins, and a dry run never
-probes the network. An explicit
+(`release_tag_exists`), so the instance runs the same release as this machine. On a
+machine with no trusted `git` (most Windows desktops), and only for the default public
+repository, `cloud/github_tag_probe.py` confirms the tag instead with one unauthenticated
+HTTPS GET of GitHub's exact-ref endpoint (`/git/ref/tags/<tag>`), spawning nothing; a fork
+with no trusted `git` is never confirmed. When no tag maps onto the version, or none of
+them is confirmed, the template's `main` stands and a WARNING says which, before the stack
+is touched; the unconfirmed-tag one says in plain words that the cloud crew will install
+the development build from `main`, which this Kiro Crew may refuse to pair with. An
+explicit ref always wins, and a dry run never probes the network. An explicit
 `ship_source=True` remains fail-closed rather than packaging an unrelated
 `site-packages` ancestor.
 
