@@ -302,6 +302,10 @@ class ClaudeLaunch(ProcessAdapter):
         # synchronous in-memory read, so the kiro construction path gains no
         # executor hop and no new failure mode (harness-parity H13).
         await session._prepare_session_mcp()
+        # Known before any process starts: an installed adapter below the
+        # session-options floor cannot serve a session that needs them, so it is
+        # refused here rather than after an adapter and a Claude Code process start.
+        session._refuse_claude_session_below_floor_before_spawn()
         # Bound here rather than in AcpClient.__init__ for the same reason: the
         # constructor is shared with kiro-cli.
         if self.backend in ACP_BACKENDS_AGENT_STARTED_TURNS:

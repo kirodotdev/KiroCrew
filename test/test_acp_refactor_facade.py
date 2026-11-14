@@ -1827,6 +1827,7 @@ def test_the_launch_capture_patches_no_moved_name() -> None:
 _SHARED_BINDINGS_PATCHED: frozenset[tuple[str, str]] = frozenset(
     {
         ("kiro_crew.acp.client", "logger"),
+        ("kiro_crew.acp.client", "launch"),
         ("kiro_crew.acp.client", "redact_exfiltration_urls"),
         ("kiro_crew.acp.client", "scrub_agent_subprocess_env"),
         ("kiro_crew.acp.client", "wrap_argv"),
