@@ -2162,12 +2162,9 @@ tests; the classes below are what the rest was made of.
   after `await act(render)`, so the positive assertion flaked (1 in 5 runs) and every
   "not listed" assertion in the block was vacuous (absent BEFORE the fetch resolves
   whether or not the filter works). Render, wait for the mocked fetch to have been
-  CALLED, drain the chain, then assert (`renderPopoverSettled`). And `App`'s startup
-  video gate read a `startupInterruptionSeen` latch that an effect sets AFTER the commit
-  showing the changelog, while `changelogDecided` is set one microtask later on the
-  same fetch chain: when that microtask landed between the commit and its passive
-  effects, the gate opened beside the changelog (2 in 5 runs). The gate now reads the
-  live conditions in the same commit as well as the latch, the `onboardingOwed` shape.
+  CALLED, drain the chain, then assert (`renderPopoverSettled`). A gate that reads a
+  latch an effect sets AFTER the commit lags its source by one commit: read the live
+  conditions in the same commit as well as the latch.
 
 Two ways to see all of the above on your own machine: run a touched file under
 `trace_home.py`-style tracing (an `sys.addaudithook` that prints the stack of every

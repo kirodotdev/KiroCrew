@@ -417,9 +417,10 @@ tab, shows nothing new.
 
 ## Backend Modules
 
-### `dashboard/ws.py` — `broadcast_side_queue`
+### `dashboard/ws_side_frames.py` — `broadcast_side_queue`
 
-Emits `chat.side_queue` frames — `{kind, slot, action, queue_id, content?, depth,
+Defined in `ws_side_frames.py` and re-exported by `dashboard/ws.py`, like the two
+broadcasts below. Emits `chat.side_queue` frames — `{kind, slot, action, queue_id, content?, depth,
 ts, front?, steer_id?, origin_client?}` where `action` is `push` | `edit` |
 `cancel` | `drain`, to owner sockets only (`broadcast_ws_owners`). Held apart from
 `chat.side_result` so a queue mutation never enters the transcript reducer, and
@@ -939,13 +940,13 @@ egress from the side chat denies the two tools with an `auto_deny_tools` rule
 or a governance profile — both bind on this surface exactly as on the main
 chat.
 
-### `dashboard/ws.py` — `broadcast_side_result`
+### `dashboard/ws_side_frames.py` — `broadcast_side_result`
 
 Module-level helper emitting `chat.side_result` frames to owner sockets only
 (`broadcast_ws_owners`), never to app sockets, matching `_check_slot_ownership`.
 Deliberately separate from `broadcast_ws` main-channel events.
 
-### `dashboard/ws.py` — `broadcast_side_closed`
+### `dashboard/ws_side_frames.py` — `broadcast_side_closed`
 
 Emits `chat.side_closed` to owner sockets only, from `api_side_close`, whether or
 not a conversation was open: a tab can still show one the gateway lost in a
