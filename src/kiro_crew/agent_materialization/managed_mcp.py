@@ -161,12 +161,11 @@ def _registry_marker_for(name: str, registry_mode: bool) -> bool:
 # reviewed against an external source instead of against someone's memory:
 # docs/reference/kiro-cli/mcp/configuration.md lists command, args, env,
 # disabled, autoApprove and disabledTools for a local (stdio) server, and
-# url/headers for a REMOTE one. The remote pair is deliberately absent -- these
-# servers are stdio-only, a leftover ``url`` would shadow the command, and older
-# builds left both behind -- so they are dropped by the rule below rather than by
-# name. ``timeout`` is the one addition: not in that table, but emitted by base
-# and one of the customizations this rule preserves, so dropping it would
-# re-introduce the very bug this filter exists to prevent.
+# url/headers for a REMOTE one. The remote pair is deliberately absent: these
+# servers are stdio-only and a leftover ``url`` would shadow the command, so both
+# are dropped by the rule below rather than by name. ``timeout`` is the one
+# addition: not in that table, but emitted by base and one of the user
+# customizations this rule preserves.
 #
 # ``type`` is here, and only the ``registry`` VALUE is ours. A transport hint the
 # user wrote (``"type": "stdio"``) is theirs and kiro-cli tolerates it, which
@@ -175,8 +174,8 @@ def _registry_marker_for(name: str, registry_mode: bool) -> bool:
 # below, rather than the whole key being treated as ours.
 #
 # Of the rest, three are OURS and are set on each pass (``command``, ``args``,
-# ``autoApprove``); the other four are the customizations a user may declare and
-# this fix exists to preserve. ``disabledTools`` is a user GUARD, not a
+# ``autoApprove``); the other four are customizations a user may declare, and
+# they are preserved. ``disabledTools`` is a user GUARD, not a
 # preference: dropping it would silently re-expose tools the user turned off,
 # which is why it is carried rather than re-derived (the custom-server PUT
 # endpoint round-trips it for the same reason).
