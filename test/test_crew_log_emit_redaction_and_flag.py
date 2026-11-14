@@ -68,7 +68,7 @@ def test_no_job_is_ever_submitted_without_a_session_key():
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(emit, "_submit", _spy)
-        # Every family this PR emits, driven through one turn.
+        # Every emitted family, driven through one turn.
         emit.on_turn_started(SESSION, 1, "user")
         emit.on_request_configured(SESSION, 1, model="m", provider="p", context_window=1000)
         emit.on_context_composed(SESSION, 1, step=1, blocks={"steering": 40}, total_chars=40)
