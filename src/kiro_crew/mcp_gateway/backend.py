@@ -197,7 +197,7 @@ class Backend:
     # flag — it does NOT alter the backend's PoolKey, so per-session isolation
     # for every key dimension is fully preserved.
     pinned: bool = False
-    # ``forward_id`` is a monotonic counter for rewriting request ids so two
+    # ``_forward_id_seq`` is a monotonic counter for rewriting request ids so two
     # stubs using the same integer id do not collide on the backend. Each
     # forwarded request is remembered in ``_pending_requests`` so the stdout
     # pump can route the response back to the originating stub with the

@@ -644,9 +644,10 @@ class AcpRuntime:
         # (_record_tree_in_background). Every kill waits for them.
         self._start_tree_scans: set[asyncio.Task[None]] = set()
         # Two independent clocks so a failure never extends the life of an old
-        # success: ``_result_at`` is stamped ONLY when a non-empty result is
-        # stored (that result may be replayed until it expires), while
-        # ``_attempt_at`` is stamped on EVERY completed attempt incl.
+        # success: ``_entitlement_probe_result_at`` is stamped ONLY when a
+        # non-empty result is stored (that result may be replayed until it
+        # expires), while ``_entitlement_probe_attempt_at`` is stamped on EVERY
+        # completed attempt incl.
         # failure/empty (it suppresses re-opening a session within the TTL but
         # never replays a stale result).
         self._entitlement_probe_result_at = 0.0

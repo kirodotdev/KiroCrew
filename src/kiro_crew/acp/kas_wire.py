@@ -85,7 +85,7 @@ KIND_USER_MESSAGE_ID_ASSIGNED = "user_message_id_assigned"
 # The engine's own turn boundaries on a session. A turn the client prompted ends
 # on its ``session/prompt`` response; a turn the ENGINE started on its own (a
 # workflow run waking its parent chat) has no request to answer, so these frames
-# are the only start and end it has (``AcpSessionHandle.observe_turn``).
+# are the only start and end it has (parsed by :func:`turn_boundary`).
 KIND_TURN_START = "turn_start"
 KIND_TURN_END = "turn_end"
 # A prompt parked behind another session's turn, waiting for the engine's one

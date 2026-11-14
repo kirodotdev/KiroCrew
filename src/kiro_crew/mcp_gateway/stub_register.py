@@ -53,9 +53,9 @@ _BINARY_HASH_CAP_BYTES = 4 * 1024 * 1024
 # sandbox is not applied to a gateway-spawned backend at all, and kiro-cli
 # evaluates the permission surface per agent before a call reaches this
 # process; the ``pool`` module docstring carries the full argument.
-# TODO: Hash relevant config fields (e.g. tool allowlists,
-# hook settings) in a future iteration to detect non-security config drift
-# that could cause subtle behavioral differences across pooled sessions.
+# shortcut: the snapshot is a fixed placeholder, so pooled sessions whose tool
+# allowlists or hook settings differ share one backend; hash those fields here
+# once such non-security drift needs to split the pool.
 _CONFIG_SNAPSHOT_PLACEHOLDER = "0" * 64
 
 
