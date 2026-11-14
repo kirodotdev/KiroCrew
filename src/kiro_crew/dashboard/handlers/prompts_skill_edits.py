@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_NAME_BYTES
+from kiro_crew.dashboard.handlers.prompts_authoring import MAX_PROMPT_NAME_BYTES, _utf8_or_none
 from kiro_crew.dashboard.handlers.prompts_caller_gates import (
     _audit_unread,
     _deny_foreign_app_skill_slot,
@@ -375,6 +375,13 @@ async def _skill_detail_verbs(request: web.Request) -> web.Response:
             return not_string
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
+        if _utf8_or_none(content) is None:
+            # JSON allows an escaped lone surrogate, which the SKILL.md writer
+            # cannot encode; the prompt routes answer the same code.
+            return web.json_response(
+                {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+                status=400,
+            )
         # Optional edit base, the same contract as the prompts PUT: the GET
         # hands out ``hash`` (sha256 of SKILL.md), and an editor that presents
         # it as ``base_hash`` is refused with 409 ``content_conflict`` when the
@@ -568,6 +575,13 @@ async def api_skills_create(request: web.Request) -> web.Response:
     if not content:
         return web.json_response(
             {"error": "content is required", "code": "content_required"}, status=400
+        )
+    if _utf8_or_none(content) is None:
+        # JSON allows an escaped lone surrogate, which the SKILL.md writer
+        # cannot encode; the prompt routes answer the same code.
+        return web.json_response(
+            {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+            status=400,
         )
     # Sanitize name: lowercase, alphanumeric + hyphens + slashes for nesting
     safe_name = re.sub(r"[^a-z0-9\-/]", "-", name.lower()).strip("-").strip("/")
