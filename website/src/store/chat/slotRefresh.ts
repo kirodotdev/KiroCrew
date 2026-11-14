@@ -278,7 +278,9 @@ const nextWarmSeq = (): number => ++warmSeqCounter
  *  reconcileSlot thunk, which did the same job). */
 export const warmSlotCache = createAsyncThunk(
   'chat/warmSlotCache',
-  async (key: string, { getState }) => {
+  async (arg: string | { key: string; reachTs?: string }, { getState }) => {
+    const key = typeof arg === 'string' ? arg : arg.key
+    const reachTs = typeof arg === 'string' ? undefined : arg.reachTs
     const state = (getState() as { chat: ChatState }).chat
     if (state.activeSlot === key) return null
     // Captured BEFORE the fetch: two warms for one slot resolve in any order,
@@ -377,8 +379,12 @@ export const warmSlotCache = createAsyncThunk(
      * above that anchor (`olderHeadAbovePage`). Every request on this path is
      * bounded, so the totals all count the same collapsed corpus and the walk's
      * own `total` is the comparable one. */
-    if (legacyUnbounded || slotCoverageShortfall({ cached: cache, window: first.messages }) > 0) {
-      const walked = await walkWindowBackTo(key, first, cache)
+    // Allow / Undo must re-serve the affected reply, not keep its stale copy
+    // above an otherwise overlapping page. Use the active refresh's identity rule.
+    const reachMid = reachMidForTs(cache, reachTs)
+    const missesReach = reachMid && !first.messages.some(m => m.meta?.mid === reachMid)
+    if (legacyUnbounded || missesReach || slotCoverageShortfall({ cached: cache, window: first.messages }) > 0) {
+      const walked = await walkWindowBackTo(key, first, cache, reachMid)
       /* A hole the walk cannot close: the window anchors the cache, yet the cache
        * holds a row at or after that anchor which the window lacks. Walking older
        * cannot reach a row that is NEWER than the window's start -- either a
