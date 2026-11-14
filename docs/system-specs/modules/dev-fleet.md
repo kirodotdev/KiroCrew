@@ -140,6 +140,21 @@ own `/api/apps/<app>/` or `/apps/<app>/` namespace):
 modules inside `register_routes` only: the seam is read in the MCP servers and the
 config loader, which must not pay for the gateway route graph.
 
+**Adopted onto its own repository.** The wheel pins the app (`apps/adoption-pins.json`,
+[app-kit-platform.md § 33](app-kit-platform.md#33-former-built-in-adoption)) at
+`KiroCrewCaptain/kirocrew-app-dev-fleet` with `minAppSdkLevel` 7, the level of the exact
+`=/api/apps` entry its backend-down banner reads (its `agentTools` need level 2), so a
+host whose record is builtin-owned swaps it in place onto that tree at a restart, keeping
+`data/`, `.app_secret`, the approved grants and `enabled`; the rail keeps `/dev-fleet`
+and the `Server` glyph. The repository's `app.json` declares the same `permissions` as
+the wheel copy (its own namespaces, the gateway's `make-live`, `restart-gateway`,
+`pod-token` and `create-release-worktree` routes, `=/api/apps`, `network` and
+`terminal`) and the same `agentTools`, so E9 holds nothing back; its backend starts from a
+launcher file in the adopted tree. The grants in the table above are keyed by the
+installed name and read from the shipped package, so the adopted record keeps them while
+the wheel copy ships. A fix to the app lands in that repository first; a change to the
+wheel copy needs its `App repo:` line.
+
 ## Main Checkout Discovery
 
 Every git operation is rooted at `MAIN_REPO`, the primary checkout whose worktrees the

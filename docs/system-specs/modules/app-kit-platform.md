@@ -5769,6 +5769,15 @@ app page with whatever it held) and no `footer`. A built-in that opens the picke
 declares the families in its own manifest, so its adopted copy, which reaches the picker
 through this export, declares nothing the built-in did not (E9).
 
+Create Folders From Project (`project-scaffolder`) is that built-in. The wheel pins it
+(`apps/adoption-pins.json`, § 33) at `KiroCrewCaptain/kirocrew-app-project-scaffolder`
+with `minAppSdkLevel` 7, the level of this export, so a host whose record is
+builtin-owned swaps it in place onto that tree at a restart, keeping `data/`,
+`.app_secret`, the approved grants and `enabled`; the rail keeps `/project-scaffolder`
+and the `FolderPlus` glyph. Its repository's `app.json` declares the same four families
+as the wheel copy and nothing else. A fix to the app lands in that repository first; a
+change to the wheel copy needs its `App repo:` line.
+
 Writers: `website/src/app-sdk/ProjectPicker.tsx`, `website/src/app-sdk/index.ts`,
 `website/public/vendor/kirocrew-app-sdk.mjs`, `website/src/app-sdk/sdkLevel.ts`,
 `apps/app_sdk_level.py`.
