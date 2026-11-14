@@ -47,6 +47,11 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
+from kiro_crew.dashboard.folder_portability import (
+    FolderMerge,
+    import_folders,
+    merge_folders_on_disk,
+)
 from kiro_crew.history import (
     ARCHIVE_DIR_NAME,
     ARCHIVE_SEGMENT_DELIMITER,
@@ -673,6 +678,7 @@ def apply_import_zip(
     channel_settings: ChannelSettings | None = None,
     memory_only: bool = False,
     agent_templates: tuple[str, ...] = (),
+    folder_merge: FolderMerge | None = None,
 ) -> dict:
     """Extract and apply an import zip.
 
@@ -696,6 +702,9 @@ def apply_import_zip(
             only where no template of that name exists, in either mode; every one not
             written is named in ``agent_templates_skipped``. A memory-only import
             installs none.
+        folder_merge: the running gateway's chat-folder store, which adds the
+            archive's folders it lacks so its in-memory copy does not write them
+            away. ``None`` (no gateway in this process) writes ``folders.json``.
 
     Returns summary dict of what was imported. ``ui_prefs_restored`` is True when the
     browser-preference backup was installed, which tells the dashboard to re-read it.
@@ -1062,6 +1071,9 @@ def apply_import_zip(
         # Both modes, and add-only in both: Replace restores the components it
         # names, and chats are not one of them, so an archive -- with chats or
         # without -- never deletes or overwrites a chat this install already has.
+        # The chat folders follow the same rule (`dashboard.folder_portability`).
+        if not memory_only:
+            import_folders(snap, summary, folder_merge or merge_folders_on_disk(mc))
         _merge_sessions(snap, mc, summary, allow_unpinned=not staging_pinned, cleared=cleared)
 
     if agent_templates and not memory_only:

@@ -45,7 +45,7 @@ EXPORT_EXCLUDE = frozenset(
         # happens to share the name. They need no entry: root-level export is a
         # hard-coded allowlist (config.json, the settings documents in
         # `_SETTINGS_DOCUMENTS`, hooks.json, crons.json, notifications.jsonl,
-        # project_dir, workspace_dir, crew-teams/teams.json), so a root beacon file is
+        # folders.json, project_dir, workspace_dir, crew-teams/teams.json), so a root beacon file is
         # never selected in the first place.
         "session_map.json",
         "kiro_session_pids.txt",
