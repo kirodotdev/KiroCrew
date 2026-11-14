@@ -4040,6 +4040,14 @@ turn. This is model guidance, not a runtime timer. Without that receipt, or
 without useful parent work, yield immediately. Channel-only, nested and
 background callers retain the immediate-yield boundary. `spawn_continue` also retains its
 immediate-yield guidance. Do not duplicate delegated work or poll to stay busy.
+A nested (`subagent:`) caller is the exception to both: its children's
+completions ring the bell only and nothing resumes it after its turn ends, so
+neither receipt tells it to end its turn (#36973). The `spawn_run` receipt says
+it is for parallel work alongside the caller's own and that `spawn_sub_agents`
+collects a child's result in the same turn; it does not tell the caller to
+poll, because a `spawn_run` parent keeps its slot. The `spawn_continue` receipt
+names `spawn_status` for the continued run, since `spawn_sub_agents` cannot wait
+on one.
 
 `POST /api/spawn` answers `{id, task, status, parent_work_supported}`. `status` is
 `spawned`, or `queued` with `reason` and `reason_detail` when the gate deferred or held
