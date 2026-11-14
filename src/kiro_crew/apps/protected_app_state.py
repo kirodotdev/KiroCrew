@@ -13,6 +13,8 @@ file tools refuse (:mod:`kiro_crew.member_records`):
 * ``app-disabled/<app>`` -- present while the owner's disable of the app stands. Every
   read of an app's ``installed.json`` reports the app disabled while it exists, whatever
   the file says; only the owner-authenticated enable and an uninstall remove it.
+* ``app-startup/<app>.json`` -- the owner's approval of the app's ``ui.startup`` module
+  (``apps.startup_modules``), which lets that code run in every dashboard tab.
 
 A third record is a choice of the owner's that the app must not undo:
 
@@ -56,6 +58,7 @@ APP_GRANTS_KIND = "app-grants"
 APP_DISABLED_KIND = "app-disabled"
 APP_SECRETS_KIND = "app-secrets"
 APP_CRONS_DELETED_KIND = "app-crons-deleted"
+APP_STARTUP_KIND = "app-startup"
 
 #: Written in ``app-grants/`` once every app's set has been carried over from the app
 #: tree. Once it exists a missing record means nothing is approved.
@@ -152,6 +155,24 @@ def read_grants_text(app_name: str) -> str | None:
         return None
 
 
+def write_startup_text(app_name: str, text: str | None) -> None:
+    """Store *app_name*'s startup-module approval as *text*; ``None`` removes it."""
+    path = _record_path(APP_STARTUP_KIND, app_name, ".json")
+    if text is None:
+        path.unlink(missing_ok=True)
+        return
+    mkdirs_owner_only(path.parent)
+    atomic_write(path, text)
+
+
+def read_startup_text(app_name: str) -> str | None:
+    """The stored startup approval's text, or ``None`` when there is none. Other faults raise."""
+    try:
+        return _record_path(APP_STARTUP_KIND, app_name, ".json").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+
+
 def _disabled_path(app_name: str) -> Path:
     return _record_path(APP_DISABLED_KIND, app_name, "")
 
@@ -242,26 +263,29 @@ def forget_deleted_app_crons(app_name: str) -> None:
         _deleted_crons_path(app_name).unlink(missing_ok=True)
 
 
-def snapshot_app(app_name: str) -> tuple[str | None, bool]:
-    """Both records of *app_name*, for :func:`restore_app` after a failed uninstall."""
-    return read_grants_text(app_name), owner_disabled(app_name)
+def snapshot_app(app_name: str) -> tuple[str | None, bool, str | None]:
+    """Every record of *app_name*, for :func:`restore_app` after a failed uninstall."""
+    return read_grants_text(app_name), owner_disabled(app_name), read_startup_text(app_name)
 
 
-def restore_app(app_name: str, snapshot: tuple[str | None, bool]) -> None:
+def restore_app(app_name: str, snapshot: tuple[str | None, bool, str | None]) -> None:
     """Put back what :func:`snapshot_app` read; the disable first, so a fault keeps it."""
-    grants_text, disabled = snapshot
+    grants_text, disabled, startup_text = snapshot
     set_owner_disabled(app_name, disabled)
     write_grants_text(app_name, grants_text)
+    write_startup_text(app_name, startup_text)
 
 
 def forget_grants(app_name: str) -> None:
-    """Remove the approved set, for an uninstall: a later app under the name starts clean.
+    """Remove the approved set and the startup approval, for an uninstall.
 
-    The disable record stays until the uninstall commits (``uninstall_app`` removes
-    it then), so the app is never re-enabled while its tree is still on disk.
+    A later app under the name starts clean. The disable record stays until the
+    uninstall commits (``uninstall_app`` removes it then), so the app is never
+    re-enabled while its tree is still on disk.
     """
     with contextlib.suppress(ValueError):
         write_grants_text(app_name, None)
+        _record_path(APP_STARTUP_KIND, app_name, ".json").unlink(missing_ok=True)
 
 
 def secret_path(app_name: str) -> Path:

@@ -613,6 +613,19 @@ class AppManifest:
         if refusal:
             report_path(refusal, f"ui.entry {refusal}: {self.ui.entry!r}")
 
+        if self.ui.startup:
+            refusal = path_refusal(self.ui.startup)
+            if refusal:
+                report_path(refusal, f"ui.startup {refusal}: {self.ui.startup!r}")
+            # The same rule admission applies on every read: a plain script path the
+            # browser cannot normalize out of ui/. Local import: startup_modules
+            # imports the app records module, which imports this one.
+            from kiro_crew.apps.startup_modules import entry_refusal
+
+            startup_refusal = entry_refusal(self.ui.startup)
+            if startup_refusal:
+                errors.append(f"ui.startup refused: {startup_refusal}")
+
         refusal = path_refusal(self.backend.entryPoint)
         if refusal:
             report_path(refusal, f"backend.entryPoint {refusal}: {self.backend.entryPoint!r}")

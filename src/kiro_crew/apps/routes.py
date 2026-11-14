@@ -426,6 +426,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _run_uninstall,
         uninstall_app_in_process,
     )
+    from kiro_crew.apps.startup_modules import (  # noqa: F401
+        MODULE_SUFFIXES,
+        approved_module,
+    )
     from kiro_crew.apps.teardown import (  # noqa: F401
         stop_app_hooks_for_uninstall,
     )

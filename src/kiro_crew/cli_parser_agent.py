@@ -1175,6 +1175,13 @@ Examples:
             "app's install directory (e.g. a ui/ symlinked to your source tree)"
         ),
     )
+    app_startup = app_sub.add_parser(
+        "startup",
+        help="Approve an app's ui.startup module to run on every dashboard load",
+        allow_abbrev=False,
+    )
+    app_startup.add_argument("name", help="App name")
+    app_startup.add_argument("--revoke", action="store_true", help="Withdraw the approval")
     app_init = app_sub.add_parser("init", help="Scaffold a new app")
     app_init.add_argument("name", help="App name (kebab-case)")
     app_init.add_argument("--dir", default=".", help="Output directory (default: current)")

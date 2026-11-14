@@ -11,6 +11,7 @@ as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import stat
@@ -21,6 +22,7 @@ from aiohttp import web
 
 from kiro_crew.apps.dev_mode import dev_mode_granted_root, is_dev_mode_cached
 from kiro_crew.apps.manager import apps_dir
+from kiro_crew.apps.startup_modules import approved_module
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.conditional_get import is_not_modified
 from kiro_crew.pinned_fs import (
@@ -76,11 +78,11 @@ _CONTENT_TYPES = {
 }
 
 
-#: Ceiling on one UI-bundle file this route will serve. With streaming (see
-#: :func:`handle_app_ui_file`) the ceiling does not bound gateway memory —
-#: per-request memory is one :data:`_UI_STREAM_CHUNK` regardless of file size —
-#: it bounds the WORK one unauthenticated request can command (bytes read and
-#: sent per request; the route bypasses token auth). Measured reality: the
+#: Ceiling on one UI-bundle file's read, hash and response bytes. Unapproved apps
+#: stream one :data:`_UI_STREAM_CHUNK` at a time; approved apps buffer the file
+#: so the checked bytes are the bytes sent. The verified buffer and its response
+#: reader each hold at most this cap per permit; record validation is separate.
+#: Measured reality: the
 #: largest UI asset a bundled app in this tree ships is ~9 KB
 #: (``website/public/apps/agent-worlds/ui/index.mjs`` — the scaffold's vite
 #: config externalizes react/react-dom/the SDK, so bundles stay small). 8 MiB
@@ -92,8 +94,8 @@ _CONTENT_TYPES = {
 _UI_MAX_BYTES = 8 * 1024 * 1024
 
 #: Read granularity when streaming a UI file from its validated descriptor.
-#: This — not the file size — is what one in-flight request pins in memory, so
-#: N slow clients cost N chunks, not N files. 256 KiB keeps the thread-hop
+#: Unapproved apps hold one chunk per request; approved apps also hold their
+#: checked file buffer and response reader. 256 KiB keeps the thread-hop
 #: count low (an 8 MiB worst case is 32 hops) while staying far below any
 #: amplification concern.
 _UI_STREAM_CHUNK = 256 * 1024
@@ -105,8 +107,8 @@ _UI_STREAM_CHUNK = 256 * 1024
 #: gateway to `EMFILE`. Under this scope at most 8 descriptors exist at once
 #: and everyone else waits fd-less. It also bounds the per-chunk `to_thread`
 #: hops on the SHARED default executor (same reason `_BLOB_FETCH_SEMAPHORE`
-#: bounds git fetches). Refusals and body-less 304s hold a slot only for
-#: microseconds; 8 comfortably covers a dashboard loading assets in parallel.
+#: bounds git fetches). Approved requests validate their record and hash the
+#: requested file before a 304, so a body-less response still pays that work.
 _UI_STREAM_SEMAPHORE = asyncio.Semaphore(8)
 
 #: Wall-clock ceiling on the body-writing phase of one UI-file response, and so
@@ -373,15 +375,18 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
     Serves bytes STREAMED from a pinned descriptor (see :func:`_open_ui_file`)
     rather than handing a validated path to ``FileResponse``, which re-opens it
     and re-introduces the check-then-reopen window the art route also closes.
-    Streaming rather than buffering is itself load-bearing: this route
-    is UNAUTHENTICATED (the ``/apps/{name}/ui/`` token-auth bypass), so a
-    buffered body would let N outstanding requests each pin a whole file in
-    gateway memory — with streaming, per-request memory is one chunk
-    (:data:`_UI_STREAM_CHUNK`) regardless of file size or client speed.
-    Behaviour contract preserved: 400 on ``..``/absolute/escaping paths, 403 on
-    a disallowed extension, 404 on a missing file, Content-Type from
-    ``_CONTENT_TYPES``, and conditional requests (If-None-Match /
-    If-Modified-Since) still answer a body-less 304.
+    Unapproved apps stream one chunk (:data:`_UI_STREAM_CHUNK`) at a time.
+    Approved apps also hold the checked buffer and its response reader, each bounded
+    by :data:`_UI_MAX_BYTES` and the eight permits, since this route bypasses token auth.
+    Path and extension checks retain 400/403. Unapproved apps retain 404 on missing
+    files; an unavailable approved file answers 409. Content-Type comes from
+    ``_CONTENT_TYPES``, and conditional requests (If-None-Match / If-Modified-Since)
+    answer a body-less 304 only after the approval check.
+
+    Every UI file of an app with a startup approval is read once from the descriptor
+    and compared to the approved file hash (:func:`approved_module`). Only a match
+    sends those same bytes. An unknown file, mismatch or fault answers 409 with a
+    reason and the commands to approve or revoke, never file bytes.
     """
     name = request.match_info["name"]
     file_path = request.match_info.get("path", "")
@@ -395,16 +400,34 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
     # 8 while every QUEUED request already held an open fd waiting for a slot —
     # an unauthenticated client could then drive the gateway to `EMFILE` with
     # slow-paced GETs. Under this scope, at most 8 requests hold a descriptor
-    # at any instant and everyone else waits fd-less. The refusal paths inside
-    # (400/403/404, body-less 304) hold their slot only microseconds.
+    # at any instant and everyone else waits fd-less. Verification stays inside
+    # this scope, including refusals and conditional requests.
     async with _UI_STREAM_SEMAPHORE:
         result = await asyncio.to_thread(_open_ui_file, name, file_path)
-        if result == "invalid":
-            return web.json_response({"error": "invalid path"}, status=400)
-        if isinstance(result, str):
-            return web.json_response({"error": "not found"}, status=404)
-        fd, st = result
+        fd = result[0] if isinstance(result, tuple) else None
         try:
+            try:
+                verified = await asyncio.to_thread(approved_module, name, file_path, fd)
+            except Exception as exc:  # noqa: BLE001 -- any fault fails closed
+                logger.warning("app %r: not serving ui/%s: %s", name, file_path, exc)
+                return web.json_response(
+                    {
+                        "code": "app_startup_approval_required",
+                        "error": "ui changed since the startup approval",
+                        "reason": "The ui/ file changed since approval or its approval cannot be verified.",
+                        "remedy": (
+                            f"Run kirocrew app startup {name} to approve the current code, "
+                            f"or kirocrew app startup {name} --revoke."
+                        ),
+                    },
+                    status=409,
+                )
+            if result == "invalid":
+                return web.json_response({"error": "invalid path"}, status=400)
+            if isinstance(result, str):
+                return web.json_response({"error": "not found"}, status=404)
+            fd, st = result
+            size = st.st_size if verified is None else len(verified[0])
             content_type = _CONTENT_TYPES.get(ext, "application/octet-stream")
             # Dev-mode apps: never cache — the file-watch live-reload reloads on
             # every change and must always see the latest bytes. `is_dev_mode_cached`
@@ -419,12 +442,17 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # whole window after an update.
             cache = "no-store" if is_dev_mode_cached(name) else "no-cache"
             etag_value = f"{st.st_ino:x}-{st.st_size:x}-{st.st_mtime_ns:x}"
+            if verified is not None:
+                # An agent can restore inode, size and mtime after a swap, so a 304 for
+                # checked bytes must also name the digest they were checked against:
+                # the browser then keeps only a copy that digest covers.
+                etag_value += f"-{verified[1]}"
             # A text file the client can take gzip-encoded is sent that way. The
             # encoded bytes are a different representation, so they carry their
             # own ETag (a 304 for one never validates the other) and the
             # response varies on Accept-Encoding for every compressible type.
             compressible = ext in _GZIP_EXTENSIONS
-            use_gzip = compressible and st.st_size >= _GZIP_MIN_BYTES and _accepts_gzip(request)
+            use_gzip = compressible and size >= _GZIP_MIN_BYTES and _accepts_gzip(request)
             if use_gzip:
                 etag_value += "-gz"
             # `nosniff` because the Content-Type is derived from the EXTENSION, not
@@ -469,21 +497,26 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             if use_gzip:
                 body_headers["Content-Encoding"] = "gzip"
             resp = web.StreamResponse(status=200, headers=body_headers)
-            # Length pinned to the fstat that was validated: a file the app GROWS
-            # after the open must not stream past the length the client was told,
-            # so the loop below caps at `remaining` as well as EOF. A gzip body's
-            # length is not known up front, so it goes chunked; the same
-            # `remaining` cap bounds the bytes READ, which bounds what is sent.
+            # Length pinned to the fstat that was validated, or to the checked bytes:
+            # a file the app GROWS after the open must not stream past the length
+            # the client was told, so the loop below caps at `remaining` as well as
+            # EOF. A gzip body's length is not known up front, so it goes chunked;
+            # the same `remaining` cap bounds the bytes READ, which bounds what is
+            # sent.
             # The compressor is per request, so its state (a few hundred KB at
-            # most) is the only memory this adds to one streamed chunk.
-            import zlib  # local: only this path needs it
+            # most) is held beside the streamed chunk, checked buffer and response reader.
+            import io  # local, like zlib: only this path needs them
+            import zlib
 
             compressor = zlib.compressobj(_GZIP_LEVEL, zlib.DEFLATED, 31) if use_gzip else None
             if compressor is None:
-                resp.content_length = st.st_size
+                resp.content_length = size
+            read_chunk = (
+                functools.partial(os.read, fd) if verified is None else io.BytesIO(verified[0]).read
+            )
             try:
                 await resp.prepare(request)
-                remaining = st.st_size
+                remaining = size
                 # The enclosing `_UI_STREAM_SEMAPHORE` scope (acquired before the
                 # open, released after the close) is what bounds this loop's
                 # `to_thread` hops on the shared default executor — no second
@@ -500,7 +533,7 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
                 async with asyncio.timeout(stream_timeout):
                     while remaining > 0:
                         chunk = await asyncio.to_thread(
-                            os.read, fd, min(_UI_STREAM_CHUNK, remaining)
+                            read_chunk, min(_UI_STREAM_CHUNK, remaining)
                         )
                         if not chunk:
                             break
@@ -553,7 +586,8 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # where repeated connect-then-drop would walk the gateway into
             # RLIMIT_NOFILE. Shielded, the close task runs to completion even
             # when this await is interrupted.
-            await asyncio.shield(asyncio.to_thread(os.close, fd))
+            if fd is not None:
+                await asyncio.shield(asyncio.to_thread(os.close, fd))
 
 
 async def handle_app_dev_mode(request: web.Request) -> web.Response:

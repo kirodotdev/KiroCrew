@@ -430,6 +430,7 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
 | `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
+| `ui.startup` | string | | A `.mjs` or `.js` module (relative to ui/) the dashboard mounts on every load once the owner approves it (see below) |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |
@@ -464,6 +465,95 @@ name; you can't supply markup or styles. The match is exact: a missing or `null`
 `loading`, a non-object, a non-string `layout`, or an unknown name (including a
 different case, like `"Rail"`) all fall back to `"page"`. An invalid value is
 not an install error; it is dropped.
+
+### `ui.startup` — Code That Runs While the Dashboard Is Open
+
+A page's code runs only while its page is open. An app that changes the whole
+dashboard, such as one that replaces the resting pointer, declares a startup
+module instead. The dashboard mounts its default export in every tab, on every
+route, from the moment the dashboard loads:
+
+```json
+{
+  "ui": {
+    "entry": "page.mjs",
+    "startup": "startup.mjs"
+  }
+}
+```
+
+```js
+// ui/startup.mjs
+import { useEffect } from 'react'
+
+export default function PointerPal() {
+  useEffect(() => {
+    const onMove = () => { /* ... */ }
+    window.addEventListener('pointermove', onMove)
+    return () => window.removeEventListener('pointermove', onMove)
+  }, [])
+  return null
+}
+```
+
+The component is mounted like a page: it gets the same SDK context (`useAppApi`)
+and its own error boundary, and a throw or a failed import is logged without
+stopping the dashboard. Do the work in an effect and undo it in the effect's
+cleanup. The component unmounts, running that cleanup, as soon as a refreshed
+app list stops admitting it; work done when the module is first evaluated stays
+until the tab reloads.
+
+`GET /api/apps` reports each app's `startup` row as `admitted`, `needs-approval`
+or `denied`, with a reason, and only `admitted` mounts. An app is admitted when
+all of these hold:
+
+- It is enabled and its execution ceiling is open (`agent.apps_allow_third_party`
+  or `agent.apps_trusted`).
+- All of its code runs in the browser. Every top-level `app.json` key must be one
+  of `name`, `version`, `displayName`, `description`, `author`, `license`,
+  `minKiroCrewVersion`, `signer`, `signature`, `tags`, `jobFamilies`, `platform`,
+  `permissions`, `notifications`, `config_keys`, `credentialMasks`, `l10n`,
+  `iconPath`, `iconPathDark`, `icon`, `links`, `repo`, `screenshots`,
+  `screenshotsDark`, `heroImage`, `heroImageDark`, `heroImageDetail`,
+  `heroImageDetailDark`, `highlights`, `useCases`, `configuration`, `ui`, `desktop`
+  and `contributes`.
+  `contributes` may hold every point except `fileMenuItems`, `ui.overlays` must be
+  empty, and the app must not manage its own resources. Any other key, including
+  one added to the manifest format later, is refused.
+- The owner approved its startup entry at its current version and code, from a
+  terminal:
+
+  ```bash
+  kirocrew app startup <name>            # approve
+  kirocrew app startup <name> --revoke   # withdraw
+  ```
+
+  The approval stores `{version, entry, digest, files}`. `files` maps every regular
+  file's relative POSIX path under `ui/` to its SHA-256; `digest` hashes the sorted
+  paths (each followed by a NUL) and their raw SHA-256 bytes. A new version, changed
+  entry or changed tree asks again before startup mounts, including dev-mode edits.
+  Each served UI file is checked against its own approved hash, whatever its type
+  (`.js`, `.mjs`, `.css`, `.json`, `.svg`, `.map`, images or fonts). The
+  gateway reads only the requested file and sends exactly the bytes it checked.
+  Changed, added or unavailable files, unreadable records, records without `files`,
+  and records whose digest disagrees with their map answer `409`, with `reason` and
+  `remedy` fields: run `kirocrew app startup <name>` to approve the current code, or
+  `kirocrew app startup <name> --revoke`. Unchanged approved files remain servable
+  even when another file changes. Revoke while developing in dev mode; it also works
+  after the manifest drops `ui.startup`. Editing the manifest alone never bypasses
+  serving checks. An owner install or update that drops `ui.startup` forgets the
+  record; a failed operation restores it. Uninstall also drops it. An entry that
+  is not a plain `.mjs` or `.js` path inside `ui/` is refused.
+  The record lives in `member-records/app-startup/<app>.json` beside the app's other
+  owner decisions, hidden by the agent sandbox in every mode. The approval command
+  refuses to run inside an agent's shell.
+- The request comes from the owner's dashboard. A page loaded with `?safe=1`
+  and an embedded instance pane mount none.
+
+A gateway older than this field drops it, so the app installs and works as a
+page-only app there; one that also requires signatures refuses a signed manifest
+carrying it, because the field is part of the signed payload. Set
+`minKiroCrewVersion` when the app depends on it.
 
 ### `ui.overlays` — Replacing a Host Overlay Surface
 

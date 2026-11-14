@@ -41,6 +41,8 @@ const GuideLayer = lazy(() => import('./guide/GuideLayer'))
 // App-contributed link previews (`contributes.linkPreviews`): hover detection only;
 // an app's module loads on the first hover of one of its links.
 const LinkPreviewLayer = lazy(() => import('./linkPreview/LinkPreviewLayer'))
+// App startup modules (`ui.startup`): each admitted app's component, on every route.
+const StartupModules = lazy(() => import('./components/StartupModules'))
 // App-contributed message actions (`contributes.messageActions`): a More-menu row per
 // approved action; an app's module loads only when its row is clicked.
 const MessageActionLayer = lazy(() => import('./messageActions/MessageActionLayer'))
@@ -881,6 +883,7 @@ export default function App() {
           <GuideProvider>
           <Suspense fallback={null}><GuideLayer /></Suspense>
           <Suspense fallback={null}><LinkPreviewLayer /></Suspense>
+          <Suspense fallback={null}><StartupModules /></Suspense>
           <Suspense fallback={null}><MessageActionLayer /></Suspense>
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           {/* The shell's own nav read owns the shared app list here. */}

@@ -116,6 +116,7 @@ def test_the_spelled_names_match_their_owners() -> None:
         protected_app_state.APP_DISABLED_KIND,
         protected_app_state.APP_SECRETS_KIND,
         protected_app_state.APP_CRONS_DELETED_KIND,
+        protected_app_state.APP_STARTUP_KIND,
     )
     assert member_records.MIGRATED_KINDS == (
         members.RULES_DIR_NAME,
