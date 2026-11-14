@@ -96,6 +96,35 @@ function liveSendsSince(
   )
 }
 
+/** The tab's own in-flight reply when a running page was read before some of
+ *  its chunks landed, so rebuilding the view from the page would drop text the
+ *  replay floor (`floor`) keeps from ever streaming in again. `replace` says the
+ *  page carries an older fold of the reply, which the client row stands in for;
+ *  otherwise the page has no streaming row and the client row is added.
+ *
+ *  A page streaming row at or past the floor already holds every chunk the tab
+ *  has. A page without a streaming row vouches for the reply when it carries an
+ *  `assistant` row past the last row both hold: the server flushed the text. */
+function racedStreamingRow(
+  before: readonly ChatMessage[], page: readonly ChatMessage[], floor: number | undefined,
+): { row: ChatMessage; replace: boolean } | undefined {
+  const at = before.findLastIndex(m => m.role === 'streaming')
+  const row = before[at]
+  if (!row || rowIdentities(row).length > 0 || !row.content) return undefined
+  const pageStream = page.findLast(m => m.role === 'streaming')
+  if (pageStream) {
+    const seq = pageStream.seq
+    return floor !== undefined && typeof seq === 'number' && seq < floor ? { row, replace: true } : undefined
+  }
+  const pageIds = new Set(identitiesOf(page))
+  let anchor = at - 1
+  while (anchor >= 0 && !rowIdentities(before[anchor]).some(id => pageIds.has(id))) anchor -= 1
+  if (anchor < 0) return undefined
+  const anchorAt = page.findIndex(m => rowIdentities(m).some(id => rowIdentities(before[anchor]).includes(id)))
+  const pageFlushedReply = page.slice(anchorAt + 1).some(m => m.role === 'assistant')
+  return pageFlushedReply ? undefined : { row, replace: false }
+}
+
 /** Re-fetch messages for a slot without changing activeSlot. Only applies if still active. */
 let refreshSeqCounter = 0
 const nextRefreshSeq = (): number => ++refreshSeqCounter
@@ -628,6 +657,24 @@ export function addSlotRefreshCases(builder: ActionReducerMapBuilder<ChatState>)
           state.messages.splice(at, 0, send)
           end += 1
         }
+      }
+      const raced = running
+        ? racedStreamingRow(rowsBeforeRefresh, messages, floorForGen(state.lastChunkSeq, state.lastChunkGen, snapshotChunkGen(messages)))
+        : undefined
+      if (raced?.replace) {
+        const streamAt = state.messages.findLastIndex(m => m.role === 'streaming')
+        if (streamAt >= 0) state.messages[streamAt] = raced.row
+      } else if (raced) {
+        let at = state.messages.length
+        while (at > 0 && state.messages[at - 1].role === 'queued') at -= 1
+        const rowAt = rowsBeforeRefresh.indexOf(raced.row)
+        for (const send of liveSends) {
+          if (rowsBeforeRefresh.indexOf(send) <= rowAt) continue
+          const ids = rowIdentities(send)
+          const sendAt = state.messages.findIndex(m => rowIdentities(m).some(id => ids.includes(id)))
+          if (sendAt >= 0) at = Math.min(at, sendAt)
+        }
+        state.messages.splice(at, 0, raced.row)
       }
       const pagePredatesLiveSend = !running && liveSends.length > 0
       // The active slot's server snapshot flipping to running is a turn
