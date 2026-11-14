@@ -37,6 +37,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import link_unfurl
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.messaging.split import truncate_utf8
 from kiro_crew.sel import sel
 from kiro_crew.teams.attachments import quoted_reply_text
@@ -1035,7 +1036,10 @@ class TeamsClient:
                 "scope": _TOKEN_SCOPE,
             }
             async with session.post(
-                url, data=data, timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT)
+                url,
+                data=data,
+                proxy=resolve_proxy(url),
+                timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
             ) as resp:
                 if resp.status != 200:
                     raise RuntimeError(f"token endpoint returned HTTP {resp.status}")
@@ -1470,6 +1474,7 @@ class TeamsClient:
                     method,
                     url,
                     json=activity,
+                    proxy=resolve_proxy(url),
                     headers={"Authorization": f"Bearer {token}"},
                     timeout=aiohttp.ClientTimeout(total=_CONNECTOR_API_TIMEOUT),
                 ) as resp:

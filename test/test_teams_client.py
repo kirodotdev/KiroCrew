@@ -662,6 +662,28 @@ class _FakeSession:
 
 class TestOutbound:
     @pytest.mark.asyncio
+    async def test_token_fetch_and_connector_send_use_the_proxy(self, monkeypatch) -> None:
+        """On a proxy-only network both halves of a send must leave through the proxy."""
+        from urllib import request as urllib_request
+
+        proxy = "http://proxy.invalid:3128"
+        monkeypatch.setattr(urllib_request, "getproxies", lambda: {"https": proxy})
+        monkeypatch.setattr(urllib_request, "proxy_bypass", lambda _host: False)
+        client = TeamsClient(app_id=_APP_ID, app_password="pw")
+        session = _FakeSession(
+            [
+                _FakeResp(json_data={"access_token": "tok", "expires_in": 3600}),
+                _FakeResp(json_data={"id": "activity-9"}),
+            ]
+        )
+        client._session = session
+
+        await client.send_message("conv-1", "hi there", "https://smba.trafficmanager.net/")
+
+        assert session.calls[0][1]["proxy"] == proxy
+        assert session.calls[1][1]["proxy"] == proxy
+
+    @pytest.mark.asyncio
     async def test_token_fetch_and_send_message(self) -> None:
         c = TeamsClient(app_id=_APP_ID, app_password="pw")
         c._session = _FakeSession(
