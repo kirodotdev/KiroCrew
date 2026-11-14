@@ -444,7 +444,9 @@ The worker only adds a report to those waiting for the loop, never replaces them
 found by a probe that outlived its timeout still reaches the bell on the next tick. At most
 `MAX_PENDING_OOM_REPORTS` reports wait; older ones are counted, and the count opens the next
 note. The loop pushes them as notes that each fit the bus body limit, and a report leaves the
-stash only once its note was pushed.
+stash only once its note was pushed. The same tick's pressure check runs however that push
+ends, so a push that fails keeps its reports for the next tick without costing the tick its
+critical alert.
 
 A **task** breach has no comparable kernel event to observe: past `pids.max` the kernel
 fails `fork()` with `EAGAIN` in whichever scope asks next, logs nothing, and every agent
