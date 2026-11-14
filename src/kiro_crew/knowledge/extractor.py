@@ -121,9 +121,31 @@ def _empty_result() -> dict:
     return {"title": "", "entities": [], "relations": [], "category": "document", "summary": ""}
 
 
+# Marks a result whose extraction call failed (pool error, timeout, unparseable
+# reply), as opposed to a chunk that was never sent (blank, no pool) or a reply
+# that parsed and found nothing. Both look like the empty result to a reader of
+# the payload fields, and treating a failure as "found nothing" stores the chunk
+# as fully extracted with no retry, so the difference has to travel with it.
+EXTRACTION_FAILED_KEY = "extraction_failed"
+
+
+def _failed_result() -> dict:
+    return {**_empty_result(), EXTRACTION_FAILED_KEY: True}
+
+
+def extraction_failed(result: dict) -> bool:
+    """True when *result* stands for a failed extraction call, not an empty one."""
+    return bool(result.get(EXTRACTION_FAILED_KEY))
+
+
 class EntityExtractor:
     def __init__(self, pool: "LLMPool | None" = None):
         self._pool = pool
+
+    @property
+    def can_extract(self) -> bool:
+        """False without a pool, where every chunk comes back empty, never sent."""
+        return self._pool is not None
 
     async def extract(self, chunk: str) -> dict:
         if not self._pool or not chunk.strip():
@@ -143,20 +165,20 @@ class EntityExtractor:
             # carries the document text.
             logger.warning(
                 "Entity extraction failed for source_id=%s: %s; the chunk is stored "
-                "without entities or a summary",
+                "without entities or a summary and marked for re-extraction",
                 _source_label(),
                 type(exc).__name__,
             )
-            return _empty_result()
+            return _failed_result()
         data = self._parse_payload(response)
         if data is None:
             logger.warning(
                 "Entity extraction for source_id=%s got %s reply; the chunk is stored "
-                "without entities or a summary",
+                "without entities or a summary and marked for re-extraction",
                 _source_label(),
                 "an empty" if not (response or "").strip() else "an unparseable",
             )
-            return _empty_result()
+            return _failed_result()
         return data
 
     async def extract_batch(self, chunks: list[str]) -> list[dict]:
@@ -183,19 +205,22 @@ class EntityExtractor:
             # carries the document text.
             logger.warning(
                 "Entity extraction failed for source_id=%s: %s; %d chunk(s) stored "
-                "without entities or a summary",
+                "without entities or a summary and marked for re-extraction",
                 _source_label(),
                 type(exc).__name__,
                 len(non_empty_indices),
             )
-            return [_empty_result() for _ in chunks]
+            failed = set(non_empty_indices)
+            return [_failed_result() if i in failed else _empty_result() for i in range(len(chunks))]
         results = [_empty_result() for _ in chunks]
         empty = unparseable = 0
         for idx, response in zip(non_empty_indices, responses):
             data = self._parse_payload(response)
             if data is not None:
                 results[idx] = data
-            elif not (response or "").strip():
+                continue
+            results[idx] = _failed_result()
+            if not (response or "").strip():
                 # The pool answers "" for a prompt whose send failed (and warns
                 # about that send itself); a worker can also reply with nothing.
                 empty += 1
@@ -206,7 +231,7 @@ class EntityExtractor:
             logger.warning(
                 "Entity extraction for source_id=%s: %d of %d chunk(s) got no usable "
                 "reply (%d empty, %d unparseable); those chunks are stored without "
-                "entities or a summary",
+                "entities or a summary and marked for re-extraction",
                 _source_label(),
                 empty + unparseable,
                 len(non_empty_indices),
@@ -221,20 +246,32 @@ class EntityExtractor:
         Delegates to the shared ``llm_helpers._extract_json_of_type`` scanner
         (a bare JSON reply, a fenced block, and JSON wrapped in prose are all
         the same to it), so a stray brace in surrounding prose does not
-        corrupt the span. Returns the empty result on any parse failure, on a
-        non-dict reply, or when two DIFFERENT payload-shaped dicts make the
-        choice ambiguous (the shared contract refuses to guess).
+        corrupt the span. Returns the failed result on an empty reply (the
+        pool's batch path turns a failed call into ``""``, and has logged
+        why), on any parse failure, on a non-dict reply, when two DIFFERENT
+        payload-shaped dicts make the choice ambiguous (the shared contract
+        refuses to guess), or when the only dict carries no payload field. The
+        scanner falls back to the first dict it finds, so a reply such as ``{}``
+        or ``{"error": ...}`` would otherwise read as "found nothing" and a
+        re-extraction would clear the chunk's links and its failure mark.
         """
         data = self._parse_payload(response)
-        return data if data is not None else _empty_result()
+        return data if data is not None else _failed_result()
 
     def _parse_payload(self, response: str) -> dict | None:
-        """The validated payload in *response*, or ``None`` when there is none."""
+        """The validated payload in *response*, or ``None`` when there is none.
+
+        A dict with no payload field is none: the scanner falls back to the first
+        dict it finds, so ``{}`` or ``{"error": ...}`` must not read as "found
+        nothing".
+        """
+        if not response or not response.strip():
+            return None
         try:
             data = _extract_json_of_type(response, dict, prefer=_extraction_shaped)
         except Exception:
             return None
-        if isinstance(data, dict):
+        if isinstance(data, dict) and _extraction_shaped(data):
             return self._validate(data)
         return None
 
