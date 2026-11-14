@@ -18,9 +18,12 @@ and writes the state's own fields and calls its siblings through ``self``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import threading
+import time
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
@@ -1009,7 +1012,83 @@ def serialize_slots(
     (``dashboard_user=True``) may see because that lifecycle is already
     world-visible. Private/unknown repos and app tokens stay owner-only.
     """
-    out = []
+    out: list[dict] = []
+    saved_creators: dict[str, str] = {}
+    for _ in _build_rows(
+        self,
+        list(self._slots.values()),
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    ):
+        pass
+    return _finish_rows(
+        self,
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    )
+
+
+#: How long a yielding pass builds rows before it lets the loop run.
+SLOT_PASS_SLICE_S = 0.02
+
+
+async def serialize_slots_yielding(
+    self: DashboardState, *, include_check_status: bool = False, dashboard_user: bool = False
+) -> list:
+    """:meth:`serialize_slots` that lets the event loop run between rows.
+
+    A request handler that needs the whole stamped list (the Crew Mode routes)
+    awaits this instead of the synchronous pass: with a few hundred open sessions
+    one pass can outlast the loop-stall budget, more so when the transcripts it
+    reads have been paged out. The rows are built in slices of at most
+    :data:`SLOT_PASS_SLICE_S`; between slices the loop answers other requests and
+    the liveness probe. A slot closed before its row is built is left out; one
+    closed after keeps its row, as it would in a list taken just before it closed.
+    One opened during the pass waits for the next pass. The lineage stamp, which
+    reads every row, runs once after the last slice. A caller that acts on a slot
+    re-checks it is still registered after this await.
+    """
+    out: list[dict] = []
+    saved_creators: dict[str, str] = {}
+    slice_started = time.monotonic()
+    for _ in _build_rows(
+        self,
+        list(self._slots.values()),
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    ):
+        if time.monotonic() - slice_started >= SLOT_PASS_SLICE_S:
+            await asyncio.sleep(0)
+            slice_started = time.monotonic()
+    return _finish_rows(
+        self,
+        out,
+        saved_creators,
+        include_check_status=include_check_status,
+        dashboard_user=dashboard_user,
+    )
+
+
+def _build_rows(
+    self: DashboardState,
+    slots: list,
+    out: list[dict],
+    saved_creators: dict[str, str],
+    *,
+    include_check_status: bool,
+    dashboard_user: bool,
+) -> Iterator[None]:
+    """Append each live slot's row to *out*, yielding after each one.
+
+    The driver decides whether a yield lets the loop run. A slot not
+    registered when its turn comes (closed while the driver yielded) is skipped.
+    """
     subs = getattr(self, "subagents", None)
     # A slot that is registered but still under construction is not yet a
     # session: its transcript is mid-hydration and, for an import, its Layer B
@@ -1028,14 +1107,13 @@ def serialize_slots(
     under_construction = getattr(self, "_slots_under_construction", None) or ()
     queued_by_slot = _published_queued_by_slot(subs)
     queued_reason_by_slot = _published_queued_reason_by_slot(subs)
-    saved_creators: dict[str, str] = {}
     # Per-slot row memos for this pass; their global key parts are read here,
     # once, BEFORE any row is built (see ``slot_row_memo``).
     memo_ctx = _row_memo_context(self)
     memo_token = ROW_MEMO.set(memo_ctx)
     try:
-        for s in self._slots.values():
-            if s.key in under_construction:
+        for s in slots:
+            if s.key in under_construction or self._slots.get(s.key) is not s:
                 continue
             saved_creators[s.key] = getattr(s, "_saved_created_by", "") or ""
             self._drop_orphaned_mcp_report(s)
@@ -1051,10 +1129,22 @@ def serialize_slots(
             if d["subagents_queued"] and s.key in queued_reason_by_slot:
                 d["subagents_queued_reason"] = queued_reason_by_slot[s.key]
             out.append(d)
+            yield
     finally:
         ROW_MEMO.reset(memo_token)
     if memo_ctx is not None and logger.isEnabledFor(logging.DEBUG):
         logger.debug("slot row memo pass: %s", dict(sorted(memo_ctx.counts.items())))
+
+
+def _finish_rows(
+    self: DashboardState,
+    out: list[dict],
+    saved_creators: dict[str, str],
+    *,
+    include_check_status: bool,
+    dashboard_user: bool,
+) -> list:
+    """The whole-list steps after every row is built: parents, stamps, badges."""
     # The slot-key/session-key correspondence the lineage join needs, read the same
     # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
     # UNCALLED: resolving it is pure dict work over the live registry, but it belongs

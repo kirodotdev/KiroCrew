@@ -1324,6 +1324,7 @@ class DashboardState:
     _slot_links = _slots_frame._slot_links
     serialize_slot = _slots_frame.serialize_slot
     serialize_slots = _slots_frame.serialize_slots
+    serialize_slots_yielding = _slots_frame.serialize_slots_yielding
     serialize_slot_views = _slots_frame.serialize_slot_views
     _reproject_slots = _slots_frame._reproject_slots
     _drop_orphaned_mcp_report = _slots_frame._drop_orphaned_mcp_report

@@ -490,7 +490,11 @@ def _steer_route(monkeypatch, delivered: dict[str, Any], queue: list[dict[str, A
         return {"ledger_event": "it_1", "ledger_error": None}
 
     monkeypatch.setattr(crew_workers, "_gate", no_gate)
-    monkeypatch.setattr(crew_workers, "_stamped_rows", lambda _s: [])
+
+    async def no_rows(_state):
+        return []
+
+    monkeypatch.setattr(crew_workers, "_stamped_rows", no_rows)
     monkeypatch.setattr(crew_workers, "_root_row", lambda _r, _k: {"key": CONDUCTOR})
     monkeypatch.setattr(crew_mode, "workers_of", lambda _r, _k: [{"key": WORKER}])
     monkeypatch.setattr(crew_workers, "_deliver_as_person", fake_deliver)
@@ -638,6 +642,40 @@ async def test_G2_the_panel_steer_route_records_an_idle_start_in_the_background(
     assert body["ledger_pending"] is True and body["ledger_event"] is None
     await asyncio.gather(*state._background_tasks)
     assert calls == [(CONDUCTOR, WORKER, "now")]
+
+
+@pytest.mark.asyncio
+async def test_the_panel_steer_route_records_with_no_slot_pass_after_delivery(monkeypatch):
+    """The slot pass yields: one between delivery and the record would let a later
+    steer to the same worker be recorded first."""
+    from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.handlers import crew_workers
+
+    state, _calls = _steer_route(
+        monkeypatch,
+        {"ok": True, "steered": False, "queued": False, "started": True},
+        [],
+    )
+    order: list[str] = []
+    real_deliver = crew_workers._deliver_as_person
+
+    async def rows(_state):
+        order.append("rows")
+        return [{"key": WORKER}]
+
+    async def deliver(*a, **k):
+        order.append("deliver")
+        return await real_deliver(*a, **k)
+
+    monkeypatch.setattr(crew_workers, "_stamped_rows", rows)
+    monkeypatch.setattr(crew_workers, "_deliver_as_person", deliver)
+    monkeypatch.setattr(
+        chat_handlers, "record_crew_steer_later", lambda *_a, **_k: order.append("record")
+    )
+    await crew_workers.api_crew_worker_steer(
+        _SteerReq(state, CONDUCTOR, WORKER, "now")  # type: ignore[arg-type]
+    )
+    assert order[order.index("deliver") :] == ["deliver", "record"]
 
 
 # ── R3 G6: a queued steer restored after a restart is delivered, never recorded ──
