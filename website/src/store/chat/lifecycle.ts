@@ -249,16 +249,18 @@ export const PENDING_OPEN_LEASE_MS = 10_000
 
 export const resumeFromHistory = createAsyncThunk<
   { ok: boolean; key: string; surface: string; nextBefore: number; messages: ReturnType<typeof filterMessages>; hasMore: boolean; total: number; folderId: string },
-  { key: string; title: string; leaveSplit?: boolean },
+  { key: string; title: string; leaveSplit?: boolean; expectedCreatedAt?: string },
   { pendingMeta: { startedAt: number }; fulfilledMeta: Required<OriginMeta> }
 >(
   'chat/resumeFromHistory',
-  async ({ key, title }, { dispatch, getState, fulfillWithValue }) => {
+  async ({ key, title, expectedCreatedAt }, { dispatch, getState, fulfillWithValue }) => {
     // Where the user stands when the resume starts, as `createSlot` captures
     // it. A resume rebuilds the slot from its transcript and can take seconds;
     // the fulfilled reducer asks `forkMayOpen` before it opens the session.
     const origin = captureForkOrigin(getState() as RootState)
-    const d = await api.resumeChatSlot(key, title)
+    const d = await (expectedCreatedAt === undefined
+      ? api.resumeChatSlot(key, title)
+      : api.resumeChatSlot(key, title, expectedCreatedAt))
     if (d.ok) {
       // A resume re-bases the cursor of the chat it opens, which may own the page in flight.
       abortActiveOlderFetch()
@@ -285,8 +287,8 @@ export const resumeFromHistory = createAsyncThunk<
     // POST has no deadline, and a request that never answers must not leave
     // its row dead for good. The drop is dispatched as a rejection so the
     // reducer can hand the latest-click token back to the resume it repeats.
-    condition: ({ key }, { getState }) => {
-      const newest = newestResumeOf((getState() as RootState).chat, key)
+    condition: ({ key, expectedCreatedAt }, { getState }) => {
+      const newest = newestResumeOf((getState() as RootState).chat, key, expectedCreatedAt)
       return !newest || Date.now() - newest.startedAt >= PENDING_OPEN_LEASE_MS
     },
     dispatchConditionRejection: true,
@@ -300,11 +302,13 @@ export function resumeStillOpening(chat: Pick<ChatState, 'pendingResumes'>, now:
   return Object.values(chat.pendingResumes ?? {}).some(p => now - p.startedAt < PENDING_OPEN_LEASE_MS)
 }
 
-/** The newest resume of `key` still on its way, if any. */
-function newestResumeOf(chat: Pick<ChatState, 'pendingResumes'>, key: string): { requestId: string; startedAt: number } | null {
+/** The newest resume of `key` with the same transcript pin still on its way,
+ *  if any. An unpinned resume matches only an unpinned one. */
+function newestResumeOf(chat: Pick<ChatState, 'pendingResumes'>, key: string, expectedCreatedAt: string | undefined): { requestId: string; startedAt: number } | null {
   let newest: { requestId: string; startedAt: number } | null = null
   for (const [requestId, p] of Object.entries(chat.pendingResumes ?? {})) {
-    if (p.key === key && (!newest || p.startedAt >= newest.startedAt)) newest = { requestId, startedAt: p.startedAt }
+    const samePin = p.expectedCreatedAt === expectedCreatedAt
+    if (p.key === key && samePin && (!newest || p.startedAt >= newest.startedAt)) newest = { requestId, startedAt: p.startedAt }
   }
   return newest
 }
@@ -665,7 +669,8 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       }
       state.requestSeq = (state.requestSeq ?? 0) + 1
       state.requestBurst = (state.requestBurst ?? 0) + 1
-      pendingResumes[action.meta.requestId] = { key: action.meta.arg.key, startedAt, origin: captureForkOrigin({ chat: state }) }
+      const { key, expectedCreatedAt } = action.meta.arg
+      pendingResumes[action.meta.requestId] = { key, ...(expectedCreatedAt !== undefined ? { expectedCreatedAt } : {}), startedAt, origin: captureForkOrigin({ chat: state }) }
       state.pendingResumes = pendingResumes
       state.unresumableResume = null
     })
@@ -784,7 +789,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         // repeats becomes the latest again and opens when it answers, judged
         // from where the user stands now, even when another row was resumed
         // in between.
-        const repeated = newestResumeOf(state, action.meta.arg.key)
+        const repeated = newestResumeOf(state, action.meta.arg.key, action.meta.arg.expectedCreatedAt)
         if (repeated) {
           state.lastResumeRequestId = repeated.requestId
           // The repeat is a click of its own, after every request started so far.

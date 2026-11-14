@@ -108,6 +108,9 @@ _TO_DICT_KEYS = (
     "theme_consent_sha",
     "memory_mode",
     "forked_from",
+    # The parent transcript's identity, which the merge dialog pins its reopen of
+    # the parent to; "" for a chat that is not a fork.
+    "forked_from_created_at",
     "linked_session_key",
     # The transcript's session key, derived by ``slot_history_key``; the
     # reopen-closed-session shortcut resumes by it.

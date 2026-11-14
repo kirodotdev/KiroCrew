@@ -651,6 +651,28 @@ class TestForkSlot:
         assert meta.get("forked_from_created_at") == identity
 
     @pytest.mark.asyncio
+    async def test_slot_list_names_the_parent_transcript_only_for_a_fork(self, tmp_path):
+        """The merge dialog pins its reopen of the parent to the identity the slot
+        list carries, so a fork carries its parent's and any other chat carries none."""
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("src")
+        slot.append("user", "hi", "msg msg-u")
+        slot.append("assistant", "hello", "msg msg-a")
+        slot.drain()
+        # An identity with no parent key names no parent to reopen.
+        not_a_fork = state.get_or_create_slot("not-a-fork")
+        not_a_fork.forked_from_created_at = "2026-10-01T09:00:00+00:00"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/src/fork", json={})
+            new_key = (await resp.json())["key"]
+
+        identity = state._slots[new_key].forked_from_created_at
+        assert identity
+        listed = {row["key"]: row["forked_from_created_at"] for row in state.serialize_slots()}
+        assert listed == {new_key: identity, "src": "", "not-a-fork": ""}
+
+    @pytest.mark.asyncio
     async def test_fork_discards_an_oversized_parent_transcript_identity(self, tmp_path):
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")

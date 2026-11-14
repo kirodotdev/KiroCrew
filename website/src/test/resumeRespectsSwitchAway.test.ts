@@ -194,6 +194,57 @@ describe('resumeFromHistory resolving after the user moved', () => {
   })
 })
 
+// A resume pinned to a transcript identity (a merge card's fork link) is a
+// different request from an unpinned resume of the same key (its History row):
+// dropping the pinned one would hand its click to a resume the gateway never
+// checks against that identity, and open whatever chat now holds the key.
+describe('the repeat guard keeps a transcript pin', () => {
+  const PIN = '2026-10-01T09:00:00+00:00'
+  const resumePinned = (key: string, expectedCreatedAt: string) =>
+    store.dispatch(resumeFromHistory({ key, title: key, expectedCreatedAt }))
+  const pinsSent = (key: string) => mocks.resumeChatSlot.mock.calls.filter(c => c[0] === key).map(c => c[2])
+
+  it('sends a pinned resume while an unpinned resume of the same key is on its way', async () => {
+    const unpinned = resume(R1)
+    await vi.waitFor(() => expect(posts(R1)).toBe(1))
+
+    const pinned = resumePinned(R1, PIN)
+    await vi.waitFor(() => expect(posts(R1)).toBe(2))
+    expect(pinsSent(R1)).toEqual([undefined, PIN])
+
+    land(R1)
+    land(R1)
+    await unpinned
+    const settled = await pinned
+    expect(resumeFromHistory.fulfilled.match(settled)).toBe(true)
+  })
+
+  it('sends an unpinned resume while a pinned resume of the same key is on its way', async () => {
+    const pinned = resumePinned(R1, PIN)
+    await vi.waitFor(() => expect(posts(R1)).toBe(1))
+
+    void resume(R1)
+    await vi.waitFor(() => expect(posts(R1)).toBe(2))
+    expect(pinsSent(R1)).toEqual([PIN, undefined])
+
+    land(R1)
+    land(R1)
+    await pinned
+  })
+
+  it('still drops a repeat of the same pinned resume', async () => {
+    const first = resumePinned(R1, PIN)
+    await vi.waitFor(() => expect(posts(R1)).toBe(1))
+
+    const repeat = await resumePinned(R1, PIN)
+    expect(resumeFromHistory.rejected.match(repeat) && repeat.meta.condition).toBe(true)
+    expect(posts(R1)).toBe(1)
+
+    land(R1)
+    await first
+  })
+})
+
 describe('the repeat guard is bounded by the pending-open lease', () => {
   // The resume POST carries no deadline. Only Date is faked, and set by hand,
   // so the guard's age is exact. No `vi.waitFor` here: with fake timers on it

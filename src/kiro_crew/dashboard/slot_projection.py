@@ -635,6 +635,14 @@ class SlotProjection:
             "theme_consent_sha": slot.theme_consent_sha,
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
+            # The parent transcript's ``created_at``, recorded when the fork was
+            # made. The merge dialog pins its reopen of the parent to it, so a
+            # chat created on the parent's key after a delete is refused rather
+            # than opened. "" for a chat that is not a fork and for a fork with no
+            # recorded identity.
+            "forked_from_created_at": (
+                slot.forked_from_created_at if slot.forked_from is not None else ""
+            ),
             "linked_session_key": slot.linked_session_key,
             # The transcript's session key, the one ``/api/chat/resume`` reads.
             # Derived here, by the one rule (``slot_history_key``), because the

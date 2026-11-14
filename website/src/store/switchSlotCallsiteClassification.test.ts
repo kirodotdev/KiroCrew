@@ -45,6 +45,7 @@ const PINNED: Record<string, Counts> = {
   'src/components/AgentSwitchNoticeBanner.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'the Open session button on a background follow-up run announces' },
   'src/components/ChatInput.tsx': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'mic-owner status-row click announces' },
   'src/components/ImportSessionItem.tsx': { gesture: 1, announced: 1, keepTarget: 1, plain: 0, reason: 'on upload the just-imported slot is new, so a 404 is a create/fetch race (#6309); the shell notice\'s later Open is a click, so it announces and is a gesture' },
+  'src/components/MergeBackDialog.tsx': { gesture: 0, announced: 2, keepTarget: 0, plain: 0, reason: 'the Open-the-parent button and the post-merge switch to the parent both announce, and both leave Split View so the parent is shown' },
   'src/components/commandPalette/providers/recentsProvider.ts': { gesture: 1, announced: 1, keepTarget: 0, plain: 0, reason: 'palette recents row announces' },
   'src/components/notifications/NotificationDetailPanel.tsx': { gesture: 3, announced: 3, keepTarget: 0, plain: 0, reason: 'go-to-chat buttons announce; the two to-chat hand-offs open through openCreatedSlot' },
   'src/hooks/useOwnSlotChat.ts': { gesture: 0, announced: 0, keepTarget: 0, plain: 1, reason: 'binds an embedded chat (artifact companion, app SDK ChatPanel) to a slot its host supplied; awaited unwrap() reports a 404 to the host and shows other failures' },
