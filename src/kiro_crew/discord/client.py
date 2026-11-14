@@ -166,6 +166,8 @@ _THREAD_INTENTS = _INTENT_GUILD_MESSAGES | _INTENT_MESSAGE_CONTENT
 
 # Discord channel types: announcement thread, public thread, private thread.
 _THREAD_CHANNEL_TYPES = frozenset({10, 11, 12})
+# Discord's error code for a thread create on a message that already has one.
+_THREAD_ALREADY_CREATED = 160004
 _CALLBACK_CHANNEL_MESSAGE_WITH_SOURCE = 4
 _CALLBACK_DEFERRED_UPDATE_MESSAGE = 6
 
@@ -509,12 +511,22 @@ class DiscordClient:
     async def create_thread_from_message(
         self, channel_id: str, message_id: str, name: str
     ) -> str | None:
-        """Create a public thread rooted at an existing channel message."""
-        result = await self._api(
+        """Create a public thread rooted at an existing channel message.
+
+        Returns the thread id, or ``None`` on failure. ``""`` means Discord
+        already holds a thread for this message (a retried create whose first
+        response was lost is answered that way). Whether that thread may be
+        used is the caller's admission decision, so nothing is cached or
+        granted for it here.
+        """
+        outcome = await self.api_json(
             "POST",
             f"/channels/{channel_id}/messages/{message_id}/threads",
             {"name": name[:100], "auto_archive_duration": 1440},
         )
+        if outcome.status == 400 and outcome.code == _THREAD_ALREADY_CREATED:
+            return ""
+        result = outcome.data
         if not result:
             return None
         thread_id = str(result.get("id") or "")

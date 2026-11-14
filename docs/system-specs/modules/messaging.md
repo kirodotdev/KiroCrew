@@ -4090,7 +4090,15 @@ asks Discord for the thread (`DiscordClient.thread_origin`, an uncached
 announcement thread (type 10/11, the only kinds `create_thread_from_message`
 makes) whose `owner_id` is this bot and whose `parent_id` is in
 `allowed_channel_ids`, with the sender still in `allowed_user_ids`; both rosters
-are read when the answer arrives, so a reload during the lookup refuses the grant. Nothing is persisted
+are read when the answer arrives, so a reload during the lookup refuses the grant.
+The same path covers a thread create whose response was lost: when the retry is
+answered `400` with code `160004` (a thread already exists for that message),
+`create_thread_from_message` returns `""` and grants nothing, and the transport
+adopts the thread at the message's id only through `readmit_own_thread` (same
+checks, audited `thread_reauthorized`), never when that id is already admitted:
+then either that message was already dispatched, or a post in the new thread was
+admitted first, and refusing both keeps one message from being answered twice
+(the second case leaves the first message unanswered). Nothing is persisted
 locally, so no file the agent can write grants a thread; the decision rests on
 Discord's own record, and after the next restart a thread whose parent an
 operator removed stays refused. A live reload does not revoke it sooner:
