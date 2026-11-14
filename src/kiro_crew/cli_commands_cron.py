@@ -88,6 +88,49 @@ def _format_schedule(schedule: object, *, tz_name: str = "") -> str:
     return format_schedule(schedule)
 
 
+def _cron_list_cell(value: str) -> str:
+    """*value* as ONE cell of a ``kirocrew cron list`` row.
+
+    Every field this command prints is written by a surface other than the
+    reader: ``name`` and ``message`` come from ``cron add``, the dashboard
+    editor and an agent's ``cron_add``; the ownership fields come from a
+    session key, an import label or an app manifest. Printed verbatim, a
+    newline in any of them ends the row early and the remainder starts an
+    unprefixed line -- which reads as another job, or as a second job's
+    ownership line. A live escape sequence reaches the terminal as a control
+    code rather than as the text that was stored.
+
+    ``safe_terminal_line`` is the policy every other list surface applies
+    (``agent list``, ``workspace list``, ``artifact list``): controls are
+    stripped or rendered, and a newline becomes the visible ``\\x0a``. The
+    one addition here is the tab, which that function deliberately keeps as
+    content but which is a column break inside a row, so it is rendered as
+    the visible ``\\x09`` for the same reason a newline is.
+    """
+    return safe_terminal_line(value).replace("\t", "\\x09")
+
+
+def _cron_list_clip(text: str, limit: int) -> str:
+    """``text`` cut to *limit* characters, never through an escaped control.
+
+    A cap applied to the CLEANED text is what keeps it a cap on what is
+    actually printed, but the cleaner spends four characters on each
+    ``\\xNN`` escape it renders. Cutting blindly can therefore land between
+    the ``x`` and the code, printing a bare ``\\x0`` that names no byte at
+    all. Backing up to the escape's own backslash costs at most three
+    characters and keeps every printed escape whole.
+    """
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    # A cut can land on, between, or one character into the four-character
+    # escape; every truncated tail below is a prefix of ``\\x0a``/``\\x09``.
+    marker = cut.rfind("\\")
+    if marker != -1 and cut[marker:] in ("\\", "\\x", "\\x0"):
+        cut = cut[:marker]
+    return cut
+
+
 def _cron_add_bounds(field_name: str) -> tuple[int, int]:
     """Numeric bounds of a ``cron add`` field, read from ``CRON_ADD_SCHEMA``.
 
@@ -666,7 +709,17 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             status = "✅" if j.enabled else "⏸️"
             sched = _format_schedule(j.schedule, tz_name=job_zone_name(j))
             folder = _cron_folder_label(j.folder_id or "", folder_names)
-            print(f"  {status} {j.id}  {j.name}  ({sched})  [folder: {folder}]  {j.message[:60]}")
+            # The 60-character cut lands AFTER cleaning: slicing the stored
+            # value first can stop inside the four-character ``\\x0a`` escape a
+            # newline becomes, printing a bare ``\\x0`` that no longer names
+            # what was elided.
+            message = _cron_list_clip(_cron_list_cell(j.message), 60)
+            cell_id = _cron_list_cell(j.id)
+            cell_name = _cron_list_cell(j.name)
+            cell_folder = _cron_list_cell(folder)
+            print(
+                f"  {status} {cell_id}  {cell_name}  ({sched})  [folder: {cell_folder}]  {message}"
+            )
             # Ownership is printed because it decides which surfaces can manage
             # the job at all: a job with no owning session is outside every chat
             # session's scope, so `cron_list` from chat does not list it and the
@@ -675,8 +728,8 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             # was the only place the state existed and nothing showed it -- which
             # is what made a normal, correct state read as a job that had
             # vanished. `cron adopt` is the way back.
-            owner = j.session_key or ""
-            provenance = j.created_by or ""
+            owner = _cron_list_cell(j.session_key or "")
+            provenance = _cron_list_cell(j.created_by or "")
             if owner:
                 detail = f"owner: {owner}"
             else:
@@ -684,9 +737,9 @@ def _cron_dispatch(args: argparse.Namespace) -> None:
             if provenance:
                 detail += f"  created by: {provenance}"
             if j.managed_by:
-                detail += f"  managed by: {j.managed_by}"
+                detail += f"  managed by: {_cron_list_cell(j.managed_by)}"
             if j.project_path:
-                detail += f"  project: {j.project_path}"
+                detail += f"  project: {_cron_list_cell(j.project_path)}"
             print(f"      {detail}")
 
     elif action == "adopt":
