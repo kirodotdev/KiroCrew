@@ -269,6 +269,12 @@ class TestDispatcher:
         assert dispatcher.routes(_note(priority="passive", silenced=True)) == ()
         assert dispatcher.routes(_note(priority="passive")) == ("slack",)
 
+    def test_a_quiet_keyed_replacement_never_routes(self, settings):
+        settings.update("system.cron", deliver_to=["slack"], deliver_min_priority="all")
+        dispatcher = BridgeDispatcher(settings=lambda: settings)
+        assert dispatcher.routes(_note(priority="critical", key="k", quiet=True)) == ()
+        assert dispatcher.routes(_note(priority="critical", key="k", quiet=False)) == ("slack",)
+
     @pytest.mark.asyncio
     async def test_one_failing_sink_does_not_stop_the_others(self, settings):
         settings.update("system.cron", deliver_to=["slack", "telegram"])

@@ -413,6 +413,39 @@ class TestKeyedCommit:
         await state.notification_bridge.drain()
         assert slack.posts == []
 
+    @pytest.mark.asyncio
+    async def test_a_quiet_replacement_posts_no_second_chat_message(
+        self, monkeypatch, tmp_path, sel_log
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.notifications.settings.config_dir", lambda: tmp_path)
+        slack = _FakeSlack()
+        state = DashboardState(
+            sessions=MagicMock(count=0),
+            crons=MagicMock(),
+            lessons=MagicMock(),
+            start_time=0.0,
+            slack_client=slack,
+            owner_id="U-OWNER",
+        )
+        state.notification_channel_settings.update("system.cron", deliver_to=["slack"])
+        for title in ("build 1 of 3", "build 2 of 3"):
+            state.notification_bus.push(
+                NotificationPayload(
+                    source="system",
+                    channel="system.cron",
+                    title=title,
+                    body="b",
+                    priority="critical",
+                    key="build",
+                )
+            )
+            assert await state.last_notification_persist is True
+        await state.notification_bridge.drain()
+        # The second note replaces the first at the same priority, so it is quiet:
+        # the owner was told once, as the bell and banner tell them once.
+        assert len(slack.posts) == 1
+
 
 class TestTransport:
     @pytest.mark.asyncio
