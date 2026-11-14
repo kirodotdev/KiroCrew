@@ -84,6 +84,8 @@ export function selectAutoConnectTargets(
     if (out.length >= budget) break
     // Turned off by the owner: the gateway would refuse it anyway.
     if (inst.disabled) continue
+    // Its cloud machine was stopped from the panel: nothing answers until Start.
+    if (inst.cloud_stopped) continue
     // No pane to warm: a fargate crew's connect is a real SSM session that
     // would only be spent on a card nobody asked to open.
     if (!hasDashboardPane(inst)) continue

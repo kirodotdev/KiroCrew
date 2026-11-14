@@ -11504,6 +11504,7 @@
         "starting": "Starting…",
         "step_progress": "Step {{current}} of {{total}}",
         "stop": "Stop",
+        "cloud_stopped_note": "You stopped this crew's cloud machine. Choose Start to bring it back.",
         "stop_crew": "Stop {{name}}",
         "stop_waiting": "Stop waiting",
         "stopping": "Stopping…",

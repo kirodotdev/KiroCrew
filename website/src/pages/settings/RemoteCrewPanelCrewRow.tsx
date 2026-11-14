@@ -282,6 +282,10 @@ export function CrewRow({
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
+  // The owner stopped this cloud crew's machine from this menu. Its tunnel is
+  // refused until Start, so the row reads Stopped with Start as the next step
+  // rather than as a failed connection.
+  const cloudStopped = isCloud && !!inst.cloud_stopped
   // An unsigned crew still connects: the user can sign in on the crew itself once
   // connected. The badge and the sign-in controls stay so the missing sign-in is
   // visible, but they never hold Connect back.
@@ -364,7 +368,9 @@ export function CrewRow({
               : `${usesSsmTransport(inst) && inst.aws_region ? ` (${inst.aws_region})` : ''} ${i18nT('pages.settings.instancesPanel.remote_port_value', { port: inst.remote_port })}`}
           </div>
           <div className="mt-1 flex items-center gap-1.5 flex-wrap">
-            {!inst.disabled && <StatusBadge status={inst.status} />}
+            {!inst.disabled && (
+              <StatusBadge status={cloudStopped ? { ...inst.status, state: 'stopped', error: undefined } : inst.status} />
+            )}
             <span className="inline-flex items-center gap-1.5 text-[12px] text-muted">
               <Toggle checked={!inst.disabled} onChange={on => onSetEnabled(inst.id, on)}
                 disabled={!!busy || deleting} describedBy={CREW_SWITCH_HINT_ID}
@@ -380,6 +386,11 @@ export function CrewRow({
             )}
             <CrewVersionStatus instanceId={inst.id} name={inst.name} connected={connected && !inst.disabled} />
           </div>
+          {cloudStopped && (
+            <div className="text-[12px] text-muted mt-1">
+              {i18nT('pages.settings.remoteCrewPanel.cloud_stopped_note')}
+            </div>
+          )}
           <div className="text-[11px] text-muted-strong mt-1">
             {isCloud
               ? i18nT('pages.settings.remoteCrewPanel.launched_by_kiro_crew')
@@ -407,6 +418,15 @@ export function CrewRow({
         {transient ? null : connected ? (
           <Btn onClick={() => onDisconnect(inst.id)} disabled={!!busy || deleting}>
             <Unplug className="lucide-inline" /> {i18nT('pages.settings.instancesPanel.disconnect')}
+          </Btn>
+        ) : cloudStopped ? (
+          <Btn
+            primary
+            onClick={() => onStart(cloudTag, coordsOf(inst))}
+            disabled={!!busy || deleting}
+            aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
+          >
+            <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
           </Btn>
         ) : inst.disabled ? null : (
           <Btn
@@ -511,23 +531,28 @@ export function CrewRow({
             {isCloud ? (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  className="gap-2 text-[13px]"
-                  onSelect={() => onStop(cloudTag, coordsOf(inst))}
-                  aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}
-                >
-                  <Power className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.stop')}
-                </DropdownMenuItem>
+                {!cloudStopped && (
+                  <DropdownMenuItem
+                    className="gap-2 text-[13px]"
+                    onSelect={() => onStop(cloudTag, coordsOf(inst))}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.stop_crew', { name: inst.name })}
+                  >
+                    <Power className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.stop')}
+                  </DropdownMenuItem>
+                )}
                 {/* Stop without Start is a one-way door: the route exists and the client
                     method existed, but nothing called it — a stopped crew had no path back
-                    to running from the dashboard, while its EBS volume kept billing. */}
-                <DropdownMenuItem
-                  className="gap-2 text-[13px]"
-                  onSelect={() => onStart(cloudTag, coordsOf(inst))}
-                  aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
-                >
-                  <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
-                </DropdownMenuItem>
+                    to running from the dashboard, while its EBS volume kept billing.
+                    A crew stopped from here carries Start as its row button instead. */}
+                {!cloudStopped && (
+                  <DropdownMenuItem
+                    className="gap-2 text-[13px]"
+                    onSelect={() => onStart(cloudTag, coordsOf(inst))}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.start_crew', { name: inst.name })}
+                  >
+                    <Play className="lucide-inline" /> {i18nT('pages.settings.remoteCrewPanel.start')}
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
                   className="gap-2 text-[13px] text-danger"

@@ -171,6 +171,10 @@ class InstanceDisabledError(InstancesError):
     """The crew is disabled, so no tunnel may be opened for it."""
 
 
+class InstanceStoppedError(InstanceDisabledError):
+    """The crew's cloud machine was stopped from the panel, so no tunnel may be opened."""
+
+
 class InvalidInstanceError(InstancesError):
     """Raised when an instance record fails validation."""
 
@@ -310,6 +314,10 @@ class Instance:
     # ``was_connected`` intent, but no tunnel is opened for it -- not by a click,
     # not by auto-connect, not by the startup revive -- until it is enabled again.
     disabled: bool = False
+    # The owner stopped this crew's EC2 instance from the panel. Like ``disabled``
+    # no tunnel is opened for it, and the panel shows it as Stopped with Start as
+    # the way back; the cloud Start route clears it.
+    cloud_stopped: bool = False
 
     def validate(self) -> None:
         """Raise :class:`InvalidInstanceError` if any field is malformed."""
@@ -497,6 +505,7 @@ class Instance:
             "forwarder_sig": self.forwarder_sig,
             "forwarder_argv_sig": self.forwarder_argv_sig,
             "disabled": self.disabled,
+            "cloud_stopped": self.cloud_stopped,
         }
 
     @classmethod
@@ -560,6 +569,7 @@ class Instance:
             # A record written before this field existed has no key: enabled.
             # `is True`: a hand-edited "false" string must not switch a crew off.
             disabled=data.get("disabled", False) is True,
+            cloud_stopped=data.get("cloud_stopped", False) is True,
         )
 
 
@@ -996,6 +1006,7 @@ class InstancesRegistry:
             "via_instance_id",
             "via_remote_port",
             "disabled",
+            "cloud_stopped",
         }
         unknown = set(changes) - allowed
         if unknown:

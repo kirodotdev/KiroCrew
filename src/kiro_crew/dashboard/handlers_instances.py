@@ -89,6 +89,7 @@ from kiro_crew.instances.registry import (  # noqa: F401
     InstanceNotFoundError,
     InstancesError,
     InstancesRegistry,
+    InstanceStoppedError,
     InvalidInstanceError,
     RegistryUnreadableError,
     ancestor_ids,
@@ -750,6 +751,17 @@ async def api_instances_connect(request: web.Request) -> web.Response:
                 "state": "disconnected",
                 "error": str(e),
                 "code": UnsupportedConnectionMethodError.code,
+            },
+            status=409,
+        )
+    except InstanceStoppedError as e:
+        _audit("connect", "denied", request_id=instance_id, error="stopped")
+        return web.json_response(
+            {
+                "instance_id": instance_id,
+                "state": "disconnected",
+                "error": f"{e}; start it from Settings > Remote Crew to connect",
+                "code": "instance_stopped",
             },
             status=409,
         )

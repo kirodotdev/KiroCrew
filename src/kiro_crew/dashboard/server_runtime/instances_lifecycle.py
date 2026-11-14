@@ -99,9 +99,13 @@ async def _revive_intended_instances(
     shutting down stops it the same way: the cleanup hook tears every tunnel
     down, and nothing would stop one connected after that.
     """
-    # A disabled crew keeps its intent so enabling it brings it back, but it is
-    # not revived while it stays disabled.
-    intended = [inst for inst in registry.list() if inst.was_connected and not inst.disabled]
+    # A disabled or cloud-stopped crew keeps its intent so enabling or starting it
+    # brings it back, but it is not revived until then.
+    intended = [
+        inst
+        for inst in registry.list()
+        if inst.was_connected and not inst.disabled and not inst.cloud_stopped
+    ]
     if not intended:
         return
     logger.info("Auto-reconnecting %d instance(s) on startup", len(intended))
