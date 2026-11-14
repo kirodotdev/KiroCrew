@@ -762,8 +762,15 @@ function createIpcRegistrar({
         // a `false`, so the click is declined and re-painted rather than
         // misdirected. GPT 6.1 lane finding F1 on 934946a45a.
         const focusedWindowAtRequestTime = windows.focusedDashboardWindow();
+        // The window alone is not the dispatch target: the click handlers resolve
+        // the focused WebContents, and a modal inside the same window (the
+        // connection dialog) moves that without changing the window.
+        const focusedContentsAtRequestTime = windows.focusedDashboardWebContents();
         const senderIsLocal = await resolveSenderIsLocal(event, "app-menu:execute");
-        if (windows.focusedDashboardWindow() !== focusedWindowAtRequestTime) {
+        if (
+          windows.focusedDashboardWindow() !== focusedWindowAtRequestTime
+          || windows.focusedDashboardWebContents() !== focusedContentsAtRequestTime
+        ) {
           // Through the per-sender budget, like every other refusal: a remote
           // page can queue un-awaited invokes behind one probe, and a single
           // focus switch would otherwise write one synchronous line per call.

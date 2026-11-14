@@ -1461,3 +1461,35 @@ test("a hostile id cannot take the focus-moved refusal past the log budget", asy
     "a hostile id must reach the bounded refusal line, not the dispatch-error path",
   );
 });
+
+// The window can stay the same while the focused WebContents moves: a modal
+// opened inside the main window takes focus, and the Reload handler resolves the
+// focused WebContents when it runs. Comparing windows alone let that dispatch
+// through and reload the modal. GPT 6.1 lane finding on 2a81d372d3 (UPHOLD-FENCED).
+test("a focus move inside the same window is refused too", async () => {
+  const h = harness({ storeValues: { runLocalGateway: true } });
+  h.registrar.registerShell();
+  const event = localSenderEvent("same-window-modal");
+
+  const sameWindow = { id: "the-main-window" };
+  h.windows.focusedDashboardWindow = () => sameWindow;
+  let focusedContents = { id: "the-dashboard" };
+  h.windows.focusedDashboardWebContents = () => focusedContents;
+  let executed = 0;
+  h.windows.menu.execute = () => {
+    executed += 1;
+    return true;
+  };
+
+  let releaseProbe;
+  h.gateway.probePrimaryPortOwner = () => new Promise((resolve) => {
+    releaseProbe = resolve;
+  });
+
+  const pending = h.handlers.get("app-menu:execute")(event, "view-menu", 0);
+  focusedContents = { id: "the-connection-modal" };
+  releaseProbe("kirocrew");
+
+  assert.equal(await pending, false, "a moved dispatch target must be refused");
+  assert.equal(executed, 0, "the menu action must not run against the modal");
+});

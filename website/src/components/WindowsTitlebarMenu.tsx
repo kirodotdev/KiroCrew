@@ -294,17 +294,16 @@ export default function WindowsTitlebarMenu() {
         // repo's own escape hatch (`useOverlayRoot()`), which eslint requires
         // over a `document.body` portal.
         //
-        // `askAgent` is ON: the hand-off navigates to the chat and unmounts
-        // this tree, and a titlebar menu holds no unsaved state for that to
-        // destroy — which is the condition `errors-use-error-notice` names. A
-        // Windows port-owner probe that cannot name the holder is also squarely
-        // the class of failure a user cannot fix and the agent can.
+        // `askAgent` is OFF: the hand-off navigates to the chat and unmounts the
+        // page the user is on, and this notice covers the whole shell, so a
+        // page with unsaved drafts (the OAuth inputs under Connections) would
+        // lose them without a prompt. `errors-use-error-notice` allows the
+        // hand-off only where it cannot destroy anything.
         <OverlayPortal>
           <div className="pointer-events-auto fixed left-1/2 top-safe-offset-12 z-50 w-[min(28rem,calc(100vw-max(2rem,var(--safe-area-x)+var(--safe-area-x))))] -translate-x-1/2">
             <ErrorNotice
               variant="inline"
               message={i18nT('app.titlebar_menu_refused_notice', { item: refusedItemLabel })}
-              askAgent
               onDismiss={() => setRefusedItemLabel(null)}
             />
           </div>

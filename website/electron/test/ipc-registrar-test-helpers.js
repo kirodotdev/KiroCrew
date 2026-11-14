@@ -333,6 +333,7 @@ function harness({
   const windows = {
     getSummonWindow: recordWindow("getSummonWindow", null),
     focusedDashboardWindow: recordWindow("focusedDashboardWindow", null),
+    focusedDashboardWebContents: recordWindow("focusedDashboardWebContents", null),
     getMainWindow: recordWindow("getMainWindow", null),
     createMainWindow: recordWindow("createMainWindow", { fake: "window" }),
     showMainWindow: recordWindow("showMainWindow", true),

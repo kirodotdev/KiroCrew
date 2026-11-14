@@ -208,7 +208,7 @@ describe('WindowsTitlebarMenu', () => {
   // to go to the main window: that instruction cannot be carried out by the
   // user who is most likely to read it, and it names a window when the actual
   // cause was a transient probe or a focus race. It says what happened and
-  // leaves the remedy to the `askAgent` hand-off. Opus 5.5 lane, blocking
+  // leaves the remedy to the user. Opus 5.5 lane, blocking
   // finding on 3faa9fa182.
   it('refuses to blame the window the user is most likely already in', async () => {
     const api = installMenuAPI()
