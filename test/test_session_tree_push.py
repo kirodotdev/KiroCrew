@@ -787,8 +787,9 @@ async def test_a_cancel_requested_while_the_class_is_read_finds_the_log_opened(m
     assert record.calls("stream") == []
 
 
-def test_a_replay_marks_every_unit_whose_decision_it_did_not_read(monkeypatch):
-    """Past the cap the replay keeps records it reads no decision for; those are suspect."""
+def test_a_replay_past_the_cap_keeps_one_capped_population(monkeypatch):
+    """Past the cap the replay drops the checkpoint units it ranks last, so the records it
+    returns and the ones it reads decisions for are the same set."""
     from kiro_crew.crew_log.session_tree import _ScanFaults
 
     emit.on_session_opened("s-a", agent="kirocrew-worker", slot="a")
@@ -805,6 +806,4 @@ def test_a_replay_marks_every_unit_whose_decision_it_did_not_read(monkeypatch):
 
     records, *_ = proj._replay_tail(loaded, {}, faults=faults)
 
-    unread = [r.sid for r in list(records.values())[2:]]
-    assert unread
-    assert set(unread) <= set(faults.sids)
+    assert len(records) == 2

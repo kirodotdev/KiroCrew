@@ -285,10 +285,10 @@ def _attach_slot_parents(
             # nobody opens that page on would stay unnested for the life of the
             # process. Asking here is what makes the retry reach this payload.
             if proj.seed_retry_due:
-                _request_lineage_seed()
+                _request_lineage_seed(_live_roster_of(resolve_aliases))
                 pending = True
         else:
-            _request_lineage_seed()
+            _request_lineage_seed(_live_roster_of(resolve_aliases))
             # Say that this frame's answer is PROVISIONAL, so a reader can come back for
             # the real one. Without it a cold start is indistinguishable from a store
             # with no lineage at all, and an idle sidebar -- nothing running, no frame
@@ -329,8 +329,32 @@ def _attach_slot_parents(
             row["lineage_pending"] = True
 
 
-def _request_lineage_seed() -> None:
+def _live_roster_of(resolve_aliases: Any) -> "Callable[[], tuple[str, ...]] | None":
+    """A callable naming the live slots' ACP session ids, or None when no state is behind
+    *resolve_aliases*. It is ``DashboardState.spend_slot_by_session``, whose owner is the
+    state the registry lookups need; a stand-in without an owner has no roster."""
+    owner = getattr(resolve_aliases, "__self__", None)
+    if owner is None or not hasattr(owner, "sessions"):
+        return None
+    return lambda: live_acp_sids(owner)
+
+
+def live_acp_sids(state: "DashboardState") -> "tuple[str, ...]":
+    """The ACP session id of every live slot, from the session registry.
+
+    ``mapped_sid`` is an in-memory lookup, so this is safe to call from a thread that
+    holds a lock or from the event loop.
+    """
+    keys = state.spend_slot_by_session()
+    return tuple(sid for key in keys if (sid := state.sessions.mapped_sid(key)))
+
+
+def _request_lineage_seed(roster: "Callable[[], tuple[str, ...]] | None" = None) -> None:
     """Seed the session-tree projection on the maintenance pool. Returns immediately.
+
+    *roster* names the live slots' ACP session ids. It is called on the pool, off the loop:
+    the seed admits those units first past the unit cap, and the projection keeps the
+    callable to pin them against eviction as the roster changes.
 
     One seed in flight at a time. The guard is an in-flight flag rather than a
     once-per-process latch, because the projection legitimately needs re-seeding when
@@ -362,7 +386,9 @@ def _request_lineage_seed() -> None:
         try:
             from kiro_crew.crew_log.session_tree_projection import projection
 
-            projection().ensure_seeded()
+            proj = projection()
+            proj.set_live_roster(roster)
+            proj.ensure_seeded(roster() if roster is not None else ())
         except Exception:
             logger.debug("session tree projection could not be seeded", exc_info=True)
         finally:

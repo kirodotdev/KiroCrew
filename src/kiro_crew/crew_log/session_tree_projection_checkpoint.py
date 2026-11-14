@@ -446,9 +446,19 @@ def _load_checkpoint() -> "_LoadedCheckpoint | None":
     except FileNotFoundError:
         return None
     except (OSError, ValueError, RecursionError):
-        logger.debug("session tree checkpoint unreadable; rebuilding", exc_info=True)
+        logger.warning(
+            "session tree checkpoint is unreadable; a full rebuild from the store follows",
+            exc_info=True,
+        )
         return None
-    if not isinstance(payload, dict) or payload.get("ver") != CHECKPOINT_VERSION:
+    found_version = payload.get("ver") if isinstance(payload, dict) else None
+    if found_version != CHECKPOINT_VERSION:
+        logger.warning(
+            "session tree checkpoint is version %r, expected %d; "
+            "a full rebuild from the store follows",
+            found_version,
+            CHECKPOINT_VERSION,
+        )
         return None
     # The file says which store it describes; a mismatch is DISCARDED. Without this the
     # only thing tying a checkpoint to a store is its path, and a file that reached the
@@ -457,7 +467,10 @@ def _load_checkpoint() -> "_LoadedCheckpoint | None":
     # one's, silently and with no recovery path.
     stored_root = payload.get("root")
     if not isinstance(stored_root, str) or stored_root != _current_root():
-        logger.debug("session tree checkpoint describes another store; rebuilding")
+        logger.warning(
+            "session tree checkpoint describes another store; "
+            "a full rebuild from this store follows"
+        )
         return None
     rows = payload.get("records")
     if not isinstance(rows, list):
