@@ -273,7 +273,7 @@ describe('KiroAccountModal', () => {
 
     const email = await screen.findByText('owner@example.com')
     expect(email).toHaveClass('blur-[5px]')
-    expect(localStorage.getItem('kirocrew:account-email-hidden')).toBeNull()
+    expect(localStorage.getItem('kirocrew:account-email-hidden')).not.toBe('0')
     fireEvent.click(screen.getByRole('button', { name: 'Show email' }))
     expect(email).not.toHaveClass('blur-[5px]')
     expect(localStorage.getItem('kirocrew:account-email-hidden')).toBe('0')

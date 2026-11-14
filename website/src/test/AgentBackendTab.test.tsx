@@ -774,6 +774,7 @@ describe('AgentBackendTab switching', () => {
     )
     const { qc } = wrapWithClient()
     qc.setQueryData(['available-models', 'acp'], [{ name: 'auto' }, { name: 'old-backend-model' }])
+    qc.setQueryData(['kiro-usage'], { used: 1, limit: 10, bonusCredits: [], email: 'old-login@example.com' })
     const reset = vi.spyOn(qc, 'resetQueries')
     await waitFor(() => expect(row('Kiro CLI')).toBeInTheDocument())
     highlight('Claude Code')
@@ -783,6 +784,8 @@ describe('AgentBackendTab switching', () => {
     // The old rows are gone the moment the switch saves, not after a refetch.
     expect(qc.getQueryData(['available-models', 'acp'])).toBeUndefined()
     expect(localStorage.getItem('kc.acp.models.v1')).toBeNull()
+    // So is the usage reading, which names the old harness's login (#36156).
+    expect(qc.getQueryData(['kiro-usage'])).toBeUndefined()
   })
 
   it('leaves the model list alone when the save is rejected', async () => {
