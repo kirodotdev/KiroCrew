@@ -169,7 +169,7 @@ class CancellationCoordinator(ManagerComponent):
                     info._session_sharing = False
                     info._shared_provider = None
                 # Re-acquire a slot through capacity, not blind increment:
-                # the old finally freed our slot and may have drained a queued
+                # the cancelled attempt's finally freed our slot and may have drained a queued
                 # spawn into it. Wait (bounded) for a free slot so recovery
                 # never pushes the pool past max_concurrent. The wait is measured
                 # on the monotonic clock: a wall-clock step forward (an NTP step,

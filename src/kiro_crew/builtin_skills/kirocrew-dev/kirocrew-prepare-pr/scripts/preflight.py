@@ -430,8 +430,8 @@ def _main():
 
     # Divergence vs base (non-destructive fetch).  The fetch MUST succeed —
     # without a fresh origin/<base> ref every subsequent merge-base/rebase
-    # operates on a potentially stale local copy (root cause of the clobber
-    # incident where a force-push carried 114 duplicate commits).
+    # operates on a potentially stale local copy, and a force-push from it can
+    # carry many duplicate commits.
     # Uses an explicit refspec so the remote-tracking ref is always updated
     # regardless of the clone's configured remote.origin.fetch (single-branch
     # clones, narrow CI checkouts).

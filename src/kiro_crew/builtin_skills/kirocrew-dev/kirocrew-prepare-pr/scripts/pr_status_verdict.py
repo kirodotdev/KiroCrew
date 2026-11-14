@@ -535,8 +535,7 @@ def decide(
             + (supersession_eval.get("error") or "supersession could not be evaluated")
         )
     for lane in (supersession_eval or {}).get("blocking_dropped") or []:
-        # Both halves of this text were wrong and each sent the reader somewhere
-        # the code does not look. `/ai-review override <lane> <head>` is an exit
+        # `/ai-review override <lane> <head>` is an exit
         # for EVERY lane, not a new head, and on a fork PR too: the accepted
         # record itself adjudicates every block the lane raised at this head
         # before it was recorded (superseded_verdicts reads it), and the

@@ -325,10 +325,12 @@ async def _run_inner_impl(
     # An explicit per-spawn model wins; otherwise fall back to the
     # configured sub-agent role model (agent.role_models['subagent']). When
     # that role is unpinned the helper returns "" so we omit the kwarg and
-    # keep deferring to the provider's configured default, exactly as before.
+    # defer to the provider's configured default.
+    #
     # The one sharing decision (``_sharing_plan``), which admission also read
     # to price this start: template execution, not ``keep``, the eligibility
     # predicate, and no model / reasoning-effort pin.
+    #
     # An UNPINNED start may take a model from ``model.route``'s derived tiers
     # (``decisions.model_route_derive``, off by default). Decided before the
     # sharing plan, which reads the routed model as a pin: a routed model
