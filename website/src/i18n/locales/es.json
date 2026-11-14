@@ -8709,7 +8709,10 @@
         "folder_agent_label_title": "Revisa el agente predeterminado de una carpeta",
         "folder_agent_label_body": "El agente predeterminado de estas carpetas tiene el nombre de un Bot, pero los chats nuevos en ellas no se ejecutan en ese Bot: {{folders}}. Para usar el Bot, elígelo como agente predeterminado en la configuración de la carpeta.",
         "repeated_failures_title": "Los fallos de herramientas se siguen repitiendo",
-        "repeated_failures_body": "Algunas llamadas a herramientas del agente fallaron una y otra vez esta semana. Abre este aviso para verlas y convertir una en lección."
+        "repeated_failures_body": "Algunas llamadas a herramientas del agente fallaron una y otra vez esta semana. Abre este aviso para verlas y convertir una en lección.",
+        "mcp_share_paused_title": "Un servidor MCP compartido está en pausa",
+        "mcp_share_paused_body": "En pausa: {{names}}. Revisa los servidores compartidos y aprueba la actualización para volver a compartirlo.",
+        "mcp_share_paused_link": "Revisar servidores compartidos"
       },
       "notificationBanner": {
         "dismiss_notification": "Descartar notificación",

@@ -257,6 +257,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "method",
             "(self, approvals: 'LaunchApprovals') -> 'None'",
         ),
+        ("_publish_paused_share_note", "async method", "(self) -> 'None'"),
+        ("_schedule_paused_share_note", "method", "(self) -> 'None'"),
         (
             "_init_mcp_gateway",
             "async method",

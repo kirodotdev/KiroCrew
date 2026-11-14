@@ -3258,7 +3258,10 @@
         "folder_agent_label_title": "Check a folder's Default agent",
         "folder_agent_label_body": "These folders' Default agent has a bot's name, but new chats there do not run on that bot: {{folders}}. To use the bot, pick it as the Default agent in the folder's settings.",
         "repeated_failures_title": "Tool failures keep coming back",
-        "repeated_failures_body": "Some agent tool calls failed again and again this week. Open this note to see them and turn one into a lesson."
+        "repeated_failures_body": "Some agent tool calls failed again and again this week. Open this note to see them and turn one into a lesson.",
+        "mcp_share_paused_title": "A shared MCP server is paused",
+        "mcp_share_paused_body": "Paused: {{names}}. Review shared servers to approve the update and share again.",
+        "mcp_share_paused_link": "Review shared servers"
       },
       "notificationBanner": {
         "dismiss_notification": "Dismiss notification",

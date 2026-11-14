@@ -8291,7 +8291,10 @@
         "folder_agent_label_title": "检查文件夹的默认智能体",
         "folder_agent_label_body": "这些文件夹的默认智能体与某个 Bot 同名，但其中的新聊天不会在该 Bot 上运行：{{folders}}。要使用该 Bot，请在文件夹设置中把它选为默认智能体。",
         "repeated_failures_title": "工具失败反复出现",
-        "repeated_failures_body": "本周智能体的一些工具调用一再失败。打开这条通知查看它们，并把其中一个转成经验。"
+        "repeated_failures_body": "本周智能体的一些工具调用一再失败。打开这条通知查看它们，并把其中一个转成经验。",
+        "mcp_share_paused_title": "有共享的 MCP 服务器已暂停",
+        "mcp_share_paused_body": "已暂停：{{names}}。查看共享服务器并批准更新后，会重新共享。",
+        "mcp_share_paused_link": "查看共享服务器"
       },
       "notificationBanner": {
         "dismiss_notification": "关闭通知",
