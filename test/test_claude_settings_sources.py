@@ -132,8 +132,9 @@ def test_config_dir_defaults_to_claude_config_dir_env(tmp_path, monkeypatch):
     )
 
 
-def test_empty_claude_config_dir_env_falls_back_to_home(tmp_path, monkeypatch):
-    """An empty CLAUDE_CONFIG_DIR is unset, so the default home directory applies."""
+def test_empty_claude_config_dir_env_reads_no_home_file(tmp_path, monkeypatch):
+    """Claude Code keeps an empty CLAUDE_CONFIG_DIR as its config root, its own cwd, so
+    the home directory's settings file is not its user tier."""
     fake_home = tmp_path / "home"
     _write(fake_home / ".claude" / "settings.json", {"availableModels": ["opus"]})
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", "")
@@ -141,7 +142,7 @@ def test_empty_claude_config_dir_env_falls_back_to_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
     assert (
         other_sources_define_available_models(tmp_path / "work", managed_dir=_managed(tmp_path))
-        is True
+        is False
     )
 
 

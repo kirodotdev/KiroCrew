@@ -38,8 +38,12 @@ _RESTRICTED = ["incognito", "temporary"]
 
 
 def _client(tmp_path, mode: str, **kw) -> AcpClient:
+    from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
+
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, **kw)
     client.memory_mode = mode
+    # As after the launch's read of the project .mcp.json files, which found none.
+    client._claude_project_mcp_gate = ProjectMcpGate([], False)
     return client
 
 
@@ -179,9 +183,13 @@ def _claude_factory(tmp_path):
 def test_a_memory_withholding_subagent_turns_auto_memory_off(tmp_path):
     """The factory names the flag, so its catch-all cannot swallow it, and the
     client's envelope then carries the switch in a persistent session too."""
+    from kiro_crew.acp.claude_project_mcp import ProjectMcpGate
+
     provider = _claude_factory(tmp_path)("subagent:s1", cwd=str(tmp_path), include_memory=False)
     assert provider._client.backend == ACP_BACKEND_CLAUDE
     assert provider._client.memory_mode == "persistent"
+    # As after the launch's read of the project .mcp.json files, which found none.
+    provider._client._claude_project_mcp_gate = ProjectMcpGate([], False)
     assert _options(provider._client) == {"env": _OFF, "settings": {"env": _OFF}}
 
 
