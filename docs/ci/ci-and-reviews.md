@@ -544,11 +544,11 @@ commit before they start (see [Fork PRs](#fork-prs)); waiting for all of `CI` pu
 fork PR's AI verdict ~54 minutes out, when the gates that verdict actually needs are
 green after one.
 
-The trigger set is copied from `ci.yml` deliberately, `branches: [main]` included.
-The fork reviewers key on this workflow now, so a wider filter here would newly
-review fork PRs opened against a non-main base — which today get no review at all,
-because they wait on a `CI` run that `ci.yml`'s own branch filter never starts.
-Widening that is a separate decision from moving the gates.
+The trigger set is copied from `ci.yml` deliberately, `branches: [main, "release/**"]`
+included: a backport PR into a release branch needs the same gates and the same
+barrier. The fork reviewers key on this workflow, so a fork PR into a release
+branch starts them too. PR Readiness still holds such a PR for a maintainer,
+because the fork lanes were only ever vetted on PRs to `main`.
 
 The separately required **Internal Content Scan** is not a `fast-gate.yml` job:
 it needs OIDC credentials and runs through `internal-content-scan-gate.yml` for
@@ -4451,7 +4451,10 @@ status plus one `readiness:` label**.
   its own right and not merely CI's precondition — a red gate must red the PR, and
   `await-fast-gate` reports `failure` rather than the gate that actually broke, so
   the readable verdict has to come from the gate workflow itself. It carries CI's
-  `branches: [main]` filter, so it sits in the same stacked-PR carve-out. The
+  `branches: [main, "release/**"]` filter, so it sits in the same stacked-PR
+  carve-out. A release base counts like `main` once that release branch's own
+  `ci.yml` lists `release/**` (the context step reads the base's copy); a release
+  branch cut before then never starts these lanes and keeps the carve-out. The
   aggregator judges that filter against the native-stack trunk (REST
   `stack.base.ref`) when the PR is in a GitHub-native stack, and against the PR's
   own base otherwise. GitHub runs the trunk's `pull_request` workflows on every PR
@@ -5123,9 +5126,10 @@ than a blocker. Readiness therefore says the same thing on a fork as anywhere el
 eligible automated validation passed for this revision. Human approval and branch
 protection remain separate gates.
 
-**A fork PR into a non-default base is held for a maintainer.** `Fast Gate` only
-runs on PRs to `main`, so on a fork PR into a release branch no `fork-*` lane
-starts. Readiness lists each lane that never ran as skipped and publishes the
+**A fork PR into a non-default base is held for a maintainer.** On a stacked base
+`Fast Gate` never runs, so no `fork-*` lane starts. On a release branch `Fast Gate`
+does run, but the `fork-*` lanes were only vetted on PRs to `main`, so the hold
+stays there too. Readiness lists each lane that never ran as skipped and publishes the
 terminal `failure` `fork PR into a non-default base needs maintainer review`, which
 the self-heal sweep does not re-fire on age. Nothing in the product clears the
 hold; a maintainer reviews the PR and decides the merge.

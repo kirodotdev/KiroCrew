@@ -158,7 +158,9 @@ def test_the_trigger_is_filtered_to_the_default_branch() -> None:
     assert (
         central_gate
     ), "ci.yml declares no pull_request branch filter; this test must not pass vacuously"
-    assert _triggers(_load(WATCHER))["workflow_run"]["branches"] == central_gate
+    # ci.yml lists the default branch first, then the release branches it also
+    # tests; a scheduled run only ever happens on the default branch.
+    assert _triggers(_load(WATCHER))["workflow_run"]["branches"] == central_gate[:1]
 
 
 def test_the_job_is_gated_on_a_red_or_timed_out_scheduled_run() -> None:
