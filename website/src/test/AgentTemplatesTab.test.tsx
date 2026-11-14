@@ -730,6 +730,81 @@ describe('AgentTemplatesTab actions', () => {
     expect(screen.queryByRole('button', { name: /Allow background agents/ })).toBeNull()
   })
 
+  it('offers every tool without marking the wildcard auto-approved', async () => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: [], allowedTools: [],
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    const add = await screen.findByTestId('tpl-allow-every-tool', {}, EDITOR_CHAIN)
+    expect(add).toHaveTextContent(/^Allow every tool$/)
+    expect(screen.getByText("This agent lists no tools, so it can't run commands or work with files.")).toBeInTheDocument()
+    fireEvent.click(add)
+    const toggle = screen.getByRole('button', { name: '*: not auto-approved', pressed: false })
+    expect(toggle).toHaveTextContent('not auto-approved')
+    expect(toggle).toHaveAttribute('title', 'not auto-approved')
+    expect(screen.queryByTestId('tpl-allow-every-tool')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*'],
+      allowedTools: [],
+    }), EDITOR_CHAIN)
+  })
+
+  it.each([
+    ['a named tool', ['execute_bash'], '*: not auto-approved', 'not auto-approved'],
+    ['every tool', ['*'], '*: auto-approve ✓', 'Auto-approved — click to ask first'],
+  ])('preserves existing auto-approval for %s when allowing every tool', async (_name, allowedTools, stateLabel, title) => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: [], allowedTools,
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    const add = await screen.findByTestId('tpl-allow-every-tool', {}, EDITOR_CHAIN)
+    expect(add).toHaveTextContent(/^Allow every tool$/)
+    fireEvent.click(add)
+    const toggle = screen.getByRole('button', { name: /^\*:/ })
+    expect(toggle).toHaveAccessibleName(stateLabel)
+    expect(toggle).toHaveAttribute('title', title)
+    expect(toggle).toHaveAttribute('aria-pressed', String(allowedTools.includes('*')))
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*'],
+      allowedTools,
+    }), EDITOR_CHAIN)
+  })
+
+  // The hint follows the backend's `spec_lists_tools`: `"*"` as the whole value
+  // lists every tool, and a list lists tools only with a non-empty name in it.
+  it.each([
+    ['the whole-value "*"', '*', false],
+    ['a list holding only an empty name', [''], true],
+    ['a malformed value', { fs_read: true }, true],
+  ])('reads %s the way the chat notice does', async (_name, tools, hinted) => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools, allowedTools: [],
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    await screen.findByRole('button', { name: 'Add tool' }, EDITOR_CHAIN)
+    expect(screen.queryByTestId('tpl-allow-every-tool') !== null).toBe(hinted)
+  })
+
+  it('keeps a whole-value "*" through an edit to the tool list', async () => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: '*', allowedTools: [],
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    renderTab()
+    expect(await screen.findByRole('button', { name: '*: not auto-approved' }, EDITOR_CHAIN)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Allow background agents/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*', ...SPAWN_FAMILY],
+      allowedTools: [],
+    }), EDITOR_CHAIN)
+  })
+
   it('reports a spawn grant the server cannot declare in the save bar', async () => {
     const reason = "Could not add kirocrew-core: the MCP servers section of this agent's file is malformed, so the tool would never load. Fix that section in the file, then save again."
     mockApi.agentPatch.mockRejectedValue(new StubApiError(409, reason, { error: reason, code: 'control_plane_not_declarable' }))

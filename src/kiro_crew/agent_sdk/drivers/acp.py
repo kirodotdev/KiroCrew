@@ -57,6 +57,7 @@ __all__ = [
     "context_provider_of",
     "crew_loads_spec_steering",
     "projected_session_mcp_servers",
+    "spec_with_default_crew_servers",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
     "claude_adapter_honours_session_options",
@@ -714,6 +715,11 @@ def _with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, An
     except Exception:
         logger.debug("default Crew servers for %r could not be resolved", agent, exc_info=True)
         return spec
+
+
+def spec_with_default_crew_servers(agent: str, spec: dict[str, Any]) -> dict[str, Any]:
+    """*spec* with Crew's default servers added, for a read-only check; see :func:`_with_default_crew_servers`."""
+    return _with_default_crew_servers(agent, spec)
 
 
 def kiro_cli_resolves() -> bool:
