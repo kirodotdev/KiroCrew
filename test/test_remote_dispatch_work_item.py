@@ -319,6 +319,24 @@ async def test_a_duplicate_item_id_is_refused_and_leaves_no_second_slot(state, p
 
 
 @pytest.mark.asyncio
+async def test_an_item_bound_to_a_slot_that_never_came_back_is_dispatched_again(state, preview):
+    # What a create cut off between the bind and the birth line leaves: the item
+    # stored and bound to a worker key no slot holds.
+    mailbox.open_mailbox(mailbox.parse_work_item(_work_item()), "chat-cut-off")
+
+    # Before the startup restore has run, a missing slot may still be on its way back.
+    status, body = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
+    assert status == 409 and body["code"] == wl.CODE_DUPLICATE_ITEM, body
+    assert wl.read_binding("chat-cut-off") == (f"hub:{HUB_CONDUCTOR}", "it_0000abcd")
+
+    state.open_slots_restored = True
+    status, body = await _call(state, "POST", "/api/chat/slots", {"work_item": _work_item()})
+    assert status == 200, body
+    assert wl.read_binding(body["key"]) == (f"hub:{HUB_CONDUCTOR}", "it_0000abcd")
+    assert wl.read_binding("chat-cut-off") is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("work_item", "code"),
     [
