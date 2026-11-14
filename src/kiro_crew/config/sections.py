@@ -383,6 +383,7 @@ from kiro_crew.config.sections_limits import (  # noqa: F401
     AutocompactPctError,
     ResourceLimitsConfig,
     _limit_int,
+    crew_autocompact_pct_refusal,
     parse_autocompact_pct,
 )
 from kiro_crew.config.sections_session import (  # noqa: F401

@@ -2464,6 +2464,29 @@ write, so a caller that must never leave a new Bot in `trust` pins it there
 instead of in a later PUT. A stored choice is applied as stored, a grant already on the slot is
 kept, and the seed runs once per in-memory slot (`_member_approval_seeded`).
 YOLO is never a Bot setting: it is process-global.
+The **Summarize old messages at** row is the Bot's `autocompact_pct`
+(`agents.<name>.autocompact_pct`, #37072): how full each of its chats may get,
+as a share of the model's context window, before it compacts. A Bot's thread
+has no context meter (`CrewComposer` drops the composer's session chrome), so
+this row is how the person bounds what every wake re-sends. Its options are
+Inherited (stored as `0`; the page names the global `session.autocompact_pct`
+it follows as the default in Settings → Chat, read from the thread's
+`GET /api/chat/slots/{slot}/autocompact`, re-read each time the picker opens;
+a failed read shows a plain notice with Try again, and Inherited still names
+where its value comes from, without a number; on a
+harness that compacts on its own, such as KAS, it names that harness instead,
+by its display name (`acpBackendName`),
+as the chat composer's meter does, since the global is not used there)
+and 20 to 90 percent in steps of ten, plus a stored value outside those steps.
+A pick writes the record only: the Bot's sessions read the crew default live
+(`crew_autocompact_pct`), and a thread's own override still outranks it, which
+the page's caption says when the thread holds one; the page then offers
+**Clear this chat's own threshold**, which posts `pct: null` to the thread's
+`/autocompact` route (the Bot's thread has no context meter to clear it from)
+and leaves the record alone. `PUT /api/agents/{name}`
+takes `autocompact_pct` as `0` or a number from 5 to 90, checked by
+`crew_autocompact_pct_refusal` over the slot route's own `parse_autocompact_pct`, and refuses anything else (a bool included) with 400 `invalid_autocompact_pct` before any write;
+`GET /api/members` carries it on each row.
 The permission PUT is compare-and-set: the profile sends
 `expected_approval_mode` (the value it last read), and the server refuses a
 stale write with 409 `approval_mode_conflict` carrying the stored value, which
