@@ -426,6 +426,7 @@ class TestTheWarmPoolClaim:
         )
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         manager = SessionManager(cfg, factory)
@@ -472,6 +473,7 @@ class TestTheWarmPoolClaim:
         )
         pooled.is_process_alive = MagicMock(return_value=True)
         pooled.cwd = ""
+        pooled.kas_memory_mode = ""
 
         factory = MagicMock(return_value=pooled)
         manager = SessionManager(cfg, factory)

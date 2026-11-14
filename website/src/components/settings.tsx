@@ -26,6 +26,8 @@ import { RadioChipGroup, radioChip } from './RadioChipGroup'
 
 interface SettingsToggleProps {
   label: string
+  /** Status beside the label, kept separate from its searchable and accessible name. */
+  labelBadge?: React.ReactNode
   // ReactNode (not just string) so callers can pass rich copy — e.g. the
   // Telegram forum toggle describes setup with inline <span className="font-mono">
   // fragments. The render path already wraps it in a <div>, so any node is safe.
@@ -73,7 +75,7 @@ interface SettingsToggleProps {
   anchor?: boolean
 }
 
-export function SettingsToggle({ label, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+export function SettingsToggle({ label, labelBadge, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
   // Busy refuses the row click. The row is disabled for assistive tech while it
   // runs -- `aria-disabled` plus `aria-busy`, out of the tab order -- so a screen
   // reader does not announce an active button that does nothing. Focus is not
@@ -95,7 +97,8 @@ export function SettingsToggle({ label, description, descriptionBadge, hint, che
     <Clickable {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} aria-busy={busy || undefined} className={`flex items-center justify-between py-1.5 group ${inert ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`} onClick={e => { if (!inert && !fromHint(e)) onChange(!checked) }} disabled={inert}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
-          <div className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
+          <div className="min-w-0 text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors">{label}</div>
+          {labelBadge && <span className="shrink-0">{labelBadge}</span>}
           {/* Marked, not handled: `fromHint` above reads this attribute off the
               event target, so the tip needs no handler of its own. */}
           {hint && <span data-settings-hint><InfoTip text={hint} placement="top" /></span>}

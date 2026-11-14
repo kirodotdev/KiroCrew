@@ -201,6 +201,22 @@ def test_agent_spawn_min_memory_gb_parsed_and_round_trips():
     assert reloaded.agent.spawn_min_memory_gb == 9.5
 
 
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param({"agent": {"orchestrator_memory": True}}, True, id="enabled"),
+        pytest.param({"agent": {"orchestrator_memory": False}}, False, id="disabled"),
+        pytest.param({"agent": {}}, False, id="absent-default"),
+    ],
+)
+def test_orchestrator_memory_loads_from_disk_and_round_trips(document, expected) -> None:
+    loaded = _load_from_dict(document)
+    assert loaded.agent.orchestrator_memory is expected
+
+    reloaded = _load_from_dict(loaded.to_dict())
+    assert reloaded.agent.orchestrator_memory is expected
+
+
 class TestSessionControlLoad:
     """agent.session_control load-time coercion.
 

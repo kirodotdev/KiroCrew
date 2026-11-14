@@ -181,6 +181,137 @@ SQLite authority with no JSONL fallback. Global V1 and each configured named
 store are separate destinations selected by the owning execution context.
 See [Memory across surfaces and channels](#memory-across-surfaces-and-channels).
 
+### The engine's own memory store (`agent.orchestrator_memory`)
+
+Everything above is Kiro Crew's memory. The KAS engine keeps a SEPARATE local
+store of the host's own memories, which Kiro Crew neither writes nor reads: it
+is reached only by the engine, inside the session.
+
+`agent.orchestrator_memory` (default off, KAS only) controls whether Crew states
+a native memory policy for the sessions it starts. While it is off, Crew
+sends no native memory setting on `initialize`, `session/new` or `session/load`,
+and checks no memory acknowledgement, so those sessions run on the engine's own
+defaults. While it is on, Crew explicitly disables native memory on local KAS
+processes and on sessions without a recall grant, and grants read-only recall
+to one session shape; it then does not depend on the engine's or the device's
+defaults. Changing the setting does not rekey anything already running: a live
+session keeps the policy its SID stated, none included, and a reload of it or
+a fresh conversation on its provider re-sends exactly that, while a running KAS
+process keeps the `initialize` default it started with. Both follow the setting
+after their next restart.
+`acp/kas_memory.py` owns both halves of it.
+
+**Which sessions ask, and for what.** `memory_plan` returns a `MemoryPlan`
+whose `mode` is `read_only` only for a session that meets all of: the key's
+namespace is owner-minted (`constants.is_owner_minted_session_key`, so a
+channel thread, a sub-agent, a cron run and a task-runner step are refused by
+namespace); cold allocation also requires a template execution with no member
+identity or app attribution, no selected Crew member, and no registered Bot
+worker. Dashboard keys alone grant nothing: Bot workers, member child chats and
+member new tabs can use ordinary dashboard keys. The gateway's in-memory and
+protected durable member vouches withhold recall even if the transcript is
+rewritten to claim an owner execution. Transcript facts can withhold a grant;
+they cannot override those gateway facts. Bot DM keys remain excluded. The
+session has no channel dispatcher, Slack link (paused links included), outbound
+mirror or inbound-resume mirror. No app owns the session; the chat's privacy
+mode reads stored memory at all (`persistent` or `incognito`, never `temporary`); and nobody but the local
+operator can reach this Crew (`crew_reachable_by_others`, which fails closed —
+an unreadable sharing mode counts as shared, because the host's memories are
+one person's and a shared Crew answers every admitted person's turns from the
+same store). While the setting is on, every other local KAS session states
+`disabled` for itself; while it is off, no session states a mode. Other
+harnesses carry no native memory setting. Kiro Cloud Sessions are excluded: their relay does not forward this
+policy, so the toggle grants nothing and rotates no cloud SID, and the Kiro
+Cloud harness (`acp/harness/kas_cloud.py`) removes the memory setting from its
+own requests, so the runtime validates no acknowledgement for them. A remote
+workspace whose KAS engine still runs locally is distinct and remains eligible.
+Crew global memory, consolidation and Bot/V2 store selection are unchanged.
+
+**What reaches the wire.** While the setting is on, local KAS `initialize`
+carries
+`clientCapabilities._meta.kiro.settings.memory = {"mode": "disabled", "reflection": false}`,
+and every local `session/new` states its own pair in
+`_meta.kiro.settings.memory`. A session that requests no mode of its own, such
+as a worker that bypasses session allocation, is resolved to `disabled` by the
+runtime (`kas_memory.runtime_memory_mode`), which reads the setting when the
+process spawns and when the session starts (`orchestrator_memory_enabled`;
+unreadable config counts as off). This prevents device or native defaults from
+filling either field. A live reload, or a fresh conversation on the same
+provider, re-sends the mode the SID stated (recorded on its handle, `""` for
+none) and does not resolve it again. Other initialization settings are preserved. While the
+setting is off none of these requests carries a memory setting.
+Reflection is stated rather than omitted so the session's stored engine record
+names both halves of the request. `read_only` grants the engine's memory index
+in the session's first message and the memory tool's reads; it refuses every
+add, update and delete, and all background reflection, in the engine's own
+policy. Because a `customAgents` entry's `tools` is an allowlist and the shipped
+list does not name the engine's memory tool, a reading session also gets
+`memory` appended to each entry's `tools` (`mount_memory_tool`; `"*"` already
+covers it, and an entry that declares no `tools` gains none). It is NOT added to
+`allowedTools`. KAS's native context and permission policy owns whether an
+index or a retrieval asks approval; Crew does not change permission behavior.
+
+Before a recalling session receives any prompts, Crew requires the response's
+`_meta.memoryConfig` to confirm `read_only` and literal `reflection: false`, plus
+a supported `memoryReflection` select config option reporting `off`. The mode
+checked is the one the request carried after the host's last word on it
+(`kas_memory.sent_memory_mode`). Missing,
+malformed or mismatched acknowledgements refuse the session, including late
+startup adoption and reloads. A failed new session is torn down; a refused load
+is evicted without deleting its stored conversation. Disabled sessions reject
+any returned mismatched policy. An engine without native memory may omit its
+acknowledgement for a disabled request; omission never permits recall. A request
+that states no mode checks no acknowledgement, whatever policy the engine
+reports.
+
+**New chats only, and how the setting is withdrawn.** The engine honours a
+session's STORED memory record over whatever a `session/load` names once that
+record is explicit, so the setting cannot be applied or withdrawn by a reload.
+While the setting is on, Kiro Crew sends the saved SID's policy on
+`session/load` (`disabled` when the mapping recorded none) as well as
+re-sending its agent definitions and memory tool mount. The policy protects a load whose
+record is missing; it does not replace an explicit stored policy. The response
+must confirm the expected pair before the session can receive prompts. A chat
+that already has an engine session retains its saved mode. While the setting is on,
+KAS sessions bypass the warm pool because each pooled engine session was
+created before its eventual session key and memory mode were known.
+
+Withdrawal is a session rotation instead. `SessionMap` records the actual mode
+beside the SID (`KAS_MEMORY_FIELD`). A mapping write distinguishes an omitted
+mode, which preserves the mapped SID's mode in `seed_conversation`, from `""`,
+which records no addon policy for a non-KAS or cloud SID or for one created
+while the setting was off. Local excluded SIDs created while it was on record
+`disabled`. Clearing a SID clears its mode too. If
+a compaction restart cannot start its successor, restoring the kept SID also
+records the live provider's actual mode. On the next cold start,
+`memory_plan` returns a plan with `MemoryPlan.rotate` set when the recorded mode
+no longer matches the grant. Recorded `read_only`
+against anything else — the setting turned off, the chat switched to
+`temporary`, a second person now on the Crew, a member/worker identity or a
+channel link — drops the resumable session id
+(`clear_sid`) and takes the same fresh-session-plus-Kiro-Crew-replay path a
+provider switch takes (`session_allocation_parts/get_or_create.py`). The
+comparison is one-directional on purpose: turning the setting ON never rotates
+anything, so an existing chat is left alone; its resume states `disabled`, and
+a saved session whose engine record contradicts that is refused and replaced
+by a fresh session plus replay. With the setting off, a SID recorded
+`disabled` resumes without stating a policy and is re-saved with no mode; its
+engine record keeps whatever policy it was created with.
+
+A successful load uses and re-saves the recorded mode, because that is the
+policy the loaded SID actually has; its re-sent agent definitions mount the
+memory tool only for that mode. If load falls back to `session/new`, the new
+session uses and saves the current requested mode. A live MCP projection reload
+carries the provider's actual SID mode for the same reason. Edit & Resend also
+records that mode alongside its replacement SID before another turn can use it.
+
+Eligibility is checked at cold allocation, not on live turns or link actions.
+Linking an already-recalling session does not revoke its active policy or scrub
+recalled material from its context or transcript. Even a cold rotation replays
+Crew history; it prevents further native recall but does not sanitize earlier
+answers. Blocking or scrubbing active link actions would require a separate
+channel-lifecycle change and is outside this Preview's native-memory scope.
+
 ## Memory (`memory.py`)
 
 Global V1 uses structured files under `~/.kiro/crew/workspace/memory/`:

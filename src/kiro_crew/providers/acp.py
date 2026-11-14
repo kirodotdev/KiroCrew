@@ -219,6 +219,12 @@ class AcpProvider(LLMProvider):
             kwargs["agent"] = agent
         self.member_context = member_context
         self.memory_mode = memory_mode
+        # Allocation sets the session's own mode; ``None`` leaves it to the runtime,
+        # which disables KAS memory only while orchestrator memory is on. After a
+        # start it holds the mode the session actually stated.
+        self.kas_memory_mode: str | None = None
+        # A failed load creates a SID under the new request, not the saved policy.
+        self.kas_memory_new_mode: str | None = self.kas_memory_mode
         # The account era this start read and the reader it came from, written by
         # the allocator immediately before ``start()``. The chat-sharing placement
         # keys a shared process on the era and re-reads it after acquiring

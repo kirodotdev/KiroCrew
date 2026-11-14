@@ -64,6 +64,7 @@ from kiro_crew.runtime_ownership import (
     is_shared_chat_runtime,
     release_session_lease,
 )
+from kiro_crew.session_allocation_parts import memory_policy as _memory_policy
 from kiro_crew.session_allocation_parts.errors import (
     SessionBusyError,
     SessionClosingError,
@@ -673,6 +674,7 @@ async def _get_or_create_impl(
                             session.provider.session_id,
                             provider=constants.provider_label_claude,
                             cwd="" if session.cwd_retracted else session.provider.cwd,
+                            kas_memory="",
                         )
                     # The semaphore may be held for a full turn; claim it
                     # only after releasing the global registry lock.
@@ -921,6 +923,8 @@ async def _get_or_create_impl(
         owner._pool_cwd,
     )
     provider_switched = False
+    plan = None
+    memory_withdrawn = False
     cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
     if not owner._pool_size:
         pool_decision = "disabled"
@@ -969,6 +973,8 @@ async def _get_or_create_impl(
         # ``""`` is a Kiro request, and under a non-Kiro default the pooled
         # child is on the wrong backend for it too.
         pool_decision = "bypass_backend_override"
+    elif _memory_policy.warm_pool_requires_cold_start(owner):
+        pool_decision = "bypass_restricted_context"
     elif await _session_runs_remotely(key):
         # A pooled child is a LOCAL engine: claiming it would run a remote session here.
         pool_decision = "bypass_remote_environment"
@@ -1196,6 +1202,14 @@ async def _get_or_create_impl(
             cast(Any, provider).app_launch_agent = app_launch_agent
             # Trusted: the caller's slot app, never transcript metadata.
             cast(Any, provider).owning_app = owning_app
+            plan = await _memory_policy.configure_provider_memory(
+                provider,
+                owner=owner,
+                session_key=key,
+                execution=execution,
+                channel_id=channel_id,
+                crew_agent=str(extra_factory_kwargs.get("crew_agent") or ""),
+            )
         if memory_mode != "persistent":
             resume_sid = None
         provider_switched = False
@@ -1227,6 +1241,17 @@ async def _get_or_create_impl(
                 provider.cwd,
             )
             resume_sid = None
+
+        memory_withdrawn = bool(resume_sid) and plan is not None and plan.rotate
+        if memory_withdrawn:
+            resume_sid = None
+            owner._session_map.clear_sid(key)
+            self._deps.logger.info(
+                "Native memory withdrawn from %s; replaying into a fresh session",
+                key,
+            )
+        elif resume_sid and plan is not None:
+            cast(Any, provider).kas_memory_mode = plan.resume_mode
 
         # Whether this start asks its process to restore a saved session.
         restores_history = bool(resume_sid)
@@ -1496,7 +1521,7 @@ async def _get_or_create_impl(
                     and provider.defer_replay_sid_promotion is True
                     and provider_label == constants.provider_label_default
                 )
-                if provider_switched or replay_needed:
+                if provider_switched or memory_withdrawn or replay_needed:
                     session.provider_switch_replay = True
                 if replay_needed and provider_label != constants.provider_label_default:
                     owner._session_map.clear_sid(key)
@@ -1554,6 +1579,7 @@ async def _get_or_create_impl(
                             sid,
                             provider=provider_label,
                             cwd=provider_cwd,
+                            kas_memory=cast(Any, provider).kas_memory_mode,
                         )
                     elif sid:
                         self._deps.logger.info(
@@ -1569,6 +1595,7 @@ async def _get_or_create_impl(
                             sid,
                             provider=constants.provider_label_claude,
                             cwd=provider_cwd,
+                            kas_memory="",
                         )
 
                 # Cleanup owns its task slot; allocation only asks the

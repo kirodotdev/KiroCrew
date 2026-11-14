@@ -124,6 +124,7 @@ async def create_session(
     session_key: str = "",
     channel_id: str = "",
     memory_mode: str = "persistent",
+    kas_memory_mode: str | None = None,
     on_gate_acquired: Callable[..., None] | None = None,
     late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
     on_gate_queued: Callable[..., None] | None = None,
@@ -171,6 +172,11 @@ async def create_session(
     starts) takes the permit from the loop's separate one-permit ``_bg`` gate
     instead, so those starts never hold or queue for a user's permit
     (``runtime_start.bg_runtime_session_start_gate``).
+
+    ``kas_memory_mode`` is the KAS local-memory mode this session states for
+    itself (:mod:`kiro_crew.acp.kas_memory`), and ``""`` states none. ``None``
+    leaves it to :func:`~kiro_crew.acp.kas_memory.runtime_memory_mode`. The mode
+    actually sent is recorded on the handle; other harnesses never send one.
     """
     if memory_mode not in {"persistent", "incognito", "temporary"}:
         raise ValueError("Invalid session memory mode")
@@ -415,10 +421,14 @@ async def create_session(
             without_excluded_stubs(wire_servers, kas_agents)
         )
     withheld_notice = "\n\n".join(n for n in (withheld_notice, *remote_notices) if n)
+    from kiro_crew.acp import kas_memory
+
+    kas_memory_mode = await kas_memory.runtime_memory_mode(self.acp_backend, kas_memory_mode)
     params = build_session_new_params(
         session_work_dir,
         mcp_servers=wire_servers,
         kas_custom_agents=kas_agents,
+        kas_memory_mode=kas_memory_mode,
     )
     # The host's last word on the request and on the agent it activates
     # (harness-parity H13): every served host returns both unchanged, except
@@ -427,6 +437,8 @@ async def create_session(
     params, agent = self._harness.session_request(
         METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
     )
+    # The policy the session was actually asked for, which KAS must acknowledge.
+    kas_memory_mode = kas_memory.sent_memory_mode(params)
 
     projected_sources: dict[str, str] = {}
     if self._member_context:
@@ -522,6 +534,7 @@ async def create_session(
             projected_sources=projected_sources,
             payload_snapshot=payload_snapshot,
             late_adopter=late_adopter,
+            kas_memory_mode=kas_memory_mode,
             memory_mode=memory_mode,
             session_key=session_key,
             member_dispatch_mounted=member_mounted,
@@ -546,11 +559,14 @@ async def create_session(
     # id, so an arm inside that already tore it down is not repeated. Shielded
     # so a second cancel cannot skip the host-side teardown.
     try:
+        self._unclaimed_new_sessions.add(session_id)
+        kas_memory.require_memory_ack(resp, kas_memory_mode)
         return await self._finish_create_session(
             session_id,
             resp,
             buffered_init=buffered_init,
             memory_mode=memory_mode,
+            kas_memory_mode=kas_memory_mode,
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
@@ -605,6 +621,7 @@ def _collect_late_start(
     projected_sources: dict[str, str],
     payload_snapshot: Any,
     late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
+    kas_memory_mode: str = "",
     memory_mode: str = "persistent",
     session_key: str = "",
     member_dispatch_mounted: bool = False,
@@ -675,11 +692,15 @@ def _collect_late_start(
     if late_adopter is not None:
 
         async def _adopt(session_id: str, resp: dict[str, Any]) -> bool:
+            from kiro_crew.acp import kas_memory
+
+            kas_memory.require_memory_ack(resp, kas_memory_mode)
             handle = await self._finish_create_session(
                 session_id,
                 resp,
                 buffered_init=collector.take_init_frames(session_id),
                 memory_mode=memory_mode,
+                kas_memory_mode=kas_memory_mode,
                 agent=agent,
                 crew_agent=crew_agent,
                 kas_agents=kas_agents,
@@ -767,6 +788,7 @@ async def _finish_create_session(
     projected_sources: dict[str, str],
     payload_snapshot: Any,
     memory_mode: str = "persistent",
+    kas_memory_mode: str = "",
     session_key: str = "",
     member_dispatch_mounted: bool = False,
     request_sent_at: float | None = None,
@@ -813,6 +835,7 @@ async def _finish_create_session(
         mcp_report=report,
     )
     handle.memory_mode = memory_mode
+    handle.kas_memory_mode = kas_memory_mode
     # The token this session's stubs carry, so a later claim (warm-pool
     # rekey) can name THIS session instead of every session on the runtime.
     handle.stub_session_token = stub_token

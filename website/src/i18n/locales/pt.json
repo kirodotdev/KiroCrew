@@ -15887,6 +15887,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "Memória do orquestrador",
+        "orchestrator_memory_description": "Use memórias existentes do Kiro em chats pessoais. As alterações são aplicadas ao iniciar uma sessão do agente; inicie um novo chat para usar a configuração atualizada.",
+        "orchestrator_memory_hint": "Usa memórias salvas em outros clientes Kiro junto com a memória existente do {{productName}}. Aqui, as memórias do Kiro são somente leitura. O comportamento de aprendizado do {{productName}} e a memória separada de cada Bot não mudam. As memórias do Kiro ficam disponíveis em chats Anônimo, mas são excluídas de chats Temporário.",
+        "orchestrator_memory_preview": "Prévia",
+        "orchestrator_memory_save_failed": "Não foi possível salvar a memória do orquestrador. Tente novamente.",
         "approval_agent_spec": "Pergunta antes de cada ferramenta porque o {{productName}} manda.",
         "approval_seeded_settings": "Pergunta antes de cada ferramenta só se as próprias configurações disserem isso. O {{productName}} escreve esse ajuste e não consegue confirmar que surtiu efeito.",
         "approval_session_config": "Pergunta antes de rodar um comando ou alterar um arquivo. O {{productName}} liga isso e confere. Leituras simples não perguntam.",

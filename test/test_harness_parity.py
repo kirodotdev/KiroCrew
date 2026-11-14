@@ -1403,6 +1403,13 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "
     "setting used to bound skill metadata. Other harnesses must keep their own spawn plans.",
     (
+        "src/kiro_crew/acp/runtime_spawn_launch.py",
+        "_initialize_handshake",
+    ): "``_meta.kiro.settings.memory`` is a KAS engine setting: while orchestrator memory "
+    "is on, a local KAS process starts with native memory disabled so no device default "
+    "can turn it on. No other harness defines the key, so a positive identity test keeps "
+    "it off their handshake.",
+    (
         "src/kiro_crew/acp/runtime_session_setup.py",
         "_guard_unresolved_mcp_refs",
     ): "Only kiro-cli launches the agent spec's own ``mcpServers`` (via ``--agent``) and "

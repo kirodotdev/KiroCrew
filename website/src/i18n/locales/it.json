@@ -15887,6 +15887,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "Memoria dell’orchestratore",
+        "orchestrator_memory_description": "Usa i ricordi esistenti di Kiro nelle chat personali. Le modifiche si applicano all’avvio di una sessione dell’agente; avvia una nuova chat per usare l’impostazione aggiornata.",
+        "orchestrator_memory_hint": "Usa i ricordi salvati in altri client Kiro insieme alla memoria esistente di {{productName}}. Qui i ricordi di Kiro sono di sola lettura. Il comportamento di apprendimento di {{productName}} e la memoria separata di ogni Bot restano invariati. I ricordi di Kiro sono disponibili nelle chat Incognito, ma esclusi dalle chat Temporaneo.",
+        "orchestrator_memory_preview": "Anteprima",
+        "orchestrator_memory_save_failed": "Impossibile salvare la memoria dell’orchestratore. Riprova.",
         "approval_agent_spec": "Chiede prima di ogni strumento, perché {{productName}} glielo impone.",
         "approval_seeded_settings": "Chiede prima di ogni strumento solo se le sue impostazioni lo dicono. {{productName}} scrive quell'impostazione e non può confermare che abbia avuto effetto.",
         "approval_session_config": "Chiede prima di eseguire un comando o modificare un file. {{productName}} lo attiva e lo verifica. Le semplici letture non chiedono.",

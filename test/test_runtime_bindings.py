@@ -93,7 +93,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     # Both take ``request_identity``: the vault identity the ``session/new`` went out
     # under, for the KAS catalog recorder (``kas_model_catalog``), and ``zero_tools``:
     # the mirror's ``"tools": []`` answer the handle refuses every permission request on.
-    "_collect_late_start": ("function", False, "06d7a01b4c51", "runtime_session_create"),
+    "_collect_late_start": ("function", False, "e0ab5550353e", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -104,7 +104,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "37a8d853eba4", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "6318c3a7d165", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
@@ -216,7 +216,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "agent_version": ("property", False, "bb418bb7ece8", "runtime_class"),
     "begin_mcp_reattempt": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "begin_mcp_sign_in": ("function", False, "dc7c165669b1", "runtime_host_requests"),
-    "create_session": ("function", True, "155a6120083d", "runtime_session_create"),
+    "create_session": ("function", True, "ef390671e691", "runtime_session_create"),
     "death_summary": ("function", False, "f21e39ec5ffb", "runtime_liveness"),
     "entitlement_probe_result_at": ("property", False, "59162e39f6f1", "runtime_class"),
     "evict_session": ("function", True, "c284282f8a1d", "runtime_session_registry"),
@@ -228,7 +228,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "is_cloud_sandbox": ("property", False, "a6632a57e602", "runtime_class"),
     "keep_record_on_teardown": ("function", False, "4f730038263e", "runtime_session_registry"),
     "kill": ("function", True, "4f9ced5c4b86", "runtime_tree_kill"),
-    "load_session": ("function", True, "4f88ef29453b", "runtime_session_load"),
+    "load_session": ("function", True, "9b8b5aab73cc", "runtime_session_load"),
     "mark_turn_active": ("function", False, "a3b3a732c817", "runtime_session_registry"),
     "mcp_sign_in_holds": ("function", False, "dc7c165669b1", "runtime_host_requests"),
     "pid": ("property", False, "8dc15be1dfda", "runtime_class"),

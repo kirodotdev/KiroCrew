@@ -19,6 +19,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from acp_runtime_helpers import _fast_no_report_ceiling  # noqa: F401
+from acp_runtime_helpers import _pinned_kiro_cli_version  # noqa: F401
+from acp_runtime_helpers import _stub_sel_for_permission_tests  # noqa: F401
+from acp_runtime_helpers import _make_runtime
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -27,6 +31,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     METHOD_SESSION_CLOSE,
+    METHOD_SESSION_LOAD,
 )
 from kiro_crew.testing.wait import await_until, until_parked
 
@@ -181,6 +186,104 @@ class TestTheApply:
         assert provider._handle is runtime.new_handle
         assert provider._mcp_reinject_pending is False
         provider.reclaim.assert_called_once_with()  # type: ignore[attr-defined]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("mode", "expected_tools"),
+        [("read_only", ["fs_read", "memory"]), ("disabled", ["fs_read"])],
+    )
+    async def test_the_reloaded_frame_keeps_the_sessions_memory_mount(
+        self, monkeypatch, mode, expected_tools
+    ) -> None:
+        from kiro_crew.acp.harness import SessionExtras
+
+        runtime, _, _ = _make_runtime()
+        runtime._can_load_session = True
+        runtime._acp_backend = ACP_BACKEND_KAS
+        sent: list[tuple[str, dict]] = []
+
+        async def send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                return {
+                    "modes": {"currentModeId": "kirocrew"},
+                    "models": [],
+                    "_meta": {"memoryConfig": {"mode": mode, "reflection": False}},
+                    "configOptions": [
+                        {
+                            "id": "memoryReflection",
+                            "type": "select",
+                            "currentValue": "off",
+                            "options": [{"value": "off", "name": "Off"}],
+                        }
+                    ],
+                }
+            return {}
+
+        async def agents(agent, **_kwargs):
+            return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": ["fs_read"]}])
+
+        monkeypatch.setattr(runtime, "_send_and_await", send)
+        monkeypatch.setattr(runtime, "_kas_custom_agents", agents)
+        provider = AcpSessionProvider(
+            _handle(),
+            runtime,
+            session_key="dashboard:abc",
+            kas_memory_mode=mode,
+        )
+        provider.reclaim = MagicMock()  # type: ignore[method-assign]
+        provider.mark_mcp_config_changed()
+
+        await provider.apply_pending_mcp_reinjection()
+
+        load = next(params for method, params in sent if method == METHOD_SESSION_LOAD)
+        (definition,) = load["_meta"]["kiro"]["customAgents"]
+        assert definition["tools"] == expected_tools
+        assert load["_meta"]["kiro"]["settings"]["memory"] == {"mode": mode, "reflection": False}
+
+    @pytest.mark.asyncio
+    async def test_a_session_that_stated_no_policy_reloads_without_one_after_the_setting_turns_on(
+        self, monkeypatch
+    ) -> None:
+        """A live SID keeps its own policy: turning orchestrator memory on does
+        not make its reload ask for ``disabled`` against the engine's stored record."""
+        from kiro_crew.acp import kas_memory
+        from kiro_crew.acp.harness import SessionExtras
+
+        runtime, _, _ = _make_runtime()
+        runtime._can_load_session = True
+        runtime._acp_backend = ACP_BACKEND_KAS
+        sent: list[tuple[str, dict]] = []
+
+        async def send(method, params, timeout=None):
+            sent.append((method, params))
+            if method == METHOD_SESSION_LOAD:
+                # The engine's own default for a session created with no policy.
+                return {
+                    "modes": {"currentModeId": "kirocrew"},
+                    "models": [],
+                    "_meta": {"memoryConfig": {"mode": "read_write", "reflection": True}},
+                }
+            return {}
+
+        async def agents(agent, **_kwargs):
+            return SessionExtras(custom_agents=[{"id": agent, "prompt": "p", "tools": ["fs_read"]}])
+
+        monkeypatch.setattr(runtime, "_send_and_await", send)
+        monkeypatch.setattr(runtime, "_kas_custom_agents", agents)
+        monkeypatch.setattr(kas_memory, "orchestrator_memory_enabled", lambda: True)
+        old = _handle()
+        provider = AcpSessionProvider(old, runtime, session_key="dashboard:abc", kas_memory_mode="")
+        provider.reclaim = MagicMock()  # type: ignore[method-assign]
+        provider.mark_mcp_config_changed()
+
+        await provider.apply_pending_mcp_reinjection()
+
+        load = next(params for method, params in sent if method == METHOD_SESSION_LOAD)
+        assert "settings" not in load["_meta"]["kiro"]
+        assert provider._handle is not old
+        assert provider._handle.kas_memory_mode == ""
+        assert provider._mcp_reinject_pending is False
 
     @pytest.mark.asyncio
     async def test_the_load_runs_inside_the_record_keeping_scope(self) -> None:

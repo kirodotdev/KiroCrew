@@ -193,6 +193,7 @@ class _SessionMapPort(Protocol):
         *,
         provider: str,
         cwd: str | None = None,
+        kas_memory: str | None = None,
     ) -> None: ...
 
     async def aclose(self) -> None: ...

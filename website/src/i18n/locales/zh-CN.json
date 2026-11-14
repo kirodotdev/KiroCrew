@@ -15083,6 +15083,11 @@
     },
     "developer": {
       "agentBackendTab": {
+        "orchestrator_memory_label": "编排器记忆",
+        "orchestrator_memory_description": "在个人聊天中使用 Kiro 已有的记忆。更改在智能体会话启动时生效；请开始新聊天以使用更新后的设置。",
+        "orchestrator_memory_hint": "将其他 Kiro 客户端中保存的记忆与 {{productName}} 现有的记忆一起使用。Kiro 记忆在这里为只读。{{productName}} 的学习行为和每个 Bot 各自独立的记忆保持不变。Kiro 记忆可在隐身聊天中使用，但不会用于临时聊天。",
+        "orchestrator_memory_preview": "预览",
+        "orchestrator_memory_save_failed": "无法保存编排器记忆设置，请重试。",
         "approval_agent_spec": "每次用工具前都会先问，因为 {{productName}} 就是这么定的。",
         "approval_seeded_settings": "只有它自己的设置这么写时，才会每次用工具前先问。{{productName}} 会写入这项设置，但无法确认是否真的生效。",
         "approval_session_config": "运行命令或改动文件前会先问。{{productName}} 打开这个开关并做检查。只是读取时不会问。",

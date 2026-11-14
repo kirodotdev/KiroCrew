@@ -1281,7 +1281,11 @@ class CompactionCoordinator:
         if session.retire_on_identity_change:
             return  # a retiring session must not re-point the key at itself
         if sid:
-            self._owner._session_map.set(key, sid)
+            self._owner._session_map.set(
+                key,
+                sid,
+                kas_memory=getattr(session.provider, "kas_memory_mode", ""),
+            )
 
     def _wake_drains(self, key: str) -> None:
         """Wake each channel with a message queued on *key*, read after the release.

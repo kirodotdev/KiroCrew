@@ -11,9 +11,10 @@ live in the :mod:`kiro_crew.session_allocation_parts` package: ``get_or_create``
 (claiming or cold-starting the session for a key) and ``companions`` (companion and
 run runtimes). Each member there is a function whose first parameter is ``self``,
 bound on the class by name, and the refusals the class and ``get_or_create`` raise
-live in its ``errors`` module. Every project name this module bound before the owners
-existed still resolves here, and :mod:`kiro_crew._facade_mirror` carries a patch of
-one of them through this module to every owner that reads it.
+live in its ``errors`` module; ``memory_policy`` plans a cold start's KAS memory
+request. Every project name this module bound before the owners existed still
+resolves here, and :mod:`kiro_crew._facade_mirror` carries a patch of one of them
+through this module to every owner that reads it.
 """
 
 from __future__ import annotations
@@ -984,6 +985,8 @@ class SessionAllocationService:
             owner._ensure_cleanup_task()
         try:
             provider = self._deps.session_provider_type()(handle, runtime)
+            # A live reload re-sends exactly the policy this SID stated.
+            setattr(provider, "kas_memory_mode", handle.kas_memory_mode)
             setattr(
                 provider,
                 "memory_mode",
@@ -1611,6 +1614,7 @@ class SessionAllocationService:
 _ALLOCATION_OWNERS: tuple[str, ...] = (
     "kiro_crew.session_allocation_parts.errors",
     "kiro_crew.session_allocation_parts.companions",
+    "kiro_crew.session_allocation_parts.memory_policy",
     "kiro_crew.session_allocation_parts.get_or_create",
 )
 #: Project names this module bound before the owners existed that only the owners read.

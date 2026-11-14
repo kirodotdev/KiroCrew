@@ -64,6 +64,10 @@ There is deliberately no `Select` primitive: use `SimpleSelect`,
 `SettingsSelect`, `SearchableSelect`, or `SettingsMultiSelect` for a searchable
 checkbox list in Settings.
 
+`SettingsToggle` accepts a `labelBadge` for status such as Preview, placed after
+the label and before its info tip. Keep `label` plain text so settings search and
+the switch's accessible name remain unchanged.
+
 `SimpleSelect` accepts optional decorative `optionIcons` alongside its text
 labels. Desktop rows and the selected value show those identities; touch devices
 retain the native text option list and show the selected icon beside the control.

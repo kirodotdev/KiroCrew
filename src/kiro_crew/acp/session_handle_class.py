@@ -365,6 +365,8 @@ class AcpSessionHandle:
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
         self.memory_mode = "persistent"
+        # The native KAS memory policy this SID's start stated; "" stated none.
+        self.kas_memory_mode = ""
         # Seconds the host keeps this session's record after destroy() before Crew
         # deletes it, on a host that can free a session and keep its record
         # (``AcpRuntime.can_release``). Set by the opener of a task-runner session
