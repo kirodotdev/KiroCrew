@@ -70,6 +70,7 @@ from kiro_crew.slack.approval_tokens import (  # noqa: F401 -- re-exported
     build_approval_token,
     split_approval_token,
 )
+from kiro_crew.slack.code_channels.binding import no_reactions as code_channel_quiet
 from kiro_crew.slack.files import (
     extract_outbound_with_audit,
     rejection_notes,
@@ -552,7 +553,7 @@ class SlackRenderer(ApprovalSessionStatus, Renderer):
         # Message ts to react to (the user's triggering message). Falls back
         # to thread_ts so reactions still attach when not supplied separately.
         self._react_ts = react_ts or thread_ts or ""
-        self._reactions_enabled = reactions_enabled
+        self._reactions_enabled = reactions_enabled and not code_channel_quiet(channel)
         # When slack.show_thinking is on, surface the model's reasoning as a 💭
         # thread reply above the answer (mirrors native handle_message). Off =>
         # reasoning stays private, only the typing indicator moves.

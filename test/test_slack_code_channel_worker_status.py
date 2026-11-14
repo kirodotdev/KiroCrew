@@ -62,6 +62,7 @@ def slack():
 def _channel_with_a_running_worker(tmp_path, repo, monkeypatch):
     h = _ws.Harness(tmp_path)
     dash = _ws.FakeDashboard()
+    _ws.store_channel_binding(tmp_path, monkeypatch)
 
     async def create_folder(state, parent_id, name, project_dir):
         return state.add_folder(f"F{len(state._folders)}", name, parent_id, project_dir)

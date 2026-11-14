@@ -89,18 +89,21 @@ def test_a_command_sync_after_a_stop_in_the_same_turn_sends_nothing(env: Any) ->
 
 
 def test_the_refresh_after_a_stopped_turn_sends_nothing(env: Any, monkeypatch: Any) -> None:
+    """The stopped turn's own turn-end hook schedules no refresh.
+
+    A refresh itself is the board's own pass: a helper agent's next event still
+    runs one (``test_slack_code_channel_board_review_rounds``).
+    """
     from kiro_crew.slack.code_channels.workspace.service import WorkspaceService
 
     binding = _bind(env)
     asyncio.run(surface.note_turn_start(binding, None))
     asyncio.run(_stop(env))
-    ran: list[int] = []
-
-    async def inner(self: Any, _b: Any) -> None:
-        ran.append(1)
-
-    monkeypatch.setattr(WorkspaceService, "_refresh", inner)
-    asyncio.run(WorkspaceService.refresh(object.__new__(WorkspaceService), binding))
+    ran: list[Any] = []
+    svc = object.__new__(WorkspaceService)
+    monkeypatch.setattr(svc, "_forget_worker_status", lambda b: None, raising=False)
+    monkeypatch.setattr(svc, "schedule_refresh", ran.append, raising=False)
+    asyncio.run(WorkspaceService.on_turn_end(svc, binding))
     assert ran == []
 
 

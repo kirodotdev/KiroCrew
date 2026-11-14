@@ -166,13 +166,16 @@ def _module_state(tree: ast.Module) -> set[str]:
     return names
 
 
-def _writes(fn: ast.AST, state: set[str]) -> list[tuple[ast.AST, str]]:
+def _writes(
+    fn: ast.AST, state: set[str], writes: frozenset[str] | set[str] = frozenset()
+) -> list[tuple[ast.AST, str]]:
     """``(node, written name)`` for every side effect in *fn* (not nested defs)."""
+    writes = writes or WRITES
     out: list[tuple[ast.AST, str]] = []
     for node in _own_nodes(fn):
         if isinstance(node, ast.Call):
             name = _callee(node)
-            if name in WRITES:
+            if name in writes:
                 fields = [k.arg for k in node.keywords if k.arg]
                 out.append((node, fields[0] if name == "surface_update" and fields else name))
             elif name == "to_thread" and node.args:
@@ -180,7 +183,7 @@ def _writes(fn: ast.AST, state: set[str]) -> list[tuple[ast.AST, str]]:
                 inner_name = (
                     inner.attr if isinstance(inner, ast.Attribute) else getattr(inner, "id", "")
                 )
-                if inner_name in WRITES:
+                if inner_name in writes:
                     out.append((node, inner_name))
             elif (
                 name in MUTATORS
@@ -253,15 +256,21 @@ def _counts(call: ast.Call, parents: dict[ast.AST, ast.AST]) -> bool:
     return _callee(call) == "_commit" or not isinstance(parents.get(call), ast.Expr)
 
 
-def _unchecked(fn: ast.AST, state: set[str]) -> list[tuple[int, str]]:
-    """Writes in async *fn* with no commit check since the last await."""
+def _unchecked(
+    fn: ast.AST,
+    state: set[str],
+    commit: set[str] | frozenset[str] = frozenset(),
+    writes: set[str] | frozenset[str] = frozenset(),
+) -> list[tuple[int, str]]:
+    """Writes in async *fn* with no *commit* check since the last await."""
+    commit = commit or COMMIT
     own = _own_nodes(fn)
     parents = _parents(fn)
     commits = [
-        n for n in own if isinstance(n, ast.Call) and _callee(n) in COMMIT and _counts(n, parents)
+        n for n in own if isinstance(n, ast.Call) and _callee(n) in commit and _counts(n, parents)
     ]
     bad: list[tuple[int, str]] = []
-    for node, name in _writes(fn, state):
+    for node, name in _writes(fn, state, writes):
         p = _pos(node)
 
         def between(a: ast.AST, start: tuple[int, int]) -> bool:
@@ -406,3 +415,60 @@ def test_every_surface_client_send_passes_the_commit_point() -> None:
     assert not any(
         isinstance(a, ast.Await) and check < _pos(a) < _pos(send) for a in own
     ), "an await sits between the commit check and the send"
+
+
+# ── The send gate of every write carrying the board's workers ──────────────
+#
+# Each board write (post, edit, pin, needs-you page) re-checks the board's scope
+# AND the Stop right before the raw send, with no await between: the raw Slack
+# client awaits nothing before its HTTP call.
+
+#: The raw Slack client's sends.
+RAW_SENDS = frozenset(
+    {"post_blocks", "update_message", "add_pin", "post_message", "chat_postMessage", "chat_update"}
+)
+#: (module, function) -> the gate calls that must precede each of its raw sends.
+WORKER_WRITERS: dict[tuple[str, str], tuple[frozenset[str], ...]] = {
+    # board post and edit / pin / needs-you page: _writable = scope, then Stop
+    ("board/publisher.py", "_send"): (frozenset({"_writable"}),),
+    ("board/publisher.py", "_pin"): (frozenset({"_writable"}),),
+    ("board/publisher.py", "_alert"): (frozenset({"_writable"}),),
+}
+#: Modules that produce worker content: every raw send in them is classified above.
+WORKER_MODULES = ("board/__init__.py", "board/publisher.py", "board/filing.py", "board/source.py")
+
+
+def _tree(module: str) -> ast.Module:
+    return ast.parse((ROOT / module).read_text(encoding="utf-8"))
+
+
+def _async_fn(module: str, name: str) -> ast.AsyncFunctionDef:
+    return next(
+        n for n in ast.walk(_tree(module)) if isinstance(n, ast.AsyncFunctionDef) and n.name == name
+    )
+
+
+def test_every_worker_content_writer_gates_each_raw_send() -> None:
+    found: list[str] = []
+    for (module, name), gates in WORKER_WRITERS.items():
+        fn = _async_fn(module, name)
+        sends = _writes(fn, set(), RAW_SENDS)
+        if not sends:
+            found.append(f"{module}:{name} has no raw send left: drop it from WORKER_WRITERS")
+        for gate in gates:
+            for line, send in _unchecked(fn, set(), gate, RAW_SENDS):
+                found.append(f"{module}:{line} {name} sends {send} without {sorted(gate)}")
+    assert found == [], "\n".join(found)
+
+
+def test_every_raw_send_in_the_board_modules_is_a_classified_writer() -> None:
+    """A new board write fails here until it is listed (and gated) above."""
+    unlisted = [
+        f"{module}:{fn.name}"
+        for module in WORKER_MODULES
+        for fn in ast.walk(_tree(module))
+        if isinstance(fn, ast.AsyncFunctionDef)
+        and _writes(fn, set(), RAW_SENDS)
+        and (module, fn.name) not in WORKER_WRITERS
+    ]
+    assert unlisted == [], unlisted
