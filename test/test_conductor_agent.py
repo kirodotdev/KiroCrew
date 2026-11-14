@@ -561,7 +561,11 @@ class TestConductorInstaller(conductor_agent_checks.PromptDoesNotCarryTheRetired
             assert "goal_concurrency_cap_reached" in text
             assert "concurrency_cap=<N>" in text
             assert "`resource_status` decides the wave" in text
-            assert "at most 6" not in text and "more than 6" not in text
+            # Whole words, so "at most 600 characters" elsewhere is not the old bound.
+            words = [w.strip(".,;:()`*") for w in text.split()]
+            triples = {tuple(words[i : i + 3]) for i in range(len(words) - 2)}
+            assert ("at", "most", "6") not in triples
+            assert ("more", "than", "6") not in triples
             assert "goal_items_used" in text
             # The advisory item cap and its one-time notice are gone
             # (rfc-drop-goal-item-cap.md).
