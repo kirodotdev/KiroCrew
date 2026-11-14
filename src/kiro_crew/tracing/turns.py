@@ -14,7 +14,7 @@ builds::
       kirocrew.compaction ...     a compaction the backend ran inside the turn
       turn.complete               marker: the stop reason arrived
 
-Approvals and steers are steps a Crew call site reports
+Approvals, steers and queue wait are steps a Crew call site reports
 (``tracing/steps.py``); they hang under the same turn span.
 
 **Trace id.** A dashboard turn binds its own turn id (:func:`bind_turn_root`)
@@ -119,6 +119,8 @@ class _TurnRoot:
     rollup_key: str = ""
     #: The turn span's name in place of ``invoke_agent <agent>`` (a workflow call).
     name: str = ""
+    #: Attributes on the turn span alone (a queued turn's wait), not on its children.
+    span_attrs: dict[str, Any] = field(default_factory=dict)
 
 
 _ROOT: contextvars.ContextVar[_TurnRoot | None] = contextvars.ContextVar(
@@ -142,13 +144,15 @@ def bind_turn_root(
     on_end: Callable[[Any], None] | None = None,
     rollup_key: str = "",
     name: str = "",
+    span_attrs: dict[str, Any] | None = None,
 ) -> contextvars.Token | None:
     """Make *turn_id* the id of the turns this task streams next.
 
     With no *join* the turn id is also the trace id. With a *join* (a
     ``runs.RunRef``) the turns sit in that run's trace under its span and
     carry its root's ``session.id`` (RFC R4, R6). *links* go on the turn span;
-    *attrs* (correlation ids) on every span of the turn. *rollup_key* names the
+    *attrs* (correlation ids) on every span of the turn, *span_attrs* on the turn
+    span only. *rollup_key* names the
     span whose roll-up the turn's spend joins, when that is not the span it hangs
     under (a sub-agent run moved onto a continuation trace). *name* replaces the
     turn span's ``invoke_agent <agent>`` name.
@@ -170,6 +174,7 @@ def bind_turn_root(
             on_end,
             rollup_key,
             name,
+            dict(span_attrs or {}),
         )
     )
 
@@ -329,7 +334,11 @@ class TurnTrace:
             or f"{OP_INVOKE_AGENT} {self.agent}".strip(),
             ids.KIND_TURN,
             parent,
-            {**agent, "gen_ai.operation.name": OP_INVOKE_AGENT},
+            {
+                **agent,
+                **(root.span_attrs if root is not None else {}),
+                "gen_ai.operation.name": OP_INVOKE_AGENT,
+            },
             links=root.links if root is not None else (),
         )
         self.span_id = format(self.turn_span.get_span_context().span_id, "016x")
@@ -577,29 +586,41 @@ def traced(source: object, events: Any) -> Any:
 
 _lock = threading.Lock()
 _open_turns: dict[str, TurnTrace] = {}
-#: ``(scope, tool_call_id) -> (turn, span, is_spawn)``; ``span`` is ``None`` while built.
-_open_tools: dict[tuple[str, str], tuple[TurnTrace, Any, bool]] = {}
+#: ``(scope, tool_call_id) -> (turn, span, role)``; ``span`` is ``None`` while built.
+_open_tools: dict[tuple[str, str], tuple[TurnTrace, Any, str]] = {}
 _ended_tools: OrderedDict[tuple[str, str], None] = OrderedDict()
 #: Roll-ups of the child turns under each open spawn tool span, by its span id (R3).
 _rollups: dict[str, runs.Rollup] = {}
 
-#: The Crew tools whose call admits sub-agents. Matched on the tool name the
-#: harness reports, whatever prefix it adds (``mcp_kirocrew_core_``, ``@server/``),
-#: and used only to find a child's parent span: the span itself still shows ``mcp``.
-_SPAWN_TOOLS = ("spawn_sub_agents", "spawn_run", "spawn_continue")
-#: What may sit just before a spawn tool's name when a harness prefixes it.
+#: The Crew tools whose open call another span needs to find, by role: a
+#: spawn's children parent to it, a send's receiver and a workflow run link to
+#: it. Matched on the tool name the harness reports, whatever prefix it adds
+#: (``mcp_kirocrew_core_``, ``@server/``); the span itself still shows ``mcp``.
+ROLE_SPAWN = "spawn"
+ROLE_SEND = "send"
+ROLE_WORKFLOW = "workflow"
+_ROLE_TOOLS = (
+    ("spawn_sub_agents", ROLE_SPAWN),
+    ("spawn_run", ROLE_SPAWN),
+    ("spawn_continue", ROLE_SPAWN),
+    ("session_send", ROLE_SEND),
+    ("session_broadcast", ROLE_SEND),
+    ("workflow_run", ROLE_WORKFLOW),
+)
+#: What may sit just before a role tool's name when a harness prefixes it.
 _PREFIX_ENDS = "_/:@."
 
 
-def _is_spawn_tool(tool_name: str) -> bool:
+def _tool_role(tool_name: str) -> str:
+    """The role of the Crew tool *tool_name* names, or ``""``."""
     if not tool_name or len(tool_name) > _MAX_KEY_LEN:
-        return False
-    for name in _SPAWN_TOOLS:
+        return ""
+    for name, role in _ROLE_TOOLS:
         if tool_name == name:
-            return True
+            return role
         if tool_name.endswith(name) and tool_name[-len(name) - 1] in _PREFIX_ENDS:
-            return True
-    return False
+            return role
+    return ""
 
 
 def open_turn(acp_session_id: str) -> TurnTrace | None:
@@ -654,20 +675,26 @@ def current_turn(session_key: str = "") -> TurnTrace | None:
     return open_turn_of_session(session_key)
 
 
+def role_span(turn: TurnTrace, role: str) -> Any:
+    """The one tool span of *role* open in *turn*; ``None`` with none or several open."""
+    with _lock:
+        found = [
+            span
+            for owner, span, held in _open_tools.values()
+            if owner is turn and held == role and span is not None
+        ]
+    return found[0] if len(found) == 1 else None
+
+
 def spawn_span_of(turn: TurnTrace) -> str:
     """The span id a sub-agent *turn* admits now parents to (RFC §5.4).
 
     The one spawn tool call open in the turn; with none, or with several open at
     once (which call admitted the child is not visible), the turn span itself.
     """
-    with _lock:
-        spawns = [
-            span
-            for owner, span, is_spawn in _open_tools.values()
-            if owner is turn and is_spawn and span is not None
-        ]
-    if len(spawns) == 1:
-        return format(spawns[0].get_span_context().span_id, "016x")
+    span = role_span(turn, ROLE_SPAWN)
+    if span is not None:
+        return format(span.get_span_context().span_id, "016x")
     return turn.span_id
 
 
@@ -710,7 +737,7 @@ def _unregister(turn: TurnTrace) -> None:
 def _end_open_tools(turn: TurnTrace) -> None:
     """End the tool spans a turn left open: their terminal frame never came."""
     with _lock:
-        mine = [key for key, (owner, _span, _spawn) in _open_tools.items() if owner is turn]
+        mine = [key for key, (owner, _span, _role) in _open_tools.items() if owner is turn]
         spans = [_open_tools.pop(key)[1] for key in mine]
     for span in spans:
         if span is not None:  # a start that failed after reserving its slot
@@ -770,11 +797,11 @@ def tool_started(
             dropped = list(_open_tools.values()) if len(_open_tools) >= _MAX_OPEN else []
             if dropped:
                 _open_tools.clear()
-            is_spawn = _is_spawn_tool(tool_name)
-            _open_tools[key] = (turn, None, is_spawn)
+            role = _tool_role(tool_name)
+            _open_tools[key] = (turn, None, role)
         if dropped:
             logger.warning("tool span registry full: ending %d open tool spans", len(dropped))
-            for _owner, stale, _spawn in dropped:
+            for _owner, stale, _role in dropped:
                 if stale is not None:
                     _end_tool_span(stale)
         name = correlation.clean({"gen_ai.tool.name": _tool_name(kind, mcp_server_name, tool_name)})
@@ -799,8 +826,8 @@ def tool_started(
         )
         with _lock:
             if key in _open_tools:
-                _open_tools[key] = (turn, span, is_spawn)
-                if is_spawn and len(_rollups) < _MAX_OPEN:
+                _open_tools[key] = (turn, span, role)
+                if role == ROLE_SPAWN and len(_rollups) < _MAX_OPEN:
                     _rollups[format(span.get_span_context().span_id, "016x")] = runs.Rollup()
                 return
         span.end()  # the turn ended while the span was being built

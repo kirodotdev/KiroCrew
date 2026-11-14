@@ -104,6 +104,12 @@ def test_off_imports_no_sdk_and_starts_no_thread(tmp_path):
             assert steps.approval_opened("r1", session_key="k") is None
             steps.approval_closed(None, approved=True, by="person")
             steps.steered(steps.STEER_INTERRUPT, source=S())
+            steps.note_queued("q1")
+            with steps.sending("k") as meta:
+                assert meta == {}
+            with steps.drained([{"id": "q1", "meta": {}}]):
+                assert steps.take_queued() == ((), {})
+            assert not steps._queued_at
 
         asyncio.run(main())
         assert provider.current() is None
