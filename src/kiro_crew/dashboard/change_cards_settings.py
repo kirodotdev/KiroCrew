@@ -671,6 +671,8 @@ def check_setting_value(spec: dict[str, Any], value: Any) -> None:
     elif kind == "bool":
         if not isinstance(value, bool):
             raise err("invalid_value", "value must be true or false")
+    elif kind == "int" and spec.get("allow_auto") and value == "auto":
+        pass  # as the settings route: an ``int | str`` field's one word
     elif kind in ("int", "float"):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise err("invalid_value", "value must be a number")

@@ -1305,8 +1305,28 @@ def host_total_mib() -> int:
             return pages * page_size // _MIB_BYTES
     except (AttributeError, OSError, ValueError):
         pass
+    if IS_MACOS:
+        # macOS builds without ``SC_PHYS_PAGES`` in ``os.sysconf_names``: the kernel's
+        # own byte count, through the same in-process sysctl handle as below.
+        return _darwin_memsize_bytes() // _MIB_BYTES
     mem = system_memory()  # GlobalMemoryStatusEx: (total, available)
     return (mem[0] // _MIB_BYTES) if mem else 0
+
+
+def _darwin_memsize_bytes() -> int:
+    """``hw.memsize`` (physical memory in bytes) on macOS, or 0 on any failure."""
+    libc = _darwin_sysctl_handle()
+    if libc is None:
+        return 0
+    value = ctypes.c_uint64(0)
+    size = ctypes.c_size_t(ctypes.sizeof(value))
+    try:
+        result = libc.sysctlbyname(b"hw.memsize", ctypes.byref(value), ctypes.byref(size), None, 0)
+    except (OSError, ValueError, ctypes.ArgumentError):
+        return 0
+    if result != 0 or size.value != ctypes.sizeof(value):
+        return 0
+    return int(value.value)
 
 
 def host_available_mib() -> int:
