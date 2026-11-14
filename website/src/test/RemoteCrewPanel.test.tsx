@@ -666,7 +666,8 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
     // The localized "not installed" line still explains the gap…
-    expect(await screen.findByText('Session Manager plugin')).toBeInTheDocument()
+    // In the answered list: the rows drawn while the check runs carry the same titles.
+    expect(await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).toBeInTheDocument()
     // …but no Copy button appears with nothing to copy.
     expect(screen.queryByRole('button', { name: /Copy command/i })).not.toBeInTheDocument()
   })
@@ -773,7 +774,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
 
     const profileInput = await screen.findByLabelText(/AWS profile/i)
-    const credsRow = await screen.findByText('AWS credentials')
+    const credsRow = await screen.findByText('AWS credentials', { selector: 'ul:not([aria-busy]) div' })
     // compareDocumentPosition: 4 = FOLLOWING — the row comes after the input.
     expect(profileInput.compareDocumentPosition(credsRow) & 4).toBeTruthy()
     // And the probed identity is stated in plain words, never as a profile named "none set".
@@ -931,7 +932,7 @@ describe('RemoteCrewPanel', () => {
     await u.click(await screen.findByRole('button', { name: 'Add Crew' })); await u.click(await screen.findByRole('button', { name: /Set up a new Crew/ }))
     // Prereq checklist rendered; a missing plugin blocks Launch.
     expect(await screen.findByText(/Before you start/i)).toBeInTheDocument()
-    expect(screen.getByText('Session Manager plugin')).toBeInTheDocument()
+    expect(await screen.findByText('Session Manager plugin', { selector: 'ul:not([aria-busy]) div' })).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: /^Launch$/ })).toBeDisabled())
     expect(screen.getByText('Fix “Session Manager plugin” above to enable this.')).toBeInTheDocument()
   })

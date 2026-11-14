@@ -157,9 +157,17 @@ export function PrereqCard({
         />
       )}
       {preflightQuery.isLoading ? (
-        <div className="flex items-center gap-2 text-muted text-sm py-2">
-          <RefreshCw className="lucide-inline animate-spin" /> {i18nT('pages.settings.remoteCrewPanel.checking')}
-        </div>
+        <ul className="m-0 p-0 list-none" aria-busy="true">
+          {[
+            i18nT('pages.settings.remoteCrewPanel.prereq_credentials'),
+            i18nT('pages.settings.remoteCrewPanel.prereq_ec2'),
+            i18nT('pages.settings.remoteCrewPanel.prereq_cloudformation'),
+            i18nT('pages.settings.remoteCrewPanel.prereq_ssm'),
+            i18nT('pages.settings.remoteCrewPanel.plugin'),
+          ].map(title => (
+            <PrereqRow key={title} pending ok={null} title={title} detail={i18nT('pages.settings.remoteCrewPanel.checking')} />
+          ))}
+        </ul>
       ) : preflight ? (
         <ul className="m-0 p-0 list-none">
           <PrereqRow
