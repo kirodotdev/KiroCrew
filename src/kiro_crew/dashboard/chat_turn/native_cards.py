@@ -431,8 +431,8 @@ async def _on_subagent_activity(turn: _ChatTurn, event) -> None:
         # (its fixed reason fused with the redacted tool title) into
         # ``event.text`` at its source, and the event carries no structured
         # reason/title field to localize from. A token here needs a new field
-        # on the ACP event, read by other consumers too, so it is deferred to a
-        # follow-up rather than threaded in this change.
+        # on the ACP event, read by other consumers too, so it is not threaded
+        # through here.
         _txt = redact(event.text)
         slot.append("notice", _txt, "msg msg-info")
     # Some kiro-cli builds also stream the sub-agent's own text via

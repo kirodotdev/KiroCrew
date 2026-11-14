@@ -1832,8 +1832,8 @@ async def _resume_slot_from_history_noted(
                     return ResumeOutcome(refusal=(await _discard()) or refusal)
             # The delete-and-recreate signature after the last await, SYNCHRONOUS
             # and lock-free, where nothing can run between it and the publish. A
-            # file read here would reopen the Windows transient this change moved
-            # off the loop (a just-rewritten file is briefly unopenable), so two
+            # file read here would reintroduce a Windows transient on the loop (a
+            # just-rewritten file is briefly unopenable), so two
             # in-memory witnesses stand in for it. A COMPLETED delete bumps the
             # invalidation generation under the file lock (``delete_session`` ->
             # ``_invalidate_cache`` after the unlink), while a transient file lock

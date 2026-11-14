@@ -905,7 +905,7 @@ _ProbeT = TypeVar("_ProbeT")
 #: uses.
 _PATH_PROBE_ADMIT_TIMEOUT_SECS = 2.0
 #: Execution ceiling handed to ``run_in_cron_pool``, which requires one. It is
-#: deliberately NOT a request timeout: this change bounds how many probes can be
+#: deliberately NOT a request timeout: it bounds how many probes can be
 #: wedged, not how long a client waits on one, and a shorter figure here would
 #: add a second refusal class this endpoint family does not yet define. Large
 #: enough that no healthy transfer under the module's own caps reaches it.

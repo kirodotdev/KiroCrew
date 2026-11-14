@@ -66,7 +66,7 @@ async def _on_cancelled(turn: _ChatTurn) -> None:
     # ``cancelled`` — or an involuntary cancel (tab close, idle-slot sweep,
     # shutdown, or the turn ceiling, which `_bounded_turn` converts to a
     # TimeoutError one frame above _run_chat). The involuntary cases share a neutral
-    # ``error: cancelled``: recording the credits is this change's goal,
+    # ``error: cancelled``: recording the credits is what matters here,
     # and telling the ceiling apart from the other involuntary
     # cancels is a separate concern no row consumer here needs.
     if _stop_pressed(turn):

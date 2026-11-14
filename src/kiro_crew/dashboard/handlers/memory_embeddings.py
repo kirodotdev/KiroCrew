@@ -400,7 +400,7 @@ def _apply_embedding_model(store: object, raw: str, loop: "asyncio.AbstractEvent
                 progress=_store_progress_adapter(prog, completed, total), pace=False
             )
             after = target.embedding_repair_state(generation)[1]  # type: ignore[attr-defined]
-            # Reconcile against the store's own NULL count, exactly as before: the
+            # Reconcile against the store's own NULL count: the
             # adapter cannot see semantic-KV rows (that phase reports no progress)
             # and must not count rows a concurrent writer resolved.
             completed += max(0, before - after)
