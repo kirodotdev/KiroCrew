@@ -15,23 +15,41 @@ AND an ``https`` URL, so text never crosses a network in the clear or without an
 explicit opt-in. Redirects are refused, and a loopback URL bypasses proxy
 environment variables, so a request never lands somewhere other than the
 configured endpoint.
+
+Authentication: ``memory.ollama_auth = "aws_sigv4"`` signs every request, the
+readiness probe included, with AWS Signature Version 4, for a server behind an
+IAM-authorized endpoint such as API Gateway. Credentials come from botocore's
+default chain (environment, shared config and SSO, ``credential_process``,
+instance role), optionally for the profile named by ``memory.ollama_aws_profile``;
+config holds only names, never a secret. A request that cannot be signed is not
+sent.
 """
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import ipaddress
 import json
 import logging
 import math
+import os
+import re
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from http.client import HTTPMessage
 from typing import IO, Any, Callable
 
-from kiro_crew.config.memory_sections import OLLAMA_DEFAULT_URL, OLLAMA_HTTP_PROVIDER
+from kiro_crew.config.memory_sections import (
+    OLLAMA_AUTH_SCHEMES,
+    OLLAMA_DEFAULT_AWS_SERVICE,
+    OLLAMA_DEFAULT_URL,
+    OLLAMA_HTTP_PROVIDER,
+)
 from kiro_crew.embeddings_llama import EmbeddingBackend
 from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
@@ -55,6 +73,11 @@ _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _READY_TTL_OK_SECS = 30.0
 _READY_TTL_FAIL_SECS = 5.0
 _PROBE_TIMEOUT_SECS = 5.0
+#: A region, service or profile name: what AWS allows in each, with no separator
+#: a signature scope or a profile lookup could misread.
+_AWS_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+#: Statuses that can mean the signing credentials went stale on disk.
+_AUTH_REJECTED = (401, 403)
 
 
 @dataclass(frozen=True)
@@ -65,6 +88,10 @@ class OllamaSettings:
     model: str
     dim: int
     error: str = ""
+    auth: str = "none"
+    aws_region: str = ""
+    aws_service: str = OLLAMA_DEFAULT_AWS_SERVICE
+    aws_profile: str = ""
 
 
 def _is_loopback_host(host: str) -> bool:
@@ -104,11 +131,58 @@ def _url_error(url: str, allow_remote: bool) -> str:
     return ""
 
 
-def resolve_ollama_settings(memory: dict) -> OllamaSettings:
+def _raw_str(memory: dict, key: str) -> str:
+    value = memory.get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+@dataclass(frozen=True)
+class _AuthSettings:
+    auth: str
+    aws_region: str = ""
+    aws_service: str = OLLAMA_DEFAULT_AWS_SERVICE
+    aws_profile: str = ""
+    error: str = ""
+
+
+def _auth_settings(memory: dict, environ: "dict[str, str]") -> _AuthSettings:
+    """The ``memory.ollama_auth*`` settings and why they are unusable (``error``)."""
+    auth = _raw_str(memory, "ollama_auth") or "none"
+    if auth not in OLLAMA_AUTH_SCHEMES:
+        schemes = ", ".join(OLLAMA_AUTH_SCHEMES)
+        return _AuthSettings(auth, error=f"memory.ollama_auth must be one of: {schemes}")
+    if auth == "none":
+        return _AuthSettings(auth)
+    region = (
+        _raw_str(memory, "ollama_aws_region")
+        or environ.get("AWS_REGION", "").strip()
+        or environ.get("AWS_DEFAULT_REGION", "").strip()
+    )
+    service = _raw_str(memory, "ollama_aws_service") or OLLAMA_DEFAULT_AWS_SERVICE
+    profile = _raw_str(memory, "ollama_aws_profile")
+    error = ""
+    if not region:
+        error = "memory.ollama_aws_region is empty and AWS_REGION is not set"
+    elif not _AWS_NAME.fullmatch(region):
+        error = "memory.ollama_aws_region is not a valid region name"
+    elif not _AWS_NAME.fullmatch(service):
+        error = "memory.ollama_aws_service is not a valid service name"
+    elif profile and not _AWS_NAME.fullmatch(profile):
+        error = "memory.ollama_aws_profile is not a valid profile name"
+    elif importlib.util.find_spec("botocore") is None:
+        error = "memory.ollama_auth 'aws_sigv4' needs botocore (pip install 'boto3>=1.34,<2')"
+    return _AuthSettings(auth, region, service, profile, error)
+
+
+def resolve_ollama_settings(
+    memory: dict, environ: "dict[str, str] | None" = None
+) -> OllamaSettings:
     """Validate the raw ``memory`` config section into :class:`OllamaSettings`.
 
     Read from the raw section, like every other knob the backend factory uses,
-    and with the same width rule as a custom model.
+    and with the same width rule as a custom model. *environ* (default
+    ``os.environ``) supplies ``AWS_REGION`` / ``AWS_DEFAULT_REGION`` when
+    ``memory.ollama_aws_region`` is empty.
     """
     raw_url = memory.get("ollama_url")
     url = raw_url.strip().rstrip("/") if isinstance(raw_url, str) else ""
@@ -124,7 +198,17 @@ def resolve_ollama_settings(memory: dict) -> OllamaSettings:
     error = _url_error(url, memory.get("ollama_allow_remote") is True)
     if not error and not model:
         error = "memory.ollama_model is empty"
-    return OllamaSettings(url, model, dim, error)
+    auth = _auth_settings(memory, dict(os.environ if environ is None else environ))
+    return OllamaSettings(
+        url,
+        model,
+        dim,
+        error or auth.error,
+        auth=auth.auth,
+        aws_region=auth.aws_region,
+        aws_service=auth.aws_service,
+        aws_profile=auth.aws_profile,
+    )
 
 
 def ollama_backend_selected(memory: "dict | None" = None) -> bool:
@@ -154,6 +238,70 @@ def _build_opener(url: str) -> urllib.request.OpenerDirector:
         # A proxy from the environment would carry loopback-bound text off the host.
         handlers.append(urllib.request.ProxyHandler({}))
     return urllib.request.build_opener(*handlers)
+
+
+class _SigningError(Exception):
+    """A request could not be signed, so it is not sent."""
+
+
+class _SigV4Signer:
+    """Signs requests with AWS Signature Version 4 through botocore.
+
+    botocore is imported on first use: it is an optional dependency, and only a
+    configuration that selects ``aws_sigv4`` needs it. The session is built once
+    and reused, so refreshable credentials (SSO, ``credential_process``, an
+    instance role) refresh themselves instead of being resolved per request.
+    :meth:`reset` drops it, so static keys rewritten on disk are read again.
+    """
+
+    def __init__(
+        self,
+        region: str,
+        service: str,
+        profile: str = "",
+        *,
+        load_credentials: "Callable[[], Any] | None" = None,
+    ) -> None:
+        self._region = region
+        self._service = service
+        self._profile = profile
+        self._load_credentials = load_credentials or self._session_credentials
+        self._lock = threading.Lock()
+        self._session: Any = None
+
+    def _session_credentials(self) -> Any:
+        # botocore sessions are not thread-safe; credential resolution runs under the lock.
+        with self._lock:
+            if self._session is None:
+                session_mod = importlib.import_module("botocore.session")
+                self._session = session_mod.Session(profile=self._profile or None)
+            return self._session.get_credentials()
+
+    def reset(self) -> None:
+        """Forget the cached session; the next request resolves credentials again."""
+        with self._lock:
+            self._session = None
+
+    def headers(self, method: str, url: str, body: "bytes | None", headers: dict) -> dict:
+        """*headers* plus the signature headers; raises :class:`_SigningError`."""
+        try:
+            auth_mod = importlib.import_module("botocore.auth")
+            request_mod = importlib.import_module("botocore.awsrequest")
+            credentials = self._load_credentials()
+            if credentials is None:
+                raise _SigningError("no AWS credentials were found")
+            request = request_mod.AWSRequest(
+                method=method, url=url, data=body, headers=dict(headers)
+            )
+            signer = auth_mod.SigV4Auth(
+                credentials.get_frozen_credentials(), self._service, self._region
+            )
+            signer.add_auth(request)
+            return dict(request.headers.items())
+        except _SigningError:
+            raise
+        except Exception as exc:
+            raise _SigningError(f"could not sign the request: {exc}") from exc
 
 
 def _finite_vector(value: object, dim: int) -> "list[float] | None":
@@ -188,11 +336,15 @@ class OllamaHttpEmbedder(EmbeddingBackend):
         *,
         opener: "urllib.request.OpenerDirector | None" = None,
         start_probe: "Callable[[Callable[[], None]], None] | None" = None,
+        signer: "_SigV4Signer | None" = None,
     ) -> None:
         self._settings = settings
         # An unusable config never sends; its URL may not even parse.
         self._opener = opener or _build_opener("" if settings.error else settings.url)
         self._start_probe = start_probe or self._start_probe_thread
+        if signer is None and settings.auth == "aws_sigv4" and not settings.error:
+            signer = _SigV4Signer(settings.aws_region, settings.aws_service, settings.aws_profile)
+        self._signer = signer
         self._model_id = f"ollama:{settings.model}"
         self._lock = threading.Lock()
         self._ready = False
@@ -266,12 +418,23 @@ class OllamaHttpEmbedder(EmbeddingBackend):
             self._checked_at = time.monotonic()
 
     def _open(self, path: str, body: "bytes | None", timeout: float) -> Any:
-        """Open ``<url><path>``: GET without *body*, POST with it."""
+        """Open ``<url><path>``, signed when ``aws_sigv4`` is configured.
+
+        GET without *body*, POST with it. Raises :class:`_SigningError` before any
+        byte is sent when the request cannot be signed.
+        """
         url = f"{self._settings.url}{path}"
         method = "GET" if body is None else "POST"
         headers = {} if body is None else {"Content-Type": "application/json"}
+        if self._signer is not None:
+            headers = self._signer.headers(method, url, body, headers)
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
-        return self._opener.open(request, timeout=timeout)
+        try:
+            return self._opener.open(request, timeout=timeout)
+        except urllib.error.HTTPError as exc:
+            if self._signer is not None and exc.code in _AUTH_REJECTED:
+                self._signer.reset()
+            raise
 
     def _probe(self, timeout: float) -> bool:
         """True when the server answers and lists the configured model."""
@@ -421,9 +584,10 @@ def build_ollama_backend(memory: dict) -> OllamaHttpEmbedder:
         )
     else:
         logger.info(
-            "Using Ollama embedding backend %s (model=%s, dim=%d)",
+            "Using Ollama embedding backend %s (model=%s, dim=%d, auth=%s)",
             settings.url,
             settings.model,
             settings.dim,
+            settings.auth,
         )
     return OllamaHttpEmbedder(settings)
