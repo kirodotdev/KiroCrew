@@ -288,7 +288,11 @@ class TestBuildArgv:
                 "text": "x",
                 "scroll_direction": "down",
             }
-            x11.build_argv(action, params, GEO)
+            argv = x11.build_argv(action, params, GEO)
+            if action in ("screenshot", "wait"):
+                assert argv == [], action
+            else:
+                assert argv and all(cmd[0] == "xdotool" for cmd in argv), (action, argv)
 
 
 def test_wait_seconds_clamps() -> None:
