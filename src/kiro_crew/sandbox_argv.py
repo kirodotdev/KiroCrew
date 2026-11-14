@@ -47,6 +47,7 @@ from kiro_crew.sandbox_leaves import (
     _CREW_READONLY_LEAVES,
     _CREW_READONLY_TARGETS,
     _CREW_UNREADABLE_MASK_LEAVES,
+    _MD_NOTEBOOK_RETIRED_STATE_LEAVES,
     _RELOCATED_CREW_HIDDEN_LEAVES,
 )
 from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
@@ -488,34 +489,41 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         )
         for entry in (os.path.dirname(os.path.normpath(target)), *_resolution_entries(target))
     )
-    # Seatbelt's masks are path rules, so renaming a parent of a declared leaf would carry
-    # the credential out from under its deny: every parent of every declared spelling is
-    # guarded against rename too. Only the directory entries; what is inside them stays
-    # writable. A namespace mask is a mount, which moves with a renamed parent. A leaf this
-    # spawn lifts (its own app's backend, the leaf's reader) leaves its parents unguarded
-    # here, so the backend can create, rotate and remove the folders it keeps them in.
-    app_mask_parents = (
-        ()
-        if namespace
-        else tuple(
-            os.path.dirname(os.path.normpath(target))
-            for target in (
-                *(
-                    os.path.join(home, f"{prefix}/{leaf}")
-                    for prefix in _CREW_HOME_PREFIXES
-                    for leaf in app_leaves
-                ),
-                *_relocated_crew_targets(app_leaves),
-            )
-            if not sandbox_plan.hidden_path_contains_visible_path(
-                target, request.extra_visible_dirs
-            )
-        )
+    # Renaming a parent of a hidden crew-home leaf carries the leaf out from under its mask:
+    # on Seatbelt the mask is a path rule, so the renamed tree is readable at once, and on
+    # Linux the mask is a mount that moves with the parent, so the NEXT spawn reads the leaf
+    # under the new name. So every parent of every hidden spelling, core or app-declared, is
+    # guarded against rename on both backends. Only the directory entries; what is inside
+    # them stays writable. A leaf this spawn lifts (its own app's backend, the leaf's
+    # reader) leaves its parents unguarded here, so the backend can create, rotate and
+    # remove the folders it keeps them in. A retired leaf, which nothing writes any more,
+    # guards its parents only while they exist: an absent folder holds no leaf to carry
+    # away, and a Seatbelt deny on the absent name would stop a sandboxed backend creating
+    # it (md-notebook's own home is ``workspace/md-notebook``).
+    hidden_leaves = (*_CREW_HIDDEN_LEAVES, *app_leaves)
+    hidden_targets = (
+        *(
+            (leaf, os.path.join(home, f"{prefix}/{leaf}"))
+            for prefix in _CREW_HOME_PREFIXES
+            for leaf in hidden_leaves
+        ),
+        *(
+            (leaf, target)
+            for leaf in (*hidden_leaves, *_RELOCATED_CREW_HIDDEN_LEAVES)
+            for target in _relocated_crew_targets((leaf,))
+        ),
+    )
+    hidden_leaf_parents = tuple(
+        parent
+        for leaf, target in hidden_targets
+        if not sandbox_plan.hidden_path_contains_visible_path(target, request.extra_visible_dirs)
+        for parent in (os.path.dirname(os.path.normpath(target)),)
+        if leaf not in _MD_NOTEBOOK_RETIRED_STATE_LEAVES or os.path.lexists(parent)
     )
     readonly_ancestor_guards = (
-        _renameable_ancestor_guards(seal_parents, uid)
+        _renameable_ancestor_guards((*seal_parents, *hidden_leaf_parents), uid)
         if namespace
-        else _literal_ancestor_guards((*seal_parents, *app_mask_parents))
+        else _literal_ancestor_guards((*seal_parents, *hidden_leaf_parents))
     )
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     operator_paths, operator_exceptions = configured_readonly_layer()
