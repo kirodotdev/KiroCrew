@@ -8,6 +8,11 @@ using stdlib dataclasses with sensible defaults. `config/sections.py` and
 modules below and re-exports their names as the same objects, so an existing
 `config.loader.X` or `config.sections.X` import keeps resolving.
 
+`paths.scratch_root_override_path_hint()` reads the scratch override pin without
+validation, directory creation or filesystem probes. Before the pin exists it
+returns the configured spelling for the security gate's bounded resolver; this
+hint does not authorize allocation.
+
 A patch reaches the code that looks the name up in the patched module, and only
 that code. `config/loader.py` is a mirrored facade (`kiro_crew._facade_mirror`):
 its code lives in the `config/loader_*.py` owners listed below, and a write or

@@ -4,6 +4,23 @@
 
 Kiro Crew implements defense-in-depth security across multiple layers: OS-level process isolation, credential path protection, input/output validation, authentication, authorization, and audit logging. This document consolidates all security controls and the vulnerabilities they address.
 
+### Scratch tree index
+
+The `.trees.json` file in the data home's `scratch` directory maps session keys
+to work directories. The scratch root
+is masked from sandboxed agents; host-side artifact reads/writes and hook reads
+and pinned writes also refuse `scratch/.trees.json` through the shared
+crew-home sensitive-path list in `security/paths_lists.py`. A write could remap
+a resumed conversation onto another session's work tree, and a read would expose
+other sessions' tree names. The existing sensitive-path mechanism covers links,
+case aliases and publish temps, including a relocated data home. The shared
+path gate also protects `scratch_root() / TREE_INDEX_FILENAME` and its direct
+`*.tmp` staging siblings when the Windows `KIROCREW_SCRATCH_ROOT` override
+relocates scratch outside the data home. It resolves the configured override
+through the path gate's resolver without allocating scratch or creating the data
+home, preserving the validated override pin after a working-directory change.
+Other sibling files and files inside work-tree subdirectories remain accessible.
+
 ### MCP launch authorization leaves
 
 The `approvals.json` file in the crew-home `mcp-launch-approvals/` directory

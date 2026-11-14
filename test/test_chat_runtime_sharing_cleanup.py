@@ -579,10 +579,11 @@ class TestReviewFindingsOnTheSharedPath:
 
         src = inspect.getsource(alloc_mod)
         start = src.index("await provider.start()")
-        arm = src[start : src.index("raise", start)]
-        assert "except (asyncio.CancelledError, Exception)" in arm
+        outer = src.index("except (asyncio.CancelledError, Exception)", start)
+        arm = src[outer : src.index("raise", outer)]
         assert "await _end_started_provider(owner, provider)" in arm
-        assert "_dispatch_hard_kill" not in arm
+        # The failed-join retry arm ends the provider the same way.
+        assert "_dispatch_hard_kill" not in src[start : src.index("raise", outer)]
 
     def test_the_start_path_passes_this_sessions_crew_identity(self):
         # Dropping ``crew_agent=self._crew_agent`` from either call makes a joiner
