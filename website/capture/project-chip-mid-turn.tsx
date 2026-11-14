@@ -11,6 +11,9 @@
  * project while the running reply still finishes in the one it started in.
  *
  *   ?theme=dark|light
+ *   ?bare=1          leave out the printed accessible name (product UI only)
+ *   ?lockAfterPick=1 attach sub-agents after the first pick (chip locks)
+ *   ?width=N         narrow the composer so its shelf goes compact
  */
 import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -28,6 +31,9 @@ const params = new URLSearchParams(location.search)
 const theme = params.get('theme') === 'light' ? 'light' : 'dark'
 // ?locked=1 mounts the chip as ChatPage does while sub-agents are attached.
 const locked = params.get('locked') === '1'
+const bare = params.get('bare') === '1'
+const lockAfterPick = params.get('lockAfterPick') === '1'
+const width = Number(params.get('width')) || 760
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 initI18n(params.get('lang') || 'en')
 
@@ -44,7 +50,7 @@ function Scene() {
     setLabel(chip?.getAttribute('aria-label') || '(chip not found)')
   }, [project])
   return (
-    <div data-capture-root className="bg-bg text-text" style={{ maxWidth: 760, margin: '0 auto', padding: '20px 24px 28px' }}>
+    <div data-capture-root className="bg-bg text-text" style={{ maxWidth: width, margin: '0 auto', padding: '20px 24px 28px' }}>
       <ChatInput
         value={value}
         onChange={setValue}
@@ -52,7 +58,7 @@ function Scene() {
         connected
         approvalMode="normal"
         isRunning
-        projectLocked={locked}
+        projectLocked={locked || (lockAfterPick && clicks > 0)}
         onStop={() => {}}
         project={project}
         projectBranch="main"
@@ -65,7 +71,7 @@ function Scene() {
         modelName="claude-sonnet-4"
         onModelClick={() => {}}
       />
-      <pre data-capture-label style={{ marginTop: 14, fontSize: 12, opacity: 0.75, whiteSpace: 'pre-wrap' }}>
+      <pre data-capture-label hidden={bare} style={{ marginTop: 14, fontSize: 12, opacity: 0.75, whiteSpace: 'pre-wrap' }}>
         {`${locked ? 'Sub-agents attached' : clicks ? 'After picking OtherRepo mid-reply' : 'Before a pick'}, the project chip tooltip / accessible name while a response runs:\n${label}\nPicker opened: ${clicks}`}
       </pre>
     </div>
