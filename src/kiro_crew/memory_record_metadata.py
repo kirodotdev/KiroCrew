@@ -12,6 +12,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -191,8 +192,14 @@ _SCHEMA_OBJECTS: tuple[tuple[str, str], ...] = (
 
 def ensure_schema(db: sqlite3.Connection) -> None:
     """Create additive tables/indexes without executescript's implicit COMMIT."""
+    rebuilt = not db.execute(
+        "SELECT 1 FROM sqlite_schema WHERE name='memory_record_meta'"
+    ).fetchone()
     for _name, statement in _SCHEMA_OBJECTS:
         db.execute(statement)
+    if rebuilt:
+        # A table made anew holds no metadata for rows the marker calls checked.
+        invalidate_marker(db)
 
 
 def schema_is_current(db: sqlite3.Connection) -> bool:
@@ -668,46 +675,256 @@ def ineligible_record_ids(rows) -> set[str]:
     return blocked
 
 
-def reconcile(db: sqlite3.Connection) -> int:
-    """Backfill metadata, or journal writes made by an older compatible binary."""
+# (relation, record kind, primary-key column). Both relations carry a TEXT primary
+# key, so a row is named by it and not by rowid, which VACUUM may renumber.
+_RECONCILED = (("semantic_memory", "fact", "key"), ("episodic_memories", "episode", "id"))
+_MARKER_DDL = (
+    "CREATE TABLE IF NOT EXISTS memory_reconcile_state "
+    "(relation TEXT PRIMARY KEY, version TEXT NOT NULL, layout TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS memory_reconcile_dirty "
+    "(relation TEXT NOT NULL, ident TEXT NOT NULL, PRIMARY KEY (relation, ident))",
+)
+
+
+def _hashed_columns(db: sqlite3.Connection, relation: str, pk: str) -> list[str]:
+    names = [row[1] for row in db.execute(f"PRAGMA table_info({relation})")]
+    return [n for n in names if n not in _HASH_DERIVED or n == pk]
+
+
+def _triggers(db: sqlite3.Connection, relation: str, pk: str) -> dict[str, str]:
+    """The triggers that journal a possibly-content-changing write as dirty.
+
+    An UPDATE that touches only derived columns (vectors, access counters,
+    ``updated_at``) does not fire, so a read-heavy session adds nothing to the set.
+    A hard DELETE is not journaled: the full pass never swept an orphan either.
+    In the crew lineage the relation is a view over ``memory_items``, which carries
+    the triggers, narrowed to the view's rows by ``kind``.
+    """
+    from kiro_crew import memory_schema
+
+    is_view = db.execute(
+        "SELECT 1 FROM sqlite_schema WHERE type='view' AND name=?", (relation,)
+    ).fetchone()
+    target, scope = relation, ""
+    columns = _hashed_columns(db, relation, pk)
+    if is_view:
+        target = "memory_items"
+        columns.append("kind")
+        kinds = (
+            f"= '{memory_schema.KIND_EPISODE}'"
+            if relation == "episodic_memories"
+            else f"IN ('{memory_schema.KIND_DIRECTIVE}', '{memory_schema.KIND_FACT}')"
+        )
+        scope = f"WHEN NEW.kind {kinds} "
+    # Not ``INSERT OR IGNORE``: the statement that fires a trigger overrides its
+    # conflict clause, so a writer's own ``OR FAIL`` would turn a repeat into an error.
+    note = (
+        f"INSERT INTO memory_reconcile_dirty SELECT '{relation}', NEW.{pk} WHERE NEW.{pk} "
+        f"IS NOT NULL AND NOT EXISTS (SELECT 1 FROM memory_reconcile_dirty "
+        f"WHERE relation = '{relation}' AND ident = NEW.{pk});"
+    )
+    return {
+        f"memory_reconcile_{relation}_ins": (
+            f"CREATE TRIGGER memory_reconcile_{relation}_ins AFTER INSERT ON {target} "
+            f"{scope}BEGIN {note} END"
+        ),
+        f"memory_reconcile_{relation}_upd": (
+            f"CREATE TRIGGER memory_reconcile_{relation}_upd AFTER UPDATE OF "
+            f"{', '.join(columns)} ON {target} {scope}BEGIN {note} END"
+        ),
+    }
+
+
+def _layout(db: sqlite3.Connection, relation: str, pk: str) -> str:
+    return hashlib.sha256("\n".join(_triggers(db, relation, pk).values()).encode()).hexdigest()
+
+
+def _version() -> str:
+    from kiro_crew import __version__
+
+    return __version__
+
+
+def invalidate_marker(db: sqlite3.Connection) -> None:
+    """Make the next :func:`reconcile` run the full pass (restore, repair)."""
+    if db.execute("SELECT 1 FROM sqlite_schema WHERE name='memory_reconcile_state'").fetchone():
+        db.execute("DELETE FROM memory_reconcile_state")
+
+
+def strip_reconcile_state(db: sqlite3.Connection) -> None:
+    """Remove the triggers, marker and notes: a copy that leaves the host carries none.
+
+    The next start on a restored copy finds no marker and runs the full pass. The
+    snapshot redactor rewrites keys in place, which would fire the triggers and
+    collide with a note already held for the original key.
+    """
+    for (name,) in db.execute(
+        "SELECT name FROM sqlite_schema WHERE type='trigger' AND name LIKE 'memory_reconcile_%'"
+    ).fetchall():
+        db.execute(f"DROP TRIGGER IF EXISTS {name}")
+    db.execute("DROP TABLE IF EXISTS memory_reconcile_state")
+    db.execute("DROP TABLE IF EXISTS memory_reconcile_dirty")
+
+
+def _marker_is_trusted(db: sqlite3.Connection) -> bool:
+    """Whether the stored marker, triggers and layout all match this binary and file."""
+    try:
+        state = dict(
+            (r, (v, lay))
+            for r, v, lay in db.execute(
+                "SELECT relation, version, layout FROM memory_reconcile_state"
+            )
+        )
+        installed = dict(
+            db.execute(
+                "SELECT name, sql FROM sqlite_schema WHERE type='trigger' AND name LIKE 'memory_reconcile_%'"
+            )
+        )
+        dirty_ok = db.execute("SELECT 1 FROM sqlite_schema WHERE name='memory_reconcile_dirty'")
+        if dirty_ok.fetchone() is None:
+            return False
+        for relation, _kind, pk in _RECONCILED:
+            if state.get(relation) != (_version(), _layout(db, relation, pk)):
+                return False
+            if any(installed.get(n) != sql for n, sql in _triggers(db, relation, pk).items()):
+                return False
+    except sqlite3.DatabaseError:
+        return False
+    return True
+
+
+def _reconcile_row(db: sqlite3.Connection, kind: str, pk: str, row: dict) -> bool:
+    identity = row[pk]
+    actual_kind = "directive" if str(row.get("key", "")).startswith("lesson.") else kind
+    record_id = record_id_for(actual_kind, identity)
+    previous = get_record_metadata(db, record_id)
+    if previous.get("content_hash") == content_hash(row):
+        return False
+    last = (
+        db.execute(
+            "SELECT after_json FROM memory_revisions WHERE record_id=? AND status='accepted' ORDER BY id DESC LIMIT 1",
+            (record_id,),
+        ).fetchone()
+        if previous
+        else None
+    )
+    prior = json.loads(last[0]) if last and last[0] else None
+    sync_record(
+        db,
+        kind=actual_kind,
+        record_id=record_id,
+        before=prior,
+        after=row,
+        source="legacy_untracked" if previous else "legacy_import",
+        operation="legacy_sync" if previous else "backfill",
+    )
+    return True
+
+
+def _install_marker(db: sqlite3.Connection) -> None:
+    for statement in _MARKER_DDL:
+        db.execute(statement)
+    for relation, _kind, pk in _RECONCILED:
+        for name, sql in _triggers(db, relation, pk).items():
+            db.execute(f"DROP TRIGGER IF EXISTS {name}")
+            db.execute(sql)
+        db.execute(
+            "INSERT OR REPLACE INTO memory_reconcile_state VALUES (?, ?, ?)",
+            (relation, _version(), _layout(db, relation, pk)),
+        )
+    db.execute("DELETE FROM memory_reconcile_dirty")
+
+
+#: Noted rows a start re-checks without clearing them (and so without a write).
+_DIRTY_KEEP = 500
+
+
+def _take_write_lock(db: sqlite3.Connection) -> bool:
+    """Begin a write transaction without waiting: a busy store is left for the next start."""
+    if db.in_transaction:
+        return True
+    timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+    db.execute("PRAGMA busy_timeout=0")
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        return True
+    except sqlite3.OperationalError:
+        return False
+    finally:
+        db.execute(f"PRAGMA busy_timeout={int(timeout)}")
+
+
+def marker_wanted_for_empty_store(db: sqlite3.Connection) -> bool:
+    """Whether a store with no marker holds no rows, so its first schema pass can mark it.
+
+    Reads only. A populated store is not marked here: its first start scans it.
+    """
+    if db.execute("SELECT 1 FROM sqlite_schema WHERE name='memory_reconcile_state'").fetchone():
+        return False
+    for relation, _kind, _pk in _RECONCILED:
+        if db.execute("SELECT 1 FROM sqlite_schema WHERE name=?", (relation,)).fetchone() and (
+            db.execute(f"SELECT 1 FROM {relation} LIMIT 1").fetchone()
+        ):
+            return False
+    return True
+
+
+def install_marker_if_empty(db: sqlite3.Connection) -> None:
+    """Mark a store that has no rows yet, inside the caller's schema transaction."""
+    if marker_wanted_for_empty_store(db):
+        _install_marker(db)
+
+
+def reconcile(db: sqlite3.Connection, *, full: bool = False) -> int:
+    """Backfill metadata, or journal writes made by an older compatible binary.
+
+    A completed full pass installs triggers that note every row whose content may
+    change, and a marker (binary version, trigger layout). While the marker and
+    triggers are intact, only the noted rows are checked; anything else (first run,
+    a new version, a restore, a missing or foreign marker, ``full=True``) re-checks
+    every row. Like the pass it replaced, the scan holds no write lock, so a store
+    with nothing to journal opens while another connection writes. The marker (or
+    the clearing of the noted rows) is written only if the write lock is free right
+    now (it is never waited for) and no other connection committed since the scan
+    began (``data_version``): a write that landed during the scan might not be
+    covered, so the next start repeats the pass instead.
+    """
+    version_before = db.execute("PRAGMA data_version").fetchone()[0]
+    # Judged before the tables are (re)created: a dropped notes table lost writes.
+    incremental = not full and _marker_is_trusted(db)
+    if incremental and not db.execute("SELECT 1 FROM memory_reconcile_dirty").fetchone():
+        return 0
     changed = 0
-    for relation, kind in (("semantic_memory", "fact"), ("episodic_memories", "episode")):
-        cursor = db.execute(f"SELECT * FROM {relation}")
-        names = [column[0] for column in cursor.description]
+    noted = 0
+    for relation, kind, pk in _RECONCILED:
+        if incremental:
+            idents = [
+                r[0]
+                for r in db.execute(
+                    "SELECT ident FROM memory_reconcile_dirty WHERE relation=?", (relation,)
+                )
+            ]
+            noted += len(idents)
+            names = [c[1] for c in db.execute(f"PRAGMA table_info({relation})")]
+            rows: Iterable[Any] = (
+                r
+                for ident in idents
+                for r in db.execute(f"SELECT * FROM {relation} WHERE {pk}=?", (ident,)).fetchall()
+            )
+        else:
+            cursor = db.execute(f"SELECT * FROM {relation}")
+            names = [column[0] for column in cursor.description]
+            rows = cursor
         skipped = 0
-        for values in cursor:
+        for values in rows:
             row = dict(zip(names, values))
-            identity = row["id"] if kind == "episode" else row["key"]
-            if not isinstance(identity, str) or not identity:
+            if not isinstance(row[pk], str) or not row[pk]:
                 # SQLite lets a TEXT PRIMARY KEY hold NULL, and older importers
                 # wrote such rows. They cannot carry metadata; one of them must
                 # not stop the whole store from opening, so leave it untouched.
                 skipped += 1
-                continue
-            actual_kind = "directive" if str(row.get("key", "")).startswith("lesson.") else kind
-            record_id = record_id_for(actual_kind, identity)
-            previous = get_record_metadata(db, record_id)
-            if previous.get("content_hash") == content_hash(row):
-                continue
-            last = (
-                db.execute(
-                    "SELECT after_json FROM memory_revisions WHERE record_id=? AND status='accepted' ORDER BY id DESC LIMIT 1",
-                    (record_id,),
-                ).fetchone()
-                if previous
-                else None
-            )
-            prior = json.loads(last[0]) if last and last[0] else None
-            sync_record(
-                db,
-                kind=actual_kind,
-                record_id=record_id,
-                before=prior,
-                after=row,
-                source="legacy_untracked" if previous else "legacy_import",
-                operation="legacy_sync" if previous else "backfill",
-            )
-            changed += 1
+            elif _reconcile_row(db, kind, pk, row):
+                changed += 1
         if skipped:
             logger.warning(
                 "Memory reconcile skipped %d %s row(s) with no %s",
@@ -715,4 +932,17 @@ def reconcile(db: sqlite3.Connection) -> int:
                 relation,
                 "id" if kind == "episode" else "key",
             )
+    if incremental and not db.in_transaction and noted <= _DIRTY_KEEP:
+        # shortcut: up to _DIRTY_KEEP noted rows are re-checked on each start, so a
+        # start after ordinary use issues no write; raise the cap if a start's
+        # re-check ever shows in a profile.
+        return changed
+    if not _take_write_lock(db):
+        return changed  # a writer holds the lock; the notes stay for the next start
+    if db.execute("PRAGMA data_version").fetchone()[0] != version_before:
+        return changed
+    if incremental:
+        db.execute("DELETE FROM memory_reconcile_dirty")
+    else:
+        _install_marker(db)
     return changed

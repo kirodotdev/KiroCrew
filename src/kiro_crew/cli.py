@@ -955,6 +955,7 @@ def main() -> None:
         _doctor(
             platform_boot_error=_platform_boot_error,
             bundle=getattr(args, "bundle", False),
+            reconcile_memory=getattr(args, "reconcile_memory", False),
         )
     elif args.command == "ledger-sweep":
         # Lazy on purpose, through ``importlib`` like ``secrets`` above: the
