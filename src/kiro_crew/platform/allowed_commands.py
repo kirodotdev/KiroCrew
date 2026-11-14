@@ -13,7 +13,8 @@ automaton, never with ``re``:
 - literal characters (a ``]`` or ``}`` too), and a backslash-escaped ASCII
   punctuation character or space as a literal (in an entry using any syntax below,
   not ``<`` / ``>``, which Rust reads as word boundaries; a literal-plus-``.*``
-  entry may escape those two, since a command holding either is never granted);
+  entry may escape those two, since the text an entry is matched against never
+  holds either);
 - Rust's control-character escapes ``\\n \\t \\r \\f \\v \\a``;
 - ``.`` (any character);
 - a bracket class: ``[abc]``, ranges such as ``[A-Za-z0-9_./-]``, negation
@@ -72,7 +73,9 @@ MAX_PATTERN_LENGTH = 1024
 #: Characters that make a command more than one plain command: chaining, pipes,
 #: redirection and substitution. A command holding any of them, quoted or not, is
 #: never granted by an entry, however wide, so a ``git status .*`` grant cannot
-#: carry ``git status; <anything>``.
+#: carry ``git status; <anything>``. Only the plain redirects
+#: :func:`split_redirects` takes off first, and a chain :func:`chain_commands`
+#: splits, are granted, each part matched on its own.
 UNGRANTABLE_COMMAND_CHARS = frozenset(";&|<>$`\n\r")
 
 #: Grouping and brace characters. A command holding one OUTSIDE a quoted argument
@@ -874,13 +877,130 @@ def chain_commands(command: object) -> tuple[str, ...] | None:
     return tuple(parts)
 
 
+#: The fd duplications :func:`split_redirects` takes off: each is a whole word.
+_REDIRECT_DUPLICATIONS = ("2>&1", ">&2")
+
+#: The file operators :func:`split_redirects` takes off, longest first so ``>>``
+#: is read before ``>``. Each takes one plain file name (:func:`_plain_target`),
+#: glued to it (``>out.txt``) or as the next word.
+_REDIRECT_FILE_OPERATORS = (">>", "2>", "&>", ">", "<")
+
+#: Characters that refuse every redirect of a command holding one: a quote, a
+#: backslash or a ``#`` changes which words the shell reads, so the words split
+#: here would not be the ones it runs.
+_REDIRECT_REFUSING_CHARS = frozenset("'\"\\#")
+
+#: Characters a redirect target may not hold: a space, a separator, a quote, a
+#: backslash, a glob (zsh's ``^`` included), ``~``, ``$``, a backtick, grouping, a
+#: ``<`` or ``>``, a ``#`` and a ``!``.
+_UNPLAIN_TARGET_CHARS = frozenset(" ;&|<>$`(){}'\"\\*?[]~^#!")
+
+#: A word that ends one with this may not stand before a redirect: the redirect
+#: would come before the next command's program.
+_COMMAND_BREAK_CHARS = frozenset(";&|(){}")
+
+#: The separators a redirect word may carry at its end (``> a.txt; ls``), longest
+#: first.
+_WORD_SEPARATORS = ("&&", "||", ";")
+
+
+def _split_separator(word: str) -> tuple[str, str]:
+    """*word* and the separator it ends with (``""`` for none)."""
+    for sep in _WORD_SEPARATORS:
+        if word.endswith(sep) and len(word) > len(sep):
+            return word[: -len(sep)], sep
+    return word, ""
+
+
+def _plain_target(target: str) -> bool:
+    """Whether *target* names exactly the file the shell opens: no character of
+    :data:`_UNPLAIN_TARGET_CHARS`, and not zsh's ``=program`` path expansion."""
+    return bool(target) and not _UNPLAIN_TARGET_CHARS.intersection(target) and target[0] != "="
+
+
+@dataclass(frozen=True)
+class Redirect:
+    """One file a granted command's redirect opens: ``write`` for ``>``-style,
+    ``False`` for ``<``. The *target* is as written: relative to the shell's
+    current directory."""
+
+    target: str
+    write: bool
+
+
+def split_redirects(command: object) -> tuple[str, tuple[Redirect, ...]] | None:
+    """*command* without the redirects kiro-cli's v3 engine grants beside an
+    ``allowedCommands`` match, and the files they open. Fails closed.
+
+    ``(command, ())`` for a command holding no ``<`` or ``>``. Otherwise the
+    command is read as words split at each space, and only these come off: a word
+    that is exactly ``2>&1`` or ``>&2``, and a word starting with ``>``, ``>>``,
+    ``2>``, ``&>`` or ``<`` followed by one plain file name (:func:`_plain_target`)
+    in the same word or the next. Each may end with ``;``, ``&&`` or ``||``, which
+    stays. The word before it must be a non-empty one that ends no command, so a
+    redirect before the program is refused. The rest is the command with those
+    words and the space before each taken out, and nothing else changed.
+
+    ``None`` when any other ``<`` or ``>`` is left (``>!``, ``>|``, ``<>``, ``<<``,
+    ``<(``, ``>&3``, ``2>>``, ``1>``, ``&>>``, one glued to a word), and for any
+    command holding a quote, a backslash, a ``#``, a non-ASCII character, any
+    whitespace but the plain space, or PowerShell's ``--%``. What is left still
+    goes through :func:`chain_commands`.
+    """
+    if not isinstance(command, str) or not command or len(command) > MAX_COMMAND_LENGTH:
+        return None
+    if "<" not in command and ">" not in command:
+        return command, ()
+    if (
+        not command.isascii()
+        or not _plain_text(command)
+        or _REDIRECT_REFUSING_CHARS.intersection(command)
+        or _STOP_PARSING in command
+    ):
+        return None
+    words = command.split(" ")
+    kept: list[str] = []
+    redirects: list[Redirect] = []
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if "<" not in word and ">" not in word:
+            kept.append(word)
+            i += 1
+            continue
+        before = words[i - 1] if i else ""
+        if not before or before[-1] in _COMMAND_BREAK_CHARS:
+            return None
+        core, sep = _split_separator(word)
+        i += 1
+        if core not in _REDIRECT_DUPLICATIONS:
+            op = next((o for o in _REDIRECT_FILE_OPERATORS if core.startswith(o)), "")
+            if not op:
+                return None
+            target = core[len(op) :]
+            if not target:
+                if sep or i == len(words):
+                    return None
+                target, sep = _split_separator(words[i])
+                i += 1
+            if not _plain_target(target):
+                return None
+            redirects.append(Redirect(target, op != "<"))
+        kept[-1] += sep
+    return " ".join(kept), tuple(redirects)
+
+
 def chain_matches_all(raw_patterns: object, command: object) -> bool:
-    """Whether *command* is a plain command or a chain of them
-    (:func:`chain_commands`) and one of *raw_patterns* matches EVERY part whole.
+    """Whether *command*, its plain redirects taken off (:func:`split_redirects`),
+    is a plain command or a chain of them (:func:`chain_commands`) and one of
+    *raw_patterns* matches EVERY part whole.
 
     kiro-cli asks about each command of a chain; a chain is granted only when each
-    one would be. One :data:`_MAX_MATCH_STEPS` budget covers the whole chain."""
-    parts = chain_commands(command)
+    one would be. One :data:`_MAX_MATCH_STEPS` budget covers the whole chain. What
+    a redirect opens is not judged here: the gate checks each file
+    (``platform.redirect_floor.redirects_clear``) before it grants."""
+    split = split_redirects(command)
+    parts = None if split is None else chain_commands(split[0])
     if parts is None:
         return False
     budget = [_MAX_MATCH_STEPS]
@@ -899,8 +1019,9 @@ def chain_matches_all(raw_patterns: object, command: object) -> bool:
 COMPOSITION_NOTICE = (
     "This command matches allowedCommands, but a chain (&&, ||, ;, |) runs without a "
     "prompt only when every command in it matches and it holds no quote, backslash, "
-    "non-ASCII character or --%, and >, <, $() or backticks always ask. Run the script alone, "
-    "or move the pipeline into the script."
+    "non-ASCII character or --%. $() and backticks always ask, and so does a redirect "
+    "before the command, into a protected file, or to a relative path inside a chain. "
+    "Run the script alone, or move the pipeline into the script."
 )
 
 #: Characters that end the leading simple command of a composed one.
