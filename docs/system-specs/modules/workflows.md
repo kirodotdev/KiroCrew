@@ -1804,6 +1804,10 @@ an object, list or boolean is absent, so it never titles the chat with its repr,
 while a string passes unchanged and a non-zero number keeps its text (zero stays
 absent).
 
+A rerun keeps the fallback `title` and `folder` its run was launched with, so a
+rerun whose chat slot is gone lands in the same titled, filed slot as the run it
+repeats.
+
 When the originating chat slot is gone at delivery (the common case for a
 webhook-driven run, whose ephemeral session is destroyed when its turn ends),
 `inject_workflow_result` falls back to a dedicated `workflow-<run_id>` slot
