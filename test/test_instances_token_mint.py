@@ -139,6 +139,17 @@ class TestTokenMint:
         argv = _build_ssh_argv("cd-1", "echo hi", connect_timeout_secs=0.2)
         assert "ConnectTimeout=1" in argv
 
+    def test_ssh_argv_drops_config_forwards(self):
+        # A `LocalForward` in the user's ssh_config for this host would make the
+        # one-shot ssh bind that port too. If the port is free it holds it,
+        # waits for the connections riding it after the command exits, and is
+        # killed at the timeout with all of them. The one-shot never needs one.
+        from kiro_crew.instances.token_mint import _build_ssh_argv
+
+        argv = _build_ssh_argv("cd-1", "echo hi")
+        at = argv.index("ClearAllForwardings=yes")
+        assert argv[at - 1] == "-o" and at < argv.index("cd-1")
+
     def test_mint_success_and_no_token_in_logs(self, monkeypatch, caplog):
         from kiro_crew.instances import token_mint as tm
 

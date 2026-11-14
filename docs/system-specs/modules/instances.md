@@ -1286,8 +1286,14 @@ the tunnel's `-L`, could drop them), and with `yes` one of them already held
 elsewhere ended every connect. The child's stderr is read by the gateway alone, and
 the tunnel's own bind failure is read off it (§7), so its verbosity is pinned.
 
-The diagnostics probes are a different case and are left alone: they are
-one-shot commands whose exit status is the whole result, with no forward to own.
+The one-shot ssh commands are a different case: the token mint,
+`restart_remote` and the diagnostics probes (`token_mint._build_ssh_argv`), and
+the desktop app's token fetch (`website/electron/remote-token.js`). Their exit
+status is the whole result and they own no forward, so their multiplexing is left
+alone. They do pin `ClearAllForwardings=yes`: an inherited `LocalForward` would
+let a one-shot ssh bind that port while it is free, keep running after its
+command for the connections riding it, and drop them all when its timeout kills
+it.
 
 **An inherited `ProxyCommand` runs under the ssh child's `PATH`.** A
 GUI-launched desktop-app gateway has launchd's minimal `PATH`, and the proxies in

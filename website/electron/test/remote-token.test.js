@@ -145,8 +145,21 @@ describe("buildRemoteTokenSshArgs", () => {
   it("closes ssh's stdin, fails fast, and connects inside the kill budget", () => {
     assert.deepStrictEqual(
       buildRemoteTokenSshArgs("devbox", "kirocrew token", { timeoutMs: 20000 }),
-      ["-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=18", "devbox", "kirocrew token"],
+      [
+        "-n", "-o", "BatchMode=yes", "-o", "ConnectTimeout=18",
+        "-o", "ClearAllForwardings=yes", "devbox", "kirocrew token",
+      ],
     );
+  });
+
+  it("never carries a forward from the user's ssh_config", () => {
+    // A `LocalForward <port>` for the crew's host would let this short-lived
+    // ssh bind the dashboard port. The dashboard's sockets then ride it, ssh
+    // waits for them after the command exits, the kill timer ends it, and the
+    // port drops every connection on it.
+    const args = buildRemoteTokenSshArgs("devbox", "cmd", { timeoutMs: 20000 });
+    const at = args.indexOf("ClearAllForwardings=yes");
+    assert.ok(at > 0 && args[at - 1] === "-o");
   });
 
   it("never passes a ConnectTimeout below one second", () => {

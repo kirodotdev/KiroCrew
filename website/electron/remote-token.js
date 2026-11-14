@@ -70,6 +70,10 @@ function buildRemoteTokenCommand(binPath, options = {}) {
 // so a fixed smaller value would fail hosts the user already raised it for. It
 // stops SSH_EXIT_MARGIN_S short of the budget, because the caller's kill timer
 // starts at spawn: an equal value lets the kill win and loses ssh's own reason.
+// `ClearAllForwardings=yes` drops any `LocalForward` the user's ssh_config sets
+// for the host. Without it this ssh binds the dashboard port whenever that port
+// is free, the dashboard's sockets then ride it, ssh waits for them after the
+// remote command exits, and the kill timer ends it with every connection on it.
 const SSH_EXIT_MARGIN_S = 2;
 
 function buildRemoteTokenSshArgs(remoteHost, remoteCommand, { timeoutMs }) {
@@ -78,6 +82,7 @@ function buildRemoteTokenSshArgs(remoteHost, remoteCommand, { timeoutMs }) {
     "-n",
     "-o", "BatchMode=yes",
     "-o", `ConnectTimeout=${connectTimeoutS}`,
+    "-o", "ClearAllForwardings=yes",
     remoteHost,
     remoteCommand,
   ];
