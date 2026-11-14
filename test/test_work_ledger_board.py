@@ -14,6 +14,7 @@ differ by a known sign, which back-to-back store writes cannot guarantee.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -188,6 +189,38 @@ async def test_events_ride_on_the_row_in_the_store_s_event_shape():
     assert events, "a bound, reported item has events"
     assert set(events[0]) == set(wl.WorkEvent().to_dict())
     assert {e["kind"] for e in events} <= wl.EVENT_KINDS
+
+
+@pytest.mark.asyncio
+async def test_every_event_tail_is_read_in_one_executor_hop(monkeypatch):
+    """Each executor hop queues behind the shared pool, so a large board must not
+    take one per item: five items cost the hops one does, each row its own tail."""
+    hops: list[object] = []
+    real = asyncio.to_thread
+
+    async def counting(func, /, *args, **kwargs):
+        hops.append(func)
+        return await real(func, *args, **kwargs)
+
+    async def hops_of_a_read() -> tuple[int, dict]:
+        # Counted on a second read of the same board, so a once-only load on a
+        # first read is never taken for a per-item cost.
+        await _call(_state(), CONDUCTOR)
+        hops.clear()
+        body, _ = await _call(_state(), CONDUCTOR)
+        return len(hops), body
+
+    monkeypatch.setattr(board.asyncio, "to_thread", counting)
+    _item(title="item 0")
+    one_item, _ = await hops_of_a_read()
+    for n in range(1, 5):
+        _item(title=f"item {n}")
+    five_items, body = await hops_of_a_read()
+    assert len(body["items"]) == 5
+    assert five_items == one_item
+    for row in body["items"]:
+        tail = board._tail_events(CONDUCTOR, row["item_id"], board._MAX_EVENT_TAIL)
+        assert row["events"] == [event.to_dict() for event in tail]
 
 
 # ── the "Needs a ruling" band ─────────────────────────────────────────────
