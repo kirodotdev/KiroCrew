@@ -1160,24 +1160,26 @@ async def test_stop_ends_within_its_budget_when_a_close_handshake_never_finishes
 
 
 async def test_an_unreachable_crew_sends_the_relay_no_port_or_os_error_text() -> None:
+    # Bound but never listening: every connection is refused, and no other
+    # listener on the host can take the port while the test holds it.
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         closed_port = probe.getsockname()[1]
-    async with FakeRelay() as relay:
-        client, _, ingress = make_client(relay, closed_port)
-        await client.start()
-        try:
-            leg = await relay.next_leg()
-            await leg.handshake()
-            head = valid_message("frames/request", path="/api/sessions", query="", headers={})
-            await leg.send(head)
-            await leg.send({"type": "request-end", "id": head["id"]})
-            error = await leg.recv_type("error")
-            assert error["code"] == "crew_unreachable"
-            assert str(closed_port) not in error["message"]
-            assert error["message"].startswith("the Crew's web server could not be reached (")
-        finally:
-            await stop(client, ingress)
+        async with FakeRelay() as relay:
+            client, _, ingress = make_client(relay, closed_port)
+            await client.start()
+            try:
+                leg = await relay.next_leg()
+                await leg.handshake()
+                head = valid_message("frames/request", path="/api/sessions", query="", headers={})
+                await leg.send(head)
+                await leg.send({"type": "request-end", "id": head["id"]})
+                error = await leg.recv_type("error")
+                assert error["code"] == "crew_unreachable"
+                assert str(closed_port) not in error["message"]
+                assert error["message"].startswith("the Crew's web server could not be reached (")
+            finally:
+                await stop(client, ingress)
 
 
 async def test_empty_partial_frames_end_only_the_overflowing_stream(monkeypatch) -> None:
