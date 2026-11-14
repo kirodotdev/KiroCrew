@@ -1056,6 +1056,8 @@ class TestValidateMcpToolArguments:
                                  "default": "x", "examples": ["y"]}},
         }
         self._v({"a": "anything"}, schema)
+        # Ignored means not obeyed: the annotations never switch off the type check.
+        self._raises({"a": 1}, schema, "expected str")
 
     def test_const_and_pattern(self):
         schema = {
@@ -1125,6 +1127,12 @@ def test_boolean_true_subschema_accepts_anything():
     validate_mcp_tool_arguments(
         {"x": {"any": [1, 2, 3]}}, {"type": "object", "properties": {"x": True}}
     )
+    # `true` accepts only its own key: a sibling property is still checked.
+    with pytest.raises(ValidationError, match="expected str"):
+        validate_mcp_tool_arguments(
+            {"x": {"any": [1]}, "y": 1},
+            {"type": "object", "properties": {"x": True, "y": {"type": "string"}}},
+        )
 
 
 def test_enum_rejects_bool_for_number():
