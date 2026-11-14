@@ -48,6 +48,8 @@ jobs:
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -uo pipefail
 
           # Open PRs of THIS repository that cross-reference the issue, one per
@@ -69,7 +71,7 @@ jobs:
             --jq '.data.repository.issue.timelineItems.nodes[].source
                   | select(.number != null and .state == "OPEN" and .repository.nameWithOwner == env.REPO)
                   | "\(.number) \(.headRefOid) \(.headRepository.nameWithOwner) \(.headRefName)"')"; then
-            echo "::error::Could not read the pull requests that reference #$ISSUE."
+            err "Could not read the pull requests that reference #$ISSUE."
             exit 1
           fi
           prs="$(sort -u <<< "$prs")"
@@ -87,7 +89,7 @@ jobs:
               --jq '[.workflow_runs[]
                      | select(.head_repository.full_name == env.HEAD_REPO and .head_branch == env.HEAD_REF)]
                     | max_by(.id) // empty | "\(.id) \(.status) \(.conclusion)"')"; then
-              echo "::warning::PR #$pr: could not read its Issue Gate runs."
+              warn "PR #$pr: could not read its Issue Gate runs."
               failed=1
               continue
             fi
@@ -103,7 +105,7 @@ jobs:
             if gh run rerun "$run_id" --failed -R "$REPO"; then
               echo "PR #$pr: re-ran the failed Issue Gate job of run $run_id."
             else
-              echo "::warning::PR #$pr: re-running Issue Gate run $run_id failed."
+              warn "PR #$pr: re-running Issue Gate run $run_id failed."
               failed=1
             fi
           done <<< "$prs"

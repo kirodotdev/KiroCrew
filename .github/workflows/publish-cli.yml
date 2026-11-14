@@ -85,7 +85,8 @@ jobs:
       - name: Refuse partial CLI signing configuration
         if: env.HAS_PUBLISH_ROLE != env.HAS_MANIFEST_KEY
         run: |
-          echo "::error::CLI publishing requires BOTH AWS_SIGNING_ROLE_ARN and CLI_MANIFEST_SIGNING_KEY_ARN. Refusing to publish an unsigned manifest."
+          err() { printf '::%s::%s\n' error "$*"; }
+          err "CLI publishing requires BOTH AWS_SIGNING_ROLE_ARN and CLI_MANIFEST_SIGNING_KEY_ARN. Refusing to publish an unsigned manifest."
           exit 1
 
       - name: Checkout manifest verifier contract
@@ -117,10 +118,11 @@ jobs:
         env:
           WHEEL_ARTIFACT: ${{ inputs.wheel_artifact }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           mapfile -t WHEELS < <(find cli-dist -type f -name '*.whl' -print)
           if [ "${#WHEELS[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one .whl in artifact '${WHEEL_ARTIFACT}'; found ${#WHEELS[@]}"
+            err "Expected exactly one .whl in artifact '${WHEEL_ARTIFACT}'; found ${#WHEELS[@]}"
             exit 1
           fi
           WHEEL="${WHEELS[0]}"
@@ -132,7 +134,7 @@ jobs:
           # other edition's wheel.
           if [ "$CHANNEL" = lts ]; then STEM=kirocrew_lts; else STEM=kirocrew; fi
           if [[ ! "$WHEEL_NAME" =~ ^${STEM}-([A-Za-z0-9][A-Za-z0-9._+]{0,127})-py3-none-any\.whl$ ]]; then
-            echo "::error::Wheel name does not match the canonical Kiro Crew pure-Python artifact contract for channel ${CHANNEL}: $WHEEL_NAME"
+            err "Wheel name does not match the canonical Kiro Crew pure-Python artifact contract for channel ${CHANNEL}: $WHEEL_NAME"
             exit 1
           fi
           WHEEL_VERSION="${BASH_REMATCH[1]}"
@@ -182,10 +184,11 @@ jobs:
           WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
           SHA256: ${{ steps.wheel.outputs.sha256 }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           case "${CDN_BASE}" in
             https://*) ;;
-            *) echo "::error::CLI_CDN_BASE must be HTTPS before signing."; exit 1 ;;
+            *) err "CLI_CDN_BASE must be HTTPS before signing."; exit 1 ;;
           esac
           CDN_BASE="${CDN_BASE%/}"
           PUBLIC_KEY="packaging/signing/cli-manifest-public.pem"
@@ -207,7 +210,7 @@ jobs:
           # line is a merge artifact and must fail the publish, not pick a line.
           MIN_VERSION=$(grep -v '^[[:space:]]*#' packaging/MIN_VERSION | grep -v '^[[:space:]]*$' || true)
           if [ "$(printf '%s\n' "$MIN_VERSION" | grep -c .)" -gt 1 ]; then
-            echo "::error::packaging/MIN_VERSION carries more than one value line."
+            err "packaging/MIN_VERSION carries more than one value line."
             exit 1
           fi
           # Trim ONLY leading/trailing whitespace. Internal whitespace must
@@ -254,13 +257,15 @@ jobs:
           MANIFEST_PATH: ${{ steps.manifest.outputs.path }}
           MANIFEST_KEY_ID: ${{ steps.manifest.outputs.key_id }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           # The origin bucket is private (OAC), so the raw S3 URL is not publicly
           # reachable. Publish only when both the dist bucket and the CloudFront
           # base are configured, and never emit a manifest that points at private
           # S3. Fail closed (before any upload) otherwise.
           if [ -z "${BUCKET}" ] || [ -z "${CDN_BASE}" ]; then
-            echo "::error::CLI_DIST_BUCKET and CLI_CDN_BASE repo variables must be set (bucket='${BUCKET}', cdn='${CDN_BASE}')."
+            err "CLI_DIST_BUCKET and CLI_CDN_BASE repo variables must be set (bucket='${BUCKET}', cdn='${CDN_BASE}')."
             exit 1
           fi
           CDN_BASE="${CDN_BASE%/}"
@@ -288,13 +293,13 @@ jobs:
             # bytes clients receive.
             curl -fsSL --retry 3 -o /tmp/existing "${CDN_BASE}/${key}"
             if [ "$(sha256sum /tmp/existing | awk '{print $1}')" = "$(sha256sum "$body" | awk '{print $1}')" ]; then
-              echo "::notice::$key already exists with identical content (idempotent retry); skipping"
+              notice "$key already exists with identical content (idempotent retry); skipping"
               return 0
             fi
-            echo "::error::$key exists with DIFFERENT content -- refusing to republish an immutable versioned key"
+            err "$key exists with DIFFERENT content -- refusing to republish an immutable versioned key"
             return 1
           }
-          [ -s "$MANIFEST_PATH" ] || { echo "::error::Signed CLI manifest is missing"; exit 1; }
+          [ -s "$MANIFEST_PATH" ] || { err "Signed CLI manifest is missing"; exit 1; }
           put_immutable "${PREFIX}/${WHEEL_NAME}" "$WHEEL_PATH"
           put_immutable "${PREFIX}/SHA256SUMS" "${SUMS_DIR}/SHA256SUMS"
           put_immutable "${PREFIX}/cli-manifest.json" "$MANIFEST_PATH"
@@ -318,11 +323,11 @@ jobs:
           # degraded evidence -- the exact rollback this guard prevents.
           FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
             -o /tmp/current-feed.json -w '%{http_code}' "${CDN_BASE}/${FEED_KEY}") \
-            || { echo "::error::channel feed fetch failed (transport)"; exit 1; }
+            || { err "channel feed fetch failed (transport)"; exit 1; }
           case "$FEED_HTTP" in
             200) ;;
             403|404) : > /tmp/current-feed.json ;;
-            *) echo "::error::channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+            *) err "channel feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
           esac
           # awk does the ^{} peel-ref filtering (awk always exits 0 on empty
           # input, unlike grep -v); an ls-remote failure aborts via pipefail.
@@ -339,10 +344,10 @@ jobs:
               --content-type application/json --cache-control no-cache
             FEED_NOTE="\`${FEED_KEY}\`"
           elif [ "$VERDICT" = "hold" ]; then
-            echo "::notice::${FEED_KEY} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
+            notice "${FEED_KEY} already serves a newer version; pointer NOT moved (hotfix on an old line). Versioned assets are published."
             FEED_NOTE="not moved (channel already serves a newer version)"
           else
-            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            err "feed guard returned neither advance nor hold (got: '${VERDICT}')"
             exit 1
           fi
 
@@ -365,6 +370,7 @@ jobs:
           SHA256: ${{ steps.wheel.outputs.sha256 }}
           PYREQ: ${{ steps.manifest.outputs.python_requires }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # PEP 503 static "simple" index per channel, so pip/uv can install
           # natively (verified invocation; --index-url alone would cut off PyPI
@@ -398,7 +404,7 @@ jobs:
             case "$STATUS" in
               200) ;;
               403|404) : > existing.html ;;
-              *) echo "::error::Fetching existing ${SIMPLE} index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
+              *) err "Fetching existing ${SIMPLE} index returned HTTP ${STATUS}; aborting without touching the published index."; exit 1 ;;
             esac
             # A merged link keeps its attributes. One without data-requires-python
             # is stamped >=3.12 on purpose: this index serves only the supported
@@ -459,26 +465,28 @@ jobs:
           WHEEL_VERSION: ${{ steps.wheel.outputs.version }}
           INSIDER_MANIFEST_PATH: ${{ steps.manifest.outputs.insider_path }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           CDN_BASE="${CDN_BASE%/}"
           FEED_KEY="feed/insider/latest-cli.json"
           FEED_HTTP=$(curl -sS --retry 3 --retry-delay 2 \
             -o /tmp/insider-feed.json -w '%{http_code}' "${CDN_BASE}/${FEED_KEY}") \
-            || { echo "::error::insider feed fetch failed (transport)"; exit 1; }
+            || { err "insider feed fetch failed (transport)"; exit 1; }
           case "$FEED_HTTP" in
             200) ;;
             403|404) : > /tmp/insider-feed.json ;;
-            *) echo "::error::insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
+            *) err "insider feed fetch returned HTTP ${FEED_HTTP}"; exit 1 ;;
           esac
           VERDICT=$(python3 scripts/check_feed_advance.py \
             --new "${WHEEL_VERSION}" --channel insider \
             --current-file /tmp/insider-feed.json \
             --tags-file /tmp/repo-tags.txt --self "${GITHUB_REF_NAME}" || true)
           if [ "$VERDICT" = "hold" ]; then
-            echo "::notice::${FEED_KEY} already serves a newer version; insider pointer NOT moved."
+            notice "${FEED_KEY} already serves a newer version; insider pointer NOT moved."
             exit 0
           elif [ "$VERDICT" != "advance" ]; then
-            echo "::error::feed guard returned neither advance nor hold (got: '${VERDICT}')"
+            err "feed guard returned neither advance nor hold (got: '${VERDICT}')"
             exit 1
           fi
           # The insider-signed manifest names this wheel under cli/insider/.

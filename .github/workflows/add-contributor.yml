@@ -96,6 +96,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          warn() { printf '::%s::%s\n' warning "$*"; }
           set -euo pipefail
 
           # This job credits three sets of people, collected by TWO independent
@@ -158,7 +159,7 @@ jobs:
               if "$@" >"$out"; then
                 return 0
               fi
-              echo "::warning::GraphQL sweep into $out failed (attempt $attempt of 3)"
+              warn "GraphQL sweep into $out failed (attempt $attempt of 3)"
               sleep $((attempt * 20))
             done
             return 1
@@ -373,6 +374,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
+          notice() { printf '::%s::%s\n' notice "$*"; }
           set -euo pipefail
           BRANCH=chore/add-contributors
           # Resolve the base from the repo itself, not the event payload -- the
@@ -451,7 +453,7 @@ jobs:
               case "$out" in
                 *"not permitted to create or approve pull requests"*)
                   compare="$GITHUB_SERVER_URL/$REPO/compare/$BASE...$BRANCH?expand=1"
-                  echo "::notice::Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare Put \`Part of #16362\` on a line of its own in the description so the Issue Gate lane passes (that is the standing tracking issue for workflow-generated PRs)."
+                  notice "Branch $BRANCH is pushed and ready, but GitHub Actions may not open pull requests in this repository. Open it here: $compare Put \`Part of #16362\` on a line of its own in the description so the Issue Gate lane passes (that is the standing tracking issue for workflow-generated PRs)."
                   echo "handoff=$compare" >>"$GITHUB_OUTPUT"
                   exit 0
                   ;;

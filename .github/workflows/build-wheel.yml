@@ -127,12 +127,13 @@ jobs:
       - name: Name the LTS distribution
         if: inputs.edition == 'lts'
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           sed -i -E 's/^name = "kirocrew"$/name = "kirocrew-lts"/' pyproject.toml
           grep -qx 'name = "kirocrew-lts"' pyproject.toml
           sed -i -E 's/^    kirocrew\[voice-aws\]$/    kirocrew-lts[voice-aws]/' setup.cfg
           grep -qx '    kirocrew-lts\[voice-aws\]' setup.cfg
           if grep -nE '^\s+kirocrew\[' setup.cfg; then
-            echo "::error::setup.cfg still names the oss kirocrew distribution in an extra"; exit 1
+            err "setup.cfg still names the oss kirocrew distribution in an extra"; exit 1
           fi
 
       - name: Build wheel + sdist
@@ -163,6 +164,7 @@ jobs:
       # directions — hence the negative case below.
       - name: The voice extra resolves to a prebuilt recogniser wheel
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           set -euo pipefail
           # The specifier from setup.cfg's `voice` extra, NOT a bare name. Without it
           # pip happily resolves an OLD release that does have a wheel for a platform
@@ -184,7 +186,7 @@ jobs:
           if python -m pip download "$SPEC" --no-deps --only-binary :all: \
               --python-version 3.12 --platform macosx_11_0_x86_64 \
               -d "$RUNNER_TEMP/pwc-intel" >/dev/null 2>&1; then
-            echo "::error::An Intel macOS pywhispercpp wheel now exists for $SPEC. Add" \
+            err "An Intel macOS pywhispercpp wheel now exists for $SPEC. Add" \
                  "x86_64 to _WHEEL_ARCHS['Darwin'] in src/kiro_crew/stt/engine.py and" \
                  "revisit the wheel-only skip in packaging/build-desktop.sh."
             exit 1
