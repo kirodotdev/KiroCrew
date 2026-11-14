@@ -23,7 +23,7 @@ from kiro_crew import conductor_patrol, session_ledger, work_ledger
 from kiro_crew.constants import env_file_display
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log.errors import CrewLogError
-from kiro_crew.dashboard import session_control
+from kiro_crew.dashboard import session_control, trace_binding
 from kiro_crew.dashboard.handlers.work_ledger_caller import (
     _caller_key,
     _code_channel_caller,
@@ -68,6 +68,7 @@ from kiro_crew.dashboard.handlers.work_ledger_refusals import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.metrics import work as work_metrics
+from kiro_crew.tracing import work as trace_work
 from kiro_crew.validation import WORK_LEDGER_RECORD_SCHEMA, ValidationError, validate_tool_args
 from kiro_crew.work_ledger import WorkLedgerError
 from kiro_crew.work_vocab import (
@@ -277,6 +278,8 @@ async def _record_conductor_write(
             stop = await before_write()
             if stop is not None:
                 return stop
+        # What the header held before this write, when it may open a round (tracing).
+        before = await trace_work.header_before(key, action)
         # The worker key is folded through ``session_ledger.ledger_key`` before the
         # store writes the binding (see the ``handlers.work_ledger`` note); the snapshot names the
         # same path, or a failed bind's binding would escape the undo.
@@ -430,6 +433,17 @@ async def _record_conductor_write(
         # write whose record did not land is undone above, so this point is
         # reached once per write the route reports as successful.
         _count_recorded(action, item, header)
+        await trace_work.recorded(
+            unit,
+            key,
+            action,
+            actor="conductor",
+            item=item,
+            header=header,
+            event_id=getattr(event, "id", None),
+            before=before,
+            root_kind=lambda: trace_binding.root_kind(state, key),
+        )
         if action == "close" and item is not None:
             await _count_crew_mode_run(state, key, item)
         # A remote bind names a PEER's slot, which no local crew record can resolve.

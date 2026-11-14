@@ -152,6 +152,8 @@ One per conductor session.
 | `depth` | int 0..2 | server | 0 for a root conductor; see §Two-level conductors |
 | `parent_item` | string or null | server | set when this conductor is itself a worker |
 | `created_at` | ISO 8601 | server | |
+| `goal_id` | 16 hex | server | minted with the board and by each `new_goal` (and by the next `goal` write on a header from before the field), so the rounds of one goal share it; the tracer keys a round's trace on it. Rides no crew-log entry: a rebuild keeps the cache's |
+| `round_started_at` | ISO 8601 | server | when the current round began: stamped with the board, and by a `goal` write that changes the round or starts a new goal. The tracer rolls a round's trace over by its age. Rides no crew-log entry: a rebuild keeps the cache's |
 
 There is deliberately **no item roster field**. The item list is derived by listing the items directory, which removes a writer and therefore a class of clobber. `list_work_items` in Issue Radar's `crew_store` already derives its list the same way.
 

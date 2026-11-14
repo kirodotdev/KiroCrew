@@ -346,6 +346,7 @@ class TurnTrace:
             self._finish(exc)
         except Exception:
             logger.debug("turn trace finish failed", exc_info=True)
+        _run_after(self)
 
     def _finish(self, exc: BaseException | None) -> None:
         from opentelemetry.trace import Status, StatusCode
@@ -709,3 +710,29 @@ def reset_for_testing() -> None:
         _open_tools.clear()
         _ended_tools.clear()
         _rollups.clear()
+
+
+def after_turn(acp_session_id: str, fn: Callable[[], None]) -> bool:
+    """Run *fn* once the turn streaming on *acp_session_id* has ended its spans.
+
+    ``False``, and *fn* is not kept, when no traced turn is streaming there. For a
+    marker whose roll-up must include that turn's spend (``tracing/work.py``).
+    """
+    with _lock:
+        turn = _open_turns.get(acp_session_id)
+        if turn is None:
+            return False
+        turn.__dict__.setdefault("_after", []).append(fn)
+    return True
+
+
+def _run_after(turn: TurnTrace) -> None:
+    # The turn left ``_open_turns`` at the start of its finish, under the same lock,
+    # so nothing is added after this pop.
+    with _lock:
+        pending = turn.__dict__.pop("_after", ())
+    for fn in pending:
+        try:
+            fn()
+        except Exception:
+            logger.debug("after-turn trace step failed", exc_info=True)

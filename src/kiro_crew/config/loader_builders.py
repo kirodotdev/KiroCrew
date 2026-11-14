@@ -1268,6 +1268,7 @@ def _build_telemetry_config(telemetry_data: dict) -> TelemetryConfig:
         # cannot use.
         traces_otlp_headers_secret=section.read("traces_otlp_headers_secret", _dict_or_default),
         traces_otlp_headers_env=section.read("traces_otlp_headers_env", _dict_or_default),
+        traces_ultra_mode=str(section.get("traces_ultra_mode")),
         beacon_enabled=bool(section.get("beacon_enabled")),
         beacon_endpoint=str(section.get("beacon_endpoint")),
     )

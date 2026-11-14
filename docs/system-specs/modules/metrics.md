@@ -1879,9 +1879,9 @@ task-review tab titled through the transcript its row recorded), plus the
 
 Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
 tracing RFC under `docs/request-for-change/`. This section covers what is built:
-session turns, sub-agent runs and the surface roots of the engines that start turns,
-recorded to a local sink, and exported over OTLP/HTTP when a collector is named. The
-workflow root kind is not built yet. Tests: `test/tracing/`.
+session turns, sub-agent runs, the surface roots of the engines that start turns and
+Ultra Mode rounds, recorded to a local sink, and exported over OTLP/HTTP when a
+collector is named. The workflow root kind is not built yet. Tests: `test/tracing/`.
 
 **Switch.** `telemetry.traces_enabled`, default `false`, independent of
 `telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
@@ -1891,7 +1891,7 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days`, `max_total_mb` or a `traces_otlp_*` key, the worker
+moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_ultra_mode` or a `traces_otlp_*` key, the worker
 thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
@@ -2076,6 +2076,50 @@ a work item also carries `kirocrew.work.item_id`, `kirocrew.work.round` and
 `kirocrew.work.conductor_hash`, read from the work ledger binding on a worker thread
 before the turn binds. No goal, title, acceptance or other ledger text.
 
+**Ultra Mode rounds** (`tracing/work.py`). With `telemetry.traces_ultra_mode` `run`
+(default), one round of a conductor's board (Ultra Mode or Bot) is one trace: an
+`ultra round N` anchor keyed `(conductor ledger key, goal key, round)`, where the goal
+key is the header's `goal_id` (minted with the board and by each `new_goal`) or
+`<generation>.<goal_items_base>` on a header from before it. The conductor's turns join
+the anchor; each item open in the round has a `work_item <item id>` anchor under it,
+keyed `(item id, generation, goal key, round)`, and its worker's turns join that. A
+round's anchor links to the previous round's. `bind_turn` finds the anchor by reading
+the board header (the worker's through its binding) on a worker thread, so nothing is
+kept open and a restart re-derives the same ids; a turn a delivered run joins (a
+sub-agent completion) keeps that join. Anchors are written only by the ledger write
+that brings their key into being, so nothing is written twice: the board's first
+write, a goal write that changes the goal key or the round (it re-emits each item
+still open under the new round, and ends the old round `ultra outcome advanced`), and
+an item's create. A `close` writes `work_item outcome <state>` with
+`kirocrew.work.verdict`, `kirocrew.work.fails` and the item's roll-up. A round ends
+once, at the goal write that moves the board on: `ultra outcome closed` when no item is
+open, `ultra outcome advanced` when items carry over, with the conductor turns'
+roll-up. Both outcome markers wait until the acting turn has ended
+(`turns.after_turn`), so that turn's spend is in them. A write span sits in its acting
+turn only when that turn is in the write's round trace; otherwise (the turn that opens
+a round was bound before it) it goes under the item's or round's anchor with a link to
+the turn. A round past its span budget or six days old (R5; its age is read from the
+header's `round_started_at`, so it holds across a restart) moves to a `(cont N)` trace;
+each item's anchor is emitted again under it, once per process, on first use. A round's
+roll-up is keyed by its first anchor and an item's by the item itself, so an outcome
+sums the whole run, round changes and rollovers included. Not covered: a board whose round began
+while tracing was off has no anchor until its next round; a worker turn still streaming
+when its item closes adds nothing to that item's roll-up; a goal's last round has no
+round outcome, and keeps its roll-up entry, until a goal write moves the board on (the
+ledger has no "goal finished" action). With `turn`, there are no
+anchors and every turn roots itself.
+
+**Ledger writes.** Every write whose `work/recorded` entry landed gets one
+`kirocrew.work.<action>` span (`report` from a worker), from the routes that append it:
+`_record_conductor_write` (every conductor action, remote and hand-back ones
+included), the worker report, a remote crew's report, and a person's steer. Where it
+sits is described above for `run` mode; with `turn`, it is in the acting turn, and
+with none (a steer, a peer's report) alone in a trace of its own. It
+carries ids, closed-vocabulary values and counts only: `kirocrew.work.action`,
+`actor`, `item_id`, `round`, `generation`, `goal_id`, `state`, `verdict`, `fails`,
+and on a report `status`, `reason` and the `pr` number. Never the goal, a title,
+acceptance, decision, summary or artifact text.
+
 **Deterministic ids** (`tracing/ids.py`, vectors in
 `test/fixtures/tracing/id_conformance.json`):
 `H(kind, p1..pn) = sha256("kirocrew.v1|" + ns + "|" + kind + "|" + esc(p1) + ... )`,
@@ -2091,9 +2135,12 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
 | `execute_tool` | `tool, acp_session_id, tool_call_id` |
 | sub-agent `invoke_agent` | `turn, turn_id, attempt`, in the parent's trace under its spawn span |
-| run anchor (`subagent`, `cron`, later workflow, Ultra Mode) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
+| run anchor (`subagent`, `cron`, later workflow) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
 | `<kind> outcome <status>` | `<kind>.outcome, *key, cont, outcome_key` |
 | `cron run <kind>` step | `cron.step, *key, cont, run <kind>` |
+| `ultra round N` | `ultra, conductor, goal key, round, cont`; trace `trace.ultra`, the same inputs |
+| `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
+| `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
 
 **Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
