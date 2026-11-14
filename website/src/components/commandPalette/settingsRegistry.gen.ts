@@ -3298,6 +3298,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Authenticates coding-activity sync when WakaTime is enabled."
   },
   {
+    "id": "security.ask-me-before-running-tools-an-mcp-server-pre-approves",
+    "labelKey": "pages.settings.securityPanel.safetySwitches.ask_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "safety"
+    },
+    "configKey": "mcp.honour_auto_approve",
+    "label": "Ask me before running tools an MCP server pre-approves",
+    "description": "Tools you set to Always allow still run without asking."
+  },
+  {
     "id": "security.denied-commands",
     "labelKey": "pages.settings.securityPanel.denied_commands",
     "tab": "security",
@@ -3390,6 +3403,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "settingId": "security.config-pending",
     "label": "Settings files changed outside Kiro Crew",
     "description": "Review edits made to settings files outside Kiro Crew, then apply or discard them."
+  },
+  {
+    "id": "security.stop-the-agent-from-editing-its-own-permission-rules",
+    "labelKey": "pages.settings.securityPanel.safetySwitches.protect_label",
+    "tab": "security",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "section": "safety"
+    },
+    "configKey": "mcp.protect_kiro_permission_rules",
+    "label": "Stop the agent from editing its own permission rules",
+    "description": "On: the agent's file-editing tools can't change the rules that let tools run without asking you. Off: they can. Commands the agent runs in a terminal can change these rules either way."
   },
   {
     "id": "security.trust-every-third-party-app",

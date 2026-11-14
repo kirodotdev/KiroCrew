@@ -5121,6 +5121,12 @@ links it to that route's page (`memory.history_max_days` and
 least 7 days and 0.5 hours; `agent.log_level` to Developer → Logs), so a generic
 write cannot skip that rule. A key such a route writes as one step with other keys
 and that has no control (`memory.embedding_provider`) is read-only (`owned`).
+The two MCP safety switches, `mcp.protect_kiro_permission_rules` and
+`mcp.honour_auto_approve`, stay in `READONLY_REASONS` (`safety`) and link to their
+Settings → Security → Safety switches controls through the registry `configKey`.
+Their only dashboard writer is the owner-gated `GET`/`PUT
+/api/security/safety-switches` ([security](security.md), "Owner's MCP safety
+switches"), so neither this PATCH nor a change card can write them.
 
 An `edit` row saves when its control changes, with no confirm step. A text,
 number or list field saves when it loses focus (or on Enter); a toggle or select

@@ -2024,7 +2024,9 @@ the agents dir. The registry leaf gets no seal, by maintainer decision (#14837):
 kiro-cli's permission rule files (`permissions.yaml` / `permissions.json` under
 `~/.kiro/settings` and `~/.kiro/workspace-roots`) join the same tier only when the owner
 turns `mcp.protect_kiro_permission_rules` on; it is off by default ([security](security.md),
-"kiro-cli's tool auto-approve rules").
+"kiro-cli's tool auto-approve rules"). The owner changes both keys in Settings → Security →
+Safety switches, whose owner-gated route audits each change before it is written
+([security](security.md), "Owner's MCP safety switches").
 
 **The Bot folder `~/.kiro/mates/agents` and its state files beside it** (`owners.json`, `revoked-approvals.json`, `tool-access.json`, `migrated.json`) sit on the same write-only tier, also under `KIRO_HOME`. Only gateway handlers write them, directly rather than through the tool gate, so the agent's file-edit tools are refused and reads are unchanged.
 

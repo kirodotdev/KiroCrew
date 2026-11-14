@@ -95,6 +95,20 @@ export interface McpBodyFieldsData {
   refused: Array<McpBodyFieldRow & { refused_at: string }>
 }
 
+/** The two config paths `/api/security/safety-switches` reads and writes. */
+export type SafetySwitchKey = 'mcp.protect_kiro_permission_rules' | 'mcp.honour_auto_approve'
+
+/**
+ * The owner's MCP safety switches (Settings > Security > Safety switches).
+ * `enabled` is the configured value; `in_force` is what the gate that reads it
+ * sees now, which differs only when `degraded` (the config could not be read in
+ * full) makes that gate fall back.
+ */
+export interface SafetySwitchesState {
+  degraded: boolean
+  switches: { key: SafetySwitchKey; enabled: boolean; in_force: boolean }[]
+}
+
 /** Full denied-commands snapshot returned by every denied-commands endpoint. */
 export interface DeniedCommandsData {
   builtins: DeniedCommandRule[]
@@ -629,6 +643,12 @@ export function createSecurityEndpoints({ get, post, put, del, patch, j, jfetch:
      *  moves the file-view switch. */
     setCredentialRedactionSeams: (enabled: boolean) =>
       put('/api/security/credential-redaction', { seams_enabled: enabled }).then(j) as Promise<CredentialRedactionState>,
+    // MCP safety switches (Settings > Security > Safety switches). Owner only on
+    // both verbs; the PUT names one switch and is its only dashboard writer.
+    safetySwitches: () =>
+      fetch('/api/security/safety-switches').then(j) as Promise<SafetySwitchesState>,
+    setSafetySwitch: (key: SafetySwitchKey, enabled: boolean) =>
+      put('/api/security/safety-switches', { key, enabled }).then(j) as Promise<SafetySwitchesState>,
     /** The owner's per-folder choice to run a folder agent's own hooks on KAS.
      *  Owner only; the handler is the record's only dashboard writer. */
     setProjectHooksConsent: (folder: string, enabled: boolean) =>
