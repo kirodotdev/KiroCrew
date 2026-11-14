@@ -1,12 +1,12 @@
 ---
 title: Session search by meaning, routed so an exact identifier still wins
-status: draft
+status: partial
 author: dma9527
 created: 2026-10-26
-last-audited: 2026-11-01
-audited-at: 42243e7c
+last-audited: 2026-11-11
+audited-at: a8308a1a
 doc-pr: 24478
-implementation-prs: []
+implementation-prs: [31794]
 tracking-issues: [24476]
 supersedes: []
 superseded-by: []
