@@ -6,6 +6,11 @@ the ``cloud`` modules, with no aiohttp and no live AWS. It adds **no** new AWS
 logic: ``preflight`` reuses ``iam.reachability_check``, ``provision`` reuses
 ``ec2.deploy``, sign-in reuses ``login.*``, and ``register`` reuses
 ``connect.register_instance`` — the same calls the CLI wizard already makes.
+
+The one read of its own is best-effort progress: given ``on_progress``,
+``provision`` polls ``ec2.list_stack_events`` (the call the CLI wizard streams)
+on a daemon thread while ``ec2.deploy`` blocks, and reports which sub-step the
+stack is in. The poll never fails, slows or outlives the provision call.
 """
 
 from __future__ import annotations
@@ -20,6 +25,16 @@ from kiro_crew.cloud.aws import AWSError
 from kiro_crew.cloud.login_target import KiroLoginTarget
 
 logger = logging.getLogger(__name__)
+
+# How often the provision sub-step poller reads the stack events. One read can
+# block up to ~60 s, so a tighter interval would buy nothing.
+_PROGRESS_POLL_S = 12.0
+
+#: The provision sub-steps, reported through ``provision(on_progress=...)``. The
+#: stack events cannot tell the on-box install from the crew starting, so there
+#: is no third one.
+SUBSTEP_CREATING = "Creating the instance…"
+SUBSTEP_INSTALLING = "Installing Kiro Crew on the instance…"
 
 # Matches login.wait_until_logged_in's own default budget (30 × ~5s ≈ 150s), but
 # spent one attempt at a time so cancellation is observed between attempts.
@@ -151,6 +166,58 @@ class _RealSigninHandle:
         return stopped
 
 
+def _instance_created(events: list[dict[str, str]]) -> bool:
+    return any(
+        ev.get("resource") == "Instance" and ev.get("status") == "CREATE_COMPLETE" for ev in events
+    )
+
+
+def _start_progress_poller(
+    tag: str, profile: str, region: str, on_progress: Callable[[str], None]
+) -> Callable[[], None]:
+    """Report the provision sub-step, then follow the stack events; return the stop function.
+
+    The stop function never waits for a stack-event read in flight, only for a
+    report already being delivered, and every report after it is dropped. That
+    keeps the caller's own writes to the step, made after ``provision`` returns
+    or raises, from ever being overwritten. A failed read or report is ignored:
+    progress is best-effort and must not fail or slow a launch.
+    """
+    stop = threading.Event()
+    lock = threading.Lock()
+
+    def report(text: str) -> None:
+        with lock:
+            if stop.is_set():
+                return
+            try:
+                on_progress(text)
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                logger.debug("provision progress report failed", exc_info=True)
+
+    def run() -> None:
+        while not stop.wait(_PROGRESS_POLL_S):
+            try:
+                created = _instance_created(ec2.list_stack_events(tag, profile, region))
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                logger.debug("stack event poll failed for %s", tag, exc_info=True)
+                continue
+            if created:
+                # The last sub-step: nothing later to report, so stop reading.
+                report(SUBSTEP_INSTALLING)
+                return
+
+    def halt() -> None:
+        with lock:
+            stop.set()
+
+    # Reported here, on the caller's thread, so it lands before anything
+    # ``ec2.deploy`` itself writes to the step.
+    report(SUBSTEP_CREATING)
+    threading.Thread(target=run, name=f"launch-progress-{tag}", daemon=True).start()
+    return halt
+
+
 class RealLaunchEngine:
     """Drives a launch against the user's AWS account via the ``cloud/`` engine."""
 
@@ -169,21 +236,27 @@ class RealLaunchEngine:
         region: str,
         subnet_id: str = "",
         on_network_fallback: Optional[Callable[[str], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
     ) -> str:
         tier = sizes.get_tier(size_key)
+        halt = _start_progress_poller(tag, profile, region, on_progress) if on_progress else None
         # No dashboard_port override: the stack binds its own DashboardPort
         # default. A crew once needed a bespoke port here because the tunnel
         # forced local_port == remote_port and hard-failed on a busy one; the
         # hub now picks its local forward port independently, so crews can
         # share the stock remote port instead of each consuming a fresh one.
-        result = ec2.deploy(
-            tag=tag,
-            tier=tier,
-            profile=profile,
-            region=region,
-            subnet_id=subnet_id,
-            on_network_fallback=on_network_fallback,
-        )
+        try:
+            result = ec2.deploy(
+                tag=tag,
+                tier=tier,
+                profile=profile,
+                region=region,
+                subnet_id=subnet_id,
+                on_network_fallback=on_network_fallback,
+            )
+        finally:
+            if halt is not None:
+                halt()
         return result.instance_id
 
     def begin_signin(

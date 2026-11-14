@@ -20739,6 +20739,8 @@
         "pricing_calculator": "AWS 料金計算ツールを開く",
         "profile_name_only": "{{productName}} が保存するのはプロファイル名だけです — キーやトークンは保存しません。",
         "provisioner_choose": "新しいクルーをどこで実行しますか？",
+        "provision_elapsed": "経過 {{elapsed}}",
+        "provision_past_estimate": "目安の 6 分を超えています。経過 {{elapsed}}",
         "provisioner_none_drawable": "このゲートウェイには、このダッシュボードで表示できるクルーの作成方法がありません。ダッシュボードを更新するか、使用するプロビジョナーを管理者に確認してください。",
         "provisioner_stale_choice": "以前使用したインスタンスの種類はこのゲートウェイでは提供されなくなったため、{{label}} が選択されました。",
         "provisioners_unavailable": "このゲートウェイが提供するクルーの作成方法を読み取れませんでした。組み込みの AWS ランチャーを表示しています。",

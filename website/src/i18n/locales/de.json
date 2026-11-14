@@ -21262,6 +21262,8 @@
         "pricing_calculator": "AWS-Preisrechner öffnen",
         "profile_name_only": "{{productName}} speichert nur den Profilnamen — niemals deine Schlüssel oder Tokens.",
         "provisioner_choose": "Wo soll die neue Crew laufen?",
+        "provision_elapsed": "Bisher {{elapsed}}",
+        "provision_past_estimate": "Über der Schätzung von 6 Minuten, bisher {{elapsed}}",
         "provisioner_none_drawable": "Dieses Gateway bietet keine Methode zum Erstellen einer Crew, die dieses Dashboard anzeigen kann. Aktualisieren Sie das Dashboard oder fragen Sie Ihren Administrator, welcher Provisioner zu verwenden ist.",
         "provisioner_stale_choice": "Der zuvor verwendete Instanztyp wird von diesem Gateway nicht mehr angeboten; stattdessen wurde {{label}} gewählt.",
         "provisioners_unavailable": "Es konnte nicht gelesen werden, welche Methoden zum Erstellen einer Crew dieses Gateway anbietet. Der integrierte AWS-Launcher wird angezeigt.",

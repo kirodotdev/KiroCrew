@@ -20739,6 +20739,8 @@
         "pricing_calculator": "Open the AWS Pricing Calculator",
         "profile_name_only": "{{productName}} 只保存配置文件名称 — 绝不保存你的密钥或令牌。",
         "provisioner_choose": "新的 Crew 应该在哪里运行？",
+        "provision_elapsed": "已用时 {{elapsed}}",
+        "provision_past_estimate": "已超过预计的 6 分钟，已用时 {{elapsed}}",
         "provisioner_none_drawable": "此网关提供的 Crew 创建方式此仪表板都无法显示。请更新仪表板，或询问管理员应使用哪个 provisioner。",
         "provisioner_stale_choice": "你之前使用的实例类型已不再由此网关提供，已为你改选 {{label}}。",
         "provisioners_unavailable": "无法读取此网关提供的 Crew 创建方式，已显示内置的 AWS 启动器。",
