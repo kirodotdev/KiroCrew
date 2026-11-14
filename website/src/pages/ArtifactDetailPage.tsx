@@ -217,7 +217,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       `Companion chat for artifact \`${artifact.slug}\` ("${artifact.name}", kind=${artifact.kind}, ` +
       `v${artifact.version}, source_path=${artifact.source_path || 'none'}, ` +
       `${commentCount} open comment${commentCount === 1 ? '' : 's'}).\n` +
-      `Use artifact_get / artifact_update / artifact_get_comments with this slug. ` +
+      `Use artifact_get / artifact_update with this slug, and artifact_get_comments ` +
+      `with this slug and exclude_resolved=true, so you read the same open comments ` +
+      `counted here. ` +
       `Anchored comments carry the exact quoted span they refer to — treat each as ` +
       `an instruction about that span, and triage every one you act on.`
     )
