@@ -165,13 +165,12 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
 
             client.on_state_change = _on_state
 
-        # Through the TRANSPORT, not the client directly: the transport's connect
-        # primes the outbound token (validating the credentials and setting the
-        # status badge via on_state_change, never raising) AND starts the
-        # serviceUrl store warm-up. Calling the client's connect alone silently
-        # skips the warm-up, which is what `configured_targets` -- a sync accessor
-        # that cannot load the store itself -- depends on to report a Teams
-        # destination as reachable after a restart.
+        # Through the TRANSPORT, not the client: its connect primes the outbound
+        # token (checks credentials and sets the status badge via
+        # on_state_change, never raising) AND warms the serviceUrl store. The
+        # client's connect alone skips the warm-up, and `configured_targets`, a
+        # sync accessor that cannot load the store, then reports no reachable
+        # Teams destination after a restart.
         await transport.connect()
         logger.info("Teams channel started (self-hosted webhook path).")
         return client
