@@ -412,9 +412,9 @@ class TestFileRead:
 
     @pytest.mark.asyncio
     async def test_read_utf8_multibyte_round_trip(self, tmp_path, mock_sel, home_patch):
-        # Regression: the dashboard file viewer reported "Invalid JSON" for
-        # files containing CJK characters. Verify that UTF-8 bytes survive
-        # the read pipeline (open + redactors + Response.text) byte-for-byte.
+        # UTF-8 bytes (CJK here) must survive the read pipeline (open +
+        # redactors + Response.text) byte-for-byte, or the file viewer shows
+        # "Invalid JSON".
         # Synthetic fixture only — no real customer/case data.
         payload = {
             "ascii_key": "value",

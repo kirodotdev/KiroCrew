@@ -256,7 +256,7 @@ async def test_delete_by_query_falls_back_to_message_ts_for_legacy(tmp_path):
         assert state._chat_pins == []
 
 
-# ── Concurrency regression: slot replaced between pre-check and lock ──
+# ── Concurrency: slot replaced between pre-check and lock ──
 
 
 @pytest.mark.asyncio

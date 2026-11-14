@@ -472,7 +472,7 @@ class TestProcessMessage:
         assert client._process_message(msg, req_id=99) == "mcp_oauth_request"
 
     def test_permission_request_with_colliding_id_not_complete(self):
-        # Regression: the agent's server→client request_permission id space is
+        # The agent's server→client request_permission id space is
         # independent of our prompt req_id space, so they collide on small
         # integers.  A permission request whose id == the in-flight prompt's
         # req_id must classify as "permission", NOT "complete" — otherwise the

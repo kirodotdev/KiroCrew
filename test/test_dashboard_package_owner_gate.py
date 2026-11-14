@@ -124,9 +124,9 @@ class TestAMalformedBinding:
 
 
 # --------------------------------------------------------------------------- #
-# Two ways the gate was skippable. Both were reported by review on
-# e1f2ce06cb and both are authorization bypasses, so each gets a test that
-# fails without the fix rather than a comment saying it is handled.
+# Two ways the gate could be skipped. Both are authorization bypasses, so each
+# gets a test that fails when the gate is skippable, not a comment saying it
+# is handled.
 # --------------------------------------------------------------------------- #
 
 

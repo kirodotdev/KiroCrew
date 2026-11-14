@@ -32,7 +32,7 @@ class TestJsonRpcMessage:
         assert not msg.is_response_for(99)
 
     def test_is_response_for_rejects_request_with_colliding_id(self):
-        # Regression: an inbound server→client REQUEST (has method) whose id
+        # An inbound server→client REQUEST (has method) whose id
         # collides with our in-flight prompt req_id must NOT be treated as the
         # prompt's response — otherwise the turn ends early and the tool
         # permission is never answered (stuck Claude Code turn on follow-ups).

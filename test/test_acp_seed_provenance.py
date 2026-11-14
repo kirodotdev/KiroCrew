@@ -963,8 +963,8 @@ class TestCrossSessionAdoption:
 
     def test_without_a_record_an_orphan_is_left_untouched(self, tmp_path, monkeypatch):
         # Provenance, not the path: an identical file Crew cannot vouch for gets the
-        # same treatment as the user's own. This is the pre-fix behaviour, kept for
-        # every case the record does not cover (another install, a copied repo).
+        # same treatment as the user's own. That holds for every case the record
+        # does not cover (another install, a copied repo).
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": list(_SERVED)})
         first = _client(tmp_path)
         first._write_claude_local_settings()

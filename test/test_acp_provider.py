@@ -70,7 +70,7 @@ class TestServedModel:
         return AcpSessionHandle("s1", asyncio.Queue(), MagicMock())
 
     def test_backend_default_model_is_readable(self):
-        # Regression: a session on the backend-SELECTED default never gets an
+        # A session on the backend-SELECTED default never gets an
         # explicit set_model, so handle._model stays "" — the served model
         # arrives only as currentModelId in the session/new response. The
         # accessor must surface it, or the poisoned-conversation escalation
