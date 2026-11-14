@@ -377,10 +377,31 @@ def _policy(args: argparse.Namespace) -> None:
                     "(enabled true or false) if you meant to decide it."
                 )
         # Force-load every profile; the store records invalid ones as deny-all.
-        from kiro_crew.platform.governance_profiles import _profiles_dir, fallback_profile_names
+        from kiro_crew.platform.governance_profiles import (
+            _STORE,
+            _profiles_dir,
+            fallback_profile_names,
+        )
 
         pdir = _profiles_dir()
-        if pdir.is_dir():
+        # The store records a directory it could not list (a file at the profiles
+        # path, or EACCES) as one unrecoverable entry; without this check the run
+        # reads as "no profiles" while every profile is dropped. Under a policy
+        # ceiling the boot gate refuses that entry, so validate fails with it; a
+        # standalone host runs policy-only on it, so validate only warns.
+        if any(name.startswith("<dir:") for name in _STORE.unrecoverable_files()):
+            if ceiling is not None:
+                print(
+                    f"   profiles directory {pdir}: INVALID (cannot be listed; "
+                    "no profile applies)"
+                )
+                ok = False
+            else:
+                print(
+                    f"   ⚠  profiles directory {pdir} cannot be listed; no profile "
+                    "applies (a host under a policy ceiling would refuse to boot)"
+                )
+        elif pdir.is_dir():
             for f in sorted(pdir.glob("*.json")):
                 prof = get_store_profile(f.stem)
                 # The store keeps the file stem as a fallback's name, so the name alone
