@@ -325,10 +325,14 @@ class TestSlackSubagentCompletionPersistence:
         assert assistant_call[0][2] == "synthesized response"
 
     @pytest.mark.asyncio
-    async def test_slack_subagent_redacts_response_before_persist(self):
-        """LLM response is redacted (credentials/exfil URLs) before persisting,
-        since the dashboard replay is an external surface."""
+    async def test_slack_subagent_redacts_response_before_persist(self, tmp_path):
+        """The sub-agent completion reaches disk through the write boundary, so a
+        credential in the LLM response is not stored: the dashboard replay is an
+        external surface."""
+        from kiro_crew.history import ConversationLog
+
         orch, mock_sm = self._setup()
+        orch.conv_log = ConversationLog(tmp_path)
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info()
         # Response carries a credential-shaped token that must not reach disk raw.
@@ -345,10 +349,10 @@ class TestSlackSubagentCompletionPersistence:
         ):
             await on_done(info)
 
-        assert orch.conv_log.append.call_count == 2
-        persisted_response = orch.conv_log.append.call_args_list[1][0][2]
-        # The raw secret value must not be persisted verbatim.
-        assert _AWS_SECRET not in persisted_response
+        rows = orch.conv_log.read_messages(info.parent_session_key)
+        assert [row["role"] for row in rows] == ["user", "assistant"]
+        assert rows[1]["content"].startswith("result ")
+        assert all(_AWS_SECRET not in row["content"] for row in rows)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(

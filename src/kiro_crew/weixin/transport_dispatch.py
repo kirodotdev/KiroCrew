@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
-from kiro_crew.history import mint_row_mid
+from kiro_crew.history import _redact_at_write_boundary, mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
@@ -637,7 +637,10 @@ class WeixinDispatcher:
                 session_key, "assistant", reply_text, agent=agent, mid=mint_row_mid()
             )
         if is_new:
-            title = (user_text or "").strip().replace("\n", " ")[:40] or "WeChat"
+            title = (
+                _redact_at_write_boundary("user", user_text or "").strip().replace("\n", " ")[:40]
+            )
+            title = title or "WeChat"
             self.conv_log.set_title(session_key, title)
 
     async def _surface_own_session(self) -> None:
