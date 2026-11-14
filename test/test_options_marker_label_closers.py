@@ -2,18 +2,17 @@
 MATCHED by an earlier ``[``, or where it CONTINUES the label list.
 
 A label may legitimately carry a closer -- ``[OPTIONS: Alpha ] | Bravo ]]`` is a
-supported, tested shape -- so the body has to admit one. Admitting it
-UNCONDITIONALLY (the old ``[^[\\n]``, which includes ``]``) made the body run to
-the LAST closer in range instead of the first plausible one, so an ordinary final
-line that mentions a bracket after the marker matched across BOTH::
+supported, tested shape -- so the body has to admit one. A body that admits it
+UNCONDITIONALLY (``[^[\\n]``, which includes ``]``) runs to the LAST closer in
+range, so an ordinary final line with a bracket after the marker matches whole::
 
     Use [OPTIONS: A | B] then check arr[0]
 
-matched whole. Every consumer removes the whole match -- ``slack.format`` and
+Every consumer removes the whole match -- ``slack.format`` and
 ``messaging.renderer`` cut the visible text at ``match.start()``, and
-``whatsapp.turn_renderer`` PERSISTS the cut turn -- so the sentence vanished from
-the message and came back as a pill label. Under TRAILER (``DOTALL``) the body
-crossed blank lines too, so the whole final paragraph went with it.
+``whatsapp.turn_renderer`` PERSISTS the cut turn -- so the sentence would vanish
+and come back as a pill label. Under TRAILER (``DOTALL``) the body crosses blank
+lines too, taking the whole final paragraph.
 
 NEITHER condition alone is enough, which is why the rule is a union of two:
 
@@ -161,8 +160,8 @@ class TestAcceptedCosts:
     """Every shape the union rule gives up, enumerated rather than summarised.
 
     They share one form -- a closer that satisfies NEITHER half, with ordinary
-    words after it -- but there is more than one way to be that closer, and all of
-    them parsed on the old body. Each fails toward a VISIBLE marker, not toward
+    words after it -- but there is more than one way to be that closer, and an
+    unconditional body would parse all of them. Each fails toward a VISIBLE marker, not toward
     deleted prose, and ``test_a_declined_marker_never_loses_the_option_list``
     below is what holds that asymmetry up.
     """
@@ -263,12 +262,10 @@ class TestAcceptedCosts:
         ],
     )
     def test_a_nested_head_is_refused(self):
-        # The one place this rule could have been LOOSER than the body it replaced:
-        # without ``(?!OPTIONS:)`` on the pair form's opener, the pair alternative
+        # Without ``(?!OPTIONS:)`` on the pair form's opener, the pair alternative
         # opens on a nested head and pairs it with that head's own closer, so the
         # OUTER head matches and the pill's label is a raw protocol marker --
-        # echoed back as the user's reply when tapped. The old body matched nothing
-        # here, and neither does this one.
+        # echoed back as the user's reply when tapped. This must match nothing.
         assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
 
 
@@ -300,11 +297,11 @@ class TestLookalikeBracketPairsParse:
         assert OPTIONS_RE_LINE.sub("", text) == text
 
     def test_a_mismatched_pair_declines_even_when_the_closer_ends_the_label(self):
-        # The balance check pairs openers by TYPE. On the previous head every
-        # closer decremented one shared count, so ``【x]`` read as closed, this
-        # candidate parsed, and a label with a half-open lookalike pair rendered
-        # as options. The ``【`` (or ``[``) is still open at the terminator here --
-        # the bare-opener shape -- so the candidate declines and no prose moves.
+        # The balance check pairs openers by TYPE. With one shared count for all
+        # closers, ``【x]`` would read as closed and a label with a half-open
+        # lookalike pair would render as options. The ``【`` (or ``[``) is still
+        # open at the terminator here -- the bare-opener shape -- so the
+        # candidate declines and no prose moves.
         for text in (
             "[OPTIONS: A 【x] | B]",
             "[OPTIONS: A [x】 | B]",
@@ -458,9 +455,9 @@ class TestLinearity:
         # bare-opener alternative takes it -- one step per character for every
         # opener kind. An interior that admitted the lookalikes would scan the
         # whole remaining run at each position instead -- measured: EXPONENTIAL,
-        # 3.2 s at 24 lookalike openers, doubling per character. The earlier shape
-        # divided two ``time.monotonic()`` readings and read a 16x "ratio" from
-        # timer granularity alone (0.0 floored to 1 ms against a single 16 ms tick).
+        # 3.2 s at 24 lookalike openers, doubling per character. The check uses
+        # CPU time via the helper: two ``time.monotonic()`` readings give a 16x
+        # "ratio" from timer granularity alone (one 16 ms tick against 1 ms).
         def reject(text: str) -> None:
             assert OPTIONS_RE_LINE.search(text) is None
             assert OPTIONS_RE_TRAILER.search(text) is None
