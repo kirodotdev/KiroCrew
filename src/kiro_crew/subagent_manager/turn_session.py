@@ -247,6 +247,9 @@ async def acquire_session(
     _sa = _facade()
     if use_session_sharing:
         from kiro_crew.agent_sdk.drivers.acp_vocab import AcpRequestTimeout as _StartTimeout
+        from kiro_crew.agent_sdk.drivers.acp_vocab import (
+            AcpScopeAdmissionTimeout as _ScopeAdmissionTimeout,
+        )
 
         try:
             client = await self._manager._create_shared_session(info, session_key, agent)
@@ -261,6 +264,14 @@ async def acquire_session(
             is_new = True
             _resumed = False
             is_cc = False
+        except _ScopeAdmissionTimeout as exc:
+            # The companion runtime's spawn waited past its bound for the user
+            # systemd manager to admit its scope. That is congestion too: a
+            # dedicated process would ask the same manager for one more scope. The
+            # attempt ends the way ``_await_late_start`` ends an ``initialize``
+            # timeout that has no collector. No L3 failure is counted: the runtime
+            # never started, and an L4 escalation cannot make the manager faster.
+            raise RuntimeError(f"start_timeout: {exc}") from exc
         except Exception as exc:
             # The shared runtime itself is unavailable (dead, spawn failed):
             # not congestion. The failure is counted on the ladder's L3

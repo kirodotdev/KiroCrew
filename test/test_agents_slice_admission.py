@@ -585,12 +585,19 @@ class TestInitializeHandshakeUnderThrottle:
 
     def test_the_spawn_path_still_kills_on_a_failed_handshake(self):
         """Placement: the helper is what spawn awaits, inside the guard that reaps
-        the process -- an overload verdict must never leave a live kiro-cli behind."""
+        the process -- an overload verdict must never leave a live kiro-cli behind.
+        Scope admission runs inside the same guard, after the stderr drain, reader
+        and exit watcher start and before the handshake."""
         import inspect
 
         src = inspect.getsource(AcpRuntime._spawn_admitted)
-        assert "_initialize_handshake(client_capabilities)" in src
-        before, after = src.split("_initialize_handshake(client_capabilities)", 1)
+        assert "self._initialize_handshake(" in src
+        before, after = src.split("self._initialize_handshake(", 1)
+        guarded = before.rsplit("try:", 1)[1]
+        assert "_admit_scope(self)" in guarded
+        admission_at = guarded.index("_admit_scope(self)")
+        for started in ("_drain_stderr()", "_reader_loop()", "_exit_watch_loop()"):
+            assert guarded.index(started) < admission_at
         assert "require_unchanged_derived_spec" in after
         # The guard runs its teardown as one shielded task; the kill lives there.
         assert "self._failed_start_cleanup()" in after

@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
 
 from kiro_crew import agent_scratch, member_essential_context, platform_compat
-from kiro_crew.acp import kas_cli_settings, kas_secret_storage
+from kiro_crew.acp import kas_cli_settings, kas_secret_storage, scope_admission
 from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
@@ -63,6 +63,8 @@ from kiro_crew.acp.session_handle import (
     AcpRuntimeDead,
     AcpRuntimeError,
     AcpRuntimeOverloaded,
+    AcpScopeAdmissionDied,
+    AcpScopeAdmissionTimeout,
 )
 from kiro_crew.acp.spawn_blocked import AcpSpawnBlocked, is_windows_spawn_blocked
 from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
@@ -82,6 +84,7 @@ from kiro_crew.constants import (
     KIROCREW_RUNTIME_AGENT_ENV,
     KIROCREW_SPAWN_HOME_ENV,
     KIROCREW_SPAWN_INSTANCE_ENV,
+    REQUEST_TIMEOUT_SECS,
 )
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
 from kiro_crew.executors import subprocess_executor
@@ -134,6 +137,16 @@ _T = TypeVar("_T")
 # precedes the handshake, so ``AcpRuntimeOverloaded`` is what the caller sees
 # rather than a reaper kill. ``test_agents_slice_admission`` pins the ordering.
 _INITIALIZE_TIMEOUT = INITIALIZE_TIMEOUT_SECS
+
+# Scope admission's share of that window. A spawn wrapped in a systemd scope has
+# no agent until the user manager has moved its pid into the scope
+# (``scope_admission``), and the window runs from the moment the process exists,
+# so a slow manager spends the agent's time. Admission may take the window less
+# one plain request budget: the reserve is what the agent keeps to answer
+# ``initialize`` after a slow admission. The two together fit the window, within
+# one admission poll interval, so the watchdog ordering above holds unchanged.
+_SCOPE_ADMISSION_RESERVE = REQUEST_TIMEOUT_SECS
+_SCOPE_ADMISSION_TIMEOUT = _INITIALIZE_TIMEOUT - _SCOPE_ADMISSION_RESERVE
 
 
 # The Kiro CLI replaces its own executable in place during an update. A spawn
@@ -382,7 +395,11 @@ async def _resolve_spawn_plan(self: AcpRuntime) -> SpawnPlan:
 
 
 async def _initialize_handshake(
-    self: AcpRuntime, client_capabilities: dict[str, Any]
+    self: AcpRuntime,
+    client_capabilities: dict[str, Any],
+    timeout: float | None = None,
+    *,
+    admission_s: float | None = None,
 ) -> dict[str, Any]:
     """Send ``initialize`` with the cold-start budget.
 
@@ -390,16 +407,18 @@ async def _initialize_handshake(
     the process existed (the harness constant, or the wire-filled variant a
     ``client_meta_settings`` host gets); this helper only owns the budget.
 
-    The budget is :data:`_INITIALIZE_TIMEOUT` whatever the host's state:
-    ``initialize`` is answered only once kiro-cli has started, so a slow
-    start is a live process answering late, not a hung one. A timeout that
-    lands while the process is still ALIVE and the agents slice is
+    The budget is *timeout*, or :data:`_INITIALIZE_TIMEOUT` when it is omitted,
+    whatever the host's state: ``initialize`` is answered only once kiro-cli
+    has started, so a slow start is a live process answering late, not a hung
+    one. The spawn passes what scope admission left of the window, and
+    *admission_s*, the time admission took, which a timeout log names. A
+    timeout that lands while the process is still ALIVE and the agents slice is
     throttling is re-raised as :class:`AcpRuntimeOverloaded`, so the failure
     names overload instead of a killed process. Any other timeout, and an
     exited process, propagate unchanged.
     """
     throttled_at_spawn = agents_slice_throttling()
-    timeout = _INITIALIZE_TIMEOUT
+    timeout = _INITIALIZE_TIMEOUT if timeout is None else timeout
     if throttled_at_spawn:
         logger.warning(
             "acp_startup_stage stage=initialize outcome=throttled_at_spawn "
@@ -435,6 +454,16 @@ async def _initialize_handshake(
         await _name_initialize_death(self, exc)
         raise
     except AcpRequestTimeout as exc:
+        if admission_s is not None:
+            # The wire's timeout record does not know the scope wait came first.
+            logger.warning(
+                "acp_startup_stage stage=initialize outcome=timeout_after_scope_admission "
+                "admission_ms=%.1f timeout_budget_s=%g pid=%s scope=%s",
+                admission_s * 1000.0,
+                timeout,
+                self._pid,  # pid-owner-ok: the runtime reads its own root
+                self._scope_unit,
+            )
         alive = self._process is not None and self._process.returncode is None
         if not alive or not (throttled_at_spawn or agents_slice_throttling()):
             raise
@@ -446,34 +475,53 @@ async def _initialize_handshake(
         ) from exc
 
 
+async def _admit_scope(runtime: AcpRuntime) -> float | None:
+    """Wait for systemd to admit the spawn's scope, and return the seconds it took.
+
+    ``None`` for a spawn with no scope: ``_scope_unit`` is empty exactly when the
+    cgroup wrap did not happen (see ``_name_scope``), and then nothing waits. A
+    bound that passes with the pid still outside its scope raises
+    :class:`AcpScopeAdmissionTimeout`, and an exit seen during the wait raises
+    :class:`AcpScopeAdmissionDied`, both before anything is written to stdin.
+    """
+    unit, process = runtime._scope_unit, runtime._process
+    if not unit or process is None:
+        return None
+    pid, bound = process.pid, _SCOPE_ADMISSION_TIMEOUT
+    admission = await scope_admission.wait_for_admission(
+        pid, unit, exited=lambda: process.returncode is not None or runtime._dead, bound_s=bound
+    )
+    if admission.outcome == scope_admission.EXITED:
+        rc, tail = await scope_admission.exit_evidence(runtime)
+        scope_admission.log_stage(admission, bound_s=bound, pid=pid, unit=unit, returncode=rc)
+        raise AcpScopeAdmissionDied(
+            scope_admission.died_message(unit, pid, rc, tail, admission.reads),
+            pid=pid,
+            scope_unit=unit,
+            returncode=rc,
+        )
+    scope_admission.log_stage(admission, bound_s=bound, pid=pid, unit=unit)
+    if admission.outcome == scope_admission.TIMEOUT:
+        raise AcpScopeAdmissionTimeout(
+            scope_admission.timeout_message(unit, pid, bound),
+            pid=pid,
+            scope_unit=unit,
+            waited_s=admission.waited_s,
+        )
+    return admission.waited_s
+
+
 async def _name_initialize_death(runtime: AcpRuntime, exc: AcpRuntimeDead) -> None:
     """Add the exit status and the stderr tail to a death that ended ``initialize``.
 
     The death reaches ``initialize`` through ``_mark_dead``, which fails the
-    pending request at stdout EOF. The stderr drain and the reap can still be
-    running then, so the reason names no code and the tail is often empty.
-    A start that dies here is not retried into anything better, and its
-    error text is all a user sees on the card, so both are waited for here:
-    the drain under ``settle_stderr``'s bound, the exit under
-    ``_KILL_REAP_TIMEOUT``. The tail is published only through
-    ``safe_stderr_tail``, the same gate the death summary uses, and a
-    restricted session retains none. The type is kept so every caller's
-    ``except`` and classifier still sees an ``AcpRuntimeDead``.
+    pending request at stdout EOF. A start that dies here is not retried into
+    anything better, and its error text is all a user sees on the card, so the
+    drain and the reap are waited for first (``scope_admission.exit_evidence``).
+    The type is kept so every caller's ``except`` and classifier still sees an
+    ``AcpRuntimeDead``.
     """
-    await runtime.settle_stderr()
-    process = runtime._process
-    if process is not None and process.returncode is None:
-        try:
-            await asyncio.wait_for(process.wait(), runtime._KILL_REAP_TIMEOUT)
-        except Exception:
-            logger.debug("AcpRuntime: exit status unread after initialize died", exc_info=True)
-    rc = runtime._returncode_label()
-    if runtime.recording_allowed:
-        from kiro_crew.acp.stderr_tail import safe_stderr_tail
-
-        tail = safe_stderr_tail(runtime._stderr_lines[-5:], " | ") or "<none>"
-    else:
-        tail = "<not retained>"
+    rc, tail = await scope_admission.exit_evidence(runtime)
     exc.args = (f"{exc} during initialize [returncode={rc}] stderr_tail: {tail}",)
     # No PID: the death line ``_mark_dead`` logged just before names it.
     logger.warning("AcpRuntime died during initialize: returncode=%s stderr_tail: %s", rc, tail)
@@ -1094,10 +1142,19 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
         # own exit even when stdout stays open behind a surviving descendant.
         self._exit_watch_task = asyncio.ensure_future(self._exit_watch_loop())
 
-        # Protocol handshake ("initialize"); the cold-start budget is
-        # _INITIALIZE_TIMEOUT -- see _initialize_handshake. The capabilities
-        # were resolved above, before the process existed.
-        init_resp = await self._initialize_handshake(client_capabilities)
+        # Scope admission, then the protocol handshake ("initialize"), in ONE
+        # cold-start window of _INITIALIZE_TIMEOUT: the agent does not exist until
+        # systemd admits its scope, so that wait has its own bound and error, and
+        # initialize gets the rest. The capabilities were resolved above, before
+        # the process existed.
+        admission_s = await _admit_scope(self)
+        init_resp = await self._initialize_handshake(
+            client_capabilities,
+            scope_admission.initialize_budget(
+                _INITIALIZE_TIMEOUT, _SCOPE_ADMISSION_RESERVE, admission_s
+            ),
+            admission_s=admission_s,
+        )
         self._initialize_result = init_resp if isinstance(init_resp, dict) else {}
         _agent_caps = init_resp.get("agentCapabilities", {})
         self._agent_capabilities = _agent_caps if isinstance(_agent_caps, dict) else {}

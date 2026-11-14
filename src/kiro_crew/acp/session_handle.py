@@ -163,6 +163,8 @@ from kiro_crew.acp.session_handle_runtime_contract import (
     AcpRuntimeError,
     AcpRuntimeOverloaded,
     AcpRuntimeProtocol,
+    AcpScopeAdmissionDied,
+    AcpScopeAdmissionTimeout,
 )
 from kiro_crew.acp.session_handle_steering import _STEERING_SETTLE_SECS
 from kiro_crew.acp.session_handle_watchdog import (

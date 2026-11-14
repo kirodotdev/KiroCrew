@@ -611,6 +611,44 @@ class TestSessionSharingFallback:
         assert info._shared_provider is None
 
     @pytest.mark.asyncio
+    async def test_scope_admission_timeout_ends_the_start_without_a_dedicated_process(self):
+        """A companion spawn whose systemd scope was not admitted in time is
+        congestion of the user manager: the attempt ends naming it, with no
+        dedicated process (another scope on the same manager) and no L3 count."""
+        from kiro_crew.acp.runtime import AcpScopeAdmissionTimeout
+
+        sessions = _mock_sessions(sharing_eligible=True)
+        sessions.get_subagent_runtime = AsyncMock(
+            side_effect=AcpScopeAdmissionTimeout(
+                "systemd did not move the agent process (PID 4242) into its scope "
+                "kirocrew-rt-test.scope within 60s",
+                pid=4242,
+                scope_unit="kirocrew-rt-test.scope",
+                waited_s=60.0,
+            )
+        )
+        ladder = MagicMock()
+        manager = SubagentManager(
+            sessions=sessions,
+            ctx_builder=_mock_ctx_builder_auto(),
+            is_yolo=lambda: True,
+        )
+
+        with (
+            _cfg_patch(session_sharing=True),
+            patch("kiro_crew.subagent.Stats"),
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.recovery.ladder.default_ladder", return_value=ladder),
+        ):
+            info = manager.spawn("test task", parent_session_key="dashboard:slot1")
+            await _wait_until_done(info)
+
+        ladder.observe_failure.assert_not_called()
+        sessions.get_or_create.assert_not_awaited()
+        assert "start_timeout:" in info.error, info.error
+        assert "kirocrew-rt-test.scope" in info.error, info.error
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("eligible", [True, False], ids=["fallback", "dedicated-arm"])
     async def test_a_dedicated_start_is_repriced_before_its_process_launches(self, eligible):
         """Admission may have priced the start shared; both dedicated launches --

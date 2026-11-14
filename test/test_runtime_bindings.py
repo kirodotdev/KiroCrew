@@ -111,7 +111,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_guard_unresolved_mcp_refs": ("function", False, "417a1661421e", "runtime_session_setup"),
     "_handshake_client_capabilities": ("function", True, "16d9fe32838b", "runtime_spawn_launch"),
     "_harness": ("property", False, "482ead03a978", "runtime_class"),
-    "_initialize_handshake": ("function", True, "9a2155299a08", "runtime_spawn_launch"),
+    # Takes ``timeout``: the budget scope admission left of the cold-start window,
+    # and ``admission_s``: the time that admission took, which a timeout log names.
+    "_initialize_handshake": ("function", True, "08b0a1c211ea", "runtime_spawn_launch"),
     "_is_stale": ("function", True, "f21e39ec5ffb", "runtime_liveness"),
     "_issue_skill_projection_generation": (
         "function",

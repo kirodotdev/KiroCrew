@@ -339,6 +339,14 @@ SUBAGENT_TIMEOUT_SECS = 10800
 # outside the ACP layer, and may not import it.
 INITIALIZE_TIMEOUT_SECS = 90.0
 
+# Budget for one plain control-plane request to an agent backend, in seconds.
+# ``acp.runtime_wire`` binds it as ``_REQUEST_TIMEOUT``. ``acp.runtime_spawn_launch``
+# keeps this much of the ``initialize`` window for the agent itself when the
+# systemd scope admission before it is slow. Owned here because the runtime's
+# owner modules import only owners listed before them, and the spawn module is
+# listed before the wire module.
+REQUEST_TIMEOUT_SECS = 30.0
+
 # Tool-call budget for long subagent work. Shared by the config default, loader,
 # manager fallback and tool description; the wall-clock deadline still bounds a
 # run that makes little progress or spends a long time inside one tool.

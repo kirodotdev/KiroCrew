@@ -197,7 +197,7 @@ names its responsibility, bound in the class under that owner's header.
 | Runtime owner | Owns |
 |---|---|
 | `acp/runtime_tree_kill.py` | the runtime's process tree and its teardown: proving the root is still the process it spawned, recording its descendants, signalling the tree, and `kill` with its reap and the release of what the process held, the root's stdin pipe included |
-| `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
+| `acp/runtime_spawn_launch.py` | launching the child and making it a runtime: the harness spawn plan and the spawn agent's projected spec, the sandboxed launch tail (`_launch_tools`, the retrying spawn factory, the private-state seed), the systemd scope admission wait before `initialize` (`_admit_scope`, with its helpers in `acp/scope_admission.py`), the `initialize` handshake with the client capabilities it declares, and the failed-start guard that reaps what a broken start left |
 | `acp/runtime_spawn_entry.py` | `spawn` under the cold-start admission, the one re-derive retry after a stale spawn spec, and the revive of a runtime whose start failed |
 | `acp/runtime_session_setup.py` | what `session/new` and `session/load` are built from and checked against: the working directory, the MCP server array (the mirrored projection, the stub session, the pooled and unpooled control planes, the member panel), KAS custom agents, the derived-spec and member-projection checks, the unresolved-reference guard, the session-open mount check, the start budget and the copy of the native launch sources |
 | `acp/runtime_session_create.py` | `session/new` end to end: `create_session`, the collector hand-off of a start that outlives its budget and the late-session teardown, the finish every answered start shares, and the entitlement probe session |
@@ -4427,10 +4427,15 @@ Authentication, protocol, and configuration errors are not retried.
 
 Structured `acp_cold_start` logs distinguish queue wait and spawn, and include
 bounded active/queued counts, outcome, duration, backend class, and coarse process
-state. Structured `acp_startup_stage` logs distinguish `initialize`,
-`session/new`, `session/load`, and `session/set_mode`; timeout records carry the
-method and budget plus bounded stderr-line count. They never include prompts,
-workflow source, credentials, session ids, request ids, or raw process ids.
+state. Structured `acp_startup_stage` logs distinguish `scope_admission` (the
+`AcpRuntime` wait for systemd to admit the agent's scope, see
+[scope admission](#scope-admission)), `initialize`, `session/new`, `session/load`, and `session/set_mode`;
+timeout records carry the method and budget plus bounded stderr-line count. They
+never include prompts, workflow source, credentials, session ids or request ids.
+The `AcpRuntime` records about one process (`scope_admission`, and `initialize`
+when it starts under throttle or times out after a scope admission) name its pid.
+The `scope_admission` record and the `initialize` timeout after a scope admission
+also name the scope unit, which the runtime's spawn and init lines log as well.
 
 `ensure_ready()` emits the `kirocrew.session.startup.duration` histogram (unit `ms`) timing the cold-start work — subprocess spawn + session init. The warm fast-path (an already-spawned, already-initialized session returns early) is intentionally **not** measured, since it does no startup work. The emit lives in a `finally` covering **every** exit path, with `outcome` recorded as one of `ready` / `auth_required` / `error` (defaulting to `error`, so any unexpected exception propagating through the `finally` is counted as a failure, never a false `ready`) and `spawned` (bool — whether this call actually forked a new process). `get_recorder` is **lazily imported** inside the `finally` to break the `config.loader → acp.types → acp.client → metrics.provider → config.loader` import cycle, and the entire emit is wrapped in `try/except` so a telemetry failure can never break session startup.
 
@@ -5640,6 +5645,60 @@ the same line at WARNING. The tail is the last five lines through
 `safe_stderr_tail`; a restricted session shows `<not retained>`. Pinned by
 `test/test_acp_runtime_initialize_death.py` with a real child that exits 3 after
 writing stderr.
+
+<a id="scope-admission"></a>**Scope admission is a startup stage of its own.** On a
+host with cgroup delegation the runtime's argv starts with `systemd-run --user
+--scope`. systemd-run asks the user systemd manager for the transient
+`kirocrew-rt-<token>.scope`, waits until the manager has moved its own pid into
+it, and then execs the next layer (`env`, `bwrap` or the agent) in the same pid.
+Until the manager has moved the pid, no agent exists. `_spawn_admitted` therefore
+waits for that move before it sends `initialize` (`_admit_scope`, with the wait,
+budget, log and message helpers in `src/kiro_crew/acp/scope_admission.py`). The
+wait reads `/proc/<pid>/cgroup` every 50 ms until the unit name is a component of
+the pid's cgroup path. It does not use the process name. The pid first runs the
+rlimit spawn shim, a Python interpreter that execs systemd-run, and the layer
+after systemd-run can be Python as well, so no name marks the move.
+It runs only when `_scope_unit` is set, inside the failed-start guard, after the
+stderr drain, the reader and the exit watcher have started.
+
+One cold-start window of `_INITIALIZE_TIMEOUT` (90 s) covers admission and
+`initialize`, so the startup watchdog arithmetic does not change. Admission can
+use `_SCOPE_ADMISSION_TIMEOUT`, which is the window less one request budget
+(`REQUEST_TIMEOUT_SECS`, 30 s). `initialize` gets the rest of the window, and
+never less than that reserve. On a healthy host admission takes milliseconds,
+and `initialize` keeps about 90 s. These errors end the stage, and neither
+writes anything to the agent's stdin:
+
+- A bound that passes with the pid still outside its scope raises
+  `AcpScopeAdmissionTimeout` (`pid`, `scope_unit`, `waited_s`). It is
+  `transient = False`, because each retry asks a slow manager for one more
+  transient unit. Its text names the unit and the pid and tells the operator to
+  count the manager's failed units. A sub-agent start on a companion runtime
+  ends its attempt on it and starts no dedicated process in its place
+  (subagent.md § Session sharing).
+- An exit seen during the wait raises `AcpScopeAdmissionDied`, an
+  `AcpRuntimeDead`, so every caller that respawns on a death keeps doing so. The
+  wait reads every 50 ms, so it knows only that no read found the pid in its
+  scope: the manager can move it, and the next layer exit, between two reads.
+  The text says no more than that. It names `stage=scope_admission`, `reads`
+  (the reads that found the pid outside its scope, `0` when none ran), the pid,
+  the unit, the return code and the stderr tail, which names the layer that
+  failed. `scope_admission.exit_evidence` waits for the tail and the exit status
+  the same way as for an `initialize` death, and publishes the tail only through
+  `safe_stderr_tail`.
+
+A `/proc` read that cannot run counts as admitted, so the spawn goes on to
+`initialize` as it did before the stage. That covers a permission error and a
+file that does not parse at once, a pid that procfs does not list (no procfs, or
+one for another pid namespace) after 2 s with no exit, and a read still waiting
+for a worker thread when the bound passes. Each outcome logs one
+`acp_startup_stage stage=scope_admission outcome=admitted|timeout|exited
+duration_ms=... budget_s=... pid=... scope=...` line, and an exit adds
+`reads=...`. An admission logs at INFO,
+or at WARNING when it took more than 5 s. A timeout and an exit log at WARNING.
+An `initialize` timeout after a scope admission adds a `stage=initialize
+outcome=timeout_after_scope_admission admission_ms=...` line. Pinned by
+`test/test_acp_scope_admission.py`.
 
 **Death-log severity is a contract: expected teardowns are INFO, genuine deaths
 are WARNING.** `_mark_dead(reason, *, expected=False)` logs the single

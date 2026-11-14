@@ -1177,6 +1177,8 @@ def test_the_runtime_star_import_is_the_declared_list(tmp_path: Path) -> None:
         "AcpRuntimeDead",
         "AcpRequestTimeout",
         "AcpRuntimeOverloaded",
+        "AcpScopeAdmissionTimeout",
+        "AcpScopeAdmissionDied",
         "SessionStartGate",
         "StartCollector",
         "AcpRuntimeProtocol",

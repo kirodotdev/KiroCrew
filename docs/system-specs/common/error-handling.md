@@ -69,6 +69,11 @@ AcpError (base, acp/transport_errors.py) — carries `transient`, the retry verd
 
 AcpRuntimeError (base, acp/session_handle_runtime_contract.py)
 ├── AcpRuntimeDead            — the underlying process has died
+│   └── AcpScopeAdmissionDied — the spawn exited during the scope admission
+│                                wait, before a read found it in its scope
+├── AcpScopeAdmissionTimeout  — the user systemd manager did not admit the
+│                                agent's scope within its bound; transient=False,
+│                                because each retry adds one more transient unit
 ├── AcpRequestTimeout         — a request's response missed its budget
 │   ├── AcpSessionStartTimeout — `session/new` timed out while a collector owns
 │   │                            the possible late result (acp/runtime_session_create.py)
