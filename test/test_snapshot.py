@@ -966,6 +966,7 @@ class TestSecurity:
         directory.type = tarfile.DIRTYPE
         assert _data_filter(directory) is not None
 
+    @requires_symlinks
     def test_symlink_filtered_out(self, env, monkeypatch):
         """TEST 30 — symlinks are silently dropped by _data_filter."""
         src, _, _, tmp_path = env
