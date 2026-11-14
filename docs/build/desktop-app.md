@@ -1349,9 +1349,10 @@ the terminal route is named instead of the button).
 
 The shell keeps its own crash ledger beside `gateway-launch.log` in the app's
 logs directory (`runtime/crash/`, driven by `crash-collector.js`). The scan runs
-lazily, the first time the dashboard's crash notice asks for it. It reads the
-Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
-`.ips` diagnostic reports:
+lazily, the first time the dashboard's crash notice asks for it. A refused ask
+runs no scan, and the notice asks again after 15 s, 45 s, 2, 5 and 10 minutes,
+then stops. It reads the Crashpad dump directory (`app.getPath("crashDumps")`)
+and, on macOS, the user's `.ips` diagnostic reports:
 
 - `crashes.log` records each new crash of this app, capped at 500 lines.
 - `crashes-seen.json` acknowledges each artifact once, so a crash is reported
