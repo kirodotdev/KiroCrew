@@ -434,8 +434,8 @@ describe('Conductor mode Crew tab', () => {
     // The worker's words get a line of their own, so a narrow panel never hides them.
     expect(screen.getByTestId('conductor-mode-quiet-said')).toHaveTextContent('Holding for CI.')
     expect(screen.getByTestId('conductor-mode-quiet-said').parentElement?.className).toContain('flex-col')
-    // On a narrow panel the reason truncates and the PR number keeps its width.
-    expect(screen.getByTestId('conductor-mode-quiet-reason').className).toMatch(/\bmin-w-0\b.*\btruncate\b/)
+    // On a narrow panel the reason wraps instead of being cut, and the PR number keeps its width.
+    expect(screen.getByTestId('conductor-mode-quiet-reason').className).toMatch(/\bmin-w-0\b.*overflow-wrap:anywhere/)
     expect(screen.getByText('· PR #42').className).toContain('shrink-0')
     expect(rows[1]).toHaveTextContent('Waiting on PR #7')
     expect(rows[2]).toHaveTextContent('Paused, no reason given')
@@ -566,13 +566,13 @@ describe('Conductor mode Crew tab', () => {
     expect(store.getState().chat.activeSlot).toBe('root-1')
   })
 
-  it('Milestones: the open done fold reads "N done" alone; folded it names them', async () => {
+  it('Milestones: the done fold reads "N done" alone, folded or open, never a list of titles', async () => {
     api.crewWorkers.mockResolvedValue(WORKERS)
     api.crewBoard.mockResolvedValue({ ...BOARD, items: [ITEM({ item_id: 'd1', title: 'Drinks menu', state: 'accepted', terminal: true })] })
     renderWith(<ConductorModeCrewPanel root="root-1" viewing="root-1" active />)
     const fold = await screen.findByTestId('conductor-mode-milestones-done')
     const summary = fold.querySelector('summary') as HTMLElement
-    expect(summary).toHaveTextContent('1 done · Drinks menu')
+    expect(summary).toHaveTextContent(/^1 done$/)
     act(() => { (fold as HTMLDetailsElement).open = true; fireEvent(fold, new Event('toggle')) })
     expect(summary).toHaveTextContent(/^1 done$/)
   })
