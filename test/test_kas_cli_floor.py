@@ -206,6 +206,58 @@ class TestBootFloor:
         assert bootstrap.apply_kas_cli_floor(cfg) is None
         assert cfg.agent.acp_backend == KAS
 
+    def test_a_probe_the_sandbox_could_not_set_up_keeps_kas(
+        self, monkeypatch, pinned_cli, kas_selectable, caplog
+    ):
+        """A gateway started while another boots: the launcher refuses the help run once.
+
+        The launcher exits 1 with its own line. Its re-run around a trusted no-op then
+        succeeds, so the result carries no ``sandbox_failure``. That line is not help
+        and must not read as a kiro-cli without the engine flag.
+        """
+        pinned_cli.chmod(0o755)
+        refused = "sandbox: FATAL — cannot enter the launch directory (Device or resource busy)\n"
+
+        async def _runner(command, args, **_kwargs):
+            return probe_facade.ProcessResult(ok=False, output=refused, returncode=1)
+
+        monkeypatch.setattr(probe_facade, "_run_process", _runner)
+        cfg = _cfg()
+        with caplog.at_level(logging.WARNING):
+            assert bootstrap.apply_kas_cli_floor(cfg) is None
+        assert cfg.agent.acp_backend == KAS
+        assert KAS in registry.selectable_backends()
+        assert "acp --help exited 1 before kiro-cli answered" in caplog.text
+        assert "sandbox: FATAL" in caplog.text
+
+    def test_the_fallback_notice_names_the_run_it_read(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        pinned_cli.chmod(0o755)
+
+        async def _runner(command, args, **_kwargs):
+            return probe_facade.ProcessResult(ok=True, output=_OLD_HELP, returncode=0)
+
+        monkeypatch.setattr(probe_facade, "_run_process", _runner)
+        notice = bootstrap.apply_kas_cli_floor(_cfg())
+        assert notice is not None
+        assert f"(read from the help `{pinned_cli} acp --help` printed)" in notice
+
+    def test_an_old_kiro_cli_that_exits_nonzero_still_falls_back(
+        self, monkeypatch, pinned_cli, kas_selectable
+    ):
+        """A kiro-cli without the engine can exit 2 with its usage: that is its answer."""
+        pinned_cli.chmod(0o755)
+
+        async def _runner(command, args, **_kwargs):
+            return probe_facade.ProcessResult(ok=False, output=_OLD_HELP, returncode=2)
+
+        monkeypatch.setattr(probe_facade, "_run_process", _runner)
+        cfg = _cfg()
+        notice = bootstrap.apply_kas_cli_floor(cfg)
+        assert notice is not None and f"no {KAS_RELAY_ENGINE_FLAG} flag" in notice
+        assert cfg.agent.acp_backend == KIRO
+
     def test_member_backend_alone_triggers_the_floor(self, monkeypatch, pinned_cli, kas_selectable):
         _help(monkeypatch, _OLD_HELP)
         cfg = _cfg(acp_backend=KIRO, member_acp_backend=KAS)
