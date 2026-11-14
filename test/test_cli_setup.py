@@ -715,7 +715,15 @@ class TestSetupChannelGating:
     into the guided Slack credential + slash-command steps.
     """
 
-    def _run_setup(self, monkeypatch, tmp_path, argv=None, install_wrote: bool = True, **kwargs):
+    def _run_setup(
+        self,
+        monkeypatch,
+        tmp_path,
+        argv=None,
+        install_wrote: bool = True,
+        sandbox_blocks: bool = False,
+        **kwargs,
+    ):
         import kiro_crew.cli_setup as cs
 
         calls: list[str] = []
@@ -737,7 +745,6 @@ class TestSetupChannelGating:
         for name in (
             "_ensure_prerequisites",
             "_setup_workspace_dir",
-            "_setup_sandbox_consent",
             "_setup_timezone",
             "_maybe_setup_dashboard_url",
             "_maybe_setup_custom_domain",
@@ -745,6 +752,7 @@ class TestSetupChannelGating:
             "_ensure_default_agent_in_config",
         ):
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
+        monkeypatch.setattr(cs, "_setup_sandbox_consent", lambda: sandbox_blocks)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
         monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
         monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
@@ -784,6 +792,30 @@ class TestSetupChannelGating:
         assert (
             "Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`." in closing
         )
+
+    @pytest.mark.parametrize(
+        ("agent_only", "done"),
+        [
+            (
+                False,
+                "👻 Done! Run `kirocrew doctor`; when it reports no issues, run `kirocrew gateway`.",
+            ),
+            (True, "👻 Done! Try: kirocrew gateway"),
+        ],
+        ids=["wizard", "agent-only"],
+    )
+    def test_the_closing_line_says_no_agent_can_run_while_the_sandbox_refuses_all(
+        self, tmp_path, monkeypatch, capsys, agent_only, done
+    ):
+        """A host the sandbox step leaves refusing every agent is not "Done!": the
+        first chat would fail. Any other outcome keeps the closing line as it was."""
+        self._run_setup(monkeypatch, tmp_path, sandbox_blocks=True, agent_only=agent_only)
+        out = capsys.readouterr().out
+        assert "Done!" not in out
+        assert "no agent can run on this host yet" in out
+        assert "`kirocrew doctor`" in out
+        self._run_setup(monkeypatch, tmp_path, sandbox_blocks=False, agent_only=agent_only)
+        assert capsys.readouterr().out.rstrip().splitlines()[-1] == done
 
     def test_a_rebuild_that_did_not_write_is_not_reported_installed(
         self, tmp_path, monkeypatch, capsys
