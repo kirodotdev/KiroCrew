@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from aiohttp import web
@@ -29,6 +30,8 @@ from kiro_crew.dashboard.handlers.members_access import (
     _deny_app_caller,
     _member_names_for_slug,
     _sel,
+    _teammate_admitted,
+    _teammate_trust_refusal,
 )
 from kiro_crew.dashboard.slot_approval_seed import seed_slot_approval
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
@@ -46,6 +49,90 @@ def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:
     if record is None or record.memory_version != 2:
         return members_mod.member_slot_key(slug), ""
     return members_mod.member_slot_key(slug, store), store
+
+
+def _teammate_trust_reason(state: object, slug: str) -> str:
+    """Why a teammate's turn on Bot *slug* would run with the owner's approvals, or ``""``.
+
+    A teammate cannot give a session trust, so they may run turns on a Bot only
+    while it would ask them: its effective mode is ``normal`` (an unset mode is
+    ``MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE``, trust) and its live thread holds no
+    grant. Blocking (config and binding reads); call it off the event loop.
+    """
+    cfg = KiroCrewConfig.load()
+    names = _member_names_for_slug(cfg, slug)
+    for name in names:
+        mode = cfg.agents[name].approval_mode or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+        if mode != "normal":
+            return "approval_mode"
+    keys = set()
+    binding = members_mod.read_dm_binding(slug)
+    if binding and binding.get("slot_key"):
+        keys.add(str(binding["slot_key"]))
+    for name in names:
+        try:
+            keys.add(_member_thread_slot(cfg, name, slug)[0])
+        except Exception:  # an unresolvable store: the open itself refuses it
+            continue
+    slots = getattr(state, "_slots", {}) or {}
+    for key in keys:
+        if _slot_holds_owner_grant(slots.get(key)):
+            return "live_trust"
+    return ""
+
+
+def _slot_holds_owner_grant(slot: object) -> bool:
+    """Whether *slot* carries any approval the owner granted on it.
+
+    Every store a call is approved from without asking: the slot-wide trust
+    flags and scope, the command patterns trusted for the chat, a timed command
+    grant that has not ended, and a deny rule waived for the session. Read only:
+    an ended timed grant is skipped here, never pruned from the owner's slot.
+    """
+    if slot is None:
+        return False
+    if (
+        getattr(slot, "_trust", False)
+        or getattr(slot, "_trust_reads", False)
+        or getattr(slot, "_trust_scope", None)
+        or getattr(slot, "_trusted_patterns", None)
+        or getattr(slot, "_deny_waivers", None)
+    ):
+        return True
+    timed = getattr(slot, "_trusted_pattern_deadlines", None) or {}
+    wall, mono = time.time(), time.monotonic()
+    return any(not deadline.ended(wall=wall, mono=mono) for deadline in list(timed.values()))
+
+
+def _teammate_open_reason(crew: object, slot: object) -> str:
+    """:func:`_teammate_trust_reason` for one Bot record and its opened slot, with no I/O.
+
+    Run right before a teammate's thread is seeded and returned, with no await
+    between, so an approval mode the owner saved while the open was being
+    prepared (or a grant placed on the slot meanwhile) still refuses it.
+    """
+    mode = getattr(crew, "approval_mode", "") or MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE
+    if crew is None or mode != "normal":
+        return "approval_mode"
+    return "live_trust" if _slot_holds_owner_grant(slot) else ""
+
+
+def teammate_turn_refusal(
+    request: web.Request, cfg: KiroCrewConfig, slot: Any
+) -> web.Response | None:
+    """The refusal for a relay teammate's turn into Bot *slot*, or ``None`` to go on.
+
+    ``None`` for anyone but a relay teammate, and for a Bot the config does not
+    name (the caller's own pin check answers that). No I/O, so a caller runs it
+    with no await before the turn is queued.
+    """
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if not _relay_teammate(request):
+        return None
+    crew = cfg.agents.get(getattr(slot, "agent", ""))
+    reason = _teammate_open_reason(crew, slot) if crew is not None else ""
+    return _teammate_trust_refusal(request, "chat_send", reason) if reason else None
 
 
 def _member_workspace_project(cfg: KiroCrewConfig, member: str) -> tuple[str, str]:
@@ -168,9 +255,20 @@ async def api_member_thread(request: web.Request) -> web.Response:
     # identity but a non-owner subject (the `!dashboard` Slack case), which
     # would otherwise bind a session slot to a crew member. Kept below the app
     # denial so app callers keep the 404 they get on every other member route.
-    owner_denied = await require_owner_dashboard_request(request, "members.thread")
-    if owner_denied is not None:
-        return owner_denied
+    # A team Crew teammate opens a person-created Bot's chat as they open a session,
+    # but never one that would run them with the owner's approvals (`turn=True`).
+    admitted = await _teammate_admitted(
+        request,
+        "members.thread",
+        slug=request.match_info["slug"],
+        trust_reason=_teammate_trust_reason,
+    )
+    if isinstance(admitted, web.Response):
+        return admitted
+    if not admitted:
+        owner_denied = await require_owner_dashboard_request(request, "members.thread")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(
@@ -580,13 +678,19 @@ async def api_member_thread(request: web.Request) -> web.Response:
 
         await asyncio.to_thread(_emit_binding)
 
-    if not slot._member_approval_seeded:
+    if admitted is True or not slot._member_approval_seeded:
         # Re-read, not the snapshot loaded at entry: a profile pick saved during
-        # the awaits above must decide the seed. No await between this read and
-        # the seed, so a later pick's slot write always lands after it.
+        # the awaits above must decide the seed. No await between this read, the
+        # teammate re-check, the seed and the return, so a later pick's slot write
+        # always lands after it, and an owner's Trust saved while a teammate's
+        # open was being prepared refuses the teammate instead of being seeded.
         fresh = await asyncio.to_thread(KiroCrewConfig.load)
         crew = fresh.agents.get(member_name)
-        if crew is not None:
+        if admitted is True:
+            reason = _teammate_open_reason(crew, slot)
+            if reason:
+                return _teammate_trust_refusal(request, "members.thread", reason)
+        if crew is not None and not slot._member_approval_seeded:
             _seed_member_approval(state, slot, crew.approval_mode)
     return web.json_response({"slot_key": slot.key, "slug": slug, "member": member_name})
 

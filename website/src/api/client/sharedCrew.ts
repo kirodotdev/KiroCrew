@@ -64,6 +64,16 @@ export function createSharedCrewEndpoints({ get, post, put, del, j, jSharedCrewP
       const body = await j(r) as { principal?: PublicPrincipal } | null
       return body?.principal?.id ? body.principal : null
     },
+    /** Whether this caller clears the owner gate (`/api/auth/me`'s `owner_ok`);
+     *  `null` when the gateway does not report it (404, or no `owner_ok` field).
+     *  Any other failure throws, so a reader can tell "unknown" from "not said".
+     *  Read whatever the Shared Crew preview is. */
+    viewerOwnerOk: async (): Promise<boolean | null> => {
+      const r = await get('/api/auth/me')
+      if (r.status === 404) return null
+      const body = await j(r) as { owner_ok?: unknown } | null
+      return typeof body?.owner_ok === 'boolean' ? body.owner_ok : null
+    },
     sharedCrewCapacity: () => read<CapacityResponse>('/api/shared-crew/capacity'),
     sharedCrewWork: (sessionKey: string) =>
       read<WorkListResponse>('/api/shared-crew/work?' + new URLSearchParams({ session_key: sessionKey })),

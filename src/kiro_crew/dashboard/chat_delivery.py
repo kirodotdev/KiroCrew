@@ -721,6 +721,12 @@ async def steer_into_running_turn(
         # can ask the model for a crew-scoped session read, which only the
         # owner's own turn may make. Same timing, same reset.
         slot._turn_owner_sent = False
+    # And a teammate's text steered into a Bot's turn takes it off the owner's
+    # approvals for the rest of the turn (``tool_approval``). Never cleared here.
+    from kiro_crew.shared_crew.attribution import teammate_started
+
+    if teammate_started():
+        slot._turn_teammate_sent = True
     if admission is not None:
         slot._steer_admissions[message] = admission
     if attachments or quote or knowledge or app_label or app_actor or banner or relay_meta:

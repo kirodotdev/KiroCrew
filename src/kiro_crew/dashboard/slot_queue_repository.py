@@ -122,6 +122,34 @@ def source_channels_of(item: Any) -> tuple[str, ...]:
     return tuple(ch for ch in raw if isinstance(ch, str) and ch)
 
 
+#: Marks an entry a team Crew teammate's request queued. The drain starts the turn
+#: as the teammate's (``attribution.teammate_origin``), so it never runs on the
+#: owner's approvals. A RESTRICTION like :data:`SOURCE_CHANNELS_KEY`, so it is
+#: persisted (as :data:`DURABLE_TEAMMATE_ORIGIN_KEY`) and restored: a hand edit
+#: that adds one only makes the turn ask.
+TEAMMATE_ORIGIN_KEY = "_teammate_origin"
+
+#: The durable spelling of :data:`TEAMMATE_ORIGIN_KEY` on a persisted entry.
+DURABLE_TEAMMATE_ORIGIN_KEY = "teammate_origin"
+
+
+def stamp_teammate_origin(owner: Any, queue_id: str) -> None:
+    """Mark the queued entry *queue_id* as a teammate's. Called right after the
+    insert that returned the id, with nothing suspending between the two."""
+    for item in getattr(owner, "_queue", None) or ():
+        if isinstance(item, dict) and item.get("id") == queue_id:
+            item[TEAMMATE_ORIGIN_KEY] = True
+            return
+
+
+def _stamp_teammate_origin(item: dict[str, Any]) -> None:
+    """Mark *item* as a teammate's when the work running here is a teammate's."""
+    from kiro_crew.shared_crew.attribution import teammate_started
+
+    if teammate_started():
+        item[TEAMMATE_ORIGIN_KEY] = True
+
+
 #: Marks a restored entry the user picked with a card's "run this next" while a
 #: turn was running. That click promotes the card and stops the turn, and the
 #: turn's end drains the queue with no card named, so the drain reads this mark
@@ -248,6 +276,8 @@ def durable_queue_entries(queue: list[dict[str, Any]]) -> list[dict[str, Any]]:
         channels = source_channels_of(item)
         if channels:
             entry[DURABLE_SOURCE_CHANNELS_KEY] = list(channels)
+        if item.get(TEAMMATE_ORIGIN_KEY) is True:
+            entry[DURABLE_TEAMMATE_ORIGIN_KEY] = True
         cost = len(json.dumps(entry))
         if cost > budget:
             continue
@@ -485,6 +515,9 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         restriction = _restored_source_channels(item)
         if restriction:
             entry[SOURCE_CHANNELS_KEY] = restriction
+        # Any value but an absent key restores the restriction: it only narrows.
+        if DURABLE_TEAMMATE_ORIGIN_KEY in item:
+            entry[TEAMMATE_ORIGIN_KEY] = True
         meta = item.get("meta")
         if isinstance(meta, dict):
             # The admission-time containment snapshot is stripped for the same
@@ -867,6 +900,7 @@ class SlotQueueRepository:
             item["_directive_channel_origin"] = True
         if directive_owner_origin:
             item["_directive_owner_origin"] = True
+        _stamp_teammate_origin(item)
         owner._queue.append(item)
         owner._note_enqueue()
         return queue_id
@@ -913,6 +947,7 @@ class SlotQueueRepository:
             item["_directive_channel_origin"] = True
         if directive_owner_origin:
             item["_directive_owner_origin"] = True
+        _stamp_teammate_origin(item)
         owner._queue.insert(index, item)
         owner._note_enqueue()
         return queue_id
@@ -1059,6 +1094,9 @@ class SlotQueueRepository:
                 item["_directive_owner_origin"] = True
             else:
                 item.pop("_directive_owner_origin", None)
+            # And the teammate mark: the replacement words are the editor's.
+            item.pop(TEAMMATE_ORIGIN_KEY, None)
+            _stamp_teammate_origin(item)
             return True
         return False
 

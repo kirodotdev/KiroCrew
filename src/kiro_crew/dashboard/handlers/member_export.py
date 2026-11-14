@@ -1,6 +1,7 @@
 """``POST /api/members/{slug}/export`` — one crewmate as a ``.crewmate`` file.
 
-Owner-only (``docs/request-for-change/rfc-crewmate-share.md`` §5.3, §8). With
+The owner's (``docs/request-for-change/rfc-crewmate-share.md`` §5.3, §8), and a team
+Crew teammate's as they export a session, without the rules or crons. With
 ``preview: true`` it answers the JSON the profile card's confirm view lists; without,
 the zip bytes as an attachment. Both come from one plan
 (:func:`kiro_crew.crewmate_bundle_export.plan_export`), so the view shows exactly
@@ -187,10 +188,20 @@ def _audit(request: web.Request, operation: str, slug: str) -> None:
 async def _owner_member(
     request: web.Request, operation: str
 ) -> tuple[str, str, dict[str, Any], KiroCrewConfig] | web.Response:
-    """``(slug, member, body, config)`` for an owner request naming its exact crewmate."""
-    denied = await require_owner_dashboard_request(request, operation)
-    if denied is not None:
-        return denied
+    """``(slug, member, body, config)`` for an owner request naming its exact crewmate.
+
+    A team Crew teammate passes for the export itself, as they may export a
+    session. The lessons draft reads the Bot's private memory, which a teammate
+    cannot read for a session either, so it stays the owner's.
+    """
+    from kiro_crew.dashboard.handlers.members import _teammate_admitted
+
+    if operation == _DRAFT_OPERATION or not await _teammate_admitted(
+        request, operation, slug=request.match_info["slug"]
+    ):
+        denied = await require_owner_dashboard_request(request, operation)
+        if denied is not None:
+            return denied
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)
@@ -230,6 +241,13 @@ async def api_member_export(request: web.Request) -> web.Response:
     choices = _choices(body)
     if isinstance(choices, web.Response):
         return choices
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if _relay_teammate(request):
+        # A teammate's export carries what a teammate may read: never the owner's
+        # rules (owner-only to read, and disclosure cannot be undone) nor the
+        # crons, whose prompts and scripts are the owner's scheduled jobs.
+        choices = dataclasses.replace(choices, rules=False, crons=False)
     state = request.app.get("state")
     crons = getattr(state, "crons", None)
     jobs = await crons.list_jobs_async(include_disabled=True) if crons is not None else []

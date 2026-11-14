@@ -10,7 +10,9 @@ and patch; this module never imports it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Callable
 
 from aiohttp import web
 
@@ -75,10 +77,10 @@ def _audit_owner_read(request: web.Request, operation: str) -> None:
 
 
 def _audit_teammate_read(request: web.Request, operation: str) -> None:
-    """Record a relay teammate's granted read, as :func:`_audit_owner_read` records the owner's.
+    """Record a relay teammate's granted request, as :func:`_audit_owner_read` records the owner's.
 
     Filed under the relay caller's own audit label (``relay:<Kiro user ID>``), so the
-    trail says which teammate read the roster. Best effort, like the owner's row.
+    trail says which teammate read or changed which Bot. Best effort, like the owner's row.
     """
     from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
 
@@ -93,6 +95,107 @@ def _audit_teammate_read(request: web.Request, operation: str) -> None:
         )
     except Exception:  # pragma: no cover - audit must never change the outcome
         logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _audit_teammate_denied(request: web.Request, operation: str, resources: str) -> None:
+    """Record a relay teammate's refused request, under their relay label. Best effort."""
+    from kiro_crew.dashboard.kiro_relay.caller import published_relay_caller
+
+    relayed = published_relay_caller(request)
+    try:
+        _sel().log_api_access(
+            caller=relayed.audit_label if relayed is not None else "",
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=resources,
+        )
+    except Exception:  # pragma: no cover - audit must never change the outcome
+        logger.debug("SEL audit for %s failed", operation, exc_info=True)
+
+
+def _teammate_reaches_bot(*, slug: str | None = None, name: str | None = None) -> bool:
+    """Whether a relay teammate may reach the Bot *slug* (or crew *name*) names.
+
+    The teammate's roster (``members_roster._teammate_roster``) lists only Bots a
+    person created here, so these routes admit exactly those: every addressable name
+    deriving the slug must be one, and at least one must exist. Blocking (it loads
+    the config); call it off the event loop.
+    """
+    cfg = KiroCrewConfig.load()
+    if name is not None:
+        agent_cfg = cfg.agents.get(name)
+        return agent_cfg is not None and members_mod.is_person_created_crewmate(name, agent_cfg)
+    try:
+        members_mod.validate_slug(slug or "")
+    except MemberSlugError:
+        return False
+    names = _member_names_for_slug(cfg, slug or "")
+    return bool(names) and all(
+        members_mod.is_person_created_crewmate(n, cfg.agents[n]) for n in names
+    )
+
+
+#: Why a teammate may not run turns on a Bot: it would run with approvals the
+#: owner granted. ``fields`` of the refusal body name which one.
+_TEAMMATE_TRUST_REASONS = {
+    "approval_mode": (
+        "This Bot runs with automatic approvals, so only its owner can use it. "
+        "The owner can share it with teammates by setting it to normal approvals."
+    ),
+    "live_trust": (
+        "This Bot's chat has automatic approvals turned on, so only its owner can use it "
+        "until they are turned off."
+    ),
+}
+
+
+async def _teammate_admitted(
+    request: web.Request,
+    operation: str,
+    *,
+    slug: str | None = None,
+    name: str | None = None,
+    trust_reason: Callable[[object, str], str] | None = None,
+) -> bool | web.Response:
+    """Whether *request* is a team Crew teammate this Bot route admits; audits the grant.
+
+    On a team Crew a Bot is shared like a session: a teammate the Kiro relay verified
+    may use a person-created Bot as they may use a session. A route that admits them
+    calls this before its owner gate and skips the gate when it answers ``True``.
+    ``False`` for everyone else, the owner included, with no config read, so the
+    owner's path through the route is unchanged. A teammate on a Bot outside their
+    roster also gets ``False`` and meets the owner gate's refusal. A route that
+    names no Bot yet (create) passes neither *slug* nor *name*, and only the
+    caller is checked. A route that runs turns passes ``trust_reason``
+    (``members_thread._teammate_trust_reason``, a higher layer than this module): a
+    Bot whose turns would run with the owner's approvals answers the 403
+    ``owner_only`` to return, audited ``denied``, never ``True``.
+    """
+    from kiro_crew.shared_crew.routes_identity import _relay_teammate
+
+    if not _relay_teammate(request):
+        return False
+    if (slug is not None or name is not None) and not await asyncio.to_thread(
+        _teammate_reaches_bot, slug=slug, name=name
+    ):
+        return False
+    if trust_reason is not None and slug is not None:
+        state = request.app.get("state")
+        reason = await asyncio.to_thread(trust_reason, state, slug)
+        if reason:
+            return _teammate_trust_refusal(request, operation, reason)
+    _audit_teammate_read(request, operation)
+    return True
+
+
+def _teammate_trust_refusal(request: web.Request, operation: str, reason: str) -> web.Response:
+    """The 403 ``owner_only`` a teammate gets on a Bot that would run on the owner's approvals."""
+    _audit_teammate_denied(request, operation, f"reason={reason}")
+    return web.json_response(
+        {"error": _TEAMMATE_TRUST_REASONS[reason], "code": "owner_only", "reason": reason},
+        status=403,
+    )
 
 
 def _member_name_is_addressable(value: object) -> bool:

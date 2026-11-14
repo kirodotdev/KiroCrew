@@ -54,13 +54,18 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.dashboard.handlers.members_access import (  # noqa: F401
+        _TEAMMATE_TRUST_REASONS,
         _audit_owner_read,
+        _audit_teammate_denied,
         _audit_teammate_read,
         _deny_app_caller,
         _member_name_is_addressable,
         _member_names_for_slug,
         _sel,
         _slug_is_claimed_by_any_member,
+        _teammate_admitted,
+        _teammate_reaches_bot,
+        _teammate_trust_refusal,
     )
     from kiro_crew.dashboard.handlers.members_drawer import (  # noqa: F401
         _ACTIVITY_LIMIT,
@@ -107,7 +112,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _member_thread_slot,
         _member_workspace_project,
         _seed_member_approval,
+        _slot_holds_owner_grant,
+        _teammate_open_reason,
+        _teammate_trust_reason,
         api_member_thread,
+        teammate_turn_refusal,
     )
     from kiro_crew.dashboard.handlers.members_thread_turns import (  # noqa: F401
         _FRESH_START_POLL_SECS,

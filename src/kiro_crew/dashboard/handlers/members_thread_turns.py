@@ -21,7 +21,8 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
-from kiro_crew.dashboard.handlers.members_access import _deny_app_caller
+from kiro_crew.dashboard.handlers.members_access import _deny_app_caller, _teammate_admitted
+from kiro_crew.dashboard.handlers.members_thread import _teammate_trust_reason
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.members import MemberSlugError
 
@@ -44,9 +45,18 @@ async def api_member_greet(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.greet")
     if denied is not None:
         return denied
-    owner_denied = await require_owner_dashboard_request(request, "members.greet")
-    if owner_denied is not None:
-        return owner_denied
+    admitted = await _teammate_admitted(
+        request,
+        "members.greet",
+        slug=request.match_info["slug"],
+        trust_reason=_teammate_trust_reason,
+    )
+    if isinstance(admitted, web.Response):
+        return admitted
+    if not admitted:
+        owner_denied = await require_owner_dashboard_request(request, "members.greet")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(
@@ -121,8 +131,8 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
 
     The slot key is never changed and no slot is created: monitor loops, the
     work ledger and the crew log are bound to it. The transcript stays on disk.
-    Same gates as every member route: app tokens get 404, and only the owner's
-    dashboard passes.
+    Same gates as the chat open: app tokens get 404, and the owner's dashboard
+    or a team Crew teammate on a person-created Bot passes.
     """
     from kiro_crew.dashboard import chat_handlers as ch
     from kiro_crew.dashboard.chat_runner import _answer_slash_without_channel
@@ -130,9 +140,18 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
     denied = await _deny_app_caller(request, "members.fresh_start")
     if denied is not None:
         return denied
-    owner_denied = await require_owner_dashboard_request(request, "members.fresh_start")
-    if owner_denied is not None:
-        return owner_denied
+    admitted = await _teammate_admitted(
+        request,
+        "members.fresh_start",
+        slug=request.match_info["slug"],
+        trust_reason=_teammate_trust_reason,
+    )
+    if isinstance(admitted, web.Response):
+        return admitted
+    if not admitted:
+        owner_denied = await require_owner_dashboard_request(request, "members.fresh_start")
+        if owner_denied is not None:
+            return owner_denied
     state: DashboardState | None = request.app.get("state")
     if state is None:
         return web.json_response(

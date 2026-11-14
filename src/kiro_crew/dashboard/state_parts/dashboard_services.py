@@ -413,8 +413,13 @@ def yolo_reaches(self: DashboardState, slot: Any, *, channel_origin: bool = Fals
     ``gateway --approval yolo``'s grant (``is_cli_launch``) is the dashboard's only: a
     turn a channel message started or steered, or a slot linked to a channel, keeps
     asking as it did before the flag armed a grant. Callers AND it with
-    ``is_yolo_active``.
+    ``is_yolo_active``. A team Crew teammate's turn on a Bot's thread never takes
+    it (``approval_posture.teammate_bot_turn``).
     """
+    from kiro_crew.dashboard.approval_posture import teammate_bot_turn
+
+    if teammate_bot_turn(slot):
+        return False
     if safety_override().is_cli_launch is not True:
         return True
     linked_key = getattr(slot, "linked_session_key", "") or ""

@@ -138,14 +138,21 @@ async def _owner_member(
     request: web.Request, operation: str, member: Any, *, write: bool
 ) -> tuple[str, str, KiroCrewConfig] | web.Response:
     """``(slug, member, config)`` for an owner request, or the refusal to send."""
-    from kiro_crew.dashboard.handlers.members import _deny_app_caller, _member_names_for_slug
+    from kiro_crew.dashboard.handlers.members import (
+        _deny_app_caller,
+        _member_names_for_slug,
+        _teammate_admitted,
+    )
 
     denied = await _deny_app_caller(request, "members.goals")
     if denied is not None:
         return denied
-    owner_denied = await require_owner_dashboard_request(request, operation)
-    if owner_denied is not None:
-        return owner_denied
+    # A team Crew teammate reads a person-created Bot's goals; every goal write stays
+    # owner-only, as cron writes are for them.
+    if write or not await _teammate_admitted(request, operation, slug=request.match_info["slug"]):
+        owner_denied = await require_owner_dashboard_request(request, operation)
+        if owner_denied is not None:
+            return owner_denied
     slug = request.match_info["slug"]
     try:
         members_mod.validate_slug(slug)

@@ -744,6 +744,12 @@ def _hands_off_queue_on_exit(
         )
         if card_mark is not None:
             card_mark.__enter__()
+        # Every turn is registered by its session key, so a sub-agent it spawns can
+        # tell a teammate's turn on a Bot's thread (approval_posture.teammate_turn_running).
+        from kiro_crew.dashboard.approval_posture import bot_turn
+
+        bot_mark = bot_turn(effective_session_key(slot), slot)
+        bot_mark.__enter__()
         try:
             # Shared Crew fair admission for a turn no admitted work started
             # (shared_crew.turn_gate); a pass-through when admission is off.
@@ -773,6 +779,7 @@ def _hands_off_queue_on_exit(
             # over, and a cancel the tail below defers and re-raises must not skip it.
             if card_mark is not None:
                 card_mark.__exit__(None, None, None)
+            bot_mark.__exit__(None, None, None)
             if not closing and not turn_exit.handed_off:
                 try:
                     # A cancel landing inside the tail is deferred until the

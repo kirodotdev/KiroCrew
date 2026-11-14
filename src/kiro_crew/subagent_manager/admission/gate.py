@@ -191,7 +191,10 @@ class _GateMixin(ManagerComponent):
         # concurrency gate keeps its identity across the round-trip instead of
         # being announced under one id and starting under another.
         agent_id: str = _preassigned_id or self._manager._mint_agent_id()
-        # A Dashboard card's turn starts no sub-agent. Its words are a page's, and a child
+        # A Dashboard card's turn starts no sub-agent, and neither does a team Crew
+        # teammate's turn on a Bot's thread (``approval_posture.teammate_turn_running``):
+        # the teammate's turn takes none of the owner's approvals, and a child would take
+        # its own from paths that turn's mark does not reach. Its words are a page's, and a child
         # would take the approval path of its own (the gateway's sub-agent approver reads
         # the parent thread's trust), a queued start could read a later turn's policy, and
         # its completion would run as a new turn nobody marked as a card's. Refusing here
@@ -206,6 +209,7 @@ class _GateMixin(ManagerComponent):
         # later (``_from_queue``), or one ``spawn_async`` already accepted, was admitted
         # before the card turn and is not failed by it.
         from kiro_crew.dashboard import card_send
+        from kiro_crew.dashboard.approval_posture import teammate_turn_running
 
         if (
             parent_session_key
@@ -216,6 +220,7 @@ class _GateMixin(ManagerComponent):
             # ``_card_turn``: the caller saw a card turn when its request arrived
             # (card_send.card_turn_seen), so a Stop during the handler's awaits does
             # not let the request through unmarked.
+            # ``card_turn_running`` also holds a teammate's turn on a Bot's thread.
             and (_card_turn or card_send.card_turn_running(parent_session_key))
         ):
             try:
@@ -223,7 +228,12 @@ class _GateMixin(ManagerComponent):
                     session_key=parent_session_key,
                     source="subagent",
                     tool_name="spawn_run",
-                    outcome="rejected_card_origin_turn",
+                    # A live teammate turn is named; one seen only at arrival is not.
+                    outcome=(
+                        "rejected_teammate_bot_turn"
+                        if teammate_turn_running(parent_session_key)
+                        else "rejected_card_origin_turn"
+                    ),
                     metadata={"agent": agent},
                 )
             except Exception:
@@ -235,7 +245,10 @@ class _GateMixin(ManagerComponent):
                     agent=agent,
                     parent_session_key=parent_session_key,
                     done=True,
-                    error="spawn refused: a turn started by a Dashboard card cannot start a sub-agent",
+                    error=(
+                        "spawn refused: a turn started by a Dashboard card, or by a teammate "
+                        "on a Bot's thread, cannot start a sub-agent"
+                    ),
                 )
             )
 
