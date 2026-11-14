@@ -67,8 +67,9 @@ class _Snapshot:
     restrictive profiles. ``_ensure_fresh`` uses this to decide that the FIRST
     load may not be skipped.
 
-    ``fallback_profiles`` records file stems where the deny-all fallback was
-    substituted because the file could not be read or parsed. This is distinct
+    ``fallback_profiles`` records file stems where the fallback was substituted
+    because the file could not be read or parsed or its ``extends`` was broken,
+    plus any profile composed over such a parent. This is distinct
     from ``unrecoverable`` (which tracks bind-unrecoverable files for boot-abort).
     A profile in ``fallback_profiles`` is still governed (deny-all), so
     enforcement is correct — but the operator cannot tell a deliberate lockdown
@@ -836,6 +837,11 @@ class ProfileStore:
                     fallback_stems.add(name)
                 else:
                     by_name[name] = compose_profiles(parent, profile)
+                    if profile.extends in fallback_stems:
+                        # Composed over a parent that failed to load, so it runs on
+                        # that parent's fallback controls: report it as one too, or
+                        # ``policy validate`` would print this child as OK.
+                        fallback_stems.add(name)
         # Build the bind index.  Last writer wins on a duplicate bind, logged.
         for name, profile in by_name.items():
             if profile.bind is not None:
@@ -990,7 +996,7 @@ def fallback_profile_names() -> "frozenset[str]":
 
     A non-empty result means at least one profile is present on disk but could not
     be USED by this build — it was unreadable, it failed to parse, or its
-    ``extends`` parent is missing or chained. Its surface is correctly denied
+    ``extends`` parent is missing or chained, or itself one of these. Its surface is correctly denied
     (enforcement is intact), but the operator cannot tell a deliberate lockdown
     from a broken file. The Security page uses this to render a warning banner.
 

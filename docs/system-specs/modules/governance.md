@@ -2975,7 +2975,10 @@ switched off. Two fields keep that honest:
   rule content, so the POSTURE-only boundary is unchanged. `_reload` substitutes
   that built-in at three sites — a present-but-unreadable file, a file whose JSON
   or schema does not parse, and a file that parses but `extends` a parent that is
-  missing or chained — and enforcement is correct in all three. What is NOT correct
+  missing or chained — and enforcement is correct in all three. A profile that
+  `extends` a parent substituted at the first two sites is composed over that
+  substitute, so it is listed here too (a child of a parent substituted at the
+  third site is itself substituted there). What is NOT correct
   without this field is the *display*: the substitute reports `source: "profile"`,
   so an unusable file renders identically to a deliberate operator lockdown, and an
   operator has to read server logs to tell them apart.

@@ -448,8 +448,9 @@ def _policy(args: argparse.Namespace) -> None:
         if args.name in fallback_profile_names():
             print(
                 f"⚠️  profile {args.name!r} failed to load (unreadable, invalid, or a "
-                "missing/chained 'extends') and is running as the fallback profile "
-                "shown below. Fix the file in ~/.kiro/crew/profiles/.",
+                "missing, chained or broken 'extends' parent) and is running as the "
+                "fallback profile shown below. Fix the file, or the parent it extends, "
+                "in ~/.kiro/crew/profiles/.",
                 file=sys.stderr,
             )
         bind = f"{prof.bind.type}:{prof.bind.id}" if prof.bind else "(unbound)"
