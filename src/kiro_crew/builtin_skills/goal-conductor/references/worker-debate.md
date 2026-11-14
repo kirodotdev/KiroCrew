@@ -251,8 +251,12 @@ Then take the first rule that holds:
    its final file and lists them; each critic verifies them in its own final
    file. No extra round is opened. A wrap-up fix a critic verified counts as
    reviewed under Finishing.
-4. `hard_rounds` reached or budget spent → ask the human. No round starts
-   without their answer.
+4. `hard_rounds` reached → ask the human. No round starts without their
+   answer. A wall-clock or round budget you set yourself is spent → your call:
+   wrap up as in 3 when the open points are small fixes; otherwise, an open
+   blocking objection still goes to the human (rules 6-7); rule the rest and
+   record why. Quota or credit spend past an owner-set or unstated bound stays
+   an ask.
 5. Churn, drift over half, or cost over budget → ask the human, naming it.
 6. A `needs-a-decision` blocks the other answers → ask the human about it;
    the rest continue.
