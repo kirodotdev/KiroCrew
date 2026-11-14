@@ -14,7 +14,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json, require_owner_dashboard_request
-from kiro_crew.dashboard.slot_ownership import slot_not_found
+from kiro_crew.dashboard.slot_ownership import is_member_thread, slot_not_found
 
 logger = logging.getLogger(__name__)
 
@@ -495,6 +495,10 @@ async def api_chat_slot_environment_get(request: web.Request) -> web.Response:
     from kiro_crew.session_environment import remote_workspace_for, start_progress
 
     slot = request.app["state"]._slots.get(request.match_info["slot"])
+    if is_member_thread(slot):
+        # A bot's thread is offered no new remote; one bound before keeps its own
+        # profile listed, so the chat can still be shown where it runs and moved back.
+        profiles = [p for p in profiles if p["id"] == profile]
     return web.json_response(
         {
             "profile": profile,
@@ -697,7 +701,7 @@ async def apply_default_environment(
     try:
         section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
         default = str(getattr(section, "default_profile", "") or "")
-        if not default or _environment_locked(slot):
+        if not default or is_member_thread(slot) or _environment_locked(slot):
             return False
         providers = {p["id"]: p["provider"] for p in await asyncio.to_thread(_profiles)}
         if default not in providers:
@@ -780,6 +784,17 @@ async def api_chat_slot_environment_put(request: web.Request) -> web.Response:
         cloud_needs_persistent_chat,
     )
 
+    if profile is not None and is_member_thread(slot):
+        # Moving back to this machine stays allowed, so a choice recorded before
+        # this refusal existed can still be cleared.
+        return web.json_response(
+            {
+                "error": "a bot's thread cannot move to a remote environment",
+                "code": "choice_refused",
+                "reason": "bot_thread",
+            },
+            status=400,
+        )
     if profile is not None and cloud_needs_persistent_chat(provider, _slot_memory_mode(slot)):
         return web.json_response(
             {

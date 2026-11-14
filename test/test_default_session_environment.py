@@ -285,3 +285,98 @@ def test_no_default_or_a_dangling_one_leaves_the_chat_on_this_machine(env):
         state["default"] = default
         assert asyncio.run(handlers.apply_default_environment(_slot())) is False
         assert _choice("dashboard:chat-1") is None
+
+
+def test_the_default_never_binds_a_bots_thread(env):
+    handlers, _state = env
+    bot = _slot(key="member-radar")
+    bot.mode = "member"
+    assert asyncio.run(handlers.apply_default_environment(bot)) is False
+    assert _choice("dashboard:member-radar") is None
+
+
+def test_a_bots_thread_is_offered_only_the_environment_it_already_runs_on(env, monkeypatch):
+    """No choice: no profile listed, so the picker hides. An older remote choice
+    keeps its own profile listed, so the chip shows it and can move it back."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard.handlers.session_environments import _choices
+
+    handlers, _state = env
+
+    async def owner(request, operation):
+        return None
+
+    monkeypatch.setattr(handlers, "require_owner_dashboard_request", owner)
+    monkeypatch.setattr(handlers, "_choice_locked", lambda *a: asyncio.sleep(0, False))
+    bot = SimpleNamespace(key="member-radar", mode="member", total_messages=0, messages=[])
+    plain = SimpleNamespace(key="chat-9", mode="", total_messages=0, messages=[])
+
+    async def run():
+        app = web.Application()
+        app["state"] = SimpleNamespace(_slots={bot.key: bot, plain.key: plain})
+        app.router.add_get("/s/{slot}", handlers.api_chat_slot_environment_get)
+        async with TestClient(TestServer(app)) as client:
+            fresh = await (await client.get("/s/member-radar")).json()
+            assert fresh["profile"] is None and fresh["profiles"] == []
+
+            await asyncio.to_thread(_choices().set, "dashboard:member-radar", "dev", "coder")
+            bound = await (await client.get("/s/member-radar")).json()
+            assert bound["profile"] == "dev"
+            assert [p["id"] for p in bound["profiles"]] == ["dev"]
+
+            ordinary = await (await client.get("/s/chat-9")).json()
+            assert len(ordinary["profiles"]) == 2
+
+    asyncio.run(run())
+
+
+def test_a_bots_thread_cannot_choose_a_remote_environment(env, monkeypatch):
+    """The picker lists no remote for a bot; the route refuses a hand-made request.
+    Choosing this machine stays allowed, so an older recorded choice can be cleared."""
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.handlers.session_environments import _choices
+
+    handlers, _state = env
+
+    async def owner(request, operation):
+        return None
+
+    monkeypatch.setattr(handlers, "require_owner_dashboard_request", owner)
+    monkeypatch.setattr(chat_runner, "schedule_eager_spawn", lambda s, slot: None)
+    bot = SimpleNamespace(
+        key="member-radar",
+        mode="member",
+        memory_mode="persistent",
+        total_messages=0,
+        messages=[],
+        _lock=asyncio.Lock(),
+        _pending_reset_history_key=None,
+    )
+    plain = SimpleNamespace(**{**vars(bot), "key": "chat-9", "mode": "", "_lock": asyncio.Lock()})
+
+    async def run():
+        app = web.Application()
+        app["state"] = SimpleNamespace(_slots={bot.key: bot, plain.key: plain})
+        app.router.add_put("/s/{slot}", handlers.api_chat_slot_environment_put)
+        async with TestClient(TestServer(app)) as client:
+            refused = await client.put("/s/member-radar", json={"profile": "dev"})
+            body = await refused.json()
+            assert refused.status == 400, body
+            assert body["code"] == "choice_refused" and body["reason"] == "bot_thread"
+            assert await asyncio.to_thread(_choices().get, "dashboard:member-radar") is None
+
+            await asyncio.to_thread(_choices().set, "dashboard:member-radar", "dev")
+            cleared = await client.put("/s/member-radar", json={"profile": None})
+            assert cleared.status == 200, await cleared.json()
+            assert await asyncio.to_thread(_choices().get, "dashboard:member-radar") is None
+
+            # An ordinary chat still chooses freely.
+            chosen = await client.put("/s/chat-9", json={"profile": "dev"})
+            assert chosen.status == 200, await chosen.json()
+
+    asyncio.run(run())
