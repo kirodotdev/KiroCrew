@@ -501,7 +501,7 @@ class TestScenarioReviewWithDiff:
 
         captured_prompt = []
 
-        async def _capture_json(client, prompt):
+        async def _capture_json(client, prompt, **_kw):
             captured_prompt.append(prompt)
             return {"ok": True}
 
@@ -536,7 +536,7 @@ class TestScenarioReviewWithDiff:
 
         captured_prompt = []
 
-        async def _capture_json(client, prompt):
+        async def _capture_json(client, prompt, **_kw):
             captured_prompt.append(prompt)
             return {"ok": True}
 

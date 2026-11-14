@@ -18,28 +18,35 @@ have no dashboard slot, and it must do the same.
 * ``task_planner`` denies inline, so a SOURCE-LEVEL guard enumerates every
   ``reject_tool(`` site there with a per-site verdict, and fails when a host deny
   is not steered or when the SEL row is not written before the steer.
+* A person-only directive (``set_project``, ...) a task runner turn calls is
+  refused and audited on that turn's own key: it leads the step's
+  result, and a JSON turn's text is left for its parse.
 """
 
 from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import pathlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import deny_notice_checks
 import pytest
 from redaction_structured_cases import github_classic
 
-from kiro_crew import llm_helpers, task_executor, task_planner
+from kiro_crew import llm_helpers, session_directive, task_executor, task_planner
 from kiro_crew.agent_sdk.spec_hooks import TurnSpecHooks
 from kiro_crew.context import ContextBuilder
 from kiro_crew.hooks import TOOL_ALLOW, TOOL_DENY, HookManager, ToolHookResult
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.sel import SecurityEventLog
 from kiro_crew.task_models import Project, Task
+from kiro_crew.taskrunner_parts import run_reporting
 
 _GENERIC = "User denied tool execution"
 _TAG = "[Kiro Crew host notice]"
@@ -502,3 +509,112 @@ def test_the_answer_scan_flags_the_wire_ports_own_answers():
         "async def f(wire, ask):\n    await wire.allow(ask)\n    await wire.refuse(ask, None)\n"
     )
     assert _answer_calls_in(source) == [2, 3]
+
+
+# ── Person-only directives on a task runner turn ─────────────────────────────
+
+_REFUSAL = "Error: set_project only works from a user-facing session"
+
+
+class _DirectiveProvider(_Provider):
+    """A turn that completes a ``set_project`` call, then answers *text*."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self._text = text
+
+    async def stream(self, message: str):
+        yield LLMEvent(
+            kind="tool_call",
+            tool_call_id="tc-1",
+            tool_name="set_project",
+            mcp_server_name=session_directive.CORE_MCP_SERVER,
+        )
+        yield LLMEvent(kind="tool_result", tool_call_id="tc-1", tool_final=True)
+        yield LLMEvent(kind="text_chunk", text=self._text)
+        yield LLMEvent(kind="complete")
+
+
+@pytest.fixture(name="directive_rows")
+def directive_rows_fixture(tmp_path, monkeypatch):
+    """A synchronous SEL under ``tmp_path``; returns a reader of its directive rows."""
+    monkeypatch.setattr(SecurityEventLog, "_instance", None)
+    SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
+    path = tmp_path / "sel" / "security_events.jsonl"
+
+    def _rows():
+        if not path.exists():
+            return []
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        return [
+            (e["caller_identity"], e["operation"], e["outcome"])
+            for e in events
+            if e.get("source") == "mcp-directive"
+        ]
+
+    return _rows
+
+
+@pytest.mark.asyncio
+async def test_a_step_turns_person_only_directive_leads_the_result(tmp_path, directive_rows):
+    task = Task(index=1, title="T", description="d")
+    ok = await _run_step(
+        _DirectiveProvider("Step done."),
+        _ctx(ToolHookResult(action=TOOL_ALLOW)),
+        tmp_path=tmp_path,
+        task=task,
+    )
+    assert ok is True
+    assert task.result.startswith(_REFUSAL), task.result
+    assert "(this turn is 'k')" in task.result
+    assert task.result.endswith(" Nothing was changed.\n\nStep done."), task.result
+    assert directive_rows() == [("k", "set_project", "denied")]
+
+
+async def _review(provider) -> tuple[object, str]:
+    run = Project(spec_path="t.md", spec_content="s", task_id="tid")
+    task = Task(index=1, title="T", description="d")
+    run.tasks = [task]
+    with patch.object(task_executor.KiroCrewConfig, "load") as cfg:
+        cfg.return_value.agent.provider = "acp"
+        ok = await task_executor.self_review(run, task, _sessions(provider), "")
+    return ok, task.error
+
+
+async def _lesson(provider) -> object:
+    runner = SimpleNamespace(_ctx=None, _sessions=_sessions(provider))
+    return await run_reporting._call_llm_for_lesson(
+        runner, "p", runtime_key="taskrunner:tid:runtime"
+    )
+
+
+async def _decompose(provider) -> object:
+    tasks = await task_planner.decompose("spec", _sessions(provider), None, task_id="tid")
+    return [(t.index, t.title) for t in tasks]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("turn", "text", "parsed", "key"),
+    [
+        (
+            _review,
+            '{"ok": false, "issue": "missing test"}',
+            (False, "Self-review: missing test"),
+            "taskrunner:tid:review",
+        ),
+        (_lesson, '{"rule": "pin it"}', {"rule": "pin it"}, "taskrunner:tid:runtime:lesson"),
+        (
+            _decompose,
+            '{"steps": [{"title": "A", "description": "a"}]}',
+            [(1, "A")],
+            "taskrunner:tid:decompose",
+        ),
+    ],
+    ids=["self_review", "lesson", "decompose"],
+)
+async def test_a_json_turns_person_only_directive_is_audited_and_parses(
+    directive_rows, turn, text, parsed, key
+):
+    assert await turn(_DirectiveProvider(text)) == parsed
+    assert directive_rows() == [(key, "set_project", "denied")]

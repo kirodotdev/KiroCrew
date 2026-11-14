@@ -764,6 +764,12 @@ async def execute_task(
     previous_error = ""
     consecutive_same_error = 0
     result_prefix = ""
+    # No session applier reads a step's turn, so a person-only directive it
+    # calls is refused and audited; every attempt's refusals lead the result.
+    from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+    refusals: list[str] = []
+    _refuse_person_only = person_only_directive_refuser(session_key, refusals)
 
     # Operator answers applied to this step's prompt. They are marked consumed
     # (``input_consumed``) only once the step has durably COMPLETED: a crash
@@ -952,6 +958,7 @@ async def execute_task(
             # model on this session (``acp.timed_out_continuation``), so the step
             # goes on with what it already did instead of re-running from the top.
             async for event in continue_timed_out_calls(client.stream, full_prompt):
+                await _refuse_person_only(event)
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text
@@ -1014,7 +1021,7 @@ async def execute_task(
 
             # kiro-cli's [STEERING steer-…] ack is protocol, not the step's result.
             result_text = strip_steering_markers(result_text)
-            final_result = result_prefix + result_text
+            final_result = "\n\n".join([*refusals, result_prefix + result_text])
             task.result = redact_credentials(redact_exfiltration_urls(final_result)[0])[0]
             # A stream that ended without any EVENT_COMPLETE proves nothing: the
             # provider never said the turn finished, so it is not a PASSED step
@@ -1723,7 +1730,13 @@ async def self_review(
         # reports no duration, so this local measurement is the fallback. Bracket
         # ONLY the model stream, not open_task_session / diff fetch / prompt build.
         _review_t0 = _time.monotonic()
-        result = await stream_and_collect_json(client, prompt)
+        # Not a person's turn: a person-only directive is refused and audited;
+        # the JSON text is left as it is, so the refusal lives in its SEL row.
+        from kiro_crew.dashboard.session_directive_apply import person_only_directive_refuser
+
+        result = await stream_and_collect_json(
+            client, prompt, on_event=person_only_directive_refuser(review_key, [])
+        )
 
         # ── Per-turn usage row: self-review is a separate model turn. ──
         try:

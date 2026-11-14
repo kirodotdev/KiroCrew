@@ -1245,6 +1245,18 @@ A mid-step agent switch (`EVENT_AGENT_SWITCHED`) rebuilds the ladder for the new
 
 The SEL row is written before any wire I/O for a refusal, and a refusal row that cannot be written is raised before the wire rather than delivered unaudited, as is an exception from the interactive handler; an approval is audited after the wire answered (`approved`, or `rejected_transport_floor` when the transport floor turned it into a rejection). A HOST refusal steers the in-band deny notice before the reject; the interactive handler's no and the compaction reject stay bare. The ladder's stages, the shared adapters and this surface's SEL rows (`TaskrunnerRows`) live in `tool_permission.py`; what reads or moves the run's own state (its trust grant `_RunTrust`, its log lines, the watchdog's activity stamp) stays in `task_executor.py`.
 
+**Person-only directives are refused out loud.** A task runner turn is not a
+person's, and no session applier reads its stream (#34756), so each turn observes
+it with `person_only_directive_refuser` (`dashboard/session_directive_apply.py`,
+the observer the cron turn, workflow steps, app turns and completion turns use) on
+that turn's own key: each completed `set_project`, `reset_conversation`,
+`chat_tag` or `suggest_followup` call is refused with
+`refuse_user_origin_directive` (its wording, and a SEL `denied` row). On the step
+turn (`execute_task`) the refusals of every attempt lead `task.result`. The
+self-review, decomposition and lesson turns are JSON turns, so their text is left
+for the parse and the refusal lives only in its SEL row, as on a workflow
+`schema=` step. Nothing is applied.
+
 ### Per-run auto-approve (trust) toggle
 
 `Project.auto_approve` is a per-run trust-intent flag (default `False`); the live authorization is the scoped `SafetyOverride` grant described below. The intent is opt-in
