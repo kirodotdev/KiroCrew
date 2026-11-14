@@ -107,25 +107,26 @@ def test_a_kiro_cli_start_on_it_is_refused_and_the_file_is_untouched(bound_spec:
 
 
 def test_a_kiro_cli_start_within_the_ceiling_is_not_refused(bound_spec: Path) -> None:
-    bound_spec.write_text(
-        json.dumps({"name": "pkg-reviewer", "allowedTools": ["web_search"]}), encoding="utf-8"
-    )
+    raw = json.dumps({"name": "pkg-reviewer", "allowedTools": ["web_search"]})
+    bound_spec.write_text(raw, encoding="utf-8")
     fork_refresh.require_shared_template_within_ceiling("pkg-reviewer", ACP_BACKEND_KIRO)
+    # The check reads only: a spec Kiro Crew does not own is never rewritten.
+    assert bound_spec.read_text(encoding="utf-8") == raw
 
 
 def test_empty_grant_lists_on_a_governed_server_are_not_refused(bound_spec: Path) -> None:
     """The strip drops an empty ``autoApprove`` key, but that removes no grant."""
-    bound_spec.write_text(
-        json.dumps(
-            {
-                "name": "pkg-reviewer",
-                "allowedTools": [],
-                "mcpServers": {"gh": {"command": "gh-mcp", "autoApprove": []}},
-            }
-        ),
-        encoding="utf-8",
+    raw = json.dumps(
+        {
+            "name": "pkg-reviewer",
+            "allowedTools": [],
+            "mcpServers": {"gh": {"command": "gh-mcp", "autoApprove": []}},
+        }
     )
+    bound_spec.write_text(raw, encoding="utf-8")
     fork_refresh.require_shared_template_within_ceiling("pkg-reviewer", ACP_BACKEND_KIRO)
+    # Passing the check leaves the empty grant list in the file, as the user wrote it.
+    assert bound_spec.read_text(encoding="utf-8") == raw
 
 
 def test_a_non_list_auto_approve_on_a_governed_server_is_refused(bound_spec: Path) -> None:

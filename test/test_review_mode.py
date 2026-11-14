@@ -677,6 +677,8 @@ class TestHandleReviewApprove:
         _review_drafts_set("C1|ts1|abc", "plain text with no secrets", REQUESTER_ID)
         await _handle_review_approve(_make_payload(user_id=OWNER_ID), _make_action())
         assert mock_orch.slack.post_message.await_count == 1
+        # The approve claims the draft, so a second press cannot post it again.
+        assert "C1|ts1|abc" not in _review_drafts
 
     @pytest.mark.asyncio
     async def test_credential_draft_warns_and_keeps_redaction(

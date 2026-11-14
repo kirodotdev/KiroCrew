@@ -85,6 +85,8 @@ class TestSweepStalePermissions:
         slot = self._make_slot(msgs)
         with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
             _sweep_stale_permissions(slot)
+        # The audit row must describe a card the sweep really settled.
+        assert json.loads(msgs[0]["cls"]) == {"request_id": "abc", "resolved": "stale"}
         mock_sel().log_api_access.assert_called_once_with(
             caller="gateway",
             operation="permission.resolve_stale",
