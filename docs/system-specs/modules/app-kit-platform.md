@@ -3462,7 +3462,10 @@ fetch leaves the seed listing, still answered 200 and flagged only by
 repair it, the store header carries a manual refresh. `POST /api/app-store/refresh` (`handle_registry_refresh`) drops the
 on-disk caches of all three published documents (catalog, category order,
 editorial) via each module's `forget_cache()`, which clears a stale document and
-the `_fetchFailedAt` back-off memory. The handler never fetches: the follow-up
+the `_fetchFailedAt` back-off memory. Both refresh routes are owner-only, as
+every other registry write is: a non-owner dashboard subject gets the
+`owner_only` 403 (`app_store.refresh`, `registries.refresh`), while an app token
+keeps the store refresh through its explicit `permissions.api` grant. The handler never fetches: the follow-up
 `GET /api/apps/registry` pays the fetch on the cold-start path, so a refresh
 cannot behave differently from the load it repairs. It is a POST rather than a
 query parameter on the GET because cache deletion plus outbound fetches is a
