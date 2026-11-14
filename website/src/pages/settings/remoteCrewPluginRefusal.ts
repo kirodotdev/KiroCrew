@@ -14,9 +14,12 @@ export const REMOTE_CREW_PREFLIGHT_GUIDE_URL =
   'https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-crew-on-ec2.md#set-up-pre-flight-credential-helper-not-found-or-plugin-refused'
 
 // Typed by the user, so never a catalog value: the AWS config file's usual
-// place and the command that prints a program's full path.
+// place, the command that prints a program's full path, and the commands that
+// create a profile.
 export const AWS_CONFIG_FILE = '~/.aws/config'
 export const whichCommand = (name: string) => `which ${name}`
+export const AWS_CONFIGURE_SSO_COMMAND = 'aws configure sso'
+export const AWS_CONFIGURE_COMMAND = 'aws configure'
 
 /** The credentials row's sentence when the AWS CLI could not find the
  *  credential_process helper by its bare name: the edit to make first, then why. */
@@ -25,6 +28,15 @@ export function credentialHelperMissingSentence(name: string): string {
     name,
     file: AWS_CONFIG_FILE,
     command: whichCommand(name),
+  })
+}
+
+/** The credentials row's sentence when the gateway's AWS credentials are
+ *  environment variables: the profile to create first, then why. */
+export function envCredentialsSentence(): string {
+  return i18nT('pages.settings.remoteCrewPanel.credentials_env_vars', {
+    sso: AWS_CONFIGURE_SSO_COMMAND,
+    configure: AWS_CONFIGURE_COMMAND,
   })
 }
 

@@ -1177,13 +1177,17 @@ def reachability_check(profile: str, region: str = "") -> dict[str, Any]:
         "note": "",
         "detail": "",
         "credential_helper_missing": "",
+        "env_credentials": False,
     }
     rc, out, err = aws.run_aws(["sts", "get-caller-identity", "--output", "json"], profile, region)
     if rc != 0:
         result["detail"] = (err or "could not resolve credentials").strip()[:300]
         helper = missing_credential_helper(err) or _windows_missing_helper(err, profile)
         result["credential_helper_missing"] = helper
-        result["note"] = aws.env_credentials_hint() or (
+        env_hint = aws.env_credentials_hint()
+        # An explicit --profile drops the CLI's environment-credential step.
+        result["env_credentials"] = not profile and bool(env_hint)
+        result["note"] = env_hint or (
             credential_helper_hint(helper)
             if helper
             else (
