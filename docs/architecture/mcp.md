@@ -2098,7 +2098,12 @@ carries an identity that app-callback governance reads as a Bot's, and that
 session declares its servers itself. An `~/.kiro/agents`
 spec whose name is that identity is a collision, and so is one for the file id
 `<id>` itself (the binding `mate_worker.mate_file_for_member` refuses): either
-way the Bot gets no overlay and no credential sidecar. Two file ids that
+way the Bot gets no overlay and no credential sidecar. When the only spec
+declaring `<id>` is an enabled installed app's own `<app>--<id>.json` export, the
+Bot's chats run that app's agent and the skip is logged at INFO; any other
+same-name spec (a user's own file, a second claimant, an export of a disabled app
+or of one no installed app declares, a linked or unreadable one) is logged as a
+warning. Two file ids that
 differ only by case are skipped only when their overlays are one file in
 `<overlay_dir>/mates` (the agents loop's `_overlay_names_collide`). Every doubt
 (unreadable listing, owner record or file, an `~/.kiro/agents` folder that cannot
