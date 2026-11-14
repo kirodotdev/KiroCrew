@@ -655,6 +655,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``/api/security/credential-redaction`` handler is the only writer and opens
     # the path directly, not through this gate.
     "credential_redaction.json",
+    # The MCP message-body fields the owner allowed (``security.mcp_body_fields``).
+    # A row moves a field off the shell matcher and lifts its size ceiling, so an
+    # agent that could write it would allow its own fields. A missing or unreadable
+    # file reads as no rows. The owner-gated ``/api/security/mcp-body-fields``
+    # handler is the only writer and opens the path directly.
+    "mcp_body_fields.json",
     "token_signing.key",
     "refresh_chains.json",
     # The staging directory the two leaves above publish through. Both are masked as

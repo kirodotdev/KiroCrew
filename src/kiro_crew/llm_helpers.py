@@ -156,6 +156,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.llm_helpers_parts.tool_approval import (  # noqa: F401
         ToolApprovalPolicy,
+        _body_field_link_origin,
         _orphan_reject_done,
         _orphan_rejects,
         _resolve_permission,
@@ -303,6 +304,11 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         redact_exfiltration_urls,
         sensitive_path_refusal,
         sensitive_write_path_refusal,
+    )
+    from kiro_crew.security.mcp_body_fields import (  # noqa: F401
+        body_field_denial,
+        body_field_keys,
+        named_size_refusal,
     )
     from kiro_crew.security.paths_resolver import bounded_judgment  # noqa: F401
     from kiro_crew.security.readonly_bash import (  # noqa: F401
