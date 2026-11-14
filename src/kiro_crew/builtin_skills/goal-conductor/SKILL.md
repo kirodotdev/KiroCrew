@@ -138,6 +138,12 @@ already decided, or when fewer than half the goal's work items are left.
 standing preference the owner stated ("always debate first", "stop suggesting
 debates") wins over these rules.
 
+When your turn's context carries the "Worker grill preview is on" paragraph,
+it replaces the unasked offer above: offer a fast worker grill as that
+paragraph says, not a debate, and its moderator follows
+`<this skill's dir>/references/worker-grill.md`. A debate then runs only when
+the owner names one.
+
 ## The loop
 
 ### Round 0 — one plan, one gate

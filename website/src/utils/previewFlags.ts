@@ -254,6 +254,18 @@ export const PREVIEW_CHAT_RUNTIME_SHARING = `${PREVIEW_FLAG_PREFIX}chat-runtime-
 export const PREVIEW_SECRETS_VAULT = `${PREVIEW_FLAG_PREFIX}secrets-vault`
 
 /**
+ * Worker grill: a conductor may offer to let two or three workers grill a costly
+ * choice before it picks a path, answer a pick with a `[GRILL: {...}]` card line,
+ * and dispatch one moderator worker that runs the fast talk
+ * (`worker_grill_preview.py`, the goal-conductor skill's
+ * `references/worker-grill.md`). Server-only: the gateway reads
+ * `dashboard.feature_previews.worker_grill` per turn, so nothing in the
+ * dashboard reads this key. Default OFF, and OFF is a conductor that offers no
+ * discussion unasked.
+ */
+export const PREVIEW_WORKER_GRILL = `${PREVIEW_FLAG_PREFIX}worker-grill`
+
+/**
  * Every live preview-flag key, the ones the gateway keeps. Each one's name (see
  * {@link previewFlagName}) is a writable `dashboard.feature_previews.<name>` path
  * in the gateway config; `test_feature_previews_config.py` pins this list equal
@@ -277,6 +289,7 @@ export const PREVIEW_FLAGS: readonly string[] = [
   PREVIEW_BRIDGE_APPROVALS,
   PREVIEW_CHAT_RUNTIME_SHARING,
   PREVIEW_SECRETS_VAULT,
+  PREVIEW_WORKER_GRILL,
 ]
 
 /**
