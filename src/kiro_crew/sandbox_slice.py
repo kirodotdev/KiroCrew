@@ -364,7 +364,7 @@ def _warn_windows_inert_resource_limits_once() -> None:
         )
 
 
-def apply_windows_resource_ceiling(pid: int) -> bool:
+def apply_windows_resource_ceiling(pid: int, *, background: bool = False) -> bool:
     """Windows counterpart to :func:`cgroup_scope_argv`, applied AFTER the spawn.
 
     ``cgroup_scope_argv`` bounds an agent subprocess and all its descendants by
@@ -389,16 +389,30 @@ def apply_windows_resource_ceiling(pid: int) -> bool:
     :func:`platform_compat.apply_job_limits` has already logged as a SECURITY
     warning. Never raises: a missing ceiling must not fail the spawn, matching
     how an unavailable cgroup scope is handled.
+
+    *background* names a runtime whose role is background work (a task run's
+    runtime, the sub-agent companion runtime). With ``agent.windows_background_qos``
+    on, that tree also gets a lowered Job CPU weight, ``BELOW_NORMAL`` and EcoQoS
+    (:mod:`kiro_crew.windows_background_qos`); the hints never change the return.
     """
     if not platform_compat.IS_WINDOWS:
         return False
     _warn_windows_inert_resource_limits_once()
     max_procs, max_mem_mb, _cpu_weight, _max_cpu_percent = _cgroup_limits_from_config()
-    return platform_compat.apply_job_limits(
+    # Imported here so the facade gains no name: windows_background_qos sits
+    # below platform_compat and reads the config lazily itself.
+    from kiro_crew import windows_background_qos
+
+    qos = background and windows_background_qos.enabled_in_config()
+    applied = platform_compat.apply_job_limits(
         pid,
         max_procs=max_procs,
         max_memory_bytes=max_mem_mb * 1024 * 1024,
+        cpu_weight=windows_background_qos.BACKGROUND_JOB_CPU_WEIGHT if qos else 0,
     )
+    if qos:
+        windows_background_qos.apply_background_qos(pid)
+    return applied
 
 
 # Prefix of the scope unit name a caller gets from ``scope_unit_name``. Carries

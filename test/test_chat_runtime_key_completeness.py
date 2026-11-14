@@ -82,6 +82,12 @@ _SPAWN_INPUT_NOT_KEYED = {
         "no config path; the one caller that passes a different value is the "
         "background session path, which does not share a chat runtime."
     ),
+    "background_qos": (
+        "The Windows background-work mark. Only the sub-agent companion runtime "
+        "and a task run's own runtime pass it; a chat runtime, shared placements "
+        "included, never does, so every chat slot passes the same False and it "
+        "selects no shared process."
+    ),
     "crew_agent": (
         "The canonical crew identity for telemetry context and watchdog settings. "
         "Per session, not per process, and it selects no spawn behaviour."

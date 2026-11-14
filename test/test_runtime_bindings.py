@@ -73,7 +73,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``,
     # ``harness_pin``: the session's own Bot pin, which KAS's route rule 2 reads,
     # and ``governance_scope``: the (session key, app) its KAS projection meets the profiles of.
-    "__init__": ("function", False, "7c98559aac93", "runtime_class"),
+    "__init__": ("function", False, "d4a21d6584f7", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -986,6 +986,7 @@ _INIT_HINTS = {
     "acp_backend": "<class 'str'>",
     "agent": "<class 'str'>",
     "agent_env": "dict[str, str] | None",
+    "background_qos": "<class 'bool'>",
     "crew_agent": "<class 'str'>",
     "expect_mcp_reports": "<class 'bool'>",
     "extra_env": "dict[str, str] | None",

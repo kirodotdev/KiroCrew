@@ -120,6 +120,7 @@
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
         "subagent_spawn_stagger_secs": 0.25,
+        "windows_background_qos": false,
         "subagent_max_turns": 1000,
         "subagent_timeout_secs": 10800,
         "subagent_stall_idle_secs": 120,
@@ -1919,6 +1920,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.25
+    },
+    {
+      "path": "agent.windows_background_qos",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Windows Background QoS",
+      "help": "Windows only. Mark the separate processes that run a chat's task runs, and its sub-agents when the chat cannot host them itself, as background work when they start: below-normal priority (inherited by the git, build and test processes they run), a lower Job object CPU weight, and EcoQoS. Priority and weight only matter when the CPU is busy; EcoQoS can slow that work even on an idle machine. Sub-agents that share the chat's own process (the default while Session Sharing is on) are not marked, because the chat runs in that process too. A task run a person opened is not marked when it starts the process, but one that reuses a process background work started runs marked. Applies to processes started after the change. Off by default; no effect on macOS or Linux.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.subagent_max_turns",

@@ -283,6 +283,7 @@ class AcpRuntime:
     #: ``__init__`` (a test double, a restored instance) reads as having none.
     _launch_agent = ""
     _harness_pin = ""
+    _background_qos = False
 
     def __init__(
         self,
@@ -309,6 +310,7 @@ class AcpRuntime:
         forward_ssh_auth_sock: bool | None = None,
         agent_env: dict[str, str] | None = None,
         kas_telemetry: bool | None = None,
+        background_qos: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -342,6 +344,13 @@ class AcpRuntime:
         # under. None for a runtime no provider built (the background runtime,
         # a review pool), whose sessions' app is then not known.
         self._governance_scope = governance_scope
+        # True for a runtime whose role is background work, fixed by the surface
+        # that builds it (the sub-agent companion runtime, a task run's runtime via
+        # ``LLMProvider.background_qos``): it never hosts a person's own chat
+        # turn, so with
+        # ``agent.windows_background_qos`` on, its spawn is marked background on
+        # Windows (``kiro_crew.windows_background_qos``).
+        self._background_qos = background_qos
         self._acp_backend = acp_backend
         # The Bot pin of the session this process was started for, as stored
         # (``SpawnContext.harness_pin``); ``""`` when it pins no harness.

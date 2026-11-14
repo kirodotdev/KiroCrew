@@ -24,7 +24,7 @@ Instance fields written: ``_agent``, ``_agent_capabilities``, ``_agent_version``
 ``_with_mcp_sign_in_storage`` (a plain function handed the runtime) also writes
 ``_mcp_secret_server``.
 
-Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
+Instance fields read: ``_acp_backend``, ``_agent_env_override``, ``_background_qos``, ``_extra_env``, ``_kas_telemetry_override``, ``_forward_ssh_auth_sock_override``,
 ``_harness_pin``, ``_launch_agent``, ``_member_context``, ``_model``, ``_native_skill_projection_enabled``, ``_record_tree_in_background``, ``_refuse_over_ceiling_launch``, ``_sandbox_mode``, ``_scratch_dir``, ``_shared_scratch``, ``_tool_search``,
 ``_work_dir``.
 """
@@ -890,6 +890,7 @@ async def _spawn_admitted(self: AcpRuntime) -> None:
                     self._process,
                     self._pid,
                     label=f"{KIRO_CLI_BIN} acp",
+                    background=self._background_qos,
                 ),
             )
         )
