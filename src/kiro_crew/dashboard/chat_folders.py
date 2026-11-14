@@ -1370,6 +1370,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         agent_creator_key,
         archived_session_names_in_folders,
         caller_home_slot,
+        channel_reachable_refusal,
         chat_folder_subtree_ids,
         clean_folder_default_prompt,
         create_folder_record,

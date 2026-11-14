@@ -218,6 +218,12 @@ def _list_tools() -> list[dict[str, Any]]:
                         "id (e.g. 'Veille'). A missing name is created. Empty or omitted "
                         "leaves the job ungrouped.",
                     },
+                    "chat_folder_id": {
+                        "type": "string",
+                        "description": "Files this job's chat in the sidebar chat folder "
+                        "with this id (from chat_folder_tree). Persistent agent jobs only. "
+                        "Not `folder`, the Schedule-page group. Empty or omitted: not filed.",
+                    },
                     "persistent_session": {
                         "type": "boolean",
                         "description": "Whether this cron reuses one agent session across "
@@ -355,6 +361,13 @@ def _list_tools() -> list[dict[str, Any]]:
                         "description": "Move the job to this Schedule-page folder, by name "
                         "or id. A missing name is created. Empty string moves the job out "
                         "of its folder (ungrouped).",
+                    },
+                    "chat_folder_id": {
+                        "type": "string",
+                        "description": "Files this job's chat in the sidebar chat folder "
+                        "with this id (from chat_folder_tree); its existing chat moves too. "
+                        "Persistent agent jobs only. Not `folder`, the Schedule-page group. "
+                        "Empty string: not filed.",
                     },
                     "thread_ts": {
                         "type": "string",

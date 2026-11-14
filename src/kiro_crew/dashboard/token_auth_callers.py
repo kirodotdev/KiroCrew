@@ -818,7 +818,9 @@ def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:
 #: widen — the point of the header is that a NEW internal caller surfaces as
 #: ``unknown-internal`` in the audit until someone decides what to call it,
 #: instead of silently inheriting another component's label.
-KNOWN_INTERNAL_CALLERS = frozenset({"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug"})
+KNOWN_INTERNAL_CALLERS = frozenset(
+    {"kirocrew-dashboard", "kirocrew-crew-log", "kirocrew-debug", "kirocrew-cron"}
+)
 
 
 def request_origin(
