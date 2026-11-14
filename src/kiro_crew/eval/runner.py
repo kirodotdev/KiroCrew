@@ -19,7 +19,15 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.constants import DENY_CAUSE_POLICY, DENY_CAUSE_SURFACE_POLICY
-from kiro_crew.eval.scenario import Assertion, AssertionType, Scenario, SeedProfile, Session, Turn
+from kiro_crew.eval.scenario import (
+    Assertion,
+    AssertionType,
+    Scenario,
+    SeedProfile,
+    Session,
+    ToolCall,
+    Turn,
+)
 from kiro_crew.llm_helpers import _steer_host_deny
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
@@ -74,6 +82,8 @@ class TurnResult:
     user_message: str
     agent_response: str
     tool_calls: list[str] = field(default_factory=list)
+    #: The same calls with their server and arguments, which the tool assertions read.
+    tool_call_records: list[ToolCall] = field(default_factory=list)
     assertion_results: list[tuple[Assertion, bool]] = field(default_factory=list)
     elapsed_secs: float = 0.0
     error: str = ""
@@ -199,6 +209,30 @@ def score_by_dimension(results: list[ScenarioResult]) -> dict[str, dict[str, Any
         }
         for dim, s in dim_stats.items()
     }
+
+
+# ── Tool calls ──
+
+
+def _tool_call_record(event: Any) -> ToolCall:
+    """The name, MCP server and arguments of one tool-call event.
+
+    A backend's tool-call event carries no ``text``: the tool's identity is the adapter's
+    own ``tool_name`` (``wire_title`` or ``title`` when it states none). ``text`` is still
+    read first, so an event that sets it keeps the name it always had.
+    """
+    name = event.text or event.tool_name or event.wire_title or event.title
+    args = event.raw_tool_params
+    if not isinstance(args, dict):
+        try:
+            args = json.loads(event.tool_input or "")
+        except (TypeError, ValueError):
+            args = None
+    return ToolCall(
+        name=name,
+        server=event.mcp_server_name,
+        args=args if isinstance(args, dict) else {},
+    )
 
 
 # ── Tool permission ──
@@ -568,12 +602,15 @@ class EvalRunner:
         t0 = time.monotonic()
         chunks: list[str] = []
         tool_calls: list[str] = []
+        tool_call_records: list[ToolCall] = []
 
         async for event in provider.stream(turn_def.user):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
             elif event.kind == EVENT_TOOL_CALL:
-                tool_calls.append(event.text)
+                record = _tool_call_record(event)
+                tool_call_records.append(record)
+                tool_calls.append(record.name)
                 sel().log_tool_invocation(
                     session_key=session_key,
                     tool_name=event.text,
@@ -705,7 +742,7 @@ class EvalRunner:
         elapsed = time.monotonic() - t0
 
         assertion_results = [
-            (a, a.check(response))
+            (a, a.check(response, tool_call_records))
             for a in turn_def.assertions
             if self.judge_enabled or a.type != AssertionType.JUDGE
         ]
@@ -714,6 +751,7 @@ class EvalRunner:
             user_message=turn_def.user,
             agent_response=response,
             tool_calls=tool_calls,
+            tool_call_records=tool_call_records,
             assertion_results=assertion_results,
             elapsed_secs=elapsed,
         )
@@ -767,12 +805,13 @@ def format_results(results: list[ScenarioResult]) -> str:
                 t_status = "✅" if tr.passed else "❌"
                 lines.append(f"  {t_status} Turn {ti + 1}: `{tr.user_message[:60]}`")
                 if tr.tool_calls:
-                    lines.append(f"     Tools: {', '.join(tr.tool_calls[:5])}")
+                    names = ", ".join(safe_terminal_line(n) for n in tr.tool_calls[:5])
+                    lines.append(f"     Tools: {names}")
                 for assertion, ok in tr.assertion_results:
                     a_status = "✅" if ok else "❌"
                     lines.append(
                         f"     {a_status} {assertion.type.value}: "
-                        f"`{assertion.value[:50]}`"
+                        f"`{assertion.label[:50]}`"
                     )
                 if not tr.passed:
                     snippet = tr.agent_response[:200].replace("\n", " ")

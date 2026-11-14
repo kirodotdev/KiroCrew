@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -21,17 +22,90 @@ class AssertionType(Enum):
     REGEX = "regex"
     EQUALS = "equals"
     JUDGE = "judge"
+    TOOL_CALLED = "tool_called"
+    TOOL_NOT_CALLED = "tool_not_called"
+    TOOL_ORDER = "tool_order"
+
+
+#: The assertions that read the calls a turn made rather than its reply text.
+TOOL_ASSERTION_TYPES = frozenset(
+    {AssertionType.TOOL_CALLED, AssertionType.TOOL_NOT_CALLED, AssertionType.TOOL_ORDER}
+)
+
+
+@dataclass
+class ToolCall:
+    """One tool call a turn made: its name, its MCP server (empty for a built-in) and arguments."""
+
+    name: str
+    server: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+
+    def is_named(self, expected: str, case_sensitive: bool) -> bool:
+        """Whether *expected* is this call's tool name, bare or as ``server/tool`` or ``@server/tool``."""
+        labels = [self.name]
+        if self.server:
+            labels += [f"{self.server}/{self.name}", f"@{self.server}/{self.name}"]
+        if case_sensitive:
+            return expected in labels
+        return expected.casefold() in {label.casefold() for label in labels}
+
+    def has_args(self, expected: dict[str, Any], case_sensitive: bool) -> bool:
+        """Whether every key of *expected* is an argument of this call with a matching value.
+
+        A string matches as a fragment of a string argument (as ``contains`` does for a
+        reply); any other value must equal the argument.
+        """
+        for key, want in expected.items():
+            if key not in self.args:
+                return False
+            have = self.args[key]
+            if isinstance(want, str):
+                if not isinstance(have, str):
+                    return False
+                if (want in have) if case_sensitive else (want.lower() in have.lower()):
+                    continue
+                return False
+            if have != want:
+                return False
+        return True
 
 
 @dataclass
 class Assertion:
-    """A single assertion on an agent response."""
+    """A single assertion on an agent response, or on the tools a turn called."""
 
     type: AssertionType
     value: str
     case_sensitive: bool = False
+    #: ``tool_called`` / ``tool_not_called``: arguments the call must carry.
+    args: dict[str, Any] = field(default_factory=dict)
+    #: ``tool_order``: the tool names that must be called, in this order.
+    tools: tuple[str, ...] = ()
+    #: ``tool_order``: no other call may appear between or around them.
+    exact: bool = False
 
-    def check(self, response: str) -> bool:
+    @property
+    def label(self) -> str:
+        """What a report prints beside the type."""
+        return " > ".join(self.tools) if self.type == AssertionType.TOOL_ORDER else self.value
+
+    def _check_tools(self, calls: Sequence[ToolCall]) -> bool:
+        cs = self.case_sensitive
+        if self.type == AssertionType.TOOL_ORDER:
+            if self.exact:
+                return len(calls) == len(self.tools) and all(
+                    c.is_named(t, cs) for c, t in zip(calls, self.tools)
+                )
+            remaining = iter(calls)
+            # ``any`` stops at the first match, so each step resumes after the previous one.
+            return all(any(c.is_named(t, cs) for c in remaining) for t in self.tools)
+        found = any(c.is_named(self.value, cs) and c.has_args(self.args, cs) for c in calls)
+        return found if self.type == AssertionType.TOOL_CALLED else not found
+
+    def check(self, response: str, tool_calls: Sequence[ToolCall] = ()) -> bool:
+        if self.type in TOOL_ASSERTION_TYPES:
+            return self._check_tools(tool_calls)
         if self.type == AssertionType.JUDGE:
             return True  # handled separately by LLMJudge
         target = response if self.case_sensitive else response.lower()
@@ -124,6 +198,46 @@ def load_scenarios(path: str | Path) -> list[Scenario]:
     return [load_scenario(f) for f in scenario_files(path)]
 
 
+def _parse_assertion(a: dict[str, Any]) -> Assertion:
+    """One assertion from its scenario-file mapping.
+
+    A tool assertion that could not be checked (no tool name, a malformed ``args`` or
+    ``tools``) is refused by name rather than loaded as one that passes or fails by
+    accident. The extra keys mean nothing on any other type.
+    """
+    kind = AssertionType(a["type"])
+    assertion = Assertion(
+        type=kind,
+        value=a.get("value", ""),
+        case_sensitive=a.get("case_sensitive", False),
+    )
+    if kind not in TOOL_ASSERTION_TYPES:
+        return assertion
+    if kind == AssertionType.TOOL_ORDER:
+        tools = a.get("tools")
+        if (
+            not isinstance(tools, list)
+            or not tools
+            or not all(isinstance(t, str) and t for t in tools)
+        ):
+            raise ValueError(f"{kind.value} needs 'tools': a list of tool names")
+        exact = a.get("exact", False)
+        if not isinstance(exact, bool):
+            raise ValueError(f"{kind.value} 'exact' must be true or false")
+        assertion.tools = tuple(tools)
+        assertion.exact = exact
+        return assertion
+    if not isinstance(assertion.value, str) or not assertion.value:
+        raise ValueError(f"{kind.value} needs the tool's name as 'value'")
+    args = a.get("args")
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        raise ValueError(f"{kind.value} 'args' must be a mapping of argument names to values")
+    assertion.args = args
+    return assertion
+
+
 def _parse_scenario(data: dict[str, Any]) -> Scenario:
     # Parse seed profile
     seed = None
@@ -140,14 +254,7 @@ def _parse_scenario(data: dict[str, Any]) -> Scenario:
     for sess_data in data.get("sessions", []):
         turns = []
         for td in sess_data.get("turns", []):
-            assertions = [
-                Assertion(
-                    type=AssertionType(a["type"]),
-                    value=a.get("value", ""),
-                    case_sensitive=a.get("case_sensitive", False),
-                )
-                for a in td.get("assertions", [])
-            ]
+            assertions = [_parse_assertion(a) for a in td.get("assertions", [])]
             turns.append(Turn(user=td["user"], assertions=assertions))
         sessions.append(Session(name=sess_data["name"], turns=turns))
 
