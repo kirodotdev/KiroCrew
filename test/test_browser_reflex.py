@@ -21,7 +21,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import string
 import struct
 import zlib
 from types import SimpleNamespace
@@ -639,49 +638,76 @@ def test_a_malformed_call_is_refused(args, code):
     assert isinstance(refused, dict) and refused["code"] == code
 
 
+def _dropdown(i: int, n: int) -> dict[str, Any]:
+    options = [{"i": j, "label": f"Option {j}"} for j in range(n)]
+    row = {"ref": f"e{i}", "role": "combobox", "name": f"Field {i}", "g": f"g{i}"}
+    return {**row, "ops": ["select"], "options": options}
+
+
 class _LongForm(Game):
-    """The walker's 250-row table: text fields, and dropdowns of 49 options (two fit in 100,
-    a third does not)."""
+    """A table that fills every target head: ``TARGET_CAP`` text fields, then dropdowns of
+    49 options (two fit in 100, a third does not) topped up by one-option dropdowns."""
 
     def elements(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for i in range(1, 251):
-            row = {"ref": f"e{i}", "name": f"Field {i}", "g": f"g{i}"}
-            if i % 2:
-                options = [{"i": j, "label": f"Option {j}"} for j in range(49)]
-                rows.append({**row, "role": "combobox", "ops": ["select"], "options": options})
-            else:
-                rows.append({**row, "role": "textbox", "ops": ["click", "hover", "type"]})
-        return rows
+        cap = reflex_space.TARGET_CAP
+        rows: list[dict[str, Any]] = [
+            {
+                "ref": f"e{i}",
+                "role": "textbox",
+                "name": f"Field {i}",
+                "g": f"g{i}",
+                "ops": ["click", "hover", "type"],
+            }
+            for i in range(1, cap + 1)
+        ]
+        return rows + [_dropdown(i, n) for i, n in enumerate([49] * 3 + [1] * cap, cap + 1)]
 
 
 def test_the_largest_request_keeps_within_laya_s_option_limits(seam, tmp_path):
-    values = [f"value {i}" for i in range(20)]
     seam.provider = Provider(judge(done_after=0))
+    targeted = list(reflex_space.TARGETED)
     args = {
         "goal": "Fill the form",
-        # Every move the call may name, each its own option (case folds "a" and "A").
-        "keys": list((string.digits + string.ascii_lowercase + ",./;")[: reflex.MAX_ACTIONS]),
+        # The most moves a call may name, each drag its own option.
+        "drag": [f"{i},0>{i},1" for i in range(reflex.MAX_ACTIONS)],
         "wait": True,
-        "targets": ["click", "hover", "type", "select"],
-        "values": values,
-        "facts": [", ".join(values)],
+        "targets": targeted,
+        # The most values; each is a field's name, so the page sources it.
+        "values": [f"Field {i}" for i in range(1, reflex.MAX_VALUES + 1)],
     }
     assert _run(args, _ctx(_LongForm(), tmp_path)[0])["stop"] == "done"
     sizes = [len(q.options) for q in seam.provider.calls[0]["questions"] if isinstance(q, Choice)]
-    assert len(sizes) == 6 and max(sizes) <= 100 and sum(sizes) <= 512
+    # The largest request the caps allow, so raising any of them grows it: the moves,
+    # WAIT and one option per targeted operation; every target head full; the values.
+    cap = reflex_space.TARGET_CAP
+    assert sizes == [
+        reflex.MAX_ACTIONS + 1 + len(targeted),
+        *[cap] * len(targeted),
+        reflex.MAX_VALUES,
+    ]
+    # Laya takes at most 100 options per Choice and 512 per request.
+    assert max(sizes) <= 100 and sum(sizes) <= 512
 
 
 def test_a_dropdown_that_does_not_fit_does_not_hide_the_ones_after_it():
-    def dropdown(i: int, n: int) -> dict[str, Any]:
-        options = [{"i": j, "label": f"Option {j}"} for j in range(n)]
-        row = {"ref": f"e{i}", "role": "combobox", "name": f"Field {i}", "g": f"g{i}"}
-        return {**row, "ops": ["select"], "options": options}
-
     # The walker sends at most 50 options per dropdown: 50 + 30 leave room for 5, not 50.
-    rows = [dropdown(1, 50), dropdown(2, 30), dropdown(3, 50), dropdown(4, 5)]
+    rows = [_dropdown(1, 50), _dropdown(2, 30), _dropdown(3, 50), _dropdown(4, 5)]
     space = reflex_space.build([], ("select",), None, rows, [], {}, wait=False)
     assert {option.split(":")[0] for option in space.targets["SELECT"]} == {"e1", "e2", "e4"}
+
+
+def test_a_dropdown_fits_by_the_options_it_offers():
+    # 90 options in the head, then a dropdown with 45 of its 50 options withdrawn: its 5
+    # offered options fit. The next one does not, so none of its moves are kept.
+    withdrawn = {f"select e3:{j}" for j in range(45)}
+    rows = [_dropdown(1, 50), _dropdown(2, 40), _dropdown(3, 50), _dropdown(4, 50)]
+    known: dict[str, reflex_space.Move] = {}
+    space = reflex_space.build(
+        [], ("select",), None, rows, [], known, wait=False, offer=lambda m: m.key not in withdrawn
+    )
+    offered = [option for option in space.targets["SELECT"] if option.startswith("e3:")]
+    assert offered == [f"e3:{j}" for j in range(45, 50)]
+    assert not any(key.startswith("select e4:") for key in known)
 
 
 def test_arrange_fills_slots_from_items_and_keeps_the_bigger_of_a_merge():
