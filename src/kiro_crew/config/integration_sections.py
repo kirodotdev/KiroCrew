@@ -872,6 +872,20 @@ class McpConfig:
             restart=True,
         ),
     )
+    protect_kiro_permission_rules: bool = field(
+        default=False,
+        metadata=_meta(
+            "Protect kiro-cli permission rules",
+            "Refuse the agent's file-edit tools when they write kiro-cli's tool "
+            "permission rules: ``permissions.yaml`` and ``permissions.json`` in "
+            "``~/.kiro/settings``, and the ``~/.kiro/workspace-roots`` folder. A rule "
+            "with ``effect: allow`` there runs its tool with no approval card, so "
+            "Kiro Crew's own tool gate never sees the call. Off by default, so the "
+            "agent can edit these files as before. Reads stay allowed either way, and "
+            "kiro-cli saving a rule you chose, or your own editor, is never stopped. "
+            "Applies to the next file edit, no restart needed.",
+        ),
+    )
 
 
 @dataclass

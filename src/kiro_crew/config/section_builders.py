@@ -495,6 +495,8 @@ def _build_mcp_config(mcp_data: dict) -> McpConfig:
         # schema validator before this runs, so it reads as absent and the default
         # applies rather than a guess at what the text meant.
         honour_auto_approve=section.get("honour_auto_approve") is True,
+        # Opt-in, off by default: only a real ``true`` turns the write fence on.
+        protect_kiro_permission_rules=section.get("protect_kiro_permission_rules") is True,
     )
 
 

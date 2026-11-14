@@ -5882,7 +5882,8 @@
       "enumValues": null,
       "defaultValue": {
         "extra_path_dirs": [],
-        "honour_auto_approve": true
+        "honour_auto_approve": true,
+        "protect_kiro_permission_rules": false
       }
     },
     {
@@ -5928,6 +5929,20 @@
       "enumValues": null,
       "defaultValue": true,
       "requiresRestart": true
+    },
+    {
+      "path": "mcp.protect_kiro_permission_rules",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Protect kiro-cli permission rules",
+      "help": "Refuse the agent's file-edit tools when they write kiro-cli's tool permission rules: ``permissions.yaml`` and ``permissions.json`` in ``~/.kiro/settings``, and the ``~/.kiro/workspace-roots`` folder. A rule with ``effect: allow`` there runs its tool with no approval card, so Kiro Crew's own tool gate never sees the call. Off by default, so the agent can edit these files as before. Reads stay allowed either way, and kiro-cli saving a rule you chose, or your own editor, is never stopped. Applies to the next file edit, no restart needed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "instances",

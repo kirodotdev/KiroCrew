@@ -841,7 +841,11 @@ def _url_payload_command(n: int) -> str:
 #: and refusing a final name whose DNS lookup fails for any reason but "no such name",
 #: or a config where a case or trailing-dot spelling of the name could route elsewhere.
 #: Re-measured.
-_PACKAGE_LINE_BUDGET = 36_794
+#: Raised by 46, from 36,794, to 36,840, for ``_KIRO_PERMISSION_RULE_LEAVES``
+#: in ``paths_lists`` and the degraded-config check in ``paths.py``: kiro-cli's
+#: permission rule files stay on the write fence while the owner opts in, including
+#: when the config read cannot establish that choice.
+_PACKAGE_LINE_BUDGET = 36_840
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
