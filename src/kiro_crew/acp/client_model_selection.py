@@ -16,9 +16,9 @@ Instance fields written: ``_acp_config_options``, ``_activated_model``,
 ``model_pin_partial``, ``model_pin_refused``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
-``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_mcp_gateway_overlay``,
-``_mcp_gateway_socket``, ``_permission_mode``, ``_sandbox_mode``, ``_session_id``,
-``_session_key``, ``_work_dir``, ``last_prompt_stats``.
+``_derived_spec_snapshot``, ``_engine_fallback``, ``_extra_env``, ``_launched_long_context``,
+``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_permission_mode``, ``_sandbox_mode``,
+``_session_id``, ``_session_key``, ``_work_dir``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -52,7 +52,13 @@ from kiro_crew.acp.types import (
     effort_config_option_value,
 )
 from kiro_crew.agent import require_unchanged_derived_spec
-from kiro_crew.agent_sdk.backends import effort_config_option_levels, model_refusal_phrase
+from kiro_crew.agent_sdk.backends import (
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
+    effort_config_option_levels,
+    long_context_pick,
+    model_refusal_phrase,
+    with_long_context_variants,
+)
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -194,6 +200,14 @@ async def set_model(self: AcpClient, model_id: str) -> None:
         # move it: the switch relaunches the process and reloads this session.
         await launch_tuning.switch_launch_model(self, model_id)
         return
+    if self.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH and (
+        long_context_pick(self.backend, model_id)[1] != self._launched_long_context
+    ):
+        # The context tier was a launch argument and this pick names the other
+        # one: relaunch on it and reload this session, whose startup apply then
+        # sends the bare model on the wire.
+        await launch_tuning.switch_launch_model(self, model_id)
+        return
     # This path deliberately does not scope: an explicit pick must reach the
     # adapter because its advertised list can omit an entitlement the adapter
     # accepts, and inherited pins are already scoped by their callers.
@@ -227,9 +241,15 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
         model_id = await self._push_model_config_option(model_id, strict=True)
     else:
+        # A long-context pick's tier rode the launch
+        # (ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH); the wire takes the bare id, and
+        # the pick keeps its suffix so a later relaunch reads the same tier.
         await self._send_request(
             METHOD_SET_MODEL,
-            {"sessionId": self._session_id, "modelId": model_id},
+            {
+                "sessionId": self._session_id,
+                "modelId": long_context_pick(self.backend, model_id)[0],
+            },
         )
     self._model = model_id
     self.model_pin_refused = ""
@@ -316,6 +336,7 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     captured = parse_advertised_models({"models": models})
     if self.backend == ACP_BACKEND_MIMOCODE:
         captured = mimocode_model_rows(captured)
+    captured = with_long_context_variants(self.backend, captured)
     if captured:
         self._available_models = captured
         self._available_models_captured_at = time.monotonic()
@@ -984,7 +1005,10 @@ async def _apply_startup_model(self: AcpClient) -> None:
     else:
         await self._send_request(
             METHOD_SET_MODEL,
-            {"sessionId": self._session_id, "modelId": self._model},
+            {
+                "sessionId": self._session_id,
+                "modelId": long_context_pick(self.backend, self._model)[0],
+            },
         )
     # session/new reports the backend default before an explicit override.
     # A config-option advisory may have substituted the served model.

@@ -58,7 +58,10 @@ from kiro_crew.acp.types import (
     effort_config_option_id,
     model_registry_namespace,
 )
-from kiro_crew.agent_sdk.backends import effort_config_option_levels
+from kiro_crew.agent_sdk.backends import (
+    effort_config_option_levels,
+    with_long_context_variants,
+)
 from kiro_crew.agent_sdk.drivers.acp import EntitlementRevalidating
 from kiro_crew.agent_sdk.kas_model_catalog import record_catalog
 from kiro_crew.platform.context import redact_log_via_context
@@ -234,9 +237,11 @@ def advertised_models_from_session(resp: dict[str, Any], backend: str) -> list[d
     """
     env = session_models_envelope(resp, backend)
     if isinstance(env, dict):
-        return parse_advertised_models({"models": env})
+        return with_long_context_variants(backend, parse_advertised_models({"models": env}))
     if isinstance(env, list):
-        return parse_advertised_models({"availableModels": env})
+        return with_long_context_variants(
+            backend, parse_advertised_models({"availableModels": env})
+        )
     return []
 
 
@@ -725,7 +730,10 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
             # still overwrites — that asymmetry with
             # ``AcpClient._capture_available_models`` (non-empty guard) is
             # deliberate, not an oversight.
-            self._available_models = parse_advertised_models({"models": {"availableModels": avail}})
+            self._available_models = with_long_context_variants(
+                self._runtime.acp_backend,
+                parse_advertised_models({"models": {"availableModels": avail}}),
+            )
             self._mark_available_models_captured()
         # A backend may advertise its model list without echoing
         # ``currentModelId`` (it is best-effort in the ACP shape). When it
@@ -739,7 +747,10 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
         if not self._resolved_model_id and len(self._available_models) == 1:
             self._resolved_model_id = self._available_models[0]["modelId"]
     elif isinstance(models, list):
-        self._available_models = parse_advertised_models({"availableModels": models})
+        self._available_models = with_long_context_variants(
+            self._runtime.acp_backend,
+            parse_advertised_models({"availableModels": models}),
+        )
         self._mark_available_models_captured()
 
 

@@ -2,9 +2,11 @@
 
 A member of :data:`~kiro_crew.agent_sdk.backends.ACP_BACKENDS_MODEL_AT_LAUNCH` (or
 :data:`~kiro_crew.agent_sdk.backends.ACP_BACKENDS_EFFORT_AT_LAUNCH`) reads its model
-(effort) from its argv when it starts and offers no ACP request that changes it. So a
-switch replaces the process, between turns: the client records the new value, which
-the harness's launch reads (``_model``, ``_launch_effort``), and
+(effort) from its argv when it starts and offers no ACP request that changes it; a
+member of :data:`~kiro_crew.agent_sdk.backends.ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH`
+reads its context tier there, so a model switch that changes the tier takes the same
+path. So a switch replaces the process, between turns: the client records the new value,
+which the harness's launch reads (``_model``, ``_launch_effort``), and
 :func:`kiro_crew.acp.relaunch_reload.relaunch_and_reload` ends the process, starts one
 that reads it and ``session/load``s the same session id there. It runs now, so the
 switch lands or fails here rather than on the person's next message.
@@ -28,6 +30,7 @@ from kiro_crew.acp.runtime_models import DEFAULT_MODEL
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_STRANDS,
+    ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_MODEL_AT_LAUNCH,
 )
@@ -65,8 +68,10 @@ def switch_barrier(client: AcpClient) -> AbstractAsyncContextManager[Any]:
     refuses. Only a member of the launch-time sets takes it: every other harness's
     start is unchanged (harness-parity H13).
     """
-    if client.backend in ACP_BACKENDS_MODEL_AT_LAUNCH or (
-        client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
+    if (
+        client.backend in ACP_BACKENDS_MODEL_AT_LAUNCH
+        or client.backend in ACP_BACKENDS_EFFORT_AT_LAUNCH
+        or client.backend in ACP_BACKENDS_CONTEXT_TIER_AT_LAUNCH
     ):
         lock = getattr(client, "_launch_tuning_lock", None)
         if lock is not None:
