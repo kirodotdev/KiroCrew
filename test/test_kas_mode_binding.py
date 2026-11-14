@@ -340,6 +340,40 @@ class TestModeBinding:
         assert handle.native_context_documents.get("template://kirocrew#prompt") == recorded
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("prompt", "headed"),
+        [("stub", True), ("You are Kiro.", False)],
+        ids=["managed-stub", "person-written-prompt"],
+    )
+    async def test_a_dashboard_session_records_its_head_only_on_the_managed_stub(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch, prompt, headed
+    ):
+        """The default agent's managed stub is replaced on the wire by the session head
+        and the session records its blocks; a prompt a person wrote is sent as it is."""
+        from kiro_crew import session_head
+        from kiro_crew.acp.harness import kas as kas_harness
+        from kiro_crew.agent_parts.spec_build import _NATIVE_PROMPT_STUB
+
+        spec = json.loads((crew_agent / "kirocrew.json").read_text(encoding="utf-8"))
+        spec["prompt"] = _NATIVE_PROMPT_STUB if prompt == "stub" else prompt
+        (crew_agent / "kirocrew.json").write_text(json.dumps(spec), encoding="utf-8")
+        monkeypatch.setattr(kas_harness, "_bundle_route_selected", lambda: False)
+        monkeypatch.setattr(kas_harness, "installed_kiro_cli_version", lambda: (2, 33, 1))
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "wsh", agent="kirocrew", sandbox_mode="off", acp_backend="kas"
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(
+                cwd=tmp_path / "wsh", agent="kirocrew", session_key="dashboard:headed"
+            )
+        finally:
+            await runtime.kill()
+        wire = handle.native_context_documents.get("template://kirocrew#prompt")
+        assert session_head.applied(handle.native_context_documents) is headed
+        assert (session_head.parse(wire) != ()) is headed
+
+    @pytest.mark.asyncio
     async def test_runtime_default_agent_is_activated_without_explicit_request(
         self, mode_stub, crew_agent, tmp_path
     ):

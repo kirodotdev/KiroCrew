@@ -1196,7 +1196,21 @@ cannot supply its ownership. The inline prompt is published (as
 `template://<agent>#prompt`) only when the session's KAS is known to apply it, a
 relay kiro-cli at or above `KAS_AGENT_PROMPT_MIN_KIRO_CLI`; Crew's bundled engine
 and an unknown release publish none. The session-start `[AGENT SYSTEM PROMPT]`
-block is left out when it equals that published prompt word for word. Resource
+block is left out when it equals that published prompt word for word. On that same
+KAS, a dashboard session of the default agent whose spec prompt is the managed stub
+gets the session head in the stub's place (`session_head.py`, decision
+`docs/request-for-change/rfc-kas-session-head-in-agent-prompt.md`): the three blocks
+that do not change within a session, `[AGENT SYSTEM PROMPT]`, the dashboard
+`[CRITICAL RULES]` and `[TOOL NAMES]`, folded like the message and followed by a
+short gateway note. The engine caches its first message, which holds that prompt, so
+later chats read those bytes from the cache. The runtime records each block
+(`crew-head://agent-prompt`, `crew-head://critical-rules`, `crew-head://tool-names`)
+on `session/new` and `session/load`, and the session-start build leaves a block out
+only when its record equals it byte for byte. A resumed chat that started with a head
+(`head_sid` on the session map) and whose resumed session holds none gets
+`[AGENT SYSTEM PROMPT]` back in its resume message, because the engine then rebuilt
+its first message from the stub. Another agent, a prompt a person wrote, a
+non-dashboard key and every other harness keep the message path. Resource
 URIs and their order remain unchanged on the wire, and conditional, skill and knowledge resources keep native selection.
 Exact template and body matches omit initial manual copies. The complete-envelope
 budget is checked BEFORE omission: 64,000 characters including wrappers, with
