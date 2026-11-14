@@ -102,7 +102,7 @@ export function MembersPageThreadHeader({
       // the chat page's single-bar hand-off), so it is a plain flex row
       // there, with no fade and nothing to pad the transcript for.
       className={headerInBar
-        ? 'grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-1.5 w-full min-w-0 h-full'
+        ? 'grid grid-cols-[minmax(max-content,1fr)_minmax(0,auto)_minmax(max-content,1fr)] items-center gap-1.5 w-full min-w-0 h-full'
         : 'absolute top-0 inset-x-0 z-20 grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-2 px-3 py-2 pointer-events-none'}
       data-testid="member-thread-header"
       data-in-topbar={headerInBar ? '' : undefined}
