@@ -19,6 +19,8 @@ import json
 import time
 from pathlib import Path
 
+import pytest
+
 from kiro_crew import security
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
@@ -167,8 +169,11 @@ def _url_payload_command(n: int) -> str:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
-#: written above. The guards that detect a monolith growing back are the per-file cap
-#: and the facade's share below, and both must stay untouched.
+#: written down. A new raise leaves this number as it is: each one is a row of its own
+#: in ``test/security_line_budget/`` (see ``_BUDGET_ROWS_DIR`` below), so concurrent
+#: pull requests do not conflict on it. The guards that detect a monolith growing
+#: back are the per-file cap and the facade's share below, and both must stay
+#: untouched.
 #:
 #: Raised for the ``registry_trust.json`` leaf added to ``_CREW_SECRET_LEAVES`` in
 #: ``paths.py``: the operator's grants of ``owner`` trust to a hand-configured app
@@ -837,6 +842,35 @@ _PACKAGE_LINE_BUDGET = 36_253
 #: the number is not the fix.
 _MODULE_LINE_CAP = 4_500
 
+#: Raises since the number above, one file per change, so two pull requests that
+#: each grow the package add two different files and never edit the same line. The
+#: budget is ``_PACKAGE_LINE_BUDGET`` plus every row's delta: still the measured
+#: total with no spare room, and each row's delta counts only its own change, so
+#: two rows measured on the same base add up to the right total once both land.
+_BUDGET_ROWS_DIR = Path(__file__).parent / "security_line_budget"
+
+
+def _budget_rows(rows_dir: Path) -> dict[str, int]:
+    """Each row's line delta, by file name. A row is a ``.txt`` file: its first line
+    is the delta (``+8``, ``-3``), the lines after it say why. A row with no reason,
+    or a first line that is not a non-zero whole number, fails, so a raise cannot
+    land without the reason a reviewer reads."""
+    rows = {}
+    for path in sorted(rows_dir.glob("*.txt")):
+        first, _, reason = path.read_text(encoding="utf-8").partition("\n")
+        try:
+            delta = int(first.strip())
+        except ValueError:
+            delta = 0
+        assert delta, f"{path.name}: first line must be a non-zero delta like +8, got {first!r}"
+        assert reason.strip(), f"{path.name}: say why the package grows, below the delta"
+        rows[path.name] = delta
+    return rows
+
+
+def _package_line_budget(rows_dir: Path) -> int:
+    return _PACKAGE_LINE_BUDGET + sum(_budget_rows(rows_dir).values())
+
 
 def _package_line_counts() -> dict[str, int]:
     """Line count per file of the installed ``kiro_crew.security`` package."""
@@ -851,7 +885,38 @@ def test_the_package_stays_within_its_line_budget() -> None:
     counts = _package_line_counts()
     assert counts, "no package sources found"
     total = sum(counts.values())
-    assert total <= _PACKAGE_LINE_BUDGET, f"package grew to {total} lines: {counts}"
+    budget = _package_line_budget(_BUDGET_ROWS_DIR)
+    assert total <= budget, (
+        f"package grew to {total} lines, over its budget of {budget}: {counts}. If the "
+        f"growth is meant, add test/security_line_budget/<change>.txt: first line "
+        f"+{total - budget}, then the reason (see README.md there)."
+    )
+
+
+def test_budget_rows_add_up_and_each_carries_its_reason(tmp_path: Path) -> None:
+    (tmp_path / "s3-reader.txt").write_text("+179\nreads a sequence of statements\n")
+    (tmp_path / "drop-spelling.txt").write_text("-12\n\nremoves the second spelling\n")
+    (tmp_path / "README.md").write_text("not a row\n")
+    assert _budget_rows(tmp_path) == {"drop-spelling.txt": -12, "s3-reader.txt": 179}
+    assert _package_line_budget(tmp_path) == _PACKAGE_LINE_BUDGET + 167
+
+
+def test_a_budget_row_without_a_reason_is_refused(tmp_path: Path) -> None:
+    (tmp_path / "bare.txt").write_text("+8\n  \n")
+    with pytest.raises(AssertionError, match="bare.txt"):
+        _budget_rows(tmp_path)
+
+
+def test_a_budget_row_with_no_number_or_zero_is_refused(tmp_path: Path) -> None:
+    for text in ("eight\nwhy\n", "0\nwhy\n", "+8 lines\nwhy\n", ""):
+        (tmp_path / "row.txt").write_text(text)
+        with pytest.raises(AssertionError, match="row.txt"):
+            _budget_rows(tmp_path)
+
+
+def test_the_shipped_budget_rows_all_parse() -> None:
+    assert _BUDGET_ROWS_DIR.is_dir()
+    _budget_rows(_BUDGET_ROWS_DIR)
 
 
 def test_no_single_module_grows_back_into_a_monolith() -> None:
