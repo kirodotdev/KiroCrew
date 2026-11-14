@@ -120,8 +120,8 @@ A model that arms a loop today also picks when the loop dies.
 
 - A gated loop's quiet tick costs no turn. Silence is still bounded: one forced
   delivery after `_MAX_QUIET_STREAK = 10` quiet ticks, or after
-  `_IDLE_LEDGER_QUIET_FLOOR = 40` on an idle work ledger or on a pull request
-  that only waits on a reviewer (`autonudge_service/gate.py`, chosen by
+  `_REVIEW_WAIT_QUIET_FLOOR = 40` on a pull request that only waits on a
+  reviewer (`autonudge_service/gate.py`, chosen by
   `_quiet_floor`; the PR case is `_pr_waits_only_on_review`: open, not a
   draft, mergeable, every check finished with none failed, and
   `REVIEW_REQUIRED`).
@@ -227,8 +227,8 @@ still ends at the 7-day ceiling, and a loop that wakes every interval keeps the
 24-cycle cap.
 
 - A model that never stops a finished patrol leaves it running until the 7-day
-  backstop. On an idle ledger that costs one floor turn every 40 quiet ticks
-  (about 3.3 hours at the 300 s patrol interval).
+  backstop. On an idle ledger that costs one floor turn every 10 quiet ticks
+  (about 50 minutes at the 300 s patrol interval).
 - The tool's directive replay reads no session log, so it cannot resolve a bare
   `PR <n>`. The implementation marks such a default cap and the applier decides
   it again with the log, so the cap follows the gate the loop actually gets.
