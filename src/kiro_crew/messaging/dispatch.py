@@ -1738,6 +1738,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401
         is_runtime_death,
     )
+    from kiro_crew.embeddings_shared import (  # noqa: F401
+        warm_embedder_for_person_soon,
+    )
     from kiro_crew.history import (  # noqa: F401
         transcript_stem,
     )

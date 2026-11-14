@@ -2761,7 +2761,7 @@
         "embedding_threads": 4,
         "embedding_bulk_threads": 1,
         "embedding_bulk_duty": 0.2,
-        "embedding_idle_evict_secs": 3600,
+        "embedding_idle_evict_secs": "auto",
         "embedding_weight_repack": true,
         "embedding_child_process": false,
         "consolidation_write_child_process": false,
@@ -2934,10 +2934,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Unload Embedding Model When Idle (seconds)",
-      "help": "Seconds without any embedding before the embedding model is unloaded from memory. The next search or memory write loads it again, which takes a few seconds. 0 keeps the model loaded.",
+      "help": "Seconds without any embedding before the embedding model is unloaded from memory. The next search or memory write loads it again, which takes a few seconds. 0 keeps the model loaded. 'auto' (the default) is 600 on a machine with 16 GiB of memory or less, where opening, typing in or sending to a chat and any channel message load the model again before it is needed, and 3600 elsewhere. A number you set is always kept.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": 3600
+      "defaultValue": "auto"
     },
     {
       "path": "memory.embedding_weight_repack",

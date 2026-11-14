@@ -402,6 +402,10 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     _agent_origin = send_is_agent_origin(body)
     _person_send = not request.get("app", "") and not _agent_origin
     note_person_send(state, _person_send)
+    from kiro_crew.embeddings_shared import warm_embedder_for_person_soon as _warm  # no focus frame
+
+    if _person_send:  # a person's send: the model loads before this build asks for a vector
+        _warm()
     message = body.get("message", "")
     not_string = string_field_error("message", message)
     if not_string is not None:

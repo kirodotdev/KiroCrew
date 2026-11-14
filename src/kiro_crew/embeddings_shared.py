@@ -11,6 +11,7 @@ name here; that module's comment lists the owners.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import threading
@@ -46,6 +47,7 @@ from kiro_crew.embeddings_settings import (
     _read_memory_config,
     _work_for_priority,
     embedding_work,
+    small_memory_host,
 )
 
 logger = logging.getLogger("kiro_crew.embeddings")
@@ -536,6 +538,47 @@ def get_shared_embedder() -> EmbeddingBackend:
                 return candidate
             _shared_embedder = candidate
         return _shared_embedder
+
+
+def warm_embedder_for_person() -> None:
+    """On a small machine, have the shared model loaded before a person's build needs it.
+
+    A small machine (:func:`small_memory_host`) unloads the model after ten idle
+    minutes instead of an hour. The dashboard calls this when its owner opens,
+    focuses, types in or sends to a chat, and channel admission calls it for each
+    routed message, so the model is loaded (or kept loaded) before the turn's
+    context build asks for a vector. Elsewhere it does nothing, which keeps a
+    larger machine exactly as it was.
+
+    Only an embedder this process already built is warmed: a process whose memory
+    never asked for the model does not get one from a person showing up. It may
+    read the model file's metadata, so call it off the event loop.
+    """
+    if not small_memory_host():
+        return
+    with _shared_embedder_lock:
+        backend = _shared_embedder
+    if backend is None:
+        return
+    try:
+        backend.keep_warm()
+    except Exception:  # noqa: BLE001 - a hint; a failure costs only the early load
+        logger.debug("Keeping the embedding model warm failed", exc_info=True)
+
+
+def warm_embedder_for_person_soon() -> None:
+    """:func:`warm_embedder_for_person` from the event loop, run on the default executor.
+
+    The small-machine check is a cached answer, so a larger machine pays one call
+    and schedules nothing; off a running loop it does nothing.
+    """
+    if not small_memory_host():
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.run_in_executor(None, warm_embedder_for_person)
 
 
 def peek_ready_shared_embedder() -> EmbeddingBackend | None:
