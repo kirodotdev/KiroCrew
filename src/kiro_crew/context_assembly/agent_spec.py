@@ -814,6 +814,48 @@ def _resolve_agent_prompt(
         pp = ctx._prompt_path()
         logger.debug("Prompt selection: mode=%r → %s", mode, pp)
         agent_prompt = _read_prompt_file(pp)
+    key = session_key or ""
+    # Any host-derived token in this prompt must be snapshotted per session:
+    # the contract block is asserted byte-identical across a session's
+    # renders, so a token resolved live on each render cannot hold it. The
+    # ``browser`` tool is mounted whatever this reads and re-checks at each
+    # call, so a session start is the only reading the section needs.
+    return _render_contract(
+        agent,
+        agent_prompt,
+        session_key,
+        cap_figure=lambda: self._session_cap_figure(key, refresh=session_start),
+        computer_use=lambda: self._session_computer_use_gate(key, refresh=session_start),
+        browser=lambda: self._session_reading(
+            self._browser_gates,
+            self._browser_gates_lock,
+            key,
+            _live_browser_gate,
+            refresh=session_start,
+        ),
+        substitute_bot_name=self._substitute_bot_name,
+    )
+
+
+def _render_contract(
+    agent: str | None,
+    agent_prompt: str,
+    session_key: str | None,
+    *,
+    cap_figure: Callable[[], str],
+    computer_use: Callable[[], bool],
+    browser: Callable[[], bool],
+    substitute_bot_name: Callable[[str], str],
+) -> str:
+    """The ``[AGENT SYSTEM PROMPT]`` text for *agent_prompt*, the agent's raw contract.
+
+    The one renderer of the block: the builder passes its per-session readings of
+    the host-derived tokens, and the session head
+    (:mod:`kiro_crew.session_head`) passes live ones, so the two
+    agree byte for byte whenever the readings do. Each reading is taken only when
+    its token is in the prompt.
+    """
+    from kiro_crew import context as ctx  # circular import: the facade imports this owner
     from kiro_crew.crew_mode import CONDUCTOR_TEMPLATES
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
     from kiro_crew.members import is_member_session_key
@@ -846,37 +888,15 @@ def _resolve_agent_prompt(
         agent_prompt = f"{agent_prompt}\n\n{_WIDGET_TOKEN}" if agent_prompt else _WIDGET_TOKEN
     if not agent_prompt:
         return ""
-    # Any host-derived token in this prompt must be snapshotted per session:
-    # the contract block is asserted byte-identical across a session's
-    # renders, so a token resolved live on each render cannot hold it.
-    cap_figure = (
-        self._session_cap_figure(session_key or "", refresh=session_start)
-        if self._MAX_SUBAGENTS_TOKEN in agent_prompt
-        else ""
-    )
-    computer_use = (
-        self._session_computer_use_gate(session_key or "", refresh=session_start)
-        if self._COMPUTER_USE_TOKEN in agent_prompt
-        else None
-    )
-    # The ``browser`` tool is mounted whatever this reads and re-checks at each
-    # call, so a session start is the only reading the section needs.
-    browser = (
-        self._session_reading(
-            self._browser_gates,
-            self._browser_gates_lock,
-            session_key or "",
-            _live_browser_gate,
-            refresh=session_start,
-        )
-        if _sections.BROWSER_BEGIN in agent_prompt
-        else None
-    )
-    agent_prompt = self._resolve_prompt_templates(
-        agent_prompt, session_key or "", cap_figure, computer_use=computer_use, browser=browser
+    builder = ctx.ContextBuilder
+    figure = cap_figure() if builder._MAX_SUBAGENTS_TOKEN in agent_prompt else ""
+    mounted = computer_use() if builder._COMPUTER_USE_TOKEN in agent_prompt else None
+    available = browser() if _sections.BROWSER_BEGIN in agent_prompt else None
+    agent_prompt = builder._resolve_prompt_templates(
+        agent_prompt, session_key or "", figure, computer_use=mounted, browser=available
     )
     # Off the dashboard the pointer resolves to nothing, which leaves a prompt
     # that held only the pointer empty: no block rather than a blank one.
     if not agent_prompt.strip():
         return ""
-    return self._substitute_bot_name(agent_prompt)
+    return substitute_bot_name(agent_prompt)

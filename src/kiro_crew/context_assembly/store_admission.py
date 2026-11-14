@@ -990,7 +990,9 @@ def refit_lessons(
     # If a later protected block consumed part of the model-safe allowance,
     # re-render lessons against the exact remaining room. Preferences,
     # identity, and safety rules are never sliced to make space.
-    protected_chars = len(essentials) + sum(len(parts[i]) for i in protected_parts)
+    protected_chars = (
+        len(essentials) + blocks.held_chars + sum(len(parts[i]) for i in protected_parts)
+    )
     if (
         protected_chars > caps.protected_context
         and lessons_renderer is not None
@@ -1006,5 +1008,7 @@ def refit_lessons(
         parts[lessons_part_index] = lessons_renderer(
             max(1, caps.protected_context - protected_without_lessons)
         )
-        protected_chars = len(essentials) + sum(len(parts[i]) for i in protected_parts)
+        protected_chars = (
+            len(essentials) + blocks.held_chars + sum(len(parts[i]) for i in protected_parts)
+        )
     return protected_chars

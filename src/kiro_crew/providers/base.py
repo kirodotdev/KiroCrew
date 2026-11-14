@@ -203,6 +203,20 @@ class LLMProvider(ABC):
         """
         return None
 
+    #: Whether this resumed session started with its agent prompt in a session head
+    #: (``kiro_crew.session_head``), set by the session manager on each claim
+    #: (``note_session_head``). False is "not known", and re-sends nothing.
+    session_head_started: bool = False
+
+    @property
+    def session_head_held(self) -> bool:
+        """Whether this live session's agent prompt carries a session head.
+
+        Read from the launch record without any file access, so it is safe on the
+        event loop. False everywhere but a KAS session that recorded one.
+        """
+        return False
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize the provider (spawn process, create client, etc.)."""

@@ -603,8 +603,13 @@ on the wire definition (`template://<agent>#prompt`), and the session-start bloc
 left out when it is that text word for word. Any other text keeps the block: a
 persona with Crew's placeholders, a remote-workspace session (whose wire prompt
 carries an added notice), an older or unreadable kiro-cli, and Crew's bundled
-engine, where no capture shows the prompt applied. The turn after a compaction
-re-sends the block on every backend. On kiro-cli the persona still arrives both
+engine, where no capture shows the prompt applied. The default agent's managed
+stub is the one prompt Crew replaces on the wire: on that same KAS a dashboard chat
+sends its session head there instead (`[AGENT SYSTEM PROMPT]`, the dashboard
+`[CRITICAL RULES]` and `[TOOL NAMES]`), so the engine's prompt cache serves them on
+later chats (`session_head.py`); a remote-workspace notice after the head does not
+stop it being recognised. The turn after a compaction re-sends the block on every
+backend. On kiro-cli the persona still arrives both
 natively and through the injection (#13305).
 
 The reader also recognizes an older managed `file://` pointer under a Crew data

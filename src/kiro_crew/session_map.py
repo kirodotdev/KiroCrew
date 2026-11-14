@@ -145,6 +145,14 @@ SUPPRESS_REPLAY_FLAG = "suppress_replay"
 #: later mapping of a different sid can never inherit the verdict.
 UNLANDED_SID_FIELD = "unlanded_sid"
 
+#: The sid of a native session whose first turn left ``[AGENT SYSTEM PROMPT]`` to
+#: its session head, the agent prompt the engine keeps in its first message
+#: (``kiro_crew.session_head``). A resume that cannot re-apply
+#: that head gets a first message rebuilt without the block, so the resumed turn
+#: re-sends it while this names the mapped sid. Scoped to the sid, as
+#: :data:`UNLANDED_SID_FIELD` is, so a later mapping never inherits it.
+HEAD_SID_FIELD = "head_sid"
+
 # Highest explicit DM generation acknowledged before its first provider turn:
 # ``kiro_crew.session_map_store.GENERATION_FLOOR_FIELD``, which reads it too.
 
@@ -900,6 +908,8 @@ class SessionMap:
         if existing:
             if existing.get(UNLANDED_SID_FIELD) not in (None, sid):
                 existing.pop(UNLANDED_SID_FIELD, None)
+            if existing.get(HEAD_SID_FIELD) not in (None, sid):
+                existing.pop(HEAD_SID_FIELD, None)
             existing["sid"] = sid
             existing.pop(NATIVE_FORK_FIELD, None)
             if provider:
@@ -1000,6 +1010,28 @@ class SessionMap:
         entry.pop(UNLANDED_SID_FIELD, None)
         self._save()
         return True
+
+    @_guarded
+    def mark_sid_head(self, key: str, sid: str) -> bool:
+        """Record that *sid*, *key*'s current mapping, started with a session head.
+
+        Written only over the sid the entry already holds, so the record never
+        describes another session. Returns whether it is recorded. See
+        :data:`HEAD_SID_FIELD`.
+        """
+        entry = self._data.get(canonical_key(key))
+        if not sid or not entry or entry.get("sid") != sid:
+            return False
+        if entry.get(HEAD_SID_FIELD) != sid:
+            entry[HEAD_SID_FIELD] = sid
+            self._save()
+        return True
+
+    @_guarded
+    def sid_head_pending(self, key: str) -> bool:
+        """Whether *key*'s mapped sid started with a session head."""
+        entry = self._data.get(canonical_key(key))
+        return bool(entry and entry.get("sid") and entry.get(HEAD_SID_FIELD) == entry["sid"])
 
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped from *key* by any path, or ''.

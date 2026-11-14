@@ -4113,6 +4113,20 @@ poisoned-conversation canary, image-history replay), because each one ends in a
 fresh first turn that arms the debt. On kiro-cli its own `.jsonl` check answers
 instead.
 
+**The session-head record.** Every claim runs `SessionManager.note_session_head`
+(`session_parts/claims.get_or_create`), so every surface that starts or resumes a
+session takes one path. A fresh session whose agent prompt carries a session head
+(the blocks KAS keeps in its first message, `session_head.py`) writes the mapped
+sid's `head_sid` field (`SessionMap.mark_sid_head`, written only over the sid the
+entry holds; `set` drops a field that names a different sid). A resumed one is told
+whether it started with a head (`LLMProvider.session_head_started`). `build_message`
+reads that on a slim resume: when the chat started with a head and the resumed
+session holds none, it re-sends `[AGENT SYSTEM PROMPT]` in the resume message,
+because the engine rebuilt its first message without the head. Only the default
+agent has a head, so a chat switched to another agent never re-sends it. The write
+is not flushed ahead of the turn: a crash in the debounce window loses it, and that
+chat's later resume then sends no block.
+
 **Replayed content carries no image reference.** `_replay_rows` and
 `_recall_rows` — the two row builders behind every history vehicle
 (`build_session_replay` and the thread-history fallback in

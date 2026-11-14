@@ -1022,6 +1022,11 @@ class AcpProvider(LLMProvider):
             return self._client.native_context_documents
         return {}
 
+    @property
+    def session_head_held(self) -> bool:
+        # Only the shared runtime's session records a head (KAS, kiro_crew.session_head).
+        return isinstance(self._client, AcpSessionProvider) and self._client.session_head_held
+
     def note_user_message(self, text: str) -> None:
         # Only the shared runtime's session starts a KAS sign-in; the direct
         # client gets the engine's own OAuth requests and has no trigger.
