@@ -164,6 +164,7 @@ def project_subagent_targets(
     engine_features: frozenset[str],
     settings_dir: str | Path | None = None,
     forward_ssh_auth_sock: bool = False,
+    scope_muted: frozenset[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """The entries to append to *parent*'s batch, and the notice for what is left out.
 
@@ -214,6 +215,7 @@ def project_subagent_targets(
                 parent_declared=parent_declared,
                 session_hooks=session_hooks,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
+                scope_muted=scope_muted,
             )
         except Exception:  # noqa: BLE001 - a target never costs the session
             logger.warning("sub-agent %r could not be registered", name, exc_info=True)
@@ -297,6 +299,7 @@ def _project_target(
     parent_declared: dict[str, Any],
     session_hooks: tuple[str, ...],
     forward_ssh_auth_sock: bool,
+    scope_muted: frozenset[str] | None = None,
 ) -> dict[str, Any] | str:
     """*name*'s projected entry, or the reason it is not registered.
 
@@ -386,6 +389,7 @@ def _project_target(
         prompt_unread_out=unread,
         engine_features=engine_features,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
+        scope_muted=scope_muted,
     )
     if _gate_only_limits(entry):
         # The launch files this projection wrote belong to no registered entry.
@@ -408,7 +412,7 @@ def _project_target(
         [entry],
         name,
         settings_dir,
-        declared=declared_servers(spec),
+        declared=declared_servers(spec, scope_muted=scope_muted),
         legacy_mcp_json=legacy_mcp_json(name, agents_dir, spec) and prompt_dir == agents_dir,
         # From the spec: the projected entry never carries a ``true``.
         opted_in=include_mcp_json(spec) is True,

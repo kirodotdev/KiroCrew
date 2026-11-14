@@ -860,6 +860,7 @@ class TestRuntimeMemberThreading:
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
             governance_app=None,
+            scope_muted=None,
         ):
             seen.append(member_dispatch)
             return [{"id": agent}]
@@ -943,6 +944,7 @@ class TestMemberServerJoinsSubtraction:
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
             governance_app=None,
+            scope_muted=None,
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
@@ -987,6 +989,7 @@ class TestMemberServerJoinsSubtraction:
             engine_features=frozenset(),
             forward_ssh_auth_sock=False,
             governance_app=None,
+            scope_muted=None,
         ):
             seen.append(frozenset(stub_server_names))
             return [{"id": agent}]
