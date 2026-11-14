@@ -470,8 +470,11 @@ def install_app(
     # was refused above, so no prior record exists to lose, but an approved set can
     # outlive its record, and that set is restored byte for byte.
     prior_grants_text = _approved_grants_snapshot(name)
+    prior_startup_text = protected_app_state.read_startup_text(name)
     try:
         _write_approved_grants(name, _declared_grant_entries(grant_source(manifest)))
+        if not manifest.ui.startup:
+            protected_app_state.write_startup_text(name, None)
         _write_installed(name, meta)
 
         # Create data directory
@@ -486,6 +489,7 @@ def install_app(
         try:
             (dest / INSTALLED_META_FILENAME).unlink(missing_ok=True)
             _restore_approved_grants(name, prior_grants_text)
+            protected_app_state.write_startup_text(name, prior_startup_text)
         except OSError as undo_exc:
             logger.error("Failed to undo the install record of app %s: %s", name, undo_exc)
         sel().log_api_access(
@@ -812,9 +816,12 @@ def update_app(
     # read refuses the update with nothing changed and no marker left behind.
     try:
         prior_grants_text = _approved_grants_snapshot(name)
+        prior_startup_text = protected_app_state.read_startup_text(name)
     except (OSError, ValueError) as exc:
         return AppResult(
-            ok=False, name=name, error=f"could not read the approved permissions of {name!r}: {exc}"
+            ok=False,
+            name=name,
+            error=f"could not read the approved permissions or startup approval of {name!r}: {exc}",
         )
     prior_owner_disabled = protected_app_state.owner_disabled(name)
     try:
@@ -864,6 +871,8 @@ def update_app(
             if refusal:
                 raise InstalledTreeRefused(refusal)
             _write_approved_grants(name, approved_grants)
+            if not manifest.ui.startup:
+                protected_app_state.write_startup_text(name, None)
             _write_installed(name, meta)
         except (OSError, shutil.Error, ValueError, InstalledTreeRefused) as exc:
             rollback_error = ""
@@ -886,6 +895,7 @@ def update_app(
                     _remove_any_shape(restored_secret)
                     shutil.move(str(tmp_secret), str(restored_secret))
                 _restore_approved_grants(name, prior_grants_text)
+                protected_app_state.write_startup_text(name, prior_startup_text)
                 protected_app_state.set_owner_disabled(name, prior_owner_disabled)
                 _write_installed(name, existing)
             except (OSError, shutil.Error, ValueError) as rollback_exc:

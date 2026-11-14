@@ -2974,8 +2974,11 @@ owner has approved for each app are stored in
 sandbox can write `apps/<name>/`, and `member-records/` is masked in every
 sandbox mode. The owner's approval of an app's `ui.startup` module is kept
 the same way, in `member-records/app-startup/<app>.json` (`apps.startup_modules`),
-and an uninstall snapshots, forgets and on failure restores it with the
-approved set. Every
+as `{version, entry, digest, files}` with per-file SHA-256 hashes. An uninstall
+snapshots, forgets and on failure restores it with the approved set. An owner install
+or update with no `ui.startup` forgets it in the record-writing transaction and
+restores it if that transaction fails. A direct edit of `app.json` never withdraws
+this record or bypasses serving checks. Every
 enforcement point -- `token_auth._app_api_allowlist`,
 `ws_event_scope._read_declared_events`, and the hook context's event bus via
 `approved_manifest_permissions` -- grants only entries the live manifest
@@ -4430,7 +4433,22 @@ declared file through `pinned_fs.open_in_pinned_parent`, gates the descriptor on
 descriptor and answers with the same `default-src 'none'; sandbox` policy and `nosniff`.
 It differs in serving the wider `_ALLOWED_EXTENSIONS` set (`.js`/`.json`/`.mjs`/`.css`)
 and in being UNAUTHENTICATED, which is why it streams in `_UI_STREAM_CHUNK` pieces
-instead of buffering.
+instead of buffering for unapproved apps. Every UI file of an app with a startup
+approval is buffered: `startup_modules.approved_module` reads it once from the pinned
+descriptor (at most `_UI_MAX_BYTES`) and compares those bytes' SHA-256 to `files[rel]`.
+The stored `digest` must equal SHA-256 over the map's sorted `rel + NUL` and raw file
+hashes. No other UI file is opened during serving, and stat metadata is never a cache
+key. The handler sends exactly the checked buffer; its ETag carries the approved
+digest. All served types, including images and fonts, take this check.
+Only an absent record leaves serving unchecked. Unknown, changed or unavailable
+files, unsafe app names, unreadable records, missing `files` or inconsistent maps
+answer 409 with `code`, `reason` and `remedy`, never file bytes. The remedy names
+`kirocrew app startup <name>` to approve the current code and
+`kirocrew app startup <name> --revoke`, which also works without a declared startup
+entry. The app-list reader uses the same parser but treats these faults as no
+approval (`needs-approval`). The eight permits bound concurrent reads, hashes and
+checked buffers; they do not bound the map's validation cost
+([security](security.md), *App startup-module approvals*).
 
 **Text files go gzip-encoded.** A `_GZIP_EXTENSIONS` file (`.mjs`/`.js`/`.css`/`.json`/
 `.svg`/`.map`) of at least `_GZIP_MIN_BYTES` is sent `Content-Encoding: gzip` when
@@ -4438,7 +4456,8 @@ instead of buffering.
 `gzip` entry decides, `q=0` included, and `*` counts only when gzip is not named, so
 `gzip;q=0, *` gets identity. Each
 streamed chunk passes through one per-request `zlib` compressor off the event loop, so
-memory stays one chunk plus the compressor's state, and the body goes chunked (its
+memory holds one chunk plus the compressor's state and, for approved apps, the checked
+file buffer and its response reader. The body goes chunked (its
 length is not known up front); the `remaining` cap still bounds the bytes read. A file
 that hits EOF short of its validated size (truncated under the descriptor) aborts the
 connection instead of finishing the gzip member, since no `Content-Length` would expose

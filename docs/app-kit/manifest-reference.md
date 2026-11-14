@@ -524,13 +524,25 @@ all of these hold:
   kirocrew app startup <name> --revoke   # withdraw
   ```
 
-  The approval records a SHA-256 of every file under `ui/`, so a new version, a
-  changed entry or any changed file asks again, and so does each edit to a
-  dev-mode app. An entry that is not a plain `.mjs` or `.js` path inside `ui/` is
-  refused. Uninstalling the app drops the approval. The approval is kept in
-  `member-records/app-startup/<app>.json` in the data home, beside the app's
-  other owner decisions, which the agent sandbox hides in every mode, and the
-  command refuses to run inside an agent's shell.
+  The approval stores `{version, entry, digest, files}`. `files` maps every regular
+  file's relative POSIX path under `ui/` to its SHA-256; `digest` hashes the sorted
+  paths (each followed by a NUL) and their raw SHA-256 bytes. A new version, changed
+  entry or changed tree asks again before startup mounts, including dev-mode edits.
+  Each served UI file is checked against its own approved hash, whatever its type
+  (`.js`, `.mjs`, `.css`, `.json`, `.svg`, `.map`, images or fonts). The
+  gateway reads only the requested file and sends exactly the bytes it checked.
+  Changed, added or unavailable files, unreadable records, records without `files`,
+  and records whose digest disagrees with their map answer `409`, with `reason` and
+  `remedy` fields: run `kirocrew app startup <name>` to approve the current code, or
+  `kirocrew app startup <name> --revoke`. Unchanged approved files remain servable
+  even when another file changes. Revoke while developing in dev mode; it also works
+  after the manifest drops `ui.startup`. Editing the manifest alone never bypasses
+  serving checks. An owner install or update that drops `ui.startup` forgets the
+  record; a failed operation restores it. Uninstall also drops it. An entry that
+  is not a plain `.mjs` or `.js` path inside `ui/` is refused.
+  The record lives in `member-records/app-startup/<app>.json` beside the app's other
+  owner decisions, hidden by the agent sandbox in every mode. The approval command
+  refuses to run inside an agent's shell.
 - The request comes from the owner's dashboard. A page loaded with `?safe=1`
   and an embedded instance pane mount none.
 
