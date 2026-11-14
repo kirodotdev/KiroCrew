@@ -424,6 +424,13 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         cleaned[name] = _clean_spec(spec)
 
     async with _get_mcp_lock():
+        # A commented store is the user's valid file: refused with the same
+        # coded 409 the other writers answer, before the strict parse below
+        # would call it malformed. A non-UTF-8 file falls through to that parse.
+        try:
+            await asyncio.to_thread(_mcp._refuse_commented_config, _mcp._kirocrew_mcp_json())
+        except UnicodeDecodeError:
+            pass
         # Load once, strictly: a malformed existing file must fail the
         # request, never be coerced to {} and overwritten (that would
         # destroy every configured server "successfully").  The read and the
