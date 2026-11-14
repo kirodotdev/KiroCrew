@@ -622,6 +622,9 @@ def main() -> None:
     # granted ``@kirocrew-secrets`` may send a write to an owner-authorized origin
     # with a Custom secret whose value never reaches the model).
     sub.add_parser("mcp-secrets")
+    # mcp-apps (MCP server -- the tools third-party apps declare in their
+    # manifests, listed outside ``kirocrew-core`` so each call asks first).
+    sub.add_parser("mcp-apps")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing);
     # see _builtin_mcp_server_available. The probe runs only when argv names an
@@ -1038,6 +1041,8 @@ def main() -> None:
         # never loads the sandboxed forwarder just to exist. It does NOT import
         # the vault -- the vault read happens host-side in the dashboard handler.
         importlib.import_module("kiro_crew.mcp_secrets").run_mcp_server()
+    elif args.command == "mcp-apps":
+        importlib.import_module("kiro_crew.mcp_apps").run_mcp_server()
     elif args.command.startswith("mcp-") and args.command[4:] in _BUILTIN_NAMES:
         # _run_app_mcp_server is the same helper `kirocrew app mcp <name>` uses:
         # a clean stderr line + exit 1 on ImportError, never a raw traceback.

@@ -31,6 +31,13 @@ the MCP server redacts and caps it.
 Body: ``{"tool": str, "arguments": object}``. Refusals: 403 ``loopback_only``,
 ``app_not_enabled`` and ``session_required``, 404 ``unknown_tool``, 400 ``invalid_json``
 and ``invalid_arguments``.
+
+``POST /api/app-tools/prompted-call`` is the same decision for the tools a third-party
+app declares (``app_agent_tools.third_party_tools``), posted by the ``kirocrew-apps``
+server, whose calls are approved one by one. Each route resolves only its own set, so
+``kirocrew-core`` cannot reach a third-party tool and ``kirocrew-apps`` cannot reach a
+first-party one, whatever name either posts. It also refuses (403 ``cross_app``) a
+session that one app owns calling another app's tool, on both dispatch paths.
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from aiohttp import web
@@ -50,11 +58,17 @@ from kiro_crew.validation_parts.field_engine import ValidationError, validate_to
 
 logger = logging.getLogger(__name__)
 
+#: The server that posts to each route, as the audit names the caller.
+_CORE_CALLER = "kirocrew-core"
+_PROMPTED_CALLER = "kirocrew-apps"
 
-def _audit(outcome: str, resource: str, error: str = "") -> None:
+Resolved = tuple["app_agent_tools.DeclaredTool | None", bool, bool]
+
+
+def _audit(caller: str, outcome: str, resource: str, error: str = "") -> None:
     try:
         sel().log_api_access(
-            caller="kirocrew-core",
+            caller=caller,
             operation="app_agent_tool_call",
             outcome=outcome,
             source="app_routes",
@@ -65,52 +79,94 @@ def _audit(outcome: str, resource: str, error: str = "") -> None:
         logger.debug("app agent tool audit failed", exc_info=True)
 
 
-def _refuse(status: int, code: str, error: str, resource: str) -> web.Response:
-    _audit("denied", resource, error)
+def _refuse(caller: str, status: int, code: str, error: str, resource: str) -> web.Response:
+    _audit(caller, "denied", resource, error)
     return web.json_response({"code": code, "error": error}, status=status)
 
 
-def _resolve(name: str) -> tuple[app_agent_tools.DeclaredTool | None, bool, bool]:
-    """``(tool, enabled, process_backed)``, read off the event loop."""
-    tool = app_agent_tools.declared_tool(name)
+def _resolved(tool: app_agent_tools.DeclaredTool | None) -> Resolved:
     if tool is None:
         return None, False, False
     manifest = get_app_manifest(tool.app)
     return tool, is_app_enabled(tool.app), manifest is not None and process_backed(manifest)
 
 
+def _resolve(name: str) -> Resolved:
+    """``(tool, enabled, process_backed)`` of a first-party tool, read off the event loop."""
+    return _resolved(app_agent_tools.declared_tool(name))
+
+
+def _resolve_third_party(name: str) -> Resolved:
+    """``(tool, enabled, process_backed)`` of a third-party tool, read off the event loop."""
+    return _resolved(app_agent_tools.third_party_tool(name))
+
+
 async def api_app_agent_tool_call(request: web.Request) -> web.StreamResponse:
-    """POST /api/app-tools/call -- see the module docstring."""
+    """POST /api/app-tools/call -- a first-party app's tool; see the module docstring."""
+    # Looked up per call, never bound at import, so the module function stays the seam.
+    return await _decide(request, _CORE_CALLER, lambda n: _resolve(n))
+
+
+async def api_prompted_app_tool_call(request: web.Request) -> web.StreamResponse:
+    """POST /api/app-tools/prompted-call -- a third-party app's tool; see the module docstring."""
+    return await _decide(
+        request, _PROMPTED_CALLER, lambda n: _resolve_third_party(n), own_app_only=True
+    )
+
+
+async def _decide(
+    request: web.Request,
+    caller: str,
+    resolve: Callable[[str], Resolved],
+    *,
+    own_app_only: bool = False,
+) -> web.StreamResponse:
     if request.get("internal_auth") is not True:
-        return _refuse(403, "loopback_only", "internal-secret authentication required", "")
+        return _refuse(caller, 403, "loopback_only", "internal-secret authentication required", "")
     try:
         body: Any = await request.json()
     except (ValueError, UnicodeDecodeError):
         body = None
     if not isinstance(body, dict) or set(body) != {"tool", "arguments"}:
-        return _refuse(400, "invalid_json", "body must be {tool, arguments}", "")
+        return _refuse(caller, 400, "invalid_json", "body must be {tool, arguments}", "")
     name, args = body["tool"], body["arguments"]
     if not isinstance(name, str) or not isinstance(args, dict):
-        return _refuse(400, "invalid_json", "tool must be a string, arguments an object", "")
-    tool, enabled, backed = await asyncio.to_thread(_resolve, name)
+        return _refuse(
+            caller, 400, "invalid_json", "tool must be a string, arguments an object", ""
+        )
+    tool, enabled, backed = await asyncio.to_thread(resolve, name)
     if tool is None:
-        return _refuse(404, "unknown_tool", f"no installed app declares {name!r}", name)
+        return _refuse(caller, 404, "unknown_tool", f"no installed app declares {name!r}", name)
     resource = f"{tool.app}:{name}"
     try:
         cleaned = validate_tool_args(
             json.loads(json.dumps(args)), app_agent_tools.build_tool_schema(tool)
         )
     except ValidationError as exc:
-        return _refuse(400, "invalid_arguments", f"{exc.field}: {exc.message}", resource)
+        return _refuse(caller, 400, "invalid_arguments", f"{exc.field}: {exc.message}", resource)
     if cleaned != args:
-        return _refuse(400, "invalid_arguments", "arguments are not in validated form", resource)
+        return _refuse(
+            caller, 400, "invalid_arguments", "arguments are not in validated form", resource
+        )
     if not enabled:
-        return _refuse(403, "app_not_enabled", f"app {tool.app!r} is not enabled", resource)
+        return _refuse(caller, 403, "app_not_enabled", f"app {tool.app!r} is not enabled", resource)
+    calling_app = request.get("app") or ""
+    if own_app_only and calling_app and calling_app != tool.app:
+        # token_auth names the app that owns the calling session. The signed proxy
+        # refuses a cross-app call on its own, but the route registry does not, so
+        # the refusal is made here for both.
+        return _refuse(
+            caller,
+            403,
+            "cross_app",
+            f"a session app {calling_app!r} owns may not call app {tool.app!r}",
+            resource,
+        )
     if tool.decl.strict_session and not request.headers.get("X-Session-Key", "").strip():
         return _refuse(
-            403, "session_required", f"{name!r} needs the calling session's key", resource
+            caller, 403, "session_required", f"{name!r} needs the calling session's key", resource
         )
-    _audit("granted", resource)
+    _audit(caller, "granted", resource)
     from kiro_crew.apps.hooks_integration import get_route_registry
 
     registry = get_route_registry()
@@ -124,7 +180,9 @@ async def api_app_agent_tool_call(request: web.Request) -> web.StreamResponse:
         # otherwise see a payload at EOF and forward none.
         return await app_routes.handle_app_api_proxy(request, read_body=await request.read())
     if registry is None:
-        return _refuse(503, "app_routes_unavailable", "app routes are not served here", resource)
+        return _refuse(
+            caller, 503, "app_routes_unavailable", "app routes are not served here", resource
+        )
     # The registry's own dispatch, never the router: only a route the app registered
     # can answer, never a core route under /api/apps/<app>/.
     request.match_info["app_name"] = tool.app

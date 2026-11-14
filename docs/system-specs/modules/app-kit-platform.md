@@ -6644,11 +6644,56 @@ A built-in whose wheel copy is released by adoption is first party too, under th
 the tool gate's own-server grant rests on (section 33, "Agent tools through adoption"):
 its block is read from the adopted record's own `app.json`, and a tool lists only when it
 equals, route included, one its wheel copy's shipped block declares. Any other installed
-or registry app's `agentTools` block lists nothing: it still validates and installs, and
-the app can ship its own `mcpServers` entry, whose calls are approved one by one
-(`_register_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
-path that asks before each call (a server of its own outside `allowedTools`, or a
-per-tool approval); that is a maintainer's decision, not this seam's.
+or registry app's `agentTools` block lists nothing under `kirocrew-core`: it still
+validates and installs, and the app can also ship its own `mcpServers` entry, whose calls
+are approved one by one (`_register_mcp_servers` strips its `autoApprove`).
+
+**A third-party app's tools: a server of their own, outside `allowedTools`.** Its block
+is read by `app_agent_tools.third_party_tools` and listed by `kirocrew-apps`
+(`mcp_apps.py`), an `opt_in` managed server like `kirocrew-secrets`: no default or
+derived spec carries it, so an agent reaches third-party app code only when its spec is
+granted `@kirocrew-apps`, and a worker spawned by such an agent does not inherit it
+(`agent._worker_unassignable_servers`). It carries no `autoApprove` and no
+`allowedTools` entry, so kiro-cli asks before every call and `hooks.on_tool_call` (the
+deny floor, the sensitive-path check, the governance ceiling) sees each one, and
+`kirocrew doctor` never adds it to `allowedTools` (`cli_doctor._NO_BLANKET_ALLOW_MCPS`).
+The read is narrower than the first-party one:
+
+- an installed app that is neither first party, adopted under pin trust, nor named by a
+  shipped manifest (a third-party record under a built-in's name lists nothing); its
+  block is read from the data-home `app.json` the app was installed from;
+- no stated `namespace` other than the app's own (`-` read as `_`): `namespace` keeps a
+  former core tool's name for a first-party app, and no third-party app has one;
+- no `strictSession` tool: a block that declares one lists nothing, because
+  `kirocrew-apps` resolves no strict identity, and the lenient key it posts can name
+  a subagent's parent rather than the calling session;
+- a name any first-party app declares, installed or shipped, stays the first-party
+  app's, and a name two third-party apps declare is neither's.
+
+Each tool's description is led by the line `Served by the installed app '<name>', not by
+Kiro Crew.`, so the model and anyone reading the call know whose code answers it. A
+readably disabled app's tools are hidden, as `kirocrew-core` hides a first-party app's.
+The call is validated against the declaration through the same field engine, and posted
+with the lenient session key every core post carries to `POST /api/app-tools/prompted-call`,
+a strict internal path whose handler resolves third-party declarations only and otherwise
+decides the call exactly as `/api/app-tools/call` does (below); `/api/app-tools/call`
+resolves first-party declarations only. So neither server can reach the other's tools,
+whatever name it posts. The prompted route also refuses (403 `cross_app`) a call from a
+session another app owns: `token_auth` names that app from the posted key
+(`request["app"]`), the signed proxy would refuse such a call on its own, and the route
+registry would not, so the check is made in the handler for both paths. The answer is
+redacted and capped by the same code (`app_tools.shape_answer`), with one difference: a
+`result: "text"` answer's credential shape (`{"text": [...], "credential": ...}`, below)
+keeps a string verbatim for a first-party app only. A third-party app's answer in that
+shape reads as the redacted `returned no result` error line, so nothing a third-party app
+names reaches the model unredacted.
+
+A scoped app agent (one whose manifest declares `permissions.mcpTools`) has
+`kirocrew-apps` withheld whole (`managedToolPolicy.excludeServers`;
+`apps.permissions._OPEN_ENDED_MANAGED_SERVERS`). Its exclusion list is built when the
+agent is materialized, and this server's tool names are those of whatever third-party
+apps are installed and enabled at call time, so no list of names could cover an app
+installed or enabled later.
 
 **The readers.** The scan stats `<apps dir>/<name>/app.json` for every installed app and
 caches on each file's mtime and size and on the first-party set. It keeps a tool only
@@ -6706,7 +6751,8 @@ replaces never redacted it either. Every other answer of such a tool is an `Erro
 which the tool-call audit records as failed: `Error: <tool> failed [<code>]: <message>`
 for a refusal the gateway, the app or the transport produced (a timeout, a gateway that
 is restarting), and `Error: <tool> returned no result: <the answer>` for any other
-body, both redacted. Only a first-party app's block is read at all (above).
+body, both redacted. `/api/app-tools/call` reads only a first-party app's block, and
+`/api/app-tools/prompted-call` only a third-party one's (above).
 No app route is admitted to internal-secret callers, so the one path in is the declared
 route, with declared arguments.
 
@@ -6714,10 +6760,11 @@ route, with declared arguments.
 |---|---|
 | no `internal_auth` | 403 `loopback_only` |
 | a body other than exactly `{tool, arguments}` | 400 `invalid_json` |
-| a tool no first-party app declares | 404 `unknown_tool` |
+| a tool no app of the route's set declares (first party on `/call`, third party on `/prompted-call`) | 404 `unknown_tool` |
 | arguments outside the declaration, or not in validated form | 400 `invalid_arguments` |
 | the declaring app is not enabled | 403 `app_not_enabled` |
 | a `strictSession` tool's call without an `X-Session-Key` | 403 `session_required` |
+| on `/prompted-call`, a call from a session another app owns | 403 `cross_app` |
 
 **One core table still names tools one by one.** The display-title table
 (`data/mcp_tool_titles.json`) is read by the chat's tool-call label on both sides, and

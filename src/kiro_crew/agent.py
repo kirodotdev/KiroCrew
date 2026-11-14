@@ -504,6 +504,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         govern_shared_template_injected_servers,
         govern_shared_template_view,
         governed_view_names,
+        report_prompt_only_withheld,
     )
     from kiro_crew.agent_materialization.skill_resources import (  # noqa: F401
         map_prompt_skills,
@@ -771,6 +772,21 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
     # demands is minted (``mediated_request_capability``).
     "kirocrew-secrets": {
         "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-secrets"),
+        "opt_in": True,
+    },
+    # The tools third-party apps declare in their manifests (``mcp_apps``). A
+    # first-party app's are listed under ``kirocrew-core``, which ``allowedTools``
+    # grants whole; a third-party app's are listed here, which no ``allowedTools``
+    # names, so kiro-cli asks before every call. ``opt_in`` like the assignable
+    # sets above: an agent reaches third-party app code only when its spec is
+    # granted ``@kirocrew-apps``, so no default agent gains that surface.
+    #
+    # No ``autoApprove`` key, and none may ever be added: the per-call prompt is
+    # the whole reason this set is not part of ``kirocrew-core``, and an
+    # autoApproved MCP tool is approved inside kiro-cli without one, so it would
+    # also skip ``hooks.on_tool_call`` and the deny floor for third-party code.
+    "kirocrew-apps": {
+        "invocation_fn": lambda: _kirocrew_mcp_invocation("mcp-apps"),
         "opt_in": True,
     },
 }
@@ -1095,6 +1111,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "governed_view_names",
         "govern_shared_template_injected_servers",
         "govern_shared_template_view",
+        "report_prompt_only_withheld",
     ),
     "kiro_crew.agent_materialization.service_agents": (
         "_install_guest_agent",

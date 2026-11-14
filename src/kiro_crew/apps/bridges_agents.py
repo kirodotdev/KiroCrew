@@ -199,7 +199,9 @@ def _may_auto_approve(ref: str) -> bool:
     return may_skip_gate_now(ref)
 
 
-def _ceiling_filtered_allowed(refs: object, agent_name: str = "") -> list[Any]:
+def _ceiling_filtered_allowed(
+    refs: object, agent_name: str = "", *, mounts_prompt_only: bool = False
+) -> list[Any]:
     """Drop auto-approve entries the ceiling has an opinion about.
 
     Applies to entries an app's PACKAGED agent JSON already carries (e.g.
@@ -216,9 +218,16 @@ def _ceiling_filtered_allowed(refs: object, agent_name: str = "") -> list[Any]:
     other, and a newly governed scope would silently re-open the shortcut for the
     copy that had not heard of it.
     """
+    from kiro_crew.platform.governance import ref_covers_prompt_only_server
+
     out: list[Any] = []
     withheld: list[str] = []
     for ref in refs if isinstance(refs, list) else []:
+        # A packaged match-all grant on an agent that mounts a prompt-only server
+        # would auto-approve that server's calls, which only the user may answer.
+        if mounts_prompt_only and ref_covers_prompt_only_server(ref, include_patterns=True):
+            withheld.append(ref)
+            continue
         if isinstance(ref, str) and not _may_auto_approve(ref):
             withheld.append(ref)
             continue
@@ -281,7 +290,12 @@ def _apply_agent_mcp_policy(
     # `allowedTools` needs checking regardless of whether the user has granted or
     # neutralized anything, and returning early here left exactly those entries
     # unchecked.
-    filtered_allowed = _ceiling_filtered_allowed(agent_data.get("allowedTools") or [], agent_name)
+    from kiro_crew.platform.governance import config_mounts_prompt_only_server
+
+    mounts_prompt_only = config_mounts_prompt_only_server(agent_data)
+    filtered_allowed = _ceiling_filtered_allowed(
+        agent_data.get("allowedTools") or [], agent_name, mounts_prompt_only=mounts_prompt_only
+    )
     if not granted and not neutralized:
         if filtered_allowed == list(agent_data.get("allowedTools") or []):
             return agent_data
@@ -422,6 +436,12 @@ def _apply_agent_mcp_policy(
         }
         tools = without_mcp_refs(tools, (name,), per_tool=False)
         allowed = without_mcp_refs(allowed, (name,))
+
+    # A grant above can mount a prompt-only server the packaged config did not,
+    # so the pattern check runs again against the final mounted set.
+    final_config = {"mcpServers": servers, "tools": tools}
+    if not mounts_prompt_only and config_mounts_prompt_only_server(final_config):
+        allowed = _ceiling_filtered_allowed(allowed, agent_name, mounts_prompt_only=True)
 
     agent_data["mcpServers"] = servers
     agent_data["tools"] = tools

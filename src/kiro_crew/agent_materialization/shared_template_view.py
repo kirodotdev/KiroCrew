@@ -37,6 +37,10 @@ from kiro_crew import agent as agent_mod
 #: writer that withholds an auto-approval.
 WITHHELD_OP = "mcp_auto_approve_withheld"
 
+#: The SEL operation recorded when an authored spec kiro-cli reads as-is keeps
+#: auto-approvals that cover a prompt-only server.
+PROMPT_ONLY_LAUNCH_GRANTS_OP = "mcp_prompt_only_launch_grants_kept"
+
 #: Removals already reported in this process, so a view rebuilt at every spawn is
 #: reported once per distinct removal and not once per spawn. Entries are fixed-size
 #: digests. Past the bound the memo is cleared and a removal may be reported again.
@@ -142,11 +146,65 @@ def govern_shared_template_view(agent: str, view: dict[str, Any]) -> frozenset[t
     return removed
 
 
-def _report(agent: str, removed: frozenset[tuple[str, str]]) -> None:
+def report_prompt_only_withheld(agent: str, refs: list[str]) -> None:
+    """Record that *agent*'s view drops *refs* because they cover a prompt-only server."""
+    _report(agent, frozenset(("allowedTools", ref) for ref in refs), prompt_only=True)
+
+
+def report_prompt_only_launch_grants(agent: str, spec_path: str, refs: list[str]) -> None:
+    """Warn that *agent* starts on *spec_path* as authored, whose *refs* skip a prompt."""
+    quoted_refs = ", ".join(repr(ref) for ref in refs)
+    message = (
+        f"agent {agent!r}: {spec_path} mounts a prompt-only MCP server, but its "
+        f"allowedTools entries {quoted_refs} auto-approve that server's calls, and kiro-cli "
+        "reads this file as written. The spec file is unchanged. Remove those approval "
+        "refs; replace wildcards with explicit tool names that do not cover the "
+        "prompt-only server, or enable agent.native_skill_projection so Kiro Crew "
+        "launches a copy without them."
+    )
+    _emit_once(
+        ["prompt-only-launch", agent, spec_path, sorted(refs)],
+        message,
+        operation=PROMPT_ONLY_LAUNCH_GRANTS_OP,
+        source=f"agent-launch:{agent}",
+    )
+
+
+def _report(
+    agent: str,
+    removed: frozenset[tuple[str, str]],
+    *,
+    prompt_only: bool = False,
+) -> None:
     """Say which grants *agent*'s kiro-cli view does not carry, and why. Best-effort."""
-    canonical = json.dumps(
-        [agent, sorted(removed)], ensure_ascii=False, separators=(",", ":")
-    ).encode("utf-8")
+    entries = ", ".join(
+        entry if where == "allowedTools" else f"{where} autoApprove {entry}"
+        for where, entry in sorted(removed)
+    )
+    if prompt_only:
+        message = (
+            f"agent {agent!r}: kiro-cli runs a Kiro Crew copy of its spec without these "
+            "auto-approvals because a mounted prompt-only server requires approval on every "
+            f"call: {entries}. The spec file itself is unchanged; the tools stay mounted and "
+            "their calls ask for approval."
+        )
+    else:
+        message = (
+            f"agent {agent!r}: kiro-cli runs a Kiro Crew copy of its spec without these "
+            f"auto-approvals, which the governance ceiling denies: {entries}. The spec file "
+            "itself is unchanged; the tools stay mounted and their calls ask for approval."
+        )
+    _emit_once(
+        [agent, sorted(removed)],
+        message,
+        operation=WITHHELD_OP,
+        source=f"shared-template-view:{agent}",
+    )
+
+
+def _emit_once(identity: list[Any], message: str, *, operation: str, source: str) -> None:
+    """Log and audit *message* once per process for *identity*. Best-effort."""
+    canonical = json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     key = hashlib.sha256(canonical).hexdigest()
     with _REPORTED_LOCK:
         if key in _REPORTED:
@@ -154,22 +212,13 @@ def _report(agent: str, removed: frozenset[tuple[str, str]]) -> None:
         if len(_REPORTED) >= _REPORTED_MAX:
             _REPORTED.clear()
         _REPORTED.add(key)
-    entries = ", ".join(
-        entry if where == "allowedTools" else f"{where} autoApprove {entry}"
-        for where, entry in sorted(removed)
-    )
-    message = (
-        f"agent {agent!r}: kiro-cli runs a Kiro Crew copy of its spec without these "
-        f"auto-approvals, which the governance ceiling denies: {entries}. The spec file "
-        "itself is unchanged; the tools stay mounted and their calls ask for approval."
-    )
     agent_mod.logger.warning("%s", message)
     try:
         agent_mod.sel().log_api_access(
             caller="system",
-            operation=WITHHELD_OP,
+            operation=operation,
             outcome="ok",
-            source=f"shared-template-view:{agent}",
+            source=source,
             resources=message,
         )
     except Exception:  # noqa: BLE001 -- the audit must not break the projection

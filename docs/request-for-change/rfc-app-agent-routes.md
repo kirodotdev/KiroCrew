@@ -6,7 +6,7 @@ created: 2026-10-13
 last-audited: 2026-10-21
 audited-at: 098bc0a17
 doc-pr: 19676
-implementation-prs: [17015]
+implementation-prs: []
 tracking-issues: [16910]
 supersedes: []
 superseded-by: []
@@ -28,9 +28,12 @@ superseded-by: []
 > `/crew/work`), Ops Mission Control (ten routes), Dev Fleet (four `/pod/*`
 > routes, strict) and Design Tweak (`/apps/design-tweak/api/thread`).
 > `RouteRegistry.dispatch` in `src/kiro_crew/apps/route_registry.py` hands an
-> app handler no caller session. A full implementation is open as
+> app handler no caller session. A full implementation was opened as
 > [#17015](https://github.com/kirodotdev/KiroCrew/pull/17015). It was written
-> before this document and is offered as the reference for it, not as a decision.
+> before this document and offered as the reference for it, not as a decision.
+> Once the manifest `agentTools` seam landed (#32660), #17015 was repurposed to
+> list a third-party app's `agentTools` on the prompted `kirocrew-apps` server
+> (`app-kit-platform.md` section 30.1), so no implementation of this RFC is open.
 
 ## Summary
 

@@ -43,6 +43,7 @@ SLIM_SERVERS: dict[str, tuple[str, str]] = {
     "mcp-crew-log": ("kiro_crew.mcp_crew_log", "run_mcp_server"),
     "mcp-debug": ("kiro_crew.mcp_debug", "run_mcp_server"),
     "mcp-secrets": ("kiro_crew.mcp_secrets", "run_mcp_server"),
+    "mcp-apps": ("kiro_crew.mcp_apps", "run_mcp_server"),
 }
 
 #: command -> (module, attribute) of the server's ``StdioServer`` declaration, for the
