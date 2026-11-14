@@ -12,6 +12,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import SpeechProviderNotice from '../../components/SpeechProviderNotice'
 import { parseSpeechProviders, speechProviderNotice, speechProviderOptions } from '../../lib/speechProviders'
 import { languageOptionLabel } from '../../lib/sttProviders'
+import { VOICE_RATE_OPTIONS } from '../../lib/voiceSpeed'
 type VoiceConfig = {
   enabled: boolean; provider: string; voice: string; engine: string; rate: string
   autoSpeak: boolean; aws_profile: string; region: string
@@ -68,8 +69,6 @@ const VOICE_OPTIONS_FALLBACK = [
   { value: 'Amy', label: 'Amy (UK F)' },
 ]
 const ENGINE_OPTIONS = ['generative', 'neural', 'long-form', 'standard']
-const SPEED_OPTIONS = ['80%', '90%', '95%', '100%', '110%', '120%', '130%', '150%']
-
 /**
  * Voice settings — the single home for all voice config:
  *  - Text-to-Speech: spoken replies. Provider is the host's built-in engine
@@ -242,7 +241,7 @@ export function VoicePanel() {
                     </div>
                   )}
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} hint={i18nT('pages.settings.voicePanel.voice_from_the_hosts_built_in_speech_engine')} value={voiceCfg.system_voice} options={systemVoiceOptions} optionLabels={systemVoiceLabels} onChange={v => setVoice({ system_voice: v })} disabled={voiceDisabled || systemUnavailable || systemVoicesLoading} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_built_in')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled || systemUnavailable} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_built_in')} value={voiceCfg.rate} options={VOICE_RATE_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled || systemUnavailable} />
                 </>
               ) : isPolly ? (
                 <>
@@ -259,7 +258,7 @@ export function VoicePanel() {
                   )}
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.voice')} hint={i18nT('pages.settings.voicePanel.amazon_polly_voice_for_tts')} value={voiceCfg.voice} options={voiceOptions.map(o => o.value)} optionLabels={voiceOptions.map(o => o.label)} onChange={v => { const engines = voiceOptions.find(o => o.value === v)?.engines ?? ENGINE_OPTIONS; const patch: Partial<VoiceConfig> = { voice: v }; if (!engines.includes(voiceCfg.engine)) patch.engine = engines[0]; setVoice(patch) }} disabled={voiceDisabled} />
                   <SettingsSelect label={i18nT('pages.settings.voicePanel.engine')} hint={i18nT('pages.settings.voicePanel.polly_engine_type')} value={voiceCfg.engine} options={selectedVoiceEngines} onChange={v => setVoice({ engine: v })} disabled={voiceDisabled} />
-                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_polly')} value={voiceCfg.rate} options={SPEED_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled} />
+                  <SettingsSelect label={i18nT('pages.settings.voicePanel.speed')} hint={i18nT('pages.settings.voicePanel.speech_rate_for_spoken_replies_polly')} value={voiceCfg.rate} options={VOICE_RATE_OPTIONS} onChange={v => setVoice({ rate: v })} disabled={voiceDisabled} />
                   <SettingsInput label={i18nT('pages.settings.voicePanel.aws_profile_polly')} hint={i18nT('pages.settings.voicePanel.aws_credentials_profile_for_polly')} value={localProfile} onChange={setLocalProfile} onBlur={() => setVoice({ aws_profile: localProfile.trim() })} placeholder={i18nT('pages.settings.voicePanel.default')} disabled={voiceDisabled} />
                   <SettingsInput label={i18nT('pages.settings.voicePanel.aws_region_polly')} hint={i18nT('pages.settings.voicePanel.aws_region_for_polly_api')} value={localRegion} onChange={setLocalRegion} onBlur={() => setVoice({ region: localRegion.trim() })} placeholder={i18nT('pages.settings.voicePanel.us_east_1')} disabled={voiceDisabled} />
                 </>

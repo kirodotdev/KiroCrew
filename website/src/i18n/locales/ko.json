@@ -5890,7 +5890,10 @@
       "resume": "읽어 주기 다시 시작",
       "stop": "읽어 주기 중지",
       "restart": "다시 읽기",
-      "restartFromStart": "처음부터 다시 읽기"
+      "restartFromStart": "처음부터 다시 읽기",
+      "speedAppliesNext": "다음에 읽는 부분부터 적용됩니다. 답변 전체를 이 속도로 들으려면 '다시 읽기'를 누르세요.",
+      "speedLoadFailed": "읽기 속도를 불러오지 못했습니다.",
+      "speedSaveFailed": "속도를 저장하지 못했습니다. 이전 속도가 유지됩니다."
     },
     "avatarBuilder": {
       "apply": "적용",

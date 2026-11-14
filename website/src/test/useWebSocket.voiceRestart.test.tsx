@@ -365,6 +365,55 @@ describe('Read aloud restart', () => {
     })
   })
 
+  describe('after a speed change', () => {
+    const changeSpeed = (rate: string) => act(() => {
+      window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { rate } }))
+    })
+
+    it('keeps the reading going when the speed changes', async () => {
+      const { hook, ws } = await mount()
+      await stream(ws, FIRST, 1)
+      await act(async () => { chunkFor(ws, requestIdOf(0), 'a') })
+      expect(chat().voicePlaying).toBe(true)
+
+      changeSpeed('120%')
+
+      expect(chat().voicePlaying).toBe(true)
+      expect(cancel).not.toHaveBeenCalled()
+      hook.unmount()
+    })
+
+    it('replays through the gateway synthesis API, which applies the stored rate to each request', async () => {
+      const { hook, ws } = await mount()
+      await stream(ws, FIRST, 1)
+      changeSpeed('150%')
+
+      await restart()
+
+      expect(synthesizedTexts()).toEqual([FIRST.trim(), FIRST.trim()])
+      expect(chat().voicePreparing).toBe(true)
+      hook.unmount()
+    })
+
+    it('speaks the restarted reply on the client at the new speed', async () => {
+      const utterances: Array<{ text: string; rate: number }> = []
+      class FakeUtterance { rate = 1; onend = null; onerror = null; constructor(public text: string) {} }
+      vi.stubGlobal('SpeechSynthesisUtterance', FakeUtterance)
+      vi.stubGlobal('speechSynthesis', { speak: (u: FakeUtterance) => utterances.push({ text: u.text, rate: u.rate }), cancel: vi.fn() })
+      const { hook, ws } = await mount()
+      act(() => { speakReply(store.dispatch, ACTIVE, 'The reply.') })
+      changeSpeed('150%')
+
+      await restart()
+      act(() => {
+        ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: requestIdOf(1), code: 'voice_unavailable' } })
+      })
+
+      expect(utterances).toEqual([{ text: 'The reply.', rate: 1.5 }])
+      hook.unmount()
+    })
+  })
+
   describe('when there is nothing to restart', () => {
     it('does nothing before anything was spoken', async () => {
       const { hook } = await mount()

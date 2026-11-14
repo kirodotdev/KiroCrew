@@ -23,6 +23,7 @@ import { ACTIVE, WS_INSTANCES, MockWebSocket, mirrorVoiceFlagsToSingleton } from
 // ── Web Speech fake ───────────────────────────────────────────────────
 
 class FakeUtterance {
+  rate = 1
   onend: (() => void) | null = null
   onerror: ((e: { error: string }) => void) | null = null
   constructor(public text: string) {}
@@ -73,6 +74,18 @@ describe('clientSpeech helper', () => {
     spoken[0].onend?.()
     expect(onPlaying).toHaveBeenLastCalledWith(false)
     expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('speaks at the requested rate multiplier', () => {
+    const { spoken } = installSpeechSynthesis()
+    speakOnClient('x', { onPlaying: vi.fn(), onError: vi.fn(), rate: 1.5 })
+    expect(spoken[0].rate).toBe(1.5)
+  })
+
+  it('leaves the engine at its normal rate when none is given', () => {
+    const { spoken } = installSpeechSynthesis()
+    speakOnClient('x', { onPlaying: vi.fn(), onError: vi.fn() })
+    expect(spoken[0].rate).toBe(1)
   })
 
   it('does not report a user cancel as an error', () => {
@@ -327,6 +340,38 @@ describe('playback owner client fallback (#22710)', () => {
       expect(testStore.getState().chat.voicePaused).toBe(false)
       expect(engine.paused).toBe(false)
     })
+
+    it('keeps a paused reading paused when the speed changes', () => {
+      const { engine, getCancelCount } = installSpeechSynthesis()
+      const ws = mount({ slot: ACTIVE, request_id: 'rq-pause-rate', clientFallback: true, text: 'hold on' })
+      act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-pause-rate', code: 'voice_unavailable' } }) })
+      press('voice-pause')
+      const cancelsBefore = getCancelCount()
+
+      act(() => { window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { rate: '150%' } })) })
+      expect(testStore.getState().chat.voicePaused).toBe(true)
+      expect(engine.paused).toBe(true)
+      expect(engine.resume).not.toHaveBeenCalled()
+      expect(getCancelCount()).toBe(cancelsBefore)
+    })
+  })
+
+  it('speaks at the rate chosen in the playback bar', () => {
+    const { spoken } = installSpeechSynthesis()
+    const ws = mount({ slot: ACTIVE, request_id: 'rq-rate', clientFallback: true, text: 'fast please' })
+    act(() => { window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { rate: '150%' } })) })
+    act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-rate', code: 'voice_unavailable' } }) })
+    expect(spoken[0].rate).toBe(1.5)
+  })
+
+  it('does not silence a reading when a rate-only config change arrives', () => {
+    const { spoken, getCancelCount } = installSpeechSynthesis()
+    const ws = mount({ slot: ACTIVE, request_id: 'rq-keep', clientFallback: true, text: 'keep going' })
+    act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-keep', code: 'voice_unavailable' } }) })
+    const cancelsBefore = getCancelCount()
+    act(() => { window.dispatchEvent(new CustomEvent('voice-config-changed', { detail: { rate: '125%' } })) })
+    expect(spoken.map(u => u.text)).toContain('keep going')
+    expect(getCancelCount()).toBe(cancelsBefore)
   })
 
   it('keeps client speech alive and raises no notice when the socket drops', () => {
