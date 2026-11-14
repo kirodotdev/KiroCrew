@@ -22,11 +22,13 @@ from builtin_adoption_helpers import (
     seed_agent,
     write_builtin_record,
 )
+from config_pending_helpers import make_config_json_pending
 
 from kiro_crew.apps import builtin_adoption as adoption
 from kiro_crew.apps import builtin_adoption_apply as apply_mod
 from kiro_crew.apps import manager
 from kiro_crew.apps.builtin_adoption_state import read_adoption_markers, read_ledger
+from kiro_crew.config import loosening_provenance as lp
 from kiro_crew.config.loader import _invalidate_config_cache, config_local_path
 from kiro_crew.sandbox import SandboxUnavailableError
 from kiro_crew.testing.ids import UNALLOCATABLE_PID
@@ -426,6 +428,57 @@ async def test_a_transient_config_failure_at_apply_is_retried_at_the_next_boot(w
     assert await _stage() == {NAME: "staged"}
     assert await _boot() == {NAME: "applied"}
     assert len(calls) == 2
+
+
+def _discard_pending_config(path) -> None:
+    """What Discard leaves: the endorsed bytes back on disk, nothing pending."""
+    path.write_bytes(lp.endorsed_bytes(lp.LEAF_CONFIG))
+    assert not lp.leaf_pending(lp.LEAF_CONFIG)
+    _invalidate_config_cache()
+
+
+async def test_a_pending_outside_edit_logs_one_warning_and_adopts_once_resolved(
+    world, monkeypatch, caplog
+):
+    """The trust write is refused while config.json waits for review: an expected
+    state, so one warning naming the file with no trace, the built-in untouched and
+    the ledger still staged for the next boot."""
+    await _stage()
+    seed_agent(world.home, {"bot_name": "Crew"})
+    path = make_config_json_pending(monkeypatch)
+    with caplog.at_level(logging.DEBUG, logger=apply_mod.logger.name):
+        assert await _boot() == {NAME: "waiting_for_review"}
+
+    ours = [r for r in caplog.records if r.name == apply_mod.logger.name]
+    [warning] = [r for r in ours if r.levelno >= logging.WARNING]
+    assert warning.levelno == logging.WARNING
+    assert warning.exc_info is None
+    assert NAME in warning.getMessage() and lp.LEAF_CONFIG in warning.getMessage()
+    assert any(r.levelno == logging.DEBUG and r.exc_info for r in ours)
+    ledger = read_ledger(NAME)
+    assert (ledger.state, ledger.attempts) == ("staged", 0)
+    assert manager.builtin_owns_installed(NAME)
+    assert NAME not in read_adoption_markers()
+
+    _discard_pending_config(path)
+    assert await _boot() == {NAME: "applied"}
+
+
+async def test_a_pending_outside_edit_records_no_nav_and_logs_no_warning(
+    world, monkeypatch, caplog
+):
+    await _stage()
+    assert await _boot() == {NAME: "applied"}
+    recorded = agent_section(world.home)["apps_builtin_adoption_nav"]
+    _drop_recorded_nav(world.home)
+    path = make_config_json_pending(monkeypatch)
+    with caplog.at_level(logging.WARNING, logger=apply_mod.logger.name):
+        assert await _boot() == {}
+    assert not [r for r in caplog.records if r.name == apply_mod.logger.name]
+
+    _discard_pending_config(path)
+    assert await _boot() == {}
+    assert agent_section(world.home)["apps_builtin_adoption_nav"] == recorded
 
 
 async def test_an_overlay_owned_trust_key_blocks_then_adopts_once_removed(world):
