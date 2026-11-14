@@ -414,6 +414,9 @@ from kiro_crew.slack.handler_runtime.voice import (  # noqa: F401
     _str_or_default,
     load_voice_reply_config,
 )
+from kiro_crew.slack.linked_thread_images import (  # noqa: F401 - read by the owners
+    store_for_slot as store_linked_thread_images,
+)
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.sessions_view import (  # noqa: F401 - read by the owners
     SESSIONS_INCLUDE_ENDED_ARGS,
