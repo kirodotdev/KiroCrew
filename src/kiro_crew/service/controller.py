@@ -162,8 +162,9 @@ def install_service() -> int:
 
     Returns 0 on success, non-zero otherwise. On Linux the install
     prompts for sudo on first use to write
-    ``/etc/systemd/system/kirocrew.service`` and to run
-    ``systemctl daemon-reload / enable / restart``. The gateway itself
+    ``/etc/systemd/system/kirocrew.service``, to run
+    ``systemctl daemon-reload / enable / restart``, and to run
+    ``loginctl enable-linger`` for the unit's account. The gateway itself
     runs as ``User=$USER`` once started — kirocrew code is never
     invoked under sudo. On macOS no sudo is required. The CLI is
     expected to surface the sudo prompt to a real terminal.
@@ -182,14 +183,11 @@ def install_service() -> int:
         # non-fatal: a failure warns and leaves the service running.
         if profile.message:
             print(f"   {'' if profile.ok else '⚠️ '}{profile.message}")
-        # A system unit's runtimes live under the service account's user manager,
-        # which logind stops at logout unless linger is on. Warn here, after the
-        # service is up: without it the gateway survives disconnects but every
-        # agent runtime dies with the account's last login session. Non-fatal —
-        # the install succeeded, and the account may enable linger at any time.
-        linger_warning = linux.linger_warning_for_service_account()
-        if linger_warning:
-            print(f"   ⚠️ {linger_warning}")
+        # Agent runtimes stop at the account's last logout unless linger is on.
+        # Non-fatal: a failure only warns; the install has already succeeded.
+        linger = linux.enable_service_account_linger()
+        if linger is not None:
+            print(f"   {'' if linger[0] else '⚠️ '}{linger[1]}")
         _print_headless_auth_warning()
         _print_dropped_host_env_warning(plat)
         print()

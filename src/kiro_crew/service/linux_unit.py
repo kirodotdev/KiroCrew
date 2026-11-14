@@ -196,9 +196,11 @@ def _home_for_user(user: str) -> str:
 def _linger_enabled(user: str) -> bool | None:
     """Whether ``user``'s per-user systemd manager lingers past logout.
 
-    From ``loginctl show-user <user> -p Linger`` (a system-level property, so it
-    answers whether or not the account has a session); ``None`` when unknown, so
-    the caller stays quiet. :func:`kiro_crew.cli_doctor._linger_enabled` delegates here.
+    From ``loginctl show-user <user> -p Linger``, which logind answers only for an
+    account it tracks (one with a session, or already lingering); ``None`` when
+    unknown, which doctor reports as nothing and the system install treats as not
+    on. ``user`` is a name or a numeric uid. :func:`kiro_crew.cli_doctor._linger_enabled`
+    delegates here.
 
     Parses ``Key=value`` output instead of ``--value``, which needs systemd 230;
     this module supports systemd 219. ``loginctl`` comes from fixed system

@@ -46,12 +46,21 @@ class TestControllerDispatch:
                 return_value=Platform.SYSTEMD,
             ),
             patch.object(svc_linux, "install") as mock_install,
+            patch.object(svc_linux, "enable_service_account_linger", return_value=None),
         ):
             rc = controller.install_service()
         assert rc == 0
         mock_install.assert_called_once()
 
-    def test_install_systemd_prints_linger_warning(self, capsys):
+    @pytest.mark.parametrize(
+        "outcome,shown",
+        [
+            ((True, "linger turned on for tester, ..."), "   linger turned on for tester"),
+            ((False, "could not turn linger on for tester (denied): ..."), "   ⚠️ could not turn"),
+        ],
+        ids=["turned-on", "warning"],
+    )
+    def test_install_systemd_prints_the_linger_outcome(self, outcome, shown, capsys):
         from kiro_crew.service import apparmor, controller
         from kiro_crew.service import linux as svc_linux
 
@@ -61,15 +70,11 @@ class TestControllerDispatch:
                 return_value=Platform.SYSTEMD,
             ),
             patch.object(svc_linux, "install", return_value=apparmor.ProfileOutcome(False, "")),
-            patch.object(
-                svc_linux,
-                "linger_warning_for_service_account",
-                return_value="linger is off for tester: ...",
-            ),
+            patch.object(svc_linux, "enable_service_account_linger", return_value=outcome),
         ):
             rc = controller.install_service()
         assert rc == 0
-        assert "linger is off for tester" in capsys.readouterr().out
+        assert shown in capsys.readouterr().out
 
     def test_install_systemd_silent_when_linger_ok(self, capsys):
         from kiro_crew.service import apparmor, controller
@@ -81,7 +86,7 @@ class TestControllerDispatch:
                 return_value=Platform.SYSTEMD,
             ),
             patch.object(svc_linux, "install", return_value=apparmor.ProfileOutcome(False, "")),
-            patch.object(svc_linux, "linger_warning_for_service_account", return_value=None),
+            patch.object(svc_linux, "enable_service_account_linger", return_value=None),
         ):
             rc = controller.install_service()
         assert rc == 0
@@ -98,7 +103,7 @@ class TestControllerDispatch:
         with (
             patch("kiro_crew.service.controller.current_platform", return_value=plat),
             patch.object(svc_linux, "install", return_value=apparmor.ProfileOutcome(False, "")),
-            patch.object(svc_linux, "linger_warning_for_service_account", return_value=None),
+            patch.object(svc_linux, "enable_service_account_linger", return_value=None),
             patch.object(svc_macos, "install"),
             patch.object(controller, "_print_headless_auth_warning"),
         ):

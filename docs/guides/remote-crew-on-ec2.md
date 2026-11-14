@@ -151,7 +151,9 @@ loginctl enable-linger <user>
 ```
 
 (A gateway installed as a **system** unit under `/etc/systemd/system` already
-survives logout; linger still matters for pods and for user-level installs.)
+survives logout, and `kirocrew service install` turns linger on for its account
+so the agent runtimes survive too; linger still matters for pods and for
+user-level installs.)
 
 ### "kiro login: not logged in"
 
