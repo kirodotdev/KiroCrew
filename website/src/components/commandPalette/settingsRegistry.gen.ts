@@ -2174,6 +2174,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "One Google OAuth client for Gmail, Drive, Calendar, Sheets, Docs and Slides"
   },
   {
+    "id": "developer.acp-runtime-sharing",
+    "label": "ACP runtime sharing",
+    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
+    "description": "Saves computer memory by running several KAS chats in one background program. They reply at the same time and can't see each other's messages. Turn it off and each new chat gets its own program again.",
+    "hint": "Chats on KAS share one background program and reply at the same time, so a long reply in one chat never makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Kiro CLI chats, and KAS chats on an older engine, keep a program each. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.agent-harness-for-worker-chats",
     "label": "Agent Harness for worker chats",
     "labelKey": "pages.developer.featurePreviewsTab.session_harness",
@@ -2497,19 +2510,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "labelKey": "sessionEnvironments.title",
     "description": "Runs a chat in its own remote workspace.",
     "hint": "Shows the Session Environments settings. Existing chats stay on this machine; a chat moves only if you pick a profile for it before its first message.",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.share-one-background-program-across-chats",
-    "label": "Share one background program across chats",
-    "labelKey": "pages.developer.featurePreviewsTab.chat_runtime_sharing",
-    "description": "Saves computer memory by running several chats in one background program. Chats can't see each other's messages, but they reply one at a time. Turn it off and each new chat gets its own program again.",
-    "hint": "Chats reply one at a time, so a long reply in one chat makes the others wait. If the shared program stops, every chat in it restarts. Chats never see each other's messages. One program runs up to 10 chats by default. Applies to chats you start after changing it. Turned off, each new chat starts its own program, which uses more memory.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

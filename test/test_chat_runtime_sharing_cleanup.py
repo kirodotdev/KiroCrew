@@ -15,7 +15,6 @@ import logging
 import pytest
 from chat_runtime_sharing_helpers import _PlacementProvider, confirming, make_placement
 from test_chat_runtime_sharing import (
-    FakeHandle,
     FakeRuntime,
     KillableRuntime,
     a_key,
@@ -274,142 +273,25 @@ class TestResetLeavesACoTenantsProcessAlone:
         ), "the skip must record the reap debt so the last tenant's release reaps the orphan"
 
 
-class _GateRuntime(FakeRuntime):
-    """A runtime whose ``chat_turn_gate`` is the real one-lock serializer.
+class TestSharedChatTurnsAreNotSerialized:
+    """A shared chat never waits for another chat's turn.
 
-    Records how many gate holders are inside at once so a test can prove the
-    lock actually serializes rather than merely being awaited.
+    Chat sharing is KAS-only, and a KAS engine that may share runs turns of
+    different sessions in parallel (``KAS_CHAT_SHARING_MIN_ENGINE``), so Crew holds
+    no per-process turn lock. Re-adding one would queue shared chats behind each
+    other, the behaviour the preview promises not to have.
     """
 
-    def __init__(self, pid: int = 7000) -> None:
-        super().__init__(pid=pid)
-        self._chat_turn_lock = asyncio.Lock()
-        self.max_concurrent = 0
-        self._inside = 0
+    def test_no_per_process_chat_turn_lock_exists(self):
+        from kiro_crew.acp.runtime import AcpRuntime
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+        from kiro_crew.providers.acp import AcpProvider
 
-    def chat_turn_gate(self):
-        import contextlib
-
-        @contextlib.asynccontextmanager
-        async def _gate():
-            async with self._chat_turn_lock:
-                self._inside += 1
-                self.max_concurrent = max(self.max_concurrent, self._inside)
-                try:
-                    yield
-                finally:
-                    self._inside -= 1
-
-        return _gate()
-
-
-def _provider_for_gate(runtime, *, shared_runtime: bool):
-    from kiro_crew.acp.session_provider import AcpSessionProvider
-
-    return AcpSessionProvider(
-        FakeHandle(),  # type: ignore[arg-type]
-        runtime,
-        owns_runtime=True,
-        runtime_lease="lease" if shared_runtime else None,
-        shared_runtime=shared_runtime,
-        session_key="k",
-    )
-
-
-class TestChatTurnsAreSerializedOnASharedProcess:
-    """An ownerless control frame is unambiguous only while ONE chat turn runs.
-
-    The reader loop routes a no-sessionId compaction / clear / agent-switch to
-    the sessions with an active turn; with two chat turns overlapping it would
-    fan to both and a peer's control event corrupts a co-tenant. So a shared
-    chat session holds the per-process turn gate for its whole turn, and a
-    sub-agent (shared_runtime=False) is kept OUT of it — contending for the lock
-    the principal holds would deadlock the principal→sub-agent await.
-    """
-
-    @pytest.mark.asyncio
-    async def test_two_shared_chat_turns_do_not_overlap(self):
-        rt = _GateRuntime()
-        a = _provider_for_gate(rt, shared_runtime=True)
-        b = _provider_for_gate(rt, shared_runtime=True)
-
-        order: list[str] = []
-        b_may_finish = asyncio.Event()
-
-        async def run_a():
-            async with a._chat_turn_gate():
-                order.append("a-in")
-                # Hold the gate until the test releases it, so b can only be
-                # waiting — never inside — while a holds it.
-                await b_may_finish.wait()
-                order.append("a-out")
-
-        async def run_b():
-            # Let a acquire first.
-            await asyncio.sleep(0)
-            async with b._chat_turn_gate():
-                order.append("b-in")
-
-        ta = asyncio.create_task(run_a())
-        tb = asyncio.create_task(run_b())
-        # Wait on the STATE, not a fixed sleep: a is inside the gate (order shows
-        # "a-in") and b is parked on the lock (the lock is held and b has not
-        # entered). Both are loop-confined asyncio state, so evaluate on-loop.
-        await async_wait_until(
-            lambda: order == ["a-in"] and rt._chat_turn_lock.locked(),
-            describe=lambda: f"order={order} locked={rt._chat_turn_lock.locked()}",
-        )
-        # a is inside and holding; b is blocked on the lock, not inside.
-        assert order == ["a-in"], order
-        assert rt.max_concurrent == 1
-        b_may_finish.set()
-        try:
-            # 30s so a slow runner never decides this; a real deadlock still
-            # fails within it. The ordering assertion below is the actual signal.
-            await asyncio.wait_for(asyncio.gather(ta, tb), timeout=30)
-        except (asyncio.TimeoutError, TimeoutError):
-            for t in (ta, tb):
-                t.cancel()
-            await asyncio.gather(ta, tb, return_exceptions=True)
-            raise AssertionError("gate turns did not drain within 30s")
-        assert order == ["a-in", "a-out", "b-in"], order
-        assert rt.max_concurrent == 1, "two shared chat turns were inside the gate at once"
-
-    @pytest.mark.asyncio
-    async def test_a_subagent_turn_does_not_contend_for_the_gate(self):
-        """A non-shared (sub-agent) session never touches the lock.
-
-        If it did, a sub-agent whose principal already holds the gate could
-        never enter — the deadlock the exemption exists to prevent. Here the
-        principal holds the gate and the sub-agent's gate still enters freely.
-        """
-        rt = _GateRuntime()
-        principal = _provider_for_gate(rt, shared_runtime=True)
-        subagent = _provider_for_gate(rt, shared_runtime=False)
-
-        async with principal._chat_turn_gate():
-            assert rt._chat_turn_lock.locked(), "principal did not take the shared lock"
-            # The sub-agent's gate must not block on the principal's held lock.
-            # Bound the acquisition with a local deadline: if the exemption
-            # regresses, the sub-agent would wait on the principal's held lock
-            # forever, so without this the Windows pytest-timeout kills the whole
-            # worker instead of producing a bounded failure here.
-            entered = False
-
-            async def _enter_subagent_gate() -> None:
-                nonlocal entered
-                async with subagent._chat_turn_gate():
-                    entered = True
-
-            try:
-                # 30s so a slow runner never decides this; the principal holds
-                # the gate, so if the sub-agent contended it would never enter and
-                # a real deadlock still fails within the floor.
-                await asyncio.wait_for(_enter_subagent_gate(), timeout=30)
-            except (asyncio.TimeoutError, TimeoutError):
-                raise AssertionError("a sub-agent turn was blocked by the principal's turn gate")
-            assert entered, "a sub-agent turn was blocked by the principal's turn gate"
-        assert not rt._chat_turn_lock.locked()
+        assert not hasattr(AcpRuntime, "chat_turn_gate")
+        assert not hasattr(AcpSessionProvider, "_chat_turn_gate")
+        assert not hasattr(AcpSessionProvider, "hold_chat_turn_gate")
+        assert not hasattr(AcpProvider, "hold_chat_turn_gate")
+        assert not hasattr(ro, "chat_turn_gate_hold")
 
 
 class TestAgentSwitchFrameOnASharedRuntime:
@@ -615,24 +497,6 @@ class TestReviewFindingsOnTheSharedPath:
             src = inspect.getsource(fn)
             check = src.index("await self._refuse_over_ceiling_start(agent or self._agent)")
             assert check < src.index(verb), f"{fn.__name__} checks the ceiling after {verb}"
-
-    def test_compaction_takes_the_gate_outside_its_budget_and_answers_busy(self):
-        # Moving the hold back inside ``wait_for(...)`` lets a co-tenant's long
-        # turn spend the budget and recycle this session as a failed compaction.
-        import inspect
-
-        from kiro_crew.session_compaction import CompactionCoordinator
-
-        src = inspect.getsource(CompactionCoordinator._compact_in_place)
-        hold = src.index("await gate.enter_async_context(chat_turn_gate_hold(session.provider))")
-        assert src.rindex("async with asyncio.timeout(timeout):", 0, hold) < hold
-        busy = src.index("except TimeoutError:", hold)
-        assert src.index('return "busy"', busy) < src.index("await asyncio.wait_for(", hold)
-        assert hold < src.index("_run_compaction(), timeout=")
-        # The receipt budget is measured from the gate, not from before the wait:
-        # dropping the reset lets a long co-tenant turn shrink it to the floor.
-        reset = src.index("started = time.monotonic()", hold)
-        assert reset < src.index("await asyncio.wait_for(", hold)
 
     def test_a_founding_spawn_launches_with_the_keyed_agent_env(self):
         # Without the hand-off the founder re-reads agent.env at spawn, so a save
@@ -1134,7 +998,9 @@ class TestResolveChatShare:
             return "gen-1"
 
         monkeypatch.setattr(share_mod, "agent_spec_generation", spec_generation)
-        monkeypatch.setattr(share_mod, "kas_chat_sharing_ready", lambda: kw.get("kas_ready", False))
+        monkeypatch.setattr(
+            share_mod, "kas_chat_sharing_ready", lambda pin="": kw.get("kas_ready", False)
+        )
         monkeypatch.setattr(
             share_mod, "agent_spawns_native_subagents", lambda w, a: kw.get("native", False)
         )
@@ -1162,11 +1028,26 @@ class TestResolveChatShare:
 
     def test_preview_on_places_an_eligible_chat_with_the_configured_cap(self, monkeypatch):
         placement, reads = self._resolve(
-            monkeypatch, {"chat_runtime_sharing": True}, _PlacementProvider()
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
         )
         assert placement is not None
         assert placement.cap == 4
         assert reads == ["spec"]
+
+    def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self, monkeypatch, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
+            placement, reads = self._resolve(
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_KIRO),
+                kas_ready=True,
+            )
+        assert placement is None
+        assert reads == []
+        assert "reason=backend_not_chat_shareable" in caplog.text
 
     def test_an_ineligible_start_is_logged_by_reason_and_reads_nothing(self, monkeypatch, caplog):
         with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
@@ -1193,7 +1074,11 @@ class TestResolveChatShare:
         # beside a co-tenant they would be auto-rejected: it must never join.
         with caplog.at_level(logging.WARNING, logger="kiro_crew.providers.chat_share"):
             placement, reads = self._resolve(
-                monkeypatch, {"chat_runtime_sharing": True}, _PlacementProvider(), native=True
+                monkeypatch,
+                {"chat_runtime_sharing": True},
+                _PlacementProvider(backend=ACP_BACKEND_KAS),
+                kas_ready=True,
+                native=True,
             )
         assert placement is None and reads == []
         assert "reason=native_subagents" in caplog.text
@@ -1223,6 +1108,10 @@ class TestResolveChatShare:
 
     def test_a_session_environment_keeps_its_own_process(self, monkeypatch):
         placement, reads = self._resolve(
-            monkeypatch, {"chat_runtime_sharing": True}, _PlacementProvider(), remote=True
+            monkeypatch,
+            {"chat_runtime_sharing": True},
+            _PlacementProvider(backend=ACP_BACKEND_KAS),
+            kas_ready=True,
+            remote=True,
         )
         assert placement is None and reads == []

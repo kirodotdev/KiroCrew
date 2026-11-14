@@ -189,6 +189,10 @@ PROTOCOL_VERSION_KAS = 1
 #: names no engine at all; this does.
 KAS_BUNDLE_SPAWN_LABEL = "kas-bundle"
 
+#: ``(node path, engine version)`` of bundles whose Node already ran once in this
+#: process for the preview's route, so the probe costs one spawn per install.
+_PROBED_BUNDLE_NODES: set[tuple[str, str]] = set()
+
 
 def _bundle_route_selected() -> bool:
     """``agent.kas_bundle`` as configured. Blocking (reads config); call off the loop.
@@ -772,10 +776,42 @@ class KasHarness(MembershipHarness):
 
         self.spawn_sandbox_mode = ctx.sandbox_mode
         self.bundle_engine_version = ""
+        # The route reason of this spawn's bundle plan ("" on the relay): the
+        # runtime reads it when the start fails (``runtime_spawn_entry``).
+        self.spawn_route_reason = ""
         if await asyncio.to_thread(_bundle_route_selected):
             return await self._bundle_spawn_plan(
                 ctx, kas_route_mod.KasRoute(bundle=True, reason=kas_route_mod.REASON_CONFIGURED)
             )
+        if await asyncio.to_thread(
+            partial(
+                kas_route_mod.sharing_preview_selects_bundle,
+                pin=ctx.harness_pin,
+                environ=ctx.environ,
+            )
+        ):
+            # The ACP runtime sharing preview runs KAS on Crew's own pinned engine.
+            # An engine that cannot be installed or started is not a reason to
+            # refuse the chat: it takes the default route below instead, on its
+            # own process (the sharing gate refuses it while no engine is installed).
+            try:
+                plan = await self._bundle_spawn_plan(
+                    ctx,
+                    kas_route_mod.KasRoute(
+                        bundle=True, reason=kas_route_mod.REASON_SHARING_PREVIEW
+                    ),
+                    probe_node=True,
+                )
+                self.spawn_route_reason = kas_route_mod.REASON_SHARING_PREVIEW
+                return plan
+            except AcpRuntimeError as exc:
+                self.bundle_engine_version = ""
+                kas_route_mod.note_preview_bundle_failed(str(exc))
+                logger.warning(
+                    "chat-runtime-sharing: Crew's KAS engine could not start (%s); this "
+                    "chat takes the default KAS route on its own process",
+                    exc,
+                )
 
         kas_bin = await _resolve_kiro_bin_for_spawn(environ=dict(ctx.environ), home=ctx.home)
         # Read only when the route is still open: a stored Kiro CLI pick, the
@@ -905,9 +941,15 @@ class KasHarness(MembershipHarness):
         )
 
     async def _bundle_spawn_plan(
-        self, ctx: SpawnContext, route: kas_route_mod.KasRoute
+        self, ctx: SpawnContext, route: kas_route_mod.KasRoute, *, probe_node: bool = False
     ) -> SpawnPlan:
-        """The bundle route's plan, installing the pinned engine first when it is missing."""
+        """The bundle route's plan, installing the pinned engine first when it is missing.
+
+        *probe_node* (the preview's route) also runs the installed Node once, as
+        the installer does, so a runtime that cannot run on this host (another
+        architecture or libc, a lost exec bit) is a refusal here, where the
+        preview can still fall back, instead of a failed launch.
+        """
         # Imported here, not at module top: the installer modules are the bundle
         # route's alone, and this harness is imported on every KAS gateway
         # whether or not that route is used.
@@ -928,6 +970,16 @@ class KasHarness(MembershipHarness):
             except kas_bundle_mod.KasHostUnsupported as exc:
                 # Final, not a failed transfer: the next spawn finds the same host.
                 raise AcpKasHostUnsupported(f"{route.describe()}. {exc}") from exc
+            except kas_bundle_mod.KasBundleError as exc:
+                raise AcpRuntimeError(f"{route.describe()}. {exc}") from exc
+        if probe_node:
+            key = (str(bundle.node_bin), bundle.version)
+            try:
+                if key not in _PROBED_BUNDLE_NODES:
+                    await asyncio.to_thread(
+                        kas_bundle_mod._probe_node, Path(bundle.node_bin), bundle.node_version
+                    )
+                    _PROBED_BUNDLE_NODES.add(key)
             except kas_bundle_mod.KasBundleError as exc:
                 raise AcpRuntimeError(f"{route.describe()}. {exc}") from exc
         logger.info(

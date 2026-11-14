@@ -32,6 +32,10 @@ from kiro_crew.acp_backends import (
 )
 from kiro_crew.runtime_ownership import RuntimeOwnership, authorize_runtime_kill
 
+#: The arguments that make a start shareable on the backend axis: KAS on an
+#: engine ``kas_chat_sharing_ready`` accepts.
+_SHAREABLE = {"backend": ACP_BACKEND_KAS, "kas_engine_ready": True}
+
 
 class FakeRuntime:
     """Stands in for ``AcpRuntime``: the table only probes ``is_alive``/``pid``."""
@@ -89,7 +93,7 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -98,7 +102,7 @@ class TestChatSharingEligibility:
             session_key="chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -108,7 +112,7 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode=mode,
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -122,14 +126,14 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=True,
         )
         assert eligible_for_chat_sharing(
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -138,16 +142,17 @@ class TestChatSharingEligibility:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=False,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
-    def test_kas_shares_only_on_an_engine_that_admits_one_turn_per_session(self):
+    def test_kas_shares_only_on_an_engine_that_runs_chats_in_parallel(self):
         """KAS is a member, but a KAS start shares only when its engine is ready.
 
-        ``kas_engine_ready`` is ``kas_chat_sharing_ready()``: the kiro-cli relay
-        at or above 3.1.0, whose engine admits one turn per session itself. An
-        older engine, or Crew's own pinned bundle, keeps one process per chat.
+        ``kas_engine_ready`` is ``kas_chat_sharing_ready()``: the engine the
+        route will run is at or above ``KAS_CHAT_SHARING_MIN_ENGINE``, which runs
+        turns of different sessions in parallel. An older engine keeps one
+        process per chat.
         """
         assert ACP_BACKEND_KAS in ACP_BACKENDS_CHAT_RUNTIME_SHARING
         common = dict(
@@ -159,32 +164,24 @@ class TestChatSharingEligibility:
         )
         assert chat_sharing_ineligible_reason(**common) == "kas_engine_not_shareable"
         assert eligible_for_chat_sharing(**common, kas_engine_ready=True)
-        # kiro-cli does not ask the KAS readiness at all.
-        assert eligible_for_chat_sharing(**{**common, "backend": ACP_BACKEND_KIRO})
 
-    @pytest.mark.parametrize(
-        "version,bundle,ready",
-        [
-            ((3, 1, 0), False, True),
-            ((3, 2, 4), False, True),
-            ((3, 0, 0), False, False),
-            ((2, 37, 1), False, False),
-            (None, False, False),
-            ((3, 1, 0), True, False),
-        ],
-    )
-    def test_kas_readiness_reads_the_relay_version_and_route(
-        self, monkeypatch, version, bundle, ready
-    ):
-        import kiro_crew.acp.kas_route as kas_route
-        import kiro_crew.kiro_cli as kiro_cli
-        from kiro_crew.acp.chat_runtime_sharing import kas_chat_sharing_ready
-
-        monkeypatch.setattr(kiro_cli, "installed_kiro_cli_version", lambda: version)
-        monkeypatch.setattr(
-            kas_route, "resolve_kas_route", lambda: kas_route.KasRoute(bundle=bundle, reason="")
+    def test_a_kiro_cli_chat_keeps_its_own_process_with_the_preview_on(self):
+        """kiro-cli is not a chat-sharing backend: chats sharing its process would
+        have to take turns, and a shared chat must never wait for another chat."""
+        assert ACP_BACKEND_KIRO not in ACP_BACKENDS_CHAT_RUNTIME_SHARING
+        args = dict(
+            session_key="dashboard:chat-12-1790000000",
+            memory_mode="persistent",
+            sharing_enabled=True,
+            backend=ACP_BACKEND_KIRO,
+            member_context=False,
         )
-        assert kas_chat_sharing_ready() is ready
+        # An engine readiness answer cannot let it in either.
+        assert chat_sharing_ineligible_reason(**args) == "backend_not_chat_shareable"
+        assert (
+            chat_sharing_ineligible_reason(**args, kas_engine_ready=True)
+            == "backend_not_chat_shareable"
+        )
 
     def test_a_session_environment_keeps_its_own_process(self):
         """A remote workspace or cloud sandbox is attached to the PROCESS."""
@@ -193,7 +190,7 @@ class TestChatSharingEligibility:
                 session_key="dashboard:chat-12-1790000000",
                 memory_mode="persistent",
                 sharing_enabled=True,
-                backend=ACP_BACKEND_KIRO,
+                **_SHAREABLE,
                 member_context=False,
                 remote_workspace=True,
             )
@@ -242,7 +239,7 @@ class TestChatSharingEligibility:
             session_key=key,
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
             member_context=False,
         )
 
@@ -258,7 +255,7 @@ class TestIsSharedChatRuntimeTellsTheSharedPathApart:
     unshared path also takes a lease at registration (`acquire_session_lease`),
     so every registered chat holds a lease string whether or not it shares.
     `_shared_runtime` (set from `chat_share_key is not None`) is the flag that
-    does separate them, and the one `_chat_turn_gate` already uses. These pin
+    does separate them. These pin
     that the guard answers True only for an actual shared-runtime provider, so
     the default path stays byte-identical to base.
     """
@@ -304,7 +301,7 @@ class TestTheRefusalNamesItsBranch:
             session_key="dashboard:chat-12-1790000000",
             memory_mode="persistent",
             sharing_enabled=True,
-            backend=ACP_BACKEND_KIRO,
+            **_SHAREABLE,
         )
         base.update(overrides)
         return chat_sharing_ineligible_reason(
@@ -341,7 +338,7 @@ class TestTheRefusalNamesItsBranch:
                 session_key="dashboard:chat-12-1790000000",
                 memory_mode="persistent",
                 sharing_enabled=True,
-                backend=ACP_BACKEND_KIRO,
+                **_SHAREABLE,
                 member_context=True,
             )
             == "member_session"
@@ -349,7 +346,7 @@ class TestTheRefusalNamesItsBranch:
 
     @pytest.mark.parametrize("enabled", [True, False])
     @pytest.mark.parametrize("mode", ["persistent", "incognito"])
-    @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
+    @pytest.mark.parametrize("backend", [ACP_BACKEND_KAS, ACP_BACKEND_KIRO, ACP_BACKEND_CODEX])
     def test_the_boolean_and_the_reason_never_disagree(self, enabled, mode, backend):
         """One decision, two spellings: a reason means refused, and no reason means
         eligible. A branch added to one and not the other would split them."""
@@ -510,7 +507,7 @@ class TestChatRuntimeKey:
                     session_key=session,
                     memory_mode="persistent",
                     sharing_enabled=True,
-                    backend=ACP_BACKEND_KIRO,
+                    **_SHAREABLE,
                     member_context=True,
                 ), "a member session must be refused chat sharing"
                 # Refused -> each founds its own runtime at cap 1.

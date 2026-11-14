@@ -90,7 +90,7 @@ import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Hashable, Iterable, Iterator, MutableSet
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -1312,8 +1312,7 @@ def is_shared_chat_runtime(provider: object) -> bool:
     False, so those branches run byte-identically to base for it.
 
     Reads ``_shared_runtime`` (set from ``chat_share_key is not None`` when the
-    provider is built), which is the same flag ``AcpSessionProvider._chat_turn_gate``
-    uses to decide whether to serialize the turn. A runtime LEASE does NOT tell
+    provider is built). A runtime LEASE does NOT tell
     the two apart: the unshared path also takes a lease at registration
     (``acquire_session_lease``), so every registered chat holds a lease string
     whether or not it shares -- ``holds_runtime_lease`` therefore cannot gate
@@ -1330,28 +1329,6 @@ def is_shared_chat_runtime(provider: object) -> bool:
         if getattr(candidate, "_shared_runtime", False) is True:
             return True
     return False
-
-
-def chat_turn_gate_hold(provider: object) -> Any:
-    """An async context that holds *provider*'s shared chat turn gate, or a null one.
-
-    For the compaction paths, which run ``/compact`` and then may wait for the
-    deferred receipt: on a SHARED chat runtime the gate is held across both
-    (``AcpSessionProvider.hold_chat_turn_gate``). Every other provider -- the
-    preview off, a subagent, a non-ACP provider, a test double -- gets
-    ``contextlib.nullcontext()``, so those paths run exactly as before.
-    """
-    import contextlib
-
-    if not is_shared_chat_runtime(provider):
-        return contextlib.nullcontext()
-    hold = getattr(provider, "hold_chat_turn_gate", None)
-    if hold is None:
-        return contextlib.nullcontext()
-    held = hold()
-    if hasattr(held, "__aenter__") and hasattr(held, "__aexit__"):
-        return held
-    return contextlib.nullcontext()
 
 
 async def acquire_session_lease(provider: object) -> None:
@@ -1402,7 +1379,6 @@ __all__ = [
     "claim_runtime_tenancy",
     "commit_runtime_teardown",
     "holds_runtime_lease",
-    "chat_turn_gate_hold",
     "is_shared_chat_runtime",
     "note_runtime_kill",
     "outstanding_leases",

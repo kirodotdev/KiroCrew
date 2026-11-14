@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import difflib  # noqa: F401
 import functools  # noqa: F401
 import hashlib
@@ -466,7 +465,6 @@ from kiro_crew.providers.base import (
     SessionMcpReport,
 )
 from kiro_crew.repeat_loop import RepeatLoopTracker
-from kiro_crew.runtime_ownership import chat_turn_gate_hold
 from kiro_crew.safety_override import safety_override  # noqa: F401
 from kiro_crew.security import (
     REDACTED_CREDENTIAL_TAG,
@@ -1073,7 +1071,6 @@ async def _run_chat(
     # turn's task and context) hides the open record from every gate and phase
     # it reaches, and gives it back on the way out.
     _timing_hidden = None if _timed else turn_timing.suspend()
-    _turn_gate = contextlib.AsyncExitStack()
     try:
         if _timed:
             turn_timing.mark("admit_start")
@@ -1090,14 +1087,6 @@ async def _run_chat(
         if _timed:
             turn_timing.mark("prompt_built")
 
-        # On a shared chat runtime, take the per-process chat turn gate BEFORE the
-        # dispatch gates, and hold it to the ``finally`` (a null hold otherwise).
-        # Waiting for a co-tenant's turn here means a Stop or a close that lands
-        # during the wait is seen by the checks below, instead of being answered
-        # "idle" while this turn runs once the gate frees. The stream's own gate is
-        # reentrant for this task, and a /compact keeps it through its deferred
-        # receipt, so no co-tenant turn can take this session's ownerless frames.
-        await _turn_gate.enter_async_context(chat_turn_gate_hold(client))
         # No await from here to the stream loop: begin_turn (in _turn_dispatch_gates) and the
         # stream's turn registration stay one yield-free span.
         _flow = await _turn_dispatch_gates(turn)
@@ -1442,8 +1431,6 @@ async def _run_chat(
     except Exception as exc:
         await _on_error(turn, exc)
     finally:
-        with contextlib.suppress(Exception):
-            await _turn_gate.aclose()
         trace_turns.release_turn_root(_trace_root)
         state.release_turn_heartbeat(turn)
         if _timed:
