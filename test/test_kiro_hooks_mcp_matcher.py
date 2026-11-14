@@ -1,8 +1,8 @@
-"""kiro-cli's MCP matcher forms reach the spec kiro-cli runs (#29841).
+"""kiro-cli's MCP matcher forms reach the spec kiro-cli runs.
 
 kiro-cli matches an MCP tool with ``@server`` (every tool of a server) or
-``@server/tool``. A config hook with either matcher used to be dropped while the
-spec was written, so the hook never ran. These tests pin all three kiro-cli
+``@server/tool``. A config hook with either matcher is kept when the spec is
+written, so the hook runs. These tests pin all three kiro-cli
 paths (the config object form, the config array form and an autoimport header)
 and the rules that stay: anything outside the two forms is still refused, and
 hooks Crew fires itself keep their own rule.

@@ -49,8 +49,8 @@ _SAFE_MATCHER_RE = re.compile(r"^[a-zA-Z0-9_.*\-]+$")
 _MAX_MATCHER_LEN = 200
 # kiro-cli's own matcher for MCP tools: ``@server`` (every tool of one server) or
 # ``@server/tool`` (one tool, where the tool part may glob with ``*``). kiro-cli
-# documents both, and ``_SAFE_MATCHER_RE`` has no ``@`` or ``/``, so without this a
-# config hook scoped to an MCP server never reached the materialized spec (#29841).
+# documents both, and ``_SAFE_MATCHER_RE`` has no ``@`` or ``/``, so this pattern is
+# what lets a config hook scoped to an MCP server reach the materialized spec.
 # The server part takes a non-leading ``:`` because an app's bridge is keyed
 # ``<app>:<server>`` in the spec (``action-radar:ledger``); it never holds a ``/``,
 # which ``mcp_server_alias`` strips from every key.
