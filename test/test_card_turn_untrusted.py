@@ -28,6 +28,7 @@ from chat_runner_coverage_helpers import (
 
 from kiro_crew.dashboard import card_send, chat_runner
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, ToolHookResult
+from kiro_crew.sel import SecurityEventLog
 
 _LS = json.dumps({"command": "ls -la"})
 _CARD_TEXT = "[Dashboard card] Approve the plan"
@@ -56,21 +57,33 @@ def _trusting_slot(mode: str):
     return slot
 
 
-async def _run(state, client, slot, *, card: bool) -> MagicMock:
-    """One turn with one permission request; returns the SEL double."""
+async def _run(tmp_path, state, client, slot, *, card: bool) -> SecurityEventLog:
+    """One turn with one permission request; returns the real security event log it wrote."""
     _set_stream(client, [_permission(tool_input=_LS), _complete()])
-    audit = MagicMock()
+    # The log is a process singleton: cleared around the construction, so this
+    # turn writes to its own log and no other caller is handed it.
+    with (
+        patch.object(SecurityEventLog, "_instance", None),
+        patch.object(SecurityEventLog, "_initialized", False),
+    ):
+        audit = SecurityEventLog(base_dir=tmp_path / "sel", sync=True)
     with (
         patch.object(chat_runner, "sel", return_value=audit),
         patch.object(chat_runner, "tool_approval_timeout_secs", return_value=0.0),
     ):
+        # Both arms call ``_run_chat`` here, not ``_drive``, whose quiet log would
+        # take the rows this log is read for.
+        slot._empty_response_retries = 2
         if card:
-            slot._empty_response_retries = 2
             await chat_runner._run_chat(state, slot, _CARD_TEXT, _card_origin=True)
-            await _settle(slot)
         else:
-            await _drive(state, slot)
+            await chat_runner._run_chat(state, slot, "hello")
+        await _settle(slot)
     return audit
+
+
+def _rows(audit: SecurityEventLog, outcome: str) -> list[dict]:
+    return [e for e in audit.recent() if e.get("outcome") == outcome]
 
 
 @pytest.mark.asyncio
@@ -80,9 +93,12 @@ async def test_a_typed_turn_in_a_trusting_thread_auto_approves(tmp_path, mode):
     state, client = _runner_state(tmp_path)
     slot = _trusting_slot(mode)
 
-    await _run(state, client, slot, card=False)
+    audit = await _run(tmp_path, state, client, slot, card=False)
 
     client.approve_tool.assert_awaited_once_with("req-cov-1")
+    # The grant is on the record, and nothing was withheld.
+    assert [r["request_id"] for r in _rows(audit, "auto_approved")] == ["req-cov-1"]
+    assert _rows(audit, "auto_approve_declined") == []
 
 
 @pytest.mark.asyncio
@@ -91,7 +107,7 @@ async def test_a_card_turn_in_a_trusting_thread_is_not_auto_approved(tmp_path, m
     state, client = _runner_state(tmp_path)
     slot = _trusting_slot(mode)
 
-    await _run(state, client, slot, card=True)
+    await _run(tmp_path, state, client, slot, card=True)
 
     client.approve_tool.assert_not_awaited()
     # It reached the approval card, where a person decides.
@@ -105,7 +121,7 @@ async def test_a_card_turn_is_not_auto_approved_under_yolo(tmp_path):
     state.is_yolo_active = MagicMock(return_value=True)
     slot = _slot()
 
-    await _run(state, client, slot, card=True)
+    await _run(tmp_path, state, client, slot, card=True)
 
     client.approve_tool.assert_not_awaited()
     assert [m for m in slot.messages if m.get("role") == "permission"]
@@ -119,9 +135,15 @@ async def test_a_card_turn_is_not_auto_approved_by_a_scoped_grant(tmp_path):
 
     with patch.object(chat_runner, "safety_override") as override:
         override.return_value.is_scope_active.return_value = True
-        await _run(state, client, slot, card=True)
+        audit = await _run(tmp_path, state, client, slot, card=True)
 
     client.approve_tool.assert_not_awaited()
+    # The live scope counts as session trust, so the audit names the trust tier it
+    # withheld, and the request went to the approval card for a person.
+    assert [r["metadata"] for r in _rows(audit, "auto_approve_declined")] == [
+        {"reason": "card_origin_turn", "tier": "trust"}
+    ]
+    assert len([m for m in slot.messages if m.get("role") == "permission"]) == 1
 
 
 @pytest.mark.asyncio
@@ -133,21 +155,16 @@ async def test_a_card_turn_is_not_auto_approved_by_the_hook_auto_approve_list(tm
 
     # The control, typed: the hook list alone approves.
     typed_slot = _slot()
-    await _run(state, client, typed_slot, card=False)
+    await _run(tmp_path, state, client, typed_slot, card=False)
     client.approve_tool.assert_awaited_once_with("req-cov-1")
 
     client.approve_tool.reset_mock()
     slot = _slot()
-    audit = await _run(state, client, slot, card=True)
+    audit = await _run(tmp_path, state, client, slot, card=True)
 
     client.approve_tool.assert_not_awaited()
     assert [m for m in slot.messages if m.get("role") == "permission"]
-    declined = [
-        c.kwargs
-        for c in audit.log_tool_invocation.call_args_list
-        if c.kwargs.get("outcome") == "auto_approve_declined"
-    ]
-    assert [d["metadata"] for d in declined] == [
+    assert [d["metadata"] for d in _rows(audit, "auto_approve_declined")] == [
         {"reason": "card_origin_turn", "tier": "hook_auto_approve"}
     ]
 
@@ -157,19 +174,12 @@ async def test_the_withheld_trust_is_written_to_the_audit_log(tmp_path):
     state, client = _runner_state(tmp_path)
     slot = _trusting_slot("trust")
 
-    audit = await _run(state, client, slot, card=True)
+    audit = await _run(tmp_path, state, client, slot, card=True)
 
-    declined = [
-        c.kwargs
-        for c in audit.log_tool_invocation.call_args_list
-        if c.kwargs.get("outcome") == "auto_approve_declined"
+    assert [d["metadata"] for d in _rows(audit, "auto_approve_declined")] == [
+        {"reason": "card_origin_turn", "tier": "trust"}
     ]
-    assert [d["metadata"] for d in declined] == [{"reason": "card_origin_turn", "tier": "trust"}]
-    assert not [
-        c
-        for c in audit.log_tool_invocation.call_args_list
-        if c.kwargs.get("outcome") == "auto_approved"
-    ]
+    assert _rows(audit, "auto_approved") == []
 
 
 @pytest.mark.asyncio
