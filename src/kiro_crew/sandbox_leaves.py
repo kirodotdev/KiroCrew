@@ -533,6 +533,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # Recorded consent to send memory to a provider app that keeps it elsewhere.
+    # Same class as ``decisions_consent.json`` above: a writable grant lets an
+    # auto-approved agent consent, for itself, to its memory leaving the machine.
+    "memory_provider_consent.json",
+    # Memory move jobs and their id ledgers (``memory_provider.migration``). A
+    # rollback deletes from the provider every id the ledger marks inserted, so a
+    # writable ledger lets an agent have Crew delete provider items of its choosing.
+    # The gateway's ``/api/memory/provider/migrations`` routes are the only writer.
+    "memory_provider_migrations",
     # The update armed for the next start (``update_next_start``). The boot-time
     # apply installs on the strength of this record alone, so a writable copy lets
     # a sandboxed shell skip the step-up, the self-protection deny floor and the
@@ -972,6 +981,9 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     # leave no record. One member's silo holding another's preferences and lessons is
     # worth a denial that costs nothing.
     "memory_stores",
+    # Memory move jobs: counts, ids and text hashes the gateway alone reads and
+    # writes, withheld on the same ground as ``memory_stores``.
+    "memory_provider_migrations",
     # The microvm lane's crew records, withheld on the same ground as ``memory_stores``
     # and for the same reason it cannot be classified readable: no in-sandbox reader
     # breaks without it, because the gateway owns every read and every write -- the
@@ -999,6 +1011,7 @@ _CREW_CHILD_WITHHELD_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "decisions_consent.json",
+    "memory_provider_consent.json",
     "shared_crew_preview.json",
     "ssh_auth_sock_consent.json",
     "project_hooks_consent.json",

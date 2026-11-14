@@ -811,7 +811,10 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 6, from 36,018, to 36,024, for ``memory_provider_consent.json`` on the
+#: crew secret-leaf list, beside ``decisions_consent.json``: the record authorizes
+#: memory to leave the machine, so the file-tool gate fences it like that one.
+_PACKAGE_LINE_BUDGET = 36_024
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

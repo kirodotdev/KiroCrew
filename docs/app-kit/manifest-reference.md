@@ -1559,6 +1559,38 @@ click. A link clicked inside the frame goes nowhere; use `offerOpen`.
 64 KB or past its burst allowance, or navigates itself away is removed, and the
 popover says the app did not respond.
 
+### `contributes.memoryProviders` — Memory Your Backend Serves
+
+An app can offer Crew a memory provider: its backend serves a fixed JSON contract, and
+the owner picks it in Settings > Memory > Memory provider, as a replacement for Crew's
+memory or as a read-only extra source. Needs `backend.entryPoint`.
+
+```json
+{
+  "backend": { "entryPoint": "backend/server.py", "healthCheck": "/health" },
+  "contributes": {
+    "memoryProviders": [{
+      "id": "bridge",
+      "displayName": "My memory server",
+      "route": "/memory-provider",
+      "description": "Keeps memory in my own service.",
+      "settingsPage": "/settings"
+    }]
+  }
+}
+```
+
+| Field | Rule |
+|---|---|
+| `id` | `^[a-z][a-z0-9-]{0,31}$`, unique in the app; the provider is `app:<app id>/<id>` |
+| `displayName` | at most 60 characters |
+| `route` | a plain path below your app's API; the gateway posts `/api/<route>/v1/<op>` |
+| `description` | optional, at most 200 characters |
+| `settingsPage` | optional page of your app where the provider is connected |
+
+At most four providers per app; a malformed block refuses the install. The contract
+your backend answers is in [api-reference](api-reference.md#memory-provider-contract).
+
 ### `backend` — App Backend Process
 
 ```json
@@ -1848,6 +1880,7 @@ packages at all.
 | `permissions.storage` | boolean | Can use app-scoped storage |
 | `permissions.cron` | boolean | Can create cron jobs at runtime (`ctx.cron`). Required when `crons` is non-empty |
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
+| `permissions.memoryAdmin` | boolean | May browse, edit and export whichever memory provider is active through `/api/memory/provider`, and plan a move or an import (never run one, and never switch). Shown at install, staged on an update like a new API path, and every call is an audit record naming the app |
 | `permissions.network` | boolean | Can make external network requests |
 | `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices, but not a change to the session's agent binding, persona settings, or a harness slash command), approve or deny pending tool requests, and change approval modes within the limits below |
 | `permissions.memberThreads` | boolean | Widens `sessionApproval` to a Bot's pinned DM thread (the live `member-*` slot the owner opened): the same actions, nothing else about the Bot. Grants nothing without `sessionApproval`; see [the scope below](#permissionsmemberthreads--a-bots-own-thread) |

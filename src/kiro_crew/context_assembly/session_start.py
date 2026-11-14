@@ -520,19 +520,52 @@ def build_session_context(
             member, member_is_id=bool(execution_context and execution_context.member_id)
         )[0]
     )
-    memory, member_vectors, activity_ranked = _store_admission.session_memory_parts(
-        self,
-        blocks,
-        private=private,
-        blocks_reads=blocks_reads,
-        effective_groups=effective_groups,
-        workspace=workspace,
-        memory_store=memory_store,
-        caps=caps,
-        essentials=essentials,
-        cfg=_cfg,
-        query_text=query_text,
+    # Which memory answers: Crew's own (the path below, unchanged) or a provider
+    # that replaces it. ``route_for`` is the only selection point
+    # (``kiro_crew.memory_provider``); on a default config it answers builtin
+    # without reading anything.
+    from kiro_crew.memory_provider import chokepoints as _memory_provider
+
+    # A read-blocked (temporary) build reads no memory at all, so it asks nothing.
+    memory_route = (
+        _memory_provider.BUILTIN_ROUTE
+        if blocks_reads
+        else _memory_provider.session_route(memory_store, session_key)
     )
+    provider_rules_index: int | None = None
+    if memory_route.replaces:
+        memory, member_vectors, activity_ranked = None, None, False
+        if not blocks_reads:
+            provider_rules_index = _memory_provider.replace_session_parts(
+                blocks,
+                memory_route,
+                memory_store=memory_store,
+                session_key=session_key,
+                execution_context=execution_context,
+                project=project,
+                query_text=query_text,
+                caps=caps,
+                include_memory=_inclusion._group_included(
+                    effective_groups, _inclusion.CONTEXT_GROUP_MEMORY
+                ),
+                include_lessons=_inclusion._group_included(
+                    effective_groups, _inclusion.CONTEXT_GROUP_LESSONS
+                ),
+            )
+    else:
+        memory, member_vectors, activity_ranked = _store_admission.session_memory_parts(
+            self,
+            blocks,
+            private=private,
+            blocks_reads=blocks_reads,
+            effective_groups=effective_groups,
+            workspace=workspace,
+            memory_store=memory_store,
+            caps=caps,
+            essentials=essentials,
+            cfg=_cfg,
+            query_text=query_text,
+        )
     _mark("memory")
 
     # Skills. Three cases, in precedence order:
@@ -577,6 +610,24 @@ def build_session_context(
         query_text=query_text,
     )
     # V2 essential rules are query-free; V1 retains its query-ranked lessons.
+    if memory_route.replaces:
+        lessons_part_index = provider_rules_index
+    elif (
+        memory_route.augments
+        and not blocks_reads
+        and _inclusion._group_included(effective_groups, _inclusion.CONTEXT_GROUP_MEMORY)
+    ):
+        # A read-only provider adds one background block after Crew's own blocks.
+        _memory_provider.augment_session_part(
+            blocks,
+            memory_route,
+            memory_store=memory_store,
+            session_key=session_key,
+            execution_context=execution_context,
+            project=project,
+            query_text=query_text,
+            caps=caps,
+        )
     _mark("lessons")
 
     # Source snippets may exist only in this conversation's log, not in the

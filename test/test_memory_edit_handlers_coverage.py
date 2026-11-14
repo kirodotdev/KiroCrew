@@ -463,7 +463,7 @@ class TestBulkPreviewAndApply:
         env.declare(_FINANCE)
         env.tier(_FINANCE)
 
-        async def _refuse(_state, _request, _operation):
+        async def _refuse(_state, _request, _operation, *, store=None):
             return web.json_response(
                 {"error": "write blocked", "code": "write_blocked"}, status=403
             )
@@ -489,7 +489,7 @@ class TestBulkPreviewAndApply:
         env.declare(_FINANCE)
         env.tier(_FINANCE)
 
-        async def _refuse(_state, _request, _operation):
+        async def _refuse(_state, _request, _operation, *, store=None):
             return web.json_response(
                 {"error": "write blocked", "code": "write_blocked"}, status=403
             )

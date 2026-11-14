@@ -935,6 +935,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         decisions_consent_path,
         denied_commands_path,
         materialize_workspace_dir,
+        memory_provider_consent_path,
         normalize_workspace_path,
         oauth_endpoints_path,
         outbox_dir,

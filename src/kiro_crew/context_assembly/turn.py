@@ -176,6 +176,7 @@ def post_compaction_parts(
         model_window=model_window,
         essentials=_essentials,
         query_text=query_text,
+        session_key=session_key,
     )
     if _lessons_ctx:
         if session_key and ctx.KiroCrewConfig.load().memory.inject_lessons_per_turn:
