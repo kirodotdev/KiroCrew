@@ -310,7 +310,8 @@ def _published_by_gateway(launch, target, occupant, expect_occupant, fd):
     """Whether the changed object pinned at *target* is one the gateway itself published.
 
     The one recreation the pin admits, and only for the names the plan lists (the two
-    runtime-config files). The gateway saves them through an atomic rename, so the
+    runtime-config files and ``refresh_chains.json``). The gateway saves them through an
+    atomic rename, so the
     object at the name after a save is a new inode, and a save landing between the
     pre-spawn pass and this pin is the gateway's own write rather than a substitution.
     What tells the two apart is the gateway's publication record, which lists, per name,

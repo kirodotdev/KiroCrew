@@ -285,6 +285,7 @@ and some inode changes are ordinary rather than hostile:
 | untouched | proceeds | -- |
 | real object recreated | REFUSES | a staging directory rebuilt mid-flight (`aws-control-staging`, measured) |
 | `config.json` / `config.local.json` rewritten by the gateway's own config writer | PROCEEDS, only on the publication record below | the boot meta-stamp refresh, a load-time migration, a settings save |
+| `refresh_chains.json` rewritten by the gateway's refresh-token store | PROCEEDS, only on the same publication record | a dashboard token rotation or logout (`dashboard/refresh_tokens.py`) |
 | any other atomic rewrite | REFUSES | any `atomic_write` / `os.replace` publish; the helper renames onto the destination, so the inode always changes |
 | symlink recreated | REFUSES | a dotfile manager restow |
 | real object replaced by a symlink | REFUSES | the substitution this exists to catch |
@@ -293,7 +294,7 @@ and some inode changes are ordinary rather than hostile:
 Which of those a sandbox should permit is a decision about what the operator's own tooling may
 do to a protected name while an agent is running. It is not derivable from the launcher, and a
 list invented there would either break ordinary hosts or quietly reopen the hole. This table is
-the list, and the code admits only the row marked PROCEEDS.
+the list, and the code admits only the rows marked PROCEEDS.
 
 **The gateway's own config save, admitted on its publication record.** The two runtime-config
 files are sealed as files (they sit at the data-home root and cannot move into a directory),
@@ -318,7 +319,10 @@ gateway did not publish starts a new run, so a rewrite by anything else in betwe
 ahead, and a save whose record can be neither rewritten nor removed is refused, so the record
 never vouches for a file older than the one at the name. It holds descriptors on both the replaced and
 the published file of every save in the run, so no
-inode can be freed and its number reused by another file while it is vouched for. The plan carries the record's path, that nonce and the two
+inode can be freed and its number reused by another file while it is vouched for. The masked `refresh_chains.json` takes the same path: the refresh-token store
+stages each save through `atomic_write` with the same `staging_hook`, because a dashboard token
+rotation landing between a spawn's pass and its mask refused that spawn the same way.
+The plan carries the record's path, that nonce and the three
 names (`published_file_record`). On a changed occupant at one of those names, and only after
 the kind check, the launcher (`_published_by_gateway`) accepts when the entry at the name is the
 same kind of entry the pass saw (the same link, for a symlinked config, which the writer writes

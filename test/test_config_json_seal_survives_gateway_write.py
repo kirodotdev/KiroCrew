@@ -480,7 +480,11 @@ def test_the_rendered_launcher_carries_the_record_descriptor(_home: Path) -> Non
     record = rendered_payload(script)["published_file_record"]
     assert record["record"] == str(_home / "config-provenance" / "published")
     assert record["nonce"] == wp._NONCE
-    assert set(record["names"]) == {str(_home / "config.json"), str(_home / "config.local.json")}
+    assert set(record["names"]) == {
+        str(_home / "config.json"),
+        str(_home / "config.local.json"),
+        str(_home / "refresh_chains.json"),
+    }
 
 
 def test_a_real_spawn_plan_carries_the_record_and_the_config_identity(

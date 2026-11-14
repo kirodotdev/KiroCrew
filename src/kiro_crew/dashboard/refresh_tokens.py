@@ -39,6 +39,7 @@ from kiro_crew.atomic_write import (
     replace_with_retry,
     retry_read_sharing_window,
 )
+from kiro_crew.config import write_provenance
 from kiro_crew.config.loader import config_dir
 from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.revocation_gen import (
@@ -863,12 +864,19 @@ class RefreshStateManager:
             # the strength of this return: without it the consumed JTI is only in
             # the page cache, and a power-off leaves a store where the refresh
             # token this request burned validates AGAIN on the next start.
+            # The Linux launcher masks this file and pins the inode its pre-spawn pass
+            # saw, so a save landing between the pass and the pin refused the spawn. The
+            # staged inode is the one the rename below publishes, so it is recorded as
+            # the gateway's own write before either rename (``config.write_provenance``).
             atomic_write(
                 staged,
                 payload,
                 fsync=True,
                 restrict_to_owner=True,
                 restrict_on_error="warn",
+                on_staged=(
+                    write_provenance.staging_hook(self._state_path) if os.name == "posix" else None
+                ),
             )
             try:
                 replace_with_retry(staged, self._state_path)
