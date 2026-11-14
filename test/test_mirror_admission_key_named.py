@@ -388,3 +388,61 @@ def test_the_cron_leg_signs_the_link_it_reads_from_the_live_origin_record() -> N
     from kiro_crew.dashboard.chat_runner import _resolve_channel_target
 
     assert _resolve_channel_target(_State(_discord(), sessions), KEY, link) is not None
+
+
+class _Slot:
+    """The slice of a chat slot the dashboard-turn mirror leg reads."""
+
+    def __init__(self) -> None:
+        self._session_notice_marks: list[str] = []
+        self._steer_audience_fences: dict[str, Any] = {}
+
+
+def _deliver_and_collect_notices(
+    _floor_monkeypatch: pytest.MonkeyPatch, state: _State, slot: _Slot
+) -> list[dict[str, Any]]:
+    import asyncio
+
+    from kiro_crew.dashboard import chat_runner
+
+    notices: list[dict[str, Any]] = []
+    _floor_monkeypatch.setattr(
+        chat_runner,
+        "append_and_surface",
+        lambda _state, _slot, role, content, cls="", **kw: notices.append(
+            {"role": role, "content": content, **kw}
+        ),
+    )
+    _floor_monkeypatch.setattr(chat_runner, "mirror_is_paused", lambda *_a: False)
+    asyncio.run(chat_runner._deliver_cross_surface_reply(state, KEY, "an answer", slot=slot))
+    return notices
+
+
+def test_a_legacy_unsigned_row_tells_the_dashboard_chat_once(
+    _floor_monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#37047: the refused send is still refused, and the chat says so and names the
+    re-link, once, instead of looking like a delivered turn."""
+    sessions = _Sessions()
+    state = _State(_discord(), sessions)
+    sessions.rows[KEY] = ChannelLink("discord", channel_id=OWN_DM)
+    slot = _Slot()
+    notices = _deliver_and_collect_notices(_floor_monkeypatch, state, slot)
+    assert len(notices) == 1
+    assert notices[0]["role"] == "notice"
+    assert "not sent to the linked discord conversation" in notices[0]["content"]
+    assert "send one message from that conversation" in notices[0]["content"]
+    assert OWN_DM not in notices[0]["content"]
+    assert _deliver_and_collect_notices(_floor_monkeypatch, state, slot) == []
+
+
+def test_a_signed_row_shows_no_refusal_notice(_floor_monkeypatch: pytest.MonkeyPatch) -> None:
+    sessions = _Sessions()
+    state = _State(_discord(), sessions)
+    assert bind_origin_mirror(sessions, key=KEY, location=ChannelLink("discord", channel_id=OWN_DM))
+    assert _resolve(state) is not None
+    assert not [
+        n
+        for n in _deliver_and_collect_notices(_floor_monkeypatch, state, _Slot())
+        if n["role"] == "notice"
+    ]

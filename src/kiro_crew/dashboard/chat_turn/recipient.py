@@ -15,6 +15,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_recovery_item,
     slack_mirror_is_paused,
 )
+from kiro_crew.dashboard.session_notice_marks import _session_notice_is_new
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.egress import channel_egress_parts, send_channel_parts
 from kiro_crew.messaging.link import CHAT_TYPE_DIRECT, parse_session_key
@@ -34,6 +35,7 @@ if TYPE_CHECKING:
         _RECIPIENT_LOGGED,
         _RECIPIENT_LOGGED_CAP,
         SLACK_NAMESPACE,
+        append_and_surface,
         code_channel_post_thread,
         logger,
         mirror_is_paused,
@@ -241,6 +243,28 @@ def _key_named_row_admitted(state: Any, session_key: str, link: Any) -> bool:
     moved one, one signed under a rotated key -- is refused, audited, and logged
     once naming the remedy: re-bind it from the conversation or the dashboard.
     """
+    if _key_named_row_verified(state, session_key, link):
+        return True
+    channel_type = str(getattr(link, "channel_type", "") or "channel")
+    _audit_admission_refusal(session_key, link)
+    _log_once(
+        ("unadmitted-key-named", channel_type, str(getattr(link, "channel_id", "") or "")),
+        logging.WARNING,
+        "cross-surface: a %s channel session's mirror row carries no valid gateway "
+        "admission (written before rows were signed, rewritten outside the gateway, or "
+        "signed under a rotated key); refusing the send. Re-bind it: send a message or "
+        "the channel's link command in that conversation, or re-link from the dashboard",
+        channel_type,
+    )
+    return False
+
+
+def _key_named_row_verified(state: Any, session_key: str, link: Any) -> bool:
+    """The decision :func:`_key_named_row_admitted` takes, with no audit and no log.
+
+    Also asked by the dashboard-turn leg after a refused send, to tell the user why
+    the reply did not reach the channel; it never admits anything the leg refused.
+    """
     if not admission_required(session_key):
         return True
     if verify_mirror_admission(session_key, link):
@@ -262,17 +286,6 @@ def _key_named_row_admitted(state: Any, session_key: str, link: Any) -> bool:
         # user id (Telegram, iMessage) and the cron leg's user-id rung, which
         # resolves the postable DM through the transport for exactly this peer.
         return True
-    channel_type = str(getattr(link, "channel_type", "") or "channel")
-    _audit_admission_refusal(session_key, link)
-    _log_once(
-        ("unadmitted-key-named", channel_type, str(getattr(link, "channel_id", "") or "")),
-        logging.WARNING,
-        "cross-surface: a %s channel session's mirror row carries no valid gateway "
-        "admission (written before rows were signed, rewritten outside the gateway, or "
-        "signed under a rotated key); refusing the send. Re-bind it: send a message or "
-        "the channel's link command in that conversation, or re-link from the dashboard",
-        channel_type,
-    )
     return False
 
 
@@ -772,6 +785,53 @@ async def _send_mirror_images(
             notes.append(f"⚠ Couldn't upload: {_local_file_name(image.path) or 'image'}")
 
 
+#: The ``meta.kind`` of the row that says a channel mirror refused this chat's replies.
+MIRROR_UNADMITTED_NOTICE_KIND = "mirror_unadmitted"
+
+
+def _notice_unsigned_mirror_refusal(state: Any, slot: Any, session_key: str, link: Any) -> None:
+    """Tell the dashboard chat that its replies are not reaching the linked channel.
+
+    Called after the cross-surface leg resolved no target. Shown only when the
+    reason was a key-named mirror row whose admission does not hold
+    (:func:`_key_named_row_verified`) -- most often a row saved before rows were
+    signed -- because the refusal is otherwise visible only in a log, and the turn
+    looks delivered. Says what re-binds it. Decides nothing: the send was already
+    refused. Shown once per chat for each row; best-effort, never fails a turn.
+    """
+    if slot is None or link is None:
+        return
+    try:
+        channel_type = getattr(link, "channel_type", None)
+        # A registered transport means the channel type is one of ours, so no text
+        # off the agent-writable row reaches the notice.
+        if not isinstance(channel_type, str) or state.get_channel_transport(channel_type) is None:
+            return
+        if _key_named_row_verified(state, session_key, link):
+            return
+        text = (
+            f"This reply was not sent to the linked {channel_type} conversation. Its link "
+            "was saved before Kiro Crew signed links, or was changed outside Kiro Crew, so "
+            "sends to it are refused. To re-link it, send one message from that "
+            "conversation, or link the session again from the dashboard."
+        )
+        # Keyed on the location only: the admission field is agent-writable, so a
+        # mark over it could be churned to repeat the row and evict other marks.
+        mark = (channel_type, str(getattr(link, "channel_id", "") or ""))
+        if not _session_notice_is_new(slot, text, *mark):
+            return
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            text,
+            "msg msg-info",
+            meta={"kind": MIRROR_UNADMITTED_NOTICE_KIND},
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("cross-surface: could not show the mirror refusal notice", exc_info=True)
+
+
 async def _deliver_cross_surface_reply(
     state: Any, session_key: str, assistant_text: str, *, slot: Any = None
 ) -> None:
@@ -830,6 +890,7 @@ async def _deliver_cross_surface_reply(
         return
     target = _resolve_channel_target(state, session_key, binding[0])
     if target is None:
+        _notice_unsigned_mirror_refusal(state, slot, session_key, binding[0])
         return
     link, transport = target
     # Local images first, BEFORE any splitter (the outbound-files contract): a
