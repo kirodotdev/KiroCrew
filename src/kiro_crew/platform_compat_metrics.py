@@ -332,7 +332,8 @@ def _malloc_trim() -> bool:
         trim.argtypes = [ctypes.c_size_t]
         trim.restype = ctypes.c_int
         return bool(trim(0))
-    except (AttributeError, OSError):
+    except (AttributeError, OSError, TypeError):
+        # TypeError: on Windows ``ctypes.CDLL(None)`` fails on ``'/' in None``.
         return False
 
 
