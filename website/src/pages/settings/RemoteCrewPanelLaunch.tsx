@@ -4,7 +4,7 @@
  * launch cancel, and the device-code sign-in block that both the progress card
  * and a crew row render. One of the owners `RemoteCrewPanel.tsx` composes.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import {
   Rocket,
   RefreshCw,
@@ -27,28 +27,32 @@ import ErrorNotice from '../../components/ErrorNotice'
 import type { ErrorReport } from '../../utils/errorReport'
 import { copyToClipboard } from '../../utils/clipboard'
 import { i18nT } from '../../i18n/t'
+import { fmtCurrency } from '../../i18n/format'
 import {
   isTerminal, isRegistered, needsSignin, connectWaiting, isSsoLaunch, cancelCopy, type SizeTier,
-  tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice,
+  tierLabel, tierWhy, gatewayIsDown, failureSentence, type SigninNotice, HOURS_PER_MONTH, SIZE_FLAG,
 } from './remoteCrewPanelModel'
 
 /** One selectable size card. Shared by the arm64 ladder and the x86 lane so the
  *  disclosure offers real choices rather than describing sizes it cannot select. */
 export function SizeCard({ tier, on, onPick }: { tier: SizeTier; on: boolean; onPick: (k: SizeTier['key']) => void }) {
+  const priceId = useId()
   return (
     <button
       type="button"
       onClick={() => onPick(tier.key)}
       aria-pressed={on}
       aria-label={`${tierLabel(tier.family)} · ${tier.arch}`}
+      aria-describedby={priceId}
       className={`w-full text-left flex items-start gap-3 rounded-md border p-3.5 transition-all ${on ? 'border-accent bg-accent-subtle shadow-[0_0_0_3px_var(--accent-glow)]' : 'border-border-strong bg-bg-elevated hover:border-border-strong'}`}
     >
       <span className={`mt-0.5 w-4 h-4 shrink-0 rounded-full border-[1.5px] ${on ? 'border-accent bg-accent' : 'border-border-strong'}`} />
       <span className="min-w-0">
-        <span className="font-bold text-[13px] text-text-strong flex items-center gap-2">
+        <span className="font-bold text-[13px] text-text-strong flex flex-wrap items-center gap-2">
           {tierLabel(tier.family)}
           {tier.recommended && <Badge variant="aim">{i18nT('pages.settings.remoteCrewPanel.default_tag')}</Badge>}
           <span className="font-normal text-muted">· {i18nT('pages.settings.remoteCrewPanel.subagents', { n: tier.subagents })}</span>
+          <code translate="no" className="font-mono font-normal text-[12px] text-muted">{SIZE_FLAG} {tier.key}</code>
         </span>
         <span className="block font-mono text-[12px] text-muted mt-1">
           {i18nT('pages.settings.remoteCrewPanel.tier_spec', {
@@ -57,6 +61,12 @@ export function SizeCard({ tier, on, onPick }: { tier: SizeTier; on: boolean; on
             vcpu: tier.vcpu,
             ramGb: tier.ramGb,
             diskGb: tier.diskGb,
+          })}
+        </span>
+        <span id={priceId} className="block text-[12px] text-text mt-1">
+          {i18nT('pages.settings.remoteCrewPanel.tier_price', {
+            hourly: fmtCurrency(tier.approxUsdPerHr, 'USD', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+            monthly: fmtCurrency(tier.approxUsdPerHr * HOURS_PER_MONTH, 'USD', { minimumFractionDigits: 0, maximumFractionDigits: 0 }),
           })}
         </span>
         <span className="block text-[12px] text-text mt-1.5">{tierWhy(tier.family)}</span>

@@ -20789,6 +20789,8 @@
         "tier_power": "고성능",
         "tier_power_why": "대규모 팬아웃, 긴 빌드, 동시에 많은 병렬 하위 에이전트에 적합합니다.",
         "tier_spec": "{{instanceType}} · {{arch}} · {{vcpu}} vCPU · RAM {{ramGb}}GB · 디스크 {{diskGb}}GB",
+        "tier_price": "약 {{hourly}}/시간 · 계속 실행하면 약 {{monthly}}/월 (추정)",
+        "price_region_note": "요금은 {{priceRegion}} 온디맨드 요금이며 다른 리전에서는 다를 수 있습니다.",
         "transport_hint_fargate": "Session Manager를 통해 AWS Fargate 태스크에 도달합니다. 대시보드가 아닌 채팅 API를 제공합니다.",
         "transport_hint_ssh": "SSH를 통해 연결합니다.",
         "transport_hint_ssm": "AWS Systems Manager Session Manager를 통해 연결합니다.",

@@ -96,7 +96,7 @@ import {
 import {
   isInProgress, CLOUD_PROFILE_KEY, CLOUD_REGION_KEY, CLOUD_SIZE_KEY, CLOUD_PROVISIONER_KEY,
   DEFAULT_REGION, launchGuardKey, isTerminal, isRegistered, needsSignin, type SizeTier, SIZE_TIERS, X86_TIERS,
-  PRICING_CALCULATOR_URL, type SigninNotice,
+  PRICING_CALCULATOR_URL, PRICE_REGION, type SigninNotice,
 } from './remoteCrewPanelModel'
 import {
   SizeCard, ProvisionerCard, SettingUpRow, PrereqRow, LaunchProgressCard,
@@ -1507,6 +1507,9 @@ export function RemoteCrewPanel() {
 
             <div>
               <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.size')}</div>
+              {region.trim() !== PRICE_REGION && (
+                <p className="text-[12px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.price_region_note', { priceRegion: PRICE_REGION })}</p>
+              )}
               <div className="space-y-2.5">
                 {SIZE_TIERS.map(tier => (
                   <SizeCard key={tier.key} tier={tier} on={sizeKey === tier.key} onPick={setSizeKey} />
