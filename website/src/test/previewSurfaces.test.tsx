@@ -461,7 +461,7 @@ describe('Settings > Developer > Feature Previews', () => {
     // SettingsCard is borderless now (no `.card-glow`); its root carries
     // `animate-rise`, which is the enclosing card frame the switch sits in.
     const decisionsFrame = () =>
-      screen.queryByRole('switch', { name: 'Decisions (Jev)' })?.closest('.animate-rise') ?? null
+      screen.queryByRole('switch', { name: 'Decisions' })?.closest('.animate-rise') ?? null
     const decisionsButtons = () =>
       Array.from(
         decisionsFrame()?.querySelectorAll(

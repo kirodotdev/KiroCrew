@@ -1,5 +1,5 @@
 /**
- * Whether the composer may offer `Auto (Jev)` on its split send button.
+ * Whether the composer may offer `Auto (decision model)` on its split send button.
  *
  * Two answers, both the gateway's, and BOTH are required — the same split the
  * Decisions card in Settings reads (`decisionsPreview.ts` explains why the two

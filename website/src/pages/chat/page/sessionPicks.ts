@@ -45,7 +45,7 @@ export function useSlotSelectionCapabilitiesQuery(activeSlot: string | null) {
 
 /**
  * The model picker's roster: the slot's ACP selection capabilities, the hidden-model
- * list, the Auto (Jev) route offer, the filtered model list with its dropdown state, and
+ * list, the Auto (decision model) route offer, the filtered model list with its dropdown state, and
  * whether a pick hands focus back to the composer.
  *
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
@@ -65,7 +65,7 @@ export function useModelPickerModels({
   const codexPairModels = shouldSeparateModelEffort(
     selectionCapabilitiesQ.data?.model_effort_pair_ids, effectiveModels,
   )
-  // Whether the picker may offer `Auto (Jev)` (see `lib/jevRoute.ts`): the fleet's
+  // Whether the picker may offer `Auto (decision model)` (see `lib/jevRoute.ts`): the fleet's
   // answer AND the owner's keystone consent, both required. Two reads the page
   // already makes for other reasons, so the row costs no new request.
   const jevDashCfgQ = useQuery<{ decisions_enabled?: boolean }>({

@@ -1,5 +1,5 @@
 /**
- * The Decisions (Jev) card in Settings > Developer > Feature Previews.
+ * The Decisions card in Settings > Developer > Feature Previews.
  *
  * What is under test is the one thing this card does differently from every
  * other preview in that section: its switch is the KEYSTONE
@@ -52,7 +52,7 @@ const HOSTED_KEY_DRAWS = namedCeiling('HOSTED_KEY_DRAWS', 5000)
 /** An older gateway has no consent route: the client rejects with a 404. */
 const notFound = () => Object.assign(new Error('Not Found'), { status: 404 })
 
-describe('Decisions (Jev) preview card', () => {
+describe('Decisions preview card', () => {
   beforeEach(() => {
     localStorage.clear()
   })
@@ -438,7 +438,7 @@ describe('Decisions (Jev) preview card', () => {
       expect.stringContaining('Quiet check-ins: wake or skip'),
       expect.stringContaining('Browser steps: pick and check'),
     ])
-    expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
+    expect(screen.getByText(/what the decision model decides while this is on/i)).toBeInTheDocument()
   })
 
   it('draws a row for a point this build has no label for, under its own identifier', async () => {
@@ -461,13 +461,13 @@ describe('Decisions (Jev) preview card', () => {
     stubGateway(consentOf(true, { points: [] }))
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/does not list what Jev decides yet/i)).toBeInTheDocument()
+      expect(screen.getByText(/does not list what the decision model decides yet/i)).toBeInTheDocument()
     })
     const link = screen.getByRole('link', { name: 'Settings › About' })
     expect(link.getAttribute('href')).toBe('/settings/about')
   })
 
-  it('says where Auto (Jev) is chosen for the model.route point', async () => {
+  it('says where Auto (decision model) is chosen for the model.route point', async () => {
     stubGateway({ enabled: true })
     renderSection()
     await waitFor(() => {
@@ -479,7 +479,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(
       () => {
         expect(screen.getByRole('tabpanel').textContent ?? '').toContain(
-          "whose own model picker shows Auto (Jev)",
+          "whose own model picker shows Auto (decision model)",
         )
       },
       { timeout: 5000 },
@@ -840,7 +840,7 @@ describe('Decisions (Jev) preview card', () => {
     )
     expect(box).toBeDisabled()
     // Disabled AND explained: a held control with no reason beside it is a dead one.
-    expect(screen.getByText(/takes effect once the main Jev switch is on/i)).toBeInTheDocument()
+    expect(screen.getByText(/takes effect once the main decision model switch is on/i)).toBeInTheDocument()
     fireEvent.change(box, { target: { value: '6000' } })
     fireEvent.blur(box)
     expect(budget).not.toHaveBeenCalled()
@@ -1143,7 +1143,7 @@ describe('Decisions (Jev) preview card', () => {
       expect(screen.getByText(/older than this feature/i)).toBeInTheDocument()
     })
     expect(screen.queryAllByRole('tab')).toEqual([])
-    expect(screen.queryByText(/what Jev decides while this is on/i)).toBeNull()
+    expect(screen.queryByText(/what the decision model decides while this is on/i)).toBeNull()
   })
 
   it('names the address consent is given for', async () => {
@@ -1458,13 +1458,13 @@ describe('Decisions (Jev) preview card', () => {
       const notice = await screen.findByTestId('decisions-admin-disabled')
       // A plain statement, named for the feature, and not a silently greyed switch.
       expect(notice).toHaveAttribute('role', 'status')
-      expect(notice.textContent).toContain('Decisions (Jev)')
+      expect(notice.textContent).toContain('Decisions')
       expect(notice.textContent).toContain(
         "Your administrator's policy turns off decision models for this dashboard, so their settings are not shown here.",
       )
       // About this dashboard only: a policy can still permit Slack or another channel.
       expect(notice.textContent).not.toMatch(/Nothing is sent|none runs|built-in rules/)
-      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Decisions' })).toBeNull()
       expect(screen.queryByRole('radiogroup', { name: 'Decision model' })).toBeNull()
       // Nothing about sending is on screen to act on, even with a recorded consent.
       expect(screen.queryByText(/sent over the internet to the decision model/i)).toBeNull()
@@ -1482,7 +1482,7 @@ describe('Decisions (Jev) preview card', () => {
         await client.invalidateQueries({ queryKey: ['dashboardConfig'] })
       })
       await screen.findByTestId('decisions-admin-disabled', {}, HOSTED_KEY_DRAWS)
-      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Decisions' })).toBeNull()
       // And back on: the same editor, the draft intact.
       vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
       await act(async () => {
@@ -1514,7 +1514,7 @@ describe('Decisions (Jev) preview card', () => {
       await waitFor(() => {
         expect(screen.getByRole('switch', { name: /Webhooks/i })).toBeInTheDocument()
       })
-      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Decisions' })).toBeNull()
     })
 
     it('explains a failed ceiling read instead of removing the feature', async () => {
@@ -1546,7 +1546,7 @@ describe('Decisions (Jev) preview card', () => {
       await waitFor(() => {
         expect(screen.getByRole('switch', { name: /Webhooks/i })).toBeInTheDocument()
       })
-      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      expect(screen.queryByRole('switch', { name: 'Decisions' })).toBeNull()
       expect(screen.queryByText(/could not read the settings/i)).toBeNull()
     })
 

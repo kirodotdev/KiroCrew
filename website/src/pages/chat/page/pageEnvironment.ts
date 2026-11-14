@@ -270,7 +270,7 @@ interface PageFlagsOptions {
 
 /**
  * The dashboard-config switches this page reads (split view, link previews, social
- * share, Auto (Jev) send, the Connections gallery), the composer's file arrivals (held
+ * share, Auto (decision model) send, the Connections gallery), the composer's file arrivals (held
  * while split view owns the composers), the pop-out state for the title bar, and the
  * plan task id the transcript carries.
  *
@@ -319,7 +319,7 @@ export function usePageFlags({
   // entry stays hidden until it says true — the endpoint is the authority, the
   // frontend never guesses (same posture as the mobile-connect rail row).
   const socialShareOn = dashCfg?.social_share_enabled === true
-  // Whether the split send button may offer `Auto (Jev)`: the fleet ceiling and
+  // Whether the split send button may offer `Auto (decision model)`: the fleet ceiling and
   // the owner's consent, both the gateway's answers (see useJevAutoSend).
   const jevAutoConsented = useJevAutoSend()
   // Connections cards own consent for the providers they render, so chat drops

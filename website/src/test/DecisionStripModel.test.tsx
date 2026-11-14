@@ -197,7 +197,7 @@ describe('the model row', () => {
     const strip = screen.getByTestId('decision-strip-model')
     expect(strip).toHaveAttribute('data-tier', 'complex')
     expect(strip).toHaveAttribute('data-expanded', 'false')
-    expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('Jev: complex')
+    expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('Decision model: complex')
     expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('model-c')
     expect(screen.getByTestId('decision-strip-model-confidence').textContent).toBe('(0.91)')
     expect(screen.getByTestId('decision-strip-model-latency').textContent).toContain('180')
@@ -216,7 +216,7 @@ describe('the model row', () => {
     render(<DecisionStrip record={unpinned} />)
     const strip = screen.getByTestId('decision-strip-model')
     expect(strip).toHaveAttribute('data-pinned', 'false')
-    expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('Jev: complex')
+    expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('Decision model: complex')
     expect(screen.getByTestId('decision-strip-model-pick').textContent).toContain('(unpinned)')
     // The tier and the score are still shown: that is the evidence to pin from.
     expect(screen.getByTestId('decision-strip-model-confidence').textContent).toBe('(0.91)')

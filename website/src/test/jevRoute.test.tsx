@@ -1,5 +1,5 @@
 /**
- * When the picker offers `Auto (Jev)`, and when it reads as selected.
+ * When the picker offers `Auto (decision model)`, and when it reads as selected.
  *
  * Both gates are asserted as FAIL-CLOSED, which is the whole point of the module:
  * the fleet's `decisions_enabled` and the owner's `permits` are different answers,
@@ -91,7 +91,7 @@ describe('isUnpinnedModel', () => {
     // `''` is not a choice to inherit, it is the absence of a choice, and the gate
     // cannot route it: the slot's first session backfills the provider's resolved
     // model into `slot.model` before the routing question is asked. Reading it as
-    // unpinned is what made a brand-new chat's chip say `Auto (Jev)` while every
+    // unpinned is what made a brand-new chat's chip say `Auto (decision model)` while every
     // turn ran on the backend default, hiding the model that would answer.
     for (const model of ['', '   ', undefined]) {
       expect(isUnpinnedModel(model)).toBe(false)
@@ -144,7 +144,7 @@ describe('a picker with no live slot', () => {
     for (const rel of ['../pages/ChatPage.tsx', '../components/useChatPanePickers.ts']) {
       const source = rel === '../pages/ChatPage.tsx' ? chatPageSource() : readFileSync(join(__dirname, rel), 'utf-8')
       const line = source.split('\n').find(l => l.includes('jevRouteOffered('))
-      expect(line, `${rel} offers Auto (Jev) without asking for a slot`).toMatch(/Slot\)/)
+      expect(line, `${rel} offers Auto (decision model) without asking for a slot`).toMatch(/Slot\)/)
     }
     // Held as nothing rather than as a resolved id: the create-value guard in
     // ChatPage.newSessionModel.test.ts admits only an explicit pick or an empty
@@ -216,7 +216,7 @@ describe('the picker row', () => {
         onSelect={() => {}}
       />,
     )
-    expect(screen.getByText('Auto (Jev)')).toBeInTheDocument()
+    expect(screen.getByText('Auto (decision model)')).toBeInTheDocument()
     expect(screen.queryByText(JEV_ROUTE_MODEL)).toBeNull()
   })
 

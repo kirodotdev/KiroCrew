@@ -3,7 +3,7 @@
  *
  * `settingsRegistry.gen.ts` is codegen'd from the static settings tree, so it lists
  * every entry the build ships whether or not the running gateway offers it. The
- * Decisions (Jev) toggle is governed by `capabilities.decisions`: under a pin
+ * Decisions toggle is governed by `capabilities.decisions`: under a pin
  * the card draws only the administrator's notice, and an unfiltered corpus would then hand
  * the user a search result that navigates to a section where the row is absent —
  * which reads as a broken page rather than a feature the fleet withdrew.

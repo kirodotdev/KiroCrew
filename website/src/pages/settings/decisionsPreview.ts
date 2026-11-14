@@ -1,5 +1,5 @@
 /**
- * The Decisions (Jev) card's read model.
+ * The Decisions card's read model.
  *
  * Two sources, deliberately, because the two values live in two different
  * places on the gateway and the split IS the security design:
@@ -37,8 +37,8 @@ export const DECISIONS_STEER_POINT = 'message.steer'
  *
  *  Every DECIDING point consumes its answer, and each is reached only through a
  *  choice the owner makes somewhere else: a non-zero `skills.max_triggered` for
- *  the skill point, the send button's `Auto (Jev)` entry for the steer point, and
- *  the chat model picker's `Auto (Jev)` entry for this one. The switch on this
+ *  the skill point, the send button's `Auto (decision model)` entry for the steer point, and
+ *  the chat model picker's `Auto (decision model)` entry for this one. The switch on this
  *  card is what lets any of them be asked at all, never what arms one.
  */
 export const DECISIONS_MODEL_POINT = 'model.route'

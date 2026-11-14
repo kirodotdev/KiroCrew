@@ -13,14 +13,14 @@ import {
 import { i18nT } from '../../i18n/t'
 
 /**
- * One decision point's own settings — the DETAIL half of the Decisions (Jev) card.
+ * One decision point's own settings — the DETAIL half of the Decisions card.
  *
  * Split into its own module so the CARD can be mounted synchronously while this is
  * loaded on demand. Both halves of that matter and they pull in opposite directions:
  *
  *  - the card must be synchronous, because settings search highlights a control by
  *    probing the DOM for it and gives up after 100 ms. A deep link to
- *    `developer.decisions-jev` that arrived while a chunk was still in flight found
+ *    `developer.decisions` that arrived while a chunk was still in flight found
  *    nothing and rang no control.
  *  - this panel need not be, because nothing it draws is in the settings registry:
  *    every control here takes its label from a map keyed by the SERVER's id (the

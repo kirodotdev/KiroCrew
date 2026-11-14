@@ -678,7 +678,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // The side panel can hold on to the callback it was last rendered with for a
   // render after this page has moved on (it sits under AnimatePresence), so it
   // is handed a stable forwarder to the latest handler: a Submit right after
-  // Auto (Jev) consent arrives must carry the auto flag, not the steer the
+  // Auto (decision model) consent arrives must carry the auto flag, not the steer the
   // previous render would have sent.
   const { submitComments } = useStableCallbackProps({ submitComments: (message: string): false | Promise<boolean> => {
     // Defense-in-depth: the panels' submit buttons are gated on `connected`,
