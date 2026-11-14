@@ -1242,10 +1242,18 @@ async def api_cron_update(request: web.Request) -> web.Response:
         if ch and (len(ch) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(ch)):
             return web.json_response({"error": "invalid channel ID format"}, status=400)
     # Schedule: accept cron_expr or every (seconds)
+    # The store reads an empty value as "leave unchanged" (other writers rely on
+    # that), so an empty one here answers ok for an edit that never happened: say so.
     if "cron" in body:
         kwargs["cron_expr"] = body["cron"]
+        if not body["cron"] and not body.get("every"):
+            update_flag_warnings.append("'cron' is empty, so the schedule was left unchanged")
     if "every" in body:
         kwargs["every_secs"] = body["every"]
+        if not body["every"] and not body.get("cron"):
+            update_flag_warnings.append(
+                "'every' is empty or zero, so the schedule was left unchanged"
+            )
     if "timezone" in body:
         tz_val = (body["timezone"] or "").strip()
         if tz_val and not is_valid_timezone(tz_val):
