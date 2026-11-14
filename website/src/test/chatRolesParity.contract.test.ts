@@ -57,6 +57,7 @@ const PAGE_ONLY_ENTRY_IDS: Record<string, string> = {
   crew_dispatch_notice: 'the Crew Mode dispatch notice row; its Open Board button needs the host slot + onOpenCrewTab reveal the store-free registry has no seam for (a peer/crew window renders it inert)',
   session_send_tool: "this session's own session_send call drawn as the outgoing session-message card, refining the tool line; the registry draws the generic tool line",
   crew_paused_notice: 'the conductor mode Pause all notice row; it reads the dashboard-only conductor mode preview flag, which the store-free registry has no seam for',
+  mcp_sign_in_needed: "the row naming MCP servers that wait for a sign-in, drawn in the reader's language from its meta; a surface without the dashboard's row set draws the row's own English text, which says the same",
   trust_reset_notice: "a restart's Trust reset row; its Turn Trust back on button dispatches this hub's approval-mode pick from the store, which the store-free registry has none of (it leaves system rows undrawn)",
   // -- page-only --
   permission: 'undrawn here; the registry leaves it to GROUPED_ROLES',

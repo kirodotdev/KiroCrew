@@ -32,7 +32,11 @@ from kiro_crew.acp._dispatch import classify_notification
 from kiro_crew.acp.client import _is_safe_oauth_url
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
-from kiro_crew.acp.mcp_reattempt import is_recoverable_auth_failure, is_start_timeout_failure
+from kiro_crew.acp.mcp_reattempt import (
+    is_recoverable_auth_failure,
+    is_refused_sign_in,
+    is_start_timeout_failure,
+)
 from kiro_crew.acp.mcp_session_report import (
     BUCKET_CAP,
     NAME_CAP,
@@ -911,7 +915,9 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
             dropped += 1
             continue
         present.add(name)
-        if server.get("failedAuthorization") is True:
+        if server.get("failedAuthorization") is True or (
+            server.get("status") == "failed" and is_refused_sign_in(server.get("errorMessage"))
+        ):
             self._mcp_sign_in_needed.add(name)
             self._mcp_reattempt_waiting.discard(name)
         elif server.get("status") in ("connected", "disabled"):

@@ -47,6 +47,7 @@ import NoticeCard from './NoticeCard'
 import { kasSignedOutBesideButton, resolveGatewayNotice } from './gatewayNotice'
 import CrewDispatchNoticeCard from './CrewDispatchNoticeCard'
 import CrewPausedNoticeCard from './CrewPausedNoticeCard'
+import McpSignInNeededNotice, { isMcpSignInNeededNotice } from './McpSignInNeededNotice'
 import TrustResetNoticeCard, { type LostMode } from './TrustResetNoticeCard'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
@@ -445,6 +446,14 @@ export function createTranscriptRenderers(
           onOpenCrewTab={o.onOpenCrewTab}
         />,
       ),
+    },
+    {
+      // The row a chat shows once when its MCP servers wait for a sign-in; its
+      // sentence names the chat message that signs in.
+      id: 'mcp_sign_in_needed',
+      roles: ['notice'],
+      match: isMcpSignInNeededNotice,
+      render: (m, ctx) => ctx.row(<McpSignInNeededNotice key={ctx.key} content={m.content} meta={m.meta} />),
     },
     {
       // The main chat's one "You paused the crew" row (conductor mode Pause all).

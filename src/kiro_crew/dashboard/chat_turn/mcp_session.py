@@ -10,8 +10,13 @@ import functools
 import json
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_sdk.backends import ACP_BACKENDS_OPEN_EXTERNAL_URL
 from kiro_crew.config.loader import oauth_endpoints_path
-from kiro_crew.dashboard.chat_utils import _redact_meta_for_role
+from kiro_crew.dashboard.chat_utils import (
+    _expire_dead_child_oauth_meta,
+    _live_child_instance,
+    _redact_meta_for_role,
+)
 from kiro_crew.dashboard.mcp_banner_dedupe import (
     forget_mcp_banner,
     rejected_banner_is_repeat,
@@ -29,6 +34,7 @@ if TYPE_CHECKING:
         _ChatSlot,
         _is_safe_oauth_url,
         append_and_surface,
+        capabilities_of,
         get_visible_providers,
         kirocrew_managed_names,
         logger,
@@ -183,6 +189,7 @@ def _publish_session_mcp_report(state: "DashboardState", slot: "_ChatSlot", prov
         if isinstance(name, str) and name:
             forget_mcp_banner(slot, name)
             forget_mcp_banner(slot, _redact_acp_string(name))
+    _notice_mcp_sign_in_needed(state, slot, payload, provider)
     # Stamp the payload with the session it describes. This copy outlives its
     # owner — the report itself lives on the transport and is inherently that
     # session's — so without the id a reader cannot tell a current answer from a
@@ -268,6 +275,107 @@ async def _notice_unresolved_control_plane(
     append_and_surface(
         state, slot, "notice", _unresolved_control_plane_notice(missing), "msg msg-warn"
     )
+
+
+#: ``meta.kind`` of the row that tells a chat its servers wait for a sign-in.
+MCP_SIGN_IN_NEEDED_KIND = "mcp_sign_in_needed"
+#: How many servers that row names; the rest are counted.
+_MCP_SIGN_IN_NOTICE_NAMES = 5
+
+
+def _mcp_sign_in_needed_notice(names: list[str], more: int) -> str:
+    """The row's own text, for a surface that draws no card for it.
+
+    The chat page draws the same sentence from ``meta`` in the reader's language
+    (``McpSignInNeededNotice.tsx``); keep the two in step.
+    """
+    if len(names) == 1 and not more:
+        name = names[0]
+        return (
+            f"⚠ {name} (an MCP server you added) needs you to sign in before its tools "
+            f'work in this chat. Send a message that names {name}, such as "Sign in to '
+            f'{name}".'
+        )
+    if more:
+        listed = ", ".join(names) + f" and {more} more"
+    else:
+        listed = ", ".join(names[:-1]) + f" and {names[-1]}"
+    return (
+        "⚠ These MCP servers you added need you to sign in before their tools work in "
+        f"this chat: {listed}. Each one needs its own sign-in. Send a message that "
+        f'names it, such as "Sign in to {names[0]}".'
+    )
+
+
+def _notice_mcp_sign_in_needed(
+    state: "DashboardState", slot: "_ChatSlot", payload: dict[str, Any] | None, provider: Any
+) -> None:
+    """One row per chat naming the servers this session reports as waiting for a sign-in.
+
+    A session that needs a sign-in draws a card only when its host sends a link by
+    itself. A host that waits to be asked (KAS: the user names the server) leaves
+    the chat with missing tools and nothing that says why, so this row names the
+    servers that have no sign-in card in the chat and how to sign in. It starts no
+    sign-in: the person does, by sending the message.
+
+    Shown only where naming a server starts its sign-in: a backend whose host
+    sends the consent link back (``ACP_BACKENDS_OPEN_EXTERNAL_URL``, the check
+    ``begin_mcp_sign_in`` makes first). Elsewhere the advice would start nothing.
+
+    Shown once per chat, so a server that stays unsigned does not repeat it on
+    every turn. Best-effort: a row that cannot be built is skipped.
+    """
+    if slot._mcp_sign_in_notice_shown:
+        return
+    if capabilities_of(provider).backend not in ACP_BACKENDS_OPEN_EXTERNAL_URL:
+        return
+    try:
+        waiting = [
+            _redact_acp_string(name)
+            for name in (payload or {}).get("awaiting_auth") or ()
+            if isinstance(name, str) and name
+        ]
+        # A card counts only while it still offers this server a way in: it has
+        # its link and is not finished, failed, withdrawn or expired. Marking a
+        # card finished keeps its oauth_url, and a restored transcript keeps it too.
+        # A card whose child is gone is judged expired only at read time, and that
+        # verdict is never saved, so the read gate judges each card here too.
+        # A rejected-link banner also counts: it already says why this server's
+        # sign-in did not start, and its advice differs from this row's.
+        live_child = _live_child_instance(state, slot)
+        carded = {
+            str(meta.get("server_name") or "")
+            for row in slot.messages
+            if isinstance(row, dict)
+            and row.get("role") == "mcp_oauth"
+            and isinstance(meta := row.get("meta"), dict)
+            and (
+                meta.get("rejected_url")
+                or (
+                    meta.get("oauth_url")
+                    and not any(
+                        meta.get(flag) for flag in ("completed", "failed", "superseded", "expired")
+                    )
+                    and _expire_dead_child_oauth_meta("mcp_oauth", meta, live_child) is meta
+                )
+            )
+        }
+        names = [name for name in waiting if name and name not in carded]
+        if not names:
+            return
+        shown = names[:_MCP_SIGN_IN_NOTICE_NAMES]
+        more = len(names) - len(shown)
+        slot._mcp_sign_in_notice_shown = True
+        append_and_surface(
+            state,
+            slot,
+            "notice",
+            _mcp_sign_in_needed_notice(shown, more),
+            "msg msg-warn",
+            meta={"kind": MCP_SIGN_IN_NEEDED_KIND, "servers": shown, "more": more},
+        )
+    except Exception:  # noqa: BLE001 - an informational row must never fail a turn
+        logger.debug("Failed to show the MCP sign-in notice", exc_info=True)
 
 
 def _record_session_mcp_event(
