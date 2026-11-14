@@ -1575,13 +1575,16 @@ async def _start_next_queued_turn(
     # it only for a user-sent opener).
     _run_kwargs["_directive_owner_origin"] = directive_owner_origin
     from kiro_crew.tracing import subagents as trace_subagents
+    from kiro_crew.tracing import workflows as trace_workflows
 
-    # The sub-agent results these entries deliver: the turn's trace joins that run's.
+    # The sub-agent results, or the workflow run, these entries deliver: the
+    # turn's trace joins that run's.
     with (
         independent_turn(),
         initiated_by(queued_initiator(consumed)),
         queued_work(consumed),
         trace_subagents.delivered(item.get("id") for item in consumed),
+        trace_workflows.delivering(trace_workflows.run_of(consumed)),
     ):
         task = spawn_guarded_turn(
             state,

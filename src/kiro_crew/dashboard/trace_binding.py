@@ -8,7 +8,9 @@ when the slot is an Ultra Mode or Bot conductor or one of their workers
 
 Only a top-level turn takes the sub-agent completions handed over by the queue drain
 (``tracing.subagents.delivered``), and only while tracing is on: one joins that run's
-trace, several give links. The work-item read touches disk, so it runs on a worker
+trace, several give links. A top-level turn reporting a finished workflow run
+(``tracing.workflows.delivering``) joins that run's trace instead and links to the
+turn that launched it. The work-item read touches disk, so it runs on a worker
 thread before anything is bound.
 """
 
@@ -24,6 +26,7 @@ from kiro_crew.tracing import provider as trace_provider
 from kiro_crew.tracing import subagents as trace_subagents
 from kiro_crew.tracing import turns as trace_turns
 from kiro_crew.tracing import work as trace_work
+from kiro_crew.tracing import workflows as trace_workflows
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +78,16 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
         # Taken first, so a failed attribute read below cannot leave them for a
         # later turn of this task.
         causes = trace_subagents.take_causes(turn_id) if top else ()
+        # A turn reporting a finished workflow run joins that run (tracing/workflows.py).
+        wf_join, wf_links, wf_attrs = (
+            trace_workflows.completion_binding(turn_id) if top else (None, (), {})
+        )
         try:
             if top:
                 join, links = trace_subagents.completion_binding(causes)
+                if wf_join is not None:
+                    # A drain may deliver sub-agent results too: their links stay.
+                    join, links = wf_join, wf_links + tuple(links)
             attrs, board_join, board_rollup = await _crew_attrs(
                 state, str(getattr(slot, "key", "") or ""), trace.hash_key
             )
@@ -88,6 +98,9 @@ async def bind_turn(state: Any, slot: Any, turn_id: str, *, top: bool) -> contex
             raise
         except Exception:
             logger.debug("trace root binding failed", exc_info=True)
+        if wf_attrs:
+            # After the crew read, so its failure cannot strip the run id off a joined turn.
+            attrs = {**(attrs or {}), **wf_attrs}
     return trace_turns.bind_turn_root(
         turn_id, join=join, links=links, attrs=attrs, rollup_key=rollup_key
     )

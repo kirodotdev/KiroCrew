@@ -74,3 +74,49 @@ async def test_a_completion_retried_after_a_runtime_death_keeps_its_causes(
 
     assert len(prompts) == 2  # the death was requeued and the retry ran
     assert bound == [("sa_retry",), ("sa_retry",)]
+
+
+@pytest.mark.asyncio
+async def test_a_workflow_completion_retried_after_a_runtime_death_keeps_its_run(
+    tmp_path, monkeypatch, traced
+):
+    from kiro_crew.dashboard import chat_runner
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+    from kiro_crew.tracing import workflows
+
+    prompts: list[str] = []
+
+    async def _stream(msg):
+        prompts.append(msg)
+        if len(prompts) == 1:
+            raise AcpProcessDied("kiro-cli exited")
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="read the result")
+        yield LLMEvent(kind=EVENT_COMPLETE)
+
+    joined: list[str] = []
+    real_binding = trace_binding.trace_workflows.completion_binding
+
+    def _record(*args, **kwargs):
+        join, links, attrs = real_binding(*args, **kwargs)
+        joined.append(attrs.get("kirocrew.workflow_run_id", "") if join is not None else "")
+        return join, links, attrs
+
+    monkeypatch.setattr(trace_binding.trace_workflows, "completion_binding", _record)
+    state = _state(tmp_path, monkeypatch)
+    _wire(state, _client(_stream))
+    slot = state.get_or_create_slot("s1")
+    slot._titled = True
+
+    with workflows.run_root("wf_000201", "w", "s1"):
+        pass
+    try:
+        with patch.object(chat_runner, "_recovery_delay", new_callable=AsyncMock):
+            with workflows.delivering("wf_000201"):
+                await _run_chat(state, slot, "Workflow run wf_000201 finished ...")
+            await _drain(state)
+    finally:
+        workflows.reset_for_testing()
+
+    assert len(prompts) == 2  # the death was requeued and the retry ran
+    assert joined == ["wf_000201", "wf_000201"]
