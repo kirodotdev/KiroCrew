@@ -400,7 +400,7 @@ function ChatSidebar({
   const modelFilterInverted = filterModelsExcluded && activeModelKeys.size > 0
   const {
     rawColumns, tagColumnsSettled, columnsFailed, columnsError, refetchColumns, tagColumnsEnabled,
-    hideEmptyFolderBody, countSubfolderContents, orderedColumns,
+    hideEmptyFolderBody, countSubfolderContents, hideEmptyFolders, orderedColumns,
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
@@ -435,9 +435,15 @@ function ChatSidebar({
     columnMatches,
   } = useColumnMatches({ subagentStartedCounts, subagentApprovalCounts, workflowActiveSet, automationRunningSet, crewBusySet, crewOpenSet, crewStalledSet, crewPersonSet, crewApprovalSet })
 
+  // Tracks the item currently being dragged, for the DragOverlay preview.
+  const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
   const {
     slotFolders, foldersWithActiveSubtree, setRevealForcedVisible, isFolderHidden, filterHiddenSubtree, effectiveHiddenFolders, pinnedFolderSubtree, pinnedFolderAncestors,
-  } = useFolderVisibility({ folders, localSlots, filterHiddenFolders })
+  } = useFolderVisibility({
+    folders, localSlots, filterHiddenFolders,
+    // A dragged session needs every folder as a drop target, the empty ones too.
+    hideEmptyFolders: hideEmptyFolders && activeDrag?.type !== 'session',
+  })
 
   useStaleMoveWatcher({ foldersLoaded, localSlots, slotFolders, setStaleRecentlyMoved })
 
@@ -739,8 +745,6 @@ function ChatSidebar({
   // lower than the Apps nav rail's. `keyboard` is on because this IS a sortable
   // ring, so the sortable coordinate getter has somewhere to move.
   const dndSensors = useDndSensors({ distance: 5, keyboard: true })
-  // Tracks the item currently being dragged, for the DragOverlay preview.
-  const [activeDrag, setActiveDrag] = useState<{ type: string; id: string } | null>(null)
   // The derived lane a session card hovers right now. Such a lane refuses the
   // drop, and its header's hover title is out of sight mid-drag, so the lane
   // says why in a visible line instead. It shows only while `nativeSessionDrag`
@@ -757,7 +761,7 @@ function ChatSidebar({
 
   const {
     revealFlash,
-  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView })
+  } = useSidebarReveal({ sidebarRootRef, dispatch, localSlots, revealBlockingFilters, staleCollapseMs, sortKey, isStaleExempt, slotFolders, setStaleExpanded, expandFolderAncestors, expandConductorAncestors: expandRevealAncestors, folders, foldersSettled, setSlotFilter, setFilterHiddenFolders, setRevealForcedVisible, setFlatView, hideEmptyFolders })
   const renameCommit = useCallback((id: string, name: string): boolean => {
     // Re-checked here, not only where the editor opens: the gateway can drop
     // while an editor is open. Keep the editor and its draft, and say why,
@@ -1019,7 +1023,7 @@ function ChatSidebar({
     folderRowsDrawn, folders, foldersError, foldersFailed, folderSortMode, folderSortMut, folderSortRead,
     foldersShelved, foldersUnreadFirst, groupByKind, kindSections, toggleGroupByKind, folderSubtrees, foldersWithActiveSubtree, pinnedFolderSubtree, pinnedFolderAncestors, handleSidebarDragCancel, handleSidebarDragEnd,
     handleSidebarDragOver, handleSidebarDragStart, hasRemoteExecutedRow, heldDisplacedRef, heldLane,
-    hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, history, historyDragging,
+    hiddenByContainer, hiddenFilters, hiddenFolderCount, hideEmptyFolderBody, hideEmptyFolders, history, historyDragging,
     historyFilter, historyHasMore, historyHeight, historyOpen, historyResize, historySearchFailed, historySearchResults,
     historySearchScan, hoverPinRef, ime, installedAgents, instanceSessions, instantCloseId, isActiveRow, isFolderFilteredOut,
     isFolderHidden, isMobile, isStaleExempt, lane, laneRowWindow, laneScrollMemory, laneSlots,
