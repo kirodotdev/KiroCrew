@@ -32,9 +32,9 @@ def touch_activity(self: AcpSessionProvider) -> None:
     signals early) and the wrong one for anything that reports idle time
     as a fact about a session.
 
-    The handle half is per-session: the tool-stall watchdog ignores the
-    runtime clock, so without it a blocking tool's keepalive pings
-    (``wait``, ``spawn_sub_agents``) would not keep its own turn alive.
+    The handle half is per-session: the session watchdog's idle clocks
+    ignore the runtime clock, so without it a blocking tool's keepalive
+    pings (``wait``, ``spawn_sub_agents``) would not keep its own turn alive.
     """
     self._runtime._last_activity = time.monotonic()
     self._handle.note_keepalive()
