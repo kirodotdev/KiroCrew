@@ -278,7 +278,7 @@ function createSuccessorHandoff({
       const owner = await probeGatewayPortOwner(expectPort);
       if (owner === "kirocrew" || owner === "service") return "confirm";
       if (owner === "foreign") return "foreign";
-      if (owner === "unknown") {
+      if (owner === "unknown" || owner === "unidentified") {
         glog(
           `successor check: listener probe unavailable on :${expectPort} `
           + "-- refusing to hand over to a holder that cannot be identified",
