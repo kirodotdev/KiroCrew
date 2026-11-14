@@ -204,16 +204,13 @@ def subagent_result_kind(
 #:   ``count_request`` above each of its 21 refusing ``return``s, the requests it
 #:   turns away before a run exists.
 #:
-#: Neither is sufficient alone, and that is the point rather than an accident.
-#: The refusals cannot record: the unreadable store is what a record would write
-#: to, and the per-source auth throttle exists to stop doing work on a flood. Left
-#: uncounted they made the series lie in the case it is for -- a rotated
-#: credential records a few ``unauthorized`` runs, the throttle then trips, and
-#: the rate falls to zero while the integration is still broken. So do NOT read
-#: either emitter as redundant and delete it; the increments are disjoint, which
-#: ``test_webhooks_request_counter.py`` pins, and that file's
+#: Both are needed; neither is redundant. A refusal cannot record a run (the
+#: store may be unreadable, and the auth throttle exists to skip work on a
+#: flood). Uncounted, a rotated credential would log a few ``unauthorized`` runs,
+#: trip the throttle, and show a zero rate while still broken. The increments are
+#: disjoint (pinned by ``test_webhooks_request_counter.py``, whose
 #: ``test_every_refusal_branch_is_counted`` reads the endpoint's syntax tree so a
-#: new branch cannot answer without counting.
+#: new branch must count).
 #:
 #: ``outcome`` is folded by ``webhooks.metric_outcome`` over two disjoint halves
 #: plus a remainder: the recorded runs (``webhooks.VALID_OUTCOMES``), the refusals
