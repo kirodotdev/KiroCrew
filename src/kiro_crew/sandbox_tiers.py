@@ -389,7 +389,7 @@ def _liftable_declared_file(target: str) -> bool:
 def enterprise_policy_cache_view(
     mode: str = "standard", extra_hidden_dirs: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
-    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an LTS build.
+    """The governance cache to lift READ-ONLY for a sandboxed spawn on a governed host.
 
     An LTS build always enters the central tier (RFC D2), including a Kiro Crew
     MCP server kiro-cli starts inside the agent sandbox. That process reaches neither the
@@ -399,10 +399,15 @@ def enterprise_policy_cache_view(
     fixed source and the fetch validators; no credential. The vault and every other
     credential path stay hidden.
 
+    An oss build whose ceiling came from central distribution
+    (``policy_distribution.central_ceiling_installed``) is in the same position: the ACP
+    launch tail and managed MCP declarations put the harness's Kiro Crew MCP children in
+    cache-only mode, and a KAS runtime starts them inside this sandbox.
+
     Lifted the way ``apps/backend.py`` lifts it for a cache-only backend: one spelling,
     refused when it sits beneath a foreign mask (:func:`carveout_shadowed_by_foreign_mask`),
     and kept read-only by the plan for every spelling (``sandbox_plan.is_policy_cache_dir``).
-    ``()`` in an oss build, so an oss sandbox is unchanged.
+    ``()`` in an oss build with no central ceiling, so such a sandbox is unchanged.
 
     Also ``()``, so the cache stays masked and a cache-only child fails closed, when:
 
@@ -415,8 +420,9 @@ def enterprise_policy_cache_view(
     """
     try:
         from kiro_crew.edition import is_lts
+        from kiro_crew.platform.policy_distribution import central_ceiling_installed
 
-        if not is_lts():
+        if not (is_lts() or central_ceiling_installed()):
             return ()
         target = os.path.join(str(config_dir()), _POLICY_CACHE_LEAF)
     except Exception:

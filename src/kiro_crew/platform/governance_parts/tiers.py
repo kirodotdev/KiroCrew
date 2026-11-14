@@ -33,6 +33,7 @@ from kiro_crew.platform.governance_parts.baseline import (
     LTS_YOLO_MAX_SECONDS,
 )
 from kiro_crew.platform.governance_parts.carriers import (
+    _POLICY_DISTRIBUTION_CACHE_ONLY_ENV,
     _POLICY_DISTRIBUTION_URL_ENV,
     BootControls,
     GovernanceCeiling,
@@ -80,11 +81,6 @@ TIER_HOME = "home"  # ~/.kiro/crew/security_policy.json
 # ``assert_governance_paths_protected`` is a BOOT check that must not import the
 # fetch engine to know what it is asserting.
 _POLICY_CACHE_LEAF = "policy_cache"
-
-# Also duplicated from ``policy_distribution``, and pinned by the same test.  Named
-# here because the tier's ENTRY condition has to know about cache-only mode: such a
-# child is deliberately given no source, so a source-only gate would skip the tier.
-_POLICY_DISTRIBUTION_CACHE_ONLY_ENV = "KIROCREW_POLICY_CACHE_ONLY"
 
 
 def _policy_home_path() -> Path:

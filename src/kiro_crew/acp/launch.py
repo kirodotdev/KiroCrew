@@ -1238,6 +1238,15 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     env = tools.scrub_agent_subprocess_env(env, forward_ssh_auth_sock=forward_ssh_auth_sock)
     if had_ssh_auth_sock and not forward_ssh_auth_sock:
         await _note_ssh_auth_sock_withheld(host, tools, request)
+    # ACP harnesses can start their own managed MCP children, which boot an
+    # independent platform context. When this gateway installed its ceiling
+    # from central distribution, let those children inherit the verified local
+    # cache without exposing the control-plane URL or headers that the scrub
+    # above deliberately removed. The wrap above already showed this tree the
+    # cache read-only (``sandbox_tiers.enterprise_policy_cache_view``).
+    from kiro_crew.agent import policy_cache_only_env
+
+    env.update(policy_cache_only_env())
     # Bundled skill scripts must not depend on a system ``python`` name. The
     # desktop bundles carry their interpreter outside the user's PATH, while this
     # path is already running under the exact environment that can import
