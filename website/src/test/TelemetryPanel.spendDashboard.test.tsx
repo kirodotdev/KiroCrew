@@ -73,7 +73,7 @@ const payload = (over: Record<string, unknown> = {}) => ({
   cost: cost(over),
 })
 
-vi.mock('../api/client', () => ({ api: { telemetryStartup: vi.fn() } }))
+vi.mock('../api/client', () => ({ api: { telemetryStartup: vi.fn(), usageTurns: vi.fn() } }))
 
 const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -308,5 +308,53 @@ describe('TelemetryPanel — a window billed in dollars', () => {
     await mount()
     await waitFor(() => expect(screen.getByText('Credits by model')).toBeInTheDocument())
     expect(screen.getByText('credits 500 · turns 50')).toBeInTheDocument()
+  })
+})
+
+// The dollar window's deeper views: the full table in each grouping, one
+// session's per-turn drill-down, and the mean-cost-per-turn line. Each reads
+// the unit on its own, so each is pinned on its own.
+describe('TelemetryPanel — the dollar window behind the summary', () => {
+  const usd = {
+    unit: 'usd',
+    credits: 4.25,
+    per_turn: 0.0425,
+    prior_credits: 1.5,
+    priciest: { credits: 0.9, slot: 'chat-1-1700000000', ts: '2026-08-05' },
+    by_model: [row('claude-x', 3.4)],
+    by_category: [row('dashboard', 3.0), row('bg', 1.25)],
+    conversations: [convo({ credits: 2.75 })],
+    context_bands: [{ label: '0k–200k', turns: 70, mean_credits: 0.031 }],
+  }
+
+  it('writes the full table in money under a Cost header, in every grouping', async () => {
+    localStorage.setItem('telemetry:spend-table-open', '1')
+    await mount(usd)
+    await waitFor(() => expect(screen.getByRole('columnheader', { name: /^Cost/ })).toBeInTheDocument())
+    expect(screen.getAllByText('$2.75').length).toBeGreaterThan(1)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('radio', { name: 'Origin' }))
+    expect(await screen.findAllByText('$1.25')).not.toHaveLength(0)
+    await user.click(screen.getByRole('radio', { name: 'Model' }))
+    expect(await screen.findAllByText('$3.40')).not.toHaveLength(0)
+  })
+
+  it('writes each turn of an expanded session as money', async () => {
+    localStorage.setItem('telemetry:spend-table-open', '1')
+    const { api } = await import('../api/client')
+    vi.mocked(api.usageTurns).mockResolvedValue({
+      turns: [{ ts: '2026-08-05T09:00:00Z', model: 'claude-x', cost: 0.0712, credits: 0 }],
+    } as never)
+    await mount(usd)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: 'Show per-turn detail' }))
+    expect(await screen.findByText('$0.07')).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader', { name: 'Cost' }).length).toBeGreaterThan(0)
+  })
+
+  it('writes the mean cost per turn by context used as money', async () => {
+    await mount(usd)
+    expect(await screen.findByText('Mean cost per turn, bucketed by context used')).toBeInTheDocument()
+    expect(screen.getByText('$0.03')).toBeInTheDocument()
   })
 })
