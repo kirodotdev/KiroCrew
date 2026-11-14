@@ -185,7 +185,11 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
     re-hardcodes a literal in either place.
     """
     from kiro_crew.config import loader
-    from kiro_crew.config.sections import TITLE_REFRESH_EVERY_TURNS_MAX
+    from kiro_crew.config.sections import (
+        IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+        IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+        TITLE_REFRESH_EVERY_TURNS_MAX,
+    )
 
     expected = {
         "agent.soft_stop_budget_secs": (loader.SOFT_STOP_BUDGET_MIN, loader.SOFT_STOP_BUDGET_MAX),
@@ -207,6 +211,10 @@ def test_the_write_table_reads_its_bounds_from_the_loader_constants() -> None:
         # clamps at 0 and raises 1-3 to TITLE_REFRESH_EVERY_TURNS_MIN itself), so the
         # write table admits the same 0..MAX and leaves the raise to the loader.
         "dashboard.title_refresh_every_turns": (0, TITLE_REFRESH_EVERY_TURNS_MAX),
+        "session.idle_compaction_min_context_pct": (
+            IDLE_COMPACTION_MIN_CONTEXT_PCT_MIN,
+            IDLE_COMPACTION_MIN_CONTEXT_PCT_MAX,
+        ),
     }
     for path_key, (lo, hi) in expected.items():
         spec = _EDITABLE_CONFIG[path_key]
