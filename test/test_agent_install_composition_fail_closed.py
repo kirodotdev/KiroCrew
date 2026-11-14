@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 
 from kiro_crew import agent
+from kiro_crew.agent_files import HEARTBEAT_AGENT_FILENAME
 from kiro_crew.agent_materialization import (
     conductor_agents,
     service_agents,
@@ -131,6 +132,7 @@ def test_rebuild_still_swallows_other_errors_from_each_installer(
     attr: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    held_flag: Any,
 ) -> None:
     """A non-composition installer failure is logged and swallowed, as before.
 
@@ -180,3 +182,38 @@ def test_the_independent_repairs_run_before_the_composition_error_raises(
         agent.rebuild_agent_config()
 
     assert repair_ran == [True], "repair_agent_configs must run before the rebuild fails closed"
+
+
+def test_a_failed_heartbeat_install_holds_the_rebuild_until_a_retry_lands_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, held_flag: Any
+) -> None:
+    """A heartbeat install that raises is reported held, and the retry writes it.
+
+    The heartbeat spec carries the background role model, so a swallowed failure
+    that read as written would leave the previous model on disk until a restart.
+    """
+    rig = _Rig(tmp_path, monkeypatch)
+    held: list[bool] = []
+    _path, wrote = agent.rebuild_agent_config_reporting(_held_out=held)
+    assert wrote is True
+    assert held == [False]
+
+    heartbeat = rig.agents / HEARTBEAT_AGENT_FILENAME
+    heartbeat.unlink()
+
+    def _raise_os(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("heartbeat: sharing violation")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(agent, "_install_heartbeat_agent", _raise_os)
+        held = []
+        _path, wrote = agent.rebuild_agent_config_reporting(_held_out=held)
+    assert wrote is True
+    assert held == [True]
+    assert not heartbeat.exists()
+
+    # The background model the operator changed to, so the retry is shown carrying it.
+    monkeypatch.setattr(agent, "_background_agent_model", lambda: "changed-background-model")
+    assert agent.retry_held_conductor_specs() is True
+    spec = json.loads(heartbeat.read_text(encoding="utf-8"))
+    assert spec["model"] == "changed-background-model"

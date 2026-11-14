@@ -212,14 +212,22 @@ def _install_sibling_specs(
         # mirrors_held: the in-place re-filter of the kept heartbeat and worker specs
         # failed, so a tightened ceiling may not have reached them. Folded into
         # ``conductor_held`` below so the memo stays behind and the retry runs again.
+        # heartbeat_held: its rewrite failed, folded in the same way.
         mirrors_held = False
+        heartbeat_held = False
         if mirror_main:
             try:
                 _install_heartbeat_agent()
             except PlatformCompositionError as exc:
                 composition_error = composition_error or exc
             except Exception:
-                logger.debug("kirocrew-heartbeat agent install failed", exc_info=True)
+                heartbeat_held = True
+                logger.warning(
+                    "kirocrew-heartbeat agent install failed; marking the spec held so the "
+                    "next maintenance wake retries it rather than leaving the previous "
+                    "background model and grants on disk",
+                    exc_info=True,
+                )
         else:
             mirrors_held = not _refilter_kept_mirrors()
 
@@ -286,9 +294,15 @@ def _install_sibling_specs(
         # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
         # ``research_held`` and ``mate_conductor_held`` fold in for the same reason:
         # all three derive from ``build_agent_config`` and must not be recorded
-        # synced over a stale grant list.
+        # synced over a stale grant list. ``heartbeat_held`` too: the heartbeat spec
+        # copies the main spec's grants and carries the background model.
         conductor_held = (
-            conductor_held or team_lead_held or research_held or mate_conductor_held or mirrors_held
+            conductor_held
+            or team_lead_held
+            or research_held
+            or mate_conductor_held
+            or heartbeat_held
+            or mirrors_held
         )
         with _main_spec_episode_lock:
             _conductor_spec_held = conductor_held or _main_spec_unreadable
