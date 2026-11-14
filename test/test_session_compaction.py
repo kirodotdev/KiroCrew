@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from session_helpers import (  # noqa: F401 -- the fixture is requested by name
     _mock_provider_factory,
+    _raw_sid,
     cfg_fixture,
 )
 
@@ -669,6 +670,31 @@ class TestKiroInPlaceCompaction:
         # reports that arm -- what the notice needs to tell the user.
         cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True, outcome="recycled")
         assert "dashboard:chat-1" not in mgr._recycling
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_failed_successor_restores_kept_sid_and_memory_mode(self, cfg):
+        provider_factory = self._inplace_provider_factory({"type": "failed"})
+        old_provider = provider_factory()
+        old_provider.kas_memory_mode = "read_only"
+        failed_successor = provider_factory()
+        failed_successor._client = None
+        failed_successor.start.side_effect = RuntimeError("successor failed")
+        mgr = SessionManager(
+            cfg,
+            provider_factory=MagicMock(side_effect=[old_provider, failed_successor]),
+        )
+        key = "dashboard:chat-1"
+        provider, _, _ = await mgr.get_or_create(key)
+        mgr.release(key)
+        mgr._session_map.set(key, "old-sid", provider="acp", kas_memory="read_only")
+
+        await mgr._compact_session(key, 92.0)
+
+        assert mgr._sessions[key].provider is provider
+        assert mgr._session_map.get_discarded_sid(key) == "old-sid"
+        assert _raw_sid(mgr, key) == "old-sid"
+        assert mgr._session_map.get_kas_memory(key) == "read_only"
         await mgr.close_all()
 
     @pytest.mark.asyncio

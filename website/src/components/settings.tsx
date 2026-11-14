@@ -25,6 +25,8 @@ import { RadioChipGroup, radioChip } from './RadioChipGroup'
 
 interface SettingsToggleProps {
   label: string
+  /** Status beside the label, kept separate from its searchable and accessible name. */
+  labelBadge?: React.ReactNode
   // ReactNode (not just string) so callers can pass rich copy — e.g. the
   // Telegram forum toggle describes setup with inline <span className="font-mono">
   // fragments. The render path already wraps it in a <div>, so any node is safe.
@@ -76,7 +78,7 @@ interface SettingsToggleProps {
  *  stretched click layer, so it is pressed itself instead of the switch. */
 const PRESSABLE_ABOVE_ROW_CLS = '[&_a]:relative [&_button]:relative'
 
-export function SettingsToggle({ label, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
+export function SettingsToggle({ label, labelBadge, description, descriptionBadge, hint, checked, onChange, disabled, busy, configKey, settingId, describedBy, anchor = true }: SettingsToggleProps) {
   const inert = disabled || busy
   // The row's own text first, then the caller's note about a consequence: the
   // order they are read on screen. A screen reader hears both, with the name and
@@ -96,7 +98,8 @@ export function SettingsToggle({ label, description, descriptionBadge, hint, che
     <div {...(anchor ? { 'data-setting-label': label, ...(configKey ? { 'data-setting-key': configKey } : {}), ...(settingId ? { 'data-setting-id': settingId } : {}) } : {})} className={`relative flex items-center justify-between py-1.5 group ${inert ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'}`}>
       <div className="flex-1 min-w-0 mr-4">
         <div className="flex items-center gap-1.5">
-          <label htmlFor={switchId} className="text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors after:absolute after:inset-0 after:content-['']">{label}</label>
+          <label htmlFor={switchId} className="min-w-0 text-[13px] font-semibold text-text group-hover:text-text-strong transition-colors after:absolute after:inset-0 after:content-['']">{label}</label>
+          {labelBadge && <span className="shrink-0">{labelBadge}</span>}
           {hint && <span data-settings-hint className="relative"><InfoTip text={hint} placement="top" /></span>}
         </div>
         {descriptionBadge ? (

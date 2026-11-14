@@ -739,7 +739,19 @@ class TestAcpRuntimeLoadSession:
         async def _fake_send(method, params, timeout=None):
             sent.append((method, params))
             if method == METHOD_SESSION_LOAD:
-                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+                return {
+                    "modes": {"currentModeId": "kirocrew"},
+                    "models": [],
+                    "_meta": {"memoryConfig": {"mode": "read_only", "reflection": False}},
+                    "configOptions": [
+                        {
+                            "id": "memoryReflection",
+                            "type": "select",
+                            "currentValue": "off",
+                            "options": [{"value": "on"}, {"value": "off"}],
+                        }
+                    ],
+                }
             return {}
 
         async def _fake_agents(
@@ -753,11 +765,16 @@ class TestAcpRuntimeLoadSession:
         monkeypatch.setattr(rt, "_kas_custom_agents", _fake_agents)
         rt._acp_backend = ACP_BACKEND_KAS
 
-        await rt.load_session("/t.json", "sid-both", cwd="/work", agent="kirocrew")
+        await rt.load_session(
+            "/t.json", "sid-both", cwd="/work", agent="kirocrew", kas_memory_mode="read_only"
+        )
 
         meta = sent[0][1]["_meta"]
         assert meta["_kiro.dev/session_file"] == "/t.json"
-        assert "kiro" in meta
+        assert meta["kiro"]["settings"] == {"memory": {"mode": "read_only", "reflection": False}}
+        assert meta["kiro"]["customAgents"] == [
+            {"id": "kirocrew", "prompt": "p", "tools": ["memory"]}
+        ]
 
     @pytest.mark.asyncio
     async def test_the_kiro_resume_path_never_reaches_the_adapter(self, monkeypatch):
