@@ -320,6 +320,7 @@ async def stream_command(self: AcpProvider, command: str) -> AsyncIterator[LLMEv
     # here, so a harness added later must opt in to it, not inherit it and
     # hard-error on every slash command a user types. KAS is the case in point:
     # kiro-family, yet it answers the RPC with -32603.
+    #
     # /compact and /clear discard native history; invalidate before dispatch
     # so the next warm turn resends the complete snapshot even when the
     # status receipt is missing or arrives late.
@@ -420,6 +421,7 @@ async def compact(self: AcpProvider, context: str = "") -> None:
     #   manual /compact and Slack's !compact have always used: kiro ACKs
     #   the prompt (end_turn) and then emits _kiro.dev/compaction/status
     #   started/completed, which wait_for_compaction() picks up.
+    #
     # Capture a terminal status emitted MID-TURN (before end_turn) while
     # draining — otherwise it would be consumed and lost, stranding a
     # subsequent wait_for_compaction() (task_executor, wecom, cli_chat)
@@ -583,13 +585,11 @@ async def wait_for_compaction(
         # source and is absent for want of a driven capture, which is recorded
         # on ``ACP_BACKENDS_COMPACT``.
         #
-        # HERE rather than in ``compact()``, because this is the one method
-        # BOTH routes to a compaction reach. ``compact()`` covers the
-        # seventeen call sites that pair it with this wait, but the session
-        # layer's autocompact drives the harness through
-        # ``stream_command("/compact")`` and never calls ``compact()`` at
-        # all -- so an arm placed there left the automatic path, the one no
-        # user action is needed to reach, still stranding.
+        # HERE rather than in ``compact()``, because BOTH compaction routes
+        # reach this method: the session layer's autocompact drives the
+        # harness through ``stream_command("/compact")`` and never calls
+        # ``compact()``, so a check there would leave autocompact waiting out
+        # the timeout.
         #
         # No ``summary``: an inline harness reports no summary text, and an
         # invented one would be echoed to the user as the backend's own.

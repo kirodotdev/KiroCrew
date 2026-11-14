@@ -322,12 +322,12 @@ def write_lesson(
     # Pass 1 resolves THIS lesson. Pass 2 runs the generic dedup rules, and those
     # can claim the write on an UNRELATED row -- a superset whose text contains our
     # rule. get_lessons() orders by updated_at DESC, then by md5 key within one
-    # stamp, so whether such a row is scanned before ours is effectively random,
-    # and doing both in one loop made the outcome depend on that order: an
-    # unrelated superset seen first discarded an enrichment we had already
-    # selected, and the clause was dropped on HTTP 200.
-    # Resolving the exact match first makes the result order-independent, and
-    # pass 2 is skipped entirely once pass 1 claims the write.
+    # stamp, so whether such a row comes before ours is effectively random. In
+    # one loop, an unrelated superset seen first would discard an enrichment
+    # already selected, dropping the clause on HTTP 200. Resolving the exact
+    # match first makes the result order-independent, and pass 2 is skipped
+    # once pass 1 claims the write.
+    #
     # Deduplication is SCOPE-LOCAL, and both passes below share this list.
     #
     # A lesson scoped to one repository and a global one are different lessons
@@ -628,12 +628,11 @@ def write_lesson(
                     # ``len(rule) > len(existing_text)`` would DROP the
                     # submission when it loses, making character count
                     # decide which of two near-identical rules is current.
-                    # A correction is frequently SHORTER than the stale
-                    # lesson it corrects (a retracted claim collapses to a
-                    # one-line "not installed"), so the losing case landed
-                    # exactly on corrections -- and left the stale lesson in
-                    # effect, the one outcome that actively misleads the
-                    # agent rather than merely losing information.
+                    # A correction is often SHORTER than the stale lesson it
+                    # corrects (a retracted claim becomes a one-line "not
+                    # installed"), so a length rule would drop exactly the
+                    # corrections and keep the stale lesson, which actively
+                    # misleads the agent.
                     #
                     # The non-mutating pre-pass above already returned
                     # DEDUPED if any purely-semantic row outranks the write. Like
@@ -708,8 +707,8 @@ def write_lesson(
     # retired row's tombstone and audit event, and by its "so far" count to the
     # matching ``superseded`` entry in the result. Logging the keys rather than a
     # fresh digest is deliberate: a newly computed hash would correlate with
-    # nothing. No log line here hashes anything; a weak-hash finding belongs at
-    # ``_lesson_slug``'s digest, not at a line that logs a key.
+    # nothing. No log line here hashes anything (``_lesson_slug`` owns the
+    # digest).
     #
     # The attribution is passed INTO delete_semantic (winning key + reason), so
     # the tombstone's record status and audit event record it durably in the

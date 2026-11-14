@@ -1178,16 +1178,14 @@ async def _start_kiro_runtime_impl(
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
         if configured_model and configured_model != DEFAULT_MODEL:
-            # Withhold a model this account cannot run rather than sending
-            # it. session/new has already reported what is on offer, and
-            # this model was NOT picked for this turn — it comes from the
-            # agent spec, the config default, or a slot value persisted
-            # before entitlements were known. Sending it anyway is what put
-            # a raw "-32603 ... model is not available" in the transcript on
-            # every turn: kiro-cli ACCEPTS the id here (so the except below
-            # never fires) and only the service rejects it, mid-prompt.
-            # Leaving it unset keeps the session on the backend's own
-            # default, so the turn succeeds.
+            # Withhold a model this account cannot run. session/new already
+            # reported what is on offer, and this model was NOT picked for
+            # this turn (it comes from the agent spec, the config default, or
+            # a slot value saved before entitlements were known). kiro-cli
+            # ACCEPTS the id here, so the except below never fires; the
+            # service then rejects it mid-prompt with a raw "-32603 ... model
+            # is not available" on every turn. Left unset, the session uses the
+            # backend's default and the turn succeeds.
             _advertised = advertised_model_ids(handle.available_models)
             _send_model = configured_model
             _namespace = model_registry_namespace(self._client.backend)
