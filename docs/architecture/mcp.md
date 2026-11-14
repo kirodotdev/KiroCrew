@@ -3089,6 +3089,9 @@ CLI commands and their MCP twins:
 
 `cron_remove_all` and `cron_secret_request` have no CLI twin: `kirocrew cron
 remove` takes one job id, and no `kirocrew cron` subcommand files a secret request.
+`kirocrew cron history` has no MCP twin: it is the operator's terminal read of the
+run store, which is bind-masked from every sandboxed agent shell, and the model
+already reads its jobs' run counts through `cron_list` with `json: true`.
 
 The last row is the one place a twin does not share its command's name, and it is
 a placement decision rather than an oversight. A tool in `kirocrew-core` costs
