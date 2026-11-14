@@ -130,6 +130,19 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "prose that happens to contain one.",
     ),
     (
+        "A Bot page's colour tokens the chat may follow",
+        "dashboard/handlers/member_dashboard_page_theme.py",
+        "The `--bg`/`--accent` colour tokens the member dashboard read returns as "
+        "`page_theme` for the Crewmates-page chat to follow. A token value is "
+        "agent-authored and the validator bounds only its shape, so a "
+        "credential-shaped string could sit there; each value is run through "
+        "`redact_via_context` and dropped when the redactor rewrites it, so no "
+        "secret reaches the client even with the preview off. The same module's "
+        "`package_declared_name_spots` runs the redactor over a package's declared "
+        "field and token NAMES so `dashboard_save` can refuse a name that would be "
+        "masked.",
+    ),
+    (
         "A crew's work-item copy read by a hub",
         "dashboard/handlers/remote_work_item.py",
         "Every key and string in the worker-owned fields and event tail of a hub's "

@@ -70,6 +70,7 @@ import { type MembersPageNavigation } from './useMembersPageNavigation'
 import { type MembersPageRosterRead, type MembersPageRosterSignals } from './useMembersPageRoster'
 import { type MembersPageTeamsRead, type MembersPageTeamView } from './useMembersPageTeams'
 import { slotRowByKey } from '../../store/slotIndex'
+import { useChatPageTheme } from './useChatPageTheme'
 
 /** The notice for a refused Fresh start, by the route's refusal code: queued
  *  work says to wait, a turn that would not stop says to stop it first. */
@@ -632,6 +633,13 @@ export function MembersPageThreadColumn({
   const { closeTeamView, teamMembers } = teamView
   // Import from file on the empty roster's hero (the switcher is not shown yet).
   const [importing, setImporting] = useState(false)
+  // The chat's colours from the open crewmate's dashboard PAGE, behind
+  // a default-off preview. `{}` with the flag off, with no crewmate open, or for
+  // a page that declares none — so the column paints exactly today's chat then.
+  // Scoped to this `<section>`, which is the chat's own column: the side panel is
+  // a sibling (see the data-testid note below) and the sidebar is outside the
+  // page, so the tint reaches the chat and nothing else.
+  const chatPageTheme = useChatPageTheme(active?.slug ?? '', active?.name ?? '')
   // The post-create notice (a failed roster re-read) with its retry, rendered
   // ONCE, in the chat column: below md a roster notice brings that column on
   // screen (see the two `className`s: this column's `<section>` below, and
@@ -678,6 +686,15 @@ export function MembersPageThreadColumn({
             // opens no chat, and hiding the column would hide the one place the
             // failure and its retry are said.
             className={`${activeName || activeTeam || postCreateError ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0 relative`}
+            // The crewmate page's colours as local variable overrides,
+            // or `{}` (default-off / no page colours) which sets nothing. The
+            // chat surfaces below resolve `--bg` / `--text` / `--accent` from
+            // here, so one spread themes the whole column.
+            style={chatPageTheme}
+            // Marks the column while page colours apply, so the theme rules that
+            // paint links and inline code a FIXED colour (Kiro's purples in
+            // `chat-transcript.css`) yield to the local palette here.
+            data-page-colors={Object.keys(chatPageTheme).length ? '' : undefined}
             ref={threadColumnRef}
             // The page's main column: the thread (or the team view, or an empty
             // state), and never the side panel, which is a sibling of this section.

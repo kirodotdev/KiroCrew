@@ -1,0 +1,2 @@
+page --bg=#2a1a4d --accent=#f59e0b
+after-dark  body text #ffffff on #2a1a4d = 15.52:1 ; muted #b7b1c2 on bg = 7.45:1 ; card-fg #ffffff on card #3b2c5b = 12.37:1 ; accent label #000000 on #f59e0b = 9.78:1

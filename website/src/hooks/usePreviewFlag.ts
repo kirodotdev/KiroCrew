@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import {
-  PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, previewFlagsLocked, readPreviewFlag,
+  PREVIEW_CHAT_PAGE_COLORS, PREVIEW_CREW_MODE, PREVIEW_EXPLORE, PREVIEW_MATE_SESSIONS, PREVIEW_FLAG_EVENT, PREVIEW_FLAG_PREFIX, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, previewFlagsLocked, readPreviewFlag,
 } from '../utils/previewFlags'
 import type { PreviewFlagChange } from '../utils/previewFlags'
 
@@ -69,6 +69,16 @@ export function useMateSessionsHidden(): boolean {
  */
 export function useExplorePreview(): boolean {
   return usePreviewFlag(PREVIEW_EXPLORE)
+}
+
+/**
+ * The crewmate-chat-page-colours preview, reactively (#20635): the thread
+ * column on the Crewmates page tints from the crewmate's dashboard page only
+ * while this is on. The colour query and the tint derivation sit behind it, so
+ * with the flag off nothing is fetched or applied.
+ */
+export function useChatPageColors(): boolean {
+  return usePreviewFlag(PREVIEW_CHAT_PAGE_COLORS)
 }
 
 /**

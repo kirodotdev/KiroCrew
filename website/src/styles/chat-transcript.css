@@ -230,6 +230,16 @@ html[data-font-family="custom"][data-custom-ligatures="off"] body{font-variant-l
 [data-theme="kiro-dark"] .nav-active .text-accent{color:#c19aff}
 [data-theme="kiro-light"] .nav-active,[data-theme="kiro-light"] .session-row.session-active,[data-theme="kiro-light"] .list-selected{background:#d8d2e0;color:#723acc;border-color:#c4bcd0}
 [data-theme="kiro-light"] .nav-active .text-accent{color:#723acc}
+/* A Crewmates chat column painted from its Bot's dashboard page (`data-page-colors`, set by
+   MembersPageThread while that preview applies): the fixed Kiro purples above were measured
+   against the Kiro background, not the page's, so inside that column links, accent text and
+   inline code read the column's own palette instead. One attribute selector above each rule
+   they replace, so these win on specificity rather than on order. */
+[data-theme^="kiro-"] [data-page-colors] .msg-content a{color:var(--accent);text-decoration-color:currentColor}
+[data-theme^="kiro-"] [data-page-colors] .text-accent{color:var(--accent)}
+[data-theme^="kiro-"] [data-page-colors] .msg-content :not(pre)>code{background:var(--bg-hover);color:var(--text)}
+[data-theme^="kiro-"] [data-page-colors] .msg-content :not(pre)>code[data-chip-action="navigate"]{color:var(--accent)}
+[data-theme^="kiro-"] [data-page-colors] .msg-content :not(pre)>code[data-chip-action="copy"]{color:var(--text)}
 /* Kiro light: the canvas is white and the app shell steps back. --bg is #ffffff so the chat
    transcript and every page read as the primary surface; the nav rail and the list cards (the
    sessions list and the Crew Members roster, both built from components/listShell) take --panel

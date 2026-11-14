@@ -175,9 +175,19 @@ function mixHex(a: string, b: string, pct: number): string | null {
  * `test/ThemeAlphaModifiers.test.tsx` for the same hazard from the other side.
  */
 function derivedDefaults(vars: Record<string, string>): string {
+  const out = Object.entries(derivedDefaultVars(vars)).map(([k, v]) => `${k}:${v}`)
+  return out.length ? out.join(';') + ';' : ''
+}
+
+/**
+ * The gap-fill above as a token map rather than CSS text, for a caller that sets
+ * the variables inline (the Crewmates chat's page colours, `pageChatTheme.ts`).
+ * One builder, two output forms: a retune here reaches both.
+ */
+export function derivedDefaultVars(vars: Record<string, string>): Record<string, string> {
   const has = (k: string) => typeof vars[k] === 'string' && escapeCssValue(vars[k]) !== ''
-  const out: string[] = []
-  const put = (k: string, v: string | null) => { if (v && !has(k)) out.push(`${k}:${v}`) }
+  const out: Record<string, string> = {}
+  const put = (k: string, v: string | null) => { if (v && !has(k)) out[k] = v }
 
   // SANITIZE ONCE, HERE. `buildVars` runs every value it emits through
   // `escapeCssValue`, and these two are the same untrusted pack input: a
@@ -247,7 +257,7 @@ function derivedDefaults(vars: Record<string, string>): string {
     // L = sqrt(1.05*0.05) - 0.05, and both sides are then 4.58:1. Picking the
     // midpoint 0.5 instead would hand white to a mid-tone fill it cannot carry
     // (#e67e22 is 2.85:1 against white but 7.37:1 against black).
-    out.push(`${fg}:${lum > 0.179 ? '#000' : '#fff'}`)
+    out[fg] = lum > 0.179 ? '#000' : '#fff'
   }
 
   // Syntax, diff and search-highlight colours cannot be mixed from the palette —
@@ -278,7 +288,7 @@ function derivedDefaults(vars: Record<string, string>): string {
     }
   }
 
-  return out.length ? out.join(';') + ';' : ''
+  return out
 }
 
 /**

@@ -267,6 +267,38 @@ async def test_the_route_arms_a_live_page_through_the_resolver(
 
 
 @pytest.mark.asyncio
+async def test_the_body_carries_the_page_colour_tokens_the_chat_may_follow(
+    wired: Any, library: Any
+) -> None:
+    """A package page that declares `--bg`/`--accent` surfaces them in the read as
+    `page_theme`, the bounded set the Crewmates-page chat follows. A free-form page
+    token is not included, and a page with no colours carries no `page_theme`."""
+    library[PACKAGE_SLUG] = _record(
+        PACKAGE_SLUG,
+        _package(theme_tokens={"--bg": "#101418", "--accent": "#7c3aed", "--heading": "#ffcc00"}),
+    )
+    status, body = await _call(
+        md.api_member_dashboard,
+        _request(wired.app, "GET", f"/api/members/{SLUG}/dashboard?member={CREW}"),
+    )
+    assert status == 200
+    assert body["page_theme"] == {"--bg": "#101418", "--accent": "#7c3aed"}
+
+
+@pytest.mark.asyncio
+async def test_a_package_with_no_colour_tokens_carries_no_page_theme(
+    wired: Any, library: Any
+) -> None:
+    library[PACKAGE_SLUG] = _record(PACKAGE_SLUG, _package())
+    status, body = await _call(
+        md.api_member_dashboard,
+        _request(wired.app, "GET", f"/api/members/{SLUG}/dashboard?member={CREW}"),
+    )
+    assert status == 200
+    assert "page_theme" not in body, "an untinted page must add no page_theme key"
+
+
+@pytest.mark.asyncio
 async def test_a_crewmate_with_no_package_still_gets_its_template_page(
     wired: Any, library: Any
 ) -> None:

@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_PAGE_COLORS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -137,6 +137,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_DASHBOARD_STALE_FIELDS: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_fields')
     case PREVIEW_DASHBOARD_STALE_WAKE: return i18nT('pages.developer.featurePreviewsTab.dashboard_stale_wake')
     case PREVIEW_BRIDGE_APPROVALS: return i18nT('pages.developer.featurePreviewsTab.bridge_approvals')
+    case PREVIEW_CHAT_PAGE_COLORS: return i18nT('pages.developer.featurePreviewsTab.chat_page_colors')
     case PREVIEW_CHAT_RUNTIME_SHARING: return i18nT('pages.developer.featurePreviewsTab.chat_runtime_sharing')
     case PREVIEW_SECRETS_VAULT: return i18nT('pages.developer.featurePreviewsTab.secrets_vault')
     case PREVIEW_SESSION_ENVIRONMENTS: return i18nT('sessionEnvironments.title')
@@ -196,6 +197,7 @@ export function FeaturePreviewsSection() {
   const dashboardStaleFields = usePreviewFlag(PREVIEW_DASHBOARD_STALE_FIELDS)
   const dashboardStaleWake = usePreviewFlag(PREVIEW_DASHBOARD_STALE_WAKE)
   const bridgeApprovals = usePreviewFlag(PREVIEW_BRIDGE_APPROVALS)
+  const chatPageColors = usePreviewFlag(PREVIEW_CHAT_PAGE_COLORS)
   const chatRuntimeSharing = usePreviewFlag(PREVIEW_CHAT_RUNTIME_SHARING)
   const secretsVault = usePreviewFlag(PREVIEW_SECRETS_VAULT)
   const sessionEnvironments = usePreviewFlag(PREVIEW_SESSION_ENVIRONMENTS)
@@ -486,6 +488,19 @@ export function FeaturePreviewsSection() {
             hint={i18nT('sessionEnvironments.description')}
             checked={sessionEnvironments}
             onChange={value => setPreviewFlag(PREVIEW_SESSION_ENVIRONMENTS, value)}
+          />
+        )}
+        {/* Bot chat follows its dashboard page colours (#20635;
+            `dashboard.feature_previews.chat_page_colors`). A browser-cached flag:
+            the Crewmates-page chat reads it through `useChatPageColors` and tints
+            only while it is on. Default OFF leaves the chat as it was. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.chat_page_colors')}
+            description={i18nT('pages.developer.featurePreviewsTab.chat_page_colors_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.chat_page_colors_desc')}
+            checked={chatPageColors}
+            onChange={v => setPreviewFlag(PREVIEW_CHAT_PAGE_COLORS, v)}
           />
         )}
         {/* Chat runtime sharing (`chat_runtime_sharing`): a gateway switch read at

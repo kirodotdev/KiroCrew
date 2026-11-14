@@ -55,7 +55,12 @@ PAGE = (
 )
 
 
-def _package(bound_to: str = f"crewmate:{SLUG}", *, html: str = PAGE) -> dict[str, Any]:
+def _package(
+    bound_to: str = f"crewmate:{SLUG}",
+    *,
+    html: str = PAGE,
+    theme_tokens: dict[str, str] | None = None,
+) -> dict[str, Any]:
     return dp.validate_package(
         {
             "kind": "dashboard",
@@ -70,7 +75,7 @@ def _package(bound_to: str = f"crewmate:{SLUG}", *, html: str = PAGE) -> dict[st
                 }
             },
             "view": {"html": html},
-            "theme": {"tokens": {}},
+            "theme": {"tokens": theme_tokens or {}},
         }
     )
 
