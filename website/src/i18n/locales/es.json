@@ -21780,6 +21780,7 @@
         "save_stopped_note": "Dejaste de esperar. Ese guardado puede haberse aplicado o no; la lista muestra el estado actual. Tus cambios siguen aquí. Guarda de nuevo o cancela.",
         "saving": "Guardando…",
         "service_missing": "Aún no disponible con este perfil: el lanzamiento necesita permiso para este servicio.",
+        "service_not_checked": "Aún no se ha comprobado: primero hacen falta credenciales de AWS que funcionen.",
         "service_ok": "Accesible con este perfil.",
         "set_up_a_new_one": "Configurar uno nuevo",
         "setting_up": "Configurando",

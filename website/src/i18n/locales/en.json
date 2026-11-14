@@ -11462,6 +11462,7 @@
         "save_stopped_note": "Stopped waiting. That save may or may not have gone through; the list shows the current state. Your edits are still here. Save again or Cancel.",
         "saving": "Saving…",
         "service_missing": "Not available with this profile yet — the launch needs permission for this service.",
+        "service_not_checked": "Not checked yet — needs working AWS credentials first.",
         "service_ok": "Reachable with this profile.",
         "set_up_a_new_one": "Set up a new one",
         "setting_up": "Setting up",

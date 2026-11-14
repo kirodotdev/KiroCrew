@@ -1407,6 +1407,14 @@ doctor` (#32068). The Set-up tab keys on the code to show that sentence in the
 reader's language. When the preflight fails for any reason, its no-result line
 says the check did not run instead of "check your credentials".
 
+**A service row is not checked when the credentials are not.**
+`iam.reachability_check` calls EC2, CloudFormation and SSM only after
+`sts get-caller-identity` succeeds, so with `reachable: false` their three flags
+are `false` without having been checked. The Set-up tab draws those rows as "Not
+checked yet" with a hollow mark and no Copy policy JSON, never as a missing
+permission (#32095), the same as `kirocrew cloud doctor`, which lists them only
+when AWS is reachable.
+
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cloud/preflight?profile=&region=` | AWS reachability + the prerequisite checklist (the doctor checks as JSON). |

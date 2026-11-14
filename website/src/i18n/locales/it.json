@@ -21780,6 +21780,7 @@
         "save_stopped_note": "Attesa interrotta. Quel salvataggio potrebbe essere andato a buon fine oppure no; l'elenco mostra lo stato attuale. Le tue modifiche sono ancora qui. Salva di nuovo o annulla.",
         "saving": "Salvataggio…",
         "service_missing": "Non ancora disponibile con questo profilo — l’avvio richiede l’autorizzazione per questo servizio.",
+        "service_not_checked": "Non ancora verificato — servono prima credenziali AWS funzionanti.",
         "service_ok": "Raggiungibile con questo profilo.",
         "set_up_a_new_one": "Configurane una nuova",
         "setting_up": "Configurazione",

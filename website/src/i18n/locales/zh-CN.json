@@ -20734,6 +20734,7 @@
         "save_stopped_note": "已停止等待。这次保存可能已生效，也可能没有；列表显示的是当前状态。你的编辑仍保留在这里。请再次保存或取消。",
         "saving": "正在保存…",
         "service_missing": "Not available with this profile yet — the launch needs permission for this service.",
+        "service_not_checked": "尚未检查 — 需要先有可用的 AWS 凭证。",
         "service_ok": "Reachable with this profile.",
         "set_up_a_new_one": "Set up a new one",
         "setting_up": "Setting up",
