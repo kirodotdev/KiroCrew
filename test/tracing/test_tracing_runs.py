@@ -182,6 +182,7 @@ def test_every_span_of_a_child_carries_the_parent_traces_session(spans):
         "chat",
         "user.prompt",
         "execute_tool",
+        "kirocrew.step",
         "turn.complete",
     }
     assert {s.attributes["kirocrew.session_key_hash"] for s in child_spans} == {
@@ -408,8 +409,8 @@ def test_an_anchor_and_its_outcome_carry_deterministic_ids_and_the_roll_up(spans
 
 
 def test_a_span_budget_overflow_starts_a_linked_continuation(spans, monkeypatch):
-    # A turn is 4 spans (invoke_agent, user.prompt, chat, turn.complete); the parent
-    # adds its spawn tool span. A budget of 5 makes each trace full after one turn.
+    # A turn is 5 spans (invoke_agent, user.prompt, chat, kirocrew.step, turn.complete);
+    # the parent adds its spawn tool span. A budget of 5 makes each trace full after one turn.
     monkeypatch.setattr(runs, "SPAN_BUDGET", 5)
     parent = _parent_turn()
     turns.tool_started(PARENT_ACP, "tc-run", kind="other", tool_name=RUN_TOOL)
