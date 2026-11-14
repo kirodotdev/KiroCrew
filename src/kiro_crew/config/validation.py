@@ -58,10 +58,10 @@ from kiro_crew.config.fields import _coerce_bool
 # stays the in-memory-only consumer the extension registry below requires.
 _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 
-# Top-level config.json sections THIS CORE itself writes and reads, but does not
-# model as a dataclass field. The settings UI persists them into config.json and
-# a core module reads them back on startup -- so, exactly like the keys save()
-# stamps (CONFIG_RESERVED_TOP_KEYS), the product wrote them itself and warning
+# Top-level config.json sections THIS CORE reads, but does not model as a
+# dataclass field: the settings UI persists them, or the docs tell the operator to
+# write them, and a core module reads them back -- so, exactly like the keys save()
+# stamps (CONFIG_RESERVED_TOP_KEYS), the product put them there and warning
 # "unrecognized" about them is a false positive. They differ from the reserved
 # keys in that they carry live operator settings that must survive save(): the
 # loader captures them into _extra_sections and re-emits them via to_dict(), so
@@ -84,7 +84,11 @@ _APP_OWNED_TOP_KEYS: frozenset = _builtin_config_top_keys()
 #     connections/oauth_clients.py::_config_client_id; the
 #     ``connections.tool_aliases`` gate is read by
 #     agent_materialization/mcp_aliases.py. No SCHEMA_REGISTRY entry.
-_CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections"})
+#   * sel -- the operator's raise of the security event log's keep count,
+#     ``sel.keep``, written by hand as configuration.md says and read by
+#     sel_rotation._read_operator_keep in every process that trims the log. No
+#     SCHEMA_REGISTRY entry, so Crew never writes a default copy of it.
+_CORE_OWNED_TOP_KEYS: frozenset = frozenset({"voice_reply", "connections", "sel"})
 
 try:
     import jsonschema
@@ -635,9 +639,9 @@ def validate_config_data(data: dict) -> dict:
     # must be excluded — otherwise every load of a config Kiro Crew has ever
     # saved warns about Kiro Crew's own bookkeeping. A section a builtin app owns
     # and reads from the file directly (_APP_OWNED_TOP_KEYS), or that this core
-    # writes and reads without a dataclass model (_CORE_OWNED_TOP_KEYS), is not
-    # in the registry either and is excluded for the same reason: the product
-    # told the operator to write it, or wrote it itself. Excluded only in the
+    # reads without a dataclass model (_CORE_OWNED_TOP_KEYS), is not in the
+    # registry either and is excluded for the same reason: the product told the
+    # operator to write it, or wrote it itself. Excluded only in the
     # shape the reader keeps -- a JSON object. A reader keeps only a dict and
     # silently falls back on anything else, so a scalar written by hand would
     # otherwise lose the one warning that tells the operator it is being ignored.

@@ -14,7 +14,8 @@ signing key lives OUTSIDE the log directory in ``<config_dir>/trust/`` so an
 actor who can rewrite the log dir cannot also read the key and re-sign a
 clean-looking chain.
 Rotation: the live log is closed at ``_SEGMENT_MAX_BYTES`` and renamed into
-``<config_dir>/security_events.d/``, keeping ``_SEGMENT_KEEP`` closed segments.
+``<config_dir>/security_events.d/``, keeping ``_SEGMENT_KEEP`` closed segments
+(an operator can raise that count with ``sel.keep`` in ``config.json``).
 Each segment is an INDEPENDENT HMAC chain (it starts from genesis), and the
 first record of every new live log is a ``sel_rotation`` event naming the
 segment just closed and its size — deliberately NOT that segment's final
@@ -294,6 +295,11 @@ class SecurityEventLog:
         self._dir = base_dir or _default_dir()
         self._path = self._dir / _SEL_FILE
         self._segment_dir = self._dir / _SEGMENT_SUBDIR
+        # The operator's ``sel.keep``, whether the current batch read it cleanly, and the
+        # config files read and keys warned about (sel_rotation._read_operator_keep).
+        self._operator_keep: int | None = None
+        self._keep_fresh = False
+        self._operator_config_seen: set[str] = set()
         # _lock guards _last_hash + the file append (held only inside the writer
         # thread and by synchronous fallbacks / prune, never by enqueuing callers).
         # Ordering across processes is _chain_lock's job, not this lock's.
@@ -521,6 +527,8 @@ class SecurityEventLog:
         # ROTATION holds the rotation lock, not this one, and this instance's
         # cached tip can be stale when a sibling appended before we took the
         # lock, both of which the guard turns into a re-anchor + re-chain.
+        if self._may_rotate():
+            self._refresh_operator_keep()
         try:
             with self._chain_lock():
                 with self._lock:
@@ -610,6 +618,7 @@ class SecurityEventLog:
     _compute_hash = _sel_trust_root._compute_hash
     _record_signature_matches = _sel_trust_root._record_signature_matches
     # Size rotation, segment retention and the age prune: ``kiro_crew.sel_rotation``.
+    _refresh_operator_keep = _sel_rotation._refresh_operator_keep
     _rotation_window = _sel_rotation._rotation_window
     _open_rotation_lock = _sel_rotation._open_rotation_lock
     _ensure_segment_dir = _sel_rotation._ensure_segment_dir

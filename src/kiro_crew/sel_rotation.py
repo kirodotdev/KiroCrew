@@ -1,7 +1,8 @@
 """Keep the SEL bounded: size rotation into closed segments, retention, and the age prune.
 
 The live log is closed into ``security_events.d`` at ``_SEGMENT_MAX_BYTES`` under a
-cross-process rotation lock, at most ``_SEGMENT_KEEP`` closed segments are kept, and
+cross-process rotation lock, at most ``_SEGMENT_KEEP`` closed segments are kept (or the
+operator's raise of that count, ``sel.keep`` in the config beside the log), and
 ``prune`` drops whole segments and live-log records older than ``_RETENTION_DAYS``.
 Whether the calling thread may rotate at all is the class's ``_may_rotate``.
 
@@ -11,9 +12,10 @@ and a patch of the method on the class or on an instance reaches every caller. M
 names this code reads are patched through ``kiro_crew.sel``, which reaches every member
 of the family that binds them (``kiro_crew._facade_mirror``).
 
-Instance fields written: ``_last_hash``.
+Instance fields written: ``_keep_fresh``, ``_last_hash``, ``_operator_keep``.
 
-Instance fields read: ``_lock``, ``_path``, ``_segment_dir``.
+Instance fields read: ``_dir``, ``_lock``, ``_operator_config_seen``, ``_path``,
+``_segment_dir``.
 """
 
 from __future__ import annotations
@@ -53,7 +55,8 @@ _RETENTION_DAYS = 365
 # long-running install reached 4.09 GB, at which point the sanctioned reader is
 # impractical and every append/read pays the size. The ceiling is
 # _SEGMENT_MAX_BYTES * (_SEGMENT_KEEP + 1) -- ~256 MiB, roughly 500k events at
-# the ~513 bytes/event measured on a real log. Age-based retention
+# the ~513 bytes/event measured on a real log, at the default keep count (an
+# operator may raise it, see _read_operator_keep). Age-based retention
 # (_RETENTION_DAYS, swept by prune()) still applies on top;
 # size rotation is what bounds the log BETWEEN those daily sweeps, which is the
 # window that 4.09 GB accumulated in.
@@ -85,7 +88,7 @@ _ROTATE_LOCK_FILE = ".rotate.lock"
 
 
 # Ceiling on entries examined when enumerating segments. Rotation itself keeps at
-# most _SEGMENT_KEEP + 1 files there, so a larger directory is someone else's
+# most _SEGMENT_KEEP_CEILING + 1 files there, so a larger directory is someone else's
 # doing; the walk runs on the append path (where a critical audit is written
 # inline, sometimes on the event loop) and must not scale with a directory an
 # agent filled before this release.
@@ -97,6 +100,110 @@ _SEGMENT_SCAN_CAP = 4096
 # sometimes on the event loop), so a directory pre-filled with consecutive
 # segment names must not be able to make rotation stat its way through it.
 _SEGMENT_NAME_PROBES = 64
+
+
+# The most closed segments an operator's ``sel.keep`` can ask for. The daily prune reads
+# each aged-out segment in full under the install-wide chain lock, so this count bounds
+# that hold: 64 x 32 MiB = 2 GiB, about nine times the 7-segment worst case.
+_SEGMENT_KEEP_CEILING = 64
+
+
+def _read_operator_keep(log_dir: Path, seen: set[str]) -> tuple[bool, int | None]:
+    """``(True, sel.keep)`` from a clean read of the config beside the log, else ``(False, None)``.
+
+    The count is ``None`` when the key is absent or null. Anything short of a clean
+    read is not one: an unreadable or malformed file, a wrong type, or a file this
+    process read before and now finds missing (an editor's save window). The caller
+    then keeps up to ``_SEGMENT_KEEP_CEILING`` rather than the default, which is the
+    setting that deletes the most.
+    *seen* holds the config files this process has read and the keys it has warned
+    about, so each warning is logged once per process.
+    """
+    # Imported here: config loading itself writes SEL events.
+    from kiro_crew.config.loader_locations import read_endorsed_config_text
+    from kiro_crew.config.resolution import _deep_merge
+
+    merged: dict = {}
+    for name in ("config.json", "config.local.json"):
+        try:
+            document = json.loads(read_endorsed_config_text(log_dir / name))
+        except FileNotFoundError:
+            # A config.json the gateway has saved before is mid-save, not absent.
+            saved = name == "config.json" and _endorsed_copy_exists(log_dir / name)
+            if name not in seen and not saved:
+                continue
+            document = None
+        except (OSError, ValueError, RecursionError):
+            document = None
+        if not isinstance(document, dict):
+            _warn_once(
+                seen,
+                name,
+                "SEL could not read %s cleanly; keeping up to %d old segments until it can",
+                name,
+                _SEGMENT_KEEP_CEILING,
+            )
+            return False, None
+        seen.add(name)
+        merged = _deep_merge(merged, document)
+    section = merged.get("sel")
+    if section is None:
+        return True, None
+    keep = section.get("keep") if isinstance(section, dict) else None
+    clean = isinstance(section, dict) and (
+        keep is None or (isinstance(keep, int) and not isinstance(keep, bool))
+    )
+    if not (clean and (keep is None or _SEGMENT_KEEP <= keep <= _SEGMENT_KEEP_CEILING)):
+        # Names the key and the range, never the value: a mis-pasted one can be a secret.
+        _warn_once(
+            seen,
+            "sel.keep" if clean else "sel.keep type",
+            "SEL config key sel.keep must be a whole number from %d to %d; %s",
+            _SEGMENT_KEEP,
+            _SEGMENT_KEEP_CEILING,
+            "using the nearest of the two" if clean else "keeping up to the larger until it is",
+        )
+    return (True, keep) if clean else (False, None)
+
+
+def _endorsed_copy_exists(path: Path) -> bool:
+    """Whether the gateway has recorded a saved copy of the config file at *path*."""
+    from kiro_crew.config import loosening_provenance
+
+    leaf = loosening_provenance.leaf_for(path)
+    return leaf is not None and loosening_provenance.endorsed_bytes(leaf) is not None
+
+
+def _warn_once(seen: set[str], topic: str, message: str, *args: object) -> None:
+    """Log *message* the first time this process meets *topic*; *seen* remembers it."""
+    if f"warned:{topic}" not in seen:
+        seen.add(f"warned:{topic}")
+        logger.warning(message, *args)
+
+
+def _refresh_operator_keep(self: SecurityEventLog) -> None:
+    """Re-read ``sel.keep`` when this batch may rotate. Writer thread only, before any lock.
+
+    Called before the chain lock, so the read (and any host check behind it) holds no
+    lock a critical audit fails closed on. Only a clean read marks THIS batch fresh: a
+    batch that reaches the cap while it waits for the lock still rotates, but trims only
+    to the ceiling until a batch that read the count does.
+    """
+    self._keep_fresh = False
+    if self._live_size() < _SEGMENT_MAX_BYTES:
+        return
+    try:
+        self._keep_fresh, self._operator_keep = _read_operator_keep(
+            self._dir, self._operator_config_seen
+        )
+    except Exception as exc:  # noqa: BLE001 -- like rotation, never fails the audit write
+        _warn_once(
+            self._operator_config_seen,
+            "read",
+            "SEL could not read sel.keep (%s); keeping up to %d old segments",
+            type(exc).__name__,
+            _SEGMENT_KEEP_CEILING,
+        )
 
 
 @contextmanager
@@ -389,7 +496,7 @@ def _segments_oldest_first(
     for why that rather than the timestamp or the mtime.
 
     Enumeration is BOUNDED at ``_SEGMENT_SCAN_CAP`` entries. Rotation keeps
-    at most ``_SEGMENT_KEEP + 1`` files here, so any larger count is either an
+    at most ``_SEGMENT_KEEP_CEILING + 1`` files here, so any larger count is either an
     operator's dumping ground or entries planted before this release, and this
     walk runs on the append path — where a critical audit is written inline,
     sometimes on the event loop. An unbounded listing of a directory someone
@@ -472,7 +579,7 @@ def _segments_oldest_first(
             "it — retention will not see past the cap until they are removed",
             self._segment_dir,
             _SEGMENT_SCAN_CAP,
-            _SEGMENT_KEEP + 1,
+            _SEGMENT_KEEP_CEILING + 1,
         )
     if pin is not None and pin.fd is None and not pin.matches(self._segment_dir):
         # Identity pin (this platform has no directory descriptors): the
@@ -490,7 +597,7 @@ def _segments_oldest_first(
 
 
 def _enforce_segment_retention_locked(self: SecurityEventLog) -> int:
-    """Delete the oldest closed segments beyond ``_SEGMENT_KEEP``.
+    """Delete the oldest closed segments beyond the keep count.
 
     Returns the number deleted. Caller holds ``_lock``.
 
@@ -501,9 +608,21 @@ def _enforce_segment_retention_locked(self: SecurityEventLog) -> int:
     Stopping leaves the count over budget until the obstruction clears, which
     is the safe direction, and the next rotation retries. Matches
     :meth:`_prune_segments_locked`, which already stops for the same reason.
+
+    The count is ``_SEGMENT_KEEP`` or the operator's raise of it, and only a batch that
+    read it cleanly trims to it (:meth:`_refresh_operator_keep`). Any other batch keeps
+    up to ``_SEGMENT_KEEP_CEILING``, the most a setting can ask for, so the bound holds
+    and no writer trims below a count it did not just read.
     """
+    raw = self._operator_keep
+    if not self._keep_fresh:
+        keep = _SEGMENT_KEEP_CEILING
+    elif raw is None:
+        keep = _SEGMENT_KEEP
+    else:
+        keep = min(max(raw, _SEGMENT_KEEP), _SEGMENT_KEEP_CEILING)
     segments = self._segments_oldest_first()
-    excess = len(segments) - _SEGMENT_KEEP
+    excess = len(segments) - keep
     if excess <= 0:
         return 0
     deleted = 0
@@ -523,7 +642,7 @@ def _enforce_segment_retention_locked(self: SecurityEventLog) -> int:
         logger.info(
             "SEL retention deleted %d closed segment(s) beyond the %d kept",
             deleted,
-            _SEGMENT_KEEP,
+            keep,
         )
     return deleted
 

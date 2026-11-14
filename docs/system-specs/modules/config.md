@@ -1715,17 +1715,21 @@ keys`. Three exclusions from that warning are named in code:
   no builtin declares one. Captured and round-tripped like any unknown section,
   and NOT reported as unrecognized: the product told the operator to write it.
   Private to the warning that is its only consumer.
-- `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`) — a section this core itself
-  writes and reads but does not model as a field. The settings UI persists it
+- `validation._CORE_OWNED_TOP_KEYS` (`voice_reply`, `connections`, `sel`) — a section this core
+  reads but does not model as a field, written by the settings UI or by hand as the docs say. The settings UI persists it
   (`slack/interactions_modals.py`, `dashboard/chat_voice.py`) and the gateway reads it
   back on startup via `load_voice_reply_config` (`slack/handler_runtime/voice.py`,
   and read by `telegram/transport_dispatch.py`). Captured and round-tripped like any unknown
-  section, and NOT reported as unrecognized because the product wrote it itself.
+  section, and NOT reported as unrecognized because the product wrote it, or told the
+  operator to.
   `connections` is the second member: the Settings → Connections OAuth app form writes
   `connections.oauth_clients.<slug>.client_id`
   (`dashboard/handlers/connections.py`), which
   `connections/oauth_clients.py` reads back, and
   `agent_materialization/mcp_aliases.py` reads `connections.tool_aliases`.
+  `sel` is the third: the operator writes `sel.keep` by hand (the security event log's
+  keep count, `configuration.md` "Security event log") and `sel_rotation._read_operator_keep`
+  reads it in every process that trims the log.
   A separate set from `_APP_OWNED_TOP_KEYS` because the owner is core, not an
   app: it has no app to declare it through host grants.
   Both sets exempt only the shape the reader keeps — a JSON object — so a scalar
