@@ -266,9 +266,14 @@ class TestFormatDashboardUrls:
         Clearing ``os.environ`` would drop the floor's ``KIROCREW_HOME`` pin, and a
         resolver left by an earlier test could then reach the real ``~/.kiro/crew``.
         Uses the floor's own monkeypatch, which a test's ``monkeypatch.undo()`` cannot lift.
+
+        Also forces ``is_ssm_session`` to ``False`` so the local-branch tests do
+        not read the real ``/proc`` ancestry and stay host independent when the
+        suite runs from a Session Manager shell.
         """
         _floor_monkeypatch.delenv("SSH_CONNECTION", raising=False)
         _floor_monkeypatch.delenv("SSH_CLIENT", raising=False)
+        _floor_monkeypatch.setattr(f"{_MOD}.is_ssm_session", lambda: False)
 
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="localhost")
@@ -286,11 +291,17 @@ class TestFormatDashboardUrls:
 
     @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 5.6.7.8 5678"})
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=False)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost")
     @patch(f"{_MOD}.socket.gethostbyname", side_effect=socket.gaierror)
-    def test_remote_ssh_tunnel_instructions(self, _dns: object, _mh: object, _dp: object) -> None:
+    def test_remote_ssh_tunnel_instructions(
+        self, _dns: object, _mh: object, _ssm: object, _dp: object
+    ) -> None:
         lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
-        assert any("ssh -NL 5476:localhost:5476 myhost" in ln for ln in lines)
+        # The ssh target is the address the client connected to (SSH_CONNECTION
+        # server field), not the box's own gethostname() a laptop cannot resolve.
+        assert any("ssh -NL 5476:localhost:5476 5.6.7.8" in ln for ln in lines)
+        assert not any("myhost" in ln for ln in lines)
         assert any("http://localhost:5476?token=t" in ln for ln in lines)
         assert "👻 Run 24/7:  kirocrew service install" in lines
 
@@ -453,6 +464,199 @@ class TestFormatDashboardUrls:
     def test_a_remote_url_without_a_token_raises(self, url: str, local_only: object) -> None:
         with pytest.raises(ValueError, match="token is required"):
             format_dashboard_urls(url, port=5476, local_only=local_only)  # type: ignore[arg-type]
+
+
+class TestSshServerAddress:
+    """ssh_server_address reads the address the client reached, from SSH_CONNECTION."""
+
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 54.1.2.3 22"})
+    def test_returns_global_server_address(self) -> None:
+        from kiro_crew.dashboard.urls import ssh_server_address
+
+        assert ssh_server_address() == "54.1.2.3"
+
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 10.0.0.5 22"})
+    def test_private_server_address_returns_none(self) -> None:
+        """A box behind NAT reports its private address; a laptop can't reach it."""
+        from kiro_crew.dashboard.urls import ssh_server_address
+
+        assert ssh_server_address() is None
+
+    @patch.dict("os.environ", {}, clear=False)
+    def test_missing_variable_returns_none(self, monkeypatch) -> None:
+        from kiro_crew.dashboard.urls import ssh_server_address
+
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        assert ssh_server_address() is None
+
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 not-an-ip 22"})
+    def test_non_ip_server_returns_none(self) -> None:
+        from kiro_crew.dashboard.urls import ssh_server_address
+
+        assert ssh_server_address() is None
+
+
+class TestIsSsmSession:
+    """is_ssm_session walks the process ancestry (parent_pid) and matches the
+    kernel-truncated ssm-session-worker comm from linux_process_name."""
+
+    _PC = "kiro_crew.platform_compat"
+    # The kernel caps comm at 15 characters, so a real host reports this prefix.
+    _TRUNC = "ssm-session-wor"
+
+    def _patch_chain(self, monkeypatch, comm_by_pid, ppid_by_pid) -> None:
+        import kiro_crew.dashboard.urls as urls_mod
+
+        monkeypatch.setattr(urls_mod.os, "getpid", lambda: 100)
+        monkeypatch.setattr(f"{self._PC}.linux_process_name", lambda pid, **k: comm_by_pid.get(pid))
+        monkeypatch.setattr(f"{self._PC}.parent_pid", lambda pid: ppid_by_pid.get(pid))
+
+    def test_detects_worker_in_ancestry(self, monkeypatch) -> None:
+        import kiro_crew.dashboard.urls as urls_mod
+
+        # Ancestry self -> bash -> sudo -> ssm-session-worker (truncated) -> 1.
+        self._patch_chain(
+            monkeypatch,
+            {100: "bash", 101: "sudo", 102: self._TRUNC},
+            {100: 101, 101: 102, 102: 1},
+        )
+        assert urls_mod.is_ssm_session() is True
+
+    def test_plain_ancestry_is_not_ssm(self, monkeypatch) -> None:
+        import kiro_crew.dashboard.urls as urls_mod
+
+        self._patch_chain(monkeypatch, {100: "bash", 101: "sshd"}, {100: 101, 101: 1})
+        assert urls_mod.is_ssm_session() is False
+
+    def test_read_error_is_not_ssm(self, monkeypatch) -> None:
+        import kiro_crew.dashboard.urls as urls_mod
+
+        def _boom(pid, **k):
+            raise OSError("no /proc")
+
+        monkeypatch.setattr(urls_mod.os, "getpid", lambda: 100)
+        monkeypatch.setattr(f"{self._PC}.linux_process_name", _boom)
+        monkeypatch.setattr(f"{self._PC}.parent_pid", lambda pid: None)
+        assert urls_mod.is_ssm_session() is False
+
+
+class TestRemoteBootLines:
+    """The boot line serves both SSM and SSH sessions and never prints the box
+    hostname as the ssh target."""
+
+    _MOD = "kiro_crew.dashboard.urls"
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, _floor_monkeypatch):
+        _floor_monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        _floor_monkeypatch.delenv("SSH_CLIENT", raising=False)
+
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=True)
+    def test_ssm_session_gets_port_forward_hint_not_local_branch(
+        self, _ssm: object, _dp: object
+    ) -> None:
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
+        text = "\n".join(lines)
+        # Not the plain local-desktop branch.
+        assert "👻 Dashboard:\n   http://localhost:5476?token=t" not in text
+        # Points at BOTH forwarding paths and the guide.
+        assert "AWS-StartPortForwardingSession" in text
+        assert "ssh -NL 5476:localhost:5476" in text
+        assert "cloud-instance-ssm-vs-ssh.md" in text
+        assert any("http://localhost:5476?token=t" in ln for ln in lines)
+
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=True)
+    @patch(f"{_MOD}.machine_hostname", return_value="box.corp.example")
+    def test_ssm_session_keeps_the_machine_name_as_a_hint(
+        self, _mh: object, _ssm: object, _dp: object
+    ) -> None:
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
+        i = next(n for n, ln in enumerate(lines) if ln.startswith("👻 Forward:"))
+        assert lines[i + 1] == "             (this machine calls itself box.corp.example)"
+
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=True)
+    @patch(f"{_MOD}.machine_hostname", return_value=None)
+    def test_ssm_session_without_machine_name_adds_no_hint(
+        self, _mh: object, _ssm: object, _dp: object
+    ) -> None:
+        text = "\n".join(format_dashboard_urls("http://localhost:5476?token=t", port=5476))
+        assert "calls itself" not in text
+
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=True)
+    def test_ssm_session_with_custom_host_keeps_the_working_url(
+        self, _ssm: object, _dp: object
+    ) -> None:
+        """A configured dashboard.url / non-loopback host is reachable directly,
+        so the SSM branch keeps the working URL and still adds the forward hint."""
+        lines = format_dashboard_urls(
+            "https://box.example:5476?token=t", port=5476, has_custom_host=True
+        )
+        text = "\n".join(lines)
+        # The working URL main printed is kept.
+        assert "   https://box.example:5476?token=t" in text
+        # The forward hint is still present for the Session Manager user.
+        assert "AWS-StartPortForwardingSession" in text
+        assert "cloud-instance-ssm-vs-ssh.md" in text
+
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 54.1.2.3 22"})
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=False)
+    @patch(f"{_MOD}.machine_hostname", return_value="ip-10-0-0-5.ec2.internal")
+    def test_ssh_hint_uses_client_reachable_address_not_box_hostname(
+        self, _mh: object, _ssm: object, _dp: object
+    ) -> None:
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
+        text = "\n".join(lines)
+        assert "ssh -NL 5476:localhost:5476 54.1.2.3" in text
+        # The box's own private hostname is NOT offered as the ssh target.
+        assert "ip-10-0-0-5.ec2.internal" not in text
+
+    @patch.dict("os.environ", {"SSH_CONNECTION": "1.2.3.4 1234 10.0.0.5 22"})
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=False)
+    @patch(f"{_MOD}.machine_hostname", return_value="box.corp.example")
+    def test_ssh_behind_nat_uses_placeholder_and_shows_machine_name(
+        self, _mh: object, _ssm: object, _dp: object
+    ) -> None:
+        """EC2 on a public IP: SSH_CONNECTION's server field is the box's private
+        address, unreachable from the laptop -- fall back to the placeholder, but
+        still show the machine's own name as a hint beside it."""
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
+        text = "\n".join(lines)
+        # The placeholder is the ssh target, never the unreachable private address.
+        assert "ssh -NL 5476:localhost:5476 <the host you ssh to>" in text
+        assert "10.0.0.5" not in text
+        # The machine's own name is shown as a hint, not as the ssh target.
+        assert "(this machine calls itself box.corp.example)" in text
+
+    @patch.dict("os.environ", {"SSH_CLIENT": "1.2.3.4 1234 22"})
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=False)
+    @patch(f"{_MOD}.machine_hostname", return_value="box.corp.example")
+    def test_ssh_without_connection_var_uses_placeholder_and_shows_machine_name(
+        self, _mh: object, _ssm: object, _dp: object
+    ) -> None:
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
+        text = "\n".join(lines)
+        assert "ssh -NL 5476:localhost:5476 <the host you ssh to>" in text
+        assert "(this machine calls itself box.corp.example)" in text
+
+    @patch.dict("os.environ", {"SSH_CLIENT": "1.2.3.4 1234 22"})
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.is_ssm_session", return_value=False)
+    @patch(f"{_MOD}.machine_hostname", return_value=None)
+    def test_ssh_placeholder_without_machine_name_adds_no_hint(
+        self, _mh: object, _ssm: object, _dp: object
+    ) -> None:
+        """When machine_hostname() returns nothing, no extra hint line appears."""
+        lines = format_dashboard_urls("http://localhost:5476?token=t", port=5476)
+        text = "\n".join(lines)
+        assert "ssh -NL 5476:localhost:5476 <the host you ssh to>" in text
+        assert "this machine calls itself" not in text
 
 
 class TestCheckOriginLoopbackTrust:

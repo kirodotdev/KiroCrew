@@ -63,6 +63,75 @@ def machine_hostname() -> str | None:
         return None
 
 
+def ssh_server_address() -> str | None:
+    """Return the address the SSH client connected to, or ``None``.
+
+    ``SSH_CONNECTION`` is ``client_ip client_port server_ip server_port``. The
+    third field is the address the client reached this box on, which is the host
+    a laptop can actually resolve -- unlike ``gethostname()``, which on a cloud
+    VM is a private ``ip-<addr>`` name the laptop cannot resolve.
+
+    Returns the value only when it parses as a *globally routable* IP address. A
+    box behind NAT (an EC2 instance reached on its public IP) sees the server
+    field as its own PRIVATE address, which a laptop outside the VPC can no more
+    reach than the private hostname; falling back to the placeholder is the
+    honest answer there. A malformed or non-global value yields ``None``.
+    """
+    conn = os.environ.get("SSH_CONNECTION", "")
+    parts = conn.split()
+    if len(parts) < 3:
+        return None
+    server = parts[2]
+    try:
+        if not ipaddress.ip_address(server).is_global:
+            return None
+    except ValueError:
+        return None
+    return server
+
+
+#: Bound on the ancestry walk. A shell is a handful of hops below the SSM worker
+#: even after a sudo/su switch; the cap stops a cycle or a long chain from
+#: stalling boot.
+SSM_ANCESTRY_MAX_DEPTH = 20
+
+#: The kernel caps a process ``comm`` at ``TASK_COMM_LEN`` (16 bytes including
+#: the NUL), so ``/proc/<pid>/comm`` reports at most 15 characters. The SSM
+#: worker's name is ``ssm-session-worker`` (18), which the kernel shows as its
+#: 15-char prefix; matching the full name would never fire on a real host.
+_SSM_WORKER_COMM = "ssm-session-worker"[:15]
+
+
+def is_ssm_session() -> bool:
+    """Return ``True`` when this process descends from an SSM Session Manager shell.
+
+    SSM sets no environment variable the shell can read, and no env hint
+    survives ``sudo -iu <user>``. The reliable signal is process ancestry: an
+    interactive Session Manager shell runs under ``ssm-session-worker``. Walking
+    the ancestor chain (not just the direct parent) keeps the signal after a
+    ``sudo``/``su`` user switch, which reparents the shell but leaves the worker
+    higher in the chain.
+
+    Linux-only (``parent_pid`` and ``linux_process_name`` answer ``None`` off
+    Linux). The hint it feeds is cosmetic, so an unreadable ``/proc`` means "not
+    detected", never an exception on the boot path.
+    """
+    from kiro_crew.platform_compat import linux_process_name, parent_pid
+
+    try:
+        pid: int | None = os.getpid()
+        for _ in range(SSM_ANCESTRY_MAX_DEPTH):
+            if pid is None or pid <= 1:
+                break
+            comm = linux_process_name(pid)
+            if comm is not None and comm == _SSM_WORKER_COMM:
+                return True
+            pid = parent_pid(pid)
+    except Exception:
+        return False
+    return False
+
+
 #: Ceiling on the startup hostname lookup. The hint it feeds is cosmetic; the
 #: gateway's event loop is not.
 HOSTNAME_RESOLVE_TIMEOUT_SECS = 2.0
@@ -546,14 +615,58 @@ def format_dashboard_urls(
     if not with_token:
         authed_url = parsed._replace(query="").geturl()
     _qs = f"?{parsed.query}" if parsed.query and with_token else ""
-    _is_remote = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+    _is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+    _is_ssm = is_ssm_session()
+    _is_remote = _is_ssh or _is_ssm
 
-    if _is_remote:
-        mh = machine_hostname() or "localhost"
-        lines: list[str] = [
-            f"👻 Dashboard: ssh -NL {port}:localhost:{port} {mh}",
-            f"             then open http://localhost:{port}{_qs}",
+    if _is_ssm and not _is_ssh:
+        # No SSH path to the box: an `ssh -NL` line would be useless (the SSM
+        # user may have no SSH access at all). Point at the localhost link plus
+        # both ways to forward the port. The port-forward document name is owned
+        # by the cloud SSM module; import it rather than spelling it here.
+        from kiro_crew.cloud.ssm import _PORT_FORWARD_DOC
+
+        if has_custom_host:
+            # A configured dashboard.url or non-loopback host is reachable
+            # directly, so keep the working URL main printed; the forward hint
+            # still helps a user who reaches the box only over Session Manager.
+            lines: list[str] = ["👻 Dashboard:", f"   {authed_url}"]
+        else:
+            lines = [
+                "👻 Dashboard: forward the port to your laptop, then open",
+                f"             http://localhost:{port}{_qs}",
+            ]
+        lines += [
+            f"👻 Forward:   ssh -NL {port}:localhost:{port} <the host you reach this box on>",
         ]
+        # main's Remote line named the machine; keep it as a hint, not a target.
+        mh_ssm = machine_hostname()
+        if mh_ssm and mh_ssm != "localhost":
+            lines.append(f"             (this machine calls itself {mh_ssm})")
+        lines += [
+            (
+                f"             or Session Manager: {_PORT_FORWARD_DOC} "
+                f"(localPortNumber={port}, portNumber={port})"
+            ),
+            "             see docs/guides/cloud-instance-ssm-vs-ssh.md",
+        ]
+    elif _is_ssh:
+        # Prefer the address the client actually connected to; the box's own
+        # gethostname() is a private name the laptop usually cannot resolve.
+        server = ssh_server_address()
+        host = server or "<the host you ssh to>"
+        lines = [
+            f"👻 Dashboard: ssh -NL {port}:localhost:{port} {host}",
+        ]
+        if server is None:
+            # The reachable address is unknown (private server address, or only
+            # SSH_CLIENT set). The machine's own name is often the one the user
+            # typed -- a VPN-reached box with a resolvable FQDN -- so show it as
+            # a hint beside the placeholder without offering it as the target.
+            mh = machine_hostname()
+            if mh:
+                lines.append(f"             (this machine calls itself {mh})")
+        lines.append(f"             then open http://localhost:{port}{_qs}")
     else:
         lines = ["👻 Dashboard:", f"   {authed_url}"]
     if not with_token:

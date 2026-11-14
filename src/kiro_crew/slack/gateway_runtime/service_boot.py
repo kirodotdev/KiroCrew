@@ -1560,9 +1560,12 @@ async def run(self: GatewayOrchestrator) -> None:
                 print(line)
 
             # Auto-open dashboard — skip on headless remote sessions
+            from kiro_crew.dashboard.urls import is_ssm_session
+
             _is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
+            _is_remote = _is_ssh or is_ssm_session()
             _has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-            _skip_open = _is_ssh and not _has_display and sys.platform != "darwin"
+            _skip_open = _is_remote and not _has_display and sys.platform != "darwin"
             if self._no_open or not self._cfg.dashboard.auto_open_browser:
                 pass  # suppressed via --no-open flag or config
             elif _skip_open:

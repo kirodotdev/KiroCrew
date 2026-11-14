@@ -12,6 +12,7 @@ import contextlib
 import gc
 import io
 import logging
+import sys
 import threading
 import time
 import weakref
@@ -1421,13 +1422,26 @@ class TestBgSessionDashboardBranch:
         assert task not in orch._background_tasks
 
     @pytest.mark.parametrize(
-        "tty", [pytest.param(False, id="service_log"), pytest.param(True, id="terminal")]
+        ("tty", "ssm"),
+        [
+            pytest.param(False, False, id="service_log"),
+            pytest.param(True, False, id="terminal"),
+            pytest.param(True, True, id="ssm_headless_skips_auto_open"),
+        ],
     )
     @pytest.mark.asyncio
-    async def test_the_login_link_is_printed_to_a_terminal_only(self, tty, monkeypatch):
+    async def test_the_login_link_is_printed_to_a_terminal_only(self, tty, ssm, monkeypatch):
         """A stdout that is not a terminal is a log a service manager keeps (the
         journal, the launchd file), where a reader could redeem a login link.
+
+        The ``ssm`` case pins the headless remote skip: a Session Manager shell
+        with no display prints the skip line and never calls ``webbrowser.open``.
         """
+        if ssm:
+            if sys.platform == "darwin":
+                pytest.skip("auto-open is never skipped on macOS")
+            monkeypatch.delenv("DISPLAY", raising=False)
+            monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
         orch = _make_orchestrator(no_dashboard=False, no_open=False)
         for name in (
             "_init_services",
@@ -1472,10 +1486,15 @@ class TestBgSessionDashboardBranch:
             stack.enter_context(
                 patch("kiro_crew.slack.gateway.resolve_dashboard_host", return_value="127.0.0.1")
             )
-            # The real formatter, kept off the host's own name and proxy.
+            # The real formatter, kept off the host's own name and proxy. The
+            # SSM pin keeps the boot path host independent: both the formatter
+            # and the auto-open skip read is_ssm_session from this module at
+            # call time, so one patch covers both and the test does not read the
+            # runner's real /proc ancestry.
             stack.enter_context(
                 patch("kiro_crew.dashboard.urls.machine_hostname", return_value="localhost")
             )
+            stack.enter_context(patch("kiro_crew.dashboard.urls.is_ssm_session", return_value=ssm))
             stack.enter_context(
                 patch("kiro_crew.dashboard.urls.devspaces_proxy_url", return_value=None)
             )
@@ -1501,9 +1520,15 @@ class TestBgSessionDashboardBranch:
                 patch("kiro_crew.slack.gateway.subprocess_executor", return_value=None)
             )
             await finished(orch.run(), "the gateway boot")
-            await await_until(opened, what="the browser auto-open")
+            if not ssm:
+                await await_until(opened, what="the browser auto-open")
 
         printed = stdout.getvalue()
+        if ssm:
+            assert "Headless remote session" in printed
+            assert not opened.is_set()
+            browser.assert_not_called()
+            return
         assert "👻 Dashboard:\n" in printed
         assert "?token=" in browser.call_args.args[0]
         if tty:
