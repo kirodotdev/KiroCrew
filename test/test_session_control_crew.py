@@ -120,8 +120,8 @@ class _Registry:
         return list(self._rows)
 
 
-def _ultra(slot):
-    """Make *slot* an Ultra Mode chat: a root on the configured conductor template."""
+def _conductor_mode(slot):
+    """Make *slot* a conductor mode chat: a root on the configured conductor template."""
     slot.agent = crew_mode.crew_mode_agent()
     slot.agent_kind = "template"
     return slot
@@ -137,7 +137,7 @@ def env(tmp_path, monkeypatch):
         [SimpleNamespace(id=INSTANCE, name="lab"), SimpleNamespace(id="inst-b", name="other")]
     )
     caller = _busy(_slot(state, "chat-1"))
-    _ultra(caller)
+    _conductor_mode(caller)
     monkeypatch.setattr(crew, "remote_dispatch_enabled", lambda: True)
     # The verb tests stand in an admitting owner check so the rest of the path
     # can be driven; the real one is pinned by the ``*_owner_*`` tests below.
@@ -492,7 +492,7 @@ def test_a_peer_slot_this_caller_did_not_dispatch_is_refused(env, verb):
 
 def test_another_callers_dispatch_is_refused(env):
     target = _create(env)
-    other = _ultra(_busy(_slot(env.state, "chat-9")))
+    other = _conductor_mode(_busy(_slot(env.state, "chat-9")))
     env.peer.calls.clear()
     status, body = _call(env, "stop", key=_key(other), crew="lab", target=target)
     assert (status, body["code"]) == (403, "crew_target_not_dispatched")
@@ -630,7 +630,7 @@ def test_an_unbound_owner_tab_is_admitted(env):
     assert _create(env) == "chat-77"
 
 
-def test_an_ultra_mode_chat_is_admitted(env):
+def test_a_conductor_mode_chat_is_admitted(env):
     assert crew_mode.slot_is_crew_mode_root(env.caller)
     assert _create(env) == "chat-77"
 
@@ -650,8 +650,8 @@ def test_a_plain_owner_chat_is_refused_ultra_mode_only(env, verb, fields):
     env.caller.agent, env.caller.agent_kind = "kirocrew", "template"
     assert not crew_mode.slot_is_crew_mode_root(env.caller)
     status, body = _call(env, verb, **fields)
-    assert (status, body["code"]) == (403, crew.ULTRA_MODE_ONLY)
-    assert "Ultra Mode" in body["error"]
+    assert (status, body["code"]) == (403, crew.CONDUCTOR_MODE_ONLY)
+    assert "conductor mode" in body["error"]
     assert env.peer.calls == []
 
 

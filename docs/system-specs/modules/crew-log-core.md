@@ -325,7 +325,7 @@ trimmed silently. No `turn`: a probe runs without a model turn, so the observati
 belongs to no turn. The monitor's state document still holds no history of the
 subject -- this entry is that history (`monitor-architecture.md`).
 
-The `objects` slot fold (`crew_log/projection_objects.py`) keeps the newest record per subject (`target`) and producer, `{latest: {target: {producer: {kind, facts, observed_at}}}, omitted}`, at most 64 subjects with the least recently observed evicted first, and facts over 2,048 bytes dropped whole. The Ultra Mode Board (`/api/crew-board`, owner-gated) reads it as `pr_facts`, so a pull request's state shows with its read time and no network read on page load.
+The `objects` slot fold (`crew_log/projection_objects.py`) keeps the newest record per subject (`target`) and producer, `{latest: {target: {producer: {kind, facts, observed_at}}}, omitted}`, at most 64 subjects with the least recently observed evicted first, and facts over 2,048 bytes dropped whole. The conductor mode Board (`/api/crew-board`, owner-gated) reads it as `pr_facts`, so a pull request's state shows with its read time and no network read on page load.
 
 ### Cards and guides
 

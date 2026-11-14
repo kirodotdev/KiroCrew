@@ -2,7 +2,7 @@
 
 ``_run_chat`` calls :func:`bind_turn` once per turn. While tracing is on, every turn,
 including a nested ``/prompts get`` turn sharing its task, reads its crew attributes
-when the slot is an Ultra Mode or Bot conductor or one of their workers
+when the slot is the conductor of a conductor mode chat or of a Bot, or one of their workers
 (``tracing.crew``), and joins its board's round, or its item's anchor for a worker
 (``tracing.work.binding``), unless a run it delivers joins it first.
 

@@ -232,7 +232,7 @@ afterEach(() => {
 })
 
 describe('chat sidebar — conductor lane', () => {
-  it('draws a Ultra Mode root as a plain row with an inline ghost, eyebrow, worker ghosts and what needs you', async () => {
+  it('draws a conductor mode root as a plain row with an inline ghost, eyebrow, worker ghosts and what needs you', async () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -245,11 +245,11 @@ describe('chat sidebar — conductor lane', () => {
     // A plain session row: no tinted card frame.
     expect(card.className).not.toContain('crew-card')
     const eyebrow = within(card).getByTestId('crew-eyebrow')
-    expect(eyebrow).toHaveTextContent('Ultra Mode')
+    expect(eyebrow).toHaveTextContent('Conductor mode')
     // A whole-pixel tracking: an em fraction at this size renders "CRE W MODE".
     expect(eyebrow.className).toContain('tracking-[1px]')
     expect(eyebrow.className).not.toMatch(/tracking-\[[\d.]+em\]/)
-    // The Ultra Mode mark is a 12px lightning bolt inline on the eyebrow line, just
+    // The conductor mode mark is a 12px lightning bolt inline on the eyebrow line, just
     // before the eyebrow, not a badge before the title: the title keeps the row's width.
     expect(within(card).queryByTestId('crew-ghost-badge')).toBeNull()
     const bolt = eyebrow.previousElementSibling as SVGElement
@@ -273,7 +273,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(eyebrow).toHaveAttribute('data-flowing', 'false')
   })
 
-  it('flows the Ultra Mode tag only while the crew root has live work', () => {
+  it('flows the conductor mode tag only while the crew root has live work', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: true, modified: 4000, crew_mode_root: true },
       { key: 'k-plain', title: 'Plain chat', agent: 'kirocrew', messages: 1, running: false, modified: 1000 },
@@ -283,7 +283,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(within(card).getByTestId('crew-eyebrow')).toHaveAttribute('data-flowing', 'true')
   })
 
-  it('flows the Ultra Mode tag while a crew member runs, even with the root idle', () => {
+  it('flows the conductor mode tag while a crew member runs, even with the root idle', () => {
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'W1', messages: 2, running: true, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -492,7 +492,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(container.querySelectorAll('[data-crew-parent="true"]')).toHaveLength(1)
   })
 
-  it('marks no crew parent with the Ultra Mode preview off', async () => {
+  it('marks no crew parent with the conductor mode preview off', async () => {
     localStorage.removeItem('mc-preview-crew-mode')
     const slots = [
       { key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, modified: 4000, crew_mode_root: true },
@@ -577,7 +577,7 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 
-  it('keeps an Ultra Mode row compact before it has any crew member', async () => {
+  it('keeps a conductor mode row compact before it has any crew member', async () => {
     mocks.crewWorkersNotServed = true
     const slots = [{ key: 'k-root', title: 'Crew root', agent: 'kirocrew-conductor', messages: 1, running: false, needs_input: true, modified: 4000, crew_mode_root: true }]
     renderSidebar(slots, [], null, {}, [], slots)
@@ -628,7 +628,7 @@ describe('chat sidebar — conductor lane', () => {
     })
   })
 
-  it("leaves a Ultra Mode root's workers out of the person's list and keeps the root", () => {
+  it("leaves a conductor mode root's workers out of the person's list and keeps the root", () => {
     const { queryByText } = renderSidebar([
       { key: 'k-root', title: 'Crew root', messages: 1, running: false, modified: 4000, crew_mode_root: true },
       { key: 'k-w1', title: 'Crew worker', messages: 1, running: false, modified: 3000, created_by: 'k-root', crew_root: 'k-root' },
@@ -773,7 +773,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(getByTestId('conductor-running-k-conductor').textContent).toBe('1')
   })
 
-  it('a Ultra Mode worker raises no needs-your-answer count on its conductor (S3)', () => {
+  it('a conductor mode worker raises no needs-your-answer count on its conductor (S3)', () => {
     // Its question goes to the conductor; its unread reply is the conductor's to read.
     localStorage.setItem('mc-sidebar-lane', 'conductor')
     openAllBut('k-conductor')
@@ -1352,7 +1352,7 @@ describe('chat sidebar — conductor lane', () => {
     expect(queryByTestId('flat-view-toggle')).toBeNull()
   })
 
-  it("carries a Ultra Mode worker's tool approval on its conductor's own summary once the worker leaves the lane", async () => {
+  it("carries a conductor mode worker's tool approval on its conductor's own summary once the worker leaves the lane", async () => {
     // With the list rule on, a worker is no row in the lane, so the collapsed
     // root's needs-you badge cannot count it; the root's crew summary does
     // ("Approval needed · 1"), from the live rows this gateway stamps, so the ask

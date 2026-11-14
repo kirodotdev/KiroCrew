@@ -11,7 +11,7 @@ import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
  * presses Pause all). `meta.stopped` is how many crew members the pause stopped.
  * The row's English `content` is only a fallback for channel mirrors and SSE
  * readers; here the copy comes from the catalog. Same visual grammar as
- * `CrewDispatchNoticeCard`, and like it, nothing at all while the Ultra Mode
+ * `CrewDispatchNoticeCard`, and like it, nothing at all while the conductor mode
  * preview is off in this browser.
  */
 export default memo(function CrewPausedNoticeCard({ stopped }: { stopped: number }) {
@@ -26,7 +26,7 @@ export default memo(function CrewPausedNoticeCard({ stopped }: { stopped: number
       <div className="flex items-start gap-2 px-3 py-2 min-w-0 text-[13px] leading-5">
         <Pause size={13} className="lucide-inline shrink-0 mt-[calc((1.25rem-1em)/2)] crew-tone-paused" aria-hidden="true" />
         <span className="min-w-0 break-words" data-testid="crew-paused-notice-text">
-          {i18nT('components.crewMode.ultra_paused_notice', { count: stopped })}
+          {i18nT('components.crewMode.conductor_mode_paused_notice', { count: stopped })}
         </span>
       </div>
     </div>

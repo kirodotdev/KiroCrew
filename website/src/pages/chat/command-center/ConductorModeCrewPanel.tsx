@@ -1,4 +1,4 @@
-/** The Ultra Mode chat's Crew tab: a Status | List switch. Status = Overview
+/** The conductor mode chat's Crew tab: a Status | List switch. Status = Overview
  *  (the goal and "Done when" in one sentence each), Needs your input (the main
  *  chat's question as one row pointing at its card, the approval cards compact), Milestones (one row per
  *  work-ledger item) and a one-line Recap. List = the crew as one indented tree,
@@ -37,9 +37,9 @@ import { RadioChipGroup, radioChip } from '../../../components/RadioChipGroup'
 import { useCrewMode } from '../../../hooks/usePreviewFlag'
 import { CrewMemberContinue, CrewPauseRow } from './CrewPauseControl'
 
-export interface UltraCounts { total: number; done: number; running: number; approvals: number; questions: number }
+export interface ConductorModeCounts { total: number; done: number; running: number; approvals: number; questions: number }
 
-export function ultraCounts(workers: readonly CrewWorker[], approvals: number, questions: number): UltraCounts {
+export function conductorModeCounts(workers: readonly CrewWorker[], approvals: number, questions: number): ConductorModeCounts {
   const g = workers.map(crewWorkerGroup)
   return {
     total: workers.length,
@@ -56,16 +56,16 @@ function joinNames(names: string[]): string {
 }
 
 /** The recap: ONE plain sentence from the counts and the names that wait. */
-export function ultraRecap(c: UltraCounts, waitingNames: string[], hasQuestion: boolean): string {
-  if (c.total === 0) return i18nT('components.crewMode.ultra_recap_empty')
-  const head = i18nT('components.crewMode.ultra_recap_head', { done: c.done, total: c.total })
+export function conductorModeRecap(c: ConductorModeCounts, waitingNames: string[], hasQuestion: boolean): string {
+  if (c.total === 0) return i18nT('components.crewMode.conductor_mode_recap_empty')
+  const head = i18nT('components.crewMode.conductor_mode_recap_head', { done: c.done, total: c.total })
   const names = [...waitingNames]
-  if (hasQuestion) names.push(i18nT('components.crewMode.ultra_recap_main_chat'))
+  if (hasQuestion) names.push(i18nT('components.crewMode.conductor_mode_recap_main_chat'))
   if (names.length > 0) {
-    return i18nT(names.length === 1 ? 'components.crewMode.ultra_recap_waiting_one' : 'components.crewMode.ultra_recap_waiting_many', { head, names: joinNames(names) })
+    return i18nT(names.length === 1 ? 'components.crewMode.conductor_mode_recap_waiting_one' : 'components.crewMode.conductor_mode_recap_waiting_many', { head, names: joinNames(names) })
   }
-  if (c.running > 0) return i18nT('components.crewMode.ultra_recap_running', { head, n: c.running })
-  return i18nT('components.crewMode.ultra_recap_quiet', { head })
+  if (c.running > 0) return i18nT('components.crewMode.conductor_mode_recap_running', { head, n: c.running })
+  return i18nT('components.crewMode.conductor_mode_recap_quiet', { head })
 }
 
 /** The Recap from the session summary (GET /api/chat/slots/{slot}/summary, a free
@@ -88,12 +88,12 @@ const BOOKKEEPING = /\b(task limit|open-task|tasks used|cap|ledger|item id|sessi
 
 /** The milestone sentence: "4 of 8 done; A and B wait on you; C is stuck; E has gone quiet; D is running." */
 export function milestoneSentence(done: number, total: number, waiting: string[], running: string[], stuck: string[] = [], quiet: string[] = []): string {
-  if (total === 0) return i18nT('components.crewMode.ultra_recap_empty')
-  const parts = [i18nT('components.crewMode.ultra_recap_head', { done, total })]
-  if (waiting.length) parts.push(i18nT(waiting.length === 1 ? 'components.crewMode.ultra_recap_wait_one' : 'components.crewMode.ultra_recap_wait', { names: joinNames(waiting) }))
-  if (stuck.length) parts.push(i18nT(stuck.length === 1 ? 'components.crewMode.ultra_recap_stuck_one' : 'components.crewMode.ultra_recap_stuck_many', { names: joinNames(stuck) }))
-  if (quiet.length) parts.push(i18nT(quiet.length === 1 ? 'components.crewMode.ultra_recap_gone_quiet_one' : 'components.crewMode.ultra_recap_gone_quiet_many', { names: joinNames(quiet) }))
-  if (running.length) parts.push(i18nT(running.length === 1 ? 'components.crewMode.ultra_recap_run_one' : 'components.crewMode.ultra_recap_run_many', { names: joinNames(running) }))
+  if (total === 0) return i18nT('components.crewMode.conductor_mode_recap_empty')
+  const parts = [i18nT('components.crewMode.conductor_mode_recap_head', { done, total })]
+  if (waiting.length) parts.push(i18nT(waiting.length === 1 ? 'components.crewMode.conductor_mode_recap_wait_one' : 'components.crewMode.conductor_mode_recap_wait', { names: joinNames(waiting) }))
+  if (stuck.length) parts.push(i18nT(stuck.length === 1 ? 'components.crewMode.conductor_mode_recap_stuck_one' : 'components.crewMode.conductor_mode_recap_stuck_many', { names: joinNames(stuck) }))
+  if (quiet.length) parts.push(i18nT(quiet.length === 1 ? 'components.crewMode.conductor_mode_recap_gone_quiet_one' : 'components.crewMode.conductor_mode_recap_gone_quiet_many', { names: joinNames(quiet) }))
+  if (running.length) parts.push(i18nT(running.length === 1 ? 'components.crewMode.conductor_mode_recap_run_one' : 'components.crewMode.conductor_mode_recap_run_many', { names: joinNames(running) }))
   return `${parts.join('; ')}.`
 }
 
@@ -213,7 +213,7 @@ export function doneWhen(items: readonly WorkBoardItem[]): string {
     if (k) count.set(k, (count.get(k) ?? 0) + 1)
   }
   const checkable = [...count.keys()].filter(k => k === 'pr_merged' || k === 'pr_checks' || k === 'file')
-  if (checkable.length !== 1) return i18nT('components.crewMode.ultra_done_line_approval')
+  if (checkable.length !== 1) return i18nT('components.crewMode.conductor_mode_done_line_approval')
   const kind = checkable[0]
   const n = count.get(kind) ?? 0
   // "and you approve the rest" only while such an item is still open.
@@ -223,9 +223,9 @@ export function doneWhen(items: readonly WorkBoardItem[]): string {
 
 /** Full literal keys per acceptance kind: [alone, with "you approve the rest"]. */
 const DONE_LINE_KEY = {
-  pr_merged: ['components.crewMode.ultra_done_line_merged', 'components.crewMode.ultra_done_line_merged_rest'],
-  pr_checks: ['components.crewMode.ultra_done_line_green', 'components.crewMode.ultra_done_line_green_rest'],
-  file: ['components.crewMode.ultra_done_line_files', 'components.crewMode.ultra_done_line_files_rest'],
+  pr_merged: ['components.crewMode.conductor_mode_done_line_merged', 'components.crewMode.conductor_mode_done_line_merged_rest'],
+  pr_checks: ['components.crewMode.conductor_mode_done_line_green', 'components.crewMode.conductor_mode_done_line_green_rest'],
+  file: ['components.crewMode.conductor_mode_done_line_files', 'components.crewMode.conductor_mode_done_line_files_rest'],
 } as const
 
 /** The goal in the user's own words: the ledger goal's first sentence with
@@ -318,7 +318,7 @@ function minutesBetween(a: string | null | undefined, b: string | number | null 
 const STATE_ICON: Record<MilestoneState, JSX.Element> = {
   done: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--ok)_18%,transparent)] crew-tone-ok"><Check size={12} strokeWidth={3} /></span>,
   needs_you: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--warn)_20%,transparent)] crew-tone-warn"><AlertTriangle size={11} strokeWidth={2.5} /></span>,
-  running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] ultra-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
+  running: <span className="w-5 h-5 rounded-full grid place-items-center bg-[color-mix(in_srgb,var(--aim)_18%,transparent)] conductor-mode-accent"><Loader size={12} className="motion-safe:animate-spin" /></span>,
   waiting: <span className="block w-5 h-5 rounded-full border-[1.5px] border-[color-mix(in_srgb,var(--muted)_70%,transparent)]" />,
   // Quiet and stuck are the conductor's to pick up, so they are muted: only
   // needs_you takes the warm colour.
@@ -333,35 +333,35 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
     const link = artifactEntries(item).find(([, v]) => /^https?:\/\//.test(v))
     sub = <>
       <span className="truncate">{firstSentence(item.summary)}</span>
-      {item.pr != null && <span className="shrink-0 ultra-accent">{i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}</span>}
-      {link && <a className="shrink-0 ultra-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
+      {item.pr != null && <span className="shrink-0 conductor-mode-accent">{i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}</span>}
+      {link && <a className="shrink-0 conductor-mode-accent hover:underline" href={link[1]} target="_blank" rel="noreferrer">· {link[0]}</a>}
     </>
   } else if (state === 'stuck' || (state === 'waiting' && onConductor(item))) {
     // Who acts next, not the worker's own words: a stuck row says why and how to
     // restart it, and a row the conductor owns says the main chat is on it.
     const said = firstSentence(item.summary)
-    const text = i18nT(state === 'waiting' ? 'components.crewMode.ultra_ms_main_chat_answering'
-      : item.alive === 'closed' ? 'components.crewMode.ultra_ms_stuck_chat_closed' : 'components.crewMode.ultra_ms_stuck_unread')
+    const text = i18nT(state === 'waiting' ? 'components.crewMode.conductor_mode_ms_main_chat_answering'
+      : item.alive === 'closed' ? 'components.crewMode.conductor_mode_ms_stuck_chat_closed' : 'components.crewMode.conductor_mode_ms_stuck_unread')
     sub = <span className="truncate" title={said || text}>{text}</span>
   } else if (state === 'quiet') {
     // Why it is quiet and the PR it named on one line, the worker's own last
     // words on the next, so a narrow panel keeps both: the PR number never
     // shrinks, the reason and the words truncate.
     const said = firstSentence(item.summary)
-    const why = i18nT('components.crewMode.ultra_ms_quiet')
+    const why = i18nT('components.crewMode.conductor_mode_ms_quiet')
     sub = <span className="flex flex-col min-w-0 w-full">
       <span className="flex items-center gap-1 min-w-0">
-        <span className="min-w-0 truncate" title={why} data-testid="ultra-quiet-reason">{why}</span>
-        {item.pr != null && <span className="shrink-0">{i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}</span>}
+        <span className="min-w-0 truncate" title={why} data-testid="conductor-mode-quiet-reason">{why}</span>
+        {item.pr != null && <span className="shrink-0">{i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}</span>}
       </span>
-      {said && <span className="truncate" title={said} data-testid="ultra-quiet-said">{said}</span>}
+      {said && <span className="truncate" title={said} data-testid="conductor-mode-quiet-said">{said}</span>}
     </span>
   } else if (state === 'waiting') {
     // What it waits on, only as far as the board knows: the PR it reported, then
     // the worker's own words; with neither, a calm "no reason given".
     const said = firstSentence(item.summary)
-    const head = item.pr != null ? i18nT('components.crewMode.ultra_ms_waiting_pr', { n: item.pr })
-      : said ? i18nT('commandCenter.worker_group_waiting') : i18nT('components.crewMode.ultra_ms_waiting_no_reason')
+    const head = item.pr != null ? i18nT('components.crewMode.conductor_mode_ms_waiting_pr', { n: item.pr })
+      : said ? i18nT('commandCenter.worker_group_waiting') : i18nT('components.crewMode.conductor_mode_ms_waiting_no_reason')
     sub = <>
       <span className="shrink-0">{head}</span>
       {said && <span className="truncate" title={said}>· {said}</span>}
@@ -369,27 +369,27 @@ function MilestoneRow({ item, state, waitingOn, now, onOpen }: { item: WorkBoard
   } else {
     // A worker idle inside its own loop reads one way, typed: "In progress · PR #N".
     const text = state === 'needs_you' ? waitingOn
-      : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.ultra_ms_running')} ${i18nT('components.crewMode.ultra_ms_pr', { n: item.pr })}`
-      : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.ultra_ms_running'))
-        : i18nT('components.crewMode.ultra_ms_not_started')
+      : state === 'running' && item.alive !== 'running' && item.pr != null ? `${i18nT('components.crewMode.conductor_mode_ms_running')} ${i18nT('components.crewMode.conductor_mode_ms_pr', { n: item.pr })}`
+      : state === 'running' ? (firstSentence(item.summary) || i18nT('components.crewMode.conductor_mode_ms_running'))
+        : i18nT('components.crewMode.conductor_mode_ms_not_started')
     sub = <span className="truncate" title={text}>{text}</span>
   }
   // "now" only for a turn in flight; a loop between checks shows the time since its report.
-  const right = state === 'running' && item.alive === 'running' ? i18nT('components.crewMode.ultra_ms_now')
-    : state === 'next' ? i18nT('components.crewMode.ultra_ms_next')
+  const right = state === 'running' && item.alive === 'running' ? i18nT('components.crewMode.conductor_mode_ms_now')
+    : state === 'next' ? i18nT('components.crewMode.conductor_mode_ms_next')
       : state === 'done' ? fmtMinutes(minutesBetween(item.created_at, item.closed_at || item.last_report_at))
         : fmtMinutes(minutesBetween(item.last_report_at || item.created_at, now))
   return (
-    <li className="flex items-start gap-2.5 py-1.5" data-testid="ultra-milestone" data-state={state}>
+    <li className="flex items-start gap-2.5 py-1.5" data-testid="conductor-mode-milestone" data-state={state}>
       <span className="mt-0.5 shrink-0">{STATE_ICON[state]}</span>
       <span className="flex-1 min-w-0">
         {/* A milestone with a crew member opens it, so a blocked one is one click from where it is decided. */}
         {onOpen
-          ? <button type="button" onClick={onOpen} data-testid="ultra-milestone-open" className={`block max-w-full text-left text-[13px] font-medium truncate hover:underline ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</button>
+          ? <button type="button" onClick={onOpen} data-testid="conductor-mode-milestone-open" className={`block max-w-full text-left text-[13px] font-medium truncate hover:underline ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</button>
           : <span className={`block text-[13px] font-medium truncate ${state === 'next' ? 'text-muted' : 'text-text'}`}>{item.title}</span>}
         <span className={`flex items-center gap-1 min-w-0 text-[12px] ${state === 'needs_you' ? 'crew-tone-warn' : 'text-muted'}`}>{sub}</span>
       </span>
-      <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'ultra-accent font-medium' : 'text-muted'}`}>{right}</span>
+      <span className={`shrink-0 text-[11px] tabular-nums mt-0.5 ${state === 'running' ? 'conductor-mode-accent font-medium' : 'text-muted'}`}>{right}</span>
     </li>
   )
 }
@@ -414,10 +414,10 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
   const folded = kids > 0 && !open
   const toggleLabel = i18nT(open ? 'pages.chatSidebar.collapse_sessions_this_one_opened' : 'pages.chatSidebar.expand_sessions_this_one_opened')
   return (
-    <li data-testid="ultra-member" data-depth={depth} data-done={done ? 'true' : undefined} data-paused={pausedIn ? 'true' : undefined} style={{ paddingLeft: indent }} className="relative flex items-start gap-0.5">
+    <li data-testid="conductor-mode-member" data-depth={depth} data-done={done ? 'true' : undefined} data-paused={pausedIn ? 'true' : undefined} style={{ paddingLeft: indent }} className="relative flex items-start gap-0.5">
       {depth > 0 && <span aria-hidden="true" className="absolute top-0 bottom-0 border-l border-border" style={{ left: indent - 9 }} />}
       {kids > 0 && onToggle ? (
-        <button type="button" onClick={onToggle} aria-expanded={open} aria-label={toggleLabel} title={toggleLabel} data-testid="ultra-member-chevron"
+        <button type="button" onClick={onToggle} aria-expanded={open} aria-label={toggleLabel} title={toggleLabel} data-testid="conductor-mode-member-chevron"
           className="mt-2.5 w-4 h-4 shrink-0 rounded flex items-center justify-center text-muted hover:text-text">
           <ChevronRight size={12} aria-hidden="true" className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-90' : ''}`} />
         </button>
@@ -425,24 +425,24 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
       <button type="button" onClick={onOpen} disabled={!onOpen} aria-current={current ? 'true' : undefined}
         className={`flex-1 min-w-0 text-left rounded-lg border px-3 py-2 text-sm transition-colors ${current ? 'crew-card' : onOpen ? 'border-border bg-bg-elevated/40 hover:bg-bg-hover' : 'border-border bg-bg-elevated/40 cursor-default'}`}>
         <span className="flex items-center gap-2 min-w-0">
-          <span className={`font-medium truncate ${done ? 'text-muted' : 'text-text'}`} data-testid="ultra-member-title">{title}</span>
+          <span className={`font-medium truncate ${done ? 'text-muted' : 'text-text'}`} data-testid="conductor-mode-member-title">{title}</span>
           <span className="ml-auto flex items-center gap-1.5 shrink-0 text-[11px]">
             {depth > CREW_MAX_INDENT_DEPTH && (
-              <span className="text-muted tabular-nums" title={i18nT('pages.chatSidebar.nesting_depth', { depth })} data-testid="ultra-member-depth">&middot;{depth}</span>
+              <span className="text-muted tabular-nums" title={i18nT('pages.chatSidebar.nesting_depth', { depth })} data-testid="conductor-mode-member-depth">&middot;{depth}</span>
             )}
             {kids > 0 && (
               <span className="text-muted tabular-nums" role="img" aria-label={i18nT('pages.chatSidebar.opened_sessions_count', { count: kids })}
-                title={i18nT('pages.chatSidebar.opened_sessions_count', { count: kids })} data-testid="ultra-member-kids">{kids}</span>
+                title={i18nT('pages.chatSidebar.opened_sessions_count', { count: kids })} data-testid="conductor-mode-member-kids">{kids}</span>
             )}
             {folded && node.needsYou > 0 && (
               <span className="inline-flex items-center gap-0.5 px-1 rounded bg-accent-subtle text-accent tabular-nums"
-                title={i18nT('components.crewMode.ultra_needs_you')} data-testid="ultra-member-needs-you">
+                title={i18nT('components.crewMode.conductor_mode_needs_you')} data-testid="conductor-mode-member-needs-you">
                 <MessageCircleQuestionMark size={10} className="lucide-inline shrink-0" aria-hidden />{node.needsYou}
               </span>
             )}
             {folded && node.running > 0 && (
               <span className="inline-flex items-center gap-0.5 px-1 rounded bg-bg-hover text-muted tabular-nums"
-                title={i18nT('pages.chatSidebar.running_session', { count: node.running })} data-testid="ultra-member-running">
+                title={i18nT('pages.chatSidebar.running_session', { count: node.running })} data-testid="conductor-mode-member-running">
                 <Loader2 size={10} className="lucide-inline shrink-0 motion-safe:animate-spin" aria-hidden />{node.running}
               </span>
             )}
@@ -451,7 +451,7 @@ function MemberRow({ node, open, gutter, onToggle, onOpen, current, pausedIn }: 
         </span>
         {w.summary && <span className="block text-[12px] text-text/80 truncate mt-0.5">{w.summary}</span>}
         <span className="block text-[11px] text-muted truncate mt-0.5">
-          <span data-testid="ultra-member-location">{w.remote_crew || i18nT('sessionEnvironments.picker.thisMachine')}</span>
+          <span data-testid="conductor-mode-member-location">{w.remote_crew || i18nT('sessionEnvironments.picker.thisMachine')}</span>
           {w.last_activity && <> &middot; {fmtRelativeTime(w.last_activity)}</>}
         </span>
       </button>
@@ -480,7 +480,7 @@ function clip(text: string, n: number): string {
  *  the way back to the main chat (`back`: "Back to main chat", or "Open main chat"
  *  reopening a closed one), the same as the panel's Back row. */
 function PersonAskRow({ root, item, options, onAct, back }: { root: string; item: WorkBoardItem; options: readonly string[]; onAct?: (text: string) => void; back: CrewBack }) {
-  const draft = (answer: string) => i18nT('components.crewMode.ultra_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
+  const draft = (answer: string) => i18nT('components.crewMode.conductor_mode_reply_draft', { t: clip(item.title, 70), id: item.item_id, answer })
   const small = 'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium border border-border hover:bg-bg-hover max-w-full'
   // Dismiss: the server writes a person steer on the item, so every surface drops
   // the ask until a newer report asks again. The board is re-read either way.
@@ -492,35 +492,35 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
     mutationFn: () => api.crewBoardAction(root, item.item_id, 'dismiss', reportId),
     onSettled: () => { void queryClient.invalidateQueries({ queryKey: crewBoardQueryKey(root) }) },
   })
-  const dismissHint = i18nT('components.crewMode.ultra_dismiss_hint', { t: clip(item.title, 70) })
+  const dismissHint = i18nT('components.crewMode.conductor_mode_dismiss_hint', { t: clip(item.title, 70) })
   return (
-    <article className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="ultra-person-ask" data-item={item.item_id}>
+    <article className="rounded-lg border border-warn bg-card px-2.5 py-2 space-y-1 text-text" data-testid="conductor-mode-person-ask" data-item={item.item_id}>
       <div className="flex items-center gap-2 min-w-0">
         <MessageSquare size={14} aria-hidden="true" className="shrink-0 text-warn" />
         <h4 className="flex-1 min-w-0 text-[13px] font-semibold truncate" title={item.title}>{item.title}</h4>
         {reportId && (
-          <button type="button" onClick={() => dismiss.mutate()} disabled={dismiss.isPending} aria-label={dismissHint} title={dismissHint} data-testid="ultra-person-ask-dismiss"
+          <button type="button" onClick={() => dismiss.mutate()} disabled={dismiss.isPending} aria-label={dismissHint} title={dismissHint} data-testid="conductor-mode-person-ask-dismiss"
             className="shrink-0 inline-flex items-center gap-1 h-6 px-1.5 rounded-md text-[12px] text-muted hover:text-text hover:bg-bg-hover disabled:opacity-50">
-            <X size={12} aria-hidden="true" />{i18nT('components.crewMode.ultra_dismiss')}
+            <X size={12} aria-hidden="true" />{i18nT('components.crewMode.conductor_mode_dismiss')}
           </button>
         )}
       </div>
       {/* The row holds no unsaved input (Reply only fills the chat box), so the hand-off loses nothing. */}
       {dismiss.isError && <ErrorNotice variant="inline" message={errMessage(dismiss.error)} askAgent />}
-      {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="ultra-person-ask-text">{item.summary}</p>}
-      {reportId && <p className="pl-[22px] text-[11px] text-muted" data-testid="ultra-person-ask-dismiss-note">{i18nT('components.crewMode.ultra_dismiss_note')}</p>}
+      {item.summary && <p className="pl-[22px] text-[12px] text-text/85 break-words line-clamp-3" title={item.summary} data-testid="conductor-mode-person-ask-text">{item.summary}</p>}
+      {reportId && <p className="pl-[22px] text-[11px] text-muted" data-testid="conductor-mode-person-ask-dismiss-note">{i18nT('components.crewMode.conductor_mode_dismiss_note')}</p>}
       {onAct ? (
         <div className="pl-[22px] space-y-1">
-          <div className="flex items-center gap-1.5" data-testid="ultra-person-ask-actions">
-            <button type="button" className={`${small} ultra-accent`} onClick={() => onAct(draft(''))} data-testid="ultra-person-ask-reply">{i18nT('components.crewMode.ultra_reply')}</button>
+          <div className="flex items-center gap-1.5" data-testid="conductor-mode-person-ask-actions">
+            <button type="button" className={`${small} conductor-mode-accent`} onClick={() => onAct(draft(''))} data-testid="conductor-mode-person-ask-reply">{i18nT('components.crewMode.conductor_mode_reply')}</button>
             {options.length > 0 && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <button type="button" className={small} data-testid="ultra-person-ask-answers">{i18nT('components.crewMode.ultra_answers')}<ChevronDown size={12} aria-hidden="true" /></button>
+                  <button type="button" className={small} data-testid="conductor-mode-person-ask-answers">{i18nT('components.crewMode.conductor_mode_answers')}<ChevronDown size={12} aria-hidden="true" /></button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="start" className="max-w-[280px]">
                   {options.map(o => (
-                    <DropdownMenuItem key={o} onSelect={() => onAct(draft(clip(o, 200)))} data-testid="ultra-person-ask-option">
+                    <DropdownMenuItem key={o} onSelect={() => onAct(draft(clip(o, 200)))} data-testid="conductor-mode-person-ask-option">
                       <span className="break-words">{clip(o, 80)}</span>
                     </DropdownMenuItem>
                   ))}
@@ -528,12 +528,12 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
               </DropdownMenu>
             )}
           </div>
-          <p className="text-[11px] text-muted" data-testid="ultra-person-ask-hint">{i18nT('components.crewMode.ultra_option_title')}</p>
+          <p className="text-[11px] text-muted" data-testid="conductor-mode-person-ask-hint">{i18nT('components.crewMode.conductor_mode_option_title')}</p>
         </div>
       ) : (
         <div className="pl-[22px] space-y-1">
-          <button type="button" onClick={back.back} data-testid="ultra-person-ask-open-main"
-            className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium ultra-accent hover:bg-bg-hover">
+          <button type="button" onClick={back.back} data-testid="conductor-mode-person-ask-open-main"
+            className="inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium conductor-mode-accent hover:bg-bg-hover">
             <ChevronLeft size={12} aria-hidden="true" />{back.label}
           </button>
           {back.reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
@@ -543,7 +543,7 @@ function PersonAskRow({ root, item, options, onAct, back }: { root: string; item
   )
 }
 
-export default function UltraCrewPanel({ root, viewing, active, onAct }: {
+export default function ConductorModeCrewPanel({ root, viewing, active, onAct }: {
   root: string
   viewing: string | null
   active: boolean
@@ -558,7 +558,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const workers = useMemo(() => mergeCrewWorkers(listed.data?.workers, live), [listed.data, live])
   // Pause all stops this gateway's turns only, so its counts leave remote rows out.
   const localWorkers = workers.filter(w => !w.remote_crew)
-  // Pause all ships behind the Ultra Mode preview, like the rest of this panel's crew surfaces.
+  // Pause all ships behind the conductor mode preview, like the rest of this panel's crew surfaces.
   const crewModeOn = useCrewMode()
   const pause = crewModeOn ? listed.data?.paused : undefined
   const slots = useAppSelector(s => s.dashboard.slots)
@@ -566,7 +566,7 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   // The same pending-question record the chat's own card reads.
   const pendingQuestion = useAppSelector(st => pendingQuestionFor(st.chat.pendingQuestions, root))
   const questionCount = pendingQuestion?.questions?.length ? 1 : 0
-  const c = ultraCounts(workers, approvals.length, questionCount)
+  const c = conductorModeCounts(workers, approvals.length, questionCount)
   const waitingNames = [...new Set(approvals.map(a => a.title))]
   // Same query key and read as the side panel's Summary tab, so one cache serves both.
   const summary = useQuery({ queryKey: ['session-summary', root], queryFn: () => api.sessionSummary(root), enabled: !!root, staleTime: 30_000, retry: false })
@@ -639,26 +639,26 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const doneMatch = goalText.match(/\bdone when:?\s*([^.。]+)/i)
   const goalFull = firstSentence((doneMatch ? goalText.slice(0, doneMatch.index) : goalText).replace(/\s*\([^)]*\)/g, '')).trim()
   const goal = goalSentence(goalText.slice(0, doneMatch ? doneMatch.index : undefined) || goalText)
-  const doneText = doneMatch ? i18nT('components.crewMode.ultra_done_when', { what: doneMatch[1].trim() }) : doneWhen(items)
+  const doneText = doneMatch ? i18nT('components.crewMode.conductor_mode_done_when', { what: doneMatch[1].trim() }) : doneWhen(items)
   const scope = goalScope(goalText)
   const now = Date.now()
   // Which ledger item each pending approval belongs to: the crew list's own join.
   const approvalByItem = new Map<string, string>()
   for (const a of approvals) {
     const w = workers.find(x => x.key === a.worker)
-    if (w?.ledger_item) approvalByItem.set(w.ledger_item, i18nT('components.crewMode.ultra_ms_waiting_approval'))
+    if (w?.ledger_item) approvalByItem.set(w.ledger_item, i18nT('components.crewMode.conductor_mode_ms_waiting_approval'))
   }
   // The ledger items a worker said wait on the person, with the conductor's offered answers.
   const forYou = personAsks(items, new Set(approvalByItem.keys()))
   // Its milestone says it waits on the person too, not on the main chat.
-  for (const item of forYou) approvalByItem.set(item.item_id, i18nT('components.crewMode.ultra_ms_waiting_answer'))
+  for (const item of forYou) approvalByItem.set(item.item_id, i18nT('components.crewMode.conductor_mode_ms_waiting_answer'))
   // Only while the main chat is on screen: the side panel's insert fills the
   // composer on screen, and a reply belongs in the main chat's.
   const replyInto = !viewing || viewing === root ? onAct : undefined
   const crewBack = useCrewBack(root)
   const milestones = items.map(item => {
     const state = milestoneState(item, approvalByItem.has(item.item_id))
-    const waitingOn = approvalByItem.get(item.item_id) || firstSentence(item.summary) || i18nT('components.crewMode.ultra_needs_you')
+    const waitingOn = approvalByItem.get(item.item_id) || firstSentence(item.summary) || i18nT('components.crewMode.conductor_mode_needs_you')
     return { item, state, waitingOn }
   })
   const doneMs = milestones.filter(m => m.state === 'done')
@@ -687,51 +687,51 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
   const recap = summaryRecap(summary.data, items.map(i => i.title))
     || (items.length
       ? milestoneSentence(msDone, items.length, milestones.filter(m => m.state === 'needs_you').map(m => m.item.title), milestones.filter(m => m.state === 'running').map(m => m.item.title), milestones.filter(m => m.state === 'stuck').map(m => m.item.title), milestones.filter(m => m.state === 'quiet').map(m => m.item.title))
-      : ultraRecap(c, waitingNames, questionCount > 0))
+      : conductorModeRecap(c, waitingNames, questionCount > 0))
 
   return (
-    <div className="h-full flex flex-col min-h-0" data-testid="ultra-crew-panel" data-view={view}>
+    <div className="h-full flex flex-col min-h-0" data-testid="conductor-mode-crew-panel" data-view={view}>
       {/* A crew member on screen: one click back to its root. */}
       {viewing && viewing !== root && <CrewPanelBack root={root} />}
       {/* A failed crew read, shown in both views; a gateway that does not serve
           the route is not a failure (the live rows stand in). */}
       {listed.isError && !crewRouteNotServed(listed.error) && <div className="shrink-0 px-3 pt-3"><ErrorNotice variant="inline" message={i18nT(live.length ? 'commandCenter.workers_error_live' : 'commandCenter.workers_error')} askAgent /></div>}
       <div className="shrink-0 px-3 pt-3">
-        <RadioChipGroup ariaLabel={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="ultra-view-switch">
+        <RadioChipGroup ariaLabel={i18nT('commandCenter.workers_view_label')} className="flex gap-1 rounded-lg border border-border bg-bg-hover/40 p-0.5" data-testid="conductor-mode-view-switch">
           {(['status', 'list'] as const).map(v => (
-            <button key={v} type="button" {...radioChip(view === v)} data-testid={`ultra-view-${v}`} onClick={() => setView(v)}
+            <button key={v} type="button" {...radioChip(view === v)} data-testid={`conductor-mode-view-${v}`} onClick={() => setView(v)}
               className={`flex-1 rounded-md px-2 py-1 text-[12px] font-medium transition-colors ${view === v ? 'bg-bg-elevated text-text shadow-sm' : 'text-muted hover:text-text'}`}>
-              {i18nT(v === 'status' ? 'components.crewMode.ultra_view_status' : 'components.crewMode.ultra_view_list')}
+              {i18nT(v === 'status' ? 'components.crewMode.conductor_mode_view_status' : 'components.crewMode.conductor_mode_view_list')}
             </button>
           ))}
         </RadioChipGroup>
       </div>
       {view === 'status' ? (
-        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4" data-testid="ultra-status">
+        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-4" data-testid="conductor-mode-status">
           {/* (1) Overview: the ledger's goal in one line, and what "done" means. */}
-          <section data-testid="ultra-overview" className="space-y-0.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.ultra_overview')}</h3>
-            <p className="text-[14px] font-semibold text-text line-clamp-1 break-words" title={goalFull}>{goal || i18nT('components.crewMode.ultra_goal_none')}</p>
+          <section data-testid="conductor-mode-overview" className="space-y-0.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_overview')}</h3>
+            <p className="text-[14px] font-semibold text-text line-clamp-1 break-words" title={goalFull}>{goal || i18nT('components.crewMode.conductor_mode_goal_none')}</p>
             {/* "Done when" needs something to finish: no goal and no milestone, no line. */}
             {(goalText || items.length > 0) && <p className="text-[12px] text-text/85 line-clamp-1" title={doneText}>{doneText}</p>}
             {scope && <p className="text-[11px] text-muted line-clamp-1" title={scope}>{scope}</p>}
           </section>
           {/* (2) Needs your input: the chat's own ask_question card and the crew's
               approval cards, both compact. */}
-          <section data-testid="ultra-needs-you" className="space-y-1.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_needs_input')} · ${needCount}`}</h3>
+          <section data-testid="conductor-mode-needs-you" className="space-y-1.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.conductor_mode_needs_input')} · ${needCount}`}</h3>
             {/* A milestone that needs the person without an approval card, or one
                 that is stuck or quiet, is not counted here, but the line does not claim
                 nothing is wrong: it points at the rows below. */}
-            {(needCount === 0 || needsYouRows.length > 0) && <p className="text-[12px] text-muted" data-testid="ultra-needs-you-none">{needsYouRows.length
-              ? i18nT(needsYouRows.length === 1 ? 'components.crewMode.ultra_needs_you_rows_one' : 'components.crewMode.ultra_needs_you_rows_many', { names: joinNames(needsYouRows) })
-              : i18nT(stuck || quiet ? 'components.crewMode.ultra_needs_you_none_stuck' : 'components.crewMode.ultra_needs_you_none')}</p>}
+            {(needCount === 0 || needsYouRows.length > 0) && <p className="text-[12px] text-muted" data-testid="conductor-mode-needs-you-none">{needsYouRows.length
+              ? i18nT(needsYouRows.length === 1 ? 'components.crewMode.conductor_mode_needs_you_rows_one' : 'components.crewMode.conductor_mode_needs_you_rows_many', { names: joinNames(needsYouRows) })
+              : i18nT(stuck || quiet ? 'components.crewMode.conductor_mode_needs_you_none_stuck' : 'components.crewMode.conductor_mode_needs_you_none')}</p>}
             {pendingQuestion?.questions?.length ? (
-              <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="ultra-main-question">
+              <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 px-2.5 py-2" data-testid="conductor-mode-main-question">
                 <span className="flex-1 min-w-0 text-[13px] text-text truncate" title={pendingQuestion.questions[0].question}>{pendingQuestion.questions[0].question}</span>
-                <button type="button" onClick={answerInChat} data-testid="ultra-answer-in-chat"
-                  className="shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium ultra-accent hover:bg-bg-hover">
-                  {i18nT('components.crewMode.ultra_answer_in_chat')}<ArrowDown size={12} aria-hidden="true" />
+                <button type="button" onClick={answerInChat} data-testid="conductor-mode-answer-in-chat"
+                  className="shrink-0 inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium conductor-mode-accent hover:bg-bg-hover">
+                  {i18nT('components.crewMode.conductor_mode_answer_in_chat')}<ArrowDown size={12} aria-hidden="true" />
                 </button>
               </div>
             ) : null}
@@ -739,13 +739,13 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
             <CrewApprovalCards root={root} compact />
           </section>
           {/* (3) Milestones: one row per ledger item, as outcomes. */}
-          <section data-testid="ultra-milestones">
+          <section data-testid="conductor-mode-milestones">
             <div className="flex items-center gap-2">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.ultra_milestones', { done: msDone, total: items.length })}</h3>
+              <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_milestones', { done: msDone, total: items.length })}</h3>
               {(stuck || quiet || (moving && lastReport)) && (
-                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck || quiet ? 'text-muted' : 'crew-tone-ok'}`} data-testid="ultra-pulse">
+                <span className={`ml-auto text-[11px] inline-flex items-center gap-1 ${stuck || quiet ? 'text-muted' : 'crew-tone-ok'}`} data-testid="conductor-mode-pulse">
                   <span aria-hidden="true" className="w-1.5 h-1.5 rounded-full bg-current" />
-                  {stuck ? i18nT('components.crewMode.ultra_stuck') : quiet ? i18nT('components.crewMode.ultra_quiet') : i18nT('components.crewMode.ultra_moving', { when: fmtRelative(lastReport || '') })}
+                  {stuck ? i18nT('components.crewMode.conductor_mode_stuck') : quiet ? i18nT('components.crewMode.conductor_mode_quiet') : i18nT('components.crewMode.conductor_mode_moving', { when: fmtRelative(lastReport || '') })}
                 </span>
               )}
             </div>
@@ -753,15 +753,15 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
                 other failure says so and offers the agent hand-off. */}
             {board.isError && !isNotFoundError(board.error) && <div className="mt-1"><ErrorNotice variant="inline" message={errMessage(board.error) || i18nT('pages.crewBoard.error_title')} askAgent /></div>}
             {board.isError && !isNotFoundError(board.error) ? null : items.length === 0
-              ? <p className="text-[12px] text-muted mt-1">{i18nT('components.crewMode.ultra_milestones_none')}</p>
+              ? <p className="text-[12px] text-muted mt-1">{i18nT('components.crewMode.conductor_mode_milestones_none')}</p>
               : <>
                 {/* Finished milestones fold into one row, so what is open stays on screen. */}
                 {doneMs.length > 0 && (
-                  <details className="group mt-0.5 border-b border-border" data-testid="ultra-milestones-done" open={doneOpen}
+                  <details className="group mt-0.5 border-b border-border" data-testid="conductor-mode-milestones-done" open={doneOpen}
                     onToggle={e => setDoneOpen((e.currentTarget as HTMLDetailsElement).open)}>
                     <summary className="flex items-center gap-2.5 py-1.5 cursor-pointer list-none">
                       <span className="shrink-0">{STATE_ICON.done}</span>
-                      <span className="flex-1 min-w-0 text-[13px] text-text truncate">{i18nT('components.crewMode.ultra_ms_done_fold', { n: doneMs.length })}{!doneOpen && <span className="text-muted"> · {fmtList(doneMs.map(m => m.item.title), { style: 'narrow' })}</span>}</span>
+                      <span className="flex-1 min-w-0 text-[13px] text-text truncate">{i18nT('components.crewMode.conductor_mode_ms_done_fold', { n: doneMs.length })}{!doneOpen && <span className="text-muted"> · {fmtList(doneMs.map(m => m.item.title), { style: 'narrow' })}</span>}</span>
                       <ChevronRight size={14} aria-hidden="true" className="shrink-0 text-muted transition-transform group-open:rotate-90" />
                     </summary>
                     <ol className="divide-y divide-border pl-2">{doneMs.map(m => <MilestoneRow key={m.item.item_id} {...m} now={now} onOpen={openItem(m.item)} />)}</ol>
@@ -773,9 +773,9 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
               </>}
           </section>
           {/* (4) Recap: one line from the session summary. */}
-          <section data-testid="ultra-recap-section" className="space-y-0.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.ultra_recap_title')}</h3>
-            <p className="text-[13px] leading-snug text-text line-clamp-2 break-words" title={recap} data-testid="ultra-recap">{recap}</p>
+          <section data-testid="conductor-mode-recap-section" className="space-y-0.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{i18nT('components.crewMode.conductor_mode_recap_title')}</h3>
+            <p className="text-[13px] leading-snug text-text line-clamp-2 break-words" title={recap} data-testid="conductor-mode-recap">{recap}</p>
             {summary.isError && !isNotFoundError(summary.error) && <ErrorNotice variant="inline" message={errMessage(summary.error) || i18nT('components.errorBoundary.something_went_wrong')} askAgent />}
           </section>
         </div>
@@ -784,19 +784,19 @@ export default function UltraCrewPanel({ root, viewing, active, onAct }: {
         {showSearch && <CrewWorkerSearch query={query} onChange={setQuery} />}
         {/* A paused crew can always be resumed, its root's tab closed or not; only Pause all needs a live root. */}
         {crewModeOn && (pause || !listed.data?.root_closed) && <CrewPauseRow root={root} paused={pause} running={localWorkers.filter(w => crewWorkerGroup(w) === 'working').length} leadRunning={!!slots.find(s => s.key === root)?.running} needsYou={localWorkers.filter(w => crewWorkerGroup(w) === 'approval').length} />}
-        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5" data-testid="ultra-list">
+        <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-1.5" data-testid="conductor-mode-list">
           {reopenFailed && <ErrorNotice variant="inline" message={i18nT('commandCenter.worker_reopen_failed')} askAgent />}
           {searching && shown.length === 0 && <p role="status" className="text-sm text-muted" data-testid="crew-search-empty">{i18nT('commandCenter.workers_search_empty', { query: query.trim() })}</p>}
-          <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.ultra_crew')} · ${i18nT('components.crewMode.ultra_row_sessions', { count: c.total, running: c.running })}`}</h3>
+          <h3 className="text-[11px] font-semibold uppercase tracking-[1px] text-muted">{`${i18nT('components.crewMode.conductor_mode_crew')} · ${i18nT('components.crewMode.conductor_mode_row_sessions', { count: c.total, running: c.running })}`}</h3>
           <ul className="space-y-1.5">
             {unfinished.map(memberRow)}
           </ul>
           {finishedTops.length > 0 && (
-            <details className="group" data-testid="ultra-finished" open={searching || finishedOpen}
+            <details className="group" data-testid="conductor-mode-finished" open={searching || finishedOpen}
               onToggle={e => { if (!searching) setFinishedOpen((e.currentTarget as HTMLDetailsElement).open) }}>
               <summary className="flex items-center gap-1 cursor-pointer list-none text-[12px] text-muted hover:text-text py-1">
                 <ChevronRight size={14} className="transition-transform group-open:rotate-90" aria-hidden="true" />
-                {i18nT('components.crewMode.ultra_finished', { n: finishedCount })}
+                {i18nT('components.crewMode.conductor_mode_finished', { n: finishedCount })}
               </summary>
               <ul className="space-y-1.5 mt-1">
                 {finished.map(memberRow)}

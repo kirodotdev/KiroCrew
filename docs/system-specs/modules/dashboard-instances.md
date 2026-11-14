@@ -103,13 +103,13 @@ Bot's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped 
 match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
 block both resolve through it, and nothing is written. No shipped page may be named
 `default`.
-A ROOT session running the Ultra Mode conductor template (`crew_mode.runs_crew_mode`) gets the same
+A ROOT session running the conductor template of conductor mode (`crew_mode.runs_crew_mode`) gets the same
 `[DASHBOARD]` block on every dashboard turn, keyed by its own store key
 (`session_turn_block`), but only once a page is ADOPTED: the default page it is shown
 while `empty` asks nothing of it, so it gets no block. A root session on any other agent
-(not in Ultra Mode) or on a Bot (`agent_kind == "member"`), a dispatched or adopted
+(not in conductor mode) or on a Bot (`agent_kind == "member"`), a dispatched or adopted
 session, and a Bot DM get no session block; the page itself is left as it is.
-Switching a root session to the Ultra Mode conductor template (Ultra Mode on) adopts `goal-board` through the ordinary
+Switching a root session to the conductor template of conductor mode (conductor mode on) adopts `goal-board` through the ordinary
 `adopt` (`adopt_crew_mode_board_on_switch`, called by `switch_slot_agent`), only while the
 page is `empty`, so a page already chosen is kept and switching away changes nothing.
 It applies to a Persistent chat only (an unset memory mode counts as one): an Incognito

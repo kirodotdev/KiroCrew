@@ -1357,7 +1357,7 @@ async def test_no_variants_refusal_carries_its_own_code(state) -> None:
 async def test_a_paused_crew_session_keeps_its_history_when_asked_to_redo_it(
     state, monkeypatch, path, body
 ) -> None:
-    """Ultra Mode "Pause all" holds the session: its replacement turn could not
+    """Conductor mode "Pause all" holds the session: its replacement turn could not
     run, so the history is left as it is and the refusal says why."""
     from kiro_crew import crew_pause
 

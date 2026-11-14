@@ -95,7 +95,7 @@ _SAVE_DRAIN_ATTEMPTS = 8
 
 
 def _crew_paused(slot: "_ChatSlot") -> bool:
-    """Whether an Ultra Mode "Pause all" holds *slot*: its history is not rewritten.
+    """Whether a conductor mode "Pause all" holds *slot*: its history is not rewritten.
 
     Asked before anything is truncated, so a refused edit leaves the chat as it
     was instead of a rewritten history with no turn behind it.
@@ -181,7 +181,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
 
-    # The stored Ultra Mode pause is read (off the loop) before the pause
+    # The stored conductor mode pause is read (off the loop) before the pause
     # check under the lock, so a paused crew's history is not rewritten
     # right after a restart.
     from kiro_crew import crew_pause as _crew_pause
@@ -597,7 +597,7 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             status=400,
         )
 
-    # The stored Ultra Mode pause is read (off the loop) before the pause
+    # The stored conductor mode pause is read (off the loop) before the pause
     # check under the lock, so a paused crew's history is not rewritten
     # right after a restart.
     from kiro_crew import crew_pause as _crew_pause

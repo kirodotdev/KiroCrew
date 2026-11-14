@@ -417,7 +417,7 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
         return redact(f"{opened}{undelivered}{guidance}{link_line}" + reply_line(resp))
     # A Crew Mode chat's worker is in the sidebar but filed in no folder.
     where = (
-        "the user's sidebar, unfiled (this chat is in Ultra Mode)"
+        "the user's sidebar, unfiled (this chat is in conductor mode)"
         if crew_mode
         else "the user's sidebar"
     )

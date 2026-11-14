@@ -4,7 +4,7 @@
 (a pull request, say) as one named producer read it: the producer vocabulary is closed
 and the emitter writes with ``src=gateway``, so no value here is text an agent typed.
 This fold keeps, for each subject (``target``, the URL) and each producer, the last
-facts read and when (``observed_at``), so the Ultra Mode Board draws a pull request's
+facts read and when (``observed_at``), so the conductor mode Board draws a pull request's
 state with its read time and no network read on page load.
 
 Bounded: at most :data:`OBJECTS_TARGET_LIMIT` subjects, the least recently observed

@@ -55,7 +55,7 @@ export const SESSION_FILTERS: SessionFilterDef[] = [
     // workers are never rows here, so there is nothing for a hide to drop.
     key: 'crew', storageKey: 'mc-session-crew-only',
     color: 'var(--accent)',
-    // The Ultra Mode lightning bolt on the gradient, the mark the root rows wear.
+    // The conductor mode lightning bolt on the gradient, the mark the root rows wear.
     icon: (active) => <span className={`w-3 h-3 rounded-full grid place-items-center ${active ? 'crew-grad' : 'bg-aim-subtle text-aim'}`}><Zap size={8} aria-hidden="true" className="inline-block shrink-0" /></span>,
   },
 ]

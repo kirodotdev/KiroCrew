@@ -163,7 +163,7 @@ def test_a_key_is_redacted_whole_before_the_cap_cuts_it():
 
 @pytest.mark.parametrize("language", sorted(welcome.WORDS))
 def test_every_language_has_every_word_and_none_names_the_conductor(language):
-    """No user text says "conductor" for Ultra Mode (the recorded docs/decisions rule)."""
+    """No user text calls the conductor "conductor" (the recorded docs/decisions rule)."""
     words = welcome.WORDS[language]
     assert set(words) == set(welcome.WORDS["en"]) and all(words.values())
     item = _item(1, status="question", pr=7, ask=RECORD)

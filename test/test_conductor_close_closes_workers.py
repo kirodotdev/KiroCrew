@@ -77,7 +77,7 @@ async def test_closing_a_conductor_closes_its_whole_line_of_workers(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_closing_an_ultra_mode_root_closes_its_workers(tmp_path, monkeypatch):
+async def test_closing_a_conductor_mode_root_closes_its_workers(tmp_path, monkeypatch):
     state, slots = _crew(tmp_path)
     slots["cond"].mode = ""
     slots["cond"].agent = "conductor-x"

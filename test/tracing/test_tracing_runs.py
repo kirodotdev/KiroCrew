@@ -456,7 +456,7 @@ def test_an_old_run_rolls_over_by_age(spans, monkeypatch):
     assert runs.segment(state, ref, "subagent") is nxt  # later children reuse it
 
 
-# ── Ultra Mode and Bot attributes ─────────────────────────────────────────
+# ── Conductor mode and Bot attributes ─────────────────────────────────────
 
 
 def test_a_worker_turn_carries_its_root_and_its_item(spans, monkeypatch):

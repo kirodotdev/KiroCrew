@@ -331,7 +331,7 @@ class TestLinkedThreadIntercept:
 
     @pytest.mark.asyncio
     async def test_authorized_queues_on_an_idle_slot_its_crew_paused(self, monkeypatch):
-        """Ultra Mode "Pause all" holds the session: the reply waits in its queue
+        """Conductor mode "Pause all" holds the session: the reply waits in its queue
         for Resume all instead of starting a turn the dispatch gate would drop."""
         from kiro_crew import crew_pause
         from kiro_crew.slack import handler

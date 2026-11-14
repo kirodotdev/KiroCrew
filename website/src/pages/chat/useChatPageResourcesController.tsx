@@ -106,7 +106,7 @@ interface UseChatPageResourcesControllerOptions {
   showActionError: (message: string, title?: string) => void
   composer: ChatPageResourcesComposerPorts
   capture: ChatPageResourcesCapturePorts
-  /** The active chat is an Ultra Mode chat (a crew root or one of its
+  /** The active chat is a conductor mode chat (a crew root or one of its
    *  workers): only a person moves its panel focus (`usePanelTabs` boardFirst). */
   boardFirst?: boolean
 }

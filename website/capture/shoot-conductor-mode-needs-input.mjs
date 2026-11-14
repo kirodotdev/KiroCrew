@@ -1,13 +1,13 @@
 /**
- * Screenshot harness for the Ultra Mode Board's Needs your input.
+ * Screenshot harness for the conductor mode Board's Needs your input.
  *
- * Serves the isolated capture entry (capture/ultra-needs-input.tsx) with a
+ * Serves the isolated capture entry (capture/conductor-mode-needs-input.tsx) with a
  * programmatic Vite dev server on loopback and photographs the REAL
- * UltraCrewPanel at side-panel width: the Status view, then the same view after
+ * ConductorModeCrewPanel at side-panel width: the Status view, then the same view after
  * pressing one offered answer, which fills the stand-in composer. The reads are
  * stubbed inside the entry, so no gateway / kiro-cli / token is involved.
  *
- * Usage (from website/): node capture/shoot-ultra-needs-input.mjs [outDir]
+ * Usage (from website/): node capture/shoot-conductor-mode-needs-input.mjs [outDir]
  * SHOT_PREFIX names the files (e.g. `before` on main, `after` on the branch).
  */
 import { chromium } from 'playwright'
@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 import { chromiumExecutable } from '../scripts/lib/chromium-executable.mjs'
 
-const OUT = process.argv[2] || resolve(dirname(fileURLToPath(import.meta.url)), '../../temp-screenshots/ultra-needs-input')
+const OUT = process.argv[2] || resolve(dirname(fileURLToPath(import.meta.url)), '../../temp-screenshots/conductor-mode-needs-input')
 mkdirSync(OUT, { recursive: true })
 const PREFIX = process.env.SHOT_PREFIX || 'shot'
 
@@ -37,13 +37,13 @@ const page = await browser.newPage({ viewport: { width: 420, height: 800 }, devi
 page.on('pageerror', e => console.log('PAGE EXCEPTION:', e.message))
 
 for (const theme of ['dark', 'light']) {
-  await page.goto(`${base}/capture/ultra-needs-input.html?theme=${theme}`)
-  await page.locator('[data-testid="ultra-milestone"]').first().waitFor({ timeout: 30000 })
+  await page.goto(`${base}/capture/conductor-mode-needs-input.html?theme=${theme}`)
+  await page.locator('[data-testid="conductor-mode-milestone"]').first().waitFor({ timeout: 30000 })
   await page.waitForTimeout(600)
   const frame = page.locator('[data-testid="capture-frame"]')
   await frame.screenshot({ path: `${OUT}/${PREFIX}-${theme}.png` })
   console.log('wrote', `${OUT}/${PREFIX}-${theme}.png`)
-  const answers = page.locator('[data-testid="ultra-person-ask-answers"]')
+  const answers = page.locator('[data-testid="conductor-mode-person-ask-answers"]')
   if (theme === 'dark' && await answers.count()) {
     await answers.click()
     await page.getByRole('menuitem', { name: 'Oolong', exact: true }).waitFor()
@@ -58,8 +58,8 @@ for (const theme of ['dark', 'light']) {
 }
 
 // A crew member on screen: the row offers to open the main chat instead of buttons.
-await page.goto(`${base}/capture/ultra-needs-input.html?theme=dark&viewing=w-tea`)
-const openMain = page.locator('[data-testid="ultra-person-ask-open-main"]')
+await page.goto(`${base}/capture/conductor-mode-needs-input.html?theme=dark&viewing=w-tea`)
+const openMain = page.locator('[data-testid="conductor-mode-person-ask-open-main"]')
 if (await openMain.count() || await openMain.waitFor({ timeout: 15000 }).then(() => true, () => false)) {
   await page.waitForTimeout(400)
   await page.locator('[data-testid="capture-frame"]').screenshot({ path: `${OUT}/${PREFIX}-member.png` })

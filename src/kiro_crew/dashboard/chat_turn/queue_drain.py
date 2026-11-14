@@ -586,7 +586,7 @@ async def _start_next_queued_turn(
     if _gateway_shutdown_requested(state):
         return False
 
-    # An Ultra Mode "Pause all" holds the root and every member it stopped: the
+    # A conductor mode "Pause all" holds the root and every member it stopped: the
     # queue stays as it is until Resume all (or the member's own Continue) lets it go.
     # Imported here: this module's functions run on the composing module's globals.
     from kiro_crew import crew_pause

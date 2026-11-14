@@ -554,8 +554,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Ultra Mode agent",
-      "help": "The agent template a chat runs when Ultra Mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
+      "label": "Conductor mode agent",
+      "help": "The agent template a chat runs when conductor mode is turned on. Empty falls back to the default. Takes effect live for new chats; no gateway restart.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "kirocrew-team-lead"
@@ -1845,7 +1845,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Conductor Own-Child Sends",
-      "help": "Let the Conductor and the Ultra Mode team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
+      "help": "Let the Conductor and the conductor mode team lead send to and close a session they created themselves without an approval prompt, the way a Bot already does. A send or close aimed at any other session still prompts, and the child keeps its own approval mode. Turn this off to read every send before it runs.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
@@ -4742,8 +4742,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Traces: Ultra Mode Shape",
-      "help": "How an Ultra Mode or Bot conductor's work is traced while Traces Enabled is on. 'run' (default): one trace per round, an 'ultra round N' root with the conductor's turns and one 'work_item' span per item holding its worker's turns, so a round reads as one waterfall. 'turn': every turn is its own trace, joined by the shared kirocrew.crew.root and kirocrew.work.item_id attributes.",
+      "label": "Traces: Conductor Mode Shape",
+      "help": "How a conductor's work in conductor mode or a Bot is traced while Traces Enabled is on. 'run' (default): one trace per round, an 'ultra round N' root with the conductor's turns and one 'work_item' span per item holding its worker's turns, so a round reads as one waterfall. 'turn': every turn is its own trace, joined by the shared kirocrew.crew.root and kirocrew.work.item_id attributes.",
       "hasChildren": false,
       "enumValues": [
         "run",
@@ -10686,8 +10686,8 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Start new chats in Ultra Mode",
-      "help": "Open each new dashboard chat with Ultra Mode already on. It can still be turned off before the first message. Applies only where Ultra Mode is offered: a Persistent chat on the default agent, with the Ultra Mode preview on.",
+      "label": "Start new chats in conductor mode",
+      "help": "Open each new dashboard chat with conductor mode already on. It can still be turned off before the first message. Applies only where conductor mode is offered: a Persistent chat on the default agent, with the conductor mode preview on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false

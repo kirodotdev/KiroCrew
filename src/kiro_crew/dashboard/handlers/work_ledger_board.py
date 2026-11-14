@@ -374,7 +374,7 @@ def awaits_person(
     """Whether *item* waits on the PERSON: its last report is ``blocked`` / ``question``
     naming one (:data:`~kiro_crew.work_vocab.WORK_BLOCKED_REASONS`), nobody has
     answered it since (:func:`answered_since_report`), and its worker's turn is not
-    *running*. The one test behind the sidebar's crew count and the Ultra Mode Board's
+    *running*. The one test behind the sidebar's crew count and the conductor mode Board's
     Needs your input, so they agree.
 
     A running turn means the worker moved on: the conductor messaged it or a loop
@@ -750,7 +750,7 @@ async def api_work_ledger_board(request: web.Request) -> web.Response:
             )
         )
 
-    # The conductor's offered answers, which the Ultra Mode Board's Needs your input
+    # The conductor's offered answers, which the conductor mode Board's Needs your input
     # draws as Reply buttons the way goal-board does.
     asks = await asyncio.to_thread(
         _conductor_asks, requested, {item.item_id for item in items if not item.is_terminal}

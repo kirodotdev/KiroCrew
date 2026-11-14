@@ -3586,7 +3586,7 @@ to the owner of its responsibility:
 | `identity` | which session is calling: the lenient and strict resolvers, `require_strict_session_key` and its diagnosis, `REFLEXIVE_TOOL_MODULES`, the Slack identity classification |
 | `gateway` | where a call goes and the call itself: the port, base URL and unix-socket caches, one request's target, the refused-target replay and re-verification, the internal secret, the identity headers, `_send` with its retry schedule, failure text and error body, and the five verbs (`_get`, `_post`, `_patch`, `_put`, `_delete`) |
 | `governance` | channel-agent containment and the messaging, browse, channel and memory-write vets |
-| `crew` | Ultra Mode's `route_crew` and `select_crew` bodies |
+| `crew` | Conductor mode's `route_crew` and `select_crew` bodies |
 | `history` | the chat-history search tools' scoping, redaction and snippet helpers |
 
 The other own servers (`kirocrew-cron`, `kirocrew-guide`, `kirocrew-mate`) take the

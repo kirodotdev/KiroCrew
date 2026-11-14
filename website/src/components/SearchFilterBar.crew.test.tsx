@@ -4,7 +4,7 @@ import { FilterChip } from './SearchFilterBar'
 
 describe('FilterChip gradient', () => {
   it('paints the Crew Mode chip in the crew gradient instead of a single colour', () => {
-    render(<FilterChip label="Ultra Mode" color="var(--accent)" gradient clearLabel="Clear" onClear={vi.fn()} testId="chip" />)
+    render(<FilterChip label="Conductor mode" color="var(--accent)" gradient clearLabel="Clear" onClear={vi.fn()} testId="chip" />)
     const chip = screen.getByTestId('chip')
     expect(chip.className).toContain('crew-grad')
     expect(chip.getAttribute('style')).toBeNull()
@@ -14,10 +14,10 @@ describe('FilterChip gradient', () => {
     // The gradient fill hides a transparent dashed border; a paused chip must
     // still read as "not narrowing right now" outside the open menu.
     const pause = {
-      paused: true, onToggle: vi.fn(), pauseLabel: 'Pause Ultra Mode filter', resumeLabel: 'Resume Ultra Mode filter',
+      paused: true, onToggle: vi.fn(), pauseLabel: 'Pause conductor mode filter', resumeLabel: 'Resume conductor mode filter',
       pausedText: 'paused', pauseHint: 'pause', resumeHint: 'resume',
     }
-    render(<FilterChip label="Ultra Mode" color="var(--accent)" gradient pause={pause} clearLabel="Clear" onClear={vi.fn()} testId="chip" />)
+    render(<FilterChip label="Conductor mode" color="var(--accent)" gradient pause={pause} clearLabel="Clear" onClear={vi.fn()} testId="chip" />)
     const chip = screen.getByTestId('chip')
     expect(chip.className).toContain('crew-grad')
     expect(chip.className).toContain('border-dashed')

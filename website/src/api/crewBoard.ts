@@ -119,7 +119,7 @@ export interface WorkBoardResponse {
    */
   take_over_available: boolean
   /** The conductor's offered answers per open item (goal-board's agentic `asks`
-   *  field), read by the Ultra Mode Board's Needs your input. Absent on an older
+   *  field), read by the conductor mode Board's Needs your input. Absent on an older
    *  gateway. */
   asks?: Record<string, string[]>
   /** What the warm welcome's own GitHub read last saw for each open item's pull

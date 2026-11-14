@@ -168,7 +168,7 @@ fields @timestamp, attributes.session.id
 Check the field names against one span in your log group first; this query has
 not been run against a live account by the Kiro Crew maintainers yet.
 
-## Ultra Mode and Bot conductors
+## Conductors in conductor mode and Bots
 
 By default each round of a conductor's work is one trace, so a round reads as one
 waterfall: an `ultra round N` root, the conductor's turns under it, and one

@@ -1638,7 +1638,7 @@ _PERMITTED_STORE_IMPORTERS = frozenset(
         # it reads nothing but that worker's own binding and item, it writes nothing,
         # and it runs only while ``telemetry.traces_enabled`` is on.
         "tracing/crew.py",
-        # The Ultra Mode round trace (tracing RFC §5.5). It reads the header of a
+        # The conductor mode round trace (tracing RFC §5.5). It reads the header of a
         # board whose key the route or the slot already resolved, and lists that
         # board's items to know which are open when a round begins and ends. The
         # same argument as ``tracing/crew.py``: it resolves no supplied identity,

@@ -1,4 +1,4 @@
-"""Ultra Mode "Pause all": what a paused crew holds and what it stopped.
+"""Conductor mode "Pause all": what a paused crew holds and what it stopped.
 
 Kept next to the work ledger (``<data home>/work-ledger/crew-pause.json``) so a page
 reload or a gateway restart still reads it. One record per paused root (``paused``):
@@ -462,7 +462,7 @@ def _is_root_of(key: str, root: str, rec: dict[str, Any]) -> bool:
 
 
 def root_paused(root: str) -> bool:
-    """Whether *root* itself is a paused Ultra Mode root (not one released)."""
+    """Whether *root* itself is a paused conductor mode root (not one released)."""
     rec = _live().get(root)
     return rec is not None and not rec.get("root_released")
 
@@ -471,7 +471,7 @@ def holds_turn(slot_key: str, still_root: Callable[[], bool] | None = None) -> b
     """Whether no new turn may start on *slot_key*: a paused root, or a crew member it holds.
 
     *still_root*, when given, is asked only for a key that is a paused root: a chat
-    that is not an Ultra Mode root (a record left behind for it) is not held as one.
+    that is not a conductor mode root (a record left behind for it) is not held as one.
     """
     records = _live()
     if any(slot_key in rec["held"] for rec in records.values()):

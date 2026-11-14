@@ -873,7 +873,7 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Streamed and non-streamed completions served to third-party clients.",
     ),
     (
-        "An Ultra Mode root's worker list and timeline",
+        "A conductor mode root's worker list and timeline",
         "dashboard/handlers/crew_workers.py",
         "The side panel's worker cards (a closed worker's saved title, the ledger "
         "line through the board's deep redactor) and every timeline bar and mark "

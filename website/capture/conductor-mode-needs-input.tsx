@@ -1,5 +1,5 @@
 /**
- * Capture page: the Ultra Mode Board's Status view with work that waits on the person.
+ * Capture page: the conductor mode Board's Status view with work that waits on the person.
  *
  * One ledger item whose worker asked the person (`question`, `needs_human`), with the
  * conductor's offered answers (`asks`), one item running and one tool approval. The
@@ -15,7 +15,7 @@ import { api } from '../src/api/client'
 import { store } from '../src/store'
 import { initI18n } from '../src/i18n/all'
 import { sseSlots } from '../src/store/dashboardSlice'
-import UltraCrewPanel from '../src/pages/chat/command-center/UltraCrewPanel'
+import ConductorModeCrewPanel from '../src/pages/chat/command-center/ConductorModeCrewPanel'
 import { PREVIEW_CREW_MODE } from '../src/utils/previewFlags'
 import '../src/index.css'
 
@@ -65,7 +65,7 @@ function Frame() {
   const [draft, setDraft] = useState('')
   return (
     <div style={{ width: 380 }} className="bg-bg text-text border border-border" data-testid="capture-frame">
-      <div style={{ height: 640 }}><UltraCrewPanel root="root" viewing={params.get('viewing') || 'root'} active onAct={setDraft} /></div>
+      <div style={{ height: 640 }}><ConductorModeCrewPanel root="root" viewing={params.get('viewing') || 'root'} active onAct={setDraft} /></div>
       <div className="border-t border-border p-2">
         <textarea data-testid="capture-composer" readOnly value={draft} placeholder="Main chat composer" rows={2}
           className="w-full rounded-md border border-border bg-bg-elevated p-2 text-[13px]" />
