@@ -811,7 +811,11 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 35, from 36,018, for the shared reader's arithmetic spans
+#: (``shell_commands.read_commands`` with ``heredocs=True``): a ``<<`` inside a
+#: ``$((…))`` / ``((…))`` that closes on its line is a shift, so no heredoc body follows
+#: it and the next line is a command the rm floor reads. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_053
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
