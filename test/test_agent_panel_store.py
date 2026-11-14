@@ -376,6 +376,31 @@ def test_an_installed_template_joins_the_available_set():
     assert {agent_panel.DEFAULT_TEMPLATE_ID, BESPOKE} <= set(agent_panel.available_templates())
 
 
+def test_a_template_linked_from_outside_its_directory_is_not_offered(tmp_path):
+    """The listing agrees with ``resolve_template``: a link leaving the override
+    directory is never served, so it is never listed either, and the crew named
+    after it falls back to the default template instead of failing to publish.
+    A link to a real file INSIDE the directory stays offered and served."""
+    outside = tmp_path / "dotfiles" / f"{BESPOKE}.html"
+    outside.parent.mkdir()
+    outside.write_text(_BESPOKE_HTML, encoding="utf-8")
+    over = agent_panel.override_templates_dir()
+    over.mkdir(parents=True, exist_ok=True)
+    (over / f"{BESPOKE}.html").symlink_to(outside)
+
+    inside = _install_template("inside-real", "INSIDE" + agent_panel.DATA_MARKER)
+    (over / "inside-link.html").symlink_to(inside)
+
+    listed = agent_panel.available_templates()
+    assert BESPOKE not in listed
+    assert agent_panel.template_for_crew(BESPOKE) == agent_panel.DEFAULT_TEMPLATE_ID
+    written = _publish(template=agent_panel.template_for_crew(BESPOKE))
+    assert written["template"] == agent_panel.DEFAULT_TEMPLATE_ID
+
+    assert "inside-link" in listed
+    assert agent_panel.resolve_template("inside-link").startswith("INSIDE")
+
+
 def test_an_operator_override_wins_over_the_shipped_template():
     over = agent_panel.override_templates_dir()
     over.mkdir(parents=True, exist_ok=True)
