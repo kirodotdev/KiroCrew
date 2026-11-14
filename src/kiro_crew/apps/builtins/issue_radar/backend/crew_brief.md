@@ -50,7 +50,8 @@ which stay local and are never rendered into a comment.
    2. a merge conflict on an otherwise-ready PR
    3. CI turned red
    4. new review comments
-   5. PR approved / mergeable — re-arm auto-merge
+   5. PR approved / mergeable — if the nudge says to arm auto-merge, re-arm it;
+      otherwise leave it for a person to merge
    6. the requester replied
    7. CI turned green — take the next step
 4. **Pick up new work** only if nothing above is advanceable AND you are under
@@ -574,8 +575,9 @@ policy, and that refusal is not about force-pushing.
 git push --force-with-lease=refs/heads/<branch>:<remote-sha> origin HEAD:refs/heads/<branch>
 ```
 
-After resolving a conflict, re-arm auto-merge unconditionally. It is idempotent
-and arming it twice costs nothing.
+After resolving a conflict, if the nudge says to arm auto-merge, re-arm it. It is
+idempotent and arming it twice costs nothing. If the nudge says never to arm it,
+do not: leave the PR for a person to merge.
 
 ## When a human has to decide, publish and move on
 
