@@ -32,6 +32,7 @@ from kiro_crew.auth.login.endpoints import (
     oidc_scopes,
     social_service_url,
 )
+from kiro_crew.auth.refresh import HTTP_TIMEOUT
 from kiro_crew.auth.shape import Transport, select_transport
 from kiro_crew.auth.store import (
     KNOWN_IDENTITIES,
@@ -41,16 +42,11 @@ from kiro_crew.auth.store import (
     TokenStoreError,
 )
 from kiro_crew.auth.whoami import START_URL_EXTRA_KEY
+from kiro_crew.http_proxy import resolve_proxy
 
 logger = logging.getLogger(__name__)
 
 _HEADERS = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
-
-# Every auth request on the shared session is bounded. aiohttp's own default is five
-# minutes, which on a black-holed route leaves a poll hanging many times longer than
-# the dashboard's poll cadence; 30s is longer than any healthy auth call and short
-# enough that a dead route is visible inside one login.
-_HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 # How many CONSECUTIVE connection-level poll failures one pending login absorbs before
 # a poll reports the auth service unreachable. The poll is the longest-lived request in
@@ -349,7 +345,7 @@ class KasLoginService:
         # Lazy: constructing the session at gateway boot would bind it to a loop the
         # service may never run on; first use always happens on the serving loop.
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(timeout=_HTTP_TIMEOUT)
+            self._session = aiohttp.ClientSession(timeout=HTTP_TIMEOUT)
         return self._session
 
     async def close(self) -> None:
@@ -592,7 +588,9 @@ class KasLoginService:
         payload = {"deviceCode": pending.auth.device_code, "clientId": USER_AGENT}
         answered = False
         try:
-            async with session.post(url, json=payload, headers=_HEADERS) as resp:
+            async with session.post(
+                url, json=payload, headers=_HEADERS, proxy=resolve_proxy(url)
+            ) as resp:
                 # The issuer answered, so whatever went wrong on earlier polls of this
                 # login was transient: the budget starts over.
                 answered = True
