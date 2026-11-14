@@ -11,6 +11,7 @@ an app token.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 #: Off until the dashboard lists and cancels ``app:`` cards: until
@@ -38,9 +39,14 @@ class CrewmateSDK:
         """Raise the import card for *bundle*; returns its card id. Never a crew key."""
         from kiro_crew import change_card_catalog as catalog
         from kiro_crew.crewmate_bundle import crewmate_import_params
+        from kiro_crew.dashboard import bot_share
         from kiro_crew.dashboard.change_cards import CardError
         from kiro_crew.dashboard.handlers.change_cards import propose_app_card
 
+        # The same gate the owner's import route asks, so no way of raising an import
+        # card sits outside it.
+        if await asyncio.to_thread(bot_share.is_bot_share_denied):
+            raise CrewmateProposalError("governance_denied", bot_share.DENIED_MESSAGE)
         try:
             params = crewmate_import_params(bundle)
             card = await propose_app_card(self._http_app, self._app_name, params)

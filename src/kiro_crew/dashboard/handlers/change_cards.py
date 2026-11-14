@@ -863,6 +863,14 @@ async def api_members_import(request: web.Request) -> web.Response:
         return denied
     if request.get("app"):
         return web.json_response({"error": "owner only", "code": "owner_only"}, status=403)
+    from kiro_crew.dashboard import bot_share
+
+    # Before the body is read or a copy staged: a refused fleet keeps nothing.
+    if await asyncio.to_thread(bot_share.is_bot_share_denied):
+        _audit("owner", "crewmate.import", "refused", "governance_denied")
+        return web.json_response(
+            {"error": bot_share.DENIED_MESSAGE, "code": "governance_denied"}, status=403
+        )
     from kiro_crew import crewmate_stage
     from kiro_crew.crewmate_bundle import crewmate_import_params, read_crewmate_file
 
@@ -1504,6 +1512,17 @@ async def _run_card_step(
     try:
         await store.warm()
         rec = store.get(card_id)
+        # A card is kept for a day, and the ceiling is read at boot, so a card raised
+        # under one policy can be pressed under another. The press of an import
+        # card is the moment an agent is created, so the gate is asked again here,
+        # before the step is admitted: the card stays pending, and an undo of one
+        # already applied is never blocked.
+        if op == catalog.OP_APPLY and rec.get("kind") == catalog.KIND_CREWMATE_IMPORT:
+            from kiro_crew.dashboard import bot_share
+
+            if await asyncio.to_thread(bot_share.is_bot_share_denied):
+                _audit("owner", "crewmate.import", "refused", "governance_denied")
+                return _deny(403, "governance_denied", bot_share.DENIED_MESSAGE)
         # The record as it was before this step was admitted: what disk holds
         # until the admission is saved, and what an unsaved verdict reverts to.
         revert = store.snapshot(rec)
