@@ -1277,12 +1277,14 @@ def _s3_download_narrows(
 ) -> bool:
     """Whether an ``aws s3 cp|mv|sync`` row is narrowed away on *view*.
 
-    True only for one plain download command :func:`~.s3_direction._s3_download_only`
-    read in full, so a command it cannot read stays denied. It gets *raw*, the
-    command before case folding, to refuse any non-ASCII, and narrows only a
-    pattern in *shipped*, so an operator's own copy stays denied. Returns False
-    for every other pattern. The verdict is cached per command: every matching
-    segment would otherwise re-read the whole command.
+    True only when :func:`~.s3_direction._s3_download_only` reads *view* as a
+    sequence of statements whose every ``aws s3`` transfer is a plain download, so
+    a command it cannot read in full -- an upload anywhere on the line, an
+    unresolvable variable, a pipe, a subshell or a command substitution -- stays
+    denied. It gets *raw*, the command before case folding, to refuse any non-ASCII,
+    and narrows only a pattern in *shipped*, so an operator's own copy stays denied.
+    Returns False for every other pattern. The verdict is cached per command: every
+    matching segment would otherwise re-read the whole command.
     """
     s3 = _submodule("s3_direction")
     if pattern not in s3._S3_TRANSFER_PATTERNS or pattern not in shipped:
