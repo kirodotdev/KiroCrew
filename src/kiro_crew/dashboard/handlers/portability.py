@@ -18,6 +18,7 @@ from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.dashboard import part_stream
+from kiro_crew.dashboard.folder_portability import live_folder_merge
 from kiro_crew.dashboard.handlers._shared import open_multipart, require_owner_dashboard_request
 from kiro_crew.portability import (
     apply_import_zip,
@@ -603,6 +604,7 @@ async def api_portability_import(request: web.Request) -> web.Response:
             zip_path,
             mode,
             channel_settings=channel_settings,
+            folder_merge=live_folder_merge(request.app.get("state"), asyncio.get_running_loop()),
             memory_only=memory_only or manifest_is_memory_only(manifest),
             **({"agent_templates": picked_templates} if picked_templates else {}),
         )

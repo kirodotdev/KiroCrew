@@ -143,6 +143,7 @@ def _build_export_zip(
             "hooks.json",
             "crons.json",
             "notifications.jsonl",
+            "folders.json",
             "project_dir",
             "workspace_dir",
         )
@@ -300,6 +301,7 @@ def _measure_nonsession_footprint(
             "hooks.json",
             "crons.json",
             "notifications.jsonl",
+            "folders.json",
             "project_dir",
             "workspace_dir",
         )
