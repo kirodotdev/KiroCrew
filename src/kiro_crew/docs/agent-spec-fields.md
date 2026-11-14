@@ -1043,7 +1043,17 @@ when:
   catalog decides which servers run.
 
 `"*"` gets the entries only; a per-tool grant such as `@kirocrew-core/skill_search`
-is not widened. Crew's own specs, Bot service agents, an app's agents (their
+is not widened.
+
+On KAS the added servers' tools are deferred: the model sees them in the loader's
+catalogue and loads one the first time it calls it, as on Crew's default agent,
+so they no longer ride in every request. Only an entry Crew added counts (the
+managed launch, byte for byte); a server your `mcpServers` declares is yours. A
+tool of an added server you name one by one, such as `@kirocrew-core/skill_search`,
+stays direct (a whole-server `@kirocrew-core` is deferred, whoever wrote it), and so does `mcp_server_wait`; every other tool your spec grants,
+your own servers' included, stays as written. A backend that does not read
+KAS's `neverDefer` list sends them as before.
+Crew's own specs, Bot service agents, an app's agents (their
 containment is the app framework's), project-checkout specs and Crew's derived
 copies are left alone. Templates with a saved capability record, under any name,
 also keep their reviewed server and tool choices unchanged. If the capability
