@@ -468,6 +468,8 @@ export interface ChatState {
   voicePlaying: boolean
   /** A speech request for the active slot is waiting for its first audio. */
   voicePreparing: boolean
+  /** The listener paused the reading; the position is held until they resume or stop. */
+  voicePaused: boolean
   voiceAudio: string | null  // base64 stitched MP3 for replay
   subagents: Record<string, SubagentActivity>
   /** Aggregate "waiting to start" count per slot — agents accepted but queued
@@ -819,6 +821,7 @@ export const initialState: ChatState = {
   slotContextTokens: {},
   voicePlaying: false,
   voicePreparing: false,
+  voicePaused: false,
   voiceAudio: null,
   subagents: {},
   subagentQueued: {},

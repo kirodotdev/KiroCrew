@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest'
 import { act, fireEvent, screen } from '@testing-library/react'
 
 import VoicePlaybackBar from '../components/VoicePlaybackBar'
-import { setVoicePlaying, setVoicePreparing } from '../store/chatSlice'
+import { setVoicePaused, setVoicePlaying, setVoicePreparing } from '../store/chatSlice'
 import { createTestStore, renderWithProviders } from './helpers'
 
 function mount() {
@@ -36,7 +36,7 @@ describe('VoicePlaybackBar', () => {
   it('wears the dock glass so the transcript behind it cannot show through the label', () => {
     const store = mount()
     act(() => { store.dispatch(setVoicePlaying(true)) })
-    const pane = screen.getByRole('status').parentElement!
+    const pane = screen.getByTestId('voice-playback-bar').firstElementChild!
     // `glass-thick` is the blur-plus-tint step the other bars above the composer wear;
     // a bare translucent tint is what let the text underneath bleed into the label.
     expect(pane.classList.contains('glass-thick')).toBe(true)
@@ -60,6 +60,83 @@ describe('VoicePlaybackBar', () => {
     expect(onStop).toHaveBeenCalledOnce()
   })
 
+  describe('pause and resume', () => {
+    /** Listen for `type` on the window for the duration of `run`; returns how often it fired. */
+    function countEvents(type: string, run: () => void): number {
+      const listener = vi.fn()
+      window.addEventListener(type, listener)
+      try { run() } finally { window.removeEventListener(type, listener) }
+      return listener.mock.calls.length
+    }
+
+    it.each([
+      ['preparing', setVoicePreparing],
+      ['playing', setVoicePlaying],
+    ] as const)('offers Pause reading while %s', (_state, action) => {
+      const store = mount()
+      act(() => { store.dispatch(action(true)) })
+      expect(screen.getByRole('button', { name: 'Pause reading' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Resume reading' })).toBeNull()
+    })
+
+    it('requests a pause, then offers Resume reading once the store says paused', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      expect(countEvents('voice-pause', () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Pause reading' }))
+      })).toBe(1)
+
+      act(() => { store.dispatch(setVoicePaused(true)) })
+      expect(screen.getByRole('status').textContent).toBe('Paused')
+      expect(screen.queryByRole('button', { name: 'Pause reading' })).toBeNull()
+      expect(countEvents('voice-resume', () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Resume reading' }))
+      })).toBe(1)
+
+      act(() => { store.dispatch(setVoicePaused(false)) })
+      expect(screen.getByRole('status').textContent).toBe('Reading aloud')
+      expect(screen.getByRole('button', { name: 'Pause reading' })).toBeTruthy()
+    })
+
+    it('says Paused instead of Preparing audio when paused between sentences', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePreparing(true)) })
+      act(() => { store.dispatch(setVoicePaused(true)) })
+      expect(screen.getByRole('status').textContent).toBe('Paused')
+      expect(screen.getByRole('button', { name: 'Resume reading' })).toBeTruthy()
+    })
+
+    it('keeps Stop reading available while paused', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      act(() => { store.dispatch(setVoicePaused(true)) })
+      expect(countEvents('voice-stop', () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Stop reading' }))
+      })).toBe(1)
+    })
+
+    it('keeps focus on the same button while it switches between Pause and Resume', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      const toggle = screen.getByTestId('voice-playback-pause')
+      toggle.focus()
+      act(() => { store.dispatch(setVoicePaused(true)) })
+      expect(screen.getByTestId('voice-playback-pause')).toBe(toggle)
+      expect(document.activeElement).toBe(toggle)
+      expect(toggle.getAttribute('aria-label')).toBeNull()
+      expect(toggle.textContent).toBe('Resume reading')
+    })
+
+    it('goes away, and the paused flag clears, when nothing is playing or preparing', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      act(() => { store.dispatch(setVoicePaused(true)) })
+      act(() => { store.dispatch(setVoicePlaying(false)) })
+      expect(screen.queryByTestId('voice-playback-bar')).toBeNull()
+      expect(store.getState().chat.voicePaused).toBe(false)
+    })
+  })
+
   describe('Read again', () => {
     it.each([
       ['preparing', setVoicePreparing],
@@ -81,11 +158,24 @@ describe('VoicePlaybackBar', () => {
       expect(onStop).not.toHaveBeenCalled()
     })
 
-    it('shows the short label next to the Stop button', () => {
+    it('shows the short label', () => {
       const store = mount()
       act(() => { store.dispatch(setVoicePlaying(true)) })
       expect(screen.getByTestId('voice-playback-restart').textContent).toBe('Read again')
-      expect(screen.getByRole('button', { name: 'Stop reading' })).toBeTruthy()
+    })
+
+    it('stays available while paused', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      act(() => { store.dispatch(setVoicePaused(true)) })
+      const onRestart = vi.fn()
+      window.addEventListener('voice-restart', onRestart)
+      try {
+        fireEvent.click(screen.getByRole('button', { name: 'Read again from the start' }))
+      } finally {
+        window.removeEventListener('voice-restart', onRestart)
+      }
+      expect(onRestart).toHaveBeenCalledOnce()
     })
 
     it('keeps focus on the button while the reading restarts', () => {
@@ -106,6 +196,60 @@ describe('VoicePlaybackBar', () => {
       expect(screen.getByRole('status').textContent).toBe('Preparing audio…')
       expect(screen.getByRole('button', { name: 'Read again from the start' })).toBe(restart)
       expect(document.activeElement).toBe(restart)
+    })
+  })
+
+  describe('button layout', () => {
+    /** The bar's rows: the direct `div` children of the glass pane (its optics layers are `span`s). */
+    const barRows = () => Array.from(screen.getByTestId('voice-playback-bar').firstElementChild!.querySelectorAll(':scope > div'))
+
+    it.each([
+      ['playing', false],
+      ['paused', true],
+    ] as const)('puts Pause or Resume and Stop in the first row and Read again alone in the second while %s', (_state, paused) => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      act(() => { store.dispatch(setVoicePaused(paused)) })
+      const rows = barRows().map(row => Array.from(row.querySelectorAll('button')).map(button => button.getAttribute('data-testid')))
+      expect(rows).toEqual([
+        ['voice-playback-pause', 'voice-playback-stop'],
+        ['voice-playback-restart'],
+      ])
+    })
+
+    it('keeps the status text in the first row and separates the second row with a hairline', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      const [firstRow, secondRow] = barRows()
+      expect(firstRow.contains(screen.getByRole('status'))).toBe(true)
+      expect(secondRow.classList.contains('border-t')).toBe(true)
+      expect(secondRow.classList.contains('justify-end')).toBe(true)
+    })
+  })
+
+  describe('narrow bars', () => {
+    it('hides the Pause or Resume and Stop labels by the bar width, so the status keeps its room', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      expect(screen.getByTestId('voice-playback-bar').classList.contains('@container')).toBe(true)
+      for (const id of ['voice-playback-pause', 'voice-playback-stop']) {
+        const label = screen.getByTestId(id).querySelector('span')!
+        expect(label.classList.contains('@max-[680px]:sr-only')).toBe(true)
+      }
+    })
+
+    it('keeps the labels as the accessible names while they are hidden', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      expect(screen.getByTestId('voice-playback-pause').textContent).toBe('Pause reading')
+      expect(screen.getByTestId('voice-playback-stop').textContent).toBe('Stop reading')
+    })
+
+    it('leaves Read again, alone on its row, to the viewport rule', () => {
+      const store = mount()
+      act(() => { store.dispatch(setVoicePlaying(true)) })
+      const label = screen.getByTestId('voice-playback-restart').querySelector('span')!
+      expect(label.className).toBe('max-[360px]:sr-only')
     })
   })
 

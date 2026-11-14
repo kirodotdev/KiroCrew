@@ -6055,6 +6055,9 @@
     "voicePlaybackBar": {
       "preparing": "Audio wird vorbereitet…",
       "playing": "Wird vorgelesen",
+      "paused": "Pausiert",
+      "pause": "Vorlesen pausieren",
+      "resume": "Vorlesen fortsetzen",
       "stop": "Vorlesen stoppen",
       "restart": "Erneut vorlesen",
       "restartFromStart": "Von vorn erneut vorlesen"

@@ -4,6 +4,8 @@
  * WS_INSTANCES (and MockAudio.instances) in its own beforeEach.
  */
 import { vi } from 'vitest'
+import { store as globalStore } from '../store'
+import { setVoicePaused, setVoicePlaying, setVoicePreparing } from '../store/chatSlice'
 
 export const ACTIVE = 'slot-a'
 export const BACKGROUND = 'slot-b'
@@ -49,4 +51,28 @@ export class MockAudio {
   pause = vi.fn()
   play = vi.fn(() => MockAudio.playResult())
   constructor(public src: string) { MockAudio.instances.push(this) }
+}
+
+type VoiceFlagSource = {
+  getState: () => { chat: { voicePlaying: boolean; voicePreparing: boolean; voicePaused: boolean } }
+  subscribe: (listener: () => void) => () => void
+}
+
+/** The playback owner reads the voice flags from the singleton store while a
+ * test's Provider store receives its dispatches. Copy the flags across so the
+ * owner sees what the test store holds; the returned function stops the copy
+ * and clears the singleton. */
+export function mirrorVoiceFlagsToSingleton(source: VoiceFlagSource): () => void {
+  const copy = () => {
+    const { voicePlaying, voicePreparing, voicePaused } = source.getState().chat
+    globalStore.dispatch(setVoicePlaying(voicePlaying))
+    globalStore.dispatch(setVoicePreparing(voicePreparing))
+    globalStore.dispatch(setVoicePaused(voicePaused))
+  }
+  const unsubscribe = source.subscribe(copy)
+  return () => {
+    unsubscribe()
+    globalStore.dispatch(setVoicePlaying(false))
+    globalStore.dispatch(setVoicePreparing(false))
+  }
 }

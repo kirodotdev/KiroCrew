@@ -12,13 +12,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import { createVoiceEndpoints } from '../api/client/voice'
 import { ApiError } from '../api/apiError'
-import { clientSpeechAvailable, speakOnClient, stopClientSpeech } from '../lib/clientSpeech'
+import { clientSpeechAvailable, pauseClientSpeech, resumeClientSpeech, speakOnClient, stopClientSpeech } from '../lib/clientSpeech'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { store as globalStore } from '../store'
 import chatReducer, { setActiveSlot, clearMessages } from '../store/chatSlice'
 import { recentErrors } from '../utils/errorReport'
-import { ACTIVE, WS_INSTANCES, MockWebSocket } from './UseWebSocketCoverageTestUtils'
+import { ACTIVE, WS_INSTANCES, MockWebSocket, mirrorVoiceFlagsToSingleton } from './UseWebSocketCoverageTestUtils'
 
 // ── Web Speech fake ───────────────────────────────────────────────────
 
@@ -31,12 +31,16 @@ class FakeUtterance {
 function installSpeechSynthesis() {
   const spoken: FakeUtterance[] = []
   let cancelCount = 0
-  ;(window as unknown as { speechSynthesis: unknown }).speechSynthesis = {
+  const engine = {
+    paused: false,
     speak: (u: FakeUtterance) => { spoken.push(u) },
     cancel: () => { cancelCount++ },
+    pause: vi.fn(() => { engine.paused = true }),
+    resume: vi.fn(() => { engine.paused = false }),
   }
+  ;(window as unknown as { speechSynthesis: unknown }).speechSynthesis = engine
   ;(window as unknown as { SpeechSynthesisUtterance: unknown }).SpeechSynthesisUtterance = FakeUtterance
-  return { spoken, getCancelCount: () => cancelCount }
+  return { spoken, engine, getCancelCount: () => cancelCount }
 }
 
 function removeSpeechSynthesis() {
@@ -97,6 +101,49 @@ describe('clientSpeech helper', () => {
   it('refuses to speak empty text', () => {
     installSpeechSynthesis()
     expect(speakOnClient('   ', { onPlaying: vi.fn(), onError: vi.fn() })).toBe(false)
+  })
+
+  describe('pause and resume', () => {
+    // Drop any utterance an earlier test left in flight in the module state.
+    beforeEach(() => {
+      installSpeechSynthesis()
+      stopClientSpeech()
+    })
+    afterEach(() => { stopClientSpeech() })
+
+    it('holds and continues the utterance in flight', () => {
+      const { engine } = installSpeechSynthesis()
+      speakOnClient('x', { onPlaying: vi.fn(), onError: vi.fn() })
+      pauseClientSpeech()
+      expect(engine.pause).toHaveBeenCalledOnce()
+      resumeClientSpeech()
+      expect(engine.resume).toHaveBeenCalledOnce()
+    })
+
+    it('leaves the engine alone when this module has no utterance in flight', () => {
+      const { engine, spoken } = installSpeechSynthesis()
+      pauseClientSpeech()
+      resumeClientSpeech()
+      speakOnClient('x', { onPlaying: vi.fn(), onError: vi.fn() })
+      spoken[0].onend?.()
+      pauseClientSpeech()
+      resumeClientSpeech()
+      expect(engine.pause).not.toHaveBeenCalled()
+      expect(engine.resume).not.toHaveBeenCalled()
+    })
+
+    it('does nothing without a speech API', () => {
+      removeSpeechSynthesis()
+      expect(() => { pauseClientSpeech(); resumeClientSpeech() }).not.toThrow()
+    })
+
+    it('does not leave the engine paused after a stop, so the next utterance is heard', () => {
+      const { engine } = installSpeechSynthesis()
+      speakOnClient('x', { onPlaying: vi.fn(), onError: vi.fn() })
+      pauseClientSpeech()
+      stopClientSpeech()
+      expect(engine.paused).toBe(false)
+    })
   })
 })
 
@@ -232,6 +279,54 @@ describe('playback owner client fallback (#22710)', () => {
     // The cleaned text is spoken, not the raw fenced markdown.
     expect(spoken.map(u => u.text)).toContain('Here is code: (code block)')
     expect(spoken.map(u => u.text)).not.toContain('```js')
+  })
+
+  describe('pause and resume of the client speech', () => {
+    let stopMirroring: () => void
+    beforeEach(() => { stopMirroring = mirrorVoiceFlagsToSingleton(testStore) })
+    afterEach(() => { stopMirroring(); stopClientSpeech() })
+
+    const press = (type: 'voice-pause' | 'voice-resume') => act(() => { window.dispatchEvent(new Event(type)) })
+
+    it('pauses and resumes the utterance that is speaking', () => {
+      const { engine } = installSpeechSynthesis()
+      const ws = mount({ slot: ACTIVE, request_id: 'rq-pr', clientFallback: true, text: 'pause me' })
+      act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-pr', code: 'voice_unavailable' } }) })
+
+      press('voice-pause')
+      expect(testStore.getState().chat.voicePaused).toBe(true)
+      expect(engine.pause).toHaveBeenCalledOnce()
+
+      press('voice-resume')
+      expect(testStore.getState().chat.voicePaused).toBe(false)
+      expect(engine.resume).toHaveBeenCalledOnce()
+    })
+
+    it('starts the fallback speech paused when the listener paused while it was preparing', () => {
+      const { engine, spoken } = installSpeechSynthesis()
+      const ws = mount({ slot: ACTIVE, request_id: 'rq-early', clientFallback: true, text: 'held reply' })
+      press('voice-pause')
+      expect(testStore.getState().chat.voicePaused).toBe(true)
+      expect(engine.pause).not.toHaveBeenCalled()
+
+      act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-early', code: 'voice_unavailable' } }) })
+      expect(spoken.map(u => u.text)).toContain('held reply')
+      expect(engine.pause).toHaveBeenCalledOnce()
+      expect(testStore.getState().chat.voicePaused).toBe(true)
+
+      press('voice-resume')
+      expect(engine.resume).toHaveBeenCalledOnce()
+    })
+
+    it('stop while paused clears the pause', () => {
+      const { engine } = installSpeechSynthesis()
+      const ws = mount({ slot: ACTIVE, request_id: 'rq-sp', clientFallback: true, text: 'stop me' })
+      act(() => { ws.simulateMessage({ type: 'voice_error', data: { slot: ACTIVE, request_id: 'rq-sp', code: 'voice_unavailable' } }) })
+      press('voice-pause')
+      act(() => { window.dispatchEvent(new Event('voice-stop')) })
+      expect(testStore.getState().chat.voicePaused).toBe(false)
+      expect(engine.paused).toBe(false)
+    })
   })
 
   it('keeps client speech alive and raises no notice when the socket drops', () => {

@@ -5885,6 +5885,9 @@
     "voicePlaybackBar": {
       "preparing": "正在准备音频…",
       "playing": "正在朗读",
+      "paused": "已暂停",
+      "pause": "暂停朗读",
+      "resume": "继续朗读",
       "stop": "停止朗读",
       "restart": "重新朗读",
       "restartFromStart": "从头重新朗读"
