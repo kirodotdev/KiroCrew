@@ -55,6 +55,7 @@ which would over-grant.
 | `kirocrew stop --port 9999` | Stop gateway on specific port |
 | `kirocrew restart` | Restart gateway (service-aware) |
 | `kirocrew status` | Show runtime stats (uptime, sessions, crons, lessons) |
+| `kirocrew usage` | Recent credit spend per day; `--by model\|agent\|channel\|session`, `--days N` / `--since YYYY-MM-DD`, `--json` |
 
 The token in a `--json-ready` line grants dashboard access for up to 20 hours, so
 captured stdout from a test harness is a credential: keep it out of logs and

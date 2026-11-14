@@ -965,6 +965,7 @@ _OWNERS = (
     "kiro_crew.cli_commands_eval",
     "kiro_crew.cli_commands_learn",
     "kiro_crew.cli_commands_secrets",
+    "kiro_crew.cli_commands_usage",
 )
 for _owner in _OWNERS:
     importlib.import_module(_owner)
@@ -1108,6 +1109,14 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _print_policy_source,
         _security,
         parse_time_selector,
+    )
+    from kiro_crew.cli_commands_usage import (  # noqa: F401
+        _MONEY_DECIMALS,
+        _UNATTRIBUTED_LABEL,
+        _figure,
+        _print_table,
+        _usage_report,
+        _window_days,
     )
     from kiro_crew.cli_commands_workspace import (  # noqa: F401
         _WS_DIR_OUTSIDE_HOME,

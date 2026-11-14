@@ -123,6 +123,8 @@ OTHER_KEY = "__other__"
 UNATTRIBUTED_KEY = "__unattributed__"
 
 _ROW_FIELDS = {"channel": "channel", "agent": "agent", "model": "model"}
+#: The four token counts a row's ``tokens`` sums, as the daily token chart does.
+_TOKEN_FIELDS = ("input", "output", "cache_create", "cache_read")
 
 # Parsed-row cache: keyed on the shard fingerprint plus a TTL safety net for
 # clock skew and in-place edits, the same posture as usage._parse_token_history.
@@ -144,6 +146,9 @@ class _Row:
     model: str
     credits: float
     cost: float = 0.0
+    #: Input + output + cache-create + cache-read: the per-turn figure the Usage
+    #: page's daily token chart sums. ``build_series`` ignores it.
+    tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,7 +173,9 @@ def _str_field(obj: dict[str, Any], key: str) -> str:
 
 
 def _credits_of(obj: dict[str, Any], field: str = "credits") -> float:
-    """The row's *field* (``credits`` or ``cost``) as a finite float; anything else counts 0.
+    """The row's numeric *field* (``credits``, ``cost``, a token count) as a finite float.
+
+    Anything else counts 0.
 
     ``float`` of an int wider than a double raises rather than answers, and a
     non-finite value would reach the client as ``Infinity``, which is not JSON.
@@ -208,6 +215,7 @@ def _row_from(obj: dict[str, Any]) -> _Row | None:
         ),
         credits=_credits_of(obj),
         cost=_credits_of(obj, "cost"),
+        tokens=sum(int(_credits_of(obj, field)) for field in _TOKEN_FIELDS),
     )
 
 
@@ -439,6 +447,91 @@ def build_series(
         "truncated": dropped > 0,
         "dropped_rows": dropped,
         "complete_from": complete_from if dropped else None,
+    }
+
+
+def _report_key(row: _Row, by: str) -> str:
+    """The bucket a report row lands in; ``session`` is the report's own dimension.
+
+    A slot that is not a session in its own right (a ``subagent:*`` fragment of
+    another session's turn) is keyed by its channel, so every such turn forms
+    one ``subagent`` row and stays in the total.
+    """
+    if by == "session":
+        return row.slot if _usage.is_session_slot(row.slot) else row.channel
+    return getattr(row, _ROW_FIELDS[by])
+
+
+def _report_cell(key: str, cell: list[Any]) -> dict[str, Any]:
+    """One report cell, printing no figure its harness does not report.
+
+    The Daily History table's per-day rule (``usage_sessions``, the
+    ``if credits or not cost:`` block), applied to every cell: ``credits`` is
+    ``None`` on dollar-billed spend (zero credits, positive cost); ``cost`` and
+    ``tokens`` are ``None`` when they sum to zero, because kiro-cli and KAS
+    write both as a hard zero, so a zero there means "not reported".
+    """
+    credits, cost, turns, tokens = cell
+    return {
+        "key": key,
+        "credits": _round(credits) if credits or not cost else None,
+        "cost": _round(cost) if cost else None,
+        "turns": turns,
+        "tokens": tokens or None,
+    }
+
+
+def build_report(
+    rows: list[_Row],
+    *,
+    by: str | None = None,
+    days: int = WINDOW_DAYS,
+    dropped: int = 0,
+    complete_from: str | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """Aggregate ``rows`` into the ``kirocrew usage`` report. Pure.
+
+    ``by=None`` answers one row per day of the dense local-day axis, oldest
+    first and zero-filled; a dimension (``model``, ``agent``, ``channel`` or
+    ``session``) answers one row per bucket, credits descending then key, with
+    no top-N fold. ``dropped`` and ``complete_from`` are the scan's; the report
+    discloses them only when they can reach its own window.
+    """
+    today = today or datetime.now().astimezone().date()
+    dates = _day_axis(days, today)
+    in_window = set(dates)
+    # [credits, cost, turns, tokens] per key, plus the window total.
+    cells: dict[str, list[Any]] = {d: [0.0, 0.0, 0, 0] for d in dates} if by is None else {}
+    total: list[Any] = [0.0, 0.0, 0, 0]
+    for row in rows:
+        if row.day not in in_window:
+            continue
+        key = row.day if by is None else (_report_key(row, by) or UNATTRIBUTED_KEY)
+        # Every admitted row is one turn, a zero-credit one included: unlike
+        # build_series (``if value == 0.0: continue``, a zero adds no layer), a
+        # report counts what ran.
+        for cell in (cells.setdefault(key, [0.0, 0.0, 0, 0]), total):
+            cell[0] = _add(cell[0], row.credits)
+            cell[1] = _add(cell[1], row.cost)
+            cell[2] += 1
+            cell[3] += row.tokens
+    if by is None:
+        order = dates
+    else:
+        order = sorted(cells, key=lambda k: (-cells[k][0], k))
+    truncated = dropped > 0 and (complete_from is None or complete_from > dates[0])
+    totals = _report_cell("", total)
+    del totals["key"]
+    return {
+        "by": by or "day",
+        "days": days,
+        "from": dates[0],
+        "to": dates[-1],
+        "totals": totals,
+        "rows": [_report_cell(key, cells[key]) for key in order],
+        "truncated": truncated,
+        "complete_from": complete_from if truncated else None,
     }
 
 
