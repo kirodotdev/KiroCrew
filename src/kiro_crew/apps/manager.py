@@ -82,6 +82,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DEFAULT_ON_BACKFILL,
         _DEFAULT_ON_BUILTINS,
         _REQUIRED_BUILTIN_FIELDS,
+        RETIRED_RECORD_SUFFIX,
         _adoption_pin_names,
         _app_declares_backend,
         _audit_default_on_backfill,
@@ -120,8 +121,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         update_app,
     )
     from kiro_crew.apps.manager_lookup import (  # noqa: F401
-        TASK_RUNNER_APP,
-        TASK_RUNNER_DISABLED_MESSAGE,
         AgentOwner,
         _absence_is_genuine,
         _add_adoption_row,
@@ -135,7 +134,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         app_agent_backend_refusal,
         app_agent_launch_refusal,
         app_command_agent_refusal,
-        app_disabled,
         app_enabled_state,
         get_app,
         is_app_enabled,

@@ -17,11 +17,12 @@ while the bar is off. The labels on the controls that open the gesture follow th
 (`quickSearchLauncher` in the shell), so a trigger never promises a search the launcher omits.
 
 It used to be the built-in app `command-bar`, whose enabled state was the switch. That record is
-now a migrated built-in (`apps/builtins._MIGRATED_BUILTINS`), and the boot cleanup that removes
-it first writes its opt-out to the setting (`apps/builtin_fold.py`, through
-`_FOLDED_BUILTIN_SWITCHES`): a record with the app off writes `command_bar_enabled: false`, a
+now a migrated built-in (`apps/builtins._MIGRATED_BUILTINS`), and the boot cleanup that retires
+it (renames `installed.json` and `app.json` to `*.retired`) first writes its opt-out to the
+setting (`apps/builtin_fold.py`, through `_FOLDED_BUILTIN_SWITCHES`, which maps it to
+`dashboard.command_bar_enabled`): a record with the app off writes `command_bar_enabled: false`, a
 record with it on writes nothing because the setting defaults on, and a record still owed its
-default-on promotion (the old `_DEFAULT_ON_BACKFILL` delivery) reads as on unless the `apps`
+default-on promotion (the old `_DEFAULT_ON_BACKFILL` delivery, `_FOLDED_PROMOTED_BUILTINS`) reads as on unless the `apps`
 governance allowlist denied the app. A key already in `config.json` is kept, and a write that
 fails keeps the record so the next start tries again. The retired-built-in uninstall path
 carries the opt-out the same way. `test/test_command_bar_fold.py` pins each case.

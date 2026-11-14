@@ -8,7 +8,7 @@ The caller classes:
 
 * the owner's dashboard cookie: ``app == ""`` with the owner's subject;
 * an app token: ``app`` carries the app's name, and ``_enforce_app_scope`` confines
-  it to its manifest's declared paths (the Projects app declares ``/api/taskrunner``,
+  it to its manifest's declared paths (an app may declare ``/api/taskrunner``,
   and several apps declare ``/api/chat/*``);
 * an ``X-Internal-Secret`` loopback process: ``app`` is ABSENT and
   ``internal_auth`` is True (the ``task_run`` MCP tool posts ``/api/taskrunner``).
@@ -132,9 +132,9 @@ def _runner():
 
 
 async def test_taskrunner_update_plan_app_token_still_reaches_runner() -> None:
-    """The Projects app's token (``app="projects"``) is scoped by its manifest, not by owner."""
+    """An app's token (``app="planner"``) is scoped by its manifest, not by owner."""
     runner = _runner()
-    app = _taskrunner_app(_identity(user="dashboard", app="projects"), runner)
+    app = _taskrunner_app(_identity(user="dashboard", app="planner"), runner)
     async with TestClient(TestServer(app)) as client:
         response = await client.put("/api/taskrunner/t1/plan", json={"steps": []})
         assert response.status == 200, await response.text()

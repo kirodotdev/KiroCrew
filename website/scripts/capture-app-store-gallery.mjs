@@ -55,7 +55,6 @@ const APPS = [
   ['papyrus', 'papyrus', 'papyrus', '/papyrus'],
   ['personal-shopper', 'personal_shopper', 'personal-shopper', '/personal-shopper'],
   ['pptx-maker', 'pptx_maker', 'pptx-maker', '/pptx-maker'],
-  ['projects', 'projects', 'projects', '/projects'],
   ['spec-builder', 'spec_builder', 'spec-builder', '/spec-builder'],
   ['workflows', 'workflows', 'workflows', '/workflows'],
 ]

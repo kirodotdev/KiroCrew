@@ -5302,20 +5302,6 @@
         "warnings": "Avvisi"
       }
     },
-    "projects": {
-      "manifest": {
-        "description": "Affida un lavoro in più passi e lascialo arrivare alla fine senza supervisione. Descrivi il lavoro in linguaggio naturale, incolla una specifica scritta o carica un file YAML, poi genera prima un piano per rivedere i passi oppure parti subito. Ogni esecuzione ha una pagina propria che mostra i progressi passo per passo, e puoi metterla in pausa, riprenderla, ritentarla o fermarla in qualsiasi momento.",
-        "display_name": "Task Runner",
-        "highlight_1": "Tre modi per iniziare: descrivi il lavoro in linguaggio naturale, incolla una specifica o carica un YAML",
-        "highlight_2": "Genera un piano e rivedi i passi prima di impegnarti in un’esecuzione",
-        "highlight_3": "Le esecuzioni procedono senza supervisione, con i progressi passo per passo sulla pagina dell’esecuzione stessa",
-        "highlight_4": "Metti in pausa, riprendi, ritenta o ferma un’esecuzione in qualsiasi momento",
-        "highlight_5": "Conserva uno storico delle esecuzioni passate e dei loro esiti",
-        "page_label": "Task Runner",
-        "use_case_1": "Pianifica ed esegui un lavoro multi-agente con dipendenze partendo da linguaggio naturale, una specifica esistente o YAML deterministico.",
-        "configuration_1": "Apri Task Runner, scegli Compose, From Spec o From YAML, seleziona un agente e facoltativamente uno spazio di lavoro assoluto, quindi verifica con Plan o avvia subito con Run."
-      }
-    },
     "specBuilder": {
       "api": {
         "phase_building": "in costruzione",
@@ -20155,7 +20141,10 @@
         "show_topbar_search_desc": "Mostra il campo di ricerca al centro della barra superiore. Disattivato, il suo spazio va ai controlli ai lati, così i valori di CPU, MEM e DSK restano visibili nelle finestre più strette. La scorciatoia di ricerca apre ancora la ricerca. Finché le scorciatoie sono disattivate, il campo resta visibile.",
         "command_bar": "Usa la Command Bar",
         "command_bar_desc": "Cmd+K o Ctrl+K apre la Command Bar: digita un comando per andare a un’app, un’impostazione o una sessione. Disattivata, la scorciatoia apre la palette di ricerca, che cerca anche in conoscenza, competenze e prompt.",
-        "command_bar_save_failed": "Impossibile salvare l’impostazione della Command Bar."
+        "command_bar_save_failed": "Impossibile salvare l’impostazione della Command Bar.",
+        "task_runner": "Mostra Task Runner",
+        "task_runner_hint": "Se disattivato, Task Runner esce dalla barra laterale sinistra e da Cerca in tutto e le nuove esecuzioni delle attività si fermano. Non viene eliminato nulla: i tuoi piani, le esecuzioni passate e quelle in corso restano.",
+        "task_runner_save_failed": "Impossibile salvare l'impostazione di Task Runner. Riprova."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

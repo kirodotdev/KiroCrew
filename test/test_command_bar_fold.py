@@ -69,16 +69,18 @@ def test_the_app_is_a_migrated_builtin_that_no_longer_ships() -> None:
         _DEFAULT_ON_BUILTINS,
         shipped_builtin_names,
     )
-    from kiro_crew.config.sections import DashboardConfig
 
     assert NAME in _MIGRATED_BUILTINS
     assert NAME not in shipped_builtin_names()
     assert NAME not in _DEFAULT_ON_BUILTINS | _DEFAULT_ON_BACKFILL
-    # Every folded switch names a real dashboard flag that defaults on, as the app
+    # Every folded switch names a real config flag that defaults on, as the app
     # did, because the carry writes only an opt-out.
-    for name, key in _FOLDED_BUILTIN_SWITCHES.items():
+    for name, path in _FOLDED_BUILTIN_SWITCHES.items():
         assert name in _MIGRATED_BUILTINS
-        assert getattr(DashboardConfig(), key) is True
+        value: object = KiroCrewConfig()
+        for part in path.split("."):
+            value = getattr(value, part)
+        assert value is True, path
 
 
 def test_an_enabled_record_is_removed_and_writes_nothing(app_home) -> None:  # noqa: F811

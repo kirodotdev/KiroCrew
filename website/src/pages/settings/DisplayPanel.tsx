@@ -41,6 +41,7 @@ import { i18nT } from '../../i18n/t'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import { ThemeExperienceSettings } from './ThemeExperienceSettings'
+import { TaskRunnerSetting } from './TaskRunnerSetting'
 import ErrorNotice from '../../components/ErrorNotice'
 import { REMOTE_EDITORS } from '../../utils/remoteEditorUrl'
 import { useImeGuard } from '../../hooks/useImeGuard'
@@ -816,6 +817,7 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
           {/* No hand-off: `shellDraft` and `installValue` are unsaved local drafts
               on this panel that navigation would discard. */}
           <ErrorNotice message={milestonesError} variant="inline" />
+          <TaskRunnerSetting />
         </SettingsCard>
       </SettingsSection>
       {/* Desktop app only: shown once the main process answers for the main

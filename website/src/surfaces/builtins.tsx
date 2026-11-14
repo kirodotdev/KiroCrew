@@ -7,9 +7,10 @@
  * Order in this file = order in the rail (within each group). Add new
  * built-in surfaces here; do not add hardcoded badge logic to `App.tsx`.
  */
-import { MessageSquare, Bell, Component, CalendarDays, Settings, ClipboardCheck, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server } from 'lucide-react'
+import { MessageSquare, Bell, Component, CalendarDays, Settings, Compass, Webhook, BookOpen, Library, MessageSquareText, Workflow, ScrollText, Bot, Server } from 'lucide-react'
 import type { ReactElement } from 'react'
 import { createSelector } from '@reduxjs/toolkit'
+import AppIcon from '../components/AppIcon'
 import { KiroGhostMark } from '../components/KiroGhostMark'
 import { CrewMemberMark } from '../components/CrewMemberMark'
 import { registerBuiltinSurface } from './registry'
@@ -17,6 +18,9 @@ import { BUILTIN_SURFACE_NAV, CAPABILITY_SUB_ITEM_NAV, capabilitySubItemNav } fr
 import { selectSubagentActivityCount } from '../store/chatSlice'
 import { isSilencedNote } from '../store/notificationsSlice'
 import type { RootState } from '../store'
+
+/** Task Runner's rail mark: a theme-painted SVG, inlined by `AppIcon` like an app's. */
+const TASK_RUNNER_ICON_URL = '/app-assets/projects/icon.svg'
 
 // Memoized at the source so `selectAllSurfacesAttention`'s per-dispatch
 // invocation only re-runs the .filter().length when the items array changes
@@ -73,7 +77,9 @@ registerBuiltinSurface({
 
 registerBuiltinSurface({
   ...BUILTIN_SURFACE_NAV.projects,
-  icon: <ClipboardCheck size={16} />,
+  // A theme-painted app mark at the rail's app-row size, so this row matches the
+  // app rows it sits among in the Apps group.
+  icon: <AppIcon iconUrl={TASK_RUNNER_ICON_URL} icon="ClipboardCheck" size={20} />,
   // Stub surface — no slotMode and no unreadSelector. The Projects badge
   // (global task-gate approval count) comes from a React Query result that
   // lives outside Redux; shell/nav/railBadges.ts mirrors it into `appBadges['projects']`

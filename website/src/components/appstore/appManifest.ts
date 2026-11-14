@@ -353,20 +353,6 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.pptxMaker.manifest.use_case_1'],
     configuration: ['apps.pptxMaker.manifest.configuration_1'],
   },
-  'projects': {
-    displayName: 'apps.projects.manifest.display_name',
-    description: 'apps.projects.manifest.description',
-    pageLabel: 'apps.projects.manifest.page_label',
-    highlights: [
-      'apps.projects.manifest.highlight_1',
-      'apps.projects.manifest.highlight_2',
-      'apps.projects.manifest.highlight_3',
-      'apps.projects.manifest.highlight_4',
-      'apps.projects.manifest.highlight_5',
-    ],
-    useCases: ['apps.projects.manifest.use_case_1'],
-    configuration: ['apps.projects.manifest.configuration_1'],
-  },
   'project-scaffolder': {
     displayName: 'apps.projectScaffolder.manifest.display_name',
     description: 'apps.projectScaffolder.manifest.description',

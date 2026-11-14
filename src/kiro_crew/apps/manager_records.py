@@ -808,14 +808,14 @@ def _disabled_before_upgrade(name: str, meta_path: Path) -> bool:
     if _read_enabled(data):
         return False
     # Deferred: manager_builtins imports this module.
-    from kiro_crew.apps.builtins import _FOLDED_BUILTIN_SWITCHES
+    from kiro_crew.apps.builtins import _FOLDED_PROMOTED_BUILTINS
     from kiro_crew.apps.manager_builtins import _DEFAULT_ON_BACKFILL
 
     # A folded built-in's record still owed the promotion is read as on when its
     # switch is carried over (``manager_builtins.folded_switch_state``), so it is
     # not recorded as the owner's disable here either.
     owed_promotion = (
-        (name in _DEFAULT_ON_BACKFILL or name in _FOLDED_BUILTIN_SWITCHES)
+        (name in _DEFAULT_ON_BACKFILL or name in _FOLDED_PROMOTED_BUILTINS)
         and data.get("source") == "builtin"
         and data.get("defaultOnBackfilled") is not True
     )

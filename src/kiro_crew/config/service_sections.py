@@ -26,6 +26,16 @@ DEFAULT_MAX_PARALLEL_STEPS = (
 
 @dataclass
 class TaskRunnerConfig:
+    enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Enabled",
+            "Show Task Runner in the sidebar and let new runs start. Off hides the "
+            "sidebar row and refuses every new start (the page, the task_run tool, "
+            "the task run command and a saved task-plan workflow); runs already "
+            "going keep going and their pages stay open.",
+        ),
+    )
     max_parallel_steps: int = field(
         default=DEFAULT_MAX_PARALLEL_STEPS,
         metadata=_meta(

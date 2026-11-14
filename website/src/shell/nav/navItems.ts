@@ -33,4 +33,7 @@ export const NAV_ITEMS = getBuiltinSurfaces().map(s => ({
   // Same reason, for the same reason: whether a promotable sub-item occupies a
   // rail row is a localStorage read that changes without a reload.
   pinnable: s.pinnable,
+  // Server state, read where the rail lists are built (`useAppRailOrder`).
+  configSwitch: s.configSwitch,
+  formerApp: s.formerApp,
 }))

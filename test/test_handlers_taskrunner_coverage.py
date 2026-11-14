@@ -37,6 +37,7 @@ from handlers_taskrunner_coverage_helpers import (  # noqa: F401 -- the autouse 
     _state,
     _stub_sel,
 )
+from taskrunner_switch_helpers import turn_task_runner_off
 
 from kiro_crew.dashboard.handlers.taskrunner import (
     _validate_spec_path,
@@ -151,32 +152,24 @@ class TestStatus:
 
 class TestStart:
     @pytest.mark.asyncio
-    async def test_disabled_task_runner_app_refuses_start(self, tmp_path: Path) -> None:
-        # Disabled in Library means no new runs: the run would have no page.
+    async def test_task_runner_turned_off_refuses_start(self, tmp_path: Path) -> None:
+        # Turned off means no new runs, with the answer the app's switch gave.
         runner = _runner(tmp_path)
-        with patch(
-            "kiro_crew.apps.manager._read_installed",
-            return_value=SimpleNamespace(enabled=False),
-        ) as read:
-            resp = await api_taskrunner_start(
-                _request(_state(runner), json_body={"spec": "__inline__:# t"})
-            )
+        turn_task_runner_off()
+        resp = await api_taskrunner_start(
+            _request(_state(runner), json_body={"spec": "__inline__:# t"})
+        )
         assert resp.status == 409
         assert _body(resp)["code"] == "app_disabled"
-        assert "Task Runner is disabled" in _body(resp)["error"]
-        read.assert_called_once_with("projects")
+        assert "Task Runner is turned off" in _body(resp)["error"]
         runner.start_background.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("meta", [None, SimpleNamespace(enabled=True)])
-    async def test_enabled_or_unregistered_app_still_starts(
-        self, tmp_path: Path, meta: Any
-    ) -> None:
+    async def test_task_runner_on_by_default_starts(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        with patch("kiro_crew.apps.manager._read_installed", return_value=meta):
-            resp = await api_taskrunner_start(
-                _request(_state(runner), json_body={"spec": "__inline__:# t"})
-            )
+        resp = await api_taskrunner_start(
+            _request(_state(runner), json_body={"spec": "__inline__:# t"})
+        )
         assert resp.status == 200
         runner.start_background.assert_awaited_once()
 
@@ -189,40 +182,32 @@ class TestStart:
             (api_taskrunner_retry, "retry_from_task"),
         ],
     )
-    async def test_disabled_task_runner_app_refuses_plan_execute_and_retry(
+    async def test_task_runner_turned_off_refuses_plan_execute_and_retry(
         self, tmp_path: Path, handler: Any, starts: str
     ) -> None:
         # Plan, Execute and Retry get a run going too, so they answer like start.
         runner = _runner(tmp_path)
         runner.plan = AsyncMock(return_value=_planned_run())  # so an unrefused plan answers 200
-        with patch(
-            "kiro_crew.apps.manager._read_installed",
-            return_value=SimpleNamespace(enabled=False),
-        ):
-            resp = await handler(
-                _request(_state(runner), match_info={"task_id": "t1"}, json_body={"input": "x"})
-            )
+        turn_task_runner_off()
+        resp = await handler(
+            _request(_state(runner), match_info={"task_id": "t1"}, json_body={"input": "x"})
+        )
         assert resp.status == 409
         assert _body(resp)["code"] == "app_disabled"
         getattr(runner, starts).assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("task_id", ["", "existing"])
-    async def test_disabled_task_runner_app_refuses_a_plan_from_chat(
+    async def test_task_runner_turned_off_refuses_a_plan_from_chat(
         self, tmp_path: Path, task_id: str
     ) -> None:
-        # A new or updated chat plan is a run the disabled page could not show.
+        # A new or updated chat plan is a run Task Runner, turned off, must not take.
         runner = _runner(tmp_path)
         runner.update_plan = AsyncMock(return_value=_planned_run())  # an unrefused plan answers 200
-        with patch(
-            "kiro_crew.apps.manager._read_installed",
-            return_value=SimpleNamespace(enabled=False),
-        ):
-            resp = await api_taskrunner_from_chat(
-                _request(
-                    _state(runner), json_body={"steps": [{"title": "first"}], "task_id": task_id}
-                )
-            )
+        turn_task_runner_off()
+        resp = await api_taskrunner_from_chat(
+            _request(_state(runner), json_body={"steps": [{"title": "first"}], "task_id": task_id})
+        )
         assert resp.status == 409
         assert _body(resp)["code"] == "app_disabled"
         runner.update_plan.assert_not_called()

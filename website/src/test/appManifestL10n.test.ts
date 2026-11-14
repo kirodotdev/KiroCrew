@@ -53,7 +53,7 @@ describe('manifest l10n fallback chain', () => {
 
   it('never lets the block override a catalog-keyed built-in', async () => {
     await i18next.changeLanguage('pt')
-    const builtin = { name: 'projects', origin: 'builtin', displayName: 'X', manifest: { l10n: { pt: { displayName: 'Hijack' } } } }
+    const builtin = { name: 'pptx-maker', origin: 'builtin', displayName: 'X', manifest: { l10n: { pt: { displayName: 'Hijack' } } } }
     expect(appDisplayName(builtin)).not.toBe('Hijack')
   })
 })

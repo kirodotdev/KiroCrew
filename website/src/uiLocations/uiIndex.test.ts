@@ -1505,9 +1505,9 @@ describe('the committed index', () => {
     const crews = byId.get('tab.capabilities.crews') as { alias_keys?: string[]; placements: { route: string }[] }
     expect(crews.placements[0].route).toBe('/capabilities?tab=crews')
     expect(crews.alias_keys).toContain('components.commandPalette.providers.pagesProvider.kirocrew_agents')
-    // "Tasks" keeps the Task Runner page's own gate.
+    // "Tasks" keeps the Task Runner page's own gate, its on/off setting.
     const projects = byId.get('page.projects')!
-    expect(projects.placements[0].requires).toEqual([{ kind: 'condition', id: 'app_enabled' }])
+    expect(projects.placements[0].requires).toEqual([{ kind: 'condition', id: 'page_switched_on' }])
   })
 
   it('names an explicit tab for every Customize location, so a remembered tab cannot answer instead', () => {

@@ -108,7 +108,7 @@ def test_a_legacy_page_title_finds_its_explicit_canonical_location() -> None:
 def test_the_tasks_alias_keeps_the_task_runner_gate() -> None:
     d = ui_index.find_ui("tasks", "en")
     projects = next(r for r in d["results"] if r["id"] == "page.projects")
-    assert projects["placements"][0]["requires"][0]["id"] == "app_enabled"
+    assert projects["placements"][0]["requires"][0]["id"] == "page_switched_on"
 
 
 def test_no_result_hands_out_a_redirecting_route() -> None:

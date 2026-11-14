@@ -56,7 +56,7 @@ describe('app shell composition', () => {
       'useMacFullscreen()',
       'useFocusChrome({',
       'useDrawerSwipe(shellRef, {',
-      'useAppRailOrder(appNavItems)',
+      'useAppRailOrder(appNavItems, railConfig)',
       'useRailBadges(approvalCount)',
       'useShellKeyboard({',
       'useKiroUsageReadout()',

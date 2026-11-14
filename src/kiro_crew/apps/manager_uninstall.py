@@ -100,7 +100,7 @@ def uninstall_app(name: str, *, keep_data: bool = True, retired_builtin: bool = 
         )
     if retired_builtin:
         # A folded app's record is the only copy of its on/off state; the boot
-        # cleanup carries it the same way before removing the record.
+        # cleanup carries it the same way before retiring the record.
         try:
             carry_folded_switch(name, folded_switch_state(name, meta))
         except Exception as exc:  # noqa: BLE001
