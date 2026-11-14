@@ -562,6 +562,10 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # lets the owner turn Files-view credential redaction off
     # (``redaction_switch.owner_may_disable``, policy layer only). Data row only.
     "capabilities.credential_redaction_off": ScopeSpec(CAPABILITY, capability_default=False),
+    # Opt-in, a row of its own: lets the owner turn off redaction for the agent's
+    # prompt and the server logs (``redaction_switch.owner_may_disable_seams``). The
+    # Files-view row above does not grant it. Data row only.
+    "capabilities.credential_redaction_seams_off": ScopeSpec(CAPABILITY, capability_default=False),
 }
 
 

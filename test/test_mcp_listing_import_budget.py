@@ -54,11 +54,17 @@ FORBIDDEN_BEFORE_THE_LIST = (
 #: with room for the modules one platform loads and another does not; a change that needs
 #: more names what it added and why a listing needs it, or moves the import behind the
 #: list. Lower a figure when a change brings the count down.
+#: Raised by 1 for ``mcp-cron`` (355 to 356) and ``mcp-mate`` (350 to 351): the structured
+#: credential detectors are on by default, so the first ``redact_credentials`` call a listing
+#: makes loads ``kiro_crew.redaction_seams`` and the ``security.redaction_structured`` package
+#: (the two servers sat one module under their old ceilings, and ``mcp-core`` and
+#: ``mcp-guide`` had room). The redactor runs on the listing's output, so the import cannot
+#: move behind the list.
 PACKAGE_MODULE_CEILING = {
     "mcp-core": 485,
-    "mcp-cron": 355,
+    "mcp-cron": 356,
     "mcp-guide": 350,
-    "mcp-mate": 350,
+    "mcp-mate": 351,
 }
 
 #: The modules that read the two live values in the spawn tools' descriptions. They are

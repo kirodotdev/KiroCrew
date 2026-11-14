@@ -21,9 +21,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-pytest.importorskip("amazon_transcribe", reason="STT stream tests require amazon-transcribe-streaming-sdk")
+pytest.importorskip(
+    "amazon_transcribe", reason="STT stream tests require amazon-transcribe-streaming-sdk"
+)
 
 from kiro_crew.dashboard import stt_stream  # noqa: E402
+from kiro_crew.testing.synthetic_credentials import github_classic  # noqa: E402
 
 
 def _fake_ws(*, closed: bool = False, close_raises: bool = False):
@@ -79,9 +82,7 @@ async def test_close_and_end_audit_audits_before_closing(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_and_end_audit_tolerates_a_broken_transport(
-    monkeypatch, caplog
-) -> None:
+async def test_close_and_end_audit_tolerates_a_broken_transport(monkeypatch, caplog) -> None:
     """The balanced trail is the invariant; the close is best-effort."""
     logged = MagicMock()
     monkeypatch.setattr(stt_stream, "sel", lambda: logged)
@@ -135,9 +136,7 @@ async def test_cancellation_during_the_debounce_wait_is_clean(monkeypatch) -> No
 @pytest.mark.asyncio
 async def test_endpoint_frame_send_failure_is_swallowed(monkeypatch) -> None:
     """The client can vanish between the verdict and the frame; that is not fatal."""
-    monkeypatch.setattr(
-        stt_stream, "run_bg_oneliner", AsyncMock(return_value="COMPLETE")
-    )
+    monkeypatch.setattr(stt_stream, "run_bg_oneliner", AsyncMock(return_value="COMPLETE"))
     ws = _fake_ws()
     ws.send_json = AsyncMock(side_effect=ConnectionResetError("client gone"))
     ep = stt_stream._Endpointer(ws, object(), debounce=0.0, timeout=1.0)
@@ -232,9 +231,7 @@ async def test_handler_feeds_the_endpointer_before_sending(monkeypatch) -> None:
     handler = _handler_for(ws, endpointer)
 
     await handler.handle_transcript_event(_event(_result("deploy the", is_partial=True)))
-    await handler.handle_transcript_event(
-        _event(_result("deploy the service", is_partial=False))
-    )
+    await handler.handle_transcript_event(_event(_result("deploy the service", is_partial=False)))
 
     # The endpointer state each send observed: already advanced by its own event.
     assert fed_at_send == [(1, []), (2, ["deploy the service"])]
@@ -251,12 +248,13 @@ async def test_handler_redacts_before_the_text_leaves_the_process() -> None:
     """A partial is flashed into the browser DOM, so it is an external surface."""
     ws = _fake_ws()
     endpointer = MagicMock()
+    key = github_classic(seed=152)
     await _handler_for(ws, endpointer).handle_transcript_event(
-        _event(_result("the key is AKIAIOSFODNN7EXAMPLE ok", is_partial=True))
+        _event(_result(f"the key is {key} ok", is_partial=True))
     )
 
     sent = ws.send_json.await_args.args[0]["text"]
-    assert "AKIAIOSFODNN7EXAMPLE" not in sent
+    assert key not in sent
     # The endpointer sees the SAME redacted text that went on the wire.
     assert endpointer.note_partial.call_args.args[0] == sent
 

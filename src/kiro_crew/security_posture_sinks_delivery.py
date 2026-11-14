@@ -272,6 +272,13 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "Transcription partials and finals are redacted before they leave the process.",
     ),
     (
+        "Dashboard live log stream",
+        "dashboard/handlers/updates_streams.py",
+        "The live log stream and its ring replay reach every dashboard-user socket and "
+        "`log`-scoped apps, not only the owner; with the owner's prompt-and-logs switch "
+        "off, each line is redacted here before it is buffered or sent.",
+    ),
+    (
         "Agent channels",
         "channel.py",
         "Tool names and tool inputs shared between agents on a persistent channel.",

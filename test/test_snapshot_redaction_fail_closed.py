@@ -16,12 +16,16 @@ import tarfile
 from pathlib import Path
 
 import pytest
+from redaction_structured_cases import github_classic
 from test_snapshot import unpinnable_argv
 
 from kiro_crew import snapshot as snap
 from kiro_crew import snapshot_redact as redact
 
 TOKEN = "8412345678:AAH9xSECRETtokenvalue_here12345"
+# A GitHub token with a valid checksum. An AWS key id would stay visible, since it is
+# an identifier, not a secret.
+KEY = github_classic(seed=11)
 
 
 @pytest.fixture
@@ -536,7 +540,7 @@ class TestARewriteNeverLandsInAContainerThatRecordsItsOwnExtents:
 
     def test_a_warc_is_refused_rather_than_shifted(self, tmp_path):
         warc = tmp_path / "crawl.warc"
-        body = "key=AKIAIOSFODNN7EXAMPLE\r\n"
+        body = f"key={KEY}\r\n"
         warc.write_text(
             "WARC/1.0\r\nWARC-Type: response\r\n" f"Content-Length: {len(body)}\r\n\r\n{body}\r\n",
             encoding="utf-8",
@@ -552,7 +556,7 @@ class TestARewriteNeverLandsInAContainerThatRecordsItsOwnExtents:
         """The PDF case must survive the switch from magic to mechanism."""
         pdf = tmp_path / "doc.pdf"
         pdf.write_text(
-            "%PDF-1.4\ncred AKIAIOSFODNN7EXAMPLE\nxref\n0 2\nstartxref\n9\n%%EOF\n",
+            f"%PDF-1.4\ncred {KEY}\nxref\n0 2\nstartxref\n9\n%%EOF\n",
             encoding="utf-8",
         )
         before = pdf.read_bytes()
@@ -564,11 +568,11 @@ class TestARewriteNeverLandsInAContainerThatRecordsItsOwnExtents:
 
     def test_ordinary_text_is_still_redacted(self, tmp_path):
         note = tmp_path / "note.md"
-        note.write_text("my key is AKIAIOSFODNN7EXAMPLE\nnext line\n", encoding="utf-8")
+        note.write_text(f"my key is {KEY}\nnext line\n", encoding="utf-8")
 
         assert redact._redact_text_file(note, redact.RedactionReport(), "note.md") is True
         body = note.read_text(encoding="utf-8")
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert KEY not in body
         assert "next line" in body
 
     def test_a_file_too_large_to_hold_is_refused_before_being_read(self, tmp_path, monkeypatch):
@@ -579,7 +583,7 @@ class TestARewriteNeverLandsInAContainerThatRecordsItsOwnExtents:
         nothing uploaded.
         """
         big = tmp_path / "huge.log"
-        big.write_text("key=AKIAIOSFODNN7EXAMPLE\n", encoding="utf-8")
+        big.write_text(f"key={KEY}\n", encoding="utf-8")
         monkeypatch.setattr(redact, "_MAX_REDACTABLE_TEXT_BYTES", 4)
         opened = {"count": 0}
         real_read = type(big).read_text
@@ -608,7 +612,7 @@ class TestAnFtsTriggerIsExemptOnlyForTheDeletionsThatAreMaintenance:
             CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT);
             CREATE TABLE audit(id INTEGER PRIMARY KEY, note TEXT);
             CREATE VIRTUAL TABLE notes_fts USING fts5(body);
-            INSERT INTO notes(body) VALUES ('key=AKIAIOSFODNN7EXAMPLE');
+            INSERT INTO notes(body) VALUES ('key={KEY}');
             INSERT INTO audit(note) VALUES ('row the operator needs');
             CREATE TRIGGER t AFTER UPDATE ON notes BEGIN {trigger_body} END;
             """)
@@ -645,7 +649,7 @@ class TestAnFtsTriggerIsExemptOnlyForTheDeletionsThatAreMaintenance:
         body = conn.execute("SELECT body FROM notes").fetchone()[0]
         audit = conn.execute("SELECT count(*) FROM audit").fetchone()[0]
         conn.close()
-        assert "AKIA" not in body, "the credential survived"
+        assert KEY not in body, "the credential survived"
         assert audit == 1
 
 
@@ -662,7 +666,7 @@ class TestATriggerThatDeletesRowsRefusesTheUpload:
         conn.executescript(f"""
             CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT);
             CREATE TABLE audit(id INTEGER PRIMARY KEY, note TEXT);
-            INSERT INTO notes(body) VALUES ('key=AKIAIOSFODNN7EXAMPLE');
+            INSERT INTO notes(body) VALUES ('key={KEY}');
             INSERT INTO audit(note) VALUES ('row the operator needs');
             CREATE TRIGGER t AFTER UPDATE ON notes BEGIN {trigger_body} END;
             """)
@@ -697,7 +701,7 @@ class TestATriggerThatDeletesRowsRefusesTheUpload:
         leaked = [
             r[0]
             for r in conn.execute("SELECT note FROM audit UNION ALL SELECT body FROM notes")
-            if "AKIA" in (r[0] or "")
+            if KEY in (r[0] or "")
         ]
         conn.close()
         assert leaked == [], f"the fixpoint left a credential behind: {leaked}"
@@ -904,7 +908,7 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
         import struct
 
         db = tmp_path / "memory.db"
-        payload = b"attachment holding AKIAIOSFODNN7EXAMPLE inside"
+        payload = f"attachment holding {KEY} inside".encode()
         # A length prefix that DESCRIBES the payload: the shape of every serialised record,
         # and what a shifted payload destroys.
         blob = struct.pack("<I", len(payload)) + payload + struct.pack("<I", 0xAABBCCDD)
@@ -952,7 +956,7 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
         ZIP, gzip, PNG, tar and a Flate-stream PDF are not UTF-8 or carry NUL.
         """
         pdf = tmp_path / "doc.pdf"
-        body = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ncred AKIAIOSFODNN7EXAMPLE\n"
+        body = f"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ncred {KEY}\n".encode()
         pdf.write_bytes(body + b"xref\n0 2\n0000000009 00000 n \nstartxref\n9\n%%EOF\n")
         before = pdf.read_bytes()
 
@@ -964,13 +968,13 @@ class TestAVariableLengthReplacementNeverRidesInAnOffsetDependentPayload:
     def test_an_ordinary_text_file_is_still_redacted(self, tmp_path):
         """The feature has to keep working: plain text has no offsets to invalidate."""
         note = tmp_path / "note.md"
-        note.write_text("my key is AKIAIOSFODNN7EXAMPLE\nnext line\n", encoding="utf-8")
+        note.write_text(f"my key is {KEY}\nnext line\n", encoding="utf-8")
 
         handled = redact._redact_text_file(note, redact.RedactionReport(), "note.md")
 
         assert handled is True
         body = note.read_text(encoding="utf-8")
-        assert "AKIAIOSFODNN7EXAMPLE" not in body
+        assert KEY not in body
         assert "next line" in body
 
 

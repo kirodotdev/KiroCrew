@@ -7,11 +7,12 @@ content scanners do not read this file as holding a key.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import pathlib
 import string
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from types import FrameType
 from typing import Any
 
@@ -61,6 +62,23 @@ def assert_linear_work(build: Callable[[int], str], run: Callable[[str], object]
     small = package_lines(lambda: run(build(1 << 18)))
     large = package_lines(lambda: run(build(1 << 19)))
     assert large <= small * 5 // 2 + 1000, (small, large)
+
+
+@contextlib.contextmanager
+def structured_engine() -> Iterator[None]:
+    """Select the structured engine for the block, then restore the previous choice.
+
+    A file whose expectations are the structured engine's output pins it with this,
+    so the same file still passes when the suite runs with the legacy engine selected.
+    """
+    from kiro_crew.security.redaction_structured import compat
+
+    before = compat.use_rule_table()
+    compat.publish_use_rule_table(True)
+    try:
+        yield
+    finally:
+        compat.publish_use_rule_table(before)
 
 
 def b64url_json(obj: dict[str, object]) -> str:

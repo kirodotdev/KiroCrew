@@ -138,6 +138,24 @@ class TestEveryOutsideInputIsInTheKey:
         assert relaxed == _expected(rows, workspace="/ws/a")
         assert plain != relaxed
 
+    def test_an_engine_change_re_renders_without_the_verdict_store(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With no verdict store (always on Windows, and before it is enabled), the
+        engine selector still keys the memo: a row rendered under one engine is
+        rendered again under the other."""
+        from kiro_crew.dashboard import display_verdicts
+        from kiro_crew.security.redaction_structured import compat
+
+        monkeypatch.setattr(display_verdicts, "mac_base", lambda: None)
+        key_id = "AKIA" + "RY5CJQX4BIPW3AHO"
+        rows = [{"role": "assistant", "content": f"id {key_id} end", "ts": "t0"}]
+        monkeypatch.setattr(compat, "_USE_RULE_TABLE", True)
+        assert key_id in _actual(rows)
+        monkeypatch.setattr(compat, "_USE_RULE_TABLE", False)
+        assert _actual(rows) == _expected(rows)
+        assert key_id not in _actual(rows)
+
     def test_token_prefix_change_re_renders(self, monkeypatch: pytest.MonkeyPatch) -> None:
         prefixes: dict[str, tuple[str, ...]] = {"v": ()}
         monkeypatch.setattr(cu, "_token_param_exempt_prefixes", lambda: prefixes["v"])

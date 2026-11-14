@@ -64,6 +64,10 @@ from kiro_crew import _facade_mirror
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # The output-seams switch's table and scope: it applies no redactor and
+        # emits nothing; the call-site scan matches the seam names its prose
+        # lists (`redact(x)`, `redact_log_via_context`).
+        "redaction_seams.py",
         # Gate-side: the .crewmate reader runs `needs_redaction` on bundle text
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
