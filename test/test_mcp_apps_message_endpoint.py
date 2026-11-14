@@ -623,7 +623,7 @@ def test_slot_detail_queue_snapshot_carries_kind():
     view = queue_entry_view(snapshot_entry)
     assert view["meta"]["kind"] == MCP_APP_MESSAGE_KIND
     # The label the producer stamped rides the wire too — without it a reload
-    # renders the generic "app" attribution (round-6 Opus finding).
+    # renders the generic "app" attribution.
     assert view["meta"]["appLabel"] == "srv/tool"
 
 

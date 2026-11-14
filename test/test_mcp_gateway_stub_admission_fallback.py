@@ -102,16 +102,12 @@ async def test_handshake_requests_fallback_when_admission_closes_the_connection(
         await server.wait_closed()
 
     assert accepted.is_set(), "the endpoint never accepted, so nothing was tested"
-    # Deliberately NOT asserting a specific reason string. Measured: this lands on
-    # "register io failed: [Errno 104] Connection reset by peer", not the clean-EOF
-    # "gateway closed during handshake" branch -- because gatewayd refuses BEFORE
-    # reading the Register frame, so those bytes are still unread in the socket
-    # buffer at close() and the kernel answers with RST rather than FIN. Which of
-    # the two branches runs is a timing/buffer detail, so pinning one would make
-    # this test brittle about the wrong thing. What must hold is the type (that is
-    # what `main` keys fallback_exec on) and a non-empty reason (that is what lands
-    # in stub_fallback.jsonl, the only signal an operator has that pooling quietly
-    # stopped engaging).
+    # No specific reason string: gatewayd refuses BEFORE reading the Register
+    # frame, so the unread bytes make close() send RST ("Connection reset by
+    # peer") or FIN ("gateway closed during handshake") depending on timing.
+    # What must hold is the type (what `main` keys fallback_exec on) and a
+    # non-empty reason (what stub_fallback.jsonl records, the operator's only
+    # sign that pooling stopped engaging).
     assert excinfo.value.reason, "fallback_exec would audit an empty reason"
 
 
