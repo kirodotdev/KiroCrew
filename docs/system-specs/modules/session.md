@@ -5874,7 +5874,10 @@ a trust root on its own; publication therefore also writes a
   (and on the force-exit handler, which must reach its `os._exit`), while the
   graceful-shutdown sweep asks for the narrowing. This pass touches only the
   `session_pid_<pid>` family, never the shared `kiro_session_pids.txt` that
-  pass 1 rewrites.
+  pass 1 rewrites. A mapping it cannot remove (a directory at that name, a
+  locked file) is skipped with a debug line rather than raised: boot and
+  shutdown call the pass unguarded, so one such entry would otherwise stop the
+  gateway from starting.
 - **Cadence** (`SessionCleanup._sweep_session_pid_mappings`): the pass above is
   reached from `cleanup_orphaned_sessions` — **startup + shutdown only** — so a
   gateway that kept running held every mapping it published until it restarted,
