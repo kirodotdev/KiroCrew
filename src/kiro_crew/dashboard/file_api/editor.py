@@ -360,7 +360,10 @@ def _resolve_diff_path(raw: str) -> tuple[str, bool]:
 
     Blocking (``realpath`` then ``isfile``) -- callers run it on a worker thread.
     """
-    path = os.path.realpath(os.path.expanduser(raw))
+    try:
+        path = os.path.realpath(os.path.expanduser(raw))
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return raw, False
     return path, os.path.isfile(path)
 
 

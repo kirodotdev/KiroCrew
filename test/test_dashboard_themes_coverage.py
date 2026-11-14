@@ -470,6 +470,12 @@ class TestResolveLocalSource:
         assert src is None
         assert err == "local 'path' is required"
 
+    @pytest.mark.parametrize("bad", ["~\x00x", "~\ud800"], ids=ascii)
+    def test_a_home_path_with_a_nul_or_surrogate_is_not_a_directory(self, bad: str) -> None:
+        src, err = th._resolve_local_source(bad)
+        assert src is None
+        assert err is not None and "not a directory" in err
+
     def test_non_directory_is_rejected(self, tmp_path: Path) -> None:
         f = tmp_path / "file.txt"
         _write_text(f, "x")

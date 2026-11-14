@@ -237,7 +237,10 @@ def _resolve_local_source(path_str: str) -> tuple[Path | None, str | None]:
     """Resolve a user-supplied local folder path to an existing directory."""
     if not isinstance(path_str, str) or not path_str.strip():
         return None, "local 'path' is required"
-    p = Path(path_str).expanduser()
+    try:
+        p = Path(path_str).expanduser()
+    except ValueError:  # a NUL byte or a lone surrogate in the path
+        return None, f"not a directory: {path_str}"
     # EVERY filesystem call below is too late for these two, so both are screened
     # first. `expanduser` only reads the environment and touches nothing.
     #

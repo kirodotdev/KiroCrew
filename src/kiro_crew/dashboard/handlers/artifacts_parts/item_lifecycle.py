@@ -599,7 +599,10 @@ async def api_artifact_relocate(request: web.Request) -> web.Response:
             strip_extended_length_prefix,
         )
 
-        resolved_path = await asyncio.to_thread(Path(os.path.expanduser(source_path)).resolve)
+        try:
+            resolved_path = await asyncio.to_thread(Path(os.path.expanduser(source_path)).resolve)
+        except ValueError:  # a NUL byte or a lone surrogate in the path
+            return _err(f"path does not exist: {source_path}", status=400)
         # The folded path is what gets stat'ed and stored, so a name only the
         # ``\\?\`` spelling can reach (a trailing dot, a DOS device) is refused:
         # its plain spelling names a different file.

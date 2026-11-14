@@ -591,6 +591,16 @@ class TestRelocate:
         assert _j(resp)["error"] == "source_path must be a string"
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="Windows path calls do not raise on these strings")
+    @pytest.mark.parametrize("bad", ["/tmp/a\x00b", "~\x00x", "~\ud800"], ids=ascii)
+    async def test_a_path_with_a_nul_or_surrogate_does_not_exist_400(
+        self, store: ArtifactStore, bad: str
+    ) -> None:
+        resp = await h.api_artifact_relocate(_req(body={"source_path": bad}, match={"slug": "doc"}))
+        assert resp.status == 400
+        assert _j(resp)["error"].startswith("path does not exist")
+
+    @pytest.mark.asyncio
     async def test_traversal_denied_403(self, store: ArtifactStore, tmp_path: Path) -> None:
         traversal = str(Path(tmp_path) / ".." / "escape.md")
         resp = await h.api_artifact_relocate(
