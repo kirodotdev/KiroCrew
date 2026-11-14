@@ -63,6 +63,7 @@ from kiro_crew.acp.harness import process_adapter_for
 from kiro_crew.acp.harness.base import HarnessReadBack, SpawnContext, SpawnPlan
 from kiro_crew.acp.launch import LaunchRequest, launch
 from kiro_crew.acp.pi_mcp_registration import verify_registration
+from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, AcpSpawnBlocked
 from kiro_crew.acp.transport_errors import (
     AcpAuthRequired,
     AcpError,
@@ -1426,6 +1427,14 @@ async def ensure_ready(self: AcpClient) -> None:
                     self._reset_state()
                     if isinstance(exc, OSError):
                         await asyncio.sleep(_ACP_RESPAWN_BACKOFF_S)
+                elif isinstance(getattr(exc, SPAWN_BLOCKED_BINARY_ATTR, None), str):
+                    # ``launch`` marked a Windows policy refusal (AppLocker, EDR,
+                    # group policy) of the binary, and the retry met it again: say
+                    # so, as the runtime path does. Detection only.
+                    _startup_outcome = "windows_spawn_blocked"
+                    await self._cleanup_failed_live_spawn()
+                    self._reset_state()
+                    raise AcpSpawnBlocked(getattr(exc, SPAWN_BLOCKED_BINARY_ATTR)) from exc
                 else:
                     # Read the ring BEFORE the cleanup below clears it: a
                     # startup that died with a throttled registration on its

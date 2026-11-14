@@ -47,6 +47,7 @@ from types import ModuleType
 from typing import Any, Awaitable, Callable, Iterator, Mapping, Protocol, Sequence
 
 from kiro_crew import acp_tool_gate, platform_compat
+from kiro_crew.acp.spawn_blocked import SPAWN_BLOCKED_BINARY_ATTR, is_windows_spawn_blocked
 from kiro_crew.acp.transport_errors import AcpError, AcpToolGateUnroutable
 from kiro_crew.acp.transport_framing import _STDOUT_BUFFER_LIMIT
 from kiro_crew.agent_sdk.backends import launch_for
@@ -1317,7 +1318,11 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
         factory = functools.partial(tools.retrying_spawn_factory, factory)
     try:
         process = await tools.platform_compat.create_windows_cleanup_owned_process(factory)
-    except BaseException:
+    except BaseException as exc:
+        if is_windows_spawn_blocked(exc):
+            # Marked here, at process creation, so the client reads only this
+            # refusal as a policy block, never a later access denied (a cleanup).
+            setattr(exc, SPAWN_BLOCKED_BINARY_ATTR, getattr(exc, "filename", None) or argv[0])
         await host._discard_bound_workspace()
         host._discard_sandbox_cleanup()
         raise
