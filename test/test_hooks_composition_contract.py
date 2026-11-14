@@ -198,6 +198,7 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
         gate_tier_problems
         """.split()),
     "safe_reads": ("screen_windows_linked_ancestors",),
+    "script_hooks": ("_script_hook_enabled_from",),
     "tool_identity": ("ToolCall",),
 }
 
