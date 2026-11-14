@@ -171,11 +171,11 @@ not been run against a live account by the Kiro Crew maintainers yet.
 ## Conductors in conductor mode and Bots
 
 By default each round of a conductor's work is one trace, so a round reads as one
-waterfall: an `ultra round N` root, the conductor's turns under it, and one
+waterfall: a `conductor_mode round N` root, the conductor's turns under it, and one
 `work_item <id>` span per item with its crew member's turns and reports under that.
 Each ledger write is a `kirocrew.work.<action>` span. Rounds of one goal share
 `kirocrew.work.goal_id`, and each round links to the one before it. To get one
-trace per turn instead, set `"traces_ultra_mode": "turn"` in `telemetry`; the turns
+trace per turn instead, set `"traces_conductor_mode": "turn"` in `telemetry`; the turns
 of one run then share `kirocrew.crew.root`, and one item's `kirocrew.work.item_id`.
 No goal, title or report text is ever on a span.
 

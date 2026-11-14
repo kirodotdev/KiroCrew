@@ -754,7 +754,7 @@ here, as for every session tool.
 
 **Conductor mode owner turns only.** Every `crew=` call, and every placed create,
 is admitted only in a turn the owner typed in their own persistent conductor mode
-chat. Anything else is refused (`not_user_turn`, `owner_only`, `ultra_mode_only`,
+chat. Anything else is refused (`not_user_turn`, `owner_only`, `conductor_mode_only`,
 `crew_owner_unverifiable`, `crew_caller_is_worker` and others): a plain chat on
 any other agent, a patrol wake, a `session_send` turn, a cron, and a conductor
 another session created. `work_ledger_read` and

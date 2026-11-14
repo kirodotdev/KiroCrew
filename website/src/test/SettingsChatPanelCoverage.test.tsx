@@ -555,8 +555,8 @@ describe('ChatPanel — Messages', () => {
     )
   })
 
-  it('offers Start New Chats in Conductor Mode only with the conductor mode preview on, and persists it', async () => {
-    const label = 'Start New Chats in Conductor Mode'
+  it('offers Start New Chats in conductor mode only with the conductor mode preview on, and persists it', async () => {
+    const label = 'Start New Chats in conductor mode'
     const view = wrap('sessions')
     await settledSwitch('Restore Sessions')
     expect(screen.queryByRole('switch', { name: label })).not.toBeInTheDocument()

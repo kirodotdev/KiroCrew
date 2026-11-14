@@ -1891,7 +1891,7 @@ returns the state already resolved and never reads or awaits anything, so a turn
 no suspension point before its prompt is written. A turn that starts before the boot
 read finishes is not traced, nor is a process that never registers the watcher (the
 `kirocrew chat` CLI). The service boot registers `watch_config()`: after a `telemetry.*` write that
-moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_ultra_mode` or a `traces_otlp_*` key, the worker
+moves `traces_enabled`, `retention_days`, `max_total_mb`, `traces_conductor_mode` or a `traces_otlp_*` key, the worker
 thread applying it re-reads the switch at once, and any other write changes nothing. A process builds at most one tracer and
 never shuts it down for a settings write: switched off, it is no longer served to new
 turns, while a turn already streaming keeps ending its spans on it; switched back on,
@@ -2123,16 +2123,16 @@ on an outcome, `kirocrew.run.status`.
 
 **Crew attributes** (`tracing/crew.py`). A dashboard turn on a conductor mode or Bot
 conductor, or on one of their workers, nested `/prompts get` turns included, carries `kirocrew.crew.root` (hashed root slot
-key), `kirocrew.crew.root_kind` (`ultra` for conductor mode, or `mate`) and, for a worker,
+key), `kirocrew.crew.root_kind` (`conductor_mode` or `mate`) and, for a worker,
 `kirocrew.crew.dispatcher` (hashed). The stamps come from
 `crew_mode.live_stamp_rows`, the slot list's own rule, with no I/O. A worker bound to
 a work item also carries `kirocrew.work.item_id`, `kirocrew.work.round` and
 `kirocrew.work.conductor_hash`, read from the work ledger binding on a worker thread
 before the turn binds. No goal, title, acceptance or other ledger text.
 
-**Conductor mode rounds** (`tracing/work.py`). With `telemetry.traces_ultra_mode` `run`
-(default), one round of a conductor's board (conductor mode or Bot) is one trace: an
-`ultra round N` anchor keyed `(conductor ledger key, goal key, round)`, where the goal
+**Conductor mode rounds** (`tracing/work.py`). With `telemetry.traces_conductor_mode` `run`
+(default), one round of a conductor's board (conductor mode or Bot) is one trace: a
+`conductor_mode round N` anchor keyed `(conductor ledger key, goal key, round)`, where the goal
 key is the header's `goal_id` (minted with the board and by each `new_goal`) or
 `<generation>.<goal_items_base>` on a header from before it. The conductor's turns join
 the anchor; each item open in the round has a `work_item <item id>` anchor under it,
@@ -2143,11 +2143,11 @@ kept open and a restart re-derives the same ids; a turn a delivered run joins (a
 sub-agent completion) keeps that join. Anchors are written only by the ledger write
 that brings their key into being, so nothing is written twice: the board's first
 write, a goal write that changes the goal key or the round (it re-emits each item
-still open under the new round, and ends the old round `ultra outcome advanced`), and
+still open under the new round, and ends the old round `conductor_mode outcome advanced`), and
 an item's create. A `close` writes `work_item outcome <state>` with
 `kirocrew.work.verdict`, `kirocrew.work.fails` and the item's roll-up. A round ends
-once, at the goal write that moves the board on: `ultra outcome closed` when no item is
-open, `ultra outcome advanced` when items carry over, with the conductor turns'
+once, at the goal write that moves the board on: `conductor_mode outcome closed` when no item is
+open, `conductor_mode outcome advanced` when items carry over, with the conductor turns'
 roll-up. Both outcome markers wait until the acting turn has ended
 (`turns.after_turn`), so that turn's spend is in them. A write span sits in its acting
 turn only when that turn is in the write's round trace; otherwise (the turn that opens
@@ -2196,7 +2196,7 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `cron run <kind>` step | `cron.step, *key, cont, run <kind>` |
 | `phase <title>` | `workflow.phase, run_id, cont, phase_index` |
 | workflow `invoke_agent` | `turn, turn_id, attempt`, turn id `H(workflow.agent, run_id, agent_id)`, under its phase |
-| `ultra round N` | `ultra, conductor, goal key, round, cont`; trace `trace.ultra`, the same inputs |
+| `conductor_mode round N` | `conductor_mode, conductor, goal key, round, cont`; trace `trace.conductor_mode`, the same inputs |
 | `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
 | `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
 

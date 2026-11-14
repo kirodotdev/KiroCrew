@@ -214,7 +214,7 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
        level deep, and is not a crew member's own thread (``owner_only``).
     4. The session is persistent (``ephemeral_caller``) and is a conductor mode chat
        (``crew_mode.slot_is_crew_mode_root``, the conductor mode agent lock's own
-       predicate; ``ultra_mode_only``).
+       predicate; ``conductor_mode_only``).
     5. The session is not bound to a private member memory store
        (``private_memory``).
     6. A ``user`` claim, when present, is the owner.
@@ -311,9 +311,8 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     return slot_key
 
 
-#: The refusal for a caller tab that is not a conductor mode chat. The code
-#: stays ``ultra_mode_only``: a conductor on another machine matches on it.
-CONDUCTOR_MODE_ONLY = "ultra_mode_only"
+#: The refusal for a caller tab that is not a conductor mode chat.
+CONDUCTOR_MODE_ONLY = "conductor_mode_only"
 
 #: The refusal while a non-owner dashboard user is possible on this gateway.
 OWNER_UNVERIFIABLE = "crew_owner_unverifiable"

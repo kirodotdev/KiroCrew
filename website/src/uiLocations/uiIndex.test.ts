@@ -1451,7 +1451,7 @@ describe('the committed index', () => {
     expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
   })
 
-  it('keeps Start New Chats in Conductor Mode behind the conductor mode preview, and not its own switch', () => {
+  it('keeps Start New Chats in conductor mode behind the conductor mode preview, and not its own switch', () => {
     const want = [{ kind: 'preview_flag', flag: 'mc-preview-crew-mode', location: 'setting:developer.conductor-mode' }]
     expect(byId.get('setting:chat.start-new-chats-in-conductor-mode')!.placements[0].requires).toEqual(want)
     expect(byId.get('setting:developer.conductor-mode')!.placements[0].requires).toEqual([])

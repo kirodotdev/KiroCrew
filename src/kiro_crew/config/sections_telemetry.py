@@ -191,13 +191,13 @@ class TelemetryConfig:
             sensitive=True,
         ),
     )
-    traces_ultra_mode: str = field(
+    traces_conductor_mode: str = field(
         default="run",
         metadata=_meta(
-            "Traces: Conductor Mode Shape",
+            "Traces: conductor mode Shape",
             "How a conductor's work in conductor mode or a Bot is traced while Traces "
-            "Enabled is on. 'run' (default): one trace per round, an 'ultra round "
-            "N' root with the conductor's turns and one 'work_item' span per item "
+            "Enabled is on. 'run' (default): one trace per round, a 'conductor_mode "
+            "round N' root with the conductor's turns and one 'work_item' span per item "
             "holding its worker's turns, so a round reads as one waterfall. "
             "'turn': every turn is its own trace, joined by the shared "
             "kirocrew.crew.root and kirocrew.work.item_id attributes.",
