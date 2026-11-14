@@ -42,6 +42,7 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
     dashboard starts this worker before it returns its state to the gateway, so
     ``self.dashboard_state`` can still be unset when the prefetch reads it.
     """
+    from kiro_crew.boot_timing import timed_step
     from kiro_crew.config.loader import data_home
     from kiro_crew.context import reset_memory_caches
     from kiro_crew.cron_service.identity import (
@@ -55,7 +56,7 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
     if startup is None:
         return False
     try:
-        with startup.worker():
+        with startup.worker(), timed_step("total"):
             # The first recall after readiness embeds its query, and an embed
             # off the loop waits for a cold model load rather than answering
             # keyword-only, so that recall would pay the whole load. Boot never loads the model on its own (see
@@ -65,26 +66,30 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
             # model to use (no model file: keyword-only recall).
             if getattr(self.vector_memory, "embed_fn", None) is not None:
                 try:
-                    get_shared_embedder().prefetch()
+                    with timed_step("embedder_prefetch"):
+                        get_shared_embedder().prefetch()
                 except Exception:  # noqa: BLE001 -- a hint; recall makes the same attempt
                     logger.debug("Embedding model prefetch skipped", exc_info=True)
             try:
                 assert self.ctx_builder is not None
                 memory = self.ctx_builder.memory
-                reset_memory_caches(memory)
+                with timed_step("reset_memory_caches"):
+                    reset_memory_caches(memory)
                 # The gateway's one run of the pre-identity member store
                 # upgrade. The CLI prologue skips `gateway` because the boot
                 # path admits no new work before the dashboard socket accepts
                 # requests; this worker runs after readiness, before pending
                 # restores and before any consumer resolves a member. A no-op
                 # when nothing needs repair; never raises.
-                upgraded = repair_legacy_member_stores()
+                with timed_step("repair_legacy_member_stores"):
+                    upgraded = repair_legacy_member_stores()
                 if upgraded:
                     logger.info("Upgraded member memory stores: %s", ", ".join(upgraded))
                 # Then the schedules those stores' members own, once, before
                 # the scheduler arms (it waits on this barrier). Same store
                 # directory the gateway's CronService uses; never raises.
-                captured = migrate_legacy_member_schedules(data_home())
+                with timed_step("migrate_legacy_member_schedules"):
+                    captured = migrate_legacy_member_schedules(data_home())
                 if captured:
                     logger.info(
                         "Captured the member execution of %d pre-identity schedule(s)",
@@ -93,7 +98,8 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
                 # Then an owner's schedule whose capture runs a crew member's name
                 # as a bare template, onto that member, under the same barrier.
                 # Never raises.
-                moved = migrate_member_named_template_schedules(data_home())
+                with timed_step("migrate_member_named_template_schedules"):
+                    moved = migrate_member_named_template_schedules(data_home())
                 if moved:
                     logger.info(
                         "Moved %d schedule(s) naming a crew member onto that member",
@@ -101,9 +107,10 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
                     )
                 if startup.stopped:
                     return False
-                restored = apply_pending_member_restores(
-                    should_stop=lambda: startup.stopped, on_error=startup.fail_store
-                )
+                with timed_step("apply_pending_member_restores"):
+                    restored = apply_pending_member_restores(
+                        should_stop=lambda: startup.stopped, on_error=startup.fail_store
+                    )
                 if startup.stopped:
                     return False
                 # Preparation walks every memory row through SQLite's B-tree, one
@@ -122,24 +129,28 @@ def _initialize_memory_worker(self: GatewayOrchestrator, dashboard_state: Any = 
                         dashboard_state if dashboard_state is not None else self.dashboard_state
                     )
                     _knowledge = getattr(_state, "_knowledge_store", None)
-                    _prefetch_pages(
-                        (
-                            getattr(self.vector_memory, "_db_path", None),
-                            getattr(memory, "_index_db", None),
-                            getattr(_knowledge, "_db_path", None),
-                        ),
-                        name="kc-memory-prefetch",
-                    )
+                    with timed_step("page_prefetch_start"):
+                        _prefetch_pages(
+                            (
+                                getattr(self.vector_memory, "_db_path", None),
+                                getattr(memory, "_index_db", None),
+                                getattr(_knowledge, "_db_path", None),
+                            ),
+                            name="kc-memory-prefetch",
+                        )
                 except Exception:  # noqa: BLE001 -- a hint only
                     logger.debug("Memory page prefetch skipped", exc_info=True)
                 if "default" not in startup.store_errors:
                     opening_vectors = False
                     try:
-                        memory.init()
+                        with timed_step("memory_init"):
+                            memory.init()
                         opening_vectors = True
-                        self.vector_memory.init()
+                        with timed_step("vector_init"):
+                            self.vector_memory.init()
                         opening_vectors = False
-                        indexed = memory.rebuild_index()
+                        with timed_step("rebuild_index"):
+                            indexed = memory.rebuild_index()
                         logger.info("Global memory ready: FTS indexed %d files", indexed)
                     except Exception as exc:
                         from kiro_crew.memory_startup import (
@@ -333,6 +344,7 @@ async def _wait_for_memory_preparation(self: GatewayOrchestrator) -> bool:
 
 def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
     """Visit one already-open memory store using the ready shared model."""
+    from kiro_crew.boot_timing import timed_step
     from kiro_crew.context import cached_vector_store_entries
     from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, require_memory_store
 
@@ -370,7 +382,8 @@ def _repair_member_memory_once(self: GatewayOrchestrator) -> None:
 
         rollback_if_off(store)
         return
-    reconcile_store_embedding_space(store)
+    with timed_step("reconcile_store_repair"):
+        reconcile_store_embedding_space(store)
     if not store.has_pending_embeddings() and not store_embedding_space_is_stale(store):
         return
     if store.embed_fn is None:
@@ -551,6 +564,8 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
         # be reconciled. Readiness is the property actually required here.
 
         def _wait_then_backfill() -> int:
+            from kiro_crew.boot_timing import timed_step
+
             # Probe for work BEFORE touching the embedder. wait_ready() below
             # calls _kick_background_load(), which mmaps the ~700MB GGUF and
             # allocates its KV/compute buffers — the single largest chunk of
@@ -590,7 +605,8 @@ async def _auto_migrate_memory(self: GatewayOrchestrator) -> None:
             # to NULL and the same sweep re-embeds them in one pass. Routed
             # through the shared chokepoint so every process that opens a
             # store reconciles identically (see reconcile_store_embedding_space).
-            reconcile_store_embedding_space(store)
+            with timed_step("reconcile_store_backfill"):
+                reconcile_store_embedding_space(store)
             return store.backfill_missing_embeddings()
 
         # memory_background_executor(), NOT maintenance_executor(): pacing

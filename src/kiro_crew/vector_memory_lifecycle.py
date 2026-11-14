@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 
 from kiro_crew import memory_record_metadata as record_meta
 from kiro_crew import memory_schema, memory_stores, platform_compat, sqlite_wal
+from kiro_crew.boot_timing import timed_step
 from kiro_crew.owner_only_files import prepare_owner_only_sqlite
 
 if TYPE_CHECKING:
@@ -522,19 +523,20 @@ def _init_database(self: VectorMemoryStore) -> None:
     # raises "no transaction is active", so such a step fails the open loudly.
     migrated: list[int] = []
     try:
-        if self._schema_steps(migrated):
-            self._db.execute("BEGIN IMMEDIATE")
-            try:
-                self._db.execute(
-                    "CREATE TABLE IF NOT EXISTS schema_version "
-                    "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
-                )
-                for step in self._schema_steps(migrated):
-                    step()
-                self._db.execute("COMMIT")
-            except BaseException:
-                self._db.rollback()
-                raise
+        with timed_step("vector_init.schema"):
+            if self._schema_steps(migrated):
+                self._db.execute("BEGIN IMMEDIATE")
+                try:
+                    self._db.execute(
+                        "CREATE TABLE IF NOT EXISTS schema_version "
+                        "(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+                    )
+                    for step in self._schema_steps(migrated):
+                        step()
+                    self._db.execute("COMMIT")
+                except BaseException:
+                    self._db.rollback()
+                    raise
     finally:
         self._db.isolation_level = ""  # Restore implicit transaction handling
     for ver in migrated:
@@ -543,9 +545,11 @@ def _init_database(self: VectorMemoryStore) -> None:
     # The metadata backfill keeps its own transaction: it reads every row, and
     # the write lock the schema transaction holds must not wait on that scan.
     with self._db:
-        record_meta.reconcile(self._db)
+        with timed_step("vector_init.record_meta_reconcile"):
+            record_meta.reconcile(self._db)
         if self.algorithm_version == "v1":
-            record_meta.limit_v1_accepted_history(self._db)
+            with timed_step("vector_init.limit_v1_accepted_history"):
+                record_meta.limit_v1_accepted_history(self._db)
 
     # Second pass, after the connect: covers what SQLite has just created. Runs
     # on EVERY init, not only when init created the files -- an existing DB is
@@ -569,7 +573,8 @@ def _init_database(self: VectorMemoryStore) -> None:
 
     # Load persisted FAISS index (or rebuild from SQLite embeddings)
     try:
-        self.load_faiss_index()
+        with timed_step("vector_init.load_faiss_index"):
+            self.load_faiss_index()
     except Exception:
         logger.warning("FAISS index not loaded (faiss-cpu may not be installed yet)", exc_info=True)
 
