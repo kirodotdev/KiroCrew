@@ -2170,6 +2170,15 @@ The details below describe the Kiro and Claude paths implemented directly here:
     [mcp.md](../../architecture/mcp.md#live-reconcile-when-no-restart-is-needed-at-all).
   - **KAS**: reads the same global and project settings files through
     `session_mcp.native_settings_sources`, called from `acp/kas_settings_mcp.py`.
+    KAS itself reads its global file under `KIRO_HOME`, which Crew's global path
+    does not follow, so when `KIRO_HOME` names another folder the servers of
+    `$KIRO_HOME/settings/mcp.json` are named too (`_kiro_home_servers`), only
+    to exclude them or carry their `disabledTools`. If Crew's global path cannot
+    be resolved, it is treated as distinct and the Kiro home file still goes
+    through the guarded settings reader. A server that both global
+    files name keeps the union of both files' glob `disabledTools`, so a tool the
+    dashboard turned off in Crew's file stays off; whether it is muted follows
+    the `KIRO_HOME` entry, the one KAS reads.
     Each file it cannot read adds one line naming the file and that fixed reason
     to the session-start notice, and the session still starts. A `disabledTools`
     glob KAS cannot match (`kas_tool_limits.kas_globs` answers `None`: a `[...]`
