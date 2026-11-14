@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from dashboard_owner_helpers import as_owner
 from redaction_structured_cases import github_classic
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard.handlers import (
     _sanitize_blocks,
     api_file_read,
@@ -755,7 +756,7 @@ class TestFileWrite:
         )
 
     @pytest.mark.asyncio
-    @pytest.mark.skipif(os.name == "nt", reason="creating a symlink on Windows needs elevation")
+    @requires_symlinks
     async def test_write_follows_a_leaf_symlink_to_its_canonical_target(
         self, tmp_path, mock_sel, home_patch
     ):

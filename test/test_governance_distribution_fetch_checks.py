@@ -39,6 +39,7 @@ from governance_distribution_helpers import (
     _write_policy,
 )
 
+from conftest import requires_symlinks
 from kiro_crew import platform_compat
 from kiro_crew.platform import governance
 from kiro_crew.platform import policy_distribution as pd
@@ -367,10 +368,7 @@ class TestOwningTheSourceIsEnoughToBeWritable:
         assert platform_compat.path_writable_by_current_user(target) is True
 
     @_POSIX_IDS_ONLY
-    @pytest.mark.skipif(
-        not hasattr(os, "symlink") or os.name == "nt",
-        reason="planting the link needs SeCreateSymbolicLinkPrivilege on Windows",
-    )
+    @requires_symlinks
     def test_a_writable_link_to_a_read_only_target_is_refused(self, tmp_path, monkeypatch):
         """Resolving first and walking only the target was the gap. Re-pointing a symlink needs
         no permission on the link and none on the target — it needs write on the LINK's parent,

@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.chat_attachments import (
     MAX_ATTACHMENT_BYTES,
     _encode_destination,
@@ -134,7 +135,7 @@ def test_oversize_image_is_skipped(sessions, tmp_path, monkeypatch):
     assert not attachments_dir(sessions, STEM).exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation needs privilege on Windows")
+@requires_symlinks
 def test_symlink_is_not_followed_or_copied(sessions, tmp_path):
     """(6) A link planted where a screenshot was expected pulls in nothing.
 

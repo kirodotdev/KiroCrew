@@ -21,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from redaction_structured_cases import github_classic
 
+from conftest import requires_symlinks
 from kiro_crew.cron import CronJob, CronSchedule
 from kiro_crew.dashboard.handlers.cron import (
     _SCRIPT_SOURCE_MAX_BYTES,
@@ -31,9 +32,7 @@ from kiro_crew.dashboard.handlers.cron import (
 # everywhere. Only the two tests that CREATE a symlink are POSIX-only: on
 # Windows that needs SeCreateSymbolicLinkPrivilege, which an unelevated test
 # runner does not hold (WinError 1314).
-needs_symlinks = pytest.mark.skipif(
-    os.name == "nt", reason="creating a symlink on Windows requires a privilege tests lack"
-)
+needs_symlinks = requires_symlinks
 
 windows_only = pytest.mark.skipif(os.name != "nt", reason="Windows-specific read path")
 
