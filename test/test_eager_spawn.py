@@ -205,7 +205,9 @@ class TestEagerSpawn:
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
         assert chat_runner._armed_prefetches == {}
-        resolve.assert_called_once_with(cfg, agent, validate_memory_files=False)
+        resolve.assert_called_once_with(
+            cfg, agent, slot.project or None, validate_memory_files=False
+        )
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()
@@ -294,11 +296,12 @@ class TestEagerSpawn:
         original = chat_runner.resolve_agent_bindings
         calls = []
 
-        def resolve(cfg, agent, **kwargs):
+        def resolve(cfg, agent, project=None, **kwargs):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             calls.append(agent)
-            result = original(cfg, agent, **kwargs)
+            assert project == (slot.project or None)
+            result = original(cfg, agent, project, **kwargs)
             if change == "store":
                 loop.call_soon_threadsafe(setattr, slot, "memory_store", "member-new")
             elif change == "replacement":
