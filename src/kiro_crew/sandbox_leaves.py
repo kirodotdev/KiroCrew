@@ -414,6 +414,9 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     _AUTH_STORE_STAGING_LEAF,
     # The self-update engine's wheel download directory (see ``_UPDATE_STAGING_LEAF``).
     _UPDATE_STAGING_LEAF,
+    # Gateway-only import extraction: a sandboxed writer must not swap a directory
+    # between archive validation, path rewriting and installation into the data home.
+    "import-staging",
     "kas",
     "ops_mission_control_secrets.json",
     "ops_mission_control_policy.json",

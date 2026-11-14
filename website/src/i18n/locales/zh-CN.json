@@ -16805,6 +16805,7 @@
         "export_chats_skipped_size": "较早的聊天因放不进此归档而未包含：{{chats}}。",
         "import_chats_result": "已添加的聊天：{{added}}。此安装中已有：{{existing}}。",
         "import_chats_withheld": "因属于隐身、临时或无法读取而未导入的聊天：{{withheld}}。",
+        "import_chats_folder_missing": "这台电脑上找不到文件夹的导入聊天：{{cleared}}。它们改在默认工作区打开。",
         "export_memory_only": "仅导出记忆",
         "export_memory_only_hint": "用它把代理学到的内容分享给别人。",
         "share_memory_title": "要导出这些记忆吗？",

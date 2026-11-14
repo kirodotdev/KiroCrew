@@ -1241,8 +1241,20 @@ The summary carries `sessions_added`, `sessions_skipped_existing`,
 `sessions_withheld` and `sessions_failed`; an archive without chats adds none of
 these. A failed chat is not added, kept or withheld. Its failure and any rollback
 residue appear in the existing `items` list, and `refused_merges` includes
-`sessions` so the existing API partial-import reporting applies. No new frontend
-field is required.
+`sessions` so the existing API partial-import reporting applies. The export
+manifest carries `home` and `home_real`. Before Merge or Replace copies anything,
+the import moves saved folder paths from either archive home to this home. This
+covers each chat header's `project`, `workspace_dir`, `project_dir`, and
+`dashboard.default_project` in `config.json` and `config.local.json`. A path
+outside both archive homes stays only if that folder exists here. Otherwise the
+import drops it, so the chat opens in the default workspace. Older archives
+without `home` infer it from saved paths and the manifest's `user` only when the
+inferred home is absent here; extraction uses the gateway-only, sandbox-masked
+`import-staging` leaf on the data home's filesystem. Same-home
+imports change nothing. Home relocation supports POSIX homes only. The summary
+may also carry `home_paths_moved` and `sessions_project_cleared`. The latter counts
+only chats this import installs. The Import / Export page shows the
+`import_chats_folder_missing` line for that count.
 
 Image references inside a transcript are absolute paths into the source's
 `sessions/` directory, so an image renders after import only when the target's

@@ -551,6 +551,8 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # The self-update wheel staging directory, by the same rule: the engine first creates it
     # at an update, which can start while a sandbox is already running.
     _UPDATE_STAGING_LEAF,
+    # The first dashboard import may start after a sandbox; its mask needs a target now.
+    "import-staging",
     # ``crew-panels`` is the same requirement seen from the mirror side of the
     # ceilings above: a read-only ceiling is materialised so the SEAL can apply,
     # a hidden leaf so the MASK can. The skip lands precisely on a fresh install,

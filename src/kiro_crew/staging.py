@@ -1,9 +1,10 @@
 """Large-transfer staging under the data home, off the system temp dir.
 
-Snapshot build, snapshot restore and the dashboard state import each stage
-multi-hundred-MB-to-GB trees before they produce their final artifact: the
-snapshot build copies the whole data home in the clear, the restore extracts a
-bundle, and the import EXTRACTS its uploaded archive into a working tree. Done
+Snapshot build and snapshot restore stage multi-hundred-MB-to-GB trees before
+they produce their final artifact: the snapshot build copies the whole data home
+in the clear, and the restore extracts a bundle. The dashboard import extracts
+separately under the gateway-only, sandbox-masked ``import-staging`` leaf on the
+same disk; this module still owns its upload spool. Done
 with a bare ``tempfile.TemporaryDirectory()`` -- no ``dir=`` -- they land in the
 system temp dir, which under the shipped systemd unit is ``/tmp``. On a host
 whose ``/tmp`` is a tmpfs (the default on Fedora, Arch, Amazon Linux 2023 and
