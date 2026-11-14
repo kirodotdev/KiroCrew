@@ -1960,6 +1960,9 @@ def test_the_windows_hint_leads_with_powershell_lines(parity_repo, tmp_path, mon
     # os.name is process-wide, so it is restored before pytest reports anything.
     with monkeypatch.context() as windows:
         windows.setattr(local_review.os, "name", "nt")
+        # The faked os.name would make the runner look up git.EXE and friends,
+        # which this host does not have; git is still the host's own.
+        windows.setattr(local_review._tool_argv, "which", lambda name: shutil.which(name))
         windows.setattr(local_review.sys, "executable", r"C:\Py 3\python.exe")
         hint = local_review.stale_copy_hint(str(parity_repo), base_sha, "main")
     assert hint[2] == "In PowerShell:"
