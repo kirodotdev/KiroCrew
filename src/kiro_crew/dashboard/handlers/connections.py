@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import logging
 import re
 from dataclasses import dataclass
@@ -49,6 +50,27 @@ _ALLOWED_CALLBACK_QUERY_KEYS = {
     "scope",
     "state",
 }
+_IPV4_LOOPBACK = "127.0.0.1"
+_IPV6_LOOPBACK = "::1"
+#: The fixed loopback literals the relay dials, in order, for each host a return
+#: address may name; a host missing here is refused. A literal names itself only.
+#: ``localhost`` names both, because the MCP client binds its callback listener to
+#: whichever address ``localhost`` resolved to FIRST on its host, and that differs
+#: by platform: KAS's Node listener lands on ``[::1]`` alone on macOS, where a
+#: dial to ``127.0.0.1`` alone would report that live listener as a spent
+#: approval. ``::1`` goes first because that is the order the resolvers in play
+#: return for ``localhost``, so it is the address a listener most likely holds.
+_LOOPBACK_DIAL_HOSTS: dict[str, tuple[str, ...]] = {
+    _IPV4_LOOPBACK: (_IPV4_LOOPBACK,),
+    _IPV6_LOOPBACK: (_IPV6_LOOPBACK,),
+    "localhost": (_IPV6_LOOPBACK, _IPV4_LOOPBACK),
+}
+#: A dial failing with one of these proves this host has no loopback in that
+#: address family (IPv6 disabled, an IPv4-only container), so nothing can be
+#: listening there either: as conclusive as a refusal, and only that strong.
+_LOOPBACK_FAMILY_ABSENT_ERRNOS = frozenset(
+    {errno.EADDRNOTAVAIL, errno.EAFNOSUPPORT, errno.ENETUNREACH}
+)
 
 
 @dataclass(frozen=True)
@@ -57,7 +79,7 @@ class _LoopbackCallback:
 
     port: int
     request_target: str
-    ipv6: bool = False
+    dial_hosts: tuple[str, ...] = (_IPV4_LOOPBACK,)
 
 
 def _validated_loopback_return_address(value: object) -> _LoopbackCallback | None:
@@ -92,7 +114,7 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
         return None
     if (
         parsed.scheme != "http"
-        or host not in {"127.0.0.1", "::1", "localhost"}
+        or host not in _LOOPBACK_DIAL_HOSTS
         or port is None
         or port < 1024
         or parsed.username is not None
@@ -129,12 +151,16 @@ def _validated_loopback_return_address(value: object) -> _LoopbackCallback | Non
     return _LoopbackCallback(
         port=port,
         request_target=request_target,
-        ipv6=host == "::1",
+        dial_hosts=_LOOPBACK_DIAL_HOSTS[host],
     )
 
 
 class _NoListener(Exception):
     """Nothing is bound to the loopback port a return address names."""
+
+    def __init__(self, hosts: tuple[str, ...]) -> None:
+        # The message is the addresses tried, which the relay's log line names.
+        super().__init__(" or ".join(hosts))
 
 
 async def _open_loopback_connection(
@@ -144,26 +170,46 @@ async def _open_loopback_connection(
     return await asyncio.open_connection(host, port)
 
 
+async def _dial_loopback_listener(
+    callback: _LoopbackCallback,
+) -> tuple[str, asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect to the first of the callback's fixed loopback hosts that accepts.
+
+    A refused dial means the kernel answered for this port at that address and
+    nothing is bound to it, and a family-absent errno means the address does not
+    exist here. Those two are the only signals proving the listener ABSENT
+    rather than merely slow, saturated or unroutable, so ``_NoListener`` is
+    raised only when EVERY host gave one. Any other failure at one host does not
+    stop the next from being tried, since the listener may hold the other
+    address, and is re-raised when no host connects: an ordinary delivery
+    failure, never a spent approval.
+    """
+    failure: OSError | None = None
+    for host in callback.dial_hosts:
+        try:
+            reader, writer = await asyncio.wait_for(
+                _open_loopback_connection(host, callback.port),
+                timeout=3,
+            )
+        except ConnectionRefusedError:
+            continue
+        except OSError as exc:  # TimeoutError is an OSError too
+            if exc.errno not in _LOOPBACK_FAMILY_ABSENT_ERRNOS and failure is None:
+                failure = exc
+            continue
+        return host, reader, writer
+    if failure is not None:
+        raise failure
+    raise _NoListener(callback.dial_hosts)
+
+
 async def _relay_loopback_callback(callback: _LoopbackCallback) -> int:
     """Send one GET to a fixed loopback host and return its HTTP status."""
-    host = "::1" if callback.ipv6 else "127.0.0.1"
-    reader: asyncio.StreamReader
-    writer: asyncio.StreamWriter
+    # Once a dial connects the listener demonstrably exists, so nothing after it
+    # may raise _NoListener.
+    host, reader, writer = await _dial_loopback_listener(callback)
     try:
-        reader, writer = await asyncio.wait_for(
-            _open_loopback_connection(host, callback.port),
-            timeout=3,
-        )
-    except ConnectionRefusedError as refused:
-        # The kernel answered for this port and said nothing is bound to it. That
-        # is the only signal proving the listener is ABSENT rather than merely
-        # slow, saturated or unroutable, so it is the only one raised distinctly:
-        # every other dial failure stays an ordinary delivery failure. Once the
-        # connection is established the listener demonstrably exists, so nothing
-        # after this point may reach here either.
-        raise _NoListener(str(refused)) from refused
-    try:
-        host_header = f"[{host}]" if callback.ipv6 else host
+        host_header = f"[{host}]" if host == _IPV6_LOOPBACK else host
         request = (
             f"GET {callback.request_target} HTTP/1.1\r\n"
             f"Host: {host_header}:{callback.port}\r\n"
@@ -261,14 +307,15 @@ async def api_mcp_oauth_relay(request: web.Request) -> web.Response:
 
     try:
         callback_status = await _relay_loopback_callback(callback)
-    except _NoListener:
+    except _NoListener as absent:
         # Nothing is bound to that port. The listener and the PKCE verifier are
         # created by the process that minted the authorize URL and die with it, so
         # its absence proves the code can no longer be redeemed BY ANYONE -- a
         # fresh listener on the same port never saw the verifier. Answering with
         # the delivery-failure message below would blame the paste for an
-        # approval that is simply spent.
-        _log_relay_outcome(server, "no local callback listener (approval spent)")
+        # approval that is simply spent. The addresses tried are logged, so a
+        # dial to the wrong address family can be told apart from a spent one.
+        _log_relay_outcome(server, f"no local callback listener on {absent} (approval spent)")
         sel().log_api_access(
             caller="dashboard",
             operation="mcp_oauth_callback_relay",
