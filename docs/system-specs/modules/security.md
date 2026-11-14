@@ -275,7 +275,11 @@ masked directory holds no mount of its own and no expectation to compare a stand
 yet covers the leaves under it all the same. The re-resolution is load-bearing: the record
 says what the ancestor reached when its mask was placed, and the question is what covers the
 leaf at this instant, so a recorded ancestor that no longer reaches its stand-in refuses the
-leaf rather than walking higher. A link at the ancestor is accepted only when it is the link
+leaf rather than walking higher. The one exception is a recorded ancestor that is itself
+ABSENT: a mask placed later over a directory above it hid it the same way (`scratch` is masked
+before the whole data home a probe hides, so `scratch/.trees.json` meets an absent `scratch`),
+so the walk goes on, and the higher record must still reach its own stand-in; with none above,
+the leaf refuses as vanished. A link at the ancestor is accepted only when it is the link
 the pin itself followed, as the read-back accepts it. A private window met on the way up ends
 the walk with a refusal: the window mounts the real tree back over the stand-in, read-write, so
 a leaf beneath it (`apps/meetings/data/edits` under the `apps/meetings/data` window) resolves
