@@ -646,7 +646,7 @@ def test_a_conductor_mode_chat_is_admitted(env):
         ("close", {"crew": "lab", "target": "chat-77"}),
     ],
 )
-def test_a_plain_owner_chat_is_refused_ultra_mode_only(env, verb, fields):
+def test_a_plain_owner_chat_is_refused_conductor_mode_only(env, verb, fields):
     env.caller.agent, env.caller.agent_kind = "kirocrew", "template"
     assert not crew_mode.slot_is_crew_mode_root(env.caller)
     status, body = _call(env, verb, **fields)

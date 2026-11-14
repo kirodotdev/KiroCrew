@@ -60,7 +60,7 @@ async def _crew_attrs(
 
 
 def root_kind(state: Any, slot_key: str) -> str:
-    """``ultra`` or ``mate`` when *slot_key* is on a crew tree, else ``""``. No I/O."""
+    """``conductor_mode`` or ``mate`` when *slot_key* is on a crew tree, else ``""``. No I/O."""
     return trace_crew.root_of(slot_key, _stamped_row(state, slot_key))[2]
 
 

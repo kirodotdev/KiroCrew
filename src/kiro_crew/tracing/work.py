@@ -1,16 +1,16 @@
 """Conductor rounds (conductor mode or a Bot) as traces, and a span per ledger write (RFC §5.5).
 
-With ``telemetry.traces_ultra_mode = "run"`` (the default) one round of a conductor's
+With ``telemetry.traces_conductor_mode = "run"`` (the default) one round of a conductor's
 board is one trace::
 
-    ultra round N                  anchor: the round's root, zero length
+    conductor_mode round N         anchor: the round's root, zero length
       invoke_agent <conductor>     each conductor turn of the round
         kirocrew.work.<action>     each ledger write the turn makes
       work_item it_xxxxxxxx        anchor per item open in the round
         invoke_agent <worker>      each turn of the item's worker
           kirocrew.work.report     the worker's report
         work_item outcome <state>  at the close: verdict, fails, roll-up
-      ultra outcome <status>       when the board moves on: ``closed`` with no item
+      conductor_mode outcome <status> when the board moves on: ``closed`` with no item
                                    open, ``advanced`` with items carried over
 
 A round is keyed ``(conductor, goal key, round)``: the goal key is the header's
@@ -69,9 +69,7 @@ _cont_items: "OrderedDict[str, None]" = OrderedDict()
 _cont_lock = threading.Lock()
 _MAX_CONT_ITEMS = 4096
 
-# The span and trace-id kind stays "ultra": exported traces carry it and saved
-# trace queries filter on it, as with ``kirocrew.crew.root_kind``.
-KIND_ROUND = "ultra"
+KIND_ROUND = "conductor_mode"
 KIND_ITEM = "work_item"
 #: Where a write span's name starts: ``kirocrew.work.<action>``.
 SPAN_PREFIX = "kirocrew.work."
@@ -187,7 +185,7 @@ def _item_ref(
 
 def _live_round(state: provider.TraceState, rnd: Round) -> runs.RunRef:
     """Where the round's next span goes: its anchor, or its live continuation (R5)."""
-    return runs.segment(state, _round_ref(state, rnd), f"ultra round {rnd.number}")
+    return runs.segment(state, _round_ref(state, rnd), f"conductor_mode round {rnd.number}")
 
 
 def _live_item(state: provider.TraceState, rnd: Round, item_id: str, root_kind: str) -> runs.RunRef:
@@ -281,7 +279,7 @@ def _open_round(
     ref = runs.anchor(
         state,
         KIND_ROUND,
-        f"ultra round {rnd.number}",
+        f"conductor_mode round {rnd.number}",
         rnd.key,
         root_session_key=_root_session(rnd.conductor),
         attrs=attrs,
@@ -522,7 +520,7 @@ async def recorded(
 
     *unit* is the acting session's unit (``""`` when no turn of this host made the
     write); *item* and *header* are the COMMITTED records; *before* is what
-    :func:`header_before` read; *root_kind* answers ``ultra`` or ``mate`` for the
+    :func:`header_before` read; *root_kind* answers ``conductor_mode`` or ``mate`` for the
     board, on the loop. Nothing happens while tracing is off.
     """
     from kiro_crew import work_vocab

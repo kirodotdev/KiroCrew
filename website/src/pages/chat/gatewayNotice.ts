@@ -495,7 +495,7 @@ const LEGACY: readonly Legacy[] = [
   },
   {
     // The first wording is what older transcripts stored; keep matching it.
-    re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is in (?:Crew Mode, which stays on its conductor\. The next turn restarts on the conductor|(?:conductor mode|Ultra Mode), which stays on its own agent\. The next turn restarts on that agent)\.$/u,
+    re: /^📌 Agent switch to (?<agent>.+?) was blocked — this chat is in (?:Crew Mode, which stays on its conductor\. The next turn restarts on the conductor|conductor mode, which stays on its own agent\. The next turn restarts on that agent)\.$/u,
     token: 'agent_switch_blocked_crew_mode',
   },
   {

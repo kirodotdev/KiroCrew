@@ -167,7 +167,7 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
  *  is not itself gated (e.g. Display > Explore). Keyed by setting id. */
 export const SETTING_PREVIEW: Record<string, string> = {
   'display.explore': PREVIEW_EXPLORE,
-  // Chat > Sessions draws Start New Chats in Conductor Mode only while the conductor mode preview is on.
+  // Chat > Sessions draws Start New Chats in conductor mode only while the conductor mode preview is on.
   'chat.start-new-chats-in-conductor-mode': PREVIEW_CREW_MODE,
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
   'developer.wake-bots-to-update-out-of-date-fields': PREVIEW_DASHBOARD_STALE_FIELDS,
