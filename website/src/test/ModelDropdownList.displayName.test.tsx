@@ -18,8 +18,8 @@ describe('ModelDropdownList — displayName rows keep their id visible', () => {
     const label = screen.getByText('Opus 5.5')
     expect(label.closest('[data-model-name]')).not.toBeNull()
     expect(label.className).not.toContain('font-mono')
-    const hint = screen.getByText('opus')
-    expect(hint.hasAttribute('data-model-id-hint')).toBe(true)
+    const hint = screen.getByText('opus').closest('[data-model-id-hint]') as HTMLElement
+    expect(hint).not.toBeNull()
     expect(hint.className).toContain('font-mono')
   })
 
@@ -27,7 +27,7 @@ describe('ModelDropdownList — displayName rows keep their id visible', () => {
     render(<ModelDropdownList
       models={[{ name: 'claude-opus-5' }]}
       activeModel="" onSelect={vi.fn()} />)
-    const label = screen.getByText('claude-opus-5')
+    const label = screen.getByText('claude-opus-5').closest('[data-model-name]') as HTMLElement
     expect(label.className).toContain('font-mono')
     expect(document.querySelector('[data-model-id-hint]')).toBeNull()
   })
@@ -36,7 +36,7 @@ describe('ModelDropdownList — displayName rows keep their id visible', () => {
     render(<ModelDropdownList
       models={[{ name: 'gpt-x', displayName: 'gpt-x' }]}
       activeModel="" onSelect={vi.fn()} />)
-    const label = screen.getByText('gpt-x')
+    const label = screen.getByText('gpt-x').closest('[data-model-name]') as HTMLElement
     expect(label.className).toContain('font-mono')
     expect(document.querySelector('[data-model-id-hint]')).toBeNull()
   })

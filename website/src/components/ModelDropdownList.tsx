@@ -6,6 +6,7 @@ import { isPricedMultiplier } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
 import { fmtNumber } from '../i18n/format'
 import { i18nT } from '../i18n/t'
+import { useCutRowTip } from './useCutRowTip'
 
 /**
  * A row this list can render. Derived from `ModelInfo` rather than re-declared,
@@ -148,6 +149,12 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: 'center', behavior: 'instant' })
   }, [])
+  const cutTip = useCutRowTip((m: ModelItem) => {
+    const named = !!m.displayName && m.displayName !== m.name
+    return named
+      ? <><span className="block">{m.displayName}</span><span className="block font-mono text-muted">{m.name}</span></>
+      : <span className="font-mono">{rowLabel(m.name)}</span>
+  })
   return (
     <div className="overflow-y-auto flex flex-col gap-0.5">
       {models.map(m => {
@@ -155,16 +162,22 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
         const named = !!m.displayName && m.displayName !== m.name
         const mult = m.rateMultiplier
         return (
-          <button key={m.name} ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)}>
+          <button key={m.name} ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)} {...cutTip.rowHandlers(m)}>
             <div className="flex items-center gap-2">
               {/* `data-model-id` carries the ID, not the label: the harnesses and
                   the keyboard-nav tests select rows by the value that is sent, and a
                   translated label would make that selector locale-dependent. The
                   VISIBLE text prefers the backend's native label (e.g. "Opus 5.5"
                   for the id `opus`), in the sans font, followed by the id in small
-                  monospace; without one the row shows the id via rowLabel. */}
-              <span data-model-name data-model-id={m.name} className={`text-[13px] ${named ? '' : 'font-mono '}font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
-              {named && <span data-model-id-hint className="text-[11px] font-mono text-muted truncate">{m.name}</span>}
+                  monospace; without one the row shows the id via rowLabel.
+                  An id is cut at its FRONT: ids share their prefix and differ
+                  at the end, so the end is what tells two rows apart. The span
+                  runs right to left to put the ellipsis there, and the id sits
+                  in an ltr <bdi> so its glyphs keep their order. */}
+              {named || m.name === JEV_ROUTE_MODEL
+                ? <span data-model-name data-model-id={m.name} className={`text-[13px] ${named ? '' : 'font-mono '}font-semibold truncate ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
+                : <span data-model-name data-model-id={m.name} className={`text-[13px] font-mono font-semibold truncate [direction:rtl] text-left ${active ? 'text-accent' : 'text-text'}`}><bdi dir="ltr">{m.name}</bdi></span>}
+              {named && <span data-model-id-hint className="text-[11px] font-mono text-muted truncate [direction:rtl] text-left"><bdi dir="ltr">{m.name}</bdi></span>}
               {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
               {/* Credit multiplier. Rendered only when the backend reported a
                   usable one — a cold-start or pre-feature cached row has none,
@@ -206,6 +219,7 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
           </button>
         )
       })}
+      {cutTip.bubble}
       {models.length === 0 && !failed && (
         loading
           ? (

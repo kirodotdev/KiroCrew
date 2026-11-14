@@ -3,6 +3,7 @@ import { ChevronDown, Search } from 'lucide-react'
 
 import { Btn, Checkbox, Input } from './ui'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
+import { useCutRowTip } from './useCutRowTip'
 
 import { i18nT } from '../i18n/t'
 
@@ -56,6 +57,14 @@ export default function MultiSelect({
       return tokens.every(token => haystack.includes(token))
     })
   }, [filter, options])
+
+  const cutTip = useCutRowTip((option: MultiSelectOption) => (
+    <>
+      <span className="block">{option.label}</span>
+      {option.hint && <span className="block font-mono text-muted">{option.hint}</span>}
+      {option.description && <span className="block text-muted">{option.description}</span>}
+    </>
+  ))
 
   const optionRows = () =>
     Array.from(listRef.current?.querySelectorAll<HTMLElement>('[data-multi-select-option]') ?? [])
@@ -158,6 +167,7 @@ export default function MultiSelect({
                 aria-disabled={option.locked || undefined}
                 tabIndex={-1}
                 className={`flex min-h-11 items-center gap-2 rounded-md px-2.5 py-1.5 transition-colors ${option.locked ? 'cursor-default' : 'cursor-pointer hover:bg-bg-hover'}`}
+                {...cutTip.rowHandlers(option)}
               >
                 <Checkbox
                   tabIndex={-1}
@@ -171,7 +181,11 @@ export default function MultiSelect({
                   {option.hint ? (
                     <span className="flex min-w-0 items-baseline gap-2">
                       <span className={`min-w-0 truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
-                      <span data-multi-select-hint className="min-w-0 truncate text-[11px] font-mono text-muted">{option.hint}</span>
+                      {/* The hint is an id, cut at its FRONT: ids share their
+                          prefix and differ at the end. The span runs right to
+                          left to put the ellipsis there, and the id sits in an
+                          ltr <bdi> so its glyphs keep their order. */}
+                      <span data-multi-select-hint className="min-w-0 truncate text-[11px] font-mono text-muted [direction:rtl] text-left"><bdi dir="ltr">{option.hint}</bdi></span>
                     </span>
                   ) : (
                     <span className={`block truncate text-[13px] font-medium ${option.locked ? 'text-muted' : 'text-text'}`}>{option.label}</span>
@@ -181,6 +195,7 @@ export default function MultiSelect({
               </label>
             )
           })}
+          {cutTip.bubble}
         </div>
       </PopoverContent>
     </Popover>
