@@ -301,8 +301,12 @@ class ClaudeLaunch(ProcessAdapter):
         # re-resolved on the loop after the handshake. Off-loop: it reads files.
         session._agent_version_read = False
         session._claude_adapter_argv = tuple(argv)
-        session._claude_adapter_disk_version = await asyncio.to_thread(
-            _claude_adapter_known_version, argv
+        # The package's own version is kept apart from the handshake fallback: only
+        # it may refuse a session before spawn, because a remembered handshake is
+        # never refreshed for a session that does not start.
+        installed = await asyncio.to_thread(_claude_adapter_installed_version, argv)
+        session._claude_adapter_disk_version = installed or _claude_adapter_handshake_versions.get(
+            tuple(argv), ""
         )
         # Per-session settings seed: permissions.defaultMode, the served ``model``
         # once the advertised cache is warm, and the availableModels allowlist when
@@ -323,6 +327,10 @@ class ClaudeLaunch(ProcessAdapter):
         # synchronous in-memory read, so the kiro construction path gains no
         # executor hop and no new failure mode (harness-parity H13).
         await session._prepare_session_mcp()
+        # Known before any process starts: an installed adapter below the
+        # session-options floor cannot serve a session that needs them, so it is
+        # refused here rather than after an adapter and a Claude Code process start.
+        session._refuse_claude_session_below_floor_before_spawn(installed)
         # Bound here rather than in AcpClient.__init__ for the same reason: the
         # constructor is shared with kiro-cli.
         if self.backend in ACP_BACKENDS_AGENT_STARTED_TURNS:

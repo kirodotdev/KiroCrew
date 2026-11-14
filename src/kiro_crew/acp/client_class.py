@@ -1208,6 +1208,10 @@ class AcpClient:
     )
     _log_claude_adapter_below_floor = _client_claude_session._log_claude_adapter_below_floor
     _note_claude_adapter_version = _client_claude_session._note_claude_adapter_version
+    _claude_session_needs_options = _client_claude_session._claude_session_needs_options
+    _refuse_claude_session_below_floor_before_spawn = (
+        _client_claude_session._refuse_claude_session_below_floor_before_spawn
+    )
     _prepare_claude_side_read_denies = _client_claude_session._prepare_claude_side_read_denies
     _claude_session_meta = _client_claude_session._claude_session_meta
     _claude_session_excludes_local = _client_claude_session._claude_session_excludes_local
