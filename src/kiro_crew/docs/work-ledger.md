@@ -330,7 +330,8 @@ they cannot infer, or a choice the person said they want to make.
 
 Parallel work is bounded in code, not only in the prompt. Each goal may hold at
 most `concurrency_cap` items open at once. `resource_status` decides the wave;
-a bound the user set is `concurrency_cap`, written by a `goal` write (1 to 32).
+the user's bound, else the concurrency the approved plan named, is
+`concurrency_cap`, written by a `goal` write (1 to 32) before the first create.
 With none set it is 32, the store's own open bound, which refuses first with
 `item_cap_exceeded`. A `create` past a lower cap is refused
 `goal_concurrency_cap_reached`, and the board writes nothing. That is not a

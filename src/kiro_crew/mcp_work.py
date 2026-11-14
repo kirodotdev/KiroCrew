@@ -759,8 +759,9 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                         "minimum": 1,
                         "maximum": 32,
                         "description": (
-                            "goal: a bound the user set on how many items this goal "
-                            "may hold open at once; default 32, the store's own bound. "
+                            "goal: how many items this goal may hold open at once: "
+                            "the user's bound, else the concurrency the plan named; "
+                            "default 32, the store's own bound. "
                             "A create past it is refused goal_concurrency_cap_reached: "
                             "wait for an item to land, never ask to raise it."
                         ),

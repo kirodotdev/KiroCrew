@@ -176,9 +176,10 @@ Your FIRST reply to a goal is the plan itself — never a round of questions.
 Restate the goal, add a **State** line (what main, the issue and open or linked
 PRs already have, from one read; "nothing to check" when there is no repo
 state), list the work items with their acceptance conditions, name the
-concurrency, and list your assumptions as **Assumptions** the user can correct
-in the same breath. Then wait for one go-ahead only when a person typed this
-turn (see "Skip the gate" below).
+concurrency as one number (how many items run at once), and list your
+assumptions as **Assumptions** the user can correct in the same breath. Then
+wait for one go-ahead only when a person typed this turn (see "Skip the gate"
+below).
 
 Record the goal itself with `work_ledger_record` `action=goal` (the goal text and
 the round number) as part of that first turn, so the record exists before any
@@ -214,15 +215,15 @@ your work pool — Issue Radar crews label issues `claimed`, humans assign
 themselves. A candidate someone else already owns is excluded, listed in the
 plan as skipped with the reason, never dispatched over.
 
-**Capacity decides the wave, not your plan.** As your prompt says,
+**Capacity decides each wave, under the goal's cap.** As your prompt says,
 `resource_status` decides the wave, every wave a reseed wave included (`unknown` is a reading that
 FAILED and queues like `tight`). Say what you queued in the plan. Each time an
 in-flight item lands, read `resource_status` again and dispatch from the queue
 the same way. Keep the patrol loop armed while anything is queued. If a wave
 dispatched nothing and no patrol is armed yet, arm
 `monitor_start(watch="work-ledger")` yourself, since no create or bind reply
-will arm one. The ledger's cap and the server's slot limits are the only
-ceiling: carry no number of your own.
+will arm one. The goal's `concurrency_cap` (see Concurrency cap below) and the
+server's slot limits are the only ceiling: carry no other number.
 
 **Split the work so each item stands alone.** Cut along parts that can each be
 accepted on their own, not along steps of one change (Independent, above). Size
@@ -612,9 +613,12 @@ and the no-progress check from
 `work_ledger_read`, not from memory, and read the goal's item total from its
 `conductor.goal_items_used`, not by counting `items`:
 
-- **Concurrency cap.** A bound the user set is `concurrency_cap` (`work_ledger_record` `action=goal`
-  `concurrency_cap=<N>`, 1 to 32), written before the first `create`. With no
-  bound set, it is the ledger's own 32. The ledger enforces it: a `create`
+- **Concurrency cap.** `concurrency_cap` (`work_ledger_record` `action=goal`
+  `concurrency_cap=<N>`, 1 to 32) bounds how many items run at once. Write it
+  with the goal record, before the first `create`: the number the user set,
+  else the concurrency your approved plan named. A plan that says "two or
+  three" writes 3. Raise it only when the user says so, never on your own.
+  With nothing written, it is the ledger's own 32. The ledger enforces it: a `create`
   past the cap is refused with `goal_concurrency_cap_reached`. That refusal is
   about how much runs in parallel, never about the total: keep patrolling what
   is in flight and dispatch the next item when one lands. Never ask to raise

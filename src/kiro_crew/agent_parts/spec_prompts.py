@@ -161,8 +161,9 @@ it next cycle; an unbound running worker is neither visible nor recoverable.
     "resource_wave": """**`resource_status` decides the wave.** Call it before you stand up several
 worker sessions at once. On `ample`, dispatch every ready, independent item.
 On `tight` or `unknown`, dispatch one and queue the rest; on `critical`,
-dispatch none. Say what you queued. Carry no number of your own: a bound the
-user set is the goal's `concurrency_cap`.
+dispatch none. Say what you queued. The concurrency your plan names is the
+goal's `concurrency_cap`: write it with `action=goal` before the first create
+(the user's own number wins), and raise it only when the user says so.
 
 """,
     "patrol_watch": """When a `session_create` or `bind` reply's `patrol=` is
@@ -463,8 +464,9 @@ refused reset changes nothing: carry on.
     (
         "spend_bounded",
         """**Rounds are not gated, but they are bounded.** Count from the ledger.
-`resource_status` decides the wave; a bound the user set is `concurrency_cap`
-(`work_ledger_record` `action=goal` `concurrency_cap=<N>`), and the ledger
+`resource_status` decides the wave; the user's bound, else your plan's
+concurrency, is `concurrency_cap` (`work_ledger_record` `action=goal`
+`concurrency_cap=<N>`), and the ledger
 enforces it: a `create` past it is refused `goal_concurrency_cap_reached`. That
 is about how much runs in parallel, not about the total: wait for an item to
 land, and never ask to raise it. The goal's total has no cap:
