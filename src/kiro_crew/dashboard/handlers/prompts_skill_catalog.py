@@ -352,14 +352,14 @@ async def api_skills(request: web.Request) -> web.Response:
                 match: dict[str, Any] = {
                     "key": key,
                     "name": key,
-                    "description": "",
+                    "description": outcome.description,
                     "content": outcome.content,
                 }
                 if paging:
                     match["page"] = {
                         field: value
                         for field, value in outcome._asdict().items()
-                        if field != "content"
+                        if field not in ("content", "description")
                     }
                 return {"matches": [match], "next_offset": None}
             report = skills.search_skills_report(

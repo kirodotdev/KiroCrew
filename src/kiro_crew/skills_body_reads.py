@@ -82,6 +82,9 @@ class SkillBodyPage(NamedTuple):
     total_lines: int
     total_bytes: int
     next_offset: int | None
+    # The skill's frontmatter description, read from the WHOLE body so a page
+    # past the frontmatter still carries it: the same value a search row shows.
+    description: str = ""
 
 
 class SkillReadRefusal(NamedTuple):
@@ -109,6 +112,7 @@ class _ExactRead(NamedTuple):
     refusal: str
     confined: bool
     incomplete: bool = False
+    description: str = ""
 
 
 def _page_skill_body(
@@ -742,7 +746,10 @@ def read_scoped_skill_page(
         if read.confined and read.refusal == SKILL_READ_OVER_CAPACITY:
             return SkillReadRefusal(read.refusal, PROJECT_SKILL_BODY_CAP, confined=True)
         return SkillReadRefusal(read.refusal, bound, incomplete=read.incomplete)
-    return _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
+    page = _page_skill_body(read.content, offset=offset, limit=limit, capacity=capacity)
+    if isinstance(page, SkillBodyPage):
+        page = page._replace(description=read.description)
+    return page
 
 
 def _read_exact_key(
@@ -795,4 +802,6 @@ def _read_exact_key(
     meta = self._parse_frontmatter_text(content)
     if meta.get("repo_scope") and not self._repo_scope_satisfied(meta["repo_scope"], project_dir):
         return _ExactRead(None, SKILL_READ_OUTSIDE_SCOPE, confined)
-    return _ExactRead(content, "", confined)
+    # The description a search row shows for this key: the frontmatter value,
+    # else the key (``skill_runtime.listing`` builds its rows the same way).
+    return _ExactRead(content, "", confined, description=meta.get("description", key))

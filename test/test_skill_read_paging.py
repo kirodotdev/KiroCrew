@@ -165,6 +165,17 @@ class TestPagedRead:
         assert "one\ntwo\n" in out
         assert "next page" not in out and "last page" not in out
 
+    @pytest.mark.parametrize("paging", [{}, {"offset": 4}])
+    def test_a_read_shows_the_description_a_search_shows(self, skills_root: Path, paging: dict):
+        """A read printed ``(`key`): `` with nothing after it: neither read path
+        filled the description. A page past the frontmatter still carries it."""
+        _skill(skills_root, "small", "one\ntwo\n")
+        searched = _call_tool("skill_search", {"query": "small"})
+        assert "(`small`): desc for small\n" in searched
+        out = _read("small", **paging)
+        assert not out.startswith("Error:")
+        assert "- **small** (`small`): desc for small\n" in out
+
     def test_an_offset_past_the_end_is_an_empty_last_page_naming_the_count(self, skills_root: Path):
         _skill(skills_root, "small", "one\ntwo\n")
         out = _read("small", offset=99)
@@ -297,12 +308,30 @@ class TestGatewayContract:
         _read("k", offset=4, limit=2)
         assert bodies[2]["offset"] == 4 and bodies[2]["limit"] == 2
 
+    def test_the_tool_renders_the_description_the_gateway_returns(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(
+            mcp_core, "require_strict_session_key", lambda *_a: ("dashboard:signed", None)
+        )
+        monkeypatch.setattr(
+            mcp_core,
+            "_post",
+            lambda *_a, **_kw: {
+                "matches": [
+                    {"key": "k", "name": "k", "description": "About  k.\n", "content": "body\n"}
+                ]
+            },
+        )
+        assert "- **k** (`k`): About k.\n" in _read("k")
+
     def test_a_page_sized_to_the_requested_capacity_fits_the_response_for_any_key(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """The framing repeats the key, so the capacity the tool asks for must
-        already leave room for it: a page of exactly that many bytes, wrapped,
-        stays under the response cap and loses no line to the tail cut."""
+        """The framing repeats the key and prints the description, so the capacity
+        the tool asks for must already leave room for both: a page of exactly
+        that many bytes, wrapped, stays under the response cap and loses no line
+        to the tail cut."""
         key = "/".join(f"segment-{n:03d}" for n in range(90))
         monkeypatch.setattr(
             mcp_core, "require_strict_session_key", lambda *_a: ("dashboard:signed", None)
@@ -318,6 +347,8 @@ class TestGatewayContract:
                     {
                         "key": key,
                         "name": key,
+                        # Wider than the clamp: the frame must budget for it.
+                        "description": "d " * 1_000,
                         "content": content,
                         "page": {
                             "line_offset": body["offset"],
@@ -437,6 +468,7 @@ class TestGatewayContract:
             return json.loads((await prompts.api_skills(request)).body)
 
         whole = await get(key="small")
+        assert whole["matches"][0]["description"] == "desc for small"
         assert (
             whole["matches"][0]["content"]
             == "---\nname: small\ndescription: desc for small\n---\none\ntwo\n"
@@ -464,6 +496,8 @@ class TestGatewayContract:
 
         limited = (await get(key="small", offset=1, limit=1))["matches"][0]
         assert limited["content"] == "name: small\n"
+        assert limited["description"] == "desc for small"
+        assert "description" not in limited["page"]
         assert limited["page"]["next_offset"] == 2
 
         assert (await get(key="absent"))["refusal"]["reason"] == "outside_scope"
