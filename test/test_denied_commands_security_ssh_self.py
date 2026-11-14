@@ -744,6 +744,10 @@ class TestSandboxEscapeSshSelf:
             # expand in a working directory the caller filled, which already
             # makes a lone ``*`` the whole connection.
             "s?h local*",
+            "git add * *.* -f",
+            "tar -czf site.tgz * *.* -p",
+            "zip -r bundle.zip * *.* -j",
+            "python3 scripts/lint.py * *.* -o report.txt",
         ],
     )
     def test_a_glob_host_after_a_glob_verb_is_not_this_host(self, text):

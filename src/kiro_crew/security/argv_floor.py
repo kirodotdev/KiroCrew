@@ -137,6 +137,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _NETLINK_ADDRS_PUBLISHED,
         _NETLINK_MISS_WARN_AT,
         _NETLINK_MISSES,
+        _NO_SUCH_NAME_ERRNOS,
         _OWN_HOST_NAMES_CACHE,
         _OWN_HOST_REFRESH_SECS,
         _OWN_HOST_RESOLVE_BACKOFF_SECS,
