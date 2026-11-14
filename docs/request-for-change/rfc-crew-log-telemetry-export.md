@@ -42,8 +42,10 @@ This RFC proposes both, in the smallest shape the existing code already supports
 2. **One OpenTelemetry subscriber** on the projection bus, which reads those folds
    when they advance and records the numbers. It is a subscriber like any other,
    not a second path into the raw log.
-3. **No new consent surface.** It is gated by `telemetry.enabled`, which is off by
-   default and writes to a local sink with no network egress.
+3. **No new consent surface.** It is gated by `telemetry.enabled`, the switch
+   that already turns local recording on or off. That switch is on for a new
+   install and off for an install that opted out (section 4.6). It writes to a
+   local sink with no network egress.
 
 ## 2. Motivation
 
@@ -65,7 +67,8 @@ Goals:
 - Add no work to the crew log append path.
 - Keep every attribute value inside a closed set that a reader can point at in the
   code.
-- Ship behind the consent gate that already exists, still off by default.
+- Ship behind the consent gate that already exists, and keep it off for every
+  install that opted out.
 
 Non-goals:
 
@@ -216,13 +219,48 @@ unbounded value is a cardinality bomb rather than a slightly noisy chart.
 
 ### 4.6 Consent, and where the numbers go
 
-`TelemetryConfig` in `config/sections_telemetry.py` owns the gate.
-`telemetry.enabled` defaults to false, and with it off the metric call sites are
-no-ops that write nothing. With it on, aggregated metrics go to a local sink under
-the data home and **no network egress happens**: `otlp_endpoint` is empty by
-default and pointing it at a collector is a separate, deliberate opt-in. An
-enterprise policy can pin the whole thing off through the
-`capabilities.telemetry` governance scope.
+`TelemetryConfig` in `config/sections_telemetry.py` owns the gate,
+`telemetry.enabled`. With it off, the metric call sites are no-ops that write
+nothing. Whether it is on is settled per install, first match wins:
+
+- `DO_NOT_TRACK` set to a true value: off, whatever the config files say. The
+  heartbeat is off too.
+- `KIROCREW_TELEMETRY` set to `1`, `true`, `yes` or `on`: on. Set to `0`,
+  `false`, `no` or `off`: off.
+- `telemetry.enabled` written in a config file: that value. Any value that is
+  not a bool (a string, a number, `null`, a list or an object) reads as false,
+  and a `telemetry` section that is not an object reads as
+  `{"enabled": false}`. A config file that cannot be parsed cannot turn
+  recording on: no new recorder starts until the file is fixed.
+- `KIROCREW_TELEMETRY_DISABLED` set, and `telemetry.enabled` not written: off.
+- `telemetry.beacon_enabled: false` (the heartbeat turned off), and
+  `telemetry.enabled` not written: off. This is a rule at load time; no file is
+  rewritten.
+- Anything else: on. That covers a new install, and an existing install with
+  the heartbeat on.
+
+`kirocrew telemetry disable` writes `telemetry.enabled: false` and
+`telemetry.beacon_enabled: false`. Recording is bounded on disk by
+`retention_days` (default 30) and `max_total_mb` (default 100).
+
+Who is told. The dashboard's first-run Privacy chapter says recording is on and
+offers Keep on or Turn off. A new install sees it on first run. An existing
+install that is recording and acknowledged an older notice sees the chapter once
+more. An install whose recording is off by any rule above is not asked again:
+the dashboard reports the current notice as already seen. A CLI or headless
+start prints a one-line notice once per install, only while recording is on and
+the current notice is not acknowledged.
+
+With the gate on, aggregated metrics go to a local sink under the data home and
+**no network egress happens**. Export needs both a destination and an explicit
+opt-in. The destination is `otlp_endpoint`, empty by default. The opt-in is
+`KIROCREW_TELEMETRY` set to a true value, or `telemetry.enabled: true` written in
+a config file. The on default alone never exports, and neither Keep on in the
+Privacy chapter nor the CLI notice counts as the opt-in. An enterprise policy
+can pin the whole thing off through the `capabilities.telemetry` governance
+scope. The enterprise build never shows the Privacy chapter, refuses the
+heartbeat, and applies the same export rule to the collector the admin policy
+names.
 
 This RFC adds no switch of its own. The subscriber is registered only when that
 gate is on. A session's fold render is CUMULATIVE over the session's life, while
@@ -536,15 +574,21 @@ today.
 - A new fold is a new name in the registry. An older copy of the code that does
   not know the name reads no savepoint for it, which is the cold-fold path that
   already exists for every fold on its first read.
-- The consent default does not move. `telemetry.enabled` stays false.
+- The consent gate is the one that exists. `telemetry.enabled` is on for a new
+  install and for an existing install with the heartbeat on. An existing install
+  that turned the heartbeat off, wrote `telemetry.enabled: false`, or sets
+  `DO_NOT_TRACK` stays off and is not asked again. A value written in a config
+  file still wins. Section 4.6 has every case.
 
 ## 9. Security and privacy considerations
 
 **A distribution can describe one person.** "How many sessions are usually open"
 is a fact about somebody's working day. Three things bound it: the folds hold
 counts only and never a per-person breakdown; nothing leaves the machine unless
-the operator points `otlp_endpoint` at a collector themselves; and the whole
-thing is off by default. Those are real, but they bound exposure rather than
+the operator points `otlp_endpoint` at a collector and opts in to recording
+explicitly; and recording stays off for every install that opted out, with
+`kirocrew telemetry disable` or `DO_NOT_TRACK` turning it off at any time
+(section 4.6). Those are real, but they bound exposure rather than
 settle scope, which is why question 3 of section 11 has to be answered before S1
 merges.
 
