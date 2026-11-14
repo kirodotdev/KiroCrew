@@ -6235,6 +6235,7 @@
       "enumValues": null,
       "defaultValue": {
         "choice": "auto",
+        "report_changes": false,
         "live": {
           "enabled": true,
           "quality": "auto",
@@ -6270,6 +6271,20 @@
         "headless"
       ],
       "defaultValue": "auto"
+    },
+    {
+      "path": "browser.report_changes",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Report what a step changed",
+      "help": "After a click, a typed entry or a choice in a list, the browser's answer also says what the page did: a new address or title, a dialog that opened or closed, new alert or status text, the names of fields that failed validation, and the controls that appeared or went away. The agent then needs fewer page reads between steps. Each step takes a fraction of a second longer, and the report covers the page's own document, not what is inside frames. Off by default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "browser.live",
