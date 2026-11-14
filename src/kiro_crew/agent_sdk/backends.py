@@ -398,6 +398,9 @@ with no row here.
      - driver-internal (whether the drain after ``session/new`` folds only the
        frames already buffered, because the harness sends no MCP init frame over
        ACP)
+   * - ``ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL``
+     - driver-internal (whether a ``configOptions`` model select overrides a
+       conflicting ``models`` object as the ids the picker may send)
    * - ``ACP_BACKENDS_ACP_CLIENT_SPAWNABLE``
      - semantic question (``SessionCapabilities.acp_client_spawnable``)
    * - ``ACP_BACKENDS_REMOTE_MCP_OAUTH``
@@ -511,6 +514,11 @@ ACP_BACKEND_STRANDS = "strands"
 # therefore strips. A separate id, not an alias of ``opencode``: a saved choice or
 # a governance rule naming ``opencode`` must keep meaning OpenCode.
 ACP_BACKEND_MIMOCODE = "mimocode"
+# Google Antigravity's standalone ACP runtime from the ACP Registry. This is
+# ``agy_acp_server``, not the interactive ``agy`` TUI. The distribution carries a
+# launcher and its sibling ``localharness_external`` helper, so its probe and spawn
+# resolution live beside the adapter rather than in the one-binary launch table.
+ACP_BACKEND_ANTIGRAVITY = "antigravity"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -558,6 +566,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -582,6 +591,7 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -726,6 +736,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -754,6 +765,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT: ACP_BACKEND_COPILOT,
     ACP_BACKEND_MIMOCODE: ACP_BACKEND_MIMOCODE,
+    ACP_BACKEND_ANTIGRAVITY: ACP_BACKEND_ANTIGRAVITY,
 }
 
 #: The backend a deployment policy may never deny.
@@ -1388,6 +1400,7 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_DEFAULT_PSEUDO_MODEL,
     ACP_BACKENDS_EFFORT_AT_LAUNCH,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,

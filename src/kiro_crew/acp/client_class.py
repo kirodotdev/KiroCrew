@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, ClassVar
 
 from kiro_crew.acp import batch_guard
+from kiro_crew.acp import client_antigravity as _client_antigravity
 from kiro_crew.acp import client_copilot as _client_copilot
 from kiro_crew.acp import client_elicitation as _client_elicitation
 from kiro_crew.acp import client_lifecycle as _client_lifecycle
@@ -54,6 +55,7 @@ from kiro_crew.acp.runtime_process_tree import ChildRecord
 from kiro_crew.acp.skill_reads import SkillReadTracker
 from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_COPILOT,
     ACP_BACKEND_GOOSE,
     ACP_BACKEND_KIRO,
@@ -863,6 +865,7 @@ class AcpClient:
     _session_mcp_servers = _client_mcp_array._session_mcp_servers
     _mimocode_session_mcp_servers = _client_mcp_array._mimocode_session_mcp_servers
     _copilot_session_mcp_servers = _client_mcp_array._copilot_session_mcp_servers
+    _antigravity_session_mcp_servers = _client_mcp_array._antigravity_session_mcp_servers
     _pi_session_mcp_servers = _client_mcp_array._pi_session_mcp_servers
     _republish_pi_mcp_handoff = _client_mcp_array._republish_pi_mcp_handoff
     _discard_pi_mcp_handoff = _client_mcp_array._discard_pi_mcp_handoff
@@ -923,6 +926,10 @@ class AcpClient:
             or self.backend in ACP_BACKENDS_META_IDENTITY
             or self._is_copilot
         )
+
+    @property
+    def _is_antigravity(self) -> bool:
+        return self.backend == ACP_BACKEND_ANTIGRAVITY
 
     @property
     def _is_mimocode(self) -> bool:
@@ -1350,6 +1357,9 @@ class AcpClient:
     _tripwire_spec_disabled_tool = _client_permissions._tripwire_spec_disabled_tool
     _note_pi_adapter_version = _client_permissions._note_pi_adapter_version
     _refuse_unverified_copilot_version = _client_copilot._refuse_unverified_copilot_version
+    _refuse_unverified_antigravity_version = (
+        _client_antigravity._refuse_unverified_antigravity_version
+    )
     _tripwire_session_config = _client_permissions._tripwire_session_config
     _seed_copilot_edit_targets = _client_copilot._seed_copilot_edit_targets
     _restore_copilot_edit_seed = _client_copilot._restore_copilot_edit_seed

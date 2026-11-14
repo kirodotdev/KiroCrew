@@ -1,0 +1,643 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "antigravity": {
+          "systemPrompt": {
+            "append": true
+          },
+          "tier": true
+        }
+      },
+      "auth": {
+        "logout": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "audio": true,
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.4.4",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "gemini-3.8-flash",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "Gemini 3.8 Flash",
+            "value": "gemini-3.8-flash"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "high",
+        "id": "thinking_level",
+        "name": "Thinking Level",
+        "options": [
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "Default permission prompt flow",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approve file edit tools",
+            "name": "Auto Edit",
+            "value": "auto_edit"
+          },
+          {
+            "description": "Auto-approve all tools",
+            "name": "YOLO",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "auto_edit",
+        "yolo"
+      ]
+    },
+    "session_id": "antigravity-session-1"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      0,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "CommandLine": "echo antigravity-capture-ok",
+          "Cwd": "<workspace>",
+          "WaitMsBeforeAsync": 5000
+        },
+        "title": "echo antigravity-capture-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"CommandLine\": \"echo antigravity-capture-ok\",\n  \"Cwd\": \"<workspace>\",\n  \"WaitMsBeforeAsync\": 5000\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo antigravity-capture-ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow_always",
+            "label": "Allow Always (risky)"
+          },
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "CommandLine": "echo antigravity-capture-ok",
+          "Cwd": "<workspace>",
+          "WaitMsBeforeAsync": 5000
+        },
+        "request_id": "permission-1",
+        "shell_classified": true,
+        "title": "echo antigravity-capture-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"CommandLine\": \"echo antigravity-capture-ok\",\n  \"Cwd\": \"<workspace>\",\n  \"WaitMsBeforeAsync\": 5000\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow_always",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "command_line": "echo antigravity-capture-ok",
+          "working_dir": "<workspace>"
+        },
+        "title": "echo antigravity-capture-ok",
+        "tool_call_id": "call-1",
+        "tool_input": "{\n  \"command_line\": \"echo antigravity-capture-ok\",\n  \"working_dir\": \"<workspace>\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "echo antigravity-capture-ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      16319,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-1",
+        "tool_final": true,
+        "tool_output": "{\"commandLine\": \"echo antigravity-capture-ok\", \"workingDir\": \"<workspace>\", \"exitCode\": 0, \"exit_code\": 0, \"combinedOutput\": \"antigravity-capture-ok\\r\\n\", \"formatted_output\": \"antigravity-capture-ok\\r\\n\"}",
+        "tool_output_bytes": 204,
+        "tool_output_digest": "66a1a09622ab8c5d0369244ad5c1862adf3ecff0213244ee9ec02d18cf717159",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```\nantigravity-capture-ok\n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```\nantigravity-capture-ok\n```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      30522,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      32536,
+      92,
+      14075,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "I am blocked from reading this file due"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I am blocked from reading this file due",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      31154,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": " to workspace boundary restrictions.\n\n### Details\n- **Error encountered**:\n  > `denied by pre-tool hook:"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": " to workspace boundary restrictions.\n\n### Details\n- **Error encountered**:\n  > `denied by pre-tool hook:",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "20261114/workspace ~/.gemini/antigravity"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "20261114/workspace ~/.gemini/antigravity",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "-acp ~/.gemini/config/skills ~"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "-acp ~/.gemini/config/skills ~",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "/<user>/.gemini/antigravity-cli/skills ~/"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "/<user>/.gemini/antigravity-cli/skills ~/",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "_token.json`.\n- **Recommended next step**: You can inspect the file directly from your local shell or terminal"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "_token.json`.\n- **Recommended next step**: You can inspect the file directly from your local shell or terminal",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "p_token.json\n  ```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "p_token.json\n  ```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      32472,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "prompt_tokens": [
+      33602,
+      454,
+      28893,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "end_line": 799,
+          "file_path": "<workspace>/decoy.txt",
+          "start_line": 0
+        },
+        "title": "Running view_file",
+        "tool_call_id": "call-2",
+        "tool_input": "{\n  \"file_path\": \"<workspace>/decoy.txt\",\n  \"start_line\": 0,\n  \"end_line\": 799\n}",
+        "tool_kind": "read",
+        "wire_title": "Running view_file"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      34243,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-2",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "The"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "0261114/workspace/decoy.txt) is:\n\n```\ndecoy\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "0261114/workspace/decoy.txt) is:\n\n```\ndecoy\n",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "```",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      34516,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "frame": "response",
+    "id": 5,
+    "prompt_tokens": [
+      36486,
+      114,
+      32018,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "diff_old_text": "decoy",
+        "diff_path": "<workspace>/decoy.txt",
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "AllowMultiple": false,
+          "Description": "Update decoy.txt content to 'captured'",
+          "EndLine": 1,
+          "Instruction": "Replace 'decoy' with 'captured'",
+          "ReplacementContent": "captured",
+          "StartLine": 1,
+          "TargetContent": "decoy",
+          "TargetFile": "<workspace>/decoy.txt"
+        },
+        "title": "Run edit_file?",
+        "tool_call_id": "call-3",
+        "tool_input": "--- <workspace>/decoy.txt\n+++ <workspace>/decoy.txt\n@@ -1 +1 @@\n-decoy\n+captured",
+        "tool_kind": "edit",
+        "wire_title": "Run edit_file?"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow",
+            "label": "Allow"
+          },
+          {
+            "id": "deny",
+            "label": "Deny"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "AllowMultiple": false,
+          "Description": "Update decoy.txt content to 'captured'",
+          "EndLine": 1,
+          "Instruction": "Replace 'decoy' with 'captured'",
+          "ReplacementContent": "captured",
+          "StartLine": 1,
+          "TargetContent": "decoy",
+          "TargetFile": "<workspace>/decoy.txt"
+        },
+        "request_id": "permission-2",
+        "shell_classified": true,
+        "title": "Run edit_file?",
+        "tool_call_id": "call-3",
+        "tool_input": "--- <workspace>/decoy.txt\n+++ <workspace>/decoy.txt\n@@ -1 +1 @@\n-decoy\n+captured",
+        "tool_kind": "edit"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow",
+      "once": "allow",
+      "reject": "deny"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call_update",
+        "raw_tool_params": {
+          "file_path": "<workspace>/decoy.txt"
+        },
+        "title": "Running edit_file",
+        "tool_call_id": "call-3",
+        "tool_input": "{\n  \"file_path\": \"<workspace>/decoy.txt\"\n}",
+        "tool_kind": "edit",
+        "wire_title": "Running edit_file"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      35280,
+      1048576
+    ],
+    "usage_cost": null
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call-3",
+        "tool_final": true,
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "\n-decoy\n+captured\n```"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "\n-decoy\n+captured\n```",
+      "thinking": false
+    }
+  }
+]

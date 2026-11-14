@@ -32,6 +32,7 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.harness import KasHarness, KiroHarness
 from kiro_crew.acp.types import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -68,6 +69,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import (
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KIRO_FAMILY,
@@ -728,7 +730,7 @@ def test_every_known_backend_has_a_label() -> None:
     labels = dict(PROVIDER_LABEL_BY_BACKEND)
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (
         "a known backend has no label in PROVIDER_LABEL_BY_BACKEND, so it would "
-        "persist under the kiro label — add a row in acp/types.py"
+        "persist under the kiro label — add a row in acp/provider_labels.py"
     )
     assert len(set(labels.values())) == len(labels), "two backends share a label"
     assert labels[ACP_BACKEND_KIRO] == PROVIDER_LABEL_DEFAULT, (
@@ -890,6 +892,8 @@ def test_model_switch_channel_is_opt_in() -> None:
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKEND_KIRO not in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION
     assert ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
+    assert ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL <= ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+    assert ACP_BACKEND_ANTIGRAVITY in ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL
     source = "\n".join(
         (
             inspect.getsource(acp_client.AcpClient.set_model),
@@ -1019,6 +1023,7 @@ _MCP_SEAM_HOOKS = ["adapter", "harness"]
 _ADAPTER_MCP_SEAMS = {
     "MimoCodeLaunch": "mimocode",
     "CopilotLaunch": "copilot",
+    "AntigravityLaunch": "antigravity",
     "PiLaunch": "pi",
 }
 
@@ -1051,6 +1056,13 @@ def test_each_mcp_seam_is_spliced_only_for_its_own_harness() -> None:
             f"{fn.__name__}: spliced MCP seams {hooks} != declared {_MCP_SEAM_HOOKS}. "
             "A missing name means a harness lost its mirrored servers; an extra one "
             "means a new seam -- add it here and gate it on its own _is_<harness>."
+        )
+        # The shared accessor is never spliced bare: a bare call is invisible to the
+        # per-hook regex above, so its guard would go unchecked. Every harness reaches
+        # it through its own named seam.
+        assert "self._session_mcp_servers()" not in source, (
+            f"{fn.__name__}: a bare _session_mcp_servers() splice; route it through "
+            "the harness's own _<harness>_session_mcp_servers seam"
         )
         # Each OCCURRENCE carries its own guard, naming its own harness. A search of
         # the whole function body would be satisfied by an unrelated ``if self._is_x``

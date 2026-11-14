@@ -23,6 +23,7 @@ from kiro_crew.acp._dispatch import build_permission_event
 from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL, kas_tool_match_names
 from kiro_crew.agent_sdk import spec_hooks
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
@@ -75,9 +76,12 @@ def test_every_backend_crew_fires_spec_hooks_for_has_a_translation_table():
     assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
     assert ACP_BACKEND_CODEX not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
     assert ACP_BACKEND_MIMOCODE not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
+    # antigravity's file reads never ask, so its table, like codex's, names a call
+    # for the observer events only.
+    assert ACP_BACKEND_ANTIGRAVITY not in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS
     assert frozenset(HARNESS_TOOL_TABLES) == (
         ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS - {ACP_BACKEND_KAS}
-    ) | {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_MIMOCODE}
+    ) | {ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_MIMOCODE}
 
 
 def test_a_kas_shell_call_answers_to_its_kiro_cli_name():

@@ -10991,6 +10991,7 @@
         "keep_it": "Keep it"
       },
       "agentBackendTab": {
+        "antigravity": "Google Antigravity",
         "codex": "OpenAI Codex",
         "copilot": "GitHub Copilot CLI",
         "deepseek": "DeepSeek Harness",

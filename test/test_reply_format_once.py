@@ -585,6 +585,7 @@ COMPACTION_SEEN = {
     "strands": False,
     "deepseek": False,
     "mimocode": False,
+    "antigravity": False,
 }
 
 

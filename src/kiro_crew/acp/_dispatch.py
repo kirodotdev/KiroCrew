@@ -29,6 +29,7 @@ from kiro_crew.acp.harness_tool_names import (  # noqa: F401
     GOOSE_READ_ONLY_BUILTINS,
     MAX_HARNESS_TOOL_NAME_LEN,
     qualified_harness_tool_id,
+    start_event_tool_id,
 )
 from kiro_crew.acp.kas_permissions import CREW_ONLY_ENTRY_KEYS
 from kiro_crew.acp.types import (  # noqa: F401
@@ -70,6 +71,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     RefusalInfo,
 )
 from kiro_crew.acp_backends import (  # noqa: F401
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_DEEPSEEK,
@@ -690,12 +692,28 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.acp._dispatch_parts.tool_call_identity import (  # noqa: F401
         _ACP_SHELL_KIND,
+        _ANTIGRAVITY_COMMAND_KEYS,
+        _ANTIGRAVITY_COMMAND_NAME_PARTS,
+        _ANTIGRAVITY_KNOWN_COMMAND_KEYS,
+        _ANTIGRAVITY_NAME_WORD_RE,
+        _ANTIGRAVITY_PATH_KEYS,
+        _ANTIGRAVITY_PATH_NAME_PARTS,
+        _ANTIGRAVITY_UNVERIFIABLE_KEPT_NAME_PARTS,
+        _ANTIGRAVITY_UNVERIFIABLE_NAME_PARTS,
+        _ANTIGRAVITY_UNVERIFIABLE_NAME_WORDS,
+        _ANTIGRAVITY_UNVERIFIABLE_TOOLS,
         _CODEX_MCP_TOOL_CALL_MARKER,
         _CODEX_WEB_SEARCH_INPUT_TYPE,
         _HARNESS_TOOL_ID_RE,
         _MAX_HARNESS_TOOL_ID_LEN,
         _MCP_IDENTITY_META_CHANNELS,
         ToolCallIdentity,
+        _antigravity_file_uri_paths,
+        _antigravity_name_has,
+        _antigravity_name_words,
+        _antigravity_named_paths,
+        _antigravity_other_commands,
+        _antigravity_stated_commands,
         _harness_identifier,
         _kiro_mcp_server_name,
         _kiro_tool_name,
@@ -704,6 +722,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MetaIdentityChannel,
         _permission_tool_id,
         _str_field,
+        antigravity_call_is_unverifiable,
+        antigravity_command_conflict,
+        antigravity_gate_params,
+        antigravity_unverifiable_params,
         classify_tool_call,
         codex_tool_name,
         harness_tool_name,
@@ -767,6 +789,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         NamedTuple,
         cast,
     )
+    from urllib.parse import (  # noqa: F401
+        unquote,
+        urlsplit,
+    )
+    from urllib.request import url2pathname  # noqa: F401
+
+    from kiro_crew.platform.tool_paths import _TARGET_PATH_MAX_NODES  # noqa: F401
 
 
 def _token_count(value: Any) -> int | float | None:

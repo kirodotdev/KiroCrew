@@ -29,6 +29,10 @@ from kiro_crew.acp._dispatch_parts.surfaced_text import (
 from kiro_crew.acp._dispatch_parts.tool_call_identity import (
     _harness_identifier,
     _permission_tool_id,
+    antigravity_call_is_unverifiable,
+    antigravity_command_conflict,
+    antigravity_gate_params,
+    antigravity_unverifiable_params,
     is_shell_kind,
     meta_builtin_server_names,
 )
@@ -46,6 +50,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_GOOSE,
@@ -1033,6 +1038,51 @@ def build_permission_event(
         tool_name_cache.get(_ck) if (tool_name_cache is not None and tool_call_id) else None
     )
     _mcp_server_name = _cached_server or ""
+    # Antigravity names its command and file targets with keys the gate does not
+    # read; this adds the names it does (a copy, so the cached params stay as sent).
+    # Not for an MCP call, whose arguments are the tool's own.
+    _antigravity_stated_tool = (
+        harness_tool_name_cache.get(_ck, "")
+        if harness_tool_name_cache is not None and tool_call_id
+        else ""
+    )
+    _antigravity_unverifiable = (
+        harness_backend == ACP_BACKEND_ANTIGRAVITY
+        and not _cached_server
+        and antigravity_call_is_unverifiable(_resolved_raw_params, _antigravity_stated_tool)
+    )
+    if _antigravity_unverifiable:
+        # A call no command or path rule can judge (``run_workflow``'s Python, or
+        # ``invoke_subagent``'s sub-agents, whose own calls may never ask) is judged
+        # as a shell call with no command the gate can verify, which the
+        # unverifiable-shell tier refuses on every approval policy. The arguments
+        # that could supply a command are dropped, so none stands in for the call.
+        is_shell = _antigravity_unverifiable
+        _resolved_raw_params = antigravity_unverifiable_params(_resolved_raw_params)
+        tool_input = redact_text(_dumps_degraded(_resolved_raw_params, indent=2))
+        tool_input_redacted = True
+    elif harness_backend == ACP_BACKEND_ANTIGRAVITY and not _cached_server:
+        _stated_params = _resolved_raw_params
+        _resolved_raw_params = antigravity_gate_params(_resolved_raw_params, shell=is_shell)
+        if is_shell and tool_input:
+            try:
+                _rendered = json.loads(tool_input)
+            except (ValueError, TypeError):
+                _rendered = None
+            # shell_command reads the rendered input when the params name no command,
+            # so a conflict must not survive there either.
+            if antigravity_command_conflict(_stated_params) or antigravity_command_conflict(
+                _rendered
+            ):
+                _safe = (
+                    _resolved_raw_params
+                    if isinstance(_resolved_raw_params, dict)
+                    else antigravity_gate_params(_rendered, shell=is_shell)
+                )
+                tool_input = redact_text(_dumps_degraded(_safe, indent=2))
+                # A spelling was dropped, so the shown input is not the whole call.
+                tool_input_redacted = True
+
     # The Crew name of a KAS consent-classified tool, so the deny floor and the
     # governance ceiling are asked about it and not about its title alone. It
     # does NOT set ``_mcp_identity_trusted`` below: that flag records a cache hit.
@@ -1233,7 +1283,12 @@ def build_permission_event(
     # that backend's table.
     elif not _harness_tool_id and harness_tool_name_cache is not None and tool_call_id:
         _harness_tool_id = qualified_harness_tool_id(
-            harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
+            harness_backend,
+            harness_tool_name_cache.get(_ck, ""),
+            harness_mcp_servers,
+            tool_kind=tool_kind,
+            mcp_server=_cached_server or "",
+            mcp_tool=_cached_tool or "",
         )
     # The kiro-cli built-in a claude read tool stands for comes only from the name
     # its preceding tool_call frame stamped (an MCP call's server and tool are read
