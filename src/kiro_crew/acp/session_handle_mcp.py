@@ -201,7 +201,9 @@ _MCP_DRAIN_IDLE_EXIT = 0.25
 # cover a realistic npx cold start (npm resolve + Node boot, observed 1-6s)
 # while bounding the cost for a session whose agent config has no MCP servers
 # at all — the one case that pays the full ceiling, since nothing ever arms
-# the idle exit. Sessions with fast servers are unaffected: their registration
+# the idle exit, unless the caller knows no server can report (a runtime
+# declared MCP-free, or one whose process switched MCP off for a tool-less
+# agent) and passes a zero ceiling. Sessions with fast servers are unaffected: their registration
 # frames are staged during session/new and arm the idle exit immediately.
 _MCP_DRAIN_NO_REPORT_CEILING = 6.0
 # Notification actions that count as "an MCP server reported in" for the

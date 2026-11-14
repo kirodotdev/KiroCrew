@@ -433,7 +433,10 @@ class TestSlotModelSwitchAtomicity:
             assert resp.status == 409
             assert data["code"] == "turn_in_flight"
             assert slot.model == _MODEL_A
-            assert state.sessions.reset.await_args.kwargs == {"skip_if_busy": True}
+            assert state.sessions.reset.await_args.kwargs == {
+                "skip_if_busy": True,
+                "forget_unused_start": True,
+            }
 
     @pytest.mark.asyncio
     async def test_reset_declined_idle_old_session_retries_once(self):
@@ -911,7 +914,10 @@ class TestSlotWorkspaceSwitchAtomicity:
             assert data["code"] == "turn_in_flight"
             assert slot.workspace == "old-ws"
             assert slot.project == "/workspace/old-ws"
-            assert state.sessions.reset.await_args.kwargs == {"skip_if_busy": True}
+            assert state.sessions.reset.await_args.kwargs == {
+                "skip_if_busy": True,
+                "forget_unused_start": True,
+            }
 
     @pytest.mark.asyncio
     async def test_active_turn_is_refused_before_the_commit(self):

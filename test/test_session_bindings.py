@@ -312,7 +312,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "replace_mirror_link_if": ("function", False, "7cf643151494", "links"),
     "reserve_generation": ("function", False, "57eca86d38c3", "links"),
     "reserve_inbound_callback": ("function", False, "b58e9cc18136", "claims"),
-    "reset": ("function", True, "529f943da605", "teardown"),
+    "reset": ("function", True, "18ccb8746d58", "teardown"),
     "restore_queue": ("function", False, "e233ef2976f2", "claims"),
     "resumable_hint": ("function", False, "1eda252b53bd", "claims"),
     "resumable_sid": ("function", False, "4b576121a346", "claims"),

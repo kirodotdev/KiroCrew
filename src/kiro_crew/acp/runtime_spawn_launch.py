@@ -1384,6 +1384,8 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     """The KAS half of :func:`_switch_off_mcp_for_toolless_spawn`."""
     from kiro_crew.acp.client_mcp_array import spec_is_toolless
 
+    # Per spawn: only the process this toggle reached runs with MCP off.
+    runtime._mcp_switched_off = False
     try:
         spec = await asyncio.to_thread(runtime._projected_spawn_spec)
     except Exception:
@@ -1396,6 +1398,7 @@ async def _send_mcp_off_if_toolless(runtime: AcpRuntime) -> None:
     except Exception:
         logger.warning("AcpRuntime: could not switch MCP off for a tool-less agent", exc_info=True)
         return
+    runtime._mcp_switched_off = True
     logger.info(
         "AcpRuntime: agent=%s mounts no tool; MCP servers are off for this process",
         runtime._agent or "<none>",

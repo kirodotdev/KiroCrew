@@ -47,6 +47,7 @@ async def reset(
     clear_conversation: bool = False,
     ends_conversation: bool = False,
     stop_shared_children: bool = False,
+    forget_unused_start: bool = False,
     scope: Any | None = None,
 ) -> bool:
     """Reset a live session while preserving its persistence entry.
@@ -71,6 +72,7 @@ async def reset(
             clear_conversation=clear_conversation,
             ends_conversation=ends_conversation,
             stop_shared_children=stop_shared_children,
+            forget_unused_start=forget_unused_start,
             scope=opened,
         )
 

@@ -975,7 +975,13 @@ async def _reset_slot_session(
         # put a second in flight over the same key.
         await _test_interleave("reset:pre_pop")
     try:
-        reloaded = await state.sessions.reset(session_key, skip_if_busy=skip_if_busy)
+        # ``forget_unused_start``: a session no turn ever prompted (an eager
+        # prewarm the person switched away from before typing) holds no
+        # conversation, so its resume pointer would only make the replacement
+        # refuse its eager start and try an empty ``session/load``.
+        reloaded = await state.sessions.reset(
+            session_key, skip_if_busy=skip_if_busy, forget_unused_start=True
+        )
     except BaseException:
         # Raised or cancelled mid-teardown: the session is in a state this slot
         # cannot vouch for, so neither is its verdict. Unknown fails open.

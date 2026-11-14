@@ -110,7 +110,7 @@ _MEMBERS: dict[str, tuple[str, bool, str, str]] = {
     "reload_provider_factory": ("function", True, "80d446c30ec5", "fleet"),
     "remove": ("function", True, "958babeb61c8", "teardown"),
     "remove_if_unclaimed": ("function", True, "1eda252b53bd", "teardown"),
-    "reset": ("function", True, "696026fd383c", "teardown"),
+    "reset": ("function", True, "5c423b13a12d", "teardown"),
     "retire_kiro_identity_sessions": ("function", True, "0929bcd2b0e5", "identity_retirement"),
     "retire_turn_permit": ("function", False, "a6707a152144", "turn_stop"),
     "set_child_teardown_handler": ("function", False, "fdd1c8c5bbb9", "parent_end"),

@@ -13,7 +13,7 @@ Instance fields written: ``_load_replay_frames``, ``_parked_copies``, ``_session
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_fold_mcp_frame``,
 ``_initialized``, ``_kas_telemetry_sent``,
-``_mcp_gateway_overlay``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
+``_mcp_gateway_overlay``, ``_mcp_switched_off``, ``_open_mcp_report``, ``_park_in_start_agent``, ``_pid``,
 ``_pool_lookup``, ``_record_tree_in_background``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``,
@@ -822,10 +822,13 @@ async def _wait_managed_mcp(
             )
         else:
             # An external-only agent still needs the ordinary OAuth/config
-            # drain, even though it has no managed readiness requirement.
+            # drain, even though it has no managed readiness requirement. A
+            # process with MCP switched off starts no server, so no report can
+            # ever arm the drain: holding for one would only spend the ceiling.
+            expects_report = self._expect_mcp_reports and not self._mcp_switched_off
             await handle.drain_init(
                 stale_report_frames=stale_report_frames,
-                no_report_ceiling=None if self._expect_mcp_reports else 0.0,
+                no_report_ceiling=None if expects_report else 0.0,
             )
         # Best effort, never required: a slow or dead one must not block the start.
         # Which servers, and why not the user's own when a person is waiting:

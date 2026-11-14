@@ -564,7 +564,9 @@ class TestSessionReload:
 
         assert resp.status == 200
         assert data == {"ok": True}
-        state.sessions.reset.assert_awaited_once_with("dashboard:s1", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "dashboard:s1", skip_if_busy=True, forget_unused_start=True
+        )
         # The feed carries the durable confirmation, tagged so the follow-up
         # options / continuable scans skip it (isSystemNoticeKind frontend twin).
         notice, outcome = slot.messages[-2:]
@@ -938,7 +940,9 @@ class TestSessionReload:
             resp = await client.post("/api/chat/slots/s1/reload")
 
         assert resp.status == 200
-        state.sessions.reset.assert_awaited_once_with("slack:123.456", skip_if_busy=True)
+        state.sessions.reset.assert_awaited_once_with(
+            "slack:123.456", skip_if_busy=True, forget_unused_start=True
+        )
 
     @pytest.mark.asyncio
     async def test_reload_refused_while_subagents_attached(self, tmp_path, monkeypatch):
