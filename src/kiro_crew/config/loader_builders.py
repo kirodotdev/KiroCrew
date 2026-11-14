@@ -1196,6 +1196,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
             _sections.SEARCH_SCAN_WINDOW_MIN,
             _sections.SEARCH_SCAN_WINDOW_MAX,
         ),
+        semantic_search=section.read("semantic_search", _safe_bool),
         watchdog_rss_max_mb=section.read("watchdog_rss_max_mb", _safe_int),
         watchdog_end_leftovers_mid_turn=section.read("watchdog_end_leftovers_mid_turn", _safe_bool),
         harness_background_hold_secs=_load_background_hold_secs(section),
