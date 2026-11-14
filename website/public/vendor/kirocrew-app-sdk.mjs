@@ -17,6 +17,8 @@ export const {
   PullRequestPanel,
   // Issue lists behind the app's declared `/api/source/issues` (level 6).
   useIssues, IssueList, IssueCard,
+  // The dashboard's project picker behind the app's declared listing paths (level 7).
+  ProjectPicker,
   defaultMessageRenderers, mergeRenderers, resolveRenderer, ToolCallPill, GROUPED_ROLES,
   // WS event scope prediction, so a subscription that will never be delivered warns at
   // development time instead of silently receiving nothing.

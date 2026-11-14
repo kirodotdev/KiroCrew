@@ -66,6 +66,9 @@
     "pullRequestPanel": {
       "not_declared": "This app can't show pull requests: its permissions don't declare {{path}}."
     },
+    "projectPicker": {
+      "not_declared": "This app can't show the project picker: its permissions don't declare {{path}}."
+    },
     "issues": {
       "assigned_to": "Assigned to {{names}}",
       "assigned_to_me": "Assigned to me",
