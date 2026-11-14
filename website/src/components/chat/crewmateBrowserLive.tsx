@@ -7,22 +7,13 @@
  *  replay, takeover and the sign-in sheet. The card is the person's own view of
  *  the browser and the place they answer its asks, so it is not machinery. */
 import BrowserLiveCard, { browserLiveAnchor, isBrowserToolMessage } from '../../pages/chat/BrowserLiveCard'
-import { isTurnEnd, opensDisplayTurn } from '../../pages/chat/groupDisplayItems'
+import { isTurnEnd, opensRunTurn } from '../../pages/chat/groupDisplayItems'
 import type { MessageRenderer } from '../../app-sdk/messageRenderers'
 import type { ChatMessage } from '../../types'
 import { filterCrewmateChat, isCrewmateChatRow } from './crewmateBubbles'
 
 /** The role a turn's first `browser` call is drawn under in a crewmate's chat. */
 export const CREWMATE_BROWSER_ROLE = 'crewmate_browser_live'
-
-/** A row that starts the next turn's card. A steer (`meta.steer`, whatever its
- *  role: a typed one or a wake steered in) belongs to the turn already running.
- *  So does a parked send: drawn as a bubble (`withQueuedAsBubbles`), or written
- *  at send time with `queuedEntryId` while the running turn goes on below it.
- *  The parked turn starts once the running one ends (`isTurnEnd`). */
-function opensCardTurn(m: ChatMessage): boolean {
-  return opensDisplayTurn(m) && !m.meta?.steer && !m.meta?.queuedBubble && !m.meta?.queuedEntryId
-}
 
 /** `filterCrewmateChat`, plus each turn's first `browser` call as a card row.
  *  Read over the unfiltered rows, so a patrol wake (a nudge or inject row the
@@ -33,7 +24,7 @@ export function filterCrewmateChatWithBrowser(messages: ChatMessage[]): ChatMess
   const out: ChatMessage[] = []
   let card = -1 // where this turn's card row sits in `out`; -1 until it browses
   for (const m of messages) {
-    if (opensCardTurn(m)) {
+    if (opensRunTurn(m)) {
       if (card >= 0) out[card] = { ...out[card], meta: { ...out[card].meta, cardTurnOver: true } }
       card = -1
     }

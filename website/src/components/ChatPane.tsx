@@ -17,6 +17,7 @@ import { DeliveryWarningStrip } from './DeliveryWarningStrip'
 import { useDeliveryWarningStrip } from './useDeliveryWarningStrip'
 import { mergePaneSends, type PaneSentRestore } from './useChatPaneSend'
 import { busySteerFlag } from './chat-input/busySend'
+import { stagedProjectTurnKey } from './chat-input/stagedProject'
 import { withQueuedAsBubbles } from './chat/crewmateBubbles'
 import { filterCrewmateChatWithBrowser } from './chat/crewmateBrowserLive'
 import { BROWSER_HANDBACK_CHAT_EVENT } from '../api/client/browserLive'
@@ -363,6 +364,8 @@ export default function ChatPane({
     () => (crewmate ? filterCrewmateChatWithBrowser(withQueuedAsBubbles(allMessages, queuedMessages)) : paneMessages),
     [crewmate, allMessages, paneMessages, queuedMessages],
   )
+  // A queued turn opens without the composer going idle (#20350).
+  const projectTurnKey = useMemo(() => stagedProjectTurnKey(messages), [messages])
   // This pane shows the chat's transcript once it has rows; a bell note for a
   // cron run is read against that, and a closed pane drops out (#23564).
   // The scroller is what the on-screen backstop probes.
@@ -1268,6 +1271,7 @@ export default function ChatPane({
             : paneRunsHere === undefined ? 'pending' : 'local'}
           hiddenCommands={paneHiddenCommands}
           isRunning={composerBusy}
+          projectTurnKey={projectTurnKey}
           onStop={onStop}
           isQueued={stopUnderWay}
           stopState={paneStopState}

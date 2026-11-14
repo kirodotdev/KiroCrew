@@ -305,6 +305,10 @@ export interface ChatInputProps {
   /** Show used/window token counts in the inline context readout. */
   showContextTokens?: boolean
   isRunning?: boolean
+  /** Names the chat's current turn (`stagedProjectTurnKey`), so a queued turn
+   *  that starts without the composer going idle re-takes the start project
+   *  the staged-pick badge compares against (#20350). */
+  projectTurnKey?: string
   /** Lock the project chip: the composer is busy only because sub-agents are
    *  attached. A pick there cannot land at the next turn, because the deferred
    *  session reset stays armed while children share the runtime. */
@@ -430,6 +434,10 @@ export interface ChatInputProps {
    *  drop, no `!` shell). The context popover shows the reading only, without
    *  this machine's auto-compact slider. */
   sessionOnPeer?: boolean
+  /** The running reply's own project as the server reports it (the slot's
+   *  `turn_project`). Preferred over the composer's start-of-response
+   *  snapshot, which a reload would take from a mid-reply pick. */
+  turnProject?: string | null
   /** Checked-out branch of the active project (or short SHA when detached). */
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
