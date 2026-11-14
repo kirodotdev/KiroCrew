@@ -157,6 +157,8 @@ async def test_no_expiry_reaches_the_provider_as_none(store, expiring):
     await publish_sync.publish("d", provider_name="expiring", expires_in_days=None)
 
     assert provider.called("expiry") == [{"expires_in_days": None}]
+    pub = store.get("d").publication
+    assert (pub.provider, pub.last_synced_kirocrew_version) == ("expiring", 1)
 
 
 @pytest.mark.asyncio
