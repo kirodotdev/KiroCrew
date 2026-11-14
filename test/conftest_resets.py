@@ -547,6 +547,23 @@ def _disable_dev_fleet_background_tasks(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_dev_fleet_service_reads(_floor_monkeypatch):
+    """Start each test with no cached start identity and no in-flight service read.
+
+    ``dev_fleet.live_service`` keeps the health route's start-id cache and the two
+    in-flight tasks (start id, service probe) as process globals. A value one test
+    cached would answer the next test's ``/api/health`` inside the TTL, and a task
+    left in flight belongs to that test's closed event loop. Patched only when the
+    module is already imported, so a test that never loads Dev Fleet pays nothing.
+    """
+    live_service = sys.modules.get("kiro_crew.apps.builtins.dev_fleet.live_service")
+    if live_service is not None:
+        _floor_monkeypatch.setattr(live_service, "_GATEWAY_START_ID_CACHE", None)
+        _floor_monkeypatch.setattr(live_service, "_GATEWAY_START_ID_INFLIGHT", None)
+        _floor_monkeypatch.setattr(live_service, "_GATEWAY_SERVICE_INFLIGHT", None)
+
+
+@pytest.fixture(autouse=True)
 def _no_restart_ready_timeout_override(_floor_monkeypatch):
     """Keep a developer's ``KIROCREW_RESTART_READY_TIMEOUT`` out of every test.
 
