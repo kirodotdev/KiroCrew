@@ -145,14 +145,10 @@ def bind_pending_approval(
     """
     try:
         from kiro_crew.notifications.bridge_actions import bridge_clock
-        from kiro_crew.notifications.bridge_transport import REPLY_TRANSPORTS, reply_owner
+        from kiro_crew.notifications.bridge_transport import bound_owner
 
         registry = getattr(state, "bridge_actions", None)
-        owner = getattr(state, "owner_id", "")
-        if not isinstance(owner, str) or not owner:
-            owner = next(
-                (found for name in REPLY_TRANSPORTS if (found := reply_owner(state, name))), ""
-            )
+        owner = bound_owner(state)
         remaining = deadline - bridge_clock()
         if registry is None or not owner or remaining <= 0:
             return ""
