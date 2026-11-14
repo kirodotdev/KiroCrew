@@ -558,15 +558,16 @@ describe('ChatPanel reply markdown', () => {
     expect(screen.queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument()
   })
 
-  it('leaves a remote image for the browser to load', async () => {
+  it('holds a remote image behind a click, like the main chat', async () => {
     // `.svg` is outside the extension list the reply renderer lifts paths out
     // with, so this reference survives into the markdown image component — the
     // one place the local-vs-remote decision is actually made.
     history = [turn('assistant', '![banner](https://example.com/banner.svg)')]
     const { container } = await renderPanel()
-    await waitFor(() =>
-      expect(container.querySelector('img[src="https://example.com/banner.svg"]')).not.toBeNull(),
-    )
+    const load = await screen.findByRole('button', { name: /click to load/i })
+    expect(container.querySelector('img[src="https://example.com/banner.svg"]')).toBeNull()
+    await userEvent.click(load)
+    expect(container.querySelector('img[src="https://example.com/banner.svg"]')).not.toBeNull()
     // Nothing local about it, so the app-api reader is not involved.
     expect(readLocalImage).not.toHaveBeenCalled()
   })

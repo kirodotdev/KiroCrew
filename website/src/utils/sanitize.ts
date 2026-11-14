@@ -450,6 +450,44 @@ function exfilBlobHit(value: string): boolean {
   return false
 }
 
+// Query values judged JOINED, in order, separators removed, so a secret cut into
+// several short params (each under the 40-char run, the query under the length
+// signal) is still seen. Mirrors the backend's `exfil_git_object` join helpers.
+// The credential signal joins every value, with any inner `=` both kept and
+// removed. The blob signal form-decodes each value (`+` is a space, so search
+// words never join), cuts it at `=` (so `a=x=y` joins like `a=x&b=y`) and joins
+// only pieces wholly in the base64 class and at least EXFIL_JOINED_B64_MIN_PIECE
+// chars: short ids and words (a video id, `index=2`) are what ordinary links
+// carry, and a piece with any other byte cannot sit in one run on its own. Such a
+// piece is skipped, not a break, so filler params between chunks do not split a
+// secret. A bare git object name is skipped too, so its carve-out above holds
+// when a neighbour param follows it. Parameter names are not joined.
+// shortcut: a secret cut into pieces under 16 chars is bounded only by the
+// length signal.
+const EXFIL_B64_PIECE_RE = /^[A-Za-z0-9+/]*$/
+const EXFIL_JOINED_B64_MIN_PIECE = 16
+function queryValues(query: string): string[] {
+  return query.split('&').map((segment) => {
+    const eq = segment.indexOf('=')
+    return eq === -1 ? '' : segment.slice(eq + 1)
+  })
+}
+function joinedCredentialHit(query: string): boolean {
+  const joined = queryValues(query).join('')
+  return EXFIL_CREDENTIAL_RE.test(joined) || EXFIL_CREDENTIAL_RE.test(joined.split('=').join(''))
+}
+function formDecode(v: string): string {
+  const spaced = v.replace(/\+/g, ' ')
+  try { return decodeURIComponent(spaced) } catch { return spaced }
+}
+function joinedBlobHit(query: string): boolean {
+  const joined = queryValues(query)
+    .flatMap((v) => formDecode(v).split('='))
+    .filter((p) => p.length >= EXFIL_JOINED_B64_MIN_PIECE && EXFIL_B64_PIECE_RE.test(p) && !EXFIL_GIT_OBJECT_NAME_RE.test(p))
+    .join('')
+  return exfilBlobHit(joined)
+}
+
 // Aggregate query LENGTH is the one signal that names no shape at all: it fires on
 // any richly-parameterised URL, which is why prefilled issue links —
 // `…/issues/new?title=…&body=<a paragraph of prose>&labels=…` — render as a
@@ -502,7 +540,9 @@ export function sanitizeExfiltrationUrls(text: string): string {
     const redact = hit ||
       EXFIL_PERCENT_RE.test(query) ||
       EXFIL_CREDENTIAL_RE.test(query) ||
+      joinedCredentialHit(query) ||
       exfilBlobHit(query) ||
+      joinedBlobHit(query) ||
       query.length >= EXFIL_QUERY_MIN_LEN
     if (redact) {
       out += text.slice(last, m.index) + i18nT('utils.sanitize.redacted_suspicious_url', { domain })
