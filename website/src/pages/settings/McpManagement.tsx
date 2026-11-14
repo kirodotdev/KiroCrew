@@ -4,6 +4,7 @@ import { AlertTriangle, Check, ExternalLink, ListChecks, RefreshCw, Server as Se
 import {
   api,
   ApiError,
+  type McpCwdUse,
   type McpGatewayFootprint,
   type McpManagedServer,
   type McpMeasureProgress,
@@ -47,6 +48,7 @@ import {
   sharedWithoutSupport,
   waitForMeasurePass,
   autoShareCandidates,
+  needsCwdAnswer,
   reloadChats,
   settleSkipped,
   staleDisplayLaunch,
@@ -63,6 +65,7 @@ import {
   ShareAction,
 } from './McpManagementLaunchReview'
 import { AssessmentView } from './McpManagementAssessment'
+import { CwdQuestionDialog } from './McpManagementCwdQuestion'
 import {
   ApprovalCard,
   ConfirmReload,
@@ -253,8 +256,8 @@ export function McpManagement({
 
   const setStub = useMutation({
     // `refused` is the stored refusal's own `expected_launch` behind the press.
-    mutationFn: ({ name, stub, expectedLaunch }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string }) =>
-      api.mcpGatewaySetStub(name, stub, expectedLaunch),
+    mutationFn: ({ name, stub, expectedLaunch, cwdUse }: { name: string; stub: boolean; expectedLaunch?: string; refused?: string; cwdUse?: McpCwdUse }) =>
+      cwdUse ? api.mcpGatewaySetStub(name, stub, expectedLaunch, false, cwdUse) : api.mcpGatewaySetStub(name, stub, expectedLaunch),
     onSuccess: async (res, vars) => {
       invalidate()
       dropCurrentLaunch(vars.name)
@@ -289,6 +292,39 @@ export function McpManagement({
     },
     onError: (err, name) => {
       setError(i18nT(launchPreviewErrorKey(err), { name }))
+    },
+  })
+
+  // The working-folder question, asked before a server that is not Kiro Crew's
+  // own is shared, and once for a server shared before the question existed.
+  // "No" on an unshared row goes on to share it; "Yes" or "Not sure" on a
+  // shared row takes it off sharing, since it would act on the wrong project.
+  // An approval asked from a shared row carries `approve`: its "No" sends that
+  // approval with the answer in one request.
+  const [cwdAsk, setCwdAsk] = useState<{
+    name: string
+    routed: boolean
+    approve?: { expectedLaunch: string; refused?: string }
+  } | null>(null)
+  const answerCwd = useMutation({
+    mutationFn: ({ name, answer, routed }: { name: string; answer: McpCwdUse; routed: boolean }) =>
+      answer === 'uses_cwd' && routed
+        ? api.mcpGatewaySetStub(name, false, undefined, false, answer)
+        : api.mcpGatewaySetCwdUse(name, answer),
+    onSuccess: (res, vars) => {
+      setCwdAsk(null)
+      invalidate()
+      if (vars.answer === 'not_used') {
+        if (!vars.routed) previewLaunch.mutate(vars.name)
+      } else {
+        setNotice(i18nT('pages.mcpManagement.cwd_kept_per_chat', { name: vars.name }))
+        if (vars.routed && res?.restart_required) setRestartNotice(i18nT('pages.mcpManagement.stub_restart_required'))
+      }
+    },
+    onError: (err, vars) => {
+      setCwdAsk(null)
+      invalidate()
+      setError(i18nT(stubErrorKey(err), { name: vars.name }))
     },
   })
 
@@ -446,7 +482,8 @@ export function McpManagement({
     },
   })
 
-  const busy = setStub.isPending || setSharing.isPending || previewLaunch.isPending || turnOn.isPending
+  const busy =
+    setStub.isPending || setSharing.isPending || previewLaunch.isPending || turnOn.isPending || answerCwd.isPending
 
   // "Reload <m> chats": the dashboard's own per-chat reload, one chat at a
   // time, after a confirm. A busy chat is refused by the gateway and skipped.
@@ -489,7 +526,7 @@ export function McpManagement({
   // stubbable-and-not-yet-stubbed keeps the control honest either way, because a
   // press that finds nothing qualifying reports exactly that.
   const stubbableNames = useMemo(
-    () => servers.filter(s => s.can_stub && !s.stub).map(s => s.name),
+    () => servers.filter(s => s.can_stub && !s.stub && !needsCwdAnswer(s)).map(s => s.name),
     [servers],
   )
 
@@ -514,8 +551,10 @@ export function McpManagement({
       qc.setQueryData(['mcpGatewayServers'], fresh)
       // Not an eligibility test: each write sends `resolve_eligibility`, and the
       // server's `_stub_eligibility` decides and reports what it skipped.
+      // A server waiting for the working-folder answer is asked one at a time
+      // from its own row, never shared in bulk.
       const candidates = (fresh?.servers ?? [])
-        .filter(s => s.can_stub && !s.stub)
+        .filter(s => s.can_stub && !s.stub && !needsCwdAnswer(s))
         .map(s => s.name)
       const plan: Array<{ name: string; expected: string }> = []
       const unreadable: string[] = []
@@ -639,6 +678,14 @@ export function McpManagement({
   // block; a moved-past refusal instead brings the launch the block then
   // shows, with an error above it asking for its approval.
   const approveFromReview = async (name: string, expectedLaunch: string, refused?: string): Promise<ReviewAnswer> => {
+    const server = servers.find(s => s.name === name)
+    if (server && needsCwdAnswer(server)) {
+      // The approval needs the working-folder answer first: ask it, and send
+      // the approval with a "No".
+      closeReview()
+      setCwdAsk({ name, routed: true, approve: { expectedLaunch, refused } })
+      return null
+    }
     try {
       const res = await api.mcpGatewaySetStub(name, true, expectedLaunch)
       dropCurrentLaunch(name)
@@ -818,6 +865,8 @@ export function McpManagement({
               // row (rowState), so this is ShareAction's two-button branch.
               const pausedControls = refusal !== undefined && launchIsApprovable(refusal)
               const hintId = `mcp-share-hint-${s.name}`
+              // Shared before the working-folder question existed: asked once here.
+              const cwdUnanswered = s.stub && needsCwdAnswer(s)
               const detailsOpen = openDetails.has(s.name)
               const describedBy = hint ? hintId : detailsOpen ? detailsWhyId(s.name) : undefined
               return (
@@ -889,13 +938,18 @@ export function McpManagement({
                           setError(null)
                           setRestartNotice(null)
                           setLaunchMovedFor(null)
-                          previewLaunch.mutate(s.name)
+                          if (needsCwdAnswer(s)) setCwdAsk({ name: s.name, routed: false })
+                          else previewLaunch.mutate(s.name)
                         }}
                         onConfirm={expectedLaunch => {
                           setError(null)
                           setRestartNotice(null)
                           setLaunchMovedFor(null)
-                          setStub.mutate({ name: s.name, stub: true, expectedLaunch, refused: stored?.expected_launch })
+                          if (needsCwdAnswer(s)) {
+                            setCwdAsk({ name: s.name, routed: true, approve: { expectedLaunch, refused: stored?.expected_launch } })
+                          } else {
+                            setStub.mutate({ name: s.name, stub: true, expectedLaunch, refused: stored?.expected_launch })
+                          }
                         }}
                         onStop={() => {
                           setError(null)
@@ -914,6 +968,29 @@ export function McpManagement({
                         className="block px-3 pb-3 pt-0 text-[12.5px] text-[var(--muted)] md:table-cell md:px-4"
                       >
                         {hint}
+                      </td>
+                    </tr>
+                  )}
+                  {cwdUnanswered && (
+                    <tr className="block md:table-row">
+                      <td
+                        colSpan={4}
+                        className="block px-3 pb-3 pt-0 text-[12.5px] text-[var(--muted)] md:table-cell md:px-4"
+                      >
+                        <span>{i18nT('pages.mcpManagement.cwd_unanswered_hint')}</span>{' '}
+                        <button
+                          type="button"
+                          disabled={busy}
+                          aria-labelledby={`mcp-cwd-answer-${s.name} ${serverNameId(s.name)}`}
+                          onClick={() => {
+                            setError(null)
+                            setRestartNotice(null)
+                            setCwdAsk({ name: s.name, routed: true })
+                          }}
+                          className="text-[var(--accent)] hover:underline disabled:opacity-60"
+                        >
+                          <span id={`mcp-cwd-answer-${s.name}`}>{i18nT('pages.mcpManagement.cwd_unanswered_answer')}</span>
+                        </button>
                       </td>
                     </tr>
                   )}
@@ -1107,6 +1184,20 @@ export function McpManagement({
         currentLaunches={currentLaunches}
         onApprove={approveFromReview}
         onClose={closeReview}
+      />
+      <CwdQuestionDialog
+        name={cwdAsk?.name ?? null}
+        busy={answerCwd.isPending}
+        onCancel={() => setCwdAsk(null)}
+        onAnswer={answer => {
+          if (!cwdAsk) return
+          if (answer === 'not_used' && cwdAsk.approve) {
+            setCwdAsk(null)
+            setStub.mutate({ name: cwdAsk.name, stub: true, ...cwdAsk.approve, cwdUse: answer })
+          } else {
+            answerCwd.mutate({ name: cwdAsk.name, routed: cwdAsk.routed, answer })
+          }
+        }}
       />
       <ConfirmReload
         open={confirmReload}

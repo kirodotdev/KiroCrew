@@ -17120,7 +17120,20 @@
       "footprint_owner_only": "I dati sulla memoria sono visibili solo al proprietario della crew.",
       "review_what_approve_does": "Approva: una sola copia lo esegue per tutte le chat, fuori dalla loro sandbox. Salta: continua a girare dentro ogni chat.",
       "share_risk": "Fuori dalla sandbox, un server condiviso può leggere e modificare i tuoi file, come un programma che avvii tu.",
-      "review_when_safe": "Approva un server se l’hai aggiunto tu e il comando mostrato è quello che ti aspetti."
+      "review_when_safe": "Approva un server se l’hai aggiunto tu e il comando mostrato è quello che ti aspetti.",
+      "cwd_question_title": "{{name}} lavora sui file del progetto in cui sei?",
+      "cwd_question_help": "Alcuni server agiscono sulla cartella in cui gira la chat, per esempio un server git, di file o di ricerca nel codice. Ad altri non importa, per esempio un server Jira o Slack.",
+      "cwd_question_why": "Un server condiviso gira in una cartella fissa fuori dal tuo progetto, condivisa da tutte le chat. Un server che lavora sui file del progetto agirebbe sul progetto sbagliato.",
+      "cwd_question_yes": "Sì, lavora sulla cartella del progetto",
+      "cwd_question_yes_hint": "Uno per chat, non condiviso.",
+      "cwd_question_no": "No, la cartella non gli importa",
+      "cwd_question_no_hint": "Una sola copia per tutte le chat.",
+      "cwd_question_unsure": "Non so",
+      "cwd_question_unsure_hint": "Vale come Sì. È la scelta sicura.",
+      "cwd_kept_per_chat": "{{name}} continua a girare dentro ogni chat.",
+      "cwd_unanswered_hint": "Questo server è condiviso. Lavora sui file del tuo progetto?",
+      "cwd_unanswered_answer": "Rispondi",
+      "stub_error_cwd_unanswered": "Prima di condividere {{name}}, rispondi se lavora sui file del tuo progetto."
     },
     "migrationPage": {
       "app_migration": "Migrazione dell'app",

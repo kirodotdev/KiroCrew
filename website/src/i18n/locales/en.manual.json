@@ -7866,7 +7866,20 @@
       "footprint_owner_only": "Memory figures are visible to the crew owner only.",
       "review_what_approve_does": "Approve: one copy runs this for all chats, outside their sandbox. Skip: it keeps running inside each chat.",
       "share_risk": "Outside the sandbox, a shared server can read and change your files, like a program you start yourself.",
-      "review_when_safe": "Approve a server if you added it yourself and the command shown is what you expect."
+      "review_when_safe": "Approve a server if you added it yourself and the command shown is what you expect.",
+      "cwd_question_title": "Does {{name}} work on the files of the project you are in?",
+      "cwd_question_help": "Some servers act on the folder a chat runs in, for example a git, file or code-search server. Others do not care, for example a Jira or Slack server.",
+      "cwd_question_why": "A shared server runs in one fixed folder outside your project, shared by every chat. A server that works on project files would act on the wrong project.",
+      "cwd_question_yes": "Yes, it works on the project folder",
+      "cwd_question_yes_hint": "Keeps it per chat, not shared.",
+      "cwd_question_no": "No, it does not care which folder",
+      "cwd_question_no_hint": "Share one copy across chats.",
+      "cwd_question_unsure": "Not sure",
+      "cwd_question_unsure_hint": "Treated as Yes. This is the safe choice.",
+      "cwd_kept_per_chat": "{{name}} keeps running inside each chat.",
+      "cwd_unanswered_hint": "This server is shared. Does it work on your project's files?",
+      "cwd_unanswered_answer": "Answer",
+      "stub_error_cwd_unanswered": "Answer whether {{name}} works on your project's files before sharing it."
     },
     "migrationPage": {
       "clean_up_old_entry": "Clean up old entry",

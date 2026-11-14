@@ -182,16 +182,45 @@ def _resolve_stub_servers(mcp_gateway_data: dict) -> list[str]:
     Roster order is preserved (the resolver has always handed back what the file
     held, duplicates included, and ``_freeze_stub_servers`` is what normalizes on
     write); servers added by an override are appended in sorted order, because
-    they have no position in the file to preserve.
+    they have no position in the file to preserve. A server ``mcp_gateway.cwd_use``
+    answers ``uses_cwd`` is dropped last, whatever put it in.
     """
     roster = _resolve_stub_base(mcp_gateway_data)
     overrides = _resolve_stub_overrides(mcp_gateway_data)
-    if not overrides:
-        return roster
-    resolved = [name for name in roster if overrides.get(name, True)]
-    already = set(resolved)
-    resolved.extend(name for name, on in sorted(overrides.items()) if on and name not in already)
-    return resolved
+    if overrides:
+        resolved = [name for name in roster if overrides.get(name, True)]
+        already = set(resolved)
+        resolved.extend(
+            name for name, on in sorted(overrides.items()) if on and name not in already
+        )
+    else:
+        resolved = roster
+    # A server the operator said works on the project folder is never routed: a
+    # routed backend runs in one fixed directory, so it would act on the wrong one.
+    cwd_use = _resolve_cwd_use(mcp_gateway_data)
+    return [name for name in resolved if cwd_use.get(name) != _CWD_USES]
+
+
+#: ``mcp_gateway.cwd_use`` values: the operator's answer to "does this server
+#: work on the files of the project a chat runs in?". Absent means unanswered.
+_CWD_USES = "uses_cwd"
+_CWD_NOT_USED = "not_used"
+_CWD_ANSWERS = frozenset({_CWD_USES, _CWD_NOT_USED})
+
+
+def _resolve_cwd_use(mcp_gateway_data: dict) -> dict[str, str]:
+    """The operator's per-server working-directory answers, unknown values dropped.
+
+    A dropped value reads as unanswered, which never routes a server that is not
+    routed already (the dashboard asks before routing), so a typo cannot share a
+    server the operator did not clear.
+    """
+    raw = _safe_dict(mcp_gateway_data.get("cwd_use", {}))
+    return {
+        name: value
+        for name, value in raw.items()
+        if isinstance(name, str) and name and isinstance(value, str) and value in _CWD_ANSWERS
+    }
 
 
 @dataclass
@@ -659,6 +688,20 @@ class McpGatewayConfig:
             "without pinning yourself to today's roster. Written by MCP "
             "Management when a toggle disagrees with the roster, and dropped "
             "again when you toggle it back to agree. Empty by default.",
+            restart=True,
+        ),
+    )
+    cwd_use: dict[str, str] = field(
+        default_factory=dict,
+        metadata=_meta(
+            "Working Folder Answers",
+            "Per server, whether it works on the files of the project a chat runs "
+            "in: uses_cwd (it does) or not_used (it does not care which folder). "
+            "A routed server runs in one fixed folder outside the project, shared "
+            "by every chat, so MCP Management routes a server only after it is "
+            "answered not_used, and a server answered uses_cwd is never routed. "
+            "Kiro Crew's own servers are not asked: they never read the folder. "
+            "A server missing here is unanswered. Written by MCP Management.",
             restart=True,
         ),
     )

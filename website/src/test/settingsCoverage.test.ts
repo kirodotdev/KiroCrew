@@ -82,6 +82,7 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'McpManagement.tsx': 'rendered on the MCP Servers page (`/mcp`), not on a Settings tab — a settings deep link would be dead; its per-server switches are table rows keyed by server, not Settings* primitives',
   'McpManagementAssessment.tsx': "McpManagement.tsx's read-only Sharing assessment view, rendered on the MCP Servers page (`/mcp`), zero settings",
   'McpManagementLaunchReview.tsx': "McpManagement.tsx's launch review and refused-row panels, per-server approvals rather than settings, rendered on the MCP Servers page (`/mcp`)",
+  'McpManagementCwdQuestion.tsx': "McpManagement.tsx's working-folder question dialog, a per-server answer asked before sharing, rendered on the MCP Servers page (`/mcp`), zero settings",
   'McpManagementHero.tsx': "McpManagement.tsx's hero, reload banner and approval card, rendered on the MCP Servers page (`/mcp`), zero settings",
   'MobileLoginCard.tsx': 'mint-a-sign-in-link action card; the link it returns is a one-time credential, not a persistent setting',
   'OptionalSdkCard.tsx': 'read-only install-command card the Feishu, Teams and WhatsApp panels mount when their optional SDK is missing; zero controls, only a copy button',

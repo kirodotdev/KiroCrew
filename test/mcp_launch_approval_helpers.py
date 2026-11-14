@@ -99,8 +99,10 @@ def _stub_request(body: dict):
     from dashboard_owner_helpers import owner_claims
 
     request = MagicMock(spec=web.Request)
+    from handlers_mcp_coverage_helpers import _with_cwd_answer
+
     request.app = {"state": SimpleNamespace(_mcp_gateway_apply_stub=None)}
-    attach_body(request, body)
+    attach_body(request, _with_cwd_answer(body))
     return owner_claims(request)
 
 

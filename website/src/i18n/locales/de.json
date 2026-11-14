@@ -16687,7 +16687,20 @@
       "footprint_owner_only": "Die Speicherwerte sieht nur der Crew-Eigentümer.",
       "review_what_approve_does": "Freigeben: Eine Kopie führt dies für alle Chats aus, außerhalb ihrer Sandbox. Überspringen: Es läuft weiter in jedem Chat.",
       "share_risk": "Außerhalb der Sandbox kann ein geteilter Server deine Dateien lesen und ändern, wie ein Programm, das du selbst startest.",
-      "review_when_safe": "Gib einen Server frei, wenn du ihn selbst hinzugefügt hast und der angezeigte Befehl deiner Erwartung entspricht."
+      "review_when_safe": "Gib einen Server frei, wenn du ihn selbst hinzugefügt hast und der angezeigte Befehl deiner Erwartung entspricht.",
+      "cwd_question_title": "Arbeitet {{name}} mit den Dateien des Projekts, in dem du bist?",
+      "cwd_question_help": "Manche Server arbeiten mit dem Ordner, in dem ein Chat läuft, zum Beispiel ein Git-, Datei- oder Code-Such-Server. Anderen ist das egal, zum Beispiel einem Jira- oder Slack-Server.",
+      "cwd_question_why": "Ein geteilter Server läuft in einem festen Ordner außerhalb deines Projekts, den alle Chats teilen. Ein Server, der mit Projektdateien arbeitet, würde am falschen Projekt arbeiten.",
+      "cwd_question_yes": "Ja, er arbeitet mit dem Projektordner",
+      "cwd_question_yes_hint": "Einer pro Chat, nicht geteilt.",
+      "cwd_question_no": "Nein, der Ordner ist ihm egal",
+      "cwd_question_no_hint": "Eine Kopie für alle Chats.",
+      "cwd_question_unsure": "Nicht sicher",
+      "cwd_question_unsure_hint": "Zählt als Ja. Das ist die sichere Wahl.",
+      "cwd_kept_per_chat": "{{name}} läuft weiter in jedem Chat selbst.",
+      "cwd_unanswered_hint": "Dieser Server wird geteilt. Arbeitet er mit den Dateien deines Projekts?",
+      "cwd_unanswered_answer": "Antworten",
+      "stub_error_cwd_unanswered": "Sag vor dem Teilen, ob {{name}} mit den Dateien deines Projekts arbeitet."
     },
     "migrationPage": {
       "app_migration": "App-Migration",
