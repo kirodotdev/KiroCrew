@@ -1027,20 +1027,31 @@ class TestClaude55Rows:
     @pytest.mark.parametrize(
         "pin",
         [
-            "claude-fable-5.1",
-            "claude-fable-5-1",
-            "claude-fable-5-1[1m]",
-            "global.anthropic.claude-fable-5-1[1m]",
+            # kiro-cli advertises claude-fable-5.1, so a kiro pin of it must not be refused.
+            *(
+                pytest.param(pin, id=f"no_fable_5_1_spelling_lacks_an_acp_id-{pin}")
+                for pin in (
+                    "claude-fable-5.1",
+                    "claude-fable-5-1",
+                    "claude-fable-5-1[1m]",
+                    "global.anthropic.claude-fable-5-1[1m]",
+                )
+            ),
+            *(
+                pytest.param(
+                    pin, id=f"a_kiro_served_row_auto_or_an_unknown_id_does_not_lack_one-{pin}"
+                )
+                for pin in (
+                    "claude-opus-4.8",
+                    "claude-opus-5-5",
+                    "auto",
+                    "",
+                    "not-a-registered-model",
+                )
+            ),
         ],
     )
-    def test_no_fable_5_1_spelling_lacks_an_acp_id(self, pin):
-        # kiro-cli advertises claude-fable-5.1, so a kiro pin of it must not be refused.
-        assert mr.lacks_acp_id(pin) is False
-
-    @pytest.mark.parametrize(
-        "pin", ["claude-opus-4.8", "claude-opus-5-5", "auto", "", "not-a-registered-model"]
-    )
-    def test_a_kiro_served_row_auto_or_an_unknown_id_does_not_lack_one(self, pin):
+    def test_a_pin_kiro_can_serve_does_not_lack_an_acp_id(self, pin):
         assert mr.lacks_acp_id(pin) is False
 
     @pytest.mark.parametrize("pin", [CLAUDE_ONLY_ALIAS, CLAUDE_ONLY_ID, CLAUDE_ONLY_KEY])
