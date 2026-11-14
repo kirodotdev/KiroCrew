@@ -708,8 +708,8 @@ async def _prompt_loop(
             # progress frames (each frame restarts the _TOOL_STALL_TIMEOUT
             # countdown).  Clearing the flag on every inbound frame would
             # disarm the watchdog after a single progress frame, so a tool
-            # that emits one frame then silently stalls would hang anyway —
-            # exactly the bug this watchdog targets.  The flag is cleared
+            # that emits one frame then silently stalls would hang anyway,
+            # which is what this watchdog exists to catch.  The flag is cleared
             # only when a tool actually resolves or the turn completes
             # (see _dispatch_events).
             self.last_prompt_stats.event_count += 1

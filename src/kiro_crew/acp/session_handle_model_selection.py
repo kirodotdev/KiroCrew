@@ -701,9 +701,8 @@ def store_session_config(self: AcpSessionHandle, resp: dict[str, Any]) -> None:
     # (``session_models_envelope``): a host in
     # ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`` advertises no ``models`` object
     # and puts the list in a ``configOptions`` ``model`` select, and a reader that
-    # knows about one shape and not the other is how the entitlement probe came to
-    # answer ``[]`` for codex while this path answered correctly. Absent stays
-    # absent, so the shape branches below are untaken exactly as before.
+    # knows about one shape and not the other answers ``[]`` for such a host.
+    # Absent stays absent, so the shape branches below are then untaken.
     models = session_models_envelope(resp, self._runtime.acp_backend)
     if isinstance(models, dict):
         # Record the resolved model id (kiro-cli's currentModelId) so

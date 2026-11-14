@@ -563,8 +563,7 @@ async def reject_tool(self: AcpClient, request_id: str | int, reason: str = "") 
         # Last resort, and not a per-tool signal: kiro-cli maps a
         # `cancelled` outcome to cancelling the TURN, so every later tool
         # call in it resolves as denied without prompting. Say so
-        # where an operator will find it — the silent cascade is the bug
-        # report's whole complaint.
+        # where an operator will find it, so the cascade is not silent.
         logger.warning(
             "reject_tool: no deny option advertised for req=%s; answering "
             "'cancelled', which the backend may treat as cancelling the "

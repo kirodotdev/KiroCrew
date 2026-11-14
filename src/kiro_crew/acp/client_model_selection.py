@@ -256,10 +256,9 @@ async def set_model(self: AcpClient, model_id: str) -> None:
     # turn's telemetry (and so _backfill_context_window is un-gated).
     # Keyed on the SERVED id, not the requested one: a config-option
     # advisory can substitute the model this switch actually got, and the
-    # meter describes what is serving. Rebasing on model_id showed the
-    # requested model's window against the substitute's token counts, so
-    # the percentage was wrong for exactly the sessions that were
-    # silently moved.
+    # meter describes what is serving. Rebasing on model_id would show the
+    # requested model's window against the substitute's token counts, a
+    # wrong percentage for exactly the sessions that were silently moved.
     served_model_id = self._resolved_model_id or model_id
     win = (
         model_registry.model_window(served_model_id)
