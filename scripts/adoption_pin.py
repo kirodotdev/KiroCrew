@@ -128,8 +128,8 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     """Every App Kit seam above level 1 that the app tree at *tree* uses, with its level.
 
     The manifest's declarations (``agentTools`` and ``permissions.agentTurns`` /
-    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3,
-    ``agentReadOnlyDirs``, an exact ``permissions.api`` entry and
+    ``workerAutoApprove`` at level 2, ``credentialMasks`` at level 3, a directory entry in
+    it, ``agentReadOnlyDirs``, an exact ``permissions.api`` entry and
     ``permissions.chatSlots`` at level 7), the context seams any non-test ``.py``
     file reaches, and the backend SDK package (level 7) any of them names. A miss
     lets a pin adopt on a host without the seam, so the scan errs wide: a false hit
@@ -144,10 +144,13 @@ def _seam_level_uses(tree: Path) -> dict[str, int]:
     for flag in ("agentTurns", "workerAutoApprove"):
         if permissions.get(flag) is True:
             uses[f"app.json permissions.{flag}"] = 2
-    if raw.get("credentialMasks"):
+    masks = raw.get("credentialMasks")
+    if masks:
         uses["app.json credentialMasks"] = 3
     if raw.get("agentReadOnlyDirs"):
         uses["app.json agentReadOnlyDirs"] = 7
+    if isinstance(masks, list) and any(isinstance(m, str) and m.endswith("/") for m in masks):
+        uses["app.json credentialMasks directory"] = 7
     api = permissions.get("api")
     if isinstance(api, list) and any(
         isinstance(entry, str) and entry.strip().startswith(EXACT_API_ENTRY_MARK) for entry in api

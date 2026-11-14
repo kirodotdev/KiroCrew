@@ -167,6 +167,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
         app_declared_mask_targets app_declared_readonly_targets _liftable_declared_file
+        _liftable_declared_dir
         crew_home_visible_spellings carveout_chain_has_planted_link
         enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
         _policy_cache_meta_names_its_source
@@ -209,7 +210,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _app_declared_readonly_leaves _establish_app_readonly_dirs _app_data_dir_settled
         """.split()),
     "kiro_crew.sandbox_staging": tuple("""
-        _materialize_maskable_dirs _materialize_live_target_mask_target
+        _materialize_maskable_dirs _materialize_declared_mask_dirs _materialize_live_target_mask_target
         _refuse_if_live_target_symlink LiveTargetUnfitness _live_target_irregular_detail
         _live_target_multilink_detail _live_target_symlink_detail _refuse_unless_sole_regular_link
         live_target_pointer_unfitness _md_notebook_degraded_mask_dirs

@@ -1972,20 +1972,31 @@ in-gateway code your app runs.
 - On Linux the mask is placed when a sandboxed process starts, so a file created after
   that is not masked for that process. A temp file you write beside a listed file is not
   listed either.
-- An entry names a file. A directory at a listed path refuses every sandboxed spawn, so
-  list the files inside it instead (`"tokens/oauth.json"`).
+- An entry names a file, unless it is one name ending in `/` (`"state/"`): that entry
+  names a directory, masked whole, so every file inside it is covered, including the temp
+  file a save writes beside its target before renaming it over. Keep a credential you
+  rewrite by rename in a listed directory: a rename over a listed FILE detaches its mask
+  from every running sandboxed process until it ends. Before each sandboxed process
+  starts, Kiro Crew creates a listed directory that is absent inside your `data/` folder
+  (created when the app is installed), so it is masked before your backend first writes
+  into it. A file or a link at a
+  directory entry's name refuses every sandboxed spawn, and so does a directory at a file
+  entry's name. An entry inside a listed directory is refused.
 - Your backend gets a listed file back only while it is absent or has a single name. A
   file with a second hard link stays masked for your backend too, until the extra link is
-  removed.
+  removed. A listed directory comes back while it is absent or a real directory; the
+  files inside it are not checked for a second name, as for Kiro Crew's own masked
+  directories.
 - The masks follow your data when Kiro Crew moves it: during an update, and after an
   uninstall that keeps your data. Kiro Crew keeps a copy of the list beside your app
   folder for that, `apps/.<name>-credential-masks.json`.
-- On macOS a sandboxed process cannot rename or remove the folders above a listed file
+- A sandboxed process cannot rename or remove the folders above a listed file
   (`apps/<name>/data` and the ones between); it can still create and edit files in them.
 - The installed app folder is writable from inside the sandbox, so this protects your
   file from an agent that reads it, not from one that rewrites your `app.json`.
 - Hosts at App Kit seam level 3 or later honour the field; read `ctx.sdk_level` and
-  treat a lower level as "nothing masks the file".
+  treat a lower level as "nothing masks the file". A directory entry needs level 7: an
+  older host refuses to install a manifest that has one.
 
 ## Agent read-only directories
 

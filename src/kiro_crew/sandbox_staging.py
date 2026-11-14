@@ -18,9 +18,10 @@ import stat
 from pathlib import Path
 from typing import NamedTuple
 
+from kiro_crew.apps import credential_masks
 from kiro_crew.atomic_write import fsync_dir
 from kiro_crew.config.paths import config_dir
-from kiro_crew.sandbox_aliases import _masked_crew_home_roots
+from kiro_crew.sandbox_aliases import _first_linked_component_below, _masked_crew_home_roots
 from kiro_crew.sandbox_leaves import (
     _AUTH_STORE_STAGING_LEAF,
     _CREW_HOME_PREFIXES,
@@ -108,6 +109,91 @@ def _materialize_maskable_dirs(established: list[str] | None = None) -> list[str
                 f"cannot create the masked directory {target}: {exc}"
             ) from exc
         created.append(target)
+        _note_established(established, target)
+    return created
+
+
+def _materialize_declared_mask_dirs(established: list[str] | None = None) -> list[str]:
+    """Create each absent declared directory inside its app's existing ``data/``.
+
+    The directory counterpart for :mod:`kiro_crew.apps.credential_masks`' directory
+    entries. The namespace launcher's mask loop skips an absent directory, so a directory
+    the app's backend creates after an agent spawned would be in view of that agent for
+    the rest of its session. So every declared directory exists before every Linux spawn:
+    an absent one is created (0700) directly in ``apps/<name>/data/``, which the gateway
+    creates when it installs or updates the app. Only the declared directory itself, never
+    ``apps/<name>`` or ``data/``: the lifecycle moves ``data/`` aside and back by rename,
+    and a ``data/`` made here while it is away would turn the move back into a move INTO
+    it. Only under the live data home, at the ``data/`` spelling and at the move-aside
+    spelling (``apps/.<name>-data-tmp/``), which holds the same tree while the gateway
+    installs, updates or uninstalls the app: a sandbox started then gets its mask on the
+    directory inside that tree, and the mount stays on it when the tree moves back. A
+    spelling with no tree leaves nothing to create, and the entry is skipped. Seatbelt needs
+    nothing here: its denies hold for a name that does not exist yet.
+
+    Fail-closed like :func:`_materialize_maskable_dirs`: a link above the name or at it, a
+    non-directory at the name, or a creation failure other than the benign race refuses
+    the spawn, because launching anyway would leave the directory unmasked once the
+    backend creates it. Every declared directory this pass saw present is noted in
+    *established*, so the launcher requires its mask.
+    """
+    created: list[str] = []
+    leaves = sorted(credential_masks.declared_crew_dir_leaves())
+    if not leaves:
+        return created
+    try:
+        root = str(config_dir())
+    except Exception as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot resolve the crew data home to create the declared mask directories: {exc}"
+        ) from exc
+    for leaf in leaves:
+        target = os.path.join(root, leaf)
+        linked = _first_linked_component_below(root, leaf)
+        if linked is not None:
+            raise SandboxCeilingUnsealable(
+                f"the declared mask directory {safe_terminal_line(target)} passes through a "
+                f"component that is a LINK ({safe_terminal_line(linked)}), so it cannot be "
+                "created where the mask binds. Replace the link with a real directory."
+            )
+        try:
+            data_is_dir = stat.S_ISDIR(os.lstat(os.path.dirname(target)).st_mode)
+        except FileNotFoundError:
+            data_is_dir = False
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the data directory of the declared mask directory "
+                f"{safe_terminal_line(target)}: {safe_terminal_line(str(exc))}"
+            ) from exc
+        if not data_is_dir:
+            continue
+        try:
+            info = os.lstat(target)
+        except FileNotFoundError:
+            info = None
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot stat the declared mask directory {safe_terminal_line(target)}: "
+                f"{safe_terminal_line(str(exc))}"
+            ) from exc
+        if info is not None:
+            if not stat.S_ISDIR(info.st_mode):
+                _require_real_dir_nofollow(target)  # raises, naming what is there
+            _note_established(established, target)
+            continue
+        try:
+            os.mkdir(target, 0o700)
+        except FileExistsError:
+            # Something won the create race: it must be a real directory, judged without
+            # following a link.
+            _require_real_dir_nofollow(target)
+        except OSError as exc:
+            raise SandboxCeilingUnsealable(
+                f"cannot create the declared mask directory {safe_terminal_line(target)}: "
+                f"{safe_terminal_line(str(exc))}"
+            ) from exc
+        else:
+            created.append(target)
         _note_established(established, target)
     return created
 
@@ -1149,7 +1235,15 @@ def _materialize_md_notebook_mask_targets(established: list[str] | None = None) 
 
 
 def _migrate_md_notebook_legacy_state() -> list[str]:
-    """Run the Notes builtin's one-time legacy-state move before this sandbox launches.
+    """Run the Notes builtin's first one-time state move before this sandbox launches.
+
+    The bare legacy names into ``md-notebook-staging/`` (:mod:`kiro_crew.md_notebook_state`),
+    a directory every build masks, so it is safe while a sandbox of any build runs. The
+    second move, out of that directory into the app's own ``data/state/``, is NOT run here:
+    an older build's sandbox masks the first directory but not the second, so that move
+    waits until no such sandbox is alive, which only the Notes backend's start checks
+    (``sealed_default_legacy_state`` in ``apps/backend.py``). Until it seals, this creates
+    the empty ``data/state/`` so the sandbox about to start masks it.
 
     Spawn prep runs it, not only the Notes backend's own spawn, so the first pass and its
     marker that closes promotion happen as early as possible, before an agent of this build
@@ -1164,8 +1258,8 @@ def _migrate_md_notebook_legacy_state() -> list[str]:
     logged and the pass stays unsealed for the next spawn to retry. No agent can plant a
     bare state name meanwhile: :func:`_materialize_md_notebook_mask_targets` runs right
     after this and stubs every bare name, so its mask always mounts, and the Notes backend
-    does not start until the pass is sealed (``sealed_default_legacy_state`` in
-    ``apps/backend.py``). An absent data home is left absent: there is nothing to move.
+    does not start until the pass is sealed. An absent data home is left absent: there is
+    nothing to move.
     """
     # Local, not top-level: every module-level name here is an owner name the
     # ``kiro_crew.sandbox`` facade inventory forwards, and a module alias is not one.
@@ -1184,8 +1278,16 @@ def _migrate_md_notebook_legacy_state() -> list[str]:
         # where a write would land, so it writes nothing. The Notes backend's own writer
         # refuses the same chain, so nothing on this host writes Notes state at all.
         return []
+    app_state_dir = Path(root).joinpath(*mns.APP_STATE_PARTS)
     try:
-        return mns.migrate_legacy_state(state_dir, Path(root).joinpath(*mns.LEGACY_DIR_PARTS))
+        moved = mns.migrate_legacy_state(state_dir, Path(root).joinpath(*mns.LEGACY_DIR_PARTS))
+        if not (state_dir / mns.APP_MOVE_MARKER).exists() and not carveout_chain_has_planted_link(
+            str(app_state_dir / mns.STATE_FILE_NAMES[0])
+        ):
+            # The second move's destination exists before this sandbox starts, so this
+            # sandbox masks it.
+            mns.ensure_app_state_dir(app_state_dir)
+        return moved
     except OSError as exc:
         # Log and continue: the stubs planted next keep every bare name masked, and the
         # Notes backend stays down until a later pass seals.

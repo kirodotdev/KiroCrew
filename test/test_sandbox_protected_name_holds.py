@@ -513,7 +513,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   sealed read-only so an agent cannot switch off a rule for its own chat. A
     #:   file at the data-home root beside writable siblings, rewritten in place,
     #:   so leaf-only is the only hold, as for ``shared_crew_preview.json``.
-    EXPECTED: dict[str, int] = {"standard": 351, "cc": 358, "strict": 359}
+    #:
+    #: Six more per tier, one app-declared directory: Notes' ``state/`` under its data
+    #: directory (``credentialMasks``), at both data-home spellings and their move-aside
+    #: spellings, plus the relocated home. Its parent ``data/`` holds the app's logs, so
+    #: it cannot take a stand-in; nothing republishes ``state`` itself (its writers rename
+    #: files INSIDE it), and its parents are pinned against rename.
+    EXPECTED: dict[str, int] = {"standard": 357, "cc": 364, "strict": 365}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

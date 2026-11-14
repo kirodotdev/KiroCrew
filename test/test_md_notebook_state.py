@@ -43,6 +43,11 @@ class TestTheModuleAgreesWithTheSandbox:
         assert mns.STATE_DIR_LEAF == sb._MD_NOTEBOOK_STAGING_LEAF
         assert mns.STATE_FILE_NAMES == sb._MD_NOTEBOOK_STATE_FILES
 
+    def test_the_move_aside_suffix_is_the_lifecycle_s(self):
+        from kiro_crew.apps import credential_masks
+
+        assert mns.STAGED_DATA_SUFFIX == credential_masks.STAGED_DATA_SUFFIX
+
     def test_the_stub_bytes_are_the_materialisers(self):
         legacy = "/".join(mns.LEGACY_DIR_PARTS)
         expected = {}
@@ -370,10 +375,16 @@ class TestTheMoveRunsBeforeAnySandboxLaunches:
 
         sb.namespace_argv(["/bin/true"])
 
+        # Into ``md-notebook-staging/``, which every build masks, and no further: the move
+        # into the app's own directory waits for the Notes backend's start, which checks
+        # that no sandbox of an earlier build is alive.
         assert (home / mns.STATE_DIR_LEAF / "pat").read_text() == "ghp_real"
-        # The moved name now holds the stub its mask mounts on.
-        assert (legacy / "pat").read_bytes() == b""
         assert (home / mns.STATE_DIR_LEAF / mns.MIGRATION_MARKER).exists()
+        assert not (home / mns.STATE_DIR_LEAF / mns.APP_MOVE_MARKER).exists()
+        # Its destination is created empty, so the sandbox about to start masks it.
+        assert sorted(os.listdir(home.joinpath(*mns.APP_STATE_PARTS))) == []
+        # The name it left now holds the stub its mask mounts on.
+        assert (legacy / "pat").read_bytes() == b""
 
     @_POSIX_ONLY
     def test_a_failed_move_does_not_stop_the_spawn(self, tmp_path, monkeypatch, caplog):
@@ -416,3 +427,343 @@ class TestTheMoveRunsBeforeAnySandboxLaunches:
         sb.namespace_argv(["/bin/true"])
         assert (state / "vaults.json").read_text() == '[{"id": "v1"}]'
         assert (state / mns.MIGRATION_MARKER).is_file()
+
+
+@pytest.fixture()
+def app_dirs(tmp_path):
+    """A sealed ``md-notebook-staging`` holding real state, and the app's data dir."""
+    home = tmp_path / "crew"
+    state = home / mns.STATE_DIR_LEAF
+    state.mkdir(parents=True)
+    (state / mns.MIGRATION_MARKER).write_text("{}\n")
+    (state / "pat").write_text("ghp_real")
+    (state / "vaults.json").write_text('[{"id": "v1"}]\n')
+    return state, home.joinpath(*mns.APP_STATE_PARTS)
+
+
+@_POSIX_ONLY
+class TestSpawnPrepMakesTheAppStateDir:
+    """``ensure_app_state_dir``: the empty ``data/state/`` every spawn masks until the move."""
+
+    @pytest.fixture()
+    def app_state(self, tmp_path):
+        return tmp_path.joinpath("crew", *mns.APP_STATE_PARTS)
+
+    def test_with_no_data_dir_the_chain_is_made_owner_only(self, app_state):
+        mns.ensure_app_state_dir(app_state)
+        for made in (app_state, app_state.parent, app_state.parent.parent):
+            assert oct(made.stat().st_mode & 0o777) == oct(0o700), made
+
+    def test_with_a_data_dir_only_state_is_made(self, app_state):
+        app_state.parent.mkdir(parents=True)
+        mns.ensure_app_state_dir(app_state)
+        assert app_state.is_dir()
+        mns.ensure_app_state_dir(app_state)
+
+    def test_nothing_is_made_while_the_lifecycle_holds_the_data_aside(self, app_state):
+        """The restore renames the kept tree to ``data/``; a ``data/`` made now would take
+        it in, nested where no mask reaches."""
+        aside = app_state.parent.parent.with_name(".md-notebook" + mns.STAGED_DATA_SUFFIX)
+        aside.mkdir(parents=True)
+        mns.ensure_app_state_dir(app_state)
+        assert not app_state.parent.parent.exists()
+
+    def test_a_data_dir_moved_aside_after_the_look_makes_nothing(self, app_state, monkeypatch):
+        data = app_state.parent
+        data.mkdir(parents=True)
+        aside = data.parent.with_name(".md-notebook" + mns.STAGED_DATA_SUFFIX)
+        real_mkdir = os.mkdir
+
+        def _moved_first(path, *args, **kwargs):
+            if Path(path) == app_state and data.exists():
+                data.rename(aside)
+            return real_mkdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(mns.os, "mkdir", _moved_first)
+        mns.ensure_app_state_dir(app_state)
+        assert not data.exists() and not (aside / "state").exists()
+
+
+@_POSIX_ONLY
+class TestTheMoveIntoTheAppDataDir:
+    """The state leaves ``md-notebook-staging`` for the directory the app's manifest masks."""
+
+    def test_every_file_is_copied_and_the_old_pat_emptied(self, app_dirs):
+        state, app_state = app_dirs
+        written = mns.move_state_to_app_data(app_state, state)
+
+        assert sorted(Path(p).name for p in written) == sorted(mns.STATE_FILE_NAMES)
+        assert (app_state / "pat").read_text() == "ghp_real"
+        assert (app_state / "vaults.json").read_text() == '[{"id": "v1"}]\n'
+        # A file the old directory never had arrives as its absent-equivalent.
+        assert (app_state / "settings.json").read_bytes() == mns.ABSENT_EQUIVALENT["settings.json"]
+        assert (state / "pat").read_bytes() == b"", "a second copy of the token was kept"
+        # The registry stays, so a rollback keeps the vaults.
+        assert (state / "vaults.json").read_text() == '[{"id": "v1"}]\n'
+        assert (state / mns.APP_MOVE_MARKER).is_file()
+        assert oct(app_state.stat().st_mode & 0o777) == oct(0o700)
+
+    def test_it_runs_once(self, app_dirs):
+        state, app_state = app_dirs
+        mns.move_state_to_app_data(app_state, state)
+        (app_state / "vaults.json").write_text('[{"id": "saved-later"}]\n')
+        (state / "vaults.json").write_text('[{"id": "stale"}]\n')
+
+        assert mns.move_state_to_app_data(app_state, state) == []
+        assert (app_state / "vaults.json").read_text() == '[{"id": "saved-later"}]\n'
+
+    def test_a_file_planted_in_the_app_dir_before_it_was_masked_is_replaced(self, app_dirs):
+        state, app_state = app_dirs
+        app_state.mkdir(parents=True)
+        (app_state / "vaults.json").write_text('[{"id": "v1", "remote": "attacker"}]\n')
+        (app_state / "settings.json").write_text('{"autoSync": true}\n')
+        (app_state / mns.MIGRATION_MARKER).write_text("{}\n")
+
+        mns.move_state_to_app_data(app_state, state)
+
+        assert (app_state / "vaults.json").read_text() == '[{"id": "v1"}]\n'
+        assert (app_state / "settings.json").read_bytes() == mns.ABSENT_EQUIVALENT["settings.json"]
+
+    def test_it_waits_for_the_first_move_to_seal(self, app_dirs):
+        state, app_state = app_dirs
+        (state / mns.MIGRATION_MARKER).unlink()
+        with pytest.raises(OSError, match="not sealed"):
+            mns.move_state_to_app_data(app_state, state)
+        assert not (app_state / "pat").exists()
+        assert (state / "pat").read_text() == "ghp_real"
+
+    @pytest.mark.skipif(not hasattr(os, "link"), reason="needs hard links")
+    def test_a_pat_with_a_second_name_stops_it_unsealed(self, app_dirs, tmp_path):
+        state, app_state = app_dirs
+        os.link(state / "pat", tmp_path / "second-name")
+        with pytest.raises(mns.SecondNameError):
+            mns.move_state_to_app_data(app_state, state)
+        assert not (state / mns.APP_MOVE_MARKER).exists()
+        assert (state / "pat").read_text() == "ghp_real"
+
+    def test_a_pass_that_stops_before_its_seal_keeps_the_old_pat_for_the_retry(
+        self, app_dirs, monkeypatch
+    ):
+        """The seal is written before the old PAT is emptied, so no retry copies an empty one."""
+        state, app_state = app_dirs
+        real_write = mns.atomic_write
+
+        def _seal_fails(path, *args, **kwargs):
+            if Path(path).name == mns.APP_MOVE_MARKER:
+                raise OSError("disk full")
+            return real_write(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(mns, "atomic_write", _seal_fails)
+            with pytest.raises(OSError, match="disk full"):
+                mns.move_state_to_app_data(app_state, state)
+        assert (state / "pat").read_text() == "ghp_real"
+        assert not (state / mns.APP_MOVE_MARKER).exists()
+
+        mns.move_state_to_app_data(app_state, state)
+        assert (app_state / "pat").read_text() == "ghp_real"
+        assert (state / "pat").read_bytes() == b""
+
+    def test_a_sealed_pass_empties_an_old_pat_it_could_not_empty_before(
+        self, app_dirs, monkeypatch
+    ):
+        state, app_state = app_dirs
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                mns, "_empty_in_place", lambda path: (_ for _ in ()).throw(OSError("busy"))
+            )
+            mns.move_state_to_app_data(app_state, state)
+        assert (state / mns.APP_MOVE_MARKER).is_file(), "the copy is final once it is sealed"
+        assert (state / "pat").read_text() == "ghp_real"
+
+        assert mns.move_state_to_app_data(app_state, state) == []
+        assert (state / "pat").read_bytes() == b""
+        assert (app_state / "pat").read_text() == "ghp_real"
+
+    @pytest.mark.parametrize("pass_", ["first", "sealed-retry"])
+    def test_every_name_is_synced_before_the_old_pat_is_emptied(self, app_dirs, monkeypatch, pass_):
+        """A power loss after the PAT is emptied must not come back without the copy's
+        names or the seal: a lost marker would copy the emptied PAT over the moved one."""
+        state, app_state = app_dirs
+        home = state.parent
+        if pass_ == "sealed-retry":
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    mns, "_empty_in_place", lambda path: (_ for _ in ()).throw(OSError("busy"))
+                )
+                mns.move_state_to_app_data(app_state, state)
+        events: list[tuple[str, Path]] = []
+        real_sync, real_write, real_empty = mns.fsync_dir, mns.atomic_write, mns._empty_in_place
+
+        def _sync(path, *args, **kwargs):
+            events.append(("sync", Path(path)))
+            return real_sync(path, *args, **kwargs)
+
+        def _write(path, *args, **kwargs):
+            events.append(("write", Path(path)))
+            return real_write(path, *args, **kwargs)
+
+        def _empty(path):
+            events.append(("empty", Path(path)))
+            return real_empty(path)
+
+        monkeypatch.setattr(mns, "fsync_dir", _sync)
+        monkeypatch.setattr(mns, "atomic_write", _write)
+        monkeypatch.setattr(mns, "_empty_in_place", _empty)
+        mns.move_state_to_app_data(app_state, state)
+
+        emptied = events.index(("empty", state / "pat"))
+        synced = {path for kind, path in events[:emptied] if kind == "sync"}
+        chain = {app_state, *(p for p in app_state.parents if p == home or home in p.parents)}
+        assert chain == {app_state, app_state.parent, app_state.parent.parent, home / "apps", home}
+        assert chain | {state} <= synced
+        if pass_ == "first":
+            seal = events.index(("write", state / mns.APP_MOVE_MARKER))
+            assert ("sync", state) in events[seal:emptied], "the seal's own name is synced"
+            assert chain <= {p for kind, p in events[:seal] if kind == "sync"}
+        assert (state / "pat").read_bytes() == b""
+
+    def test_a_seal_that_cannot_be_synced_keeps_the_old_pat_for_the_next_pass(
+        self, app_dirs, monkeypatch
+    ):
+        state, app_state = app_dirs
+        real_sync = mns.fsync_dir
+
+        def _sync(path, *args, **kwargs):
+            if Path(path) == state:
+                raise OSError("EIO")
+            return real_sync(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(mns, "fsync_dir", _sync)
+            with pytest.raises(OSError, match="EIO"):
+                mns.move_state_to_app_data(app_state, state)
+        assert (state / "pat").read_text() == "ghp_real"
+
+        mns.move_state_to_app_data(app_state, state)
+        assert (state / "pat").read_bytes() == b""
+        assert (app_state / "pat").read_text() == "ghp_real"
+
+    @pytest.mark.parametrize("pass_", ["first", "sealed-retry", "sealed"])
+    def test_the_seal_s_name_is_synced_with_no_pat_to_empty(self, app_dirs, monkeypatch, pass_):
+        """With no token to move nothing is emptied, yet the marker's entry is still synced
+        before the pass returns: the backend writes over the copies once it does."""
+        state, app_state = app_dirs
+        (state / "pat").write_bytes(b"")
+        if pass_ != "first":
+            mns.move_state_to_app_data(app_state, state)
+        if pass_ == "sealed-retry":
+            # Still holding bytes, so the sealed pass takes the lock.
+            (state / "pat").write_text("ghp_left")
+        events: list[tuple[str, Path]] = []
+        real_sync, real_write = mns.fsync_dir, mns.atomic_write
+
+        def _sync(path, *args, **kwargs):
+            events.append(("sync", Path(path)))
+            return real_sync(path, *args, **kwargs)
+
+        def _write(path, *args, **kwargs):
+            events.append(("write", Path(path)))
+            return real_write(path, *args, **kwargs)
+
+        monkeypatch.setattr(mns, "fsync_dir", _sync)
+        monkeypatch.setattr(mns, "atomic_write", _write)
+        mns.move_state_to_app_data(app_state, state)
+
+        start = events.index(("write", state / mns.APP_MOVE_MARKER)) if pass_ == "first" else 0
+        assert ("sync", state) in events[start:], "the seal's name was never synced"
+
+    def test_the_backend_gate_refuses_a_seal_it_cannot_sync(self, tmp_path, monkeypatch):
+        """A marker that merely exists is not durable, so it does not start the backend."""
+        home = tmp_path / "crew"
+        state = home / mns.STATE_DIR_LEAF
+        monkeypatch.setattr(mns, "_crew_home", lambda: home)
+        state.mkdir(parents=True)
+        for marker in (mns.MIGRATION_MARKER, mns.APP_MOVE_MARKER):
+            (state / marker).write_text("{}\n")
+        real_sync = mns.fsync_dir
+
+        def _sync(path, *args, **kwargs):
+            if Path(path) == state:
+                raise OSError("EIO")
+            return real_sync(path, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(mns, "fsync_dir", _sync)
+            assert mns.sealed_default_legacy_state() is False
+        assert mns.sealed_default_legacy_state() is True
+
+    def test_it_waits_while_the_lifecycle_holds_the_data_aside(self, app_dirs):
+        """A ``data/`` made now would take the restore's rename into it."""
+        state, app_state = app_dirs
+        aside = app_state.parent.parent.with_name(".md-notebook" + mns.STAGED_DATA_SUFFIX)
+        aside.mkdir(parents=True)
+        with pytest.raises(OSError, match="moved aside"):
+            mns.move_state_to_app_data(app_state, state)
+        assert not app_state.parent.exists()
+        assert not (state / mns.APP_MOVE_MARKER).exists()
+        assert (state / "pat").read_text() == "ghp_real"
+
+    def test_every_directory_the_move_creates_is_owner_only(self, app_dirs):
+        state, app_state = app_dirs
+        mns.move_state_to_app_data(app_state, state)
+        for created in (state.parent / "apps", app_state.parent.parent, app_state.parent):
+            assert oct(created.stat().st_mode & 0o777) == oct(0o700), created
+
+    def test_the_backend_gate_needs_both_moves(self, tmp_path, monkeypatch):
+        home = tmp_path / "crew"
+        monkeypatch.setattr(mns, "_crew_home", lambda: home)
+        monkeypatch.setattr(mns, "older_sandboxes_masking_only_the_old_dir", lambda: [])
+        (home / "workspace" / "md-notebook").mkdir(parents=True)
+        (home / "workspace" / "md-notebook" / "pat").write_text("ghp_oldest")
+
+        assert mns.sealed_default_legacy_state() is True
+        assert (home.joinpath(*mns.APP_STATE_PARTS) / "pat").read_text() == "ghp_oldest"
+
+    @pytest.mark.parametrize("older", [[4242], None], ids=["named", "unreadable"])
+    def test_the_move_waits_while_an_older_sandbox_may_run(
+        self, tmp_path, monkeypatch, caplog, older
+    ):
+        """A sandbox of an earlier build masks the old directory and not the new one, so
+        while one may be alive the token stays where it is masked and Notes stays off."""
+        home = tmp_path / "crew"
+        monkeypatch.setattr(mns, "_crew_home", lambda: home)
+        live = {"older": older}
+        monkeypatch.setattr(mns, "older_sandboxes_masking_only_the_old_dir", lambda: live["older"])
+        (home / mns.STATE_DIR_LEAF).mkdir(parents=True)
+        (home / mns.STATE_DIR_LEAF / mns.MIGRATION_MARKER).write_text("{}\n")
+        (home / mns.STATE_DIR_LEAF / "pat").write_text("ghp_real")
+        app_state = home.joinpath(*mns.APP_STATE_PARTS)
+
+        with caplog.at_level("WARNING"):
+            assert mns.sealed_default_legacy_state() is False
+        assert "not moving the Notes state" in caplog.text
+        assert ("pid 4242" in caplog.text) is (older is not None)
+        assert not (app_state / "pat").exists()
+        assert (home / mns.STATE_DIR_LEAF / "pat").read_text() == "ghp_real"
+        assert not (home / mns.STATE_DIR_LEAF / mns.APP_MOVE_MARKER).exists()
+
+        # Once none is left, the next start moves it.
+        live["older"] = []
+        assert mns.sealed_default_legacy_state() is True
+        assert (app_state / "pat").read_text() == "ghp_real"
+
+    def test_a_sealed_move_does_not_read_the_process_table(self, tmp_path, monkeypatch):
+        home = tmp_path / "crew"
+        monkeypatch.setattr(mns, "_crew_home", lambda: home)
+        (home / mns.STATE_DIR_LEAF).mkdir(parents=True)
+        for marker in (mns.MIGRATION_MARKER, mns.APP_MOVE_MARKER):
+            (home / mns.STATE_DIR_LEAF / marker).write_text("{}\n")
+
+        def _must_not_scan():
+            raise AssertionError("scanned after the move sealed")
+
+        monkeypatch.setattr(mns, "older_sandboxes_masking_only_the_old_dir", _must_not_scan)
+        assert mns.sealed_default_legacy_state() is True
+
+    def test_the_backend_reads_its_state_from_the_app_data_dir(self, tmp_path, monkeypatch):
+        from kiro_crew.apps.builtins.md_notebook import server_store
+
+        monkeypatch.setattr(server_store, "_HOME", None)
+        monkeypatch.setattr(mns, "_crew_home", lambda: tmp_path / "crew")
+        assert server_store._staging_dir() == tmp_path / "crew" / "apps/md-notebook/data/state"

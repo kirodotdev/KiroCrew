@@ -666,11 +666,10 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
 #: holds. This is the per-leaf argument the sibling-gap note above asks for: ``mount(2)``
 #: cannot mask an absent path and the ``sensitive_files`` loop guards on ``isfile``, so an
 #: ABSENT leaf gets NO mask, and a namespace that outlives the leaf's later creation reads
-#: the real bytes — the PAT among them. That was vacuous while nothing could create these
-#: files on a sandboxed host; the backend carve-out
-#: (:func:`app_backend_visible_targets`) makes creation possible, so the mask has to be
-#: made non-vacuous first. Each document is its reader's absent-equivalent, and the
-#: md-notebook backend is the only reader:
+#: the real bytes — the PAT among them. No spawn gets these names back now (the Notes
+#: state lives in its own declared ``data/state/``), and the stubs keep every mask
+#: non-vacuous for a host still holding the old layout. Each document is its reader's
+#: absent-equivalent, and ``md_notebook_state``'s moves are the only reader:
 #:
 #:   * ``vaults.json`` — ``_read_vaults_sync`` returns ``[]`` for absent (OSError) and
 #:     for ``[]`` alike;
