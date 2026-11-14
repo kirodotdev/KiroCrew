@@ -271,7 +271,9 @@ def test_the_conductor_prompt_hedges_a_gated_action_instead_of_promising_it() ->
     prompt = _conductor_prompt()
     assert "Promise only what you can do." in prompt
     assert "say you will try" in prompt
-    assert "Never offer to ask for a permission or a card to get past a safety rule." in prompt
+    # The no-loosening clause moved to ASK_CORE, which the Bot conductor gets at
+    # agent rank (test_ask_core_guidance.py pins it in the rendered block).
+    assert "Never offer to ask for a permission or a card" not in prompt
 
 
 def test_a_blocked_command_is_handed_over_as_the_run_yourself_card() -> None:
@@ -280,6 +282,9 @@ def test_a_blocked_command_is_handed_over_as_the_run_yourself_card() -> None:
     assert "```run-yourself" in prompt
     assert '```run-yourself summary="<what it installs or does, and from where>"' in prompt
     assert "facts only, no persuasion" in prompt
+    assert "If a rule blocks a command and no allowed path reaches the goal" in " ".join(
+        prompt.split()
+    )
     card = (ROOT / "website" / "src" / "components" / "RunYourselfCard.tsx").read_text(
         encoding="utf-8"
     )
@@ -314,7 +319,8 @@ def test_no_piece_carries_an_example_chip_with_jargon() -> None:
 def test_the_worker_hands_a_blocked_command_back_for_the_user() -> None:
     text = crewmate_prompts.text("worker.principles")
     assert "When a safety rule blocks a command" in text
-    assert "do not look for a way around it" in text
+    assert "do not look for a way around it" not in text
+    assert "and no allowed path is left, say so in your report" in text
     assert "exact command in a code block" in text
     assert "what it installs or does, and from where" in text
     assert "no persuasion" in text

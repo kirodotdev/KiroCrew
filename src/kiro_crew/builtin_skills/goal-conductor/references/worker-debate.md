@@ -210,7 +210,8 @@ e.g. `A-M3`) and is reassigned in the next step-b relay. Rule
 `fixed_verified` on a question only after a critic says, in its critique
 step, that the evidence holds; a failed answer is re-asked under the same id.
 
-A `needs-a-decision` stays open until the human rules. When critics conflict,
+A `needs-a-decision` stays open until it is ruled: ask the human only for an
+ask case (a)-(e); otherwise rule it yourself and record it. When critics conflict,
 rule on the evidence. A participant that does not file gets one nudge; after
 that it is marked absent for the round and its open objections stay open. Only
 the human can drop a participant. Before you nudge, check `session_status`: a
@@ -251,24 +252,20 @@ Then take the first rule that holds:
    its final file and lists them; each critic verifies them in its own final
    file. No extra round is opened. A wrap-up fix a critic verified counts as
    reviewed under Finishing.
-4. `hard_rounds` reached → ask the human. No round starts without their
-   answer. A wall-clock or round budget you set yourself is spent → your call:
-   wrap up as in 3 when the open points are small fixes; otherwise, an open
-   blocking objection still goes to the human (rules 6-7); rule the rest and
-   record why. Quota or credit spend past an owner-set or unstated bound stays
-   an ask.
-5. Churn, drift over half, or cost over budget → ask the human, naming it.
-6. A `needs-a-decision` blocks the other answers → ask the human about it;
-   the rest continue.
+4. `hard_rounds` reached or budget spent → you decide: wrap up with open items recorded, or extend once and record why, unless going on spends past an amount the owner approved: that is (b).
+5. Churn, drift over half, or cost over budget → name it; you decide: wrap up with open items recorded, or extend once and record why, unless going on spends past an amount the owner approved: that is (b).
+6. A `needs-a-decision` blocks the other answers → ask the human only for an
+   ask case (a)-(e); otherwise rule it yourself and record it; the rest continue.
 7. No new blocking, old blocking still open, and no drop over the last two
-   checkpoints → more rounds will not help; ask the human for a ruling.
+   checkpoints → more rounds will not help; ask the human only for an ask case
+   (a)-(e); otherwise rule it yourself and record it.
 8. Otherwise continue: relay to the proposers and start round `r + 1`. From
    `soft_rounds` on, a round starts only after you write the reason to
    continue in the checkpoint line.
 
 ## The human's ruling
 
-When the debate is stuck, tell the user in your own words what the open
+When the debate is stuck on an ask case (a)-(e), tell the user in your own words what the open
 blocking objections are: id, claim, the proposer's answer, and what each
 option costs. Put it in the needs-you line on your dashboard. The user answers
 in a free-form message to you; there is no fixed set of values.
@@ -276,7 +273,7 @@ in a free-form message to you; there is no fixed set of values.
 Read the message and act on it:
 
 - Map it to the open ids it covers. If it is unclear which objection it rules
-  on, or what it wants, ask back once; never guess.
+  on, or what it wants, pick the likeliest reading, state it, apply it.
 - Send the participants the ruling as you understood it, plus the user's words
   quoted verbatim for the note keeper to file.
 - Then coordinate what it asks for: more rounds, a fix one critic verifies,

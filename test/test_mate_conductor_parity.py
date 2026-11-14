@@ -12,7 +12,8 @@ grant or a mapped skill that the crewmate's conductor does not carry and that
 
 The rule they hold (``docs/system-specs/modules/crew-mode.md``, Keeping the two
 conductors in step): a conductor change lands on both, or it lands here with a
-reason.
+reason. The ask policy is the one exception to the placeholder route: both get
+the same ``output_contract`` constants (crew-mode.md, Ask cases and reroute).
 
 * A prompt rule both need is written ONCE, in ``agent_parts/spec_prompts.py``
   ``_LEDGER_CONDUCTOR_RULES``. The root charter is assembled from it
@@ -68,7 +69,6 @@ ALLOWLIST: dict[str, str] = {
     "prompt:rounds_back_to_back": "a crewmate's thread is driven by the user and its Heartbeat, not by a round loop",
     "prompt:round_close_reset": "a crewmate's DM thread lives for years and is never reset at a round close",
     "prompt:spend_bounded": "a crewmate is not driven by a round loop; a refused create names its own concurrency cap",
-    "prompt:ask_only_when_needed": "a crewmate's Bot prompt keeps its own ask cases (irreversible steps, the user's goals) and escalates through [HOW YOU WORK] item 3",
     "prompt:patrol_ends": "a crewmate stops a loop with monitor_stop when no item is open, and escalates through its own ladder ([HOW YOU WORK] item 3)",
     "prompt:steer": "steer events come from the Crew panel, which shows Crew Mode trees and not a crewmate's workers",
     "prompt:own_session_ledger": "names session_ledger goal/phase/next, the root conductor's round state; a crewmate keeps its state in its briefing and goal",

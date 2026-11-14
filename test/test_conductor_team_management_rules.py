@@ -55,8 +55,9 @@ def test_goal_conductor_handles_routine_incidents_itself():
     ):
         assert incident in patrol, incident
     assert (
-        "Escalate only what needs the owner, a conflict with another lead, an "
-        "irreversible action, or a change to an owner ruling" in patrol
+        "Escalate to the person only an ask case (a)-(e); a change to an owner ruling "
+        "is (e). Send a conflict with another lead to the lead that dispatched you as "
+        "`question`; with none, decide it and record it." in patrol
     )
     # A merge or a cleanup is recorded before it happens, with its target and reason.
     assert (

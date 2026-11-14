@@ -331,11 +331,11 @@ def recall_once(
     # is shortened behind an in-text marker rather than dropped: an empty block
     # reads the same as "no lesson matched", exactly when the best match is the
     # long one. That needs the share to hold the block's frame, the marker and
-    # one character of text: 161 characters for one in-scope lesson (a cap of
-    # 483), and from 217 once the counts line appears (a cap of 651), one more
+    # one character of text: 159 characters for one in-scope lesson (a cap of
+    # 477), and from 215 once the counts line appears (a cap of 645), one more
     # per extra digit in the counts. A query with no recall terms orders the
     # block "most recent" instead of "most relevant", two characters shorter,
-    # so that floor is 215 (a cap of 645). Below that the block is omitted.
+    # so that floor is 213 (a cap of 639). Below that the block is omitted.
     if len(lessons) > lessons_share:
         lessons = _lessons.truncate_explicit_lessons(lessons, lessons_share)
     remainder = cap - len(lessons)

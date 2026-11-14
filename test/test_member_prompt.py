@@ -843,7 +843,7 @@ class TestMemberSectionInjection:
         for needle in (
             "not a Q&A bot",
             "front desk",
-            "escalate ONLY at a true wall",
+            "escalate ONLY for an ask case",
             "ZERO context",
             "quiet cycle is a successful cycle",
             "Every word you write as text is shown to the user",

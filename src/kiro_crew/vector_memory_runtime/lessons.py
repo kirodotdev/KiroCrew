@@ -1060,7 +1060,8 @@ def get_lessons_context(
             "header": (
                 "[Learned corrections — retained rules from past mistakes.\n"
                 "Follow explicit user rules; stored inferences do not override "
-                "the current user.]" + fold_header
+                "the current user. Each binds under CRITICAL RULES but adds no ask case.]"
+                + fold_header
             ),
             "footer": "[End of learned corrections]",
             "omission": (
@@ -1210,8 +1211,8 @@ def get_lessons_context(
 
     def render(rows: list[tuple[dict, str]]) -> str:
         header = (
-            "[Learned corrections — user-taught rules from past mistakes.\n"
-            "ALWAYS follow these. They override default behavior."
+            "[Learned corrections — retained rules from past mistakes.\n"
+            "Each binds under CRITICAL RULES but adds no ask case."
         )
         if len(rows) < total:
             header += (

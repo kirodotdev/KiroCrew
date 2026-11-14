@@ -5649,6 +5649,47 @@ rows can be set, and model choices use the shared advertised-model query. Versio
 hashes live in a collapsed details section rather than in the main status banner.
 Parent-change and impact previews use the server's redacted projection.
 
+## Ask cases and reroute (all four kinds)
+
+One text says when a crew agent stops for a person. It lives in
+`src/kiro_crew/context_assembly/output_contract.py`:
+
+- `ASK_CORE`: reroute first, the five ask cases (a)-(e) stated once, what is
+  not an ask (own time or round caps, reruns inside an approved count,
+  rerunning runs the agent's own bug voided, a blocked step with an allowed
+  path such as a refused protected-branch push that a feature branch and pull
+  request can take, a clearly best option, a ruling already made, a done
+  report even when the next step is the person's), and the safety
+  holds (another spelling of a blocked effect is the same block; the reroute
+  path must not hit (a)-(e) itself; no bypassing an approval or review, no ask
+  to loosen a rule, sandbox or approval mode).
+- `CONDUCTOR_ASK_TAIL`: a worker's ask is a claim the conductor checks against
+  (a)-(e).
+- `WORKER_ASK_TAIL`: try an allowed path before `blocked` or `question`;
+  `needs_human` only for (a)-(e).
+
+Every critical-rules variant carries `ASK_CORE`. The four crew kinds carry it
+again at agent rank, through five seams:
+
+| kind | seam | text |
+|---|---|---|
+| Bot conductor (`kirocrew-mate-conductor`) | `context_assembly/agent_spec.py`, appended to `[AGENT SYSTEM PROMPT]` after the sub-agent span swap | core + conductor tail |
+| Bot worker (`kirocrew-mate-worker`) | `mate_worker.py` `MATE_WORKER_PROMPT` | core + worker tail |
+| Conductor-mode lead (`kirocrew-team-lead`) | `agent_materialization/conductor_agents.py` `with_conductor_ask()`, appended at install by `service_agents._install_team_lead_agent` | core + conductor tail |
+| Conductor-mode conductor (`kirocrew-conductor`, `kirocrew-ledger-conductor`) | `with_conductor_ask()`, appended at install by `conductor_agents._conductor_spec` | core + conductor tail |
+| Conductor-mode worker (`kirocrew-worker`) | `agent_materialization/worker_agent.py` `worker_prompt()` | core + worker tail |
+
+Every other ask list (the `work_report` schema, the goal-conductor skill, the
+worker-debate guide, the Bot conductor and worker pieces, `config/prompt.md`)
+points at "(a)-(e)" instead of repeating it. The lesson headers say a lesson
+that forbids an action still binds, and a lesson that says to wait or ask adds
+no ask case. `deny_notice.POLICY_REROUTE_TEXT` is the one reroute line a
+policy block and the dashboard's refusal recovery prompt share.
+
+Known limit: a custom agent with `includeCrewContext: false` gets no CRITICAL
+RULES, so the `work_report` schema's "(a)-(e) in your CRITICAL RULES" points
+at nothing for it. None of the four kinds sets the flag.
+
 ## Boundaries
 
 - A crew's `triggers` is free text read by a model. It is not a matcher, and no
