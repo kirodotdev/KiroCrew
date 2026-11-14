@@ -811,7 +811,14 @@ def _url_payload_command(n: int) -> str:
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
 #: Raised by 18, from 36,000, to 36,018, for ``paths.py``'s scratch tree-index fence:
 #: artifact reads refuse the canonical index path even during replacement.
-_PACKAGE_LINE_BUDGET = 36_018
+#: Raised by 48, from 36,018, to 36,066, for one false-refusal fix and one
+#: diagnostic: ``exfil_bash._inert_line_allows`` (the ``-d @`` date carve-out across
+#: a chain, pipe, quoted ``$(…)`` or locale prefix; ``printf``, an escape or a
+#: ``#`` keeps the deny) and
+#: ``exfil_bash.audit_bash_exfiltration`` (each exfil refusal names its rule and
+#: span); the ``exfil`` facade manifest lists the new name. No deny pattern or rule
+#: is removed. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_066
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

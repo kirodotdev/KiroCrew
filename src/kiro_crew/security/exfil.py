@@ -1933,6 +1933,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _DATA_EXFIL_FILE_BODY_RULE,
         _data_at_carveout_allows,
         _exfil_rule_id_for_match,
+        _inert_line_allows,
         audit_bash_exfiltration,
     )
     from kiro_crew.security.exfil_oauth import (  # noqa: F401
