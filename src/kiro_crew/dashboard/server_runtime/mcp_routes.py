@@ -142,7 +142,7 @@ def _deferred_instances(handler_name: str) -> Callable:
 
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
-    # Both entrypoints register this table, so both start reading the Ultra Mode
+    # Both entrypoints register this table, so both start reading the conductor mode
     # pause file off-loop at startup; the hook returns at once.
     from kiro_crew import crew_pause, mcp_listing_gateway
 
@@ -472,7 +472,7 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/chat/slots/{slot}/crew-workers/{worker}/recap",
         _deferred("crew_worker_recap", "api_crew_worker_recap"),
     )
-    # Ultra Mode "Pause all" / "Resume all": the Stop and Continue mechanisms over
+    # Conductor mode "Pause all" / "Resume all": the Stop and Continue mechanisms over
     # the root's whole crew, under the same owner-only, no-app gate.
     app.router.add_post(
         "/api/chat/slots/{slot}/crew-workers/pause", _deferred("crew_pause", "api_crew_pause")

@@ -19,7 +19,7 @@ describe('CrewModeMarks', () => {
     const eyebrow = screen.getByTestId('crew-eyebrow')
     expect(eyebrow.className).toContain('crew-eyebrow-text')
     expect(eyebrow.className).toContain('tracking-[1px]')
-    expect(eyebrow.textContent).toBe('Ultra Mode')
+    expect(eyebrow.textContent).toBe('Conductor mode')
     // Idle by default: the gradient sits still.
     expect(eyebrow).toHaveAttribute('data-flowing', 'false')
   })
@@ -76,7 +76,7 @@ describe('CrewModeMarks', () => {
     const chip = screen.getByTestId('crew-mode-composer-chip')
     expect(chip.tagName).toBe('BUTTON')
     expect(chip.getAttribute('aria-pressed')).toBe('true')
-    expect(chip.getAttribute('title')).toContain('Turn off Ultra Mode')
+    expect(chip.getAttribute('title')).toContain('Turn off conductor mode')
     fireEvent.click(chip)
     expect(onTurnOff).toHaveBeenCalledTimes(1)
 
@@ -84,11 +84,11 @@ describe('CrewModeMarks', () => {
     const mark = screen.getByTestId('crew-mode-composer-chip')
     expect(mark.tagName).toBe('SPAN')
     expect(mark.getAttribute('role')).toBe('img')
-    expect(mark.getAttribute('aria-label')).toBe('Ultra Mode is on for this chat')
-    expect(mark.textContent).toBe('Ultra Mode')
+    expect(mark.getAttribute('aria-label')).toBe('Conductor mode is on for this chat')
+    expect(mark.textContent).toBe('Conductor mode')
   })
 
-  it('marks Ultra Mode with a lightning bolt, not the ghost', () => {
+  it('marks conductor mode with a lightning bolt, not the ghost', () => {
     render(<CrewModeComposerChip />)
     const chip = screen.getByTestId('crew-mode-composer-chip')
     expect(chip.querySelector('.lucide-zap')).not.toBeNull()

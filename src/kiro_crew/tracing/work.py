@@ -1,4 +1,4 @@
-"""Ultra Mode and Bot conductor rounds as traces, and a span per ledger write (RFC §5.5).
+"""Conductor rounds (conductor mode or a Bot) as traces, and a span per ledger write (RFC §5.5).
 
 With ``telemetry.traces_ultra_mode = "run"`` (the default) one round of a conductor's
 board is one trace::
@@ -69,6 +69,8 @@ _cont_items: "OrderedDict[str, None]" = OrderedDict()
 _cont_lock = threading.Lock()
 _MAX_CONT_ITEMS = 4096
 
+# The span and trace-id kind stays "ultra": exported traces carry it and saved
+# trace queries filter on it, as with ``kirocrew.crew.root_kind``.
 KIND_ROUND = "ultra"
 KIND_ITEM = "work_item"
 #: Where a write span's name starts: ``kirocrew.work.<action>``.
@@ -415,7 +417,7 @@ def _recorded(
 ) -> None:
     from kiro_crew import work_ledger
 
-    run = provider.ultra_mode() == provider.ULTRA_RUN
+    run = provider.conductor_mode_shape() == provider.CONDUCTOR_MODE_RUN
     rnd = round_of(conductor, header)
     if run and rnd is not None:
         prev = round_of(conductor, before)
@@ -492,7 +494,7 @@ async def header_before(conductor: str, action: str) -> Any:
     if (
         action not in _OPENING
         or provider.peek() is None
-        or provider.ultra_mode() != provider.ULTRA_RUN
+        or provider.conductor_mode_shape() != provider.CONDUCTOR_MODE_RUN
     ):
         return NOT_READ
     from kiro_crew import work_ledger
@@ -557,7 +559,7 @@ def binding(
     off a board, or while tracing is off. Reads disk: run it on a worker thread.
     """
     state = provider.peek()
-    if state is None or provider.ultra_mode() != provider.ULTRA_RUN:
+    if state is None or provider.conductor_mode_shape() != provider.CONDUCTOR_MODE_RUN:
         return None, ""
     from kiro_crew import session_ledger, work_ledger
 

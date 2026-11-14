@@ -8,7 +8,7 @@
  * and there is no other Crew Mode state. The composer exists only for an open
  * session, so this reads the session itself, never a pending pick.
  *
- * The task board is the side panel's Board tab (`workers`, the Ultra Mode crew
+ * The task board is the side panel's Board tab (`workers`, the conductor mode crew
  * view). It is opened the way
  * every other caller outside the panel opens a view (open the panel, then
  * `openView`), and only for a ROOT session (`isRootSession`): any other session
@@ -24,7 +24,7 @@ import { isRootSession } from '../command-center/model'
 import { useIsMobile } from '../../../hooks/useIsMobile'
 
 const EMPTY: ReadonlySet<string> = new Set()
-// The tabs Ultra Mode puts on a chat's strip: Crew and Dashboard.
+// The tabs conductor mode puts on a chat's strip: Crew and Dashboard.
 const BOARD_VIEWS: readonly ViewKind[] = ['workers', 'command-center']
 const withKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => (set.has(key) ? set : new Set(set).add(key))
 const withoutKey = (set: ReadonlySet<string>, key: string): ReadonlySet<string> => {
@@ -91,7 +91,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     shownKey.current = currentSlot?.key
     return () => { shownKey.current = undefined }
   }, [currentSlot?.key])
-  // The first entry to an Ultra Mode root opens the side panel on the Crew tab.
+  // The first entry to a conductor mode root opens the side panel on the Crew tab.
   // After that the chat keeps its own saved panel state and tab: a panel the
   // person closed stays closed, and the tab they picked stays in front. Not on a
   // phone: there the panel is a sheet over the chat, and a phone always lands
@@ -103,7 +103,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     if (!rootKey || enteredKey.current === rootKey) { if (!rootKey) enteredKey.current = null; return }
     enteredKey.current = rootKey
     if (isMobile || hasSavedActivityOpen(rootKey)) return
-    // A chat created already in Ultra Mode (`dashboard.new_chat_crew_mode`) is
+    // A chat created already in conductor mode (`dashboard.new_chat_crew_mode`) is
     // entered, not turned on: remember a closed panel the same way, so turning
     // it off before the first message closes the panel again.
     if (!activityOpen) panelWasClosed.current.add(rootKey)
@@ -135,7 +135,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     }).finally(() => setTurningOn(set => withoutKey(set, key)))
     // the side panel opens on its own with the Crew tab in front
     // (SidePanel pins it first). Remember whether it was closed, so turning
-    // Ultra Mode off again before the first message puts it back. Not on a
+    // conductor mode off again before the first message puts it back. Not on a
     // phone: there the panel is a sheet over the chat, so the chat stays in
     // front and the Board is one press away on the panel button.
     if (opensBoard) {
@@ -168,7 +168,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     const key = currentSlot.key
     setTurningOff(set => withKey(set, key))
     // The Crew and Dashboard tabs go only once the switch has landed: a refused
-    // switch (shown as its own notice) leaves the chat in Ultra Mode, and it
+    // switch (shown as its own notice) leaves the chat in conductor mode, and it
     // keeps its tabs. The panel closes only if this chat is still the one on
     // screen, since the panel is shared by every chat.
     void switchAgent(defaultAgent || 'kirocrew', 'template').then(ok => {
@@ -178,7 +178,7 @@ export function useCrewModeSwitch({ currentSlot, defaultAgent, hasUserMessage, s
     }).finally(() => setTurningOff(set => withoutKey(set, key)))
   }, [crewModeCancellable, currentSlot, switchAgent, defaultAgent, dispatch])
   // A plain ROOT chat that already has a message can still be turned into an
-  // Ultra Mode chat (one way: the gateway then locks it on the conductor). A
+  // conductor mode chat (one way: the gateway then locks it on the conductor). A
   // crew member's chat is not a root, so it never offers this.
   const crewModeMidChat = crewModeEligible && !crewModeChosen && hasUserMessage && isRootSession(currentSlot)
   return {

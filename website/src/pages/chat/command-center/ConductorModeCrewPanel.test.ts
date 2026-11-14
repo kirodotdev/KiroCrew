@@ -1,5 +1,5 @@
 /**
- * The Ultra Mode Status view's pure helpers: the Overview's goal and "Done when"
+ * The conductor mode Status view's pure helpers: the Overview's goal and "Done when"
  * lines, the milestone state rule, the Recap rule (the session summary only when
  * it is about goal progress, else the milestone sentence) and the List's tree depth.
  */
@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest'
 import type { CrewWorker } from '../../../types'
 import type { WorkBoardItem } from '../../../api/crewBoard'
 import type { SessionSummary } from '../../../types/sessionSummary'
-import { CREW_BOARD_EXPANDED_KEY, crewAncestors, crewRowOpen, crewTree, doneWhen, goalScope, goalSentence, milestoneSentence, milestoneState, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './UltraCrewPanel'
+import { CREW_BOARD_EXPANDED_KEY, crewAncestors, crewRowOpen, crewTree, doneWhen, goalScope, goalSentence, milestoneSentence, milestoneState, readCrewBoardExpanded, summaryRecap, visibleCrewRows, type CrewTreeNode } from './ConductorModeCrewPanel'
 
 const item = (over: Partial<WorkBoardItem>): WorkBoardItem => ({
   schema: 1, item_id: 'it_1', title: 'Menu', acceptance: { kind: 'human_approval' }, state: 'open', verdict: null,

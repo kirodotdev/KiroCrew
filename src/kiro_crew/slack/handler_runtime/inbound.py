@@ -927,7 +927,7 @@ async def route_linked_thread(
         **({"meta": dict(user_meta)} if user_meta else {}),
     )
     _queued_text = text
-    # Ultra Mode "Pause all" holds this session: the message queues as it does
+    # Conductor mode "Pause all" holds this session: the message queues as it does
     # behind a running turn, and Resume all (or its own Continue) runs it.
     from kiro_crew import crew_pause
 

@@ -120,7 +120,7 @@ async def _fire_dashboard_nudge(
         await load_window_off_loop(slot)
         if self.dashboard_state.get_slot(loop.slot_key) is not slot:
             return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
-    # An Ultra Mode "Pause all" holds this session: the wake is refused like a busy
+    # A conductor mode "Pause all" holds this session: the wake is refused like a busy
     # slot's, so it spends no cycle and dispatches nothing until Resume all.
     from kiro_crew import crew_pause
 

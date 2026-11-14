@@ -1052,7 +1052,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     from kiro_crew import crew_pause
     from kiro_crew.dashboard import responsive_chat
 
-    # Ultra Mode "Pause all" holds this session: a send is queued, not started,
+    # Conductor mode "Pause all" holds this session: a send is queued, not started,
     # and waits for Resume all (or the session's own Continue).
     _crew_paused = crew_pause.holds_slot(slot)
     _responsive_eligible = False

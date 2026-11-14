@@ -456,7 +456,7 @@ export function createTranscriptRenderers(
       render: (m, ctx) => ctx.row(<McpSignInNeededNotice key={ctx.key} content={m.content} meta={m.meta} />),
     },
     {
-      // The main chat's one "You paused the crew" row (Ultra Mode Pause all).
+      // The main chat's one "You paused the crew" row (Conductor mode Pause all).
       id: 'crew_paused_notice',
       roles: ['notice'],
       match: m => m.meta?.kind === 'crew_paused_notice',

@@ -325,8 +325,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const dashDisabled = !dashQ.isSuccess
-  // The Ultra Mode default is shown only while its preview is on: off, no chat
-  // offers Ultra Mode, so the setting would change nothing.
+  // The conductor mode default is shown only while its preview is on: off, no chat
+  // offers conductor mode, so the setting would change nothing.
   const crewModePreview = useCrewMode()
 
   // Second-level rail groups. Order = rail order; the first item (Transcript)

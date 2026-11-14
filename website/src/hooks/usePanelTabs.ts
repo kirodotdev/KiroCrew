@@ -647,13 +647,13 @@ export function offerPanelView(slotKey: string | null, kind: ViewKind): void {
 }
 
 /** What *slotKey*'s strip holds now: its tab ids and the tab in front. Read
- *  before a change that may have to be undone (a failed Ultra Mode turn-on). */
+ *  before a change that may have to be undone (a failed conductor mode turn-on). */
 export function panelStripOf(slotKey: string | null): { ids: readonly string[], activeId: string | null } {
   const b = store[bucketKey(slotKey)] ?? EMPTY_BUCKET
   return { ids: b.tabs.map(t => t.id), activeId: b.activeId }
 }
 
-/** remove views a turned-off (or failed) Ultra Mode put on a strip. When the tab
+/** remove views a turned-off (or failed) conductor mode put on a strip. When the tab
  *  in front goes, or is one of `restore.over` (a tab the caller itself put in
  *  front), `restore.focus` comes back to the front if it is still there; a tab
  *  in front that went falls back to the first tab. */
@@ -673,7 +673,7 @@ export function openPanelView(slotKey: string | null, kind: ViewKind, opts?: { h
   mutateSlot(key, b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), null, { choice: true })
   // `hold`: a discovery open (Changes for a link the chat's history turns out
   // to hold) keeps this view in front until the next tab choice or the end of
-  // this show. The Ultra Mode board opens a worker with Workers in front, and
+  // this show. The conductor mode board opens a worker with Workers in front, and
   // the worker's history loads after it: without the hold, its PR link took
   // the focus and hid the panel's way back to the root.
   if (opts?.hold) heldViews.set(key, kind)
@@ -976,7 +976,7 @@ export function usePanelTabs(
      *  for not being a stored tab. Pass a module constant: the array is a
      *  dependency of the strip callbacks. */
     leadingIds?: readonly string[]
-    /** An Ultra Mode chat (a crew root or one of its workers): the Board leads
+    /** A conductor mode chat (a crew root or one of its workers): the Board leads
      *  the strip and only a person moves the focus. An `automatic` open (a PR
      *  or issue link found, Pin Summary's landing, an app render opening on its
      *  own, the Git tab) adds or updates its tab and leaves the focus where it
@@ -1252,7 +1252,7 @@ export function usePanelTabs(
    *  (belt-and-braces: focus stamping already sorts it last). */
   const openApp = useCallback((toolCallId: string, title: string, slot: string | null = null, opts?: { automatic?: boolean }) => {
     const id = `app:${toolCallId}`
-    // An Ultra Mode chat keeps its focus when a render opens on its own (see `boardFirst`).
+    // A conductor mode chat keeps its focus when a render opens on its own (see `boardFirst`).
     const keepFocus = !!opts?.automatic && boardFirst
     update(b => {
       const now = Date.now()

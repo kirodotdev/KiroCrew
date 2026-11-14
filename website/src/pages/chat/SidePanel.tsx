@@ -368,7 +368,7 @@ export default function SidePanel({
     const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined
     return crewModeRoot(row) || !!crewRootOf(row)
   })
-  // while a new chat's Ultra Mode switch lands (no root stamp yet),
+  // while a new chat's conductor mode switch lands (no root stamp yet),
   // a Crew tab already on its strip is pinned first too.
   const freshChat = useAppSelector(st => {
     const row = slot ? st.dashboard.slots.find(r => r.key === slot) : undefined

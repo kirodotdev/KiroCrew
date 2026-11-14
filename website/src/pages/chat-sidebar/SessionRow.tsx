@@ -243,7 +243,7 @@ interface SessionRowProps {
  *  is subscribed to HERE, slot-scoped, so a background event re-renders only
  *  the row it belongs to. */
 
-/** An Ultra Mode root's status line: "N needs you", "N stalled" (plus who
+/** A conductor mode root's status line: "N needs you", "N stalled" (plus who
  *  stalled longest), "N running", or "Done" -- only what applies. With no crew
  *  and nothing owed it shows *fallback*, the row's usual line. */
 function CrewRootSummaryLine({ root, fallback, own = null, work, rootOwes = 0, dot = null }: {
@@ -459,7 +459,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
   // wakes itself at that moment and the selector above reads the clock again.
   useCrewWorkClock(s.crew_work ? [s.crew_work] : [])
   // A Crew Mode root whose own turn is idle is still working while one of its
-  // crew members runs; its Ultra Mode tag flows for either. Only crew roots scan.
+  // crew members runs; its conductor mode tag flows for either. Only crew roots scan.
   const crewWorking = useAppSelector(st => crewRoot && (hasLiveSessionWork(s) || openedSessionRunning(st.dashboard.slots, s.key)))
   const goalLoop = automation?.kind === 'legacy_goal_loop' ? automation : undefined
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
@@ -745,7 +745,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     const crewStalled = crewIdle && (crewWork?.stalled ?? 0) > 0
     const crewMoving = crewIdle && (crewWork?.moving ?? 0) > 0
     const crewLooping = crewMoving && crewWork?.looping === crewWork?.moving
-    const crewRunningText = crewLooping ? i18nT('components.crewMode.ultra_row_count_running', { count: crewWork?.looping ?? 0 }) : ''
+    const crewRunningText = crewLooping ? i18nT('components.crewMode.conductor_mode_row_count_running', { count: crewWork?.looping ?? 0 }) : ''
     // Ordinary sessions need the same reboot/error visibility as goal loops,
     // without claiming that an older interrupted parent turn has stopped live
     // child work. A goal loop keeps its richer cycle-specific treatment below;
@@ -1130,7 +1130,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
       ? crewApprovalEntry
       : ownStateEntry
     const rowState = rowStateEntry?.build() ?? null
-    // The sentence the winning branch shows, kept for an Ultra Mode row's tooltip.
+    // The sentence the winning branch shows, kept for a conductor mode row's tooltip.
     const rowStateTitle = (key: string | undefined): string => {
       switch (key) {
         case 'pending_approval': return i18nT('pages.chatSidebar.needs_approval')
@@ -1158,7 +1158,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
         default: return ''
       }
     }
-    // The same branch, as a word and a tooltip for an Ultra Mode row.
+    // The same branch, as a word and a tooltip for a conductor mode row.
     const crewOwnState = crewRoot ? crewRowOwnState(rowStateEntry?.key, rowStateTitle(rowStateEntry?.key), goalLoopStalled, !!crewWorking) : null
     // The title-line live dot reads the WINNING branch of the resolver above, so
     // it can never disagree with the secondary line: it lights exactly when that
@@ -1636,7 +1636,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 *  conductor is Crew Mode's to choose and may be swapped. The bolt sits
                 *  inline on this line rather than as a badge before the title, so the
                 *  title keeps the row's full width. */}
-              {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />}
+              {crewRoot && <Zap size={12} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />}
               {crewRoot && <CrewEyebrow active={crewWorking} />}
               {/* A code-channel row's agent name gives way first, so the Slack
                 *  mark and the time keep their room; other rows keep `shrink-0`. */}
@@ -1918,7 +1918,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
                 dot IS the content then. A crew card's workers summary takes the
                 tail's place (ONE line); a search's snippet stands in for the tail. */}
             {crewRoot
-              // An Ultra Mode row shows only what needs attention (counts in the tooltip), else the usual tail.
+              // A conductor mode row shows only what needs attention (counts in the tooltip), else the usual tail.
               ? <CrewRootSummaryLine root={s.key} fallback={<SearchHitTail slot={s} preview={lastMessageLine} dot={unreadDot} tail={rowState ?? lastMessageLine} />} own={crewOwnState} work={s.crew_work} dot={unreadDot}
                   // What the main chat itself holds for the person: an approval, a question, a
                   // spawn approval, or an armed loop asking (a ledger item on the person is counted from `crew_work`).

@@ -23,11 +23,11 @@ export function CrewGhostBadge({ size = 28 }: { size?: number }) {
  *  pixel: an em fraction at this size lands letters on fractional pixels, which
  *  renders one gap wider than the rest.
  *  `active` (the crew is working) slides the gradient one tile per
- *  `ULTRA_FLOW_SECONDS`; it stops the moment the work ends, and never moves
+ *  `CONDUCTOR_MODE_FLOW_SECONDS`; it stops the moment the work ends, and never moves
  *  under reduced motion, so the flow is a live-state signal rather than an
  *  always-on loop. The pace is quick enough to tell a working row from an idle
  *  one at a glance (at 5s the drift read as still). */
-export const ULTRA_FLOW_SECONDS = 2
+export const CONDUCTOR_MODE_FLOW_SECONDS = 2
 
 export function CrewEyebrow({ active = false }: { active?: boolean } = {}) {
   const reduceMotion = useLiveReducedMotion()
@@ -44,7 +44,7 @@ export function CrewEyebrow({ active = false }: { active?: boolean } = {}) {
       className="crew-eyebrow-text font-bold uppercase tracking-[1px] truncate"
       initial={{ backgroundPositionX: '0%' }}
       animate={{ backgroundPositionX: flowing ? ['0%', '-200%'] : '0%' }}
-      transition={flowing ? { duration: ULTRA_FLOW_SECONDS, ease: 'linear', repeat: Infinity } : { duration: 0 }}
+      transition={flowing ? { duration: CONDUCTOR_MODE_FLOW_SECONDS, ease: 'linear', repeat: Infinity } : { duration: 0 }}
     >
       {i18nT('components.crewMode.eyebrow')}
     </motion.span>
@@ -100,7 +100,7 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
         transition={{ duration: 0.2 }}
         className="inline-flex items-center gap-1.5 h-7 px-1.5 -mx-1.5 rounded-md text-[12px] font-semibold shrink-0 cursor-pointer hover:bg-bg-hover"
       >
-        <Zap size={13} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
+        <Zap size={13} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />
         <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
       </motion.button>
     )
@@ -115,7 +115,7 @@ export function CrewModeComposerChip({ onTurnOff }: { onTurnOff?: () => void } =
       transition={{ duration: 0.2 }}
       className="inline-flex items-center gap-1.5 h-7 text-[12px] font-semibold shrink-0 cursor-default select-none"
     >
-      <Zap size={13} aria-hidden="true" className="inline-block shrink-0 ultra-accent" />
+      <Zap size={13} aria-hidden="true" className="inline-block shrink-0 conductor-mode-accent" />
       <span className="crew-grad-text">{i18nT('components.crewMode.chip_off')}</span>
     </motion.span>
   )

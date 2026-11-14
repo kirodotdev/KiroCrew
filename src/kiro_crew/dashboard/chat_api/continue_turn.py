@@ -105,7 +105,7 @@ async def api_chat_slot_continue(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
 
-    # Ultra Mode "Pause all": the person's own Continue on a member the pause
+    # Conductor mode "Pause all": the person's own Continue on a member the pause
     # stopped hands that one member back. A paused root resumes from the Board.
     # Imported here: this module's functions run on chat_handlers' globals.
     import asyncio

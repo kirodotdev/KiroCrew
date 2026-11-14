@@ -118,7 +118,7 @@ export function usePaneLayoutState({
     if (!safeSetItem(key, '1')) return
     // Without the Auto-Open Git setting the tab is only created for discovery,
     // so it is automatic: it neither stops Pin Summary's landing nor takes the
-    // focus from a Summary the landing chose. An Ultra Mode chat keeps the
+    // focus from a Summary the landing chose. A conductor mode chat keeps the
     // Board (or the tab the person picked) in front either way.
     tabsCtl.openView('git', { automatic: !autoOpenGitPanel || tabsCtl.boardFirst })
     if (autoOpenGitPanel) dispatch(openActivityPanel())

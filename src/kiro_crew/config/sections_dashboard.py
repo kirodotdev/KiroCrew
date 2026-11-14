@@ -518,11 +518,11 @@ class DashboardConfig:
     new_chat_crew_mode: bool = field(
         default=False,
         metadata=_meta(
-            "Start new chats in Ultra Mode",
-            "Open each new dashboard chat with Ultra Mode already on. It can "
+            "Start new chats in conductor mode",
+            "Open each new dashboard chat with conductor mode already on. It can "
             "still be turned off before the first message. Applies only where "
-            "Ultra Mode is offered: a Persistent chat on the default agent, "
-            "with the Ultra Mode preview on.",
+            "conductor mode is offered: a Persistent chat on the default agent, "
+            "with the conductor mode preview on.",
         ),
     )
     widget_density: str = field(

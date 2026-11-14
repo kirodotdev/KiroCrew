@@ -115,7 +115,7 @@ describe('settingEntryOffered', () => {
     expect(settingEntryOffered(tipsEntry(), ON)).toBe(true)
   })
 
-  it('offers Start New Chats in Ultra Mode only while the Ultra Mode preview draws its row', () => {
+  it('offers Start New Chats in Conductor Mode only while the conductor mode preview draws its row', () => {
     const entry = SETTINGS_REGISTRY.find(e => e.configKey === 'dashboard.new_chat_crew_mode')
     if (!entry) throw new Error('dashboard.new_chat_crew_mode missing from the registry')
     localStorage.removeItem(PREVIEW_CREW_MODE)

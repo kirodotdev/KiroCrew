@@ -251,7 +251,7 @@ def test_critical_rules_require_a_live_read_before_any_status_claim():
 def test_shared_base_rules_tell_every_crew_agent_to_ask_only_when_needed(
     tmp_path, monkeypatch, agent, session_key
 ):
-    """Conductor, worker, Bot and Ultra Mode all start from the critical-rules block."""
+    """Conductor, worker, Bot and conductor mode all start from the critical-rules block."""
     from kiro_crew import context as ctx_mod
 
     rule = "Ask a person only when human involvement is truly required."

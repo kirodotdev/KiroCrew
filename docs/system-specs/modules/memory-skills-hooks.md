@@ -1614,8 +1614,8 @@ raw agent file writes cannot modify managed SQLite state.
 | User flow | Memory behavior |
 |---|---|
 | Ordinary assistant without a selected member | Existing Global Memory V1 behavior |
-| Member DM, without Ultra Mode | The owning execution record's member/store IDs; existing V1 bindings stay V1, explicit newly created members use V2 |
-| Ultra Mode | Each delegate retains its own binding. A target member is explicit and admitted by ordinary delegation/tool/app policy; omitted targets inherit the parent |
+| Member DM, without conductor mode | The owning execution record's member/store IDs; existing V1 bindings stay V1, explicit newly created members use V2 |
+| Conductor mode | Each delegate retains its own binding. A target member is explicit and admitted by ordinary delegation/tool/app policy; omitted targets inherit the parent |
 | Scheduled work | `member_id` pins the member separately from its provider template. Creation, firing and resumed chat validate the pinned store |
 | Restart or continuation | The owning record retains the same frozen execution context |
 | Unavailable or corrupt memory | Learned-memory operations report unavailability; manual essentials remain usable. No global fallback or replacement empty database |
