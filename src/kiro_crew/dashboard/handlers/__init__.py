@@ -1172,3 +1172,8 @@ from kiro_crew.dashboard.handlers.security import (  # noqa: E402, F401
     api_trusted_registry_grant,
     api_trusted_registry_revoke,
 )
+from kiro_crew.dashboard.handlers.tool_grants import (  # noqa: E402, F401
+    api_tool_grant_add,
+    api_tool_grant_remove,
+    api_tool_grants_list,
+)

@@ -1170,7 +1170,7 @@ def _operator_confirms(facts: GateFacts, grant_targets: tuple[str, ...]) -> bool
 
 
 def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
-    """The operator's ``auto_approve_tools`` patterns.
+    """The operator's ``auto_approve_tools`` patterns and per-tool identity grants.
 
     Matched against both the original title (preserves "Running: "/"Reading "
     prefixes) and the normalized name (stripped), so "Running: *" and bare
@@ -1196,6 +1196,13 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     (over-denying is safe); a grant may not. An identity that is present but
     unproven falls back to the title, exactly as before.
 
+    ``auto_approve_tool_identities`` (the grants the approval card's "Always
+    allow this tool" and the MCP tool list write) uses case-insensitive literal
+    equality against a verified identity, never glob or path normalization and
+    never the title: a shell call's title can be the model's
+    own ``description``, so one reading ``@ops/list`` must not win that grant.
+    ``confirm_tools`` outranks it exactly as it outranks ``auto_approve_tools``.
+
     ``classifier_only`` skips this tier (see the app-own-server tier for why).
     """
     if facts.classifier_only:
@@ -1218,6 +1225,10 @@ def _tier_operator_grants(facts: GateFacts, tier: GateTier) -> ToolHookResult | 
     for pattern in facts.config.auto_approve_tools:
         if any(_tool_matches(pattern, target) for target in grant_targets):
             return ToolHookResult.auto_approve(identity_grant=identity_grant)
+    if identity_ref and any(
+        grant.lower() == identity_ref.lower() for grant in facts.config.auto_approve_tool_identities
+    ):
+        return ToolHookResult.auto_approve(identity_grant=True)
     if identity_ref:
         # Runtime breadcrumb for the deliberate title-match exclusion: a pattern
         # that matches the agent-authored title does not grant an

@@ -201,6 +201,11 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/security/trusted-registries/revoke", handlers.api_trusted_registry_revoke
     )
+    # Per-tool "Always allow" grants: the MCP tool list's toggle and the
+    # approval card's "Always allow this tool" (dashboard.always_allow_tool).
+    app.router.add_get("/api/security/tool-grants", handlers.api_tool_grants_list)
+    app.router.add_post("/api/security/tool-grants", handlers.api_tool_grant_add)
+    app.router.add_post("/api/security/tool-grants/remove", handlers.api_tool_grant_remove)
     # Read-only governance policy viewer — effective Level-1 ∩ Level-2 ceiling
     # across every governed scope (no write path; the ceiling is file-authored).
     app.router.add_get("/api/governance/policy", handlers.api_governance_policy)
