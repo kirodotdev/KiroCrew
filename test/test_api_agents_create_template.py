@@ -36,7 +36,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew.config.sections import MemoryConfig
+from kiro_crew.config.sections import MemoryConfig, WorkspaceConfig
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +68,7 @@ def _fake_config():
         agents={},
         memory_stores={},
         workspaces={},
+        default_workspace="default",
         default_agent="kirocrew",
         save=lambda: saved.append(True),
         saved=saved,
@@ -436,6 +437,23 @@ class TestCreateRequestHandle:
         assert cfg.saved == [True, True] and len(cfg.agents) == 2
 
     @pytest.mark.asyncio
+    async def test_a_repeat_naming_an_unconfigured_workspace_gets_the_same_warning(self):
+        cfg = _fake_config()
+        body = {
+            "name": "scout",
+            "kiro_agent": "kirocrew",
+            "workspace": "nope",
+            "request_id": self.RID,
+        }
+        first = await _post(body, cfg, installed=("kirocrew",))
+        again = await _post(body, cfg, installed=("kirocrew",))
+        assert first[0] == 200
+        assert first[1].get("warnings") == [
+            "workspace 'nope' is not configured; the crew shares a fallback workspace directory"
+        ]
+        assert again == first
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("repeat_id", [None, "0b9e4a1c-2d3f-4a5b-9c8d-7e6f5a4b3c2d"])
     async def test_any_other_repeat_is_still_agent_exists(self, repeat_id):
         cfg = _fake_config()
@@ -670,3 +688,39 @@ class TestHeadlessAvatarDefault:
         (key,) = agents.keys()
         assert agents[key]["display_name"] == "Scout Ranger"
         assert agents[key]["avatar"] == default_icon_avatar("Scout Ranger")
+
+
+class TestUnconfiguredWorkspaceWarning:
+    """A named workspace is stored as given; an unconfigured one is warned about.
+
+    Such a name falls back to another workspace's directory, so the create says
+    so with the same line the update route answers, and nothing else changes.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "workspace, warned",
+        [
+            ("nope", True),
+            ("shared", False),
+            ("default", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    async def test_only_an_unconfigured_name_is_warned_about(self, workspace, warned, tmp_path):
+        cfg = _fake_config()
+        cfg.workspaces["shared"] = WorkspaceConfig(dir=str(tmp_path / "shared"))
+        body = {"name": "scout", "kiro_agent": "kirocrew"}
+        if workspace is not None:
+            body["workspace"] = workspace
+        status, data = await _post(body, cfg, installed=("kirocrew",))
+        assert status == 200 and data["ok"] is True
+        if warned:
+            assert data.get("warnings") == [
+                "workspace 'nope' is not configured; "
+                "the crew shares a fallback workspace directory"
+            ]
+            assert cfg.written["doc"]["agents"]["scout"]["workspace"] == "nope"
+        else:
+            assert "warnings" not in data
