@@ -302,7 +302,7 @@ def test_the_channel_default_also_comes_from_the_caller_block() -> None:
     assert job is not None and job.channel == "C0FROMBLOCK"
 
 
-# 5: the rows written before the fix
+# 5: ownerless rows, recorded owners and the audit trail
 
 
 def test_a_job_created_now_always_records_an_owner() -> None:

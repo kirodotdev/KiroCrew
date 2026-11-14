@@ -997,17 +997,12 @@ async def test_a_stale_survivor_is_repaired_end_to_end(
     run_dir = _isolate(monkeypatch, home)
     sock = short_sock_dir / "gw.sock"
 
-    # The manager rejects a daemon whose reported code_fingerprint differs from
-    # its own, and code_fingerprint() caches ONE value per worker process --
-    # seeded by its first read, often long before this test runs. When that
-    # single cached read took the mtime fallback (the git probe timed out or
-    # failed once under a loaded run) while the real daemon subprocesses this
-    # test spawns resolve the git revision live, the two schemes never compare
-    # equal, every daemon reads as stale code, the election exhausts its rounds
-    # and start() returns False. Pin the manager to a fingerprint resolved the
-    # same way, from the same tree, as the daemons it is comparing against, so
-    # code drift reflects only real code differences -- which this test plants
-    # none of; the drift it does exercise is the target-map drift below.
+    # The manager rejects a daemon whose code_fingerprint differs from its own,
+    # and code_fingerprint() caches ONE value per worker process. If that cached
+    # read took the mtime fallback (a git probe timed out under load) while the
+    # spawned daemons resolve the git revision, the schemes never match, every
+    # daemon reads as stale and start() returns False. Pin the manager to the
+    # daemons' scheme, so the only drift here is the target-map drift below.
     monkeypatch.setattr(mgr, "code_fingerprint", lambda: _cf.fingerprint_of(_cf._PACKAGE_ROOT))
 
     stale_env = {

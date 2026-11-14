@@ -556,7 +556,7 @@ def test_a_kept_overlay_from_before_the_vendor_denylist_drops_the_vendor_stub(
 
     stub_servers = frozenset({"creds-agent"})
     with monkeypatch.context() as patch:
-        # The pass as it ran before this change: schema 10, empty denylist.
+        # An older rewriter pass: schema 10, empty denylist.
         patch.setattr(rewriter, "_FINGERPRINT_SCHEMA", 10)
         patch.setattr(rewriter_spec, "UNPOOLABLE_SERVERS", frozenset())
         _rewrite(tmp_path, stub_servers=stub_servers)
