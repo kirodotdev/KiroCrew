@@ -665,7 +665,7 @@ def test_settings_and_channel_pickers_list_the_same_choosable_roster(
     assert not hidden & set(channel_list)
 
 
-# ── Review regressions ────────────────────────────────────────────────────
+# ── /kirocrew agent edge cases ────────────────────────────────────────────
 
 
 def test_kirocrew_agent_outside_a_code_channel_is_the_apps_own_command(env: Env) -> None:
