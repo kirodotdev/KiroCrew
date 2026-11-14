@@ -7,6 +7,7 @@ spawn; these pin the rules each half applies on its own.
 from __future__ import annotations
 
 import io
+import json
 import os
 import socket
 import sys
@@ -243,6 +244,25 @@ def test_a_refused_pickup_is_dropped(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_ipc_client, "unix_socket_urlopen", forbid)
     assert agent_ipc_client.current_capability(lambda: 1) == ("", "")
     assert agent_ipc_client._pickup == ""
+
+
+def _answer(monkeypatch, body: dict) -> None:
+    reply = io.BytesIO(json.dumps(body).encode())
+    monkeypatch.setattr(agent_ipc_client, "unix_socket_urlopen", lambda *_a, **_k: reply)
+
+
+def test_a_redeemed_pickup_becomes_the_capability_and_its_session(monkeypatch, tmp_path):
+    sock = tmp_path / "a.sock"
+    monkeypatch.setattr(agent_ipc_client, "agent_socket_path", lambda port: sock)
+    for name, value in _held().items():
+        monkeypatch.setenv(name, value)
+    _answer(monkeypatch, {"capability": "c" * 64})
+    agent_ipc_client.redeem_at_startup(lambda: 1)
+    assert agent_ipc_client.current_capability(lambda: 1) == ("c" * 64, str(sock))
+    _answer(monkeypatch, {"session_key": "chat-1"})
+    assert agent_ipc_client.capability_session_key() == "chat-1"
+    _answer(monkeypatch, {})
+    assert agent_ipc_client.capability_session_key() == ""
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="AF_UNIX transport")

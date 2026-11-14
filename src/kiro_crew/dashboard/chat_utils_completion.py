@@ -14,6 +14,7 @@ from typing import Any
 
 from kiro_crew.dashboard.chat_utils_injected_rows import (
     SUBAGENT_DELIVERY_KINDS,
+    signout_hold_active,
     teardown_hold_active,
 )
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key, effective_session_key
@@ -357,7 +358,7 @@ async def chat_done_payload(
                 slot.queue_depth
                 and not queue_held
                 and not only_restored_cards
-                and not slot._last_turn_auth_required
+                and not signout_hold_active(slot)
                 and not teardown_hold_active(state, slot)
             )
             or await background_wake_pending(state, slot, "completion_sound")

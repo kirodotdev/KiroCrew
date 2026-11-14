@@ -103,6 +103,25 @@ async def test_stable_member_identity_and_store(fixture):
 
 
 @pytest.mark.asyncio
+async def test_resending_a_prompt_held_for_sign_in_drops_the_held_copy(fixture, monkeypatch):
+    from dataclasses import replace
+
+    from kiro_crew.shared_crew import identity
+
+    state, slot, request, *_ = fixture
+    actor = replace(identity.unknown_actor(), principal=identity.local_operator_principal("me"))
+    monkeypatch.setattr(identity, "actor_of", lambda _request: actor)
+    _busy(slot)
+    slot._last_turn_auth_required = True
+    author = actor.principal.to_public_dict()
+    held = slot.queue_append("New question", meta={"author": author}, directive_user_origin=True)
+    slot._queue[0].update({"_signout_put_back": "g1", "_signout_retained": True})
+    await rc.accept(request, slot, "New question", None)
+    assert [e["content"] for e in slot._queue] == ["New question"]
+    assert slot._queue[0]["id"] != held
+
+
+@pytest.mark.asyncio
 async def test_a_waiting_send_evicted_from_the_window_reuses_its_written_row(fixture, monkeypatch):
     state, slot, request, *_ = fixture
     _busy(slot)
@@ -336,6 +355,37 @@ async def test_idle_parent_answers_ahead_of_children_and_keeps_ordinary_queue(fi
     rows = [row for row in slot.messages if row["role"] == "user"]
     assert len(rows) == 1 and rows[0]["meta"]["sendId"] == "s1"
     state.sessions.cancel_owned_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_put_back_send_does_not_merge_with_a_later_waiting_send(fixture):
+    state, slot, request, *_ = fixture
+    _busy(slot)
+    await rc.accept(request, slot, "/prompts get checklist", {"sendId": "a"})
+    await rc.accept(request, slot, "later", {"sendId": "b"})
+    slot._queue[0]["_signout_put_back"] = "g1"
+    assert rc.dequeue_waiting_run(slot) is None
+    assert [e["content"] for e in slot._queue] == ["/prompts get checklist", "later"]
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_send_does_not_run_ahead_of_a_prompt_held_for_sign_in(fixture, monkeypatch):
+    state, slot, request, *_ = fixture
+    _busy(slot)
+    await rc.accept(request, slot, "newer", {"sendId": "s1"})
+    slot.task.cancel()
+    slot.task = None
+    slot.queue_insert(0, "held", directive_user_origin=True)
+    slot._queue[0]["_signout_retained"] = True
+    seen = []
+
+    async def run(st, sl, message, **kwargs):
+        seen.append(message)
+
+    monkeypatch.setattr(chat_runner, "_run_chat", run)
+    assert await chat_runner._start_next_queued_turn(state, slot)
+    await asyncio.wait_for(slot.task, timeout=30)
+    assert seen == ["held"]
 
 
 @pytest.mark.asyncio

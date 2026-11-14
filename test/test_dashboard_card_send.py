@@ -447,7 +447,7 @@ async def test_a_card_does_not_join_a_non_empty_queue(env):
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "hold",
-    ["crew_paused", "teardown_hold", "edit_hold"],
+    ["crew_paused", "teardown_hold", "edit_hold", "signout_hold"],
 )
 async def test_a_card_never_enters_an_unmarked_queue_path(env, monkeypatch, hold):
     """A state that would QUEUE the send (a Pause all, a deferred conversation discard,
@@ -461,6 +461,10 @@ async def test_a_card_never_enters_an_unmarked_queue_path(env, monkeypatch, hold
         monkeypatch.setattr("kiro_crew.crew_pause.holds_slot", lambda s: True)
     elif hold == "teardown_hold":
         monkeypatch.setattr(chat_handlers, "teardown_hold_active", lambda st, s: True)
+    elif hold == "signout_hold":
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_utils_injected_rows.signout_held", lambda s: True
+        )
     else:
         monkeypatch.setattr(
             "kiro_crew.dashboard.queue_edit_hold.edit_hold_blocks_user_turn", lambda s: True

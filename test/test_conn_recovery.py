@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 
 import pytest
 from chat_test_helpers import _make_state
@@ -138,6 +138,7 @@ async def test_queue_dispatch_preserves_recovery_provenance(
         "_directive_user_origin": False,
         "_directive_channel_origin": False,
         "_directive_owner_origin": False,
+        "_queued_entries": ANY,
     }
     if expected_recovery:
         # A recovery-kind entry also tells the runner it IS a recovery
@@ -261,6 +262,7 @@ async def test_dispatch_classifies_the_payload_not_the_recovery(
         _directive_user_origin=False,
         _directive_channel_origin=False,
         _directive_owner_origin=False,
+        _queued_entries=ANY,
     )
     # Provenance is unchanged by the split: either payload still renders as an
     # inject row, which is what stops the duplicate user bubble.

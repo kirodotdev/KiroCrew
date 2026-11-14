@@ -326,8 +326,11 @@ async def test_the_hold_route_validates_its_input(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_release_on_a_slot_held_for_sign_in_starts_nothing(tmp_path, monkeypatch):
+    from kiro_crew.dashboard.chat_utils_injected_rows import mark_signout_retained
+
     state, slot, qid = _idle_state(tmp_path, monkeypatch)
     slot._last_turn_auth_required = True
+    mark_signout_retained(slot)
     spawn, run = _patched_turn_start()
     with spawn as spawned, run:
         async with TestClient(TestServer(_app(state))) as client:
