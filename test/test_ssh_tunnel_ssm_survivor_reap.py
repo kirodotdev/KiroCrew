@@ -109,8 +109,8 @@ async def _connected_tunnel(proc: asyncio.subprocess.Process, exits: list[str]) 
     """A CONNECTED tunnel supervising *proc*, its monitor already waiting."""
     tunnel = _ssm_tunnel(on_exit=exits.append)
     tunnel._proc = proc
-    tunnel._ssm_pgid = _SshTunnel._spawned_group(proc)
-    assert tunnel._ssm_pgid == proc.pid
+    tunnel._child_pgid = _SshTunnel._spawned_group(proc)
+    assert tunnel._child_pgid == proc.pid
     tunnel.status.state = TunnelState.CONNECTED
     tunnel._probe_failed = True
     tunnel._monitor_task = asyncio.create_task(tunnel._monitor())
@@ -190,7 +190,7 @@ class TestSurvivingPluginIsReaped:
             spawned = tunnel._proc
             assert spawned is not None
             pgid = spawned.pid
-            assert tunnel._ssm_pgid == pgid
+            assert tunnel._child_pgid == pgid
             assert await await_until(exited, what="on_exit fires") == "cd-1"
             assert "health probe failed" in tunnel.status.error
         finally:
@@ -217,7 +217,7 @@ class TestSurvivingPluginIsReaped:
 
         tunnel = _ssm_tunnel()
         tunnel._proc = _Exited()  # type: ignore[assignment]
-        tunnel._ssm_pgid = 4242
+        tunnel._child_pgid = 4242
         await tunnel._terminate()
         assert signalled == []
         assert tunnel._proc is None
