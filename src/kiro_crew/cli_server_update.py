@@ -553,6 +553,14 @@ def _update(force: bool = False) -> None:
         # refuse the reset — same stance as the unreadable-divergence guard.
         print("  ❌ Could not check for local changes (git status timed out)")
         sys.exit(1)
+    if status.returncode != 0:
+        # A failed status prints nothing, which would read as a clean tree and
+        # skip the prompt. Refuse, like the timeout above.
+        print(f"  ❌ Could not check for local changes (git status exited {status.returncode})")
+        detail = (status.stderr or "").strip()
+        if detail:
+            print(f"      {detail.splitlines()[0]}")
+        sys.exit(1)
     tracked_changes = [
         line for line in status.stdout.strip().splitlines() if not line.startswith("??")
     ]
