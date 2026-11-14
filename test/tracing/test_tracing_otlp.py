@@ -660,6 +660,16 @@ def _decoded(received):
     return resource, spans
 
 
+#: What one traced turn exports: the derived ``kirocrew.step`` opens at the turn's start.
+_TURN_SPANS = {
+    "invoke_agent kirocrew-default",
+    "user.prompt",
+    "chat",
+    "kirocrew.step",
+    "turn.complete",
+}
+
+
 class _Source:
     session_id = "acp-1"
     _session_key = "dashboard_chat-7"
@@ -710,7 +720,7 @@ def test_a_traced_turn_reaches_a_loopback_receiver_with_its_vault_header(tmp_pat
     assert {h.get("Authorization") for _p, h, _b in received} == {HEADER_VALUE}
     resource, spans = _decoded(received)
     assert resource["service.name"] == "crew-under-test"
-    assert set(spans) == {"invoke_agent kirocrew-default", "user.prompt", "chat", "turn.complete"}
+    assert set(spans) == _TURN_SPANS
     chat = spans["chat"]
     assert chat["langfuse.observation.type"] == "generation"
     assert json.loads(chat["langfuse.observation.usage_details"]) == {"credits": 1.5}
@@ -912,4 +922,4 @@ def test_the_exit_flush_sends_spans_still_queued(tmp_path, monkeypatch):
         finally:
             turns.reset_for_testing()
             provider.reset_for_testing()
-        assert len(_decoded(receiver.received)[1]) == 4
+        assert set(_decoded(receiver.received)[1]) == _TURN_SPANS
