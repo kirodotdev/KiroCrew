@@ -149,6 +149,13 @@ import importlib as _importlib  # noqa: E402
 import sys as _sys  # noqa: E402
 
 from kiro_crew import _facade_mirror  # noqa: E402
+from kiro_crew.dashboard.state_parts.bot_worker_cap import (  # noqa: E402,F401 -- re-exported; see state_parts
+    count_restored_workers,
+    note_new_worker,
+    own_worker_member,
+    read_worker_execution,
+    worker_cap_refusal,
+)
 from kiro_crew.dashboard.state_parts.chat_slot import (  # noqa: E402,F401 -- re-exported; see state_parts
     _ChatSlot,
 )
@@ -506,6 +513,7 @@ _OWNERS = (
     "kiro_crew.dashboard.state_parts.session_events",
     "kiro_crew.dashboard.state_parts.status_payload",
     "kiro_crew.dashboard.state_parts.slot_directory",
+    "kiro_crew.dashboard.state_parts.bot_worker_cap",
     "kiro_crew.dashboard.state_parts.sidebar_stores",
     "kiro_crew.dashboard.state_parts.slots_diff",
     "kiro_crew.dashboard.state_parts.slots_frame",

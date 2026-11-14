@@ -1273,6 +1273,18 @@ Settings > Chat > Sessions > Sessions per creator, and the change applies to
 the next create with no restart. An agent can only propose the change on a
 card that you apply.
 
+A Bot also has its own limit: how many of its own worker sessions may be open
+at once (`max_workers` on its record, 1 to 32; 0, the default, sets no limit).
+Its own worker sessions are the ones that run on its worker template. Its owner
+sets it on the Bot's settings page under **Workers at once**; no Bot tool can
+change it. A `session_create`, `session_revive` or `session_fork` that would
+leave one more of those worker sessions open past it, from the Bot's chat or
+from one of its workers, is refused with `bot_worker_cap_reached` (HTTP 409),
+and nothing is created. A session that a worker opens on another template is
+not counted here; the per-creator cap above still bounds it. A worker keeps its
+seat until it is closed, even after its work is done: close one that has
+finished (`session_close`), then try again.
+
 ## Combining two chats
 
 There is no Combine button. Two chats are combined by one of them, the
