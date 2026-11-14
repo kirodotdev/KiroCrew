@@ -5,6 +5,7 @@
       "/opt/lib/claude-agent-acp/index.js"
     ],
     "env_added": {
+      "CLAUDE_CODE_THINKING_DISPLAY": "summarized",
       "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
       "KIROCREW_SESSION_KEY": "golden-session",
       "KIROCREW_SPAWNED": "1",
