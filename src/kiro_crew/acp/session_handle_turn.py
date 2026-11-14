@@ -964,9 +964,10 @@ async def _run_turn(
             self.want_mcp_sign_in_named(sign_in_ask)
         self._match_mcp_sign_in_ask()
         self._offer_mcp_sign_in()
-        # A server that failed for want of a credential is connected again
-        # here, after the sign-in offer: the offer takes the runtime's one
-        # consent-URL slot first, and a re-attempt never needs it.
+        # A server that failed for want of a credential, or lost its
+        # connection, is connected again here, after the sign-in offer: the
+        # offer takes the runtime's one consent-URL slot first, and a
+        # re-attempt never needs it.
         self._reattempt_failed_mcp_servers()
         # Build the request FIRST (for prompts, the slow, cancellable
         # image-encoding part — see prompt()'s _build), then mark the turn

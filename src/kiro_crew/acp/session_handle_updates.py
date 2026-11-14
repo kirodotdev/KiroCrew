@@ -404,6 +404,8 @@ def _handle_update_frame(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[Ac
     # Returns None only for a non-KAS-specific discriminant, so ordinary
     # chunk/tool frames still fall through to the shared parser below.
     if self._runtime.acp_backend == ACP_BACKEND_KAS:
+        if session_update == "tool_call_update":
+            self._note_mcp_call_disconnected(update)
         kas_events = self._handle_kas_update(session_update, update)
         if kas_events is not None:
             return kas_events

@@ -9,7 +9,8 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_mcp_launches``, ``_mcp_network_servers``, ``_mcp_network_urls``,
-``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
+``_mcp_reattempt_counts``, ``_mcp_reattempt_dropped``, ``_mcp_reattempt_waiting``,
+``_mcp_sign_in_completed``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_probed``, ``_mcp_sign_in_probes``, ``_mcp_sign_in_spent``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
@@ -29,11 +30,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp._dispatch import classify_notification
+from kiro_crew.acp._dispatch import classify_notification, classify_tool_call
 from kiro_crew.acp.client import _is_safe_oauth_url
 from kiro_crew.acp.mcp_connect_progress import McpConnectProgress
 from kiro_crew.acp.mcp_reattempt import MAX_ATTEMPTS as REATTEMPT_MAX
 from kiro_crew.acp.mcp_reattempt import (
+    MCP_NOT_CONNECTED,
     is_recoverable_auth_failure,
     is_refused_sign_in,
     is_sse_fallback_failure,
@@ -1004,6 +1006,9 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
         ):
             self._mcp_sign_in_needed.add(name)
             self._mcp_reattempt_waiting.discard(name)
+        elif server.get("status") == "connected" and name in self._mcp_reattempt_dropped:
+            # KAS keeps a server that lost its connection ``connected``: its reset stands.
+            continue
         elif server.get("status") in ("connected", "disabled"):
             tracked = name in self._mcp_sign_in_needed or (
                 name in self._mcp_reattempt_waiting and self._mcp_reattempt_counts.get(name, 0) > 0
@@ -1045,6 +1050,7 @@ def _note_mcp_sign_in_status(self: AcpSessionHandle, msg: JsonRpcMessage, *, off
     self._mcp_sign_in_needed &= present
     self._mcp_sign_in_wanted &= self._mcp_sign_in_needed
     self._mcp_reattempt_waiting &= present
+    self._mcp_reattempt_dropped &= self._mcp_reattempt_waiting
     self._sync_mcp_reattempting()
     if dropped != self._mcp_sign_in_dropped:
         self._mcp_sign_in_dropped = dropped
@@ -1348,7 +1354,7 @@ def _sync_mcp_reattempting(self: AcpSessionHandle) -> None:
 
 
 def _runtime_reattempts_mcp(self: AcpSessionHandle) -> bool:
-    """Whether this session's host re-attempts a credential-failed server.
+    """Whether this session's host re-attempts a failed or dropped server.
 
     Asks the runtime's capability rather than whether the method exists:
     every runtime has ``begin_mcp_reattempt``, and on a host without the
@@ -1360,11 +1366,34 @@ def _runtime_reattempts_mcp(self: AcpSessionHandle) -> bool:
     return getattr(self._runtime, "reattempts_mcp_servers", False) is True
 
 
+def _note_mcp_call_disconnected(self: AcpSessionHandle, update: dict[str, Any]) -> None:
+    """Owe a re-attempt to a server whose tool call found its connection gone.
+
+    KAS reports such a call ``failed`` with the MCP SDK's own error in its
+    ``rawOutput.message`` and leaves the server ``connected`` in its status
+    snapshots. The server is the one the engine names in ``_meta.kiro``, never
+    the title. At most ``BUCKET_CAP`` waiting names.
+    """
+    if update.get("status") != "failed":
+        return
+    raw_output = update.get("rawOutput")
+    if not isinstance(raw_output, dict) or raw_output.get("message") != MCP_NOT_CONNECTED:
+        return
+    name = classify_tool_call(update).mcp_server_name
+    if not name or len(name) > NAME_CAP:
+        return
+    if name not in self._mcp_reattempt_waiting and len(self._mcp_reattempt_waiting) >= BUCKET_CAP:
+        return
+    self._mcp_reattempt_waiting.add(name)
+    self._mcp_reattempt_dropped.add(name)
+
+
 def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
-    """Re-attempt servers that failed for want of a credential.
+    """Re-attempt servers that failed for want of a credential or dropped.
 
     Called at turn start, beside the sign-in offer: by then the user or
-    the agent may have obtained the credential the server lacked. Each
+    the agent may have obtained the credential the server lacked, or
+    brought back what a dropped server's connection needed. Each
     waiting server is re-attempted at most ``REATTEMPT_MAX`` times per
     session, and at most ``BUCKET_CAP`` distinct servers are ever counted,
     so the budget holds however many names the engine reports. A healthy
@@ -1389,8 +1418,9 @@ def _reattempt_failed_mcp_servers(self: AcpSessionHandle) -> None:
         self._mcp_reattempt_counts[name] = attempts + 1
         if attempts + 1 >= REATTEMPT_MAX:
             self._sync_mcp_reattempting()
+        self._mcp_reattempt_dropped.discard(name)
         logger.info(
-            "MCP server %s on %s failed for a credential; re-attempt %d of %d",
+            "MCP server %s on %s; re-attempt %d of %d",
             sanitize_sink_text(name, NAME_CAP),
             self._session_id,
             attempts + 1,
