@@ -1514,6 +1514,136 @@ async def test_a_permission_frame_naming_another_tool_is_refused(tmp_path, monke
     assert await client._refuse_identity_drift(event) is True
 
 
+def _titled_frames(call_id: str, wire_title: str, permission_title: str, raw: dict):
+    """A titled Crew tool's frame pair, in the shapes Copilot CLI 1.0.100 sent (captured).
+
+    The ``tool_call`` names ``<server>-<tool>`` with kind ``other``; the permission
+    frame names the tool's MCP ``title`` annotation, always with kind ``other``.
+    """
+    tool_call = {
+        "method": "session/update",
+        "params": {
+            "sessionId": "s-1",
+            "update": {
+                "sessionUpdate": "tool_call",
+                "toolCallId": call_id,
+                "title": wire_title,
+                "kind": "other",
+                "status": "pending",
+                "rawInput": raw,
+            },
+        },
+    }
+    permission = {
+        "id": 1,
+        "method": "session/request_permission",
+        "params": {
+            "sessionId": "s-1",
+            "toolCall": {
+                "toolCallId": call_id,
+                "title": permission_title,
+                "kind": "other",
+                "status": "pending",
+                "rawInput": raw,
+            },
+            "options": [
+                {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"},
+                {"optionId": "allow_always", "kind": "allow_always", "name": "Always allow"},
+                {"optionId": "reject_once", "kind": "reject_once", "name": "Deny"},
+            ],
+        },
+    }
+    return tool_call, permission
+
+
+async def _judge_titled(client, tool_call, permission):
+    _feed(client, tool_call)
+    event = client._build_permission_event(
+        JsonRpcMessage(
+            id=permission["id"], method=permission["method"], params=permission["params"]
+        )
+    )
+    client.reject_tool = AsyncMock()
+    client._audit_spec_restriction = MagicMock()
+    return event, await client._refuse_identity_drift(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "permission_title", "raw"),
+    [
+        ("learn_add", "Save lesson", {"rule": "test rule", "category": "knowledge"}),
+        ("kiro_cli_logs", "Read kiro-cli logs", {"tail": 5}),
+        ("memory_recall", "Recall memory", {"query": "x"}),
+    ],
+)
+async def test_a_titled_crew_tool_is_confirmed_by_its_declared_title(
+    tmp_path, monkeypatch, tool, permission_title, raw
+) -> None:
+    """Copilot asks about a titled tool by its MCP ``title``, not its bare name.
+
+    Compared to the bare name only, every kind-``other`` Crew tool was refused as
+    identity drift and Copilot reported "Operation cancelled by user".
+    """
+    tool_call, permission = _titled_frames(
+        "toolu_015HL2RVhzAtzuJMGiA78dBQ", f"kirocrew-core-{tool}", permission_title, raw
+    )
+    client = _client_with_placed(tmp_path, ["kirocrew-core", "kirocrew-cron"], monkeypatch)
+    event, refused = await _judge_titled(client, tool_call, permission)
+    assert refused is False
+    client.reject_tool.assert_not_awaited()
+    assert (event.mcp_server_name, event.tool_name) == ("kirocrew-core", tool)
+    assert event.mcp_identity_trusted
+
+
+@pytest.mark.asyncio
+async def test_the_title_of_another_tool_is_refused(tmp_path, monkeypatch) -> None:
+    tool_call, permission = _titled_frames(
+        "c1", "kirocrew-core-learn_add", "Recall memory", {"rule": "r", "category": "knowledge"}
+    )
+    client = _client_with_placed(tmp_path, ["kirocrew-core"], monkeypatch)
+    event, refused = await _judge_titled(client, tool_call, permission)
+    assert refused is True
+    assert not event.mcp_server_name
+
+
+@pytest.mark.asyncio
+async def test_a_title_two_placed_servers_declare_is_refused(tmp_path, monkeypatch) -> None:
+    """``chat_tag`` (core) and ``chat_tag_assign`` (dashboard) are both ``Tag session``."""
+    tool_call, permission = _titled_frames("c1", "kirocrew-core-chat_tag", "Tag session", {})
+    client = _client_with_placed(tmp_path, ["kirocrew-core", "kirocrew-dashboard"], monkeypatch)
+    _, refused = await _judge_titled(client, tool_call, permission)
+    assert refused is True
+
+
+@pytest.mark.asyncio
+async def test_a_title_two_tools_of_one_server_declare_is_refused(tmp_path, monkeypatch) -> None:
+    from kiro_crew import mcp_tool_titles
+
+    pairs = (("kirocrew-core", "learn_add"), ("kirocrew-core", "learn_remove"))
+    monkeypatch.setattr(
+        mcp_tool_titles, "tools_titled", lambda t: pairs if t == "Save lesson" else ()
+    )
+    tool_call, permission = _titled_frames(
+        "c1", "kirocrew-core-learn_add", "Save lesson", {"rule": "r", "category": "knowledge"}
+    )
+    client = _client_with_placed(tmp_path, ["kirocrew-core"], monkeypatch)
+    _, refused = await _judge_titled(client, tool_call, permission)
+    assert refused is True
+
+
+@pytest.mark.asyncio
+async def test_a_declared_title_under_an_unplaced_server_spelling_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    tool_call, permission = _titled_frames(
+        "c1", "kirocrew_core-learn_add", "Save lesson", {"rule": "r", "category": "knowledge"}
+    )
+    client = _client_with_placed(tmp_path, ["kirocrew-core"], monkeypatch)
+    _, refused = await _judge_titled(client, tool_call, permission)
+    assert refused is True
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
 def test_a_fifo_git_is_never_opened(tmp_path) -> None:
     work = tmp_path / "work"

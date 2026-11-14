@@ -678,8 +678,10 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
     gains a call; each predicate below keeps its own narrower scope as well.
 
     Copilot CLI publishes no identity channel; its MCP identity is recovered from the
-    ``tool_call`` title (``_recover_copilot_mcp_identity``), and a title two placed
-    servers could both have produced is refused here, before any gate reads it.
+    ``tool_call`` title (``_recover_copilot_mcp_identity``), and a call whose server
+    cannot be named -- a title two placed servers could both have produced, or a
+    permission frame that names another tool (``_confirm_copilot_mcp_identity``) --
+    is refused here, before any gate reads it.
 
     Returns True when the request was refused (rejected on the wire and audited),
     False when it was left to the caller. A False means "not refused BY THIS".
@@ -690,9 +692,11 @@ async def _refuse_identity_drift(self: AcpClient, event: AcpEvent) -> bool:
         or (event.tool_call_id and event.tool_call_id in ambiguous)
     ):
         logger.warning(
-            "session MCP: refusing a Copilot CLI tool approval whose tool_call title "
-            "more than one placed server could have produced, so the call's MCP "
-            "server cannot be named and its governance cannot be applied [session=%s]",
+            "session MCP: refusing a Copilot CLI tool approval whose MCP server Crew "
+            "could not establish -- its tool_call title matched more than one placed "
+            "server, or named a served tool under no placed server name, or the "
+            "permission frame's title did not match the placed tool the tool_call "
+            "named -- so its governance cannot be applied [session=%s]",
             self._session_id,
         )
         self._audit_spec_restriction(
