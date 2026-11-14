@@ -186,6 +186,8 @@ def service_environment(home: str) -> "dict[str, str]":
       absolute dir. It puts that Node ahead of nvm's on the MCP search path
       (:mod:`kiro_crew.env_node_pins`); a relative value or one carrying a
       ``:`` would add PATH entries nobody named, so it is dropped.
+    * ``KIROCREW_PORT`` / ``KIROCREW_HOME`` — only when the installer sets
+      them, so the service binds the same port and runs the same crew.
     """
     utf8_locale = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
     env = {
@@ -217,6 +219,18 @@ def service_environment(home: str) -> "dict[str, str]":
     port = os.environ.get("KIROCREW_PORT", "").strip()
     if port:
         env["KIROCREW_PORT"] = port
+    # Without KIROCREW_HOME the service resolves the default ~/.kiro/crew and
+    # silently starts a new, empty crew beside the one the installer uses.
+    # Made absolute because the service runs from a different cwd. A leading
+    # "~" stays as typed: config_dir() expands it against the baked HOME, and
+    # expanding it here would name root's home under `sudo -H`.
+    # Unstripped, because config_dir() resolves the raw value: a trimmed copy
+    # would name a different directory from the installer's own.
+    crew_home = os.environ.get("KIROCREW_HOME", "")
+    if crew_home:
+        env["KIROCREW_HOME"] = (
+            crew_home if crew_home.startswith("~") else os.path.abspath(crew_home)
+        )
     return env
 
 
@@ -345,6 +359,11 @@ def _with_crew_home_caveat(
 
     Not named ``*home_no*``: CodeQL's private-data name heuristic reads that as a
     home phone number and flags every printed warning built here as sensitive.
+
+    The ``.env`` named above lives under this shell's ``KIROCREW_HOME``. The
+    service runs that home only when its definition was installed from a shell
+    with the same value and no override file (Linux ``/etc/kirocrew``) sets
+    another, which neither install nor doctor can see from here.
     """
     if account:
         lines += [
@@ -354,15 +373,18 @@ def _with_crew_home_caveat(
         ]
     if _home_override_is_set(environ):
         lines.append("")
-        lines.append(
-            "   KIROCREW_HOME is set here but is also not inherited, so confirm"
-        )
-        lines.append("   that path is the home the service actually starts with.")
+        lines.append("   KIROCREW_HOME is set here, but a service installed from a shell")
+        lines.append("   with another value, or whose override file sets its own, runs a")
+        lines.append("   different home, so confirm that path is the home it starts with.")
     return "\n".join(lines)
 
 
 def _home_override_is_set(environ: "Mapping[str, str] | None" = None) -> bool:
-    """Whether the installer overrides the crew home (also not inherited)."""
+    """Whether the installer overrides the crew home.
+
+    The service bakes that home, but a unit from another shell or an override
+    file can still name a different one, so the ``.env`` path is unconfirmed.
+    """
     source = os.environ if environ is None else environ
     return bool(source.get("KIROCREW_HOME", "").strip())
 

@@ -2729,8 +2729,10 @@ pins the contract.
     override file is installed `0644` — so a model credential placed there
     would be readable by every local user on the host. `service_environment()`
     therefore carries no credential — its only installer-derived values are
-    `PATH`, `KIROCREW_KIRO_BIN`, `KIROCREW_NODE_BIN_DIR` and `KIROCREW_PORT`
-    (it also returns `HOME`,
+    `PATH`, `KIROCREW_KIRO_BIN`, `KIROCREW_NODE_BIN_DIR`, `KIROCREW_PORT` and
+    `KIROCREW_HOME` (made absolute; a leading `~` is kept for the service to
+    expand against the baked `HOME`, so the service runs the installer's crew
+    rather than a fresh one in `~/.kiro/crew`) (it also returns `HOME`,
     `LANG` and `LC_ALL`) — and a test pins the absence so a future "just
     propagate it" change fails.
     Consequence: a `KIRO_API_KEY` exported in the installing shell does not
@@ -2746,7 +2748,10 @@ pins the contract.
     is already written and started by the time it runs. `kirocrew doctor` reports
     the same condition next to its `kiro login` line — the one output where the
     contradiction is visible, since that line runs `whoami` with the inherited
-    environment and reports signed in. Doctor's report is gated on a service
+    environment and reports signed in. With `KIROCREW_HOME` set, both reports
+    add a caveat to confirm the service's home: a unit installed from a shell
+    with another value, or an override file that sets its own, runs a
+    different home and reads a different `.env`. Doctor's report is gated on a service
     definition existing (`installed_unit_path()` — the system unit file, or,
     when it is absent, the per-user unit the calling account's own manager
     has loaded, read from the `FragmentPath` it reports via
