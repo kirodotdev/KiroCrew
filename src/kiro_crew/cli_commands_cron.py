@@ -1031,7 +1031,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
     # format, existence, sensitive path, containment under ~/.kiro/crew/crons/)
     try:
         script_path, func_name = resolve_script_path(args.script)
-    except (ValueError, FileNotFoundError, PermissionError) as e:
+    except (ValueError, FileNotFoundError, PermissionError, OSError, RuntimeError) as e:
         sel().log_api_access(
             caller="cli",
             operation="cron.preview",
