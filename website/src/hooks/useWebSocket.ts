@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { isLookPreviewFrame } from '../utils/lookPreview'
 import { useQueryClient } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
-import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
+import { sseTodoUpdate, sseMcpReportUpdate, sseSlotTitle, triggerRefresh, triggerLiveRefresh, triggerCronRefresh, fetchSlots, remoteSlotRead } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, applyNotificationDismiss, clearAllNotifications } from '../store/notificationsSlice'
 import { dispatchMcNotification, dispatchLiveNotification } from './notificationEvent'
 import {
@@ -561,7 +561,11 @@ export function useWebSocket() {
             break
           case 'refresh': {
             const kinds: string[] = Array.isArray(data.kinds) ? data.kinds.filter((k: unknown): k is string => typeof k === 'string') : []
-            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => dispatch(triggerRefresh()))
+            // A turn-end frame inside the window re-reads none of the config caches,
+            // but the page on screen still follows it (`liveRefreshTrigger`).
+            let othersNow = false
+            invalidateRefreshQueries(queryClient, kinds, () => dispatch(triggerCronRefresh()), () => { othersNow = true; dispatch(triggerRefresh()) })
+            if (!othersNow) dispatch(triggerLiveRefresh())
             if (kinds.includes('history')) dispatch(fetchHistory(false))
             break
           }
