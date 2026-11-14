@@ -365,6 +365,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "release_settings_seed_claim": ("function", False, "b60c5fea256e", "client_class"),
     "report_native_children": ("function", False, "ccfc57bdf135", "client_native_children"),
     "resumed": ("property", False, "a6632a57e602", "client_class"),
+    "sandbox_mode": ("property", False, "bb418bb7ece8", "client_class"),
     "send_command": ("function", True, "b66667c61d53", "client_turn_control"),
     "send_message": ("function", True, "c63d2b398c21", "client_turn"),
     "send_message_stream": ("function", "agen", "dbc2a1962f65", "client_turn"),
