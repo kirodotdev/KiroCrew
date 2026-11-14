@@ -187,6 +187,14 @@ _DIFF_RULE_DASHBOARD = (
     "routine progress notes, only on content the user must see. Prefer "
     "restructuring the turn so the deliverable IS its last message; reach for "
     "the marker only when that is not possible.\n"
+    "When the session's work is clearly finished and nothing is left open (no "
+    "question, choice, approval or follow-up you expect), you may offer the user "
+    "a one-click close: end the reply with <!-- option-action:close=<label> --> "
+    "on its own line, after any [OPTIONS:] line, where <label> is a few words "
+    "naming what was done (e.g. <!-- option-action:close=PR merged -->). The "
+    "dashboard shows it as a close-session chip the user can take or ignore; it "
+    "closes nothing by itself and is hidden from every other channel. Never "
+    "offer it while work is still running or something is still owed.\n"
 )
 
 

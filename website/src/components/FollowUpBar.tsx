@@ -1,7 +1,7 @@
 import { memo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { useWheelToHorizontal } from '../hooks/useWheelToHorizontal'
-import { ChevronLeft, ChevronRight, ArrowUp, Loader2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ArrowUp, Loader2, X } from 'lucide-react'
 import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 import ErrorNotice from './ErrorNotice'
 import { reportUiControlClick } from '../lib/uiControlTelemetry'
@@ -10,6 +10,8 @@ import { dispatchIsCommandShaped } from '../app-sdk/protocol/dispatchShape'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
+import type { OfferedAction } from '../app-sdk/protocol/optionActionTag'
+
 export type FollowUpLayout = 'multiline' | 'scroll'
 
 interface FollowUpBarProps {
@@ -70,6 +72,23 @@ interface FollowUpBarProps {
    *  value draws ONE error row, `''` included — a rejection carrying no readable
    *  message is still a failure to show. */
   error?: string | null
+  /**
+   * The local UI action offered alongside the content options (`<!-- option-action:close=… -->`).
+   * Rendered AFTER every content chip, and NOT part of `picked`: an action chip never
+   * puts text in the composer.
+   */
+  action?: OfferedAction | null
+  /**
+   * The ONLY callback an action chip can reach. Separate from `onSelect`/`onSend` on
+   * purpose: an action runs a local effect and must never travel the text path.
+   */
+  onAction?: (action: OfferedAction) => void
+  /** Asked on the action chip's first click: true when that click only arms it, so a
+   *  second click within `ACTION_CONFIRM_WINDOW_MS` runs it. Absent runs on one click. */
+  actionNeedsSecondClick?: () => boolean
+  /** The session the action acts on. Part of the chip's reset identity, so an armed chip
+   *  never carries over to another session whose reply has the same `sourceKey` (a fork). */
+  actionScope?: string | null
 }
 
 /**
@@ -87,6 +106,10 @@ interface FollowUpBarProps {
  * create — see `CHIP_ROW_GAP` below, which the CSS half-gap is pinned to.
  */
 const CHIP_MAX_WIDTH = 'followup-chip'
+/** The action chip's own cap. Wider because its visible label carries a fixed
+ *  consequence sentence ahead of the model's label inside one truncating span, so a
+ *  content chip's cap spends most of itself on the prefix. See `.followup-action-chip`. */
+const ACTION_CHIP_MAX_WIDTH = 'followup-action-chip'
 
 /**
  * Gap between chips, shared by both layouts. Load-bearing beyond spacing: the
@@ -201,7 +224,8 @@ function chipEntrance(index: number, animating: boolean): { className: string, s
 // `border-transparent`: the chip keeps its 1px box (the split chip's seam and the
 // picked / unpicked swap stay layout-stable) but the glass draws no outline of its
 // own — the material has none, the tint and the light bands are the boundary.
-const CHIP_BASE = 'px-3 py-1.5 mc-message-font-chip text-left leading-snug transition-all border border-transparent'
+const CHIP_LAYOUT = 'px-3 py-1.5 mc-message-font-chip text-left leading-snug transition-all border'
+const CHIP_BASE = `${CHIP_LAYOUT} border-transparent`
 
 // Every chip is its own Liquid Glass pill — the SAME primitive as the composer
 // (components/Glass.tsx, `chip` variant), rendered AS the button (`as`), so the
@@ -606,11 +630,172 @@ function Chip({ option, isPicked, picked, quickSend, multi, onSelect, onSend, cl
   )
 }
 
+/**
+ * Chrome for an action chip. Same `CHIP_LAYOUT` box and colour tokens as a content
+ * chip, but with a SOLID danger border at rest, where a content chip only earns a
+ * border on hover or once picked. With the leading glyph in `ActionChip`, that is what
+ * separates "this does something" from "this sends text".
+ *
+ * DANGER, not accent: the accent palette is what a SELECTED content chip wears, and the
+ * product already paints this operation `text-danger` in `SessionActionsMenu`.
+ *
+ * `CHIP_LAYOUT`, not `CHIP_BASE`: `CHIP_BASE` carries `border-transparent`, which
+ * Tailwind emits after `border-danger/50` and so won at equal specificity.
+ *
+ * Armed (waiting for the second click) fills with the hover paint, so the chip
+ * visibly changes state even under a pointer that is still hovering it.
+ */
+function actionChipClassName(armed: boolean, { shrink0 = false }: { shrink0?: boolean } = {}) {
+  const palette = armed
+    ? 'border-solid border-danger bg-danger-subtle text-danger-text'
+    : 'border-solid border-danger/50 bg-bg-elevated text-muted hover:border-danger/70 hover:bg-danger-subtle hover:text-danger-text focus-visible:text-danger-text'
+  return `${shrink0 ? 'shrink-0 ' : ''}${ACTION_CHIP_MAX_WIDTH} ${CHIP_LAYOUT} rounded-lg cursor-pointer ${palette}`
+}
+
+/**
+ * The chip's accessible NAME and visible text: the effect plus the model's label. The
+ * label is model-authored free text and need never mention closing, so the fixed
+ * prefix is what names the consequence, on screen for a touch user who gets no hover.
+ */
+function actionChipAccessibleName(action: OfferedAction) {
+  return i18nT('components.followUpBar.action_closes_this_session', { label: action.label })
+}
+
+/** How long an armed chip waits for the second click before it reverts. */
+export const ACTION_CONFIRM_WINDOW_MS = 3000
+
+interface ActionChipProps {
+  action: OfferedAction
+  onAction?: (action: OfferedAction) => void
+  /** Asked on the first click: true when that click only arms the chip. */
+  needsSecondClick?: () => boolean
+  className: (armed: boolean) => string
+  /** Position in the row, continuing the content chips' stagger ladder. */
+  index: number
+  animating: boolean
+}
+
+/**
+ * A chip whose click runs a LOCAL UI action instead of composing or sending text.
+ *
+ * A SEPARATE component from `Chip` rather than a flag threaded through it. `Chip` has
+ * three routes to the text path (the undebounced `onSelect`, the debounced `onSelect`
+ * plus its double-click `onSend`, and the `▲` split segment), and a plan chip shows
+ * what intercepting only one of them costs: its double-click and `▲` still send the
+ * label as chat text. This component closes over neither `onSelect` nor `onSend`, so it
+ * cannot reach them.
+ *
+ * Click twice to confirm. When the host says the action would otherwise run with no
+ * question asked (`needsSecondClick`), the first click turns the label into "Click again
+ * to close" for `ACTION_CONFIRM_WINDOW_MS`, and only a second click in that window runs
+ * it. A stray click therefore closes nothing, and a deliberate one needs no trip to a
+ * dialog. When the host's own close will ask anyway, one click hands straight to it, so
+ * the user confirms once, not twice.
+ */
+function ActionChip({ action, onAction, needsSecondClick, className, index, animating }: ActionChipProps) {
+  const entrance = chipEntrance(index, animating)
+  const [armed, setArmed] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const clearTimer = () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current)
+    timerRef.current = null
+  }
+  useEffect(() => clearTimer, [])
+
+  const fire = () => {
+    if (armed) {
+      clearTimer()
+      setArmed(false)
+      onAction?.(action)
+      return
+    }
+    if (needsSecondClick?.()) {
+      setArmed(true)
+      timerRef.current = setTimeout(() => { timerRef.current = null; setArmed(false) }, ACTION_CONFIRM_WINDOW_MS)
+      return
+    }
+    onAction?.(action)
+  }
+
+  const restName = actionChipAccessibleName(action)
+  const armedName = i18nT('components.followUpBar.action_click_again_to_close', { label: action.label })
+  const name = armed ? armedName : restName
+  return (
+    <>
+      <button
+        type="button"
+        data-option-action={action.action}
+        data-armed={armed ? '' : undefined}
+        // Same reason as the content chip: keep keyboard focus in the textarea so a
+        // following Enter sends the composer rather than re-activating this chip.
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={fire}
+        className={`${className(armed)} ${entrance.className}`}
+        style={entrance.style}
+        title={name}
+        aria-label={name}
+      >
+        <span className="flex items-center gap-1.5 min-w-0">
+          <X size={13} aria-hidden="true" className="shrink-0" />
+          {/* Both labels share one grid cell, so the chip keeps its width when it arms and
+              the confirming click lands where the first one did. Wraps rather than
+              truncating: the clipped part would be the model's label. */}
+          <span aria-hidden="true" className="grid min-w-0">
+            <span data-action-label="" className={`col-start-1 row-start-1 block min-w-0 break-words${armed ? ' invisible' : ''}`}>{restName}</span>
+            <span data-action-armed-label="" className={`col-start-1 row-start-1 block min-w-0 break-words${armed ? '' : ' invisible'}`}>{armedName}</span>
+          </span>
+        </span>
+      </button>
+      {/* The button keeps no focus, so its new name alone is not announced. */}
+      <span className="sr-only" role="status">{armed ? name : ''}</span>
+    </>
+  )
+}
+
+/**
+ * The action chip, in its OWN group rather than as a sibling of the content chips.
+ * `max-two-buttons-per-row` reads a run of peer buttons as one row, and an action chip
+ * is not a peer of a content option: one sends text, the other closes the tab.
+ */
+function ActionGroup({
+  action, onAction, needsSecondClick, scope, animating, sourceKey, optionCount, shrink0 = false,
+}: {
+  action: OfferedAction | null
+  onAction?: (action: OfferedAction) => void
+  needsSecondClick?: () => boolean
+  scope?: string | null
+  animating: boolean
+  sourceKey?: string | null
+  optionCount: number
+  shrink0?: boolean
+}) {
+  if (!action) return null
+  return (
+    <div
+      // The divider is a LEFT border only in the scroll layout, which is one row that
+      // never wraps. Multiline takes `basis-full`, so the action always starts its own
+      // row instead of making a three-button row with two short options.
+      className={`${shrink0 ? 'shrink-0 ' : ''}flex min-w-0 max-w-full flex-wrap items-end ${CHIP_ROW_GAP} ${optionCount > 0 ? (shrink0 ? 'followup-action-group @[32rem]/followup:ml-1 @[32rem]/followup:pl-2 @[32rem]/followup:border-l border-border' : 'basis-full') : (shrink0 ? '' : 'basis-full')}`}
+    >
+      <ActionChip
+        // A new offer or another session starts unarmed: a first click never carries over.
+        key={`${scope ?? ''}\u0000${sourceKey ?? ''}\u0000${action.action}=${action.label}`}
+        action={action}
+        onAction={onAction}
+        needsSecondClick={needsSecondClick}
+        className={armed => actionChipClassName(armed, { shrink0 })}
+        index={optionCount}
+        animating={animating}
+      />
+    </div>
+  )
+}
+
 /** Both layouts render the same chips; `animating` is owned by the parent so a
  *  layout switch cannot restart an entrance that already played. */
 type LayoutProps = Omit<FollowUpBarProps, 'layout' | 'multi'> & { animating: boolean, multi: boolean }
 
-function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, animating, sourceKey, pendingOptions, refusedOptions, error }: LayoutProps) {
+function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, animating, sourceKey, pendingOptions, refusedOptions, error, action, onAction, actionNeedsSecondClick, actionScope }: LayoutProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [attachEdges, edges, remeasure] = useScrollEdges<HTMLDivElement>()
   // Whether the CHIPS overflow, measured without the gutters: the gutters are
@@ -670,8 +855,10 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
   // changing the row's box, so no observer reports it: re-read the edges.
   useLayoutEffect(() => { remeasure() }, [overflows, remeasure])
 
-  // Chips changing keeps the row's own box, so no observer reports it.
-  useEffect(() => { remeasure(); measureOverflow() }, [options, remeasure, measureOverflow])
+  // Chips changing keeps the row's own box, so no observer reports it. Actions are
+  // in the dep list for the same reason options are: they are chips in this row, so
+  // an action-only row would otherwise never measure its own overflow.
+  useEffect(() => { remeasure(); measureOverflow() }, [options, action, remeasure, measureOverflow])
 
   // Scroll by ~80% of the visible width in the given direction, so a click
   // reveals the next set of chips while keeping one in view for continuity.
@@ -687,8 +874,16 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
   const arrowClass = 'absolute top-1/2 -translate-y-1/2 z-20 flex items-center justify-center h-6 w-6 rounded-full bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 shadow-sm cursor-pointer p-0'
 
   return (
-    <div className="pt-1">
-      <div className="relative">
+    <div className="pt-1 @container/followup">
+      {/* The close chip sits OUTSIDE the scrolling strip, after it. Inside the strip
+          it was the last item, so any row long enough to scroll pushed it under the
+          right arrow (measured: "✕ Closes t") and the warning on a control that tears
+          the tab down appeared only if the user scrolled to it. Pinned here, the strip
+          shrinks and scrolls while the action stays whole and in view. Below 32rem it
+          stacks under the strip instead: side by side, a long label took the whole row
+          and squeezed the strip to zero, hiding every option. */}
+      <div data-followup-scroll-row="" className={`flex flex-col @[32rem]/followup:flex-row @[32rem]/followup:items-end ${CHIP_ROW_GAP}`}>
+      <div className="relative min-w-0 flex-1">
       {edges.left && <div className="absolute left-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-r from-bg to-transparent" />}
       {edges.right && <div className="absolute right-0 top-0 bottom-0 w-10 z-10 pointer-events-none bg-gradient-to-l from-bg to-transparent" />}
       {edges.left && (
@@ -771,12 +966,23 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, multi, ani
         {overflows && <span aria-hidden="true" data-arrow-gutter="" className={ARROW_GUTTER_CLASS} />}
       </div>
       </div>
+      <ActionGroup
+        action={action ?? null}
+        onAction={onAction}
+        needsSecondClick={actionNeedsSecondClick}
+        scope={actionScope}
+        animating={animating}
+        sourceKey={sourceKey}
+        optionCount={options.length}
+        shrink0
+      />
+      </div>
       {error != null && <ChipError error={error} />}
     </div>
   )
 }
 
-function MultilineLayout({ options, picked, onSelect, onSend, quickSend, multi, animating, sourceKey, pendingOptions, refusedOptions, error }: LayoutProps) {
+function MultilineLayout({ options, picked, onSelect, onSend, quickSend, multi, animating, sourceKey, pendingOptions, refusedOptions, error, action, onAction, actionNeedsSecondClick, actionScope }: LayoutProps) {
   return (
     // Bottom-aligned for the same reason as the scroll layout: with the
     // one-line clamp every chip is already the same height, so this only
@@ -810,22 +1016,39 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, multi, 
           />
         )
       })}
+      <ActionGroup
+        action={action ?? null}
+        onAction={onAction}
+        needsSecondClick={actionNeedsSecondClick}
+        scope={actionScope}
+        animating={animating}
+        sourceKey={sourceKey}
+        optionCount={options.length}
+      />
     </div>
     {error != null && <ChipError error={error} />}
     </>
   )
 }
 
-function FollowUpBar({ options, picked, onSelect, onSend, quickSend, multi = true, layout = 'multiline', sourceKey, pendingOptions, refusedOptions, error }: FollowUpBarProps) {
+function FollowUpBar({ options, picked, onSelect, onSend, quickSend, multi = true, layout = 'multiline', sourceKey, pendingOptions, refusedOptions, error, action, onAction, actionNeedsSecondClick, actionScope }: FollowUpBarProps) {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Content-keyed, not identity-keyed: the caller rebuilds the array on every
   // render, so an identity comparison would restart the entrance constantly.
   // \u0000 cannot occur inside an option label.
-  const animating = useChipEntrance(options.join('\u0000'))
+  //
+  // Actions are part of the key because they are part of the row's offer: an
+  // action-only row has no options at all, so an options-only key would be the
+  // empty string for every such row and the second one in a session would never
+  // play its entrance. Byte-identical when there is no action, so no existing
+  // row's entrance changes.
+  const animating = useChipEntrance(
+    [...options, ...(action ? [`${action.action}=${action.label}`] : [])].join('\u0000'),
+  )
   if (layout === 'scroll') {
-    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} />
+    return <ScrollLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} action={action} onAction={onAction} actionNeedsSecondClick={actionNeedsSecondClick} actionScope={actionScope} />
   }
-  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} />
+  return <MultilineLayout options={options} picked={picked} onSelect={onSelect} onSend={onSend} quickSend={quickSend} multi={multi} animating={animating} sourceKey={sourceKey} pendingOptions={pendingOptions} refusedOptions={refusedOptions} error={error} action={action} onAction={onAction} actionNeedsSecondClick={actionNeedsSecondClick} actionScope={actionScope} />
 }
 
 export default memo(FollowUpBar)

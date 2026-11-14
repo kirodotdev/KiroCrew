@@ -2711,7 +2711,9 @@
       "click_to_send_instantly_shift_click_to_add_without_sending": "Click to send instantly, Shift+Click to add to the message without sending",
       "click_to_replace_selection": "Click to replace selection",
       "click_to_replace_selection_double_click_to_send": "Click to replace selection (double-click to send)",
-      "send_now_2": "Send now: {{option}}"
+      "send_now_2": "Send now: {{option}}",
+      "action_closes_this_session": "Close session — {{label}}",
+      "action_click_again_to_close": "Click again to close — {{label}}"
     },
     "followUpCard": {
       "create_worktree_and_open_session": "Create a git worktree (a separate copy of {{path}} on its own branch) and open a new session there",

@@ -51,6 +51,7 @@ const NONE: FollowUpDerivation = Object.freeze({
   followUpOptions: Object.freeze([]) as readonly string[],
   followUpSourceKey: null,
   followUpMulti: true,
+  followUpAction: null,
 })
 
 /**
@@ -61,6 +62,6 @@ const NONE: FollowUpDerivation = Object.freeze({
 export function crewmateFollowUps(d: FollowUpDerivation): FollowUpDerivation {
   const kept = d.followUpOptions.filter(label => !asksForCard(label))
   if (kept.length === d.followUpOptions.length) return d
-  if (!kept.length) return NONE
+  if (!kept.length && !d.followUpAction) return NONE
   return { ...d, followUpOptions: kept }
 }

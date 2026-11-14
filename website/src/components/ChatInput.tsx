@@ -120,23 +120,8 @@ const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
 // gate. Extensions align the picker exactly with the verified server allowlist
 // instead of broadening the dialog to neighboring unsupported formats.
 const AUDIO_ACCEPT = '.mp3,.m4a,.wav,.ogg,.oga,.opus,.flac'
-// Half the one-row box: the 44px text line plus its 1px border each side.
-const COMPOSER_ONE_ROW_RADIUS = 23
-// The one-row text line's padding, equal above and below so the line sits on
-// the buttons' centre whatever its height. INPUT_TYPO's 12px over 4px puts it
-// lower by half of (line height - 20px): 2px at the 16px touch floor. Set on
-// the text column, so the textarea, its paste mirror and the Lexical editor
-// all take it; `1.5em` is INPUT_TYPO's `leading-normal` line, and resolves on
-// each of them at its own font size. Not `1lh`: Safari before 16.4 has no
-// such unit, and an invalid value would drop the padding to 0.
-const ONE_ROW_TEXT_PAD = '[--composer-pt:max(0px,calc((44px_-_1.5em)_/_2))] [--composer-pb:max(0px,calc((44px_-_1.5em)_/_2))]'
-// The one-row clusters' edge padding (pl-1.5 + pr-1.5), which the text column
-// gives up besides the clusters themselves.
-const ONE_ROW_CLUSTER_PAD_PX = 12
-// The glass rim is a slice of the pane's smaller side. A one-row composer
-// would get half the rim of a two-row one, so the rim is sized from the
-// two-row height (one wrapped line of text plus the toolbar) in both shapes.
-const COMPOSER_RIM_FROM_PX = 102
+const NO_FOLLOW_UP_OPTIONS: readonly string[] = Object.freeze([])
+import { COMPOSER_ONE_ROW_RADIUS, ONE_ROW_TEXT_PAD, ONE_ROW_CLUSTER_PAD_PX, COMPOSER_RIM_FROM_PX } from './chat-input/composerShape'
 const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',' + AUDIO_ACCEPT + ',.txt,.text,.xwiki,.md,.json,.jsonl,.excalidraw,.har,.yaml,.yml,.xml,.drawio,.csv,.tsv,.log,.rem,.ret,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.php,.sql,.kt,.swift,.cs,.vue,.toml,.pdf,.doc,.docx,.dotx,.xls,.xlsx,.xltx,.ppt,.pptx,.potx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
@@ -271,6 +256,9 @@ function ChatInput({
   followUpPendingOptions,
   followUpRefusedOptions,
   followUpError,
+  followUpAction,
+  onFollowUpAction,
+  followUpActionNeedsSecondClick,
   pasteBlocks: pasteBlocksProp = [],
   onPasteBlocksChange: onPasteBlocksChangeProp,
   showFullPastes = false,
@@ -1035,8 +1023,9 @@ function ChatInput({
       )}
 
       {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {!showGhost && ((followUpOptions && followUpOptions.length > 0) || (followUpAction && onFollowUpAction)) && onFollowUpSelect && (
+          <FollowUpBar options={followUpOptions ?? NO_FOLLOW_UP_OPTIONS} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError}
+            action={onFollowUpAction ? followUpAction : null} onAction={onFollowUpAction} actionNeedsSecondClick={followUpActionNeedsSecondClick} actionScope={slotId} />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

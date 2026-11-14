@@ -6930,7 +6930,9 @@
       "click_to_send_instantly_shift_click_to_add_without_sending": "[Çĺìçķ ţø şèñð ìñşţàñţĺý, Şĥìƒţ+Çĺìçķ ţø àðð ţø ţĥè ɱèşşàğè ẁìţĥøùţ şèñðìñğ ······················]",
       "click_to_replace_selection": "[Çĺìçķ ţø ŕèþĺàçè şèĺèçţìøñ ··················]",
       "click_to_replace_selection_double_click_to_send": "[Çĺìçķ ţø ŕèþĺàçè şèĺèçţìøñ (ðøùƀĺè-çĺìçķ ţø şèñð) ·························]",
-      "send_now_2": "[Şèñð ñøẁ: {{option}} ···············]"
+      "send_now_2": "[Şèñð ñøẁ: {{option}} ···············]",
+      "action_closes_this_session": "[Çĺøşè şèşşìøñ — {{label}} ··············]",
+      "action_click_again_to_close": "[Çĺìçķ àğàìñ ţø çĺøşè — {{label}} ················]"
     },
     "followUpCard": {
       "add_to_this_session": "[Àðð ţø ţĥìş şèşşìøñ ·················]",

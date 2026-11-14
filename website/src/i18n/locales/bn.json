@@ -7594,7 +7594,9 @@
       "scroll_suggestions_left": "প্রস্তাবগুলো বাঁয়ে স্ক্রল করুন",
       "scroll_suggestions_right": "প্রস্তাবগুলো ডানে স্ক্রল করুন",
       "send_now": "এখনই পাঠান",
-      "send_now_2": "এখনই পাঠাও: {{option}}"
+      "send_now_2": "এখনই পাঠাও: {{option}}",
+      "action_closes_this_session": "সেশন বন্ধ করো — {{label}}",
+      "action_click_again_to_close": "বন্ধ করতে আবার ক্লিক করো — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "এই সেশনে যোগ করুন",

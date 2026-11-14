@@ -7389,7 +7389,9 @@
       "scroll_suggestions_left": "제안을 왼쪽으로 스크롤",
       "scroll_suggestions_right": "제안을 오른쪽으로 스크롤",
       "send_now": "지금 전송",
-      "send_now_2": "지금 전송: {{option}}"
+      "send_now_2": "지금 전송: {{option}}",
+      "action_closes_this_session": "세션 종료 — {{label}}",
+      "action_click_again_to_close": "다시 클릭하여 종료 — {{label}}"
     },
     "followUpCard": {
       "add_to_this_session": "이 세션에 추가",
