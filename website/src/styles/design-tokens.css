@@ -228,6 +228,18 @@ html:lang(ko) {
    share from this rule and measures every paired tint in every light palette. */
 :root{--ok-text:var(--ok);--danger-text:var(--danger);--info-text:var(--info);}
 [data-mode="light"]{--ok-text:color-mix(in srgb, var(--ok) 60%, #000);--danger-text:color-mix(in srgb, var(--danger) 55%, #000);--info-text:color-mix(in srgb, var(--info) 58%, #000);}
+/* ErrorNotice colours per `impact` (docs/request-for-change/rfc-error-notice-impact.md).
+   Each mixes toward --text or --text-strong, the colours that stand out most
+   against the theme's own background, so contrast rises in light and dark
+   alike. Partial body text is plain --text-strong. Blocking title, icon
+   and link: --danger-ink on the danger tint; the body a softer --danger-body.
+   A nested notice has no fill of its own and sits on its host's warn tint, so
+   it mixes further (--danger-ink-nested, --danger-body-nested). Minor link:
+   --minor-link. Action-row buttons: --notice-btn-border (hover: -hover) and
+   the focus ring --notice-ring. errorNoticeImpactContrast.test.ts reads every
+   mix from this rule and measures it in every palette. Internal, derived,
+   outside the [data-theme] blocks so packs cannot set it. */
+:root{--danger-ink:color-mix(in srgb, var(--danger-text) 84%, var(--text));--danger-body:color-mix(in srgb, var(--danger-text) 72%, var(--text));--danger-ink-nested:color-mix(in srgb, var(--danger-text) 55%, var(--text));--danger-body-nested:color-mix(in srgb, var(--danger-text) 45%, var(--text));--minor-link:color-mix(in srgb, var(--accent) 40%, var(--text-strong));--notice-btn-border:color-mix(in srgb, var(--text-strong) 80%, var(--card));--notice-btn-border-hover:var(--text-strong);--notice-ring:color-mix(in srgb, var(--ring) 60%, var(--text-strong));}
 :root,[data-theme="dark"],[data-theme="amber-dark"]{
   --search-highlight:rgba(255,167,38,.45);--search-highlight-current:rgba(255,120,0,.85);--search-highlight-current-border:rgba(255,255,255,.9);
   --bg:#12141a;--bg-accent:#14161d;--bg-elevated:#1a1d25;--bg-hover:#262a35;

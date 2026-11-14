@@ -123,12 +123,12 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
         colspan="5"
       >
         <span
-          class="inline-flex items-center gap-1.5 text-[12px] text-danger  "
+          class="inline-flex items-center gap-1.5 text-[12px] text-danger-ink  "
           role="alert"
         >
           <svg
             aria-hidden="true"
-            class="lucide lucide-triangle-alert shrink-0"
+            class="lucide lucide-circle-alert shrink-0"
             fill="none"
             height="14"
             stroke="currentColor"
@@ -139,14 +139,22 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
             width="14"
             xmlns="http://www.w3.org/2000/svg"
           >
-            <path
-              d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"
+            <circle
+              cx="12"
+              cy="12"
+              r="10"
             />
-            <path
-              d="M12 9v4"
+            <line
+              x1="12"
+              x2="12"
+              y1="8"
+              y2="12"
             />
-            <path
-              d="M12 17h.01"
+            <line
+              x1="12"
+              x2="12.01"
+              y1="16"
+              y2="16"
             />
           </svg>
           <span
@@ -155,41 +163,45 @@ exports[`CrewLogTab > draws the subagents table 1`] = `
           >
             kill failed: pid 8821 still alive
           </span>
-          <button
-            class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-danger-text bg-transparent border-none p-0 underline decoration-danger/30 hover:decoration-danger underline-offset-2 "
-            title="Open a chat with this error's full context attached"
-            type="button"
+          <span
+            class="inline-flex text-danger-ink"
           >
-            <svg
-              aria-hidden="true"
-              class="lucide lucide-sparkles"
-              fill="none"
-              height="13"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              viewBox="0 0 24 24"
-              width="13"
-              xmlns="http://www.w3.org/2000/svg"
+            <button
+              class="inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors text-[12px] font-medium text-inherit bg-transparent border-none p-0 underline decoration-current/30 hover:decoration-current underline-offset-2 "
+              title="Open a chat with this error's full context attached"
+              type="button"
             >
-              <path
-                d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"
-              />
-              <path
-                d="M20 2v4"
-              />
-              <path
-                d="M22 4h-4"
-              />
-              <circle
-                cx="4"
-                cy="20"
-                r="2"
-              />
-            </svg>
-            Ask the agent
-          </button>
+              <svg
+                aria-hidden="true"
+                class="lucide lucide-sparkles"
+                fill="none"
+                height="13"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                viewBox="0 0 24 24"
+                width="13"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M11.017 2.814a1 1 0 0 1 1.966 0l1.051 5.558a2 2 0 0 0 1.594 1.594l5.558 1.051a1 1 0 0 1 0 1.966l-5.558 1.051a2 2 0 0 0-1.594 1.594l-1.051 5.558a1 1 0 0 1-1.966 0l-1.051-5.558a2 2 0 0 0-1.594-1.594l-5.558-1.051a1 1 0 0 1 0-1.966l5.558-1.051a2 2 0 0 0 1.594-1.594z"
+                />
+                <path
+                  d="M20 2v4"
+                />
+                <path
+                  d="M22 4h-4"
+                />
+                <circle
+                  cx="4"
+                  cy="20"
+                  r="2"
+                />
+              </svg>
+              Ask the agent
+            </button>
+          </span>
         </span>
       </td>
     </tr>

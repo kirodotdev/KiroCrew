@@ -736,6 +736,17 @@ custom-rules:
         the tree beneath the dialog still unmounts, so over an unsaved draft
         the no-hand-off form applies, `onHandoff` or not.
 
+      `impact` says what the failure costs on this surface
+      (`docs/request-for-change/rfc-error-notice-impact.md`). `blocking` (the
+      default) when what the user came to do failed: the main read, a pressed
+      action, a gate. `partial` when the surface works and one part of it is
+      missing or stale. `minor` when only a detail is missing and nothing the
+      user does depends on it. A notice inside a host that already frames it
+      (a warning box) passes `nested`. The reviewer blocks a `partial` or
+      `minor` on a pressed action's failure or on the surface's main read, and
+      blocks a block-variant notice inside a warn-toned box without `nested`.
+      A missing `impact` is never a finding: the default is the safe one.
+
       On the hand-off choice, the REVIEWER blocks on a missing decision, never
       on the direction of it: an added or touched `ErrorNotice` must carry
       `askAgent`, a `No hand-off` comment naming a concrete draft, a sibling
@@ -792,10 +803,11 @@ custom-rules:
         bypasses the app-sdk `useNotify` seam: that carve-out exists because
         the seam cannot host the hand-off, so a local toast the page fully
         controls gets no carve-out at all.
-      - The error sits in a `role="status"` / `aria-live` region, or in a
-        warn- or muted-toned box (`text-warn`, `text-muted`, a `<td>`). Toning
-        a failure down to a polite status does not make it status; a load
-        that did not happen is still a failure.
+      - The error sits in a hand-written `role="status"` / `aria-live`
+        region, or in a warn- or muted-toned box (`text-warn`, `text-muted`, a
+        `<td>`). Toning a failure down by hand does not make it status; a load
+        that did not happen is still a failure. A calmer look for a failure
+        goes through `ErrorNotice`'s `impact`, never around the component.
       - The error text lives only in a `title=` / `aria-label=` / tooltip
         (`InfoTip`) attribute or behind an icon-only glyph. Hover text is not
         a surface: it is invisible on touch, unreadable to a screen reader in
