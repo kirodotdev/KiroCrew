@@ -86,4 +86,14 @@ describe('manifest l10n fallback chain', () => {
     const scripted = { name: 'latn', origin: 'registry', displayName: 'Probe', manifest: { l10n: { 'pt-Latn': { displayName: 'Sonda' } } } }
     expect(appDisplayName(scripted)).toBe('Probe')
   })
+
+  it('counts a cap in characters, as the manifest parser does', async () => {
+    await i18next.changeLanguage('de')
+    // 100 characters the parser accepts under its 120 cap, but 200 UTF-16 units.
+    const name = '𝒜'.repeat(100)
+    const highlight = '𝒜'.repeat(200)
+    const app = { name: 'wide', origin: 'registry', displayName: 'Probe', manifest: { l10n: { de: { displayName: name, highlights: [highlight] } } } }
+    expect(appDisplayName(app)).toBe(name)
+    expect(appHighlights(app)).toEqual([highlight])
+  })
 })

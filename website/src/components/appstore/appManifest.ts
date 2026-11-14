@@ -425,6 +425,8 @@ export type AppL10nCarrier = { l10n?: unknown; manifest?: unknown }
 const L10N_TEXT_CAPS = { displayName: 120, description: 1000, pageLabel: 60 } as const
 const L10N_MAX_HIGHLIGHTS = 12
 const L10N_MAX_HIGHLIGHT_CHARS = 300
+/** A string's length in characters (code points), the unit the manifest parser's caps use. */
+const charCount = (s: string) => [...s].length
 
 /** The reader's locale entries, most specific first: `pt-BR`, then `pt`. */
 function l10nEntries(app: AppL10nCarrier | undefined): Record<string, unknown>[] {
@@ -473,7 +475,7 @@ function l10nEntries(app: AppL10nCarrier | undefined): Record<string, unknown>[]
 export function appL10nText(app: AppL10nCarrier | undefined, field: keyof typeof L10N_TEXT_CAPS): string | undefined {
   for (const entry of l10nEntries(app)) {
     const value = entry[field]
-    if (typeof value === 'string' && value && value.length <= L10N_TEXT_CAPS[field]) return value
+    if (typeof value === 'string' && value && charCount(value) <= L10N_TEXT_CAPS[field]) return value
   }
   return undefined
 }
@@ -483,7 +485,7 @@ function appL10nHighlights(app: AppL10nCarrier | undefined): string[] | undefine
   for (const entry of l10nEntries(app)) {
     const value = entry.highlights
     if (Array.isArray(value) && value.length > 0 && value.length <= L10N_MAX_HIGHLIGHTS
-      && value.every(item => typeof item === 'string' && item.length <= L10N_MAX_HIGHLIGHT_CHARS)) {
+      && value.every(item => typeof item === 'string' && charCount(item) <= L10N_MAX_HIGHLIGHT_CHARS)) {
       return value as string[]
     }
   }
