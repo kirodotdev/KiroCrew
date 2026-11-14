@@ -149,9 +149,13 @@ describe('milestoneState', () => {
   it('done and next: as before', () => {
     expect(milestoneState(item({ state: 'accepted' }), false)).toBe('done')
     expect(milestoneState(item({ status: 'done' }), false)).toBe('done')
-    expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('done')
     expect(milestoneState(item({ status: null }), false)).toBe('next')
     expect(milestoneState(item({ status: null, alive: 'closed' }), false)).toBe('next')
+  })
+
+  it('a rejected or abandoned item is not done, whatever its last report said', () => {
+    expect(milestoneState(item({ status: 'question', outstanding: false, terminal: true, state: 'abandoned' }), false)).toBe('not_done')
+    expect(milestoneState(item({ status: 'done', terminal: true, state: 'rejected' }), true)).toBe('not_done')
   })
 })
 

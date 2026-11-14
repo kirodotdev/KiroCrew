@@ -1,3 +1,5 @@
+import type { ConductorModeRun } from '../types'
+
 /**
  * Types for the Crew page's work-item board (`GET /api/crew-board`).
  *
@@ -126,6 +128,9 @@ export interface WorkBoardResponse {
    *  request (the `objects` fold), with its read time. Never a network read on
    *  page load. Absent on an older gateway. */
   pr_facts?: Record<string, CrewPrFacts>
+  /** Done or stopped, from the item states and the conductor's patrol, read by
+   *  the conductor mode Board's run line. Absent on an older gateway. */
+  run?: ConductorModeRun
 }
 
 export interface CrewPrRead {

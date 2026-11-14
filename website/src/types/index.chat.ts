@@ -20,6 +20,21 @@ export interface CrewWorkItemFacts {
   looping?: boolean
 }
 
+/** A conductor mode board's settled verdict (`dashboard/conductor_mode_run.py`):
+ *  `done` (items, every one closed, no patrol loop on), `stopped` (items open, no
+ *  patrol loop on), else `''`. */
+export interface ConductorModeRun {
+  settled: '' | 'done' | 'stopped'
+  open: number
+  accepted: number
+  not_done: number
+  /** A stop at the patrol's time or budget bound. */
+  at_limit: boolean
+  /** The conductor's patrol loop is on. An unsettled run without it (a new goal
+   *  with no item yet) is waiting on the conductor's next step, not working. */
+  patrol_on: boolean
+}
+
 /** A conductor's work ledger in brief (`crew_work` on its slot row). */
 export interface CrewWorkFacts {
   open: number
@@ -31,6 +46,9 @@ export interface CrewWorkFacts {
   /** The conductor itself holds a live loop (its patrol), which picks a stalled
    *  item up; absent from a gateway that predates it. */
   conductor_looping?: boolean
+  /** The board's settled verdict; absent for a board with no item yet, and from a
+   *  gateway that predates it. */
+  run?: ConductorModeRun
   items: CrewWorkItemFacts[]
 }
 
