@@ -883,6 +883,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   } = useMessageActions({
     dispatch, navigate, filteredSlotsRef, connected, activeSlot, messages, messagesRef, slotRunning, activityOpen, activeSlotRef, activeSlotRemoteBound, showActionError, handleFileOpen, handleFolderOpen, search,
     tabsCtl, sessionTitles, selectSessionTab, linkPreviewsOn, planTaskId, setSidebarPinned, sidebarAutoHidden, sidebarWidth, setRegenerating,
+    // The same document test appShell's `isEmbed` makes: a companion chat renders on its host's route.
+    embedChatFrame: embedMode === 'chat' && location.pathname.startsWith('/embed/'),
   })
 
   // The rows the virtualizer draws (see transcriptRows).
