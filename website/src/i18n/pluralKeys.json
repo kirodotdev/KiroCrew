@@ -553,5 +553,6 @@
   "components.jobLogsView.idle_runs_hidden",
   "pages.overview.skillsTab.budget_group_counting_detail",
   "pages.overview.skillsTab.budget_group_cold_detail",
-  "pages.capabilitiesPage.mcp_servers_waiting"
+  "pages.capabilitiesPage.mcp_servers_waiting",
+  "pages.chatPage.mcp_sign_in_needed_more"
 ]

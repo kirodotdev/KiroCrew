@@ -469,6 +469,17 @@ the KAS engine, but the grant the row reads as Signed in is one the KAS vault do
 (a kiro-cli mint wrote it), so the row says to sign in again. Any other row has no key and no
 line.
 
+The table's probe carries no token, so a server whose saved sign-in stopped working answers
+it with its challenge and reads the same as a working one: Signed in, no tools listed. A row
+the owner added from the page (`ownerSignIn`) offers Sign in again there, which replaces
+tokens the engine could not refresh (the report table above). A row with a held grant that
+the page cannot sign in to (added any other way, so the gateway refuses its mint) says in
+words instead of showing nothing: it is signed in, this page cannot list its tools, a tool
+call in chat is the real check, and if a tool fails a chat message naming the server signs
+in. The line is shown on a working server too, so it names no reinstall. The
+chat's `mcp_sign_in_needed` notice names only the chat way in, never this page
+([acp-client](acp-client.md#kas-mcp-oauth-sign-in)).
+
 **The handler side.** `api_connections_mint` skips warm adoption for a provider whose Connect
 signs in on KAS: a warm URL was minted by kiro-cli, so adopting it would write the grant back
 into kiro-cli's cache. It asks the rule above (`kas_sign_in_entry`, through `_signs_in_on_kas`)
