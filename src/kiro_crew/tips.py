@@ -811,7 +811,9 @@ def _select_tip(
 
     Weight = recency_decay ** tier, where the tier ranks a tip's catalog recency
     (doc file mtime) among the distinct mtimes present, newest first. Tips
-    sharing an mtime are equally recent and so share a tier and a weight.
+    sharing an mtime are equally recent and so share a tier and a weight. A tip
+    with no catalog doc or id match has no recency signal; all such tips share
+    the oldest tier.
     """
     if not candidates:
         return None
@@ -829,17 +831,19 @@ def _select_tip(
         entry.doc.replace(".md", "-tip"): entry.mtime for entry in catalog
     }
 
-    def _tip_mtime(t: dict, index: int) -> float:  # type: ignore[type-arg]
+    def _tip_mtime(t: dict) -> float:  # type: ignore[type-arg]
         doc = t.get("doc", "")
         if doc in mtime_by_doc:
             return mtime_by_doc[doc]
         tid = t.get("id", "")
         if tid in mtime_by_id:
             return mtime_by_id[tid]
-        # Unknown provenance: insertion order as a stable last-resort proxy
-        return float(index)
+        # Unknown provenance (every curated tip is docless): no recency signal,
+        # so all such tips share the oldest tier and are picked uniformly
+        # within it. List position must not rank them.
+        return 0.0
 
-    mtimes = {id(t): _tip_mtime(t, i) for i, t in enumerate(candidates)}
+    mtimes = {id(t): _tip_mtime(t) for t in candidates}
 
     # Sort candidates newest-first by mtime
     sorted_candidates = sorted(candidates, key=lambda t: mtimes[id(t)], reverse=True)
