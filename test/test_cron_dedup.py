@@ -650,7 +650,7 @@ class TestCronFailureRespectsSilent:
         assert job.consecutive_failures == 2
 
     def test_non_silent_first_failure_still_rings_dashboard(self) -> None:
-        # Regression: the silent guard must not suppress the bell for normal crons.
+        # The silent guard must not suppress the bell for normal crons.
         gw = _make_gateway()
         gw.slack.post_message = AsyncMock()
         job = _make_job(silent=False)

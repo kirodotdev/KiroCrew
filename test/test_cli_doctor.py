@@ -211,7 +211,7 @@ class TestDataHome:
     ) -> None:
         # KIROCREW_HOME=~/.kirocrew makes the legacy dir the ACTIVE home, not
         # ignored debris — the doctor must not mislabel the home the process is
-        # actually using (GPT 5.6 MEDIUM).
+        # actually using.
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         legacy = tmp_path / cli_doctor.LEGACY_CONFIG_DIR_NAME
         legacy.mkdir()

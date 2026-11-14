@@ -877,11 +877,10 @@ class TestInstallPidfdChildWatcher:
         # The gateway startup kill scenario: a uv-managed /
         # Clang-built CPython 3.12 whose build omits the os.pidfd_open wrapper
         # (present on the system python, absent in the venv interpreter). The
-        # probe raises AttributeError, not OSError -- the old code caught it and
-        # RETURNED, leaving the thread-per-child ThreadedChildWatcher, whose
-        # os.waitpid reaper-thread storm starved the loop and got the gateway
-        # killed by the loop-stall watchdog. It must now fall back to
-        # SafeChildWatcher instead.
+        # probe raises AttributeError, not OSError. Returning on it would leave
+        # the thread-per-child ThreadedChildWatcher, whose os.waitpid
+        # reaper-thread storm starves the loop until the loop-stall watchdog
+        # kills the gateway. It must fall back to SafeChildWatcher instead.
         monkeypatch.delattr("kiro_crew.cli.os.pidfd_open", raising=False)
         installed = []
         monkeypatch.setattr(asyncio, "set_child_watcher", lambda w: installed.append(w))
