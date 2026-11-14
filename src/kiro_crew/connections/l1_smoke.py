@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import ipaddress
 import json
 import os
 import sys
@@ -34,9 +35,11 @@ from pathlib import Path
 from typing import Any, Literal, Sequence, TypedDict
 
 import aiohttp
+from yarl import URL
 
 from kiro_crew.connections.registry import Provider, get_all_registry_providers
 from kiro_crew.connections.tool_aliases import normalized_endpoint
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.mcp_discovery import (
     MCP_CLIENT_PROTOCOL_VERSION,
     McpServerInfo,
@@ -191,6 +194,28 @@ async def _read_capped(response: aiohttp.ClientResponse) -> dict[str, Any]:
     return payload
 
 
+def _smoke_proxy(url: str) -> URL | None:
+    """Keep local endpoints direct and omit proxy credentials from configuration errors."""
+    host = (URL(url).host or "").lower().rstrip(".")
+    if host == "localhost" or host.endswith(".localhost"):
+        return None
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return None
+    except ValueError:
+        pass
+    proxy = resolve_proxy(url)
+    if proxy is None:
+        return None
+    try:
+        parsed = URL(proxy)
+        if parsed.scheme in {"http", "https"} and parsed.host:
+            return parsed
+    except ValueError:
+        pass
+    raise ValueError("invalid MCP smoke proxy URL")
+
+
 async def _post(
     session: aiohttp.ClientSession,
     url: str,
@@ -210,7 +235,12 @@ async def _post(
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
     is_notification = body.get("id") is None
     async with session.post(
-        url, json=body, headers=headers, allow_redirects=False, timeout=timeout
+        url,
+        json=body,
+        headers=headers,
+        allow_redirects=False,
+        timeout=timeout,
+        proxy=_smoke_proxy(url),
     ) as response:
         if _needs_authorization(response.status, response.headers, headers):
             raise _McpChallenge(f"provider challenged with HTTP {response.status}")
