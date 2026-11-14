@@ -172,6 +172,17 @@ GOOSE_TESTED_RANGE = ((1, 50, 0), (1, 51, 0))
 CODEX_ACP_TESTED_VERSION = "2.3.0"
 CODEX_ACP_TESTED_RANGE = ((2, 0, 0), (3, 0, 0))
 
+#: The claude-agent-acp release the Real Adapter Contract lane pins in
+#: ``test/real_adapters/package.json``, which the live claude captures report. Its
+#: releases are 0.x, where each minor line can break, so the tested range is 0.94.x.
+CLAUDE_ACP_TESTED_VERSION = "0.94.0"
+CLAUDE_ACP_TESTED_RANGE = ((0, 94, 0), (0, 95, 0))
+
+#: The pi-acp release the same lane pins (spawning pi 1.4.0), which the live pi captures
+#: report. It is 0.0.x, where each patch can break, so the range is that release.
+PI_ACP_TESTED_VERSION = "0.0.34"
+PI_ACP_TESTED_RANGE = ((0, 0, 34), (0, 0, 35))
+
 #: Per backend: the tested range and the command that installs the tested release.
 #: Opt-in by membership, as :data:`_STEER_MIN_VERSIONS`.
 _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, int, int]], str]] = {
@@ -186,13 +197,24 @@ _TESTED_VERSION_RANGES: dict[str, tuple[tuple[tuple[int, int, int], tuple[int, i
         f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CODEX]}"
         f"@{CODEX_ACP_TESTED_RANGE[0][0]}",
     ),
+    ACP_BACKEND_CLAUDE: (
+        CLAUDE_ACP_TESTED_RANGE,
+        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_CLAUDE]}"
+        f"@{CLAUDE_ACP_TESTED_VERSION}",
+    ),
+    ACP_BACKEND_PI: (
+        PI_ACP_TESTED_RANGE,
+        f"npm i -g {ACP_BACKEND_NODE_ADAPTER_PACKAGES[ACP_BACKEND_PI]}@{PI_ACP_TESTED_VERSION}",
+    ),
 }
 
 
 def _tested_range_label(low: tuple[int, int, int], high: tuple[int, int, int]) -> str:
-    """``2.x`` for a whole major, else ``1.50.x`` for a minor line."""
+    """``2.x`` for a whole major, ``0.0.34`` for one release, else ``1.50.x`` for a minor line."""
     if low[1:] == (0, 0) and high == (low[0] + 1, 0, 0):
         return f"{low[0]}.x"
+    if high == (low[0], low[1], low[2] + 1):
+        return ".".join(str(part) for part in low)
     return f"{low[0]}.{low[1]}.x"
 
 
