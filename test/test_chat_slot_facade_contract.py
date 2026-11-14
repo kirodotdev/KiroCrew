@@ -24,7 +24,7 @@ _TO_DICT_KEYS = (
     "crew_mode_agent",
     "effective_agent",
     "model",
-    # The owner's per-turn model-routing choice (the picker's "Auto (Jev)" entry).
+    # The owner's per-turn model-routing choice (the picker's "Auto (decision model)" entry).
     # Present on EVERY slot, so an absent key and "pinned by hand" are not the
     # same reading for a stale client.
     "jev_route",

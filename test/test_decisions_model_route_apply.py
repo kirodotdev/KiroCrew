@@ -13,7 +13,7 @@ that ignored either -- switching to a hardcoded model, or switching on nothing -
 passes a single happy-path assertion and fails both of these.
 
 The rest is WHOSE turn gets routed. The point runs for a normal dashboard chat turn
-of a slot whose owner picked ``Auto (Jev)``, and for nothing else: a cron delivery,
+of a slot whose owner picked ``Auto (decision model)``, and for nothing else: a cron delivery,
 a sub-agent turn, an app injection and an autonudge wake each already resolve their
 model through their own tier, and none of them has an owner watching the price.
 """

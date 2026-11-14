@@ -139,7 +139,7 @@ def init_session_fields(self: _ChatSlot) -> None:
     # next create or pick, and from the first row on the row carries it.
     self._welcome_preview = ("", "", "", "")
     # Whether the owner asked Jev to pick this turn's model tier
-    # (`decisions.points.model_route`), set by the picker's "Auto (Jev)" entry
+    # (`decisions.points.model_route`), set by the picker's "Auto (decision model)" entry
     # and cleared by any concrete pick. A FLAG beside `model`, never a
     # sentinel inside it: `model` is a provider model id -- it reaches
     # `session/set_model`, the session allocation and the composer chip -- and

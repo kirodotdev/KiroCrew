@@ -142,7 +142,7 @@ def _model_rejected_reason(
 
 
 def _is_jev_route_pick(raw: object) -> bool:
-    """Whether a request body's ``model`` is the "Auto (Jev)" sentinel.
+    """Whether a request body's ``model`` is the "Auto (decision model)" sentinel.
 
     Exact identity on a stripped string. A near-miss spelling is NOT this entry
     and falls through to the ordinary model path, where the guard refuses it --
@@ -444,9 +444,9 @@ async def switch_slot_model(
     *caller* says who asked (see :class:`SlotAgentSwitchCaller`): the route passes
     its request, the chat runner's command passes ``for_turn``, so the busy rules,
     the deferral and the owner gate are the same for both. A turn caller is never
-    the owner, so it cannot arm "Auto (Jev)".
+    the owner, so it cannot arm "Auto (decision model)".
     """
-    # The "Auto (Jev)" entry is resolved HERE and nowhere else: every reader below
+    # The "Auto (decision model)" entry is resolved HERE and nowhere else: every reader below
     # -- the guard, the live switch, the reset, the session allocation, the
     # composer chip -- takes the id it produces, which is the plain ``auto`` the
     # session actually runs on until a tier is answered. The choice itself
@@ -593,7 +593,7 @@ async def switch_slot_model(
                 pass
             slot._model_pick_gen += 1
             # The one place the flag is recorded on this path, and the reason it is
-            # not written before the branch: an unpinned slot picking "Auto (Jev)"
+            # not written before the branch: an unpinned slot picking "Auto (decision model)"
             # resolves to the ``auto`` it already holds and lands HERE, so a write
             # placed only in the transaction below would never run for the
             # commonest case. This shortcut is a success, so committing is correct.
@@ -1197,7 +1197,7 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
             # Explicit pick (bulk): same generation bump as the single-slot pick.
             slot._model_pick_gen += 1
             # And the same clearing of the routing choice. This surface takes no
-            # "Auto (Jev)" target -- it switches many sessions to one model, which
+            # "Auto (decision model)" target -- it switches many sessions to one model, which
             # is the opposite of a per-turn tier -- but it is an explicit pick, so
             # leaving the flag set would route the next turn away from the model
             # the owner just chose for this slot.

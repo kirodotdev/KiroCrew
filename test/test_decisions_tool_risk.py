@@ -707,7 +707,7 @@ class TestTheConfidenceThresholds:
         )
         operator = _OPERATOR_DOC.read_text(encoding="utf-8")
         assert (
-            "risky`, and Jev is sure" in operator
+            "risky`, and it is sure" in operator
         ), "the operator doc must still gate the risky row on confidence, in words"
         assert "caution`, is sure, and the call is not a plain file write" in operator, (
             "the operator doc must still gate the caution row on confidence and the "

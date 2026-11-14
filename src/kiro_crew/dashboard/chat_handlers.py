@@ -1221,7 +1221,7 @@ _SLOW_CLOSE_STAGE_SECS = 5.0
 _slot_switch_session_lock = slot_switch_session_lock
 
 
-#: The chat picker's "Auto (Jev)" entry, as the id a client sends for it. NOT a
+#: The chat picker's "Auto (decision model)" entry, as the id a client sends for it. NOT a
 #: provider model id and never stored in ``slot.model``: it asks the
 #: ``model.route`` decision point to pick a difficulty tier for each turn, and
 #: until it answers the session runs on the backend default. The prefix is

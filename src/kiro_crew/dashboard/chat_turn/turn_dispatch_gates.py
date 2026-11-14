@@ -417,7 +417,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         await _probe_fallback_restore_for_slot(slot, client)
 
     # ── Jev model routing (decisions/points/model_route.py) ──
-    # For a slot the owner chose not to pin -- the owner picked "Auto (Jev)", or
+    # For a slot the owner chose not to pin -- the owner picked "Auto (decision model)", or
     # the slot is on plain ``auto`` while the preview is on -- and only for a
     # NORMAL chat turn: `_crew_log_actor` is the turn's structural origin, so
     # cron deliveries, sub-agent turns, crew-relayed turns, app injections and

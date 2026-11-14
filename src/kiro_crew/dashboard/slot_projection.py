@@ -504,7 +504,7 @@ class SlotProjection:
             "effective_agent": resolve_effective_agent(slot.agent, slot.project or None),
             "model": slot.model,
             # Whether this session's turns ask Jev which model tier to run on
-            # (the picker's "Auto (Jev)" entry). Shipped on every slot, not only
+            # (the picker's "Auto (decision model)" entry). Shipped on every slot, not only
             # the routed ones, so the picker branches on a field that is always
             # present: an absent key and "the owner picked a model by hand" would
             # otherwise be the same reading, and a stale client would show a

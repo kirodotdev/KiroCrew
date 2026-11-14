@@ -388,7 +388,7 @@ def _session_tools() -> tuple[Tool, ...]:
                 "check runs again; if the target has become channel-linked or otherwise "
                 "out of reach by then, the change is dropped. A model or effort the "
                 "user picks in the meantime wins. The conversation is kept. 'auto', "
-                "'Auto (Jev)' and sessions bound to a remote crew are refused."
+                "'Auto (decision model)' and sessions bound to a remote crew are refused."
             ),
             schema={
                 "type": "object",
