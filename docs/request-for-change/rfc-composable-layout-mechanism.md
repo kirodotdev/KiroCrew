@@ -1,10 +1,10 @@
 ---
 title: Composable Layout Mechanism — a reusable pane-layout foundation, first surfaced as custom member layouts
-status: in-progress
+status: partial
 author: gjjnn
 created: 2026-09-24
-last-audited: 2026-09-25
-audited-at: 20b4c8fee
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: [13572, 14062]
 tracking-issues: []
@@ -13,13 +13,13 @@ superseded-by: []
 ---
 # RFC: Composable Layout Mechanism
 
-- Status: in-progress — PR 1 of the §7 sequence (the layout model and its tests,
+- Status: partial — PR 1 of the §7 sequence (the layout model and its tests,
   pure data with no UI) is on main as
   [#13572](https://github.com/kirodotdev/KiroCrew/pull/13572), and the editor core
   with its dev harness (PR 2a) is on main as
   [#14062](https://github.com/kirodotdev/KiroCrew/pull/14062), both under
   `website/src/components/crew/layout/`. The remaining elements and the renderer
-  land as the later PRs in §7. The mechanism is not yet reachable from any
+  land as the later PRs in §7; none is open (checked at `1d08e941b3`). The mechanism is not yet reachable from any
   product surface. It is the decision to build the mechanism
   described below and to surface it first as custom member layouts, landed as the
   sequence of small PRs in §7.

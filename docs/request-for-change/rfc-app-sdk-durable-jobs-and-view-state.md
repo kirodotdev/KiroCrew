@@ -86,7 +86,7 @@ keeps active tasks and subprocesses in `_ACTIVE_RUNS`
 Its fleet payload overlays `sync_run_id` and per-worktree provision run IDs at
 request time in `_with_live_run_pointers`; `DevFleetPage` uses those pointers
 to reattach a mounted page to a current run (`http_api.py`,
-`_with_live_run_pointers`; `website/src/pages/DevFleetPage.tsx`, sync and
+`_with_live_run_pointers`; `website/src/apps/dev-fleet/DevFleetPage.tsx`, sync and
 provision reattach effects).
 
 The run records and pointers are process memory, so this reattachment applies

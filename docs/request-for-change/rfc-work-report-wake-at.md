@@ -1,12 +1,12 @@
 ---
 title: Work-report wake_at -- a worker that waits on a time says when, and the conductor is woken then
-status: accepted
+status: partial
 author: iamwhatever, with kirocrew-worker
 created: 2026-11-03
-last-audited: 2026-11-03
-audited-at: 41bade9256
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
-implementation-prs: []
+implementation-prs: [33477]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: Work-report `wake_at`
 
-- Status: accepted. The repository owner chose this design on 2026-11-03, over the two alternatives in section 6. Nothing is built. This document lands on its own first, as GOVERNANCE.md asks of an RFC, because it adds a field to the worker contract and to a crew-log entry. The implementation follows in its own pull request and references this one.
+- Status: partial. The repository owner chose this design on 2026-11-03, over the two alternatives in section 6. [#33477](https://github.com/kirodotdev/KiroCrew/pull/33477) (merged 2026-11-09) ships the `wake_at` field on `work_report`, its storage and the staleness deferral (§3.1, §3.2's storage, §3.4); the `wait_due` wake (§3.3), the patrol text (§3.5) and the board line (§3.2) are not built: `wait_due` has no code hit outside a comment in `src/kiro_crew/ledger_wake.py`. This document lands on its own first, as GOVERNANCE.md asks of an RFC, because it adds a field to the worker contract and to a crew-log entry. The implementation follows in its own pull request and references this one.
 - Amends [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) (the `work_report` fields) and [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (which reports wake the conductor) in the one place section 3 names: a `progress` report that carries `wake_at` wakes the conductor once, at that time.
 - Related: [rfc-work-ledger-person-wait-hold.md](rfc-work-ledger-person-wait-hold.md) added `reason` to `work_report` the same way this adds `wake_at`; [rfc-conductor-default-patrol.md](rfc-conductor-default-patrol.md) owns the patrol text this changes.
 - Measured at `41bade9256`.

@@ -16,7 +16,9 @@ superseded-by: []
 
 - Status: partial (2026-11-03, section 9): phase 1 is on main, and the
   cold-only amendment below is built in
-  [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388). As drafted, two
+  [#29388](https://github.com/kirodotdev/KiroCrew/pull/29388), which is still
+  open, so main keeps Rule A (`CONTEXT_CAP_HIGH_TOKENS` in
+  `dashboard/chat_turn/context_cap.py`). As drafted, two
   decisions came before the implementation pull request (section 9): acceptance by the user
   (iamwhatever), the maintainer who owns the conductor patrol, and agreement
   from bolichen97, whose ruling on

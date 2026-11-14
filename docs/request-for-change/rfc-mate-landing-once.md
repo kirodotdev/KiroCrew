@@ -1,10 +1,10 @@
 ---
 title: Mate gets one landing, then the ordinary landing applies
-status: accepted
+status: implemented
 author: iamwhatever
 created: 2026-10-10
-last-audited: 2026-10-11
-audited-at: a84f616557
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 18903
 implementation-prs: [18904]
 tracking-issues: []
@@ -14,7 +14,10 @@ superseded-by: []
 
 # RFC: Mate gets one landing, then the ordinary landing applies
 
-- Status: accepted. buluoray, the author of rfc-crewmate-guides-and-mate,
+- Status: implemented by #18904 (`d9557f54a3`): the roster row's
+  `welcome_claimed` stamp (`dashboard/handlers/members_roster.py`) and
+  `resolveMateLanding` in `website/src/pages/members/MembersPage.tsx`.
+  Accepted earlier: buluoray, the author of rfc-crewmate-guides-and-mate,
   approved it on #18903 on 2026-10-11 and asked for the status to be flipped.
   The "owed" condition in § 2 is the one gap that review raised (Design lane
   finding, checked at main); it is folded in here. Proposed on a user report

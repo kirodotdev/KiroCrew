@@ -1,12 +1,12 @@
 ---
 title: Mate-owned agent config — a copied custom agent in its own folder
-status: accepted
+status: implemented
 author: gjjnn
 created: 2026-10-16
-last-audited: 2026-10-20
-audited-at: 8892889b91
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
-implementation-prs: [21463, 22037]
+implementation-prs: [21463, 22037, 23010]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -14,9 +14,10 @@ superseded-by: []
 
 # RFC: Mate-owned agent config — a copied custom agent in its own folder
 
-- Status: accepted — the product owner's decision of 2026-10-20 (rayrayxu),
-  not a description of what the code does today; the implementation is in
-  #21463 and #22037, both open. "Exists today" claims cite symbols verified
+- Status: implemented — the product owner's decision of 2026-10-20 (rayrayxu),
+  shipped in #23010 (merged 2026-10-23: `mate_config.py`,
+  `mate_config_migration.py`, `~/.kiro/mates/agents/`); #21463 and #22037
+  closed unmerged. "Exists today" claims cite symbols verified
   against the working tree at `8892889b91`; re-verify at implementation time.
 - Author: gjjnn
 - Related: [rfc-crewmates-launch.md](rfc-crewmates-launch.md) (the product

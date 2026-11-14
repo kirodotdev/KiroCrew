@@ -1,10 +1,10 @@
 ---
 title: "MCP gateway: routed servers and the session working directory"
-status: in-progress
+status: partial
 author: kirocrew agent session, directed by the repository owner
 created: 2026-11-12
-last-audited: 2026-11-13
-audited-at: b2aac45f3a
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: null
 implementation-prs: [36277]
 tracking-issues: [36209]
@@ -21,7 +21,7 @@ and is built in [#36277](https://github.com/kirodotdev/KiroCrew/pull/36277)
 its spec section "The working-folder question gates routing" in
 `docs/system-specs/modules/mcp-shareability.md` is the authority. The owner
 confirmed F on 2026-11-13 by merging this document and asking for the fix to ship,
-so the status is `in-progress`: F is decided and its implementation PR is open.
+#36277 merged on 2026-11-14 (`538bad7fc7`), so the status is `partial`: F is built on main.
 Proposal C (section 5) is still a proposal, not decided: acceptance is requested
 from a maintainer, and section 5 records it when one does. This document changes no code. Every code reference below
 names a symbol as it stands on main at `b2aac45f3a`.

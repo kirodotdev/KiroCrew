@@ -1,13 +1,13 @@
 ---
 title: Conductor default patrol -- a dispatch (bind or session_create) arms a work-ledger watch when the caller has no live loop
-status: partial
+status: implemented
 revision: v2
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-05
-last-audited: 2026-10-13
-audited-at: ac8a96a242
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 17079
-implementation-prs: [17069, 19742]
+implementation-prs: [17069, 19742, 27948]
 tracking-issues: [17051, 19741]
 supersedes: []
 superseded-by: []
@@ -15,10 +15,10 @@ superseded-by: []
 
 # RFC: Conductor default patrol
 
-- Status: partial. Phase 1 (arm on bind, section 8) is on main from [#17069](https://github.com/kirodotdev/KiroCrew/pull/17069). Phase 2 (section 9: the system-stopped re-arm for any loop, arming on `session_create`, the no-ledger note, the reply reason) is open in [#19742](https://github.com/kirodotdev/KiroCrew/pull/19742). That PR's First Principles lane reads an RFC's status off the base branch, so this revision lands on its own first, as GOVERNANCE.md asks of an RFC, and the implementation rebases onto it. Where the implementation PR also edits this file, this document is the source of truth.
+- Status: implemented. Phase 1 (arm on bind, section 8) is on main from [#17069](https://github.com/kirodotdev/KiroCrew/pull/17069). Phase 2 (section 9: the system-stopped re-arm for any loop, arming on `session_create`, the no-ledger note, the reply reason) merged in [#19742](https://github.com/kirodotdev/KiroCrew/pull/19742), and the section 10 amendment in [#27948](https://github.com/kirodotdev/KiroCrew/pull/27948). That PR's First Principles lane reads an RFC's status off the base branch, so this revision lands on its own first, as GOVERNANCE.md asks of an RFC, and the implementation rebases onto it. Where the implementation PR also edits this file, this document is the source of truth.
 - Decisions: the bind-time arm was decided by the operator who owns the conductor patrol (2026-10-05). The phase 2 decisions in section 9 were made by the same maintainer (2026-10-13) and are recorded here as accepted.
 - Amends [rfc-conductor-work-ledger.md](rfc-conductor-work-ledger.md) in one place, named in section 3: arming the `work-ledger` watch is no longer only the conductor's own act.
-- Related: [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor) and the goal-conductor skill's `scripts/patrol_budget.py` (the bounds a patrol must pass).
+- Related: [rfc-crew-log-wake.md](rfc-crew-log-wake.md) (how a worker's report wakes the conductor) and the goal-conductor skill's `scripts/patrol_budget.py` (the bounds a patrol must pass; since removed by #33599).
 - Sections 1 to 8 were measured at `a92dde1a6c`. Section 9 was measured at `ac8a96a242`.
 - Amended 2026-11-02 (section 10): a crewmate's own thread takes the default patrol. This supersedes section 9.2 decisions 4 and 5 and the section 9.7 option C rejection for that one arm only. The amendment lands on its own first, as GOVERNANCE.md asks; the implementation is [#27948](https://github.com/kirodotdev/KiroCrew/pull/27948), which rebases onto it.
 

@@ -1,10 +1,10 @@
 ---
 title: Tool-Derived Diff Cards — structured diffs as the primary file-change display
-status: in-progress
+status: implemented
 author: zezhexu
 created: 2026-08-21
-last-audited: 2026-10-06
-audited-at: 9348a25a34
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr:
 implementation-prs: ["#5012"]
 tracking-issues: []
@@ -13,9 +13,10 @@ superseded-by: []
 ---
 # RFC: Tool-Derived Diff Cards — structured diffs as the primary file-change display
 
-- Status: in-progress — the dashboard promotion and the runtime-selected
-  prompt rule ship with [#5012](https://github.com/kirodotdev/KiroCrew/pull/5012);
-  the messaging `OutputEvent` extension (§3.3) is unstarted.
+- Status: implemented — the dashboard promotion and the runtime-selected
+  prompt rule shipped with [#5012](https://github.com/kirodotdev/KiroCrew/pull/5012)
+  (`db31495bc8`); rendering diffs on Slack/Discord/Telegram is out of scope
+  (§3.3), though `OutputEvent` has since gained a `tool_input` field (#5131).
 - Amended by [rfc-fold-recorded-edit-cards.md](rfc-fold-recorded-edit-cards.md):
   a diff card whose change the turn's changed-files card records folds with
   the other tool rows (§3.1's `isDiffCardItem` bullet).

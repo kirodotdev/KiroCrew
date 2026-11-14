@@ -16,10 +16,11 @@ superseded-by: []
 
 - Status: partial. P1's template contract, its instance store, the agentic write
   path and the crewmate Dashboard tab are on main, under the pull requests named
-  in `implementation-prs`. On main the dynamic dashboard is still offered only
-  behind the "Dynamic Dashboard" Feature Preview, whose removal the second
-  amendment of 2026-10-12 records; with it off, a crewmate's Dashboard tab draws
-  the published panel. P2 onward are open, and the agent-written page line is
+  in `implementation-prs`. The "Dynamic Dashboard" Feature Preview that once
+  gated it is gone (removed by
+  [#19659](https://github.com/kirodotdev/KiroCrew/pull/19659), as the second
+  amendment of 2026-10-12 records), so the dynamic dashboard is the crewmate
+  Dashboard tab for every reader. P2 onward are open, and the agent-written page line is
   in flight under
   [issue #18642](https://github.com/kirodotdev/KiroCrew/issues/18642). This
   document is itself on main now, as the pull request named in `doc-pr`, so the

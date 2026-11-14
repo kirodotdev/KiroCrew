@@ -1,10 +1,10 @@
 ---
 title: A Crew Mode chat's side panel opens on the Crew tab
-status: accepted
+status: implemented
 author: iamwhatever, with kirocrew-worker
 created: 2026-10-30
-last-audited: 2026-10-30
-audited-at: e106845756
+last-audited: 2026-11-14
+audited-at: 1d08e941b3
 doc-pr: 26002
 implementation-prs: [25936]
 tracking-issues: [25934]
@@ -14,7 +14,7 @@ superseded-by: []
 
 # RFC: A Crew Mode chat's side panel opens on the Crew tab
 
-- Status: accepted on the repository owner's decision of 2026-10-30. Nothing is built on main yet. This document lands first because the change moves a default, and the First Principles lane reads that decision off the base branch.
+- Status: implemented by [#25936](https://github.com/kirodotdev/KiroCrew/pull/25936), merged 2026-10-30, on the repository owner's decision of 2026-10-30. At `1d08e941b3` `SidePanel.tsx` (`website/src/pages/chat/`) passes `crewFirst` for a Crew Mode chat, behind the `crew_mode` Feature Preview. This document lands first because the change moves a default, and the First Principles lane reads that decision off the base branch.
 - Tracking issue: [#25934](https://github.com/kirodotdev/KiroCrew/issues/25934)
 - Implementation: [#25936](https://github.com/kirodotdev/KiroCrew/pull/25936)
 - Amends: UI review r1 rule U1 of Crew Mode ([#25183](https://github.com/kirodotdev/KiroCrew/pull/25183)), "Workers is offered on a Crew Mode slot's strip without taking focus".
