@@ -68,3 +68,17 @@ async def test_the_limits_survive_the_store_and_an_old_record_loads_without_them
     old["budget_total"] = "lots"
     loaded = RunHandle.from_store_json(old)
     assert (loaded.timeout_secs, loaded.budget_total) == (None, None)
+
+
+async def test_a_rerun_keeps_the_fallback_chat_title_and_folder() -> None:
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False)
+    first = await svc.start(
+        GOOD_SCRIPT, fallback_title="Nightly digest", fallback_folder_id="fld_123"
+    )
+    assert "run_id" in first, first
+    await _wait_terminal(svc, first["run_id"])
+    out = await svc.rerun_subtree(first["run_id"], 0, owner=True)
+    assert "run_id" in out, out
+    await _wait_terminal(svc, out["run_id"])
+    rerun = svc.registry.get(out["run_id"])
+    assert (rerun.fallback_title, rerun.fallback_folder_id) == ("Nightly digest", "fld_123")

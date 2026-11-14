@@ -1781,6 +1781,8 @@ class WorkflowService:
             name=f"{prior.name} ({label})",
             args=prior.args,
             budget_total=prior.budget_total,
+            fallback_title=prior.fallback_title,
+            fallback_folder_id=prior.fallback_folder_id,
             author=origin,
             session_key=origin,
             replay_results=replay_results,
