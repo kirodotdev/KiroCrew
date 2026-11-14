@@ -3183,7 +3183,27 @@ zsh and PowerShell all read as plain text, so `git commit -m "fix(x): y"` can be
 granted), and that one entry matches whole, as kiro-cli anchors each entry at
 both ends. Every other condition above still holds, so a matching command the
 deny floor, governance or `confirm_tools` refuses is still refused, and a command
-that redirects, groups or substitutes is never granted whatever the pattern says.
+that groups or substitutes is never granted whatever the pattern says.
+Plain redirects come off first, as kiro-cli's v3 engine takes them off before it
+matches (`allowed_commands.split_redirects`, #36798), and only this short list:
+a whole word `2>&1` or `>&2`, or a word `>`, `>>`, `2>`, `&>` or `<` with one
+file name glued to it or as the next word. The name holds no space, quote,
+backslash, glob (zsh's `^` included), `~`, `$`, backtick, grouping, separator,
+`<`, `>`, `#` or `!`, and does not start with `=` (zsh's `=program`). The split
+fails closed: any other `<` or `>` refuses the command (`>!`, `>>!`, `&>!`,
+`>|`, `<>`, `<<`, `<<<`, `<(`, `>(`, `<&`, `>&` with any other digit or a word,
+`2>>`, `1>`, `3>`, `&>>`, one glued to a word, a redirect before the program),
+and so does a command that holds a quote, a backslash, a `#`, a non-ASCII
+character or `--%` beside a `<` or `>`. The rest, which is the command minus the
+removed words and the space before each, is matched as below.
+Before granting, the gate judges each file a redirect opens
+(`platform/redirect_floor.redirects_clear`): a write target must pass
+`sensitive_write_path_refusal` and a `<` source `sensitive_path_refusal`, a
+relative one joined to the session's directory (`spec_write_cwd`); a relative
+target with no absolute session directory, or inside a chain, where a `cd` moves
+the directory the shell opens it in, keeps the prompt. A redirect is not held to
+`allowedPaths`, as kiro-cli does not hold it. kiro-cli 3.3.0's v2 engine asks
+for every redirect to a file; this row reads the v3 engine KAS runs.
 A chain is the one composed shape that can be granted
 (`allowed_commands.chain_commands` / `chain_matches_all`): the command is split
 at every `&&`, `||`, `;` and `|` into at most 16 parts; a chain holding a quote,
