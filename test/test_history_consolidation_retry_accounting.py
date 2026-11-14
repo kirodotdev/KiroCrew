@@ -948,6 +948,115 @@ class TestALapsedLoginIsNotAFailedAttempt:
         assert log.unconsolidated_count(KEY) == 0
 
 
+class _UnreachableProvider(_OneTurnProvider):
+    """Fails every prompt with a transient ACP error, as a host that has lost its network does.
+
+    A Mac in DarkWake runs the gateway's timers with the network path down, so
+    the turn dies on a dispatch failure or connection reset that
+    ``_raise_acp_error`` tags ``connection_failure``. *connection* False models a
+    provider that answered with a 5xx instead.
+    """
+
+    def __init__(
+        self,
+        *,
+        connection: bool = True,
+        billed_first: float = 0.0,
+        streams_text: bool = False,
+        metered: bool = True,
+    ) -> None:
+        super().__init__("", credits=0.0)
+        self.reports_turn_usage = metered
+        self._connection = connection
+        self._billed_first = billed_first
+        self._streams_text = streams_text
+        self.calls = 0
+
+    async def stream(self, _message: str, *, allow_image: bool = True):
+        from kiro_crew.acp.client import AcpError
+
+        self.calls += 1
+        if self._billed_first and self.calls == 1:
+            self.last_prompt_stats = SimpleNamespace(credits=self._billed_first)
+        else:
+            self.last_prompt_stats = SimpleNamespace(credits=0.0)
+        if self._streams_text:
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text='{"history_entry": "par')
+        err = AcpError("The model backend hit a transient error (HTTP 5xx).", transient=True)
+        err.connection_failure = self._connection
+        raise err
+
+
+class TestAnUnreachableBackendIsNotAFailedAttempt:
+    """A turn that never reached the provider must not spend the abandon budget.
+
+    An overnight sleep on macOS wakes the host briefly (DarkWake) with no usable
+    network, so every retry inside the night fails on the network path before
+    the model runs. Charging those spends all five attempts and marks the span
+    consolidated unread. Same terms as the signed-out case: nothing streamed and
+    a metered backend shows no billing on any attempt of the turn.
+    """
+
+    @staticmethod
+    def _consolidator(log, provider):
+        c = _make_consolidator(log, sessions=object())
+        abandoned: list[tuple] = []
+        c.on_abandoned = lambda *args, **kwargs: abandoned.append(args)
+        turn = patch.object(history_consolidation, "background_turn", _background_turn_on(provider))
+        return c, abandoned, turn
+
+    @pytest.mark.asyncio
+    async def test_a_connection_failure_inside_the_turn_is_not_dispatched(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, _, turn = self._consolidator(log, _UnreachableProvider())
+
+        with (
+            turn,
+            patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0),
+            pytest.raises(history_mod._ConsolidationNotDispatched, match="unreachable"),
+        ):
+            await c._call_llm("prompt")
+
+    @pytest.mark.asyncio
+    async def test_repeated_connection_failures_never_abandon_the_history_span(self, tmp_path):
+        log = _seed_log(tmp_path)
+        c, abandoned, turn = self._consolidator(log, _UnreachableProvider())
+
+        with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
+            for _ in range(_CONSOLIDATION_MAX_ATTEMPTS + 3):
+                await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
+                await c._consolidate(KEY, include_history=True)
+
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == 0, "an unreachable backend consumed the abandon budget"
+        assert retry_at > time.time(), "the environment backoff was not armed"
+        assert abandoned == []
+        assert log.unconsolidated_count(KEY) == 3, "an unreachable backend dropped the span unread"
+        await asyncio.to_thread(log.update_metadata, KEY, {"consolidation_retry_at": 0.0})
+        assert c.retry_eligible(KEY) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "provider_kwargs",
+        [
+            pytest.param({"connection": False}, id="provider-answered-5xx"),
+            pytest.param({"billed_first": 2.0}, id="billed-attempt-then-unreachable"),
+            pytest.param({"streams_text": True}, id="text-streamed-then-unreachable"),
+            pytest.param({"metered": False}, id="unmetered-backend"),
+        ],
+    )
+    async def test_a_failure_the_provider_may_have_billed_is_charged(
+        self, tmp_path, provider_kwargs
+    ):
+        log = _seed_log(tmp_path)
+        c, _, turn = self._consolidator(log, _UnreachableProvider(**provider_kwargs))
+
+        with turn, patch("kiro_crew.llm_helpers.transient_retry_delay", return_value=0):
+            await c._consolidate(KEY, include_history=True)
+
+        assert log.consolidation_retry_state(KEY)[0] == 1
+
+
 class TestAccountingNeverResurrectsADeletedSession:
     @pytest.mark.asyncio
     async def test_recording_a_failure_for_a_deleted_session_is_a_no_op(self, tmp_path):
