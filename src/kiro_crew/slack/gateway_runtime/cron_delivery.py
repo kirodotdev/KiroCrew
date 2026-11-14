@@ -54,9 +54,17 @@ async def _deliver_cron_agent_result(
     if rh != job.last_posted_hash and self.dashboard_state:
         # A changed result of a crewmate's scheduled turn reaches that crewmate's
         # thread as one of its worker reports; an identical one wakes nobody.
-        from kiro_crew.dashboard.mate_thread_wakes import note_cron_result
+        # The session's own MCP report rides along, so the report names a server
+        # of the crewmate's that this scheduled turn could not use.
+        from kiro_crew.dashboard.mate_thread_wakes import note_cron_result, provider_mcp_payload
 
-        await note_cron_result(self.dashboard_state, job, session_key, result_text)
+        await note_cron_result(
+            self.dashboard_state,
+            job,
+            session_key,
+            result_text,
+            mcp_report=provider_mcp_payload(client),
+        )
     if rh == job.last_posted_hash:
         job.consecutive_dupes += 1
         # Time-based reminder: re-post after 24h so persistent identical

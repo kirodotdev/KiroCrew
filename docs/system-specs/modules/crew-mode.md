@@ -4357,7 +4357,9 @@ parts:
   session reports to the Bot's thread as one of its workers
   (`mate_thread_wakes.note_cron_result`), recognised only on attested state:
   the job's own `cron:` key, a capture naming `job.member_id`, a turn on that
-  Bot's worker (`test_cron_crewmate_report.py`).
+  Bot's worker (`test_cron_crewmate_report.py`). Its report carries the
+  worker report's unusable-server line, read from the cron session's own MCP
+  report at delivery (`mate_thread_wakes.provider_mcp_payload`).
   Its built-in tools are the default template's (the shell, the file writer and
   `code` included): it may run a quick command or make a small edit itself, and
   hands longer work to the worker. Its own notes go through `save_notes`. The spawn admission gate
@@ -4708,7 +4710,8 @@ stamped by `session_send`), the thread is woken with ONE hidden turn
 its reply scrubbed (`member_goals.scrub_text`), capped at 4,000 characters (held
 cut, with its cut flag) and fenced between `<<<worker reply` / `>>>end of worker
 reply` as data. Under it, when the worker slot's stored MCP report
-(`mcp_report_payload`, read at the worker's turn end) names servers of the
+(`mcp_report_payload`, read at the worker's turn end; for a scheduled turn,
+the cron session's own report, read at delivery) names servers of the
 worker's that its session cannot use (only servers the worker spec mounts, read
 off the loop before the wake; one it declares without selecting its tools is one
 it lacks), one line names each with how: sign-in missing or expired (a failed
