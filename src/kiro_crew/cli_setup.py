@@ -581,7 +581,12 @@ def _maybe_setup_cloud() -> None:
 
 
 def _setup_workspace_dir() -> None:
-    """Prompt user for workspace directory, falling back to platform default."""
+    """Prompt for the workspace directory; a refused typed answer keeps the folder shown.
+
+    At a terminal a refused typed answer is asked again. Off one it is not, for
+    the reason :func:`_prompt_verified_slack_value` gives: a re-ask would read the
+    next line of a piped answer file.
+    """
     platform_default = _default_workspace_base() / _WORKSPACE_DIR_NAME
     default = platform_default
     label = "Default"
@@ -592,21 +597,28 @@ def _setup_workspace_dir() -> None:
     print("── Workspace Directory ──\n")
     print("  LLM sessions and task output are stored in a workspace directory.")
     print(f"  {label}: {default}\n")
-    # EOF (piped / closed stdin) keeps the default rather than raising a
-    # traceback out of the wizard — this step runs FIRST, so a bare input() here
-    # made `kirocrew setup < /dev/null` fail before any later guard could help.
-    answer = _input_or_skip(f"  Workspace path [{default}]: ") or ""
-    chosen = default if answer.lower() in ("", "y", "yes") else normalize_workspace_path(answer)
-    try:
-        if not chosen.is_absolute():
-            raise OSError("not an absolute path")
-        chosen.mkdir(parents=True, exist_ok=True)
-        _workspace_dir_file().parent.mkdir(parents=True, exist_ok=True)
-        _workspace_dir_file().write_text(str(chosen) + "\n", encoding="utf-8")
-        print(f"  ✅ Workspace: {chosen}\n")
-    except OSError as e:
-        print(f"  ❌ Cannot create {chosen}: {e}")
-        print(f"  Falling back to platform default: {platform_default}\n")
+    while True:
+        # EOF raises _SetupAborted, which _setup reports in one line, not a traceback.
+        answer = _input_or_skip(f"  Workspace path [{default}]: ") or ""
+        chosen = default if answer.lower() in ("", "y", "yes") else normalize_workspace_path(answer)
+        try:
+            if not chosen.is_absolute():
+                raise OSError("not an absolute path")
+            chosen.mkdir(parents=True, exist_ok=True)
+            _workspace_dir_file().parent.mkdir(parents=True, exist_ok=True)
+            _workspace_dir_file().write_text(str(chosen) + "\n", encoding="utf-8")
+            print(f"  ✅ Workspace: {chosen}\n")
+            return
+        except OSError as e:
+            print(f"  ❌ Cannot create {chosen}: {e}")
+        if chosen == default:
+            # The folder shown is unusable, so the runtime falls back from a configured one.
+            print(f"  Falling back to platform default: {platform_default}\n")
+            return
+        if not _stdio_is_interactive():
+            print(f"  Keeping the {label.lower()} folder: {default}\n")
+            return
+        print("  Enter an absolute path, or press Enter to keep the folder shown.")
 
 
 #: Per-call timeout, in seconds, for the Slack API round-trips that check a
