@@ -540,8 +540,8 @@ are allowed** so a journal stays forward-compatible.
 | `type` | required `data` keys | Notes |
 |--------|----------------------|-------|
 | `run_started` | `name`, `args`, `script_hash`, `budget_total` | first event of every run. `name` comes from `META["name"]` (empty on the author-in-run and validation-failure paths). `budget_total` may be `None` |
-| `phase_started` | `title` | from `ctx.phase()`, and from the runner's own `"Authoring"` phase |
-| `agent_started` | `agent_id`, `label`, `phase`, `call_index` | `agent_id` is `a<call_index>` |
+| `phase_started` | `title` | from `ctx.phase()`, and from the runner's own `"Authoring"` phase; also an optional `phase_index`, the phase's 1-based ordinal in the run (counted by `EventStream`) |
+| `agent_started` | `agent_id`, `label`, `phase`, `call_index` | `agent_id` is `a<call_index>`; also an optional `phase_index`, the ordinal of the phase the call runs in (0 when the call names its own `phase=` or runs before any phase) |
 | `agent_progress` | `agent_id`, `turns`, `last_tool`, `elapsed_s` | **builder exists, nothing emits it.** The frontend reads `last_tool` from it |
 | `agent_finished` | `agent_id`, `result_summary`, `ok` | plus an optional `error` (bounded, redacted; empty when `ok`). `result_summary` is `str(result)[:120]`, empty when the result is `None`. `error` is deliberately **not** in `REQUIRED_DATA_KEYS` so journals from an older build still deserialize |
 | `log` | `message` | from `ctx.log()`, from authoring progress, and from nudge outcomes |
@@ -556,6 +556,17 @@ are allowed** so a journal stays forward-compatible.
 terminal event is always last, and `seq` is contiguous from 0. For the canonical
 happy path the stream is `run_started, phase_started, log, agent_started,
 agent_finished, run_finished`.
+
+**Traces.** While `telemetry.traces_enabled` is on, `WorkflowRunner.run` opens the run's
+trace root around everything the run does (`tracing/workflows.py`; spec:
+[metrics](metrics.md), "Workflow runs"). The trace has a `workflow <name>` anchor, one
+`phase <title>` span per `phase_started` (read from its `phase_index`), each live
+`ctx.agent()` call as one turn under its phase, and a `workflow outcome <status>` marker.
+A call replayed from a prior run streams no turn, so it emits no span.
+`run_background` pins the turn that launched the run. The completion turn that
+`workflow_startup`'s auto-turn starts joins the run's trace and links to that launcher;
+a queued one, and a retry of either, carries `meta.workflow_run_id` for the drain to
+hand over. Off, the runner opens no span.
 
 `where` maps to a cause:
 

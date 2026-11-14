@@ -1879,9 +1879,9 @@ task-review tab titled through the transcript its row recorded), plus the
 
 Native OpenTelemetry spans of agent turns, for #1643. Design record: the native
 tracing RFC under `docs/request-for-change/`. This section covers what is built:
-session turns, sub-agent runs, the surface roots of the engines that start turns and
-Ultra Mode rounds, recorded to a local sink, and exported over OTLP/HTTP when a
-collector is named. The workflow root kind is not built yet. Tests: `test/tracing/`.
+session turns, sub-agent runs, the surface roots of the engines that start turns,
+workflow runs and Ultra Mode rounds, recorded to a local sink, and exported over
+OTLP/HTTP when a collector is named. Tests: `test/tracing/`.
 
 **Switch.** `telemetry.traces_enabled`, default `false`, independent of
 `telemetry.enabled`. The switch (and, when on, the namespace file and vault key) is
@@ -2008,6 +2008,7 @@ own. Every span in a trace carries the root's `session.id`; a span's own session
 | `webhook` | `dashboard/handlers/hooks.py::_run_hook_inner` | the turn roots itself |
 | `task` | `task_executor.py::execute_task` (one task-runner step) and `self_review` (its review turn) | the turn roots itself |
 | `cron` | `cron_service/service/run_execution.py::_execute_with_timeout`, around the run's deadline | a run: anchor `cron <job kind>` keyed `(job id, marker_run)` with the root session `cron:<job id>`, the turns join it, `cron outcome <status>` with the roll-up |
+| `workflow` | `workflows/runner.py::WorkflowRunner.run`, around the whole run | a run: anchor `workflow <name>` keyed `(run_id)` with the launching session as root session, phases and agent calls under it, `workflow outcome <status>` with the roll-up (below) |
 
 Every prompt streamed inside one root is the next attempt of the same turn
 (`kirocrew.attempt`), except where the engine starts a new turn with `turns.next_turn` (each
@@ -2024,6 +2025,46 @@ the dispatch runs in a task of its own, and `admitted_cron_dispatch` hands the r
 to it (`turns.adopt_root`). A root opened inside another root bound in the
 same task (a one-liner a dashboard turn awaits) owns its turns until it closes, then
 the outer binding is back. Off, a root is one context-variable write.
+
+**Workflow runs** (`tracing/workflows.py`). The `workflow` root above opens the anchor,
+named by the script's `META["name"]`, and the outcome: `finished`, `failed` or
+`cancelled`, from the run's own result. Between them:
+
+- `phase <title>` per `phase_started`, read from its `phase_index` (the 1-based
+  ordinal `EventStream` counts). It ends at the next phase or the run's end, because
+  the DSL has no phase-end event, and carries `kirocrew.phase_index` and the roll-up
+  of its calls. A parallel branch can open the next phase while another branch's call
+  under this one still runs, so the span is exported once its last bound call is
+  released (`release_agent`), still ending at the time the next phase began. The
+  run's end exports the phase still open whatever is in flight; an earlier one waits
+  for its calls, which the runner settles before the run ends.
+- Each live `ctx.agent()` call is one turn under its phase (`bind_agent`, around the
+  call's `agent_fn`, in the task that streams it). It is named
+  `invoke_agent <phase>:<label>` (`<phase>:a<call_index>` when the script gives no
+  `label=`, because the runner's fallback label is prompt text), carries
+  `kirocrew.agent_id` (`a<call_index>`), and
+  its schema re-asks are its attempts 2 and on. Its spend rolls up to its phase and
+  to the run's outcome.
+- A call replayed from a prior run's results (`replay_before`) streams no turn, so a
+  resumed run emits no span for it. A rerun is a new `run_id`, so a new trace.
+- A run authored from an intent (`start_from_intent`) has an `Authoring` phase first;
+  the author's model turns are one call under it, `invoke_agent Authoring:author`,
+  bound in the task the runner starts for the author.
+- `WorkflowRunner.run_background` pins the turn open for the launching session
+  (`pin_launcher`, by `turns.open_turn_of_session`) before the run is scheduled.
+- The completion turn: `workflow_startup`'s auto-turn starts it inside
+  `delivering(run_id)`, or queues it with `meta.workflow_run_id`, which the queue
+  drain hands over (`run_of`). `bind_turn` takes the run once (top-level turns
+  only), joins its trace under the anchor and links to the launcher. It keeps its own
+  `kirocrew.turn_id`. A retry of that turn (`_queue_recovery`) carries the same
+  `meta.workflow_run_id` (`recovery_meta`, keyed by the turn id), so it joins the
+  same run.
+
+Every span of the run carries `kirocrew.workflow_run_id` and the launching session's
+`session.id`; a run kind's outcome carries its anchor's keys. Names are script text:
+collapsed to one line, passed whole through `validate_attrs`, then cut to 64
+characters. Runs and launchers are kept in memory (the last
+1,024), so after a restart a completion turn roots its own trace.
 
 **Sub-agents** (`tracing/subagents.py`). The spawn gate
 (`subagent_manager/admission/gate.py`) calls `pin_origin` on a spawn's first
@@ -2135,9 +2176,11 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 | `chat`, `user.prompt`, `turn.complete` | that kind, `turn_id, attempt` |
 | `execute_tool` | `tool, acp_session_id, tool_call_id` |
 | sub-agent `invoke_agent` | `turn, turn_id, attempt`, in the parent's trace under its spawn span |
-| run anchor (`subagent`, `cron`, later workflow) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
+| run anchor (`subagent`, `cron`, `workflow`) | `<kind>, *key, cont`; trace `trace.<kind>, *key, cont` |
 | `<kind> outcome <status>` | `<kind>.outcome, *key, cont, outcome_key` |
 | `cron run <kind>` step | `cron.step, *key, cont, run <kind>` |
+| `phase <title>` | `workflow.phase, run_id, cont, phase_index` |
+| workflow `invoke_agent` | `turn, turn_id, attempt`, turn id `H(workflow.agent, run_id, agent_id)`, under its phase |
 | `ultra round N` | `ultra, conductor, goal key, round, cont`; trace `trace.ultra`, the same inputs |
 | `work_item <item id>` | `work_item, item id, generation, goal key, round, 1`, in its round's trace |
 | `kirocrew.work.<action>` | `work, conductor, item id, action, event id`; `goal`: `work.goal, conductor, generation, goal_version`; alone, the trace is `trace.<the same>` |
@@ -2145,8 +2188,8 @@ A turn's trace id is the turn id itself when it is 32 hex, else
 **Correlation and the allowlist** (`tracing/correlation.py`). `ALLOWED_KEYS` is the
 whole attribute vocabulary; anything else is dropped. Ids follow #24884's hook
 contract with a `kirocrew.` prefix: `kirocrew.turn_id`, `kirocrew.acp_session_id`,
-`kirocrew.tool_call_id`, `kirocrew.subagent_id`, `kirocrew.work.item_id` and
-`kirocrew.cron.job_id` raw;
+`kirocrew.tool_call_id`, `kirocrew.subagent_id`, `kirocrew.work.item_id`,
+`kirocrew.cron.job_id`, `kirocrew.workflow_run_id` and `kirocrew.agent_id` raw;
 `kirocrew.parent_session_key_hash`, `kirocrew.crew.root`, `kirocrew.crew.dispatcher`
 and `kirocrew.work.conductor_hash` hashed like the session key; `kirocrew.session_key_hash` and `session.id` a
 keyed HMAC-SHA256 (32 hex) under `SecretVault.derive_subkey("trace-correlation")`;

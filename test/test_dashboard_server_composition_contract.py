@@ -476,6 +476,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.shared_crew.host_hooks": "mark_sessions_restored",
     "kiro_crew.shared_crew.host_power": "shared_use_wants_awake",
     "kiro_crew.subagent": "_available_memory_gb",
+    "kiro_crew.tracing": "trace_workflows",
     "kiro_crew.transcribe": "_whisper_language",
     "kiro_crew.workflows.service": "WorkflowService",
 }
@@ -497,7 +498,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 151
+    assert len(expected) == 152
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
