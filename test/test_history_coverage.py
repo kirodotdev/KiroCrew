@@ -1031,19 +1031,31 @@ class TestWriteStructuredMemory:
         assert f"Wrote {cap} episodic entries from consolidation" in caplog.text
         assert vs.write_episodic.call_count == cap
 
-    def test_non_list_sections_are_ignored(self) -> None:
-        vs = MagicMock()
+    def test_non_list_sections_are_ignored(self, tmp_path, opened) -> None:
+        import sqlite3
+
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "m.db", embedding_dim=4))
+        vs.init()
         c = _consolidator(vector_store=vs)
         c._write_structured_memory({"semantic": "nope", "episodic": {"a": 1}}, "k")
-        vs.set_semantic.assert_not_called()
-        vs.write_episodic.assert_not_called()
+        with contextlib.closing(sqlite3.connect(tmp_path / "m.db")) as db:
+            rows = [
+                db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in ("semantic_memory", "episodic_memories")
+            ]
+        assert rows == [0, 0]
 
 
 class TestSaveLessons:
-    def test_non_list_is_ignored(self) -> None:
-        vs = MagicMock()
+    def test_non_list_is_ignored(self, tmp_path, opened) -> None:
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        vs = opened(VectorMemoryStore(db_path=tmp_path / "m.db", embedding_dim=4))
+        vs.init()
         _consolidator(vector_store=vs)._save_lessons({"rule": "x"})
-        vs.write_lesson.assert_not_called()
+        assert vs.get_lessons() == []
 
     def test_caps_and_warns(self, caplog) -> None:
         vs = MagicMock()
