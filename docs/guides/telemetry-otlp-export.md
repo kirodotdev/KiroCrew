@@ -165,7 +165,8 @@ feedback survey, and does not show the first-run Privacy chapter.
 
 A build of Kiro Crew can ship a collector of its own. It does so in code, through
 its telemetry provider (`TelemetryProvider.otlp_destinations`), not as an entry in
-your `config.json`; the public build ships none. What that means for you:
+your `config.json`. The public build ships one, `kiro-telemetry`, described in
+[The Kiro telemetry destination](#the-kiro-telemetry-destination). What that means for you:
 
 - Your own entries still work next to it, as long as the build keeps them (the
   public provider's list is `otlp_endpoints.config_destinations(cfg)`, which a
@@ -178,6 +179,37 @@ your `config.json`; the public build ships none. What that means for you:
 An LTS build ignores `otlp_endpoint` and `otlp_endpoints` from local
 config; collectors the build ships still
 apply, under the policy.
+
+#### The Kiro telemetry destination
+
+The public build sends the reviewed [`PRODUCT_METRICS`](#the-product_metrics-preset)
+list to the Kiro telemetry endpoint (`https://telemetry.us-east-1.kiro.dev/v1/metrics`),
+next to any collector of your own. It is listed as `kiro-telemetry` in Settings ->
+Privacy and in `kirocrew telemetry status`.
+
+It is not listed, and sends nothing, until you acknowledge a privacy notice that
+names it (`dashboard.privacy_ack_version` 3 or later). Every notice so far says
+metrics stay on this machine, so a `"enabled": true` written under one of them
+covers local recording only. Until then the Settings switch and
+`kirocrew telemetry enable` work exactly as on a host with no destination.
+
+Once the notice is acknowledged, it sends only when every gate above says yes:
+
+| Host | Sent? |
+|---|---|
+| Recording on by default only (a new install, or an upgrade that never wrote the setting) | No |
+| `"enabled": true` written in a config file, or `KIROCREW_TELEMETRY=1` | Yes, once the OTLP exporter package is installed |
+| `"enabled": false`, `kirocrew telemetry disable`, `KIROCREW_TELEMETRY=0`, or `DO_NOT_TRACK=1` | No |
+| A policy's `otlp_hosts` list that does not permit `telemetry.us-east-1.kiro.dev` | No |
+| LTS build (the policy names the collector, or none) | No: not part of that build's list |
+| CI runner (`CI`, `GITHUB_ACTIONS`, ...) or a non-default `KIROCREW_HOME` | No: not listed, same rule as the daily heartbeat |
+
+Each data point carries `ClientType=kiro-crew`. The batch's resource keeps
+only service name and version, OS type, Python runtime, `kirocrew.harness` and
+`kirocrew.process.role`: no install id, no pid, nothing under `host.*`. Every
+request carries `x-kiro-machineid`, a SHA-256 of the install id, and no sign-in
+token or other credential. The process-wide `OTEL_EXPORTER_OTLP_*` header,
+credential and certificate variables are never applied to it.
 
 ### Other settings worth knowing
 

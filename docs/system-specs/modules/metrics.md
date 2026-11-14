@@ -239,8 +239,20 @@ host must also pass the security policy's `capabilities.telemetry` `otlp_hosts`
 list (`otlp_governance.governed_destinations` before the reader is built and `otlp_governance.gate_exporter` before each export; see [governance.md](governance.md)), and a
 policy that pins `capabilities.telemetry` off drops every destination. The public
 `DefaultTelemetryProvider` turns a non-empty `otlp_endpoint` into exactly one
-destination and returns none when it is empty, so a standalone build behaves as it
-did when this module constructed that exporter itself. Readers are appended AFTER
+destination, so a standalone build behaves as it
+did when this module constructed that exporter itself. It then adds each
+`otlp_endpoints` entry and the built-in `kiro-telemetry` destination
+(`metrics/kiro_export.py`): the `PRODUCT_METRICS` preset to a fixed Kiro telemetry
+endpoint, with `ClientType=kiro-crew` on every point, a reduced resource (no
+install id, pid or `host.*`), delta temporality, no process-wide OTel credentials,
+and a session that adds only `x-kiro-machineid` (a hash of the install id).
+`outbound_consented` still decides export, so recording on by default sends
+nothing. It is not returned until `dashboard.privacy_ack_version` reaches
+`kiro_export.NOTICE_VERSION` (a notice that names it; every notice so far says
+metrics stay on this machine, so an earlier written `true` is not consent to this
+export), in an LTS build, on a CI runner, or under a non-default `KIROCREW_HOME`.
+While it is not returned, `otlp_egress_active` and the enable refusals behave as
+on a host with no destination. The test suite turns it off in `test/conftest.py`. Readers are appended AFTER
 the local JSONL sink, so an edition can add destinations but can never remove or
 replace the sink the dashboard reads, and it supplies no cadence — the export
 interval stays `telemetry.export_interval_seconds`. Nor does it supply a

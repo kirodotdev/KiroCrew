@@ -816,7 +816,9 @@ class TelemetryProvider(Protocol):
         ``telemetry.otlp_endpoint`` first when it is a non-empty string (with no
         narrowing, byte-identical to the endpoint-only exporter this replaced),
         then each enabled ``telemetry.otlp_endpoints`` entry
-        (``metrics/otlp_endpoints.py``).  Nothing when neither is set.
+        (``metrics/otlp_endpoints.py``), then the built-in ``kiro-telemetry``
+        destination (``metrics/kiro_export.py``) once its privacy notice is
+        acknowledged.  Nothing when none of these applies.
 
         An edition that overrides it and should keep the operator's entries
         returns ``metrics.otlp_endpoints.config_destinations(cfg)`` first and its

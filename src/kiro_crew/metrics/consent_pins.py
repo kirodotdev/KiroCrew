@@ -26,10 +26,10 @@ logger = logging.getLogger("kiro_crew.metrics.provider")
 # LOCAL metrics on (or force them off) without editing ~/.kiro/crew/config.json —
 # handy for CI, containers, and one-off debugging. Truthy => enable, falsy =>
 # disable, unset/blank => defer to the ``telemetry.enabled`` config flag (itself
-# default True). This gates LOCAL collection ONLY: external OTLP egress needs the
-# active telemetry provider to name a destination (the default provider does so
-# only for a non-empty ``telemetry.otlp_endpoint``), so merely flipping this var
-# never causes data to leave the host (egress stays off by default).
+# default True). A truthy value is also an explicit opt-in to export
+# (:func:`outbound_consented`): the default provider names the configured
+# ``telemetry.otlp_endpoint(s)`` and the built-in Kiro telemetry destination
+# (``metrics/kiro_export.py``), and all of them export once this var is truthy.
 # Public: a UI control over ``telemetry.enabled`` names this variable when it
 # reports the setting as pinned, and naming it from here keeps the message and the
 # lookup from drifting apart.
