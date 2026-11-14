@@ -1525,3 +1525,130 @@ class TestOneDecisionWalksEachTextOnce:
         modes.clear()
         assert walk._matching_close_paren("$(: ${v:-)}; printf token)", 2) == (26, True)
         assert modes == [False, True]
+
+
+class TestS3DirectionSubstitutionCost:
+    """The s3 direction reader resolves ``$NAME`` in one pass, one lookup per reference.
+
+    A pattern compiled per assignment, run on every statement, cost the product of
+    the two: 1000 assignments and 1000 statements took ~53 s in the gate. The
+    cost is asserted structurally, not by timing: ``_substitute`` runs once per
+    non-assignment statement, never walks the assignment map, and looks up at most
+    one name per ``$`` in the text it reads.
+    """
+
+    def test_many_assignments_and_statements_cost_one_lookup_per_reference(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        n = 1000
+        text = "\n".join(
+            [f"V{i}=b{i}" for i in range(n)] + ["true"] * n + ["aws s3 cp s3://$V0/k ./d"]
+        )
+        calls: list[str] = []
+        lookups = [0]
+
+        class _CountingMap(dict):
+            def get(self, key, default=None):
+                lookups[0] += 1
+                return super().get(key, default)
+
+            def __getitem__(self, key):
+                lookups[0] += 1
+                return super().__getitem__(key)
+
+            def __contains__(self, key):
+                lookups[0] += 1
+                return super().__contains__(key)
+
+            def _walk(self, *_a):
+                raise AssertionError("_substitute walked the assignment map")
+
+            __iter__ = keys = items = values = _walk
+
+        real = s3_direction._substitute
+
+        def _spy(raw: str, assigns: "dict[str, str]", budget: int) -> "str | None":
+            calls.append(raw)
+            return real(raw, _CountingMap(assigns), budget)
+
+        monkeypatch.setattr(s3_direction, "_substitute", _spy)
+        assert s3_direction._reads_all_downloads(text) is True
+        assert len(calls) == n + 1
+        assert sum(len(raw) for raw in calls) <= len(text)
+        assert lookups[0] <= sum(raw.count("$") for raw in calls) == 1
+
+
+class TestS3DirectionUsesTheLinearMatcher:
+    """The s3 direction reader matches the s3 rows with the gate's linear matcher.
+
+    A raw ``re.search`` of those rows backtracks exponentially on a run of flags
+    before ``s3`` (about 8x per two more flags), so 20 ``--quiet`` words in a
+    statement held the gate for minutes. The cost is asserted structurally, as the
+    rest of this file does: every row match goes through
+    ``denied_rules._deny_pattern_matches``, and the 20-flag line is read by it.
+    """
+
+    LINE = "aws " + "--quiet " * 20 + "not-s3; aws s3 cp --recursive s3://b/key ./out"
+
+    def test_every_row_match_goes_through_the_linear_matcher(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        real = s3_direction._deny_pattern_matches
+        seen: list[str] = []
+
+        def _spy(pattern: str, text: str, is_regex: bool) -> bool:
+            seen.append(text)
+            return real(pattern, text, is_regex)
+
+        monkeypatch.setattr(s3_direction, "_deny_pattern_matches", _spy)
+        assert s3_direction._reads_all_downloads(self.LINE) is False
+        assert any(text.startswith("aws --quiet") for text in seen)
+
+
+class TestS3DirectionSubstitutionIsCapped:
+    """The s3 direction reader caps how much text resolving ``$NAME`` may add.
+
+    A 2000-character value read 2000 times turned a ~6 KB line into ~4 MB before
+    the tokenizer ran, and one ``is_denied`` took over 30 s. The cap is the line's
+    own length plus a small margin, and never more than the gate's command
+    ceiling; past it the reader stops and the deny stands. The cost is asserted on
+    the text ``_substitute`` returns, so an uncapped reader fails at once instead
+    of hanging in the tokenizer.
+    """
+
+    def _spy(self, monkeypatch, cap: int) -> "list[int]":
+        from kiro_crew.security import s3_direction
+
+        real = s3_direction._substitute
+        produced = [0]
+
+        def _counting(*args):
+            out = real(*args)
+            produced[0] += len(out or "")
+            assert produced[0] <= cap, f"_substitute produced {produced[0]} chars, cap {cap}"
+            return out
+
+        monkeypatch.setattr(s3_direction, "_substitute", _counting)
+        return produced
+
+    def _cap(self, line: str) -> int:
+        from kiro_crew.security import s3_direction
+        from kiro_crew.security.paths import MAX_SCANNABLE_COMMAND_CHARS
+
+        return min(len(line) + s3_direction._SUBSTITUTION_MARGIN, MAX_SCANNABLE_COMMAND_CHARS)
+
+    def test_repeated_long_value_stops_at_the_cap_and_keeps_the_deny(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        line = "A=" + "a" * 2000 + "; echo " + "$A" * 2000 + "; aws s3 cp s3://b/k ./d"
+        produced = self._spy(monkeypatch, self._cap(line))
+        assert s3_direction._reads_all_downloads(line) is False
+        assert produced[0] <= self._cap(line)
+
+    def test_download_with_a_variable_across_statements_is_still_read(self, monkeypatch):
+        from kiro_crew.security import s3_direction
+
+        line = "B=my-bucket; mkdir -p ./d; aws s3 cp s3://$B/key ./d/key && echo done"
+        produced = self._spy(monkeypatch, self._cap(line))
+        assert s3_direction._reads_all_downloads(line) is True
+        assert produced[0] > 0
