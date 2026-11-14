@@ -20,6 +20,7 @@ import importlib
 import importlib.util
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -715,3 +716,141 @@ def test_the_reference_scan_reads_each_test_file_once_and_drops_it(gate) -> None
         "run_scoped_tests._read_text is memoised again; the reference scan must "
         "read each file once and drop it, not retain the test tree's text"
     )
+
+
+# ---------------------------------------------------------------------------
+# selection: a platform's collect-ignore list reaches the related set
+# ---------------------------------------------------------------------------
+
+_LISTED = "test_posix_only_suite.py"
+
+
+def _mini_repo(tmp_path: Path) -> Path:
+    """A checkout with the listed name at every reach the hook distinguishes.
+
+    ``test/<name>`` is what the hook ignores; the same name under a subdirectory
+    and under the apps-builtins root is collected on every platform, so the
+    selector must keep both. The module under ``src/`` gives the name-matched
+    and referencing sources something to find.
+    """
+    root = tmp_path / "repo"
+    (root / "src" / "kiro_crew").mkdir(parents=True)
+    (root / "src" / "kiro_crew" / "posix_only_suite.py").write_text("X = 1\n", encoding="utf-8")
+    for rel in (
+        f"test/{_LISTED}",
+        "test/test_other.py",
+        f"test/fixtures/{_LISTED}",
+        f"src/kiro_crew/apps/builtins/demo/{_LISTED}",
+    ):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("from kiro_crew import posix_only_suite\n", encoding="utf-8")
+    return root
+
+
+@pytest.fixture
+def collect_ignore_helpers():
+    return importlib.import_module("platform_collect_ignore_helpers")
+
+
+def test_a_listed_suite_is_dropped_only_at_the_hooks_reach(
+    gate, tmp_path, monkeypatch, collect_ignore_helpers
+) -> None:
+    """Named on the pytest command line, a file bypasses ``pytest_ignore_collect``;
+    the selector therefore applies the hook's list itself, and no wider.
+
+    The list is installed the way ``test_platform_collect_ignore.py`` installs
+    it, so the Windows branch is proven on every host.
+    """
+    selector = importlib.import_module("run_scoped_tests")
+    root = _mini_repo(tmp_path)
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset({_LISTED}))
+    diff = [f"test/{_LISTED}", "src/kiro_crew/posix_only_suite.py"]
+    targets, verdict = selector.related_targets("backend", diff, root=root)
+    assert f"test/{_LISTED}" not in targets
+    assert f"test/fixtures/{_LISTED}" in targets
+    assert f"src/kiro_crew/apps/builtins/demo/{_LISTED}" in targets
+    assert "test/test_other.py" in targets
+    assert "1 not collected on this platform" in verdict
+
+
+def test_an_empty_platform_list_drops_nothing(
+    gate, tmp_path, monkeypatch, collect_ignore_helpers
+) -> None:
+    """Linux lists nothing, so the related set is the plain union there."""
+    selector = importlib.import_module("run_scoped_tests")
+    root = _mini_repo(tmp_path)
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    targets, verdict = selector.related_targets("backend", [f"test/{_LISTED}"], root=root)
+    assert f"test/{_LISTED}" in targets
+    assert "not collected" not in verdict
+
+
+def test_the_leaf_selector_imports_without_pytest_or_kiro_crew() -> None:
+    """CI's ``changes`` job runs ``leaf_test_scope.py`` with no dependencies
+    installed, and it imports this selector; the collector helper (which needs
+    pytest and kiro_crew) must load on first use, not at import."""
+    probe = (
+        "import sys; sys.path.insert(0, 'scripts'); import leaf_test_scope; "
+        "assert 'platform_collect_ignore_helpers' not in sys.modules"
+    )
+    # -S: no site-packages, so neither pytest nor an installed kiro_crew is importable.
+    result = subprocess.run(
+        [sys.executable, "-S", "-c", probe],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_the_selector_subtracts_exactly_what_the_hook_ignores(
+    gate, request, monkeypatch, collect_ignore_helpers
+) -> None:
+    """One list, one platform rule: the selector's subtraction is the hook's verdict.
+
+    Every path the selector would drop is one the real hook chain ignores at
+    ``test/``, and every listed name is dropped -- asked through the conftest's
+    registered hook rather than by re-reading the file, so the two readers cannot
+    drift apart without this failing.
+    """
+    selector = importlib.import_module("run_scoped_tests")
+    names = collect_ignore_helpers.platform_ignore_names("win32")
+    assert names, "the Windows ignore list parsed to nothing"
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", names)
+    # Under CI's --file-shard-targets every unlisted path is skipped by design,
+    # which would answer for the platform list here; lift it for this question.
+    shards = request.config.pluginmanager.get_plugin("ci-file-shards")
+    if shards is not None:
+        monkeypatch.setattr(shards, "keep", None)
+    test_dir = collect_ignore_helpers.TEST_DIR
+    ihook = request.session.gethookproxy(test_dir)
+    dropped = selector.platform_uncollected_targets()
+    assert dropped == {f"test/{name}" for name in names}
+    for rel in sorted(dropped):
+        path = test_dir / rel[len("test/") :]
+        assert ihook.pytest_ignore_collect(collection_path=path, config=request.config), rel
+    assert not ihook.pytest_ignore_collect(collection_path=Path(__file__), config=request.config)
+
+
+def test_a_windows_excluded_suite_is_not_re_enabled_by_the_related_set(
+    gate, monkeypatch, collect_ignore_helpers
+) -> None:
+    """The reported shape, on the real tree: a suite the Windows list keeps out
+    of every shard reaches pytest anyway when a change names it, matches its
+    name, or references it, because the related set hands pytest explicit paths.
+    Under the Windows list it must be absent; with no list it is selected.
+    """
+    selector = importlib.import_module("run_scoped_tests")
+    names = collect_ignore_helpers.platform_ignore_names("win32")
+    listed = sorted(names)[0]
+    rel = f"test/{listed}"
+    assert (_REPO_ROOT / rel).is_file()
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", names)
+    targets, verdict = selector.related_targets("backend", [rel])
+    assert rel not in targets
+    assert "not collected on this platform" in verdict
+    monkeypatch.setattr(collect_ignore_helpers, "PLATFORM_IGNORED", frozenset())
+    targets, _verdict = selector.related_targets("backend", [rel])
+    assert rel in targets

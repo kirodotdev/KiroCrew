@@ -52,6 +52,14 @@ Backend, as the union of:
 * the cross-surface set ``ci-surface-tests.py`` computes, when the OTHER surface
   changed. That one is CI's own reduction rather than a second answer invented here
 
+minus the ``test/`` files this platform does not collect. Every target here is
+named explicitly on the pytest command line, and an explicit path bypasses
+``test/conftest.py``'s ``pytest_ignore_collect`` hook, so without this
+subtraction a suite that ``test/windows-collect-ignore.txt`` keeps out of every
+Windows run would be re-enabled by the very gate meant to run only what is
+related. The set subtracted is the hook's own (``platform_collect_ignore_helpers``):
+the same list file, the same platform rule, the same ``test/<name>``-only reach.
+
 Frontend is the same shape over vitest specs, re-rooted to ``cwd=website``.
 
 The set is never silently swapped for the full suite because it came out large:
@@ -83,6 +91,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import importlib
 import os
 import re
 import shutil
@@ -90,8 +99,27 @@ import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The collector's own platform ignore list, through the collector's own reader.
+# `test/conftest.py` re-exports that helper's `pytest_ignore_collect` hook, and the
+# helper lives beside it, so `test/` joins sys.path the way
+# scripts/new_test_stability_scope.py already puts it there. One list, one
+# platform rule, shared by the hook and by every selector that names files
+# explicitly. Loaded on first use, not at import: the helper needs pytest and
+# kiro_crew, and scripts/leaf_test_scope.py imports this module in CI's
+# dependency-free `changes` job.
+_TEST_DIR = str(REPO_ROOT / "test")
+
+
+def _collect_ignore() -> ModuleType:
+    """The collector's helper module (one cached object, so a patch on it sticks)."""
+    if _TEST_DIR not in sys.path:
+        sys.path.insert(0, _TEST_DIR)
+    return importlib.import_module("platform_collect_ignore_helpers")
+
 
 # A change to any of these can affect anything, so no reduction is defensible.
 # Matched on the FILE NAME or on a PATH PREFIX, never as a bare substring:
@@ -750,6 +778,19 @@ def _referencing_tests(paths: list[str], tree: tuple[str, ...], root: Path) -> l
     return [rel for rel in tree if rel not in changed and matcher.search(_read_text(root, rel))]
 
 
+def platform_uncollected_targets() -> frozenset[str]:
+    """Backend targets ``test/conftest.py`` would refuse to collect on this host.
+
+    Read at call time from the hook's own ``PLATFORM_IGNORED`` rather than copied
+    at import, so a test that installs a platform's list the way
+    ``test_platform_collect_ignore.py`` does sees the selector follow it. The
+    reach is the hook's: ``test/<name>`` only, never a same-named file in a
+    subdirectory or under the apps-builtins root, which no conftest excludes and
+    the platform collects fine.
+    """
+    return frozenset(f"test/{name}" for name in _collect_ignore().PLATFORM_IGNORED)
+
+
 def related_targets(
     surface: str, paths: list[str], root: Path = REPO_ROOT
 ) -> tuple[list[str], str]:
@@ -788,6 +829,17 @@ def related_targets(
         if cross:
             notes.append(f"{len(cross)} cross-surface (ci-surface-tests.py)")
             selected |= cross
+
+    if surface == "backend":
+        # Every target below is handed to pytest as an explicit path, and an
+        # explicit path bypasses the `pytest_ignore_collect` hook that keeps a
+        # platform's listed suites out of a recursive run. A suite the list keeps
+        # off this platform must not come back through the related set, whichever
+        # of the three sources above named it.
+        uncollected = selected & platform_uncollected_targets()
+        if uncollected:
+            notes.append(f"{len(uncollected)} not collected on this platform")
+            selected -= uncollected
 
     # A path named by the diff can be one the diff DELETED. Dropping it here keeps
     # a deletion from tripping validated_targets' "target vanished" refusal, which
@@ -1104,6 +1156,37 @@ def _self_test() -> int:
     diff_test = "test/test_prepare_pr_profiles.py"
     picked, _ = related_targets("backend", [diff_test])
     check("a changed test file is itself selected", diff_test in picked)
+
+    # A platform's collect-ignore list applies to the related set exactly as the
+    # conftest hook applies it to a recursive run, so a suite the list keeps off
+    # this platform is not re-enabled by being named explicitly. Checked under
+    # the Windows list on every host, then under an empty list, so the verdict
+    # is the same on Linux, macOS and Windows runners.
+    collect_ignore = _collect_ignore()
+    listed = sorted(collect_ignore.platform_ignore_names("win32"))
+    check("the windows list parses to something", bool(listed))
+    listed_rel = f"test/{listed[0]}"
+    _real_ignored = collect_ignore.PLATFORM_IGNORED
+    try:
+        collect_ignore.PLATFORM_IGNORED = frozenset(listed)
+        check(
+            "an uncollected list file is a test/ path",
+            listed_rel in platform_uncollected_targets(),
+        )
+        win_picked, win_verdict = related_targets("backend", [listed_rel])
+        check(
+            "a listed suite named by the diff is dropped under its platform list",
+            listed_rel not in win_picked,
+        )
+        check("the verdict says why", "not collected on this platform" in win_verdict)
+        collect_ignore.PLATFORM_IGNORED = frozenset()
+        open_picked, open_verdict = related_targets("backend", [listed_rel])
+        check(
+            "the same suite is selected when the platform lists nothing", listed_rel in open_picked
+        )
+        check("no list, no note", "not collected" not in open_verdict)
+    finally:
+        collect_ignore.PLATFORM_IGNORED = _real_ignored
 
     fe_targets, _ = related_targets("frontend", ["website/src/App.tsx"])
     check("the frontend related set is website-relative", all(not p.startswith("website/") for p in fe_targets))
