@@ -13,6 +13,16 @@ a per-source reader: the caller POSTs the html it already holds and gets back a
 short-lived URL. One mechanism then covers both surfaces — and the inline-widget
 case, whose bytes are not persisted anywhere and so have no other URL to give.
 
+The document leaves here with the Tailwind runtime it links already inside it
+(:func:`kiro_crew.tailwind_runtime.inline_into_document`). Its frame is an opaque
+origin, so the frame's own request for ``/vendor/tailwindcss-browser.js`` carries
+no cookie, and a dashboard reached through a proxy that authenticates by cookie (a
+single-sign-on tunnel) refuses it: the widget renders with every utility class dead.
+The navigation to THIS route carries the cookie, so a runtime that arrives with the
+document styles it behind any proxy. The swap happens when the document is served,
+not when it is minted, so the stash's byte cap still measures what the dashboard
+sent rather than 260 KB more per entry.
+
 Security posture, mirroring the webapp-preview channel next door:
 
 * The GET route is on the auth-middleware bypass list, and the **HMAC path token
@@ -34,6 +44,7 @@ Security posture, mirroring the webapp-preview channel next door:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets as _secrets
 import threading
@@ -42,7 +53,9 @@ from collections import OrderedDict
 
 from aiohttp import web
 
+from kiro_crew import tailwind_runtime
 from kiro_crew.dashboard.origin import frame_ancestors_value
+from kiro_crew.executors import static_asset_executor
 from kiro_crew.sel import sel
 
 from .path_token import PathTokenSigner
@@ -140,6 +153,24 @@ def _audit(outcome: str, resources: str) -> None:
         logger.debug("sandbox-doc: audit failed", exc_info=True)
 
 
+async def _with_inline_runtime(doc: bytes) -> bytes:
+    """``doc`` carrying its Tailwind runtime inline (see the module docstring).
+
+    Never raises: the entry is already spent by the time this runs, so a failure
+    serves the document as minted, whose link still loads wherever the frame's
+    request needs no cookie. Runs on the build-file pool, because the first call
+    after a rebuild reads the 260 KB bundle off disk and the splice copies a
+    document that can be several MB.
+    """
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            static_asset_executor(), tailwind_runtime.inline_into_document, doc
+        )
+    except Exception:
+        logger.warning("sandbox-doc: serving without the inline runtime", exc_info=True)
+        return doc
+
+
 async def api_stash_sandbox_doc(request: web.Request) -> web.Response:
     """``POST /api/sandbox-doc`` — stash html, return the URL a frame can load.
 
@@ -230,8 +261,10 @@ async def serve_sandbox_doc(request: web.Request) -> web.Response:
     # Encoding here instead would let a document carrying a lone surrogate
     # (JSON accepts "\ud800", Python holds it in a str, UTF-8 cannot represent it)
     # pop the entry and THEN raise — a 500 for the frame and a document lost to
-    # the single-use pop, with no way to ask for it again.
-    resp = web.Response(body=entry[1], content_type="text/html", charset="utf-8")
+    # the single-use pop, with no way to ask for it again. The runtime swap below
+    # keeps that property: it falls back to the minted bytes instead of raising.
+    body = await _with_inline_runtime(entry[1])
+    resp = web.Response(body=body, content_type="text/html", charset="utf-8")
     # Serving from a real URL must not raise the trust level. `sandbox` gives the
     # document an opaque origin even opened top-level, and the flags are exactly
     # those the embedding frames grant — no more: `allow-scripts`, the

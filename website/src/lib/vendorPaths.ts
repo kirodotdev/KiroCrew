@@ -9,9 +9,12 @@
 // dev-serve / build-emit paths.
 //
 // A fourth consumer reads the same asset from DISK, not this URL path:
-// src/kiro_crew/publish_sync.py inlines it into published widget documents,
-// which are viewed away from the dashboard origin and so cannot resolve a
-// same-origin path. It resolves the build-emit location
+// src/kiro_crew/tailwind_runtime.py inlines it into published widget documents
+// (publish_sync.py), which are viewed away from the dashboard origin and so
+// cannot resolve a same-origin path, and into every frame document the gateway
+// serves from /sandbox-doc/, whose own request for this path carries no cookie
+// and is refused by a proxy that authenticates by cookie (a single-sign-on
+// tunnel). It resolves the build-emit location
 // (static/dist/vendor/tailwindcss-browser.js) and depends on the emit filename
 // below staying put.
 
