@@ -18,9 +18,9 @@ Two channel-neutral halves own work this module deliberately does not:
 * **Length splitting** belongs to
   :func:`kiro_crew.messaging.split.split_markdown_safe`, the shared fence-safe
   splitter, so this renderer owns no fence grammar. ``slack/format.py``'s
-  ``split_message`` counts backticks and cuts anywhere a newline sits, which
-  inverts its own open/closed state on a fence whose content contains one; it
-  stays for the native handler's call sites. The splitter's streaming contract is
+  ``split_message`` cuts at a line break and repairs a cut fence through the same
+  module's ``rebalance_fenced_cuts``; it stays for the native handler's call
+  sites. The splitter's streaming contract is
   consumed as written: every chunk but the last is sealed, the final one is left
   open, and the one documented over-``limit`` case (a whole line placed with its
   fence scaffolding) is bounded again against the limit Slack's own update path

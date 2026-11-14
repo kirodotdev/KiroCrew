@@ -24,6 +24,7 @@ from kiro_crew.messaging.display_safety import (
 )
 from kiro_crew.messaging.markup import flatten_mermaid_body
 from kiro_crew.messaging.renderer import MIRROR_ECHO_LABEL, cap_choices, format_overflow
+from kiro_crew.messaging.split import rebalance_fenced_cuts
 from kiro_crew.messaging.tables import _MAX_INDENT as _TABLE_MAX_INDENT
 from kiro_crew.messaging.tables import _cells as _table_cells
 from kiro_crew.messaging.tables import (
@@ -1269,7 +1270,10 @@ def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
 
     Splits at the line break :func:`~kiro_crew.slack.break_point.last_break`
     picks (at least a quarter into the chunk, or one before a line that fits one
-    post whole); with none that counts, it cuts where the limit falls.
+    post whole); with none that counts, it cuts where the limit falls. A cut
+    inside a fenced code block closes the block in its post and reopens it in the
+    next one (:func:`~kiro_crew.messaging.split.rebalance_fenced_cuts`), so each
+    post shows the code as code.
     """
     if len(text) <= limit:
         return [text]
@@ -1285,20 +1289,61 @@ def split_message(text: str, limit: int = SLACK_MSG_LIMIT) -> list[str]:
         # loop would spin forever. Keep at least one character of progress per
         # iteration so the function always terminates regardless of `limit`.
         chunk_limit = max(1, limit - len(CONTINUATION))
-        cut = last_break(text, chunk_limit, ("\n",))
-        if cut <= 0:
-            # The last post carries no CONTINUATION, so a remainder up to
-            # ``limit`` still goes out whole after an early line break.
-            early = text.rfind("\n", 0, chunk_limit)
-            fits = early > 0 and len(text[early:].lstrip("\n")) <= limit
-            cut = early if fits else chunk_limit
-        remainder = text[cut:].lstrip("\n")
+        cut, closer, remainder = _fenced_cut(text, chunk_limit, limit)
+        if closer and len(text[:cut]) + len(closer) > chunk_limit:
+            # The closer has to fit in the post too, so cut again short of it.
+            cut, closer, remainder = _fenced_cut(text, max(1, chunk_limit - len(closer)), limit)
         if remainder:
-            parts.append(text[:cut] + CONTINUATION)
+            parts.append(text[:cut] + closer + CONTINUATION)
         else:
             parts.append(text[:cut])
         text = remainder
     return parts
+
+
+def _fenced_cut(text: str, chunk_limit: int, limit: int) -> tuple[int, str, str]:
+    """Where :func:`split_message` cuts *text*: the cut, the fence closer, the rest.
+
+    The closer is ``""`` when the cut is outside every fenced block. Inside one it
+    is the block's closer on a new line, and the rest starts with the block's
+    opener line, so the next post opens the block again.
+    """
+    cut = last_break(text, chunk_limit, ("\n",))
+    if cut <= 0:
+        # The last post carries no CONTINUATION, so a remainder up to
+        # ``limit`` still goes out whole after an early line break.
+        early = text.rfind("\n", 0, chunk_limit)
+        fits = early > 0 and len(text[early:].lstrip("\n")) <= limit
+        cut = early if fits else chunk_limit
+    sealed = _sealed_at(text, cut)
+    if sealed is None and cut < chunk_limit:
+        # The cut holds no more than the reopened opener, so the next line is too
+        # long for one post: cut inside it, as a line with no break is cut.
+        cut = chunk_limit
+        sealed = _sealed_at(text, cut)
+    if sealed is None:
+        return cut, "", text[cut:].lstrip("\n")
+    return cut, *sealed
+
+
+def _sealed_at(text: str, cut: int) -> tuple[str, str] | None:
+    """The fence closer and the rest of *text* for a cut at *cut*.
+
+    The closer is ``""`` outside every fenced block. ``None`` means the cut is
+    inside one but the reopened rest would not be shorter than *text*.
+    """
+    remainder = text[cut:].lstrip("\n")
+    if not remainder:
+        return "", remainder
+    # The newlines the cut drops stay on the head, so its last line counts as
+    # finished when the fence state at the cut is read.
+    head = text[: len(text) - len(remainder)]
+    sealed, reopened = rebalance_fenced_cuts([head, remainder])
+    if sealed == head:
+        return "", remainder
+    if len(reopened) >= len(text):
+        return None
+    return "\n" + sealed[len(head) :].lstrip("\n"), reopened
 
 
 def _slack_client_display(text: str) -> str:
