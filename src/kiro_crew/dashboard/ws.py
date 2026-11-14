@@ -704,9 +704,14 @@ def _handle_slot_focused(
     # circular import: ws -> chat_runner -> handlers/__init__ -> handlers/side -> ws
     from kiro_crew.dashboard.chat_runner import schedule_eager_spawn
 
+    # deferred: keeps the embedding runtime out of this module's import
+    from kiro_crew.embeddings_shared import warm_embedder_for_person_soon
+
     if not owner:
         return prev_task
     slot = state.get_slot(slot_key) if isinstance(slot_key, str) and slot_key else None
+    if slot is not None:  # opened, focused or typed in: a small machine loads the model now
+        warm_embedder_for_person_soon()
     if (
         slot is not None
         and prev_task is not None

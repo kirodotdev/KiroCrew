@@ -159,13 +159,16 @@ class MemoryConfig:
             "Settings is never paced.",
         ),
     )
-    embedding_idle_evict_secs: int = field(
-        default=3600,
+    embedding_idle_evict_secs: int | str = field(
+        default="auto",
         metadata=_meta(
             "Unload Embedding Model When Idle (seconds)",
             "Seconds without any embedding before the embedding model is unloaded "
             "from memory. The next search or memory write loads it again, which takes "
-            "a few seconds. 0 keeps the model loaded.",
+            "a few seconds. 0 keeps the model loaded. 'auto' (the default) is 600 on "
+            "a machine with 16 GiB of memory or less, where opening, typing in or "
+            "sending to a chat and any channel message load the model again before "
+            "it is needed, and 3600 elsewhere. A number you set is always kept.",
         ),
     )
     embedding_weight_repack: bool = field(

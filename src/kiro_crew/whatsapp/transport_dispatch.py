@@ -20,6 +20,7 @@ from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.loader import config_local_path, config_path, read_merged_config_files
 from kiro_crew.config.sections import _normalize_threshold_pair
+from kiro_crew.embeddings_shared import warm_embedder_for_person_soon
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.approval import (
     TextReplyApprovalDecider,
@@ -182,6 +183,8 @@ class WhatsAppDispatcher:
             route=inbound_route,
         ):
             return
+        if group:  # a group message has no route, so admission did not start the model load
+            warm_embedder_for_person_soon()
 
         # Recheck governance only after this accepted callback is census-visible;
         # otherwise the off-loop policy read opens an uncounted restart window.

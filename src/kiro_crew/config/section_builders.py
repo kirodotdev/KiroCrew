@@ -301,6 +301,19 @@ def _history_idle_hours(section: SectionReader) -> float:
     return hours
 
 
+def _embedding_idle_evict_secs(raw: object) -> int | str:
+    """``"auto"``, or a stored number of seconds the operator chose.
+
+    The same reading as ``embeddings_settings.embedding_idle_evict_secs``, which the
+    evictor uses: a non-negative number is kept (``0`` never unloads; capped at a
+    year), and anything else, ``"auto"`` included, is ``"auto"``, which picks by
+    machine size at run time.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < 0:
+        return "auto"
+    return min(int(raw), 365 * 24 * 3600)
+
+
 def _build_memory_config(memory_data: dict) -> MemoryConfig:
     section = SectionReader(MemoryConfig, memory_data)
     return MemoryConfig(
@@ -315,9 +328,8 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         # deliberate opt-in to the interactive pool.
         embedding_bulk_threads=section.read("embedding_bulk_threads", _safe_int, 0, 256),
         embedding_bulk_duty=section.read("embedding_bulk_duty", _safe_float, 0.05, 1.0),
-        # 0 is the documented "never unload" sentinel, so the floor is 0.
-        embedding_idle_evict_secs=section.read(
-            "embedding_idle_evict_secs", _safe_int, 0, 365 * 24 * 3600
+        embedding_idle_evict_secs=_embedding_idle_evict_secs(
+            section.get("embedding_idle_evict_secs")
         ),
         embedding_weight_repack=section.read("embedding_weight_repack", _safe_bool),
         embedding_child_process=section.read("embedding_child_process", _safe_bool),

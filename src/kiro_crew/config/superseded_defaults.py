@@ -167,6 +167,18 @@ def _stt_resolves_auto_locally(base_data: dict) -> bool:
     return stt_provider_resolution(provider) == STT_PROVIDER_LOCAL
 
 
+def _small_memory_host_applies(_base_data: dict) -> bool:
+    """Whether ``"auto"`` differs from a stored 3600 here: only on a small machine.
+
+    Elsewhere ``"auto"`` resolves to 3600 (``embeddings_settings``), so a stored
+    3600 already behaves like the default and is not drift.
+    """
+    # Imported at call time: keeps the embedding runtime out of the loader's import.
+    from kiro_crew.embeddings_settings import small_memory_host
+
+    return small_memory_host()
+
+
 def _stale_unsandboxed_exec_false_applies(_base_data: dict) -> bool:
     """Whether a stored ``agent.sandbox_allow_unsandboxed_exec: false`` may be stale here.
 
@@ -513,6 +525,20 @@ SUPERSEDED_DEFAULTS: tuple[SupersededDefault, ...] = (
         new_default=100,
         changed_in="#22397",
         note=_METRICS_CAP_NOTE,
+    ),
+    # A machine with 16 GiB or less now releases the embedding model after ten idle
+    # minutes ("auto"); see docs/request-for-change/rfc-small-machine-embedding-release.md.
+    #
+    # REPORT-ONLY: an hour is a value an operator sets on purpose, and a stored
+    # number is always kept, so the report tells the owner and the owner decides.
+    SupersededDefault(
+        dotted_key="memory.embedding_idle_evict_secs",
+        old_default=3600,
+        new_default="auto",
+        changed_in="#36969",
+        new_default_display='"auto" (600 on a machine with 16 GiB or less)',
+        note="a stored number, 3600 included, is kept as your choice; auto picks by memory size",
+        applies=_small_memory_host_applies,
     ),
 )
 
