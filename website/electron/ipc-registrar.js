@@ -1331,6 +1331,21 @@ function createIpcRegistrar({
       }
     });
 
+    // Connect with WakaTime finishes in the system browser: its callback needs
+    // the state cookie of the browser that started the sign-in. The renderer
+    // passes nothing; the only URL opened is this dashboard's WakaTime panel.
+    // Answers whether the OS took the hand-off.
+    ipcMain.handle("wakatime:open-in-browser", async (event) => {
+      await assertLocalDashboard(event, "wakatime:open-in-browser");
+      try {
+        await shell.openExternal(`${backendUrl}/settings/overview?view=wakatime`);
+        return true;
+      } catch (e) {
+        log(`wakatime:open-in-browser failed: ${e && e.message}`);
+        return false;
+      }
+    });
+
     // First-run setup's "connect to a crew on another machine" exit. It stops the
     // gateway this app started and reconnects the main window to a crew the
     // user names, so it is an action on the machine in front of the user and

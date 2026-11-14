@@ -444,6 +444,14 @@ if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("folderPickAPI", {
   pick: () => ipcRenderer.invoke("dashboard:pick-folder"),
 });
 
+// Connect with WakaTime from the desktop: `openInBrowser()` asks the main
+// process to open this dashboard's WakaTime panel in the system browser, where
+// the sign-in can finish. It passes nothing; resolves true when the OS took the
+// hand-off, false when it failed, and rejects when the shell refuses the window.
+if (!REMOTE_GATEWAY) contextBridge.exposeInMainWorld("wakatimeConnectAPI", {
+  openInBrowser: () => ipcRenderer.invoke("wakatime:open-in-browser"),
+});
+
 // External terminal bridge for the Files tab's "Open in external terminal" row
 // and its Settings picker. `detect` resolves { apps: [{id, label}], capable },
 // the allowlisted terminal apps installed on this machine; for a window whose

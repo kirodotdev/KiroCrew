@@ -17899,6 +17899,7 @@
         "oauth_connect_button": "WakaTime に接続",
         "oauth_connect_lead": "2026 年 11 月 1 日以降、WakaTime の API キーはアクティビティの送信にしか使えず、読み取りはできません。統計を引き続き読み取るには WakaTime アカウントを接続してください。",
         "oauth_connecting": "WakaTime を開いています…",
+        "oauth_desktop_handoff": "ブラウザーで WakaTime への接続を完了してください。先にサインインを求められる場合があります。戻ってくると、このパネルが更新されます。",
         "oauth_desktop_notice": "WakaTime に接続するには、このダッシュボードをウェブブラウザーで開いてください。そこで接続すると、デスクトップアプリでも同じアカウントを使えます。",
         "oauth_disconnect_button": "接続を解除",
         "oauth_disconnecting": "接続を解除しています…",

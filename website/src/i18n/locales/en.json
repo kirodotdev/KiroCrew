@@ -10331,6 +10331,7 @@
         "oauth_connect_button": "Connect with WakaTime",
         "oauth_connect_lead": "Since 1 November 2026, WakaTime API keys can only send activity, not read it. Connect your WakaTime account to keep reading your stats.",
         "oauth_connecting": "Opening WakaTime…",
+        "oauth_desktop_handoff": "Finish connecting WakaTime in your browser. It may ask you to sign in first. This panel updates when you come back.",
         "oauth_desktop_notice": "Open this dashboard in a web browser to connect WakaTime. Once connected there, the desktop app uses the same account.",
         "oauth_disconnect_button": "Disconnect",
         "oauth_disconnecting": "Disconnecting…",

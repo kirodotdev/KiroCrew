@@ -18863,6 +18863,7 @@
         "oauth_connect_button": "Collega WakaTime",
         "oauth_connect_lead": "Dal 1° novembre 2026 le chiavi API di WakaTime possono solo inviare attività, non leggerla. Collega il tuo account WakaTime per continuare a leggere le statistiche.",
         "oauth_connecting": "Apertura di WakaTime…",
+        "oauth_desktop_handoff": "Completa il collegamento a WakaTime nel browser. Potrebbe chiederti prima di accedere. Questo pannello si aggiorna quando torni.",
         "oauth_desktop_notice": "Apri questa dashboard in un browser web per collegare WakaTime. Dopo il collegamento, l’app desktop usa lo stesso account.",
         "oauth_disconnect_button": "Scollega",
         "oauth_disconnecting": "Scollegamento…",

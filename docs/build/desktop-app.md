@@ -984,6 +984,21 @@ then lists the folder through `/api/browse-dirs`, the read its path field uses,
 and commits it only when that listing succeeds; a refusal, a failed dialog and
 a refused gate are each told beside the button.
 
+Settings > WakaTime's **Connect with WakaTime** rides the same gate.
+`window.wakatimeConnectAPI.openInBrowser()` takes no argument and invokes
+`wakatime:open-in-browser`, which runs the three checks above (a refusal rejects
+and opens nothing) and then hands one fixed URL to `shell.openExternal`: the
+window's own dashboard origin plus `/settings/overview?view=wakatime`, built in
+the main process. It answers `true` when the OS took the URL and `false`, with
+one log line, when it did not. The sign-in then finishes in the system browser,
+because the WakaTime callback needs the state cookie of the browser that
+started it ([wakatime-oauth-read-auth](../architecture/design-notes/wakatime-oauth-read-auth.md)).
+The window's navigation guard is unchanged. The Mochi panel's
+`mochi-panel:open-dashboard` is the precedent: a no-argument channel, so page
+content never names the URL the shell opens. With no bridge the panel shows its
+"open this dashboard in a web browser" note; on `false` or a refusal it shows the
+same text as an error notice.
+
 A window whose gateway the shell already knows is not on this machine (a
 configured Remote Crew on its port, as in the client-only launch with the local
 gateway off, or a non-loopback URL) does not ask in the first place. On every
@@ -991,7 +1006,7 @@ load the preload asks the shell `dashboard:is-remote-gateway`, answered by the
 same `isGatewayLocalForWindow` the gate reads, and then withholds every bridge
 whose channels that gate refuses: `remoteCrewSetupAPI`,
 `gatewayRestartAPI`, `crashReportsAPI`, `wslAPI`, `fileOpenAPI`, `folderPickAPI`,
-`externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
+`wakatimeConnectAPI`, `externalTerminalAPI`, `electronAPI.clearPaneHttpCache` and
 `updateAPI.notifyPolicyGoverned`. The SPA treats a missing bridge as it does in
 a browser tab, so the crash notice, the Host runtime card, **Open in editor**,
 the native folder and terminal controls and first-run's link to a crew on
