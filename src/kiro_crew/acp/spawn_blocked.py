@@ -16,6 +16,10 @@ from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeError
 #: ``winerror`` values a host policy answers a blocked spawn with.
 _BLOCKED_WINERRORS = frozenset({5, 1260})
 
+#: Set by ``acp.launch.launch`` on a policy-refused ``CreateProcess`` error: the
+#: binary it tried to start. ``AcpClient.ensure_ready`` reads only marked errors.
+SPAWN_BLOCKED_BINARY_ATTR = "kirocrew_spawn_blocked_binary"
+
 
 def is_windows_spawn_blocked(exc: BaseException) -> bool:
     """True when *exc* is a Windows spawn refusal a host policy gave.
