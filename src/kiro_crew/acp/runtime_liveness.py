@@ -9,7 +9,8 @@ binds it by name, so it reads and writes the runtime's own state on the instance
 of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
-``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
+``_death_reason``, ``_death_summary``, ``_death_tail``, ``_kas_load_recaps``,
+``_pending_init_notifications``,
 ``_delegate_launch_failure_message``, ``_kas_extract_server_path``, ``_pending_requests``,
 ``_routed_requests``, ``_saw_auth_failure``, ``_saw_delegate_launch_failure``,
 ``_saw_kas_engine_refusal``, ``_saw_sandbox_init_failure``,
@@ -784,6 +785,7 @@ def _mark_dead(
             future.set_exception(exc)
     self._pending_requests.clear()
     self._pending_init_notifications.clear()
+    self._kas_load_recaps.clear()
     # Also drop routed-request correlations: on death no reader will pop
     # them, and if a session is never destroyed the entry would otherwise
     # linger. unregister_session() also sweeps these per-session; this is

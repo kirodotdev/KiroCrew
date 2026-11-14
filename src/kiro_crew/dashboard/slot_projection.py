@@ -11,6 +11,7 @@ from kiro_crew.dashboard.agent_welcome import welcome_preview
 from kiro_crew.dashboard.slot_preparing import is_preparing, preparing_caption
 from kiro_crew.dashboard.slot_queue_repository import is_held_queue_entry
 from kiro_crew.dashboard.slot_row_memo import memo_redacted, memo_row_summary, summarize_rows
+from kiro_crew.dashboard.system_notices import SESSION_RECAP_KIND
 from kiro_crew.history_schema import transcript_sort_key
 from kiro_crew.safety_override import safety_override, yolo_policy_permits
 from kiro_crew.session_lifecycle import STOP_DECLINED_ESCALATION_SECS
@@ -87,6 +88,23 @@ def options_ending_is_stale(options_ts: str, now: float) -> bool:
     if bucket != 0:
         return False
     return now - at > OPTIONS_WAITING_MAX_AGE_SECS
+
+
+def _newest_non_recap_ts(rows: Sequence[Any], transient_roles: frozenset[str]) -> str:
+    """The ``ts`` of the newest durable row that is not a session recap notice.
+
+    The resume prefetch writes the recap row when a chat is reopened, not when a
+    turn runs, so an idle slot's ordering key reads past it. ``last_ts`` still
+    counts the row, because the unread watermark reads ``last_ts``.
+    """
+    for message in reversed(rows):
+        if message.get("role") in transient_roles:
+            continue
+        meta = message.get("meta")
+        if isinstance(meta, dict) and meta.get("kind") == SESSION_RECAP_KIND:
+            continue
+        return message.get("ts", "")
+    return ""
 
 
 def _history_key(slot: Any) -> str:
@@ -396,7 +414,7 @@ class SlotProjection:
             if turn_in_flight and not slot.turn_running
             else {"turn": slot._turn_generation, "turn_gen": chunk_generation()}
         )
-        last_turn_ts = last_ts
+        last_turn_ts = _newest_non_recap_ts(rows, transient_roles)
         if turn_in_flight:
             prompt_ts = next(
                 (

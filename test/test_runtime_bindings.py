@@ -72,8 +72,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     # Takes ``launch_agent``: the app launch copy kiro-cli is asked for (``apps.agent_launch``),
     # and ``native_skill_projection``: off for the warm mint process, whose specs sit in ``run/``,
     # ``harness_pin``: the session's own Bot pin, which KAS's route rule 2 reads,
-    # and ``governance_scope``: the (session key, app) its KAS projection meets the profiles of.
-    "__init__": ("function", False, "d4a21d6584f7", "runtime_class"),
+    # ``governance_scope``: the (session key, app) its KAS projection meets the profiles of,
+    # and ``session_recap``: the KAS recap opt-in (``agent.session_recap``).
+    "__init__": ("function", False, "d407200af34c", "runtime_class"),
     "_activate_mode_bracketed": ("function", True, "3dc699e8b0af", "runtime_mode_activation"),
     "_activates_agent_by_mode": ("function", False, "a6632a57e602", "runtime_mode_activation"),
     "_adopt_skill_projection": ("function", False, "5c4748bee6c5", "runtime_mode_activation"),
@@ -1005,6 +1006,7 @@ _INIT_HINTS = {
     "sandbox_mode": "<class 'str'>",
     "shared_scratch": "pathlib.Path | None",
     "launch_agent": "<class 'str'>",
+    "session_recap": "<class 'bool'>",
     "tool_search": "kiro_crew.agent_sdk.tool_search.ToolSearchSettings | None",
     "work_dir": "str | pathlib.Path | None",
 }

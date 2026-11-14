@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from kiro_crew.acp import session_provider_context as _sp_context
+from kiro_crew.acp import session_provider_kas as _sp_kas
 from kiro_crew.acp import session_provider_keepalive as _sp_keepalive
 from kiro_crew.acp import session_provider_mcp_reinject as _sp_mcp_reinject
 from kiro_crew.acp import session_provider_shared as _sp_shared
@@ -534,52 +535,23 @@ class AcpSessionProvider(LLMProvider):
         except Exception:  # pragma: no cover - handle types without the attr
             logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
 
+    # The KAS session facts the handle records: ``kiro_crew.acp.session_provider_kas``.
+    # ``LLMProvider`` declares the first two with their types, so they stay typed properties.
     @property
     def kas_auto_approved_capabilities(self) -> frozenset[str] | None:
-        """See ``AcpSessionHandle.kas_auto_approved``."""
-        return getattr(self._handle, "kas_auto_approved", None)
+        return _sp_kas.kas_auto_approved_capabilities(self)
 
     @property
     def kas_projected_agent(self) -> str:
-        """See ``AcpSessionHandle.kas_projected_agent``."""
-        value = getattr(self._handle, "kas_projected_agent", "")
-        return value if isinstance(value, str) else ""
+        return _sp_kas.kas_projected_agent(self)
 
-    @property
-    def kas_registered_agents(self) -> list[dict[str, Any]]:
-        """A copy of ``AcpSessionHandle.kas_registered_agents``: the batch KAS holds."""
-        value = getattr(self._handle, "kas_registered_agents", None)
-        return [dict(a) for a in value if isinstance(a, dict)] if isinstance(value, list) else []
-
-    @property
-    def kas_active_mode_id(self) -> str:
-        """The last mode id KAS reported for this session, or ``""`` before any switch."""
-        value = getattr(self._handle, "_last_kas_mode_id", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_agent_prompt_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_agent_prompt_notice``."""
-        value = getattr(self._handle, "kas_agent_prompt_notice", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_bundle_engine_version(self) -> str:
-        """See ``AcpSessionHandle.kas_bundle_engine_version``."""
-        value = getattr(self._handle, "kas_bundle_engine_version", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_telemetry_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_telemetry_notice``."""
-        value = getattr(self._handle, "kas_telemetry_notice", "")
-        return value if isinstance(value, str) else ""
-
-    @property
-    def kas_withheld_credentials_notice(self) -> str:
-        """See ``AcpSessionHandle.kas_withheld_credentials_notice``."""
-        value = getattr(self._handle, "kas_withheld_credentials_notice", "")
-        return value if isinstance(value, str) else ""
+    take_session_recap = _sp_kas.take_session_recap
+    kas_registered_agents = property(_sp_kas.kas_registered_agents)
+    kas_active_mode_id = property(_sp_kas.kas_active_mode_id)
+    kas_agent_prompt_notice = property(_sp_kas.kas_agent_prompt_notice)
+    kas_bundle_engine_version = property(_sp_kas.kas_bundle_engine_version)
+    kas_telemetry_notice = property(_sp_kas.kas_telemetry_notice)
+    kas_withheld_credentials_notice = property(_sp_kas.kas_withheld_credentials_notice)
 
     @property
     def zero_tool_ban_notice(self) -> str:

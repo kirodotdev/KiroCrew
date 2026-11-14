@@ -871,6 +871,16 @@ class LLMProvider(ABC):
         """
         return None
 
+    def take_session_recap(self) -> str | None:
+        """The recap the backend replayed while this session loaded, popped once.
+
+        ``None`` when there is none. The dashboard reads it right after a resume
+        prefetch, so a returning user sees where the chat left off before typing.
+        Declared here with a safe default (harness-parity H14): only a backend
+        that sends a recap answers with text.
+        """
+        return None
+
     @property
     def harness_pin(self) -> str:
         """The Bot pin this provider's runtimes carry for KAS's route rule 2, ``""`` for none.

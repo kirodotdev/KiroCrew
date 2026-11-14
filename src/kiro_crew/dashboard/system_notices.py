@@ -1,10 +1,11 @@
 """Assistant-role system notices the gateway injects into a slot's feed.
 
 Status reports -- the auto-compaction notices, the session-reload
-confirmation, the session-switch boundary rows and the Task Runner notices a
-run sends back to the conversation it was started from -- not real turns.
-Every scan that walks for "the last real message" (the conversation floor, the
-sidebar preview, backfill replay) must skip them, and the frontend keeps a twin of this set
+confirmation, the session-switch boundary rows, the Task Runner notices a
+run sends back to the conversation it was started from and the session recap --
+not real turns. Every scan that walks for "the last real message" (the
+conversation floor, the sidebar preview, backfill replay) must skip them, and the
+frontend keeps a twin of this set
 (``website/src/lib/systemNotice.ts``): a kind skipped on one side but not the
 other leaves the sidebar showing notice boilerplate while the chat pane shows
 the real turn, or vice versa.
@@ -38,6 +39,7 @@ MEMORY_CHANGE_KIND = "memory_change"
 #: A Task Runner notice in the conversation that started the run
 #: (``dashboard.task_run_notices``).
 TASKRUNNER_NOTICE_KIND = "taskrunner_notice"
+SESSION_RECAP_KIND = "recap"
 
 SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
     {
@@ -46,6 +48,7 @@ SYSTEM_NOTICE_KINDS: frozenset[str] = frozenset(
         SESSION_SWITCH_KIND,
         MEMORY_CHANGE_KIND,
         TASKRUNNER_NOTICE_KIND,
+        SESSION_RECAP_KIND,
     }
 )
 

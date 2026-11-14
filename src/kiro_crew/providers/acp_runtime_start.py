@@ -16,8 +16,8 @@ Instance fields written: ``_client``, ``_cloud_governance_scope``,
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
 ``background_qos``,
 ``_harness_pin``, ``_keepalive_routed``, ``_on_gate_acquired``, ``_on_gate_queued``,
-``_tool_search``, ``focus_resume``, ``member_context``, ``memory_mode``, ``owning_app``,
-``start_priority``.
+``_session_recap``, ``_tool_search``, ``focus_resume``, ``member_context``, ``memory_mode``,
+``owning_app``, ``start_priority``.
 """
 
 from __future__ import annotations
@@ -647,6 +647,7 @@ async def _start_kiro_runtime_impl(
         acp_backend=self._client.backend,
         crew_agent=self._crew_agent,
         tool_search=self._tool_search_settings(),
+        session_recap=self._session_recap,
         member_context=self.member_context,
         memory_mode=self.memory_mode,
         # A dedicated subagent's inherited work directory (agent_scratch):
@@ -850,6 +851,7 @@ async def _start_kiro_runtime_impl(
             acp_backend=self._client.backend,
             crew_agent=self._crew_agent,
             tool_search=self._tool_search_settings(),
+            session_recap=self._session_recap,
             member_context=self.member_context,
             memory_mode=self.memory_mode,
             shared_scratch=self._shared_scratch,
@@ -1019,6 +1021,7 @@ async def _start_kiro_runtime_impl(
                     # takes Tool Search at initialize, a respawn without them
                     # would run the replayed session with it silently off.
                     tool_search=self._tool_search_settings(),
+                    session_recap=self._session_recap,
                     member_context=self.member_context,
                     memory_mode=self.memory_mode,
                     # The dead runtime's tree, for the same reason a restart

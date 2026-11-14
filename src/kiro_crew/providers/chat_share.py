@@ -182,6 +182,7 @@ class ChatSharePlacement:
             harness_pin=getattr(p, "_harness_pin", "") or "",
             agent_env=self._agent_env,
             kas_telemetry=self._kas_telemetry,
+            session_recap=bool(getattr(p, "_session_recap", False)),
         )
 
     def spawn_agent_env(self) -> dict[str, str]:
