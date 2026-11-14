@@ -181,7 +181,14 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
         body = await request.json()
     except Exception:
         return web.json_response(
-            {"error": {"message": "invalid JSON", "type": "invalid_request_error"}},
+            {
+                "error": {
+                    "message": "invalid JSON",
+                    "type": "invalid_request_error",
+                    "code": "invalid_json",
+                },
+                "code": "invalid_json",
+            },
             status=400,
         )
     from kiro_crew.dashboard.handlers._shared import body_not_object_error

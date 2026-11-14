@@ -58,7 +58,7 @@ async def api_update_auto(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be a JSON object", "code": "invalid_json"}, status=400

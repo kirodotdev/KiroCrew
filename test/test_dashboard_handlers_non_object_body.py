@@ -18,6 +18,7 @@ are not here.
 from __future__ import annotations
 
 import importlib
+import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -75,6 +76,13 @@ _ROUTES = [
 
 _NON_OBJECTS = [[1, 2], [], "text", 7, None]
 
+#: A body the parse refuses: ``_Req.json`` raises ``JSONDecodeError`` for it.
+_MALFORMED = object()
+
+#: These two read a malformed body as ``{}`` on purpose, so it reaches their own
+#: field checks instead of a parse refusal.
+_MALFORMED_ROUTES = [r for r in _ROUTES if r[1] not in {"api_skill_pin", "api_update_simulate"}]
+
 
 class _Req(dict):
     """A request double: an owner caller, a JSON body, and the route's match info."""
@@ -96,6 +104,8 @@ class _Req(dict):
 
     async def json(self) -> Any:
         self.parsed = True
+        if self._body is _MALFORMED:
+            raise json.JSONDecodeError("Expecting value", "{", 1)
         return self._body
 
 
@@ -152,8 +162,6 @@ def drive(tmp_path, monkeypatch):
 
 
 def _code(resp: Any) -> Any:
-    import json
-
     payload = json.loads(resp.text)
     err = payload.get("error")
     return err.get("code") if isinstance(err, dict) else payload.get("code")
@@ -171,6 +179,22 @@ async def test_a_non_object_body_is_a_400(
     assert req.parsed, "the drive never reached the parse"
     assert resp.status == 400, resp.text
     assert _code(resp) == "body_not_object"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "modname,fn,method,match,_object_body",
+    _MALFORMED_ROUTES,
+    ids=[r[1] for r in _MALFORMED_ROUTES],
+)
+async def test_a_malformed_body_is_a_coded_400(
+    drive, modname, fn, method, match, _object_body
+) -> None:
+    """Malformed JSON gets the one code ``read_bounded_json`` gives it, not a bare 400."""
+    req, resp = await drive(modname, fn, method, match, _MALFORMED)
+    assert req.parsed, "the drive never reached the parse"
+    assert resp.status == 400, resp.text
+    assert _code(resp) == "invalid_json"
 
 
 @pytest.mark.asyncio

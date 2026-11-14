@@ -178,13 +178,15 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         try:
             patch_body = await request.json()
         except ValueError:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         # Valid JSON is not necessarily an object. A top-level array makes
         # ``"skills" in patch_body`` a LIST-membership test (true for
         # ``["skills"]``), and the subscript that follows then raises TypeError
         # -> HTTP 500. Reject the shape once, here, rather than per-field.
         if not isinstance(patch_body, dict):
-            return web.json_response({"error": "body must be a JSON object"}, status=400)
+            return web.json_response(
+                {"error": "body must be a JSON object", "code": "body_not_object"}, status=400
+            )
         # A key this PATCH never writes is refused before any file is read, so a
         # caller is told nothing was saved instead of getting a 200 that dropped it.
         read_only_keys = sorted(TEMPLATE_READ_ONLY_KEYS & patch_body.keys())

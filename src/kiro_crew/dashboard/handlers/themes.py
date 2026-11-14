@@ -178,7 +178,7 @@ async def api_themes_create(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
 
     err = _validate_theme_data(body)
     if err:
@@ -875,7 +875,7 @@ async def api_themes_install(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     source = body.get("source") if isinstance(body, dict) else None
     if not isinstance(source, dict):
         return web.json_response({"error": "missing 'source' object"}, status=400)
@@ -1023,7 +1023,7 @@ async def api_theme_detail(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return web.json_response({"error": "invalid JSON"}, status=400)
+            return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
         err = _validate_theme_data(body)
         if err:
             return web.json_response({"error": err}, status=400)

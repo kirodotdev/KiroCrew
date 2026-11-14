@@ -336,7 +336,7 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception:
-            return _deny("invalid JSON")
+            return _deny("invalid JSON", code="invalid_json")
         if body_not_object_error(body) is not None:
             # The same answer, through ``_deny`` so it is audited like every refusal.
             return _deny("body must be a JSON object", code="body_not_object")

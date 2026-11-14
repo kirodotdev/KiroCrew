@@ -249,13 +249,17 @@ async def _json_body(
     except (LookupError, RecursionError, ValueError):
         if code:
             return None, web.json_response({"error": "invalid JSON body", "code": code}, status=400)
-        return None, web.json_response({"error": "invalid JSON body"}, status=400)
+        return None, web.json_response(
+            {"error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
         if code:
             return None, web.json_response(
                 {"error": "body must be an object", "code": code}, status=400
             )
-        return None, web.json_response({"error": "body must be an object"}, status=400)
+        return None, web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     return body, None
 
 
@@ -298,9 +302,13 @@ async def api_dev_fleet_prune_run(request: web.Request) -> web.Response:
     try:
         body = await request.json() if request.content_length else {}
     except ValueError:
-        return web.json_response({"ok": False, "error": "invalid JSON body"}, status=400)
+        return web.json_response(
+            {"ok": False, "error": "invalid JSON body", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"ok": False, "error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"ok": False, "error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     raw_names = body.get("names") or []
     if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
         return web.json_response(

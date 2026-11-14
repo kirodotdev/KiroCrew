@@ -322,9 +322,13 @@ async def _handle_generate_recommendations(request: web.Request) -> web.Response
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "request body must be JSON"}, status=400)
+        return web.json_response(
+            {"error": "request body must be JSON", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "body_not_object"}, status=400
+        )
 
     key = routes._key_from_body(body)
     owner, repo = key.owner, key.repo
@@ -396,9 +400,13 @@ async def _handle_create_label(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "request body must be JSON"}, status=400)
+        return web.json_response(
+            {"error": "request body must be JSON", "code": "invalid_json"}, status=400
+        )
     if not isinstance(body, dict):
-        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+        return web.json_response(
+            {"error": "request body must be a JSON object", "code": "body_not_object"}, status=400
+        )
 
     key = routes._key_from_body(body)
     owner, repo = key.owner, key.repo

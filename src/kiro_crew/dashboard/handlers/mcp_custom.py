@@ -395,9 +395,11 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
 
     servers = body.get("servers")
     if not isinstance(servers, dict) or not servers:
@@ -563,9 +565,11 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     submitted = body.get("spec")
 
     async with _get_mcp_lock():

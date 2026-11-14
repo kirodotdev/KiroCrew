@@ -263,7 +263,7 @@ async def api_sessions_summarize(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     keys = body.get("keys") if isinstance(body, dict) else None
     if not isinstance(keys, list):
         return web.json_response({"error": "keys must be a list"}, status=400)

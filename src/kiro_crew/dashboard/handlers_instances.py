@@ -335,9 +335,11 @@ async def api_instances_update(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response({"error": "invalid JSON body"}, status=400)
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be an object"}, status=400)
+        return web.json_response(
+            {"error": "body must be an object", "code": "body_not_object"}, status=400
+        )
     # Only allow editing user-facing config fields (not internal hints). Derived
     # from the type map rather than listed twice, so a field can never be editable
     # without a declared type to check it against.
