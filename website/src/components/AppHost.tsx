@@ -19,6 +19,7 @@ import { Btn, PageHeader } from './ui'
 import AppLoadingFallback from './AppLoadingFallback'
 import { importAppBundle } from './appBundleImport'
 import { appBundleReplacedSinceImport, noteAppBundleImport } from './appBundleFreshness'
+import { refusedDeclaredOrigin, reloadIfFrameAdmitted } from './appFrameSources'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
 
@@ -57,6 +58,8 @@ export interface AppHostProps {
          *  Typed `unknown` on purpose: it is read straight from `app.json` and
          *  `AppLoadingFallback` validates it against a closed set. */
         loading?: unknown
+        /** Exact https origins the app's pages frame (validated by the gateway). */
+        frameSources?: string[]
       }
       permissions?: {
         api?: string[]
@@ -287,6 +290,22 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey, on
     window.addEventListener('mc:app-reload', handler)
     return () => window.removeEventListener('mc:app-reload', handler)
   }, [app.name])
+
+  // The document's CSP is fixed at load. A declared frame origin the gateway
+  // admitted later (the app was enabled or trusted since) is refused here until
+  // a reload, so a refusal of one reloads when the gateway now admits it
+  // (appFrameSources.ts).
+  const frameSourcesKey = (app.manifest?.ui?.frameSources || []).join(' ')
+  useEffect(() => {
+    if (!frameSourcesKey) return
+    const declared = frameSourcesKey.split(' ')
+    const onViolation = (e: SecurityPolicyViolationEvent) => {
+      const origin = refusedDeclaredOrigin(e, declared)
+      if (origin) void reloadIfFrameAdmitted(app.name, origin)
+    }
+    document.addEventListener('securitypolicyviolation', onViolation)
+    return () => document.removeEventListener('securitypolicyviolation', onViolation)
+  }, [app.name, frameSourcesKey])
 
   const entry = entryOverride || app.manifest?.ui?.entry
   const permissions = app.manifest?.permissions || {}

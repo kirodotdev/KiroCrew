@@ -430,6 +430,7 @@ each replaced field with its old and new value (a WARNING line ending in
 | `ui.overlays[].id` | string | | Overlay id; must match a bundled overlay component (see below) |
 | `ui.overlays[].replaces` | string | | Host overlay slot this app takes over while enabled |
 | `ui.loading.layout` | string | `"page"` | Placeholder shape shown while the bundle loads: `"page"`, `"rail"`, `"centered"` or `"split"` (see below) |
+| `ui.frameSources` | string[] | `[]` | Sites your pages may show in an `<iframe>`, at most 8. Each is an exact origin, `https://` plus one hostname: no path (not even `/`), port, query, user info or wildcard, and no IP address, `localhost` or public suffix such as `co.uk` or `github.io`. Install refuses anything else, and a repeated entry. The dashboard allows these origins in its `frame-src` only while your app is enabled and trusted |
 | `contributes.sessionControls[].id` | string | | Control id, kebab-case; addressed as `<appName>:<id>` |
 | `contributes.sessionControls[].entryPoint` | string | | ESM bundle path for the control (relative to ui/) |
 | `contributes.sessionControls[].label` | string | | Accessible name, and the chip's tooltip |

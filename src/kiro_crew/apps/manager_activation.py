@@ -16,6 +16,7 @@ import logging
 from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
+from kiro_crew.apps.frame_sources import refresh_frame_sources
 from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
@@ -292,6 +293,7 @@ def enable_app(
     # The owner's enable is the one write that ends their disable.
     protected_app_state.set_owner_disabled(name, False)
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
+    refresh_frame_sources()
 
     # Mint the owner-enable grant. This path runs only after the owner, governance
     # and execution checks above, so it is owner-authenticated, and it is never
@@ -442,11 +444,13 @@ def disable_app(name: str) -> AppResult:
             )
         meta.updatedAt = _now_iso()
         _write_installed(name, meta)
+        refresh_frame_sources()
         return AppResult(ok=True, name=name, message=f"{name} is already disabled")
 
     meta.enabled = False
     meta.updatedAt = _now_iso()
     _write_installed(name, meta)  # revokes the host-exec grant (enabled is False)
+    refresh_frame_sources()
 
     # Fail closed: a disable that reports success must not leave a live grant that
     # still authorizes a pod. _write_installed's revoke is best-effort, so verify.

@@ -29,6 +29,7 @@ from kiro_crew.apps.backend import (  # noqa: F401
     revive_lost_app_backends,
     start_enabled_app_backends,
 )
+from kiro_crew.apps.frame_sources import frame_src_extra as _app_frame_src_extra  # noqa: F401
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler  # noqa: F401
 from kiro_crew.apps.hooks_integration import (  # noqa: F401
     _stop_spawned_backends,
@@ -619,6 +620,8 @@ _BASE_CSP = (
     # The panel isolates the preview host from the dashboard host
     # (isolatePreviewHost) so host-scoped dashboard cookies are never sent to
     # the framed server. The *.localhost tunnel wildcard stays instances-gated.
+    # Also appended: the exact https origins enabled, trusted apps declare in
+    # ui.frameSources (apps/frame_sources.py), for iframes their pages draw.
     "frame-src 'self' blob: https://*.cloudfront.net{frame_src_extra}; "
     # form-action does not fall back to default-src, so without it an injected
     # <form> could post to any host. Every dashboard form posts to its own origin.
