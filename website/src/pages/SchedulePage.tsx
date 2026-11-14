@@ -550,6 +550,8 @@ export default function SchedulePage() {
   const handleMoveJob = useCallback(async (jobId: string, folderId: string) => {
     try {
       await api.updateCron(jobId, { folder_id: folderId })
+      // Only this job's own refusal: the slot is shared with other rows' errors.
+      setActionError(prev => (prev?.id === jobId ? null : prev))
       // Auto-expand the target folder so moved job stays visible
       if (folderId) {
         setCollapsedFolders(prev => {
@@ -919,6 +921,7 @@ export default function SchedulePage() {
                         setActionError({ id: 'batch-move', msg: i18nT('pages.schedulePage.cronFolders.batch_move_failed', { count: failedIds.length, total: ids.length }) })
                       } else {
                         setSelectedIds(new Set())
+                        setActionError(prev => (prev?.id === 'batch-move' ? null : prev))
                       }
                       if (folderId) {
                         setCollapsedFolders(prev => {
