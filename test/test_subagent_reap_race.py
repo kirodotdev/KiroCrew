@@ -192,7 +192,7 @@ def test_slot_token_independent_of_reaped_and_done():
     assert mgr._release_slot(_info(reaped=True, done=True)) is True
 
 
-# ── the round-5 regression: done set mid-teardown ────────────────────
+# ── done set mid-teardown ────────────────────────────────────────────
 
 
 @pytest.mark.asyncio

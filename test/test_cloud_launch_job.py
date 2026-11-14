@@ -579,7 +579,7 @@ class TestFilePermissions:
     def test_a_pre_existing_wide_open_store_dir_is_tightened(self, tmp_path):
         s = _store(tmp_path)
         s.root.mkdir(parents=True)
-        s.root.chmod(0o755)  # what an earlier build would have left
+        s.root.chmod(0o755)  # a legacy install's mode
         s.save(s.create(profile="dev", region="us-east-1", size_key="balanced"))
         assert s.root.stat().st_mode & 0o777 == 0o700
 
