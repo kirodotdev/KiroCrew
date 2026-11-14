@@ -6,7 +6,7 @@ calls :func:`root` (or :func:`rooted`) around the turn, so every root kind gets 
 
 - a kind with no run of its own (``RUN_KINDS`` excludes it) roots each turn by
   itself, ``trace_id`` = the turn id (R1);
-- a run kind (``cron``) emits a ``<kind> <name>`` anchor first (R2), the turns it
+- a run kind (``cron``, ``workflow``) emits a ``<kind> <name>`` anchor first (R2), the turns it
   streams join that anchor's trace (R4), and the block ends with a
   ``<kind> outcome <status>`` marker carrying the turns' summed spend (R3).
 
@@ -43,6 +43,7 @@ TRIGGER_HEARTBEAT = "heartbeat"
 TRIGGER_BACKGROUND = "background"
 TRIGGER_WEBHOOK = "webhook"
 TRIGGER_TASK = "task"
+TRIGGER_WORKFLOW = "workflow"
 #: Every ``kirocrew.trigger`` value: a closed vocabulary, never caller text.
 TRIGGERS = frozenset(
     {
@@ -52,10 +53,11 @@ TRIGGERS = frozenset(
         TRIGGER_BACKGROUND,
         TRIGGER_WEBHOOK,
         TRIGGER_TASK,
+        TRIGGER_WORKFLOW,
     }
 )
 #: The triggers that are runs: an anchor, joined turns and an outcome marker.
-RUN_KINDS = frozenset({TRIGGER_CRON})
+RUN_KINDS = frozenset({TRIGGER_CRON, TRIGGER_WORKFLOW})
 
 STATUS_FINISHED = "finished"
 STATUS_FAILED = "failed"
@@ -100,7 +102,9 @@ def root(
 
     *trigger* is one of :data:`TRIGGERS`. *channel* names a channel's namespace.
     For a run kind, *run_key* identifies the run and *run_name* labels its anchor
-    (a closed-vocabulary label, never user text), and *root_session_key* is the
+    (a closed-vocabulary label, or a name the caller bounded and checked, as
+    ``tracing/workflows.py`` does with a workflow's name; never raw user text), and
+    *root_session_key* is the
     Crew session whose ``session.id`` every span of the run wears (R6); *step* opens a span under the run
     for the whole block, for a run that streams no model turn. *attrs* are extra
     allowlisted keys for the run's spans.
@@ -129,7 +133,13 @@ def root(
     finally:
         turns.release_turn_root(token)
         if state is not None and surface.run is not None:
-            _close_run(state, surface.run, step_span, _status_of(error, surface.status))
+            _close_run(
+                state,
+                surface.run,
+                step_span,
+                _status_of(error, surface.status),
+                {**common, **(attrs or {})},
+            )
 
 
 def rooted(
@@ -197,7 +207,14 @@ def _open_run(
         return None, None
 
 
-def _close_run(state: provider.TraceState, ref: runs.RunRef, step_span: Any, status: str) -> None:
+def _close_run(
+    state: provider.TraceState,
+    ref: runs.RunRef,
+    step_span: Any,
+    status: str,
+    attrs: Mapping[str, Any],
+) -> None:
+    """End the step span and write the outcome, which carries the anchor's *attrs*."""
     try:
         if step_span is not None:
             if status in _ERROR_STATUSES:
@@ -206,6 +223,6 @@ def _close_run(state: provider.TraceState, ref: runs.RunRef, step_span: Any, sta
                 step_span.set_status(Status(StatusCode.ERROR))
             step_span.set_attribute("kirocrew.run.status", status)
             step_span.end()
-        runs.outcome(state, ref, status, rollup=turns.close_rollup(ref.span_id))
+        runs.outcome(state, ref, status, rollup=turns.close_rollup(ref.span_id), attrs=attrs)
     except Exception:
         logger.debug("surface run close failed", exc_info=True)

@@ -53,6 +53,8 @@ ID_KEYS = frozenset(
         "kirocrew.work.goal_id",
         "kirocrew.work.generation",
         "kirocrew.cron.job_id",
+        "kirocrew.workflow_run_id",
+        "kirocrew.agent_id",
     }
 )
 
@@ -86,6 +88,7 @@ ALLOWED_KEYS = ID_KEYS | frozenset(
         "kirocrew.trigger",
         "kirocrew.channel",
         "kirocrew.cron.job_kind",
+        "kirocrew.phase_index",
         "kirocrew.crew.root_kind",
         "kirocrew.work.round",
         "kirocrew.work.action",
