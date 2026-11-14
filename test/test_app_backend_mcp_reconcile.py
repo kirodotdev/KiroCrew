@@ -8,6 +8,8 @@ Fakes come from ``app_backend_helpers.py``.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from app_backend_helpers import _FakeHealthResp, _FakeProc, _probe_outcome
 
@@ -475,6 +477,28 @@ class TestTeardownParticipatesInTheReconcileSerialization:
         assert held and held[0] is True, held
 
 
+def _require_recorded_spawn(monkeypatch):
+    """Turn the ``agent.apps_never_adopt_backend_listener`` opt-in on, config readable."""
+    from types import SimpleNamespace
+
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = SimpleNamespace(
+        agent=SimpleNamespace(apps_never_adopt_backend_listener=True),
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+
+
+def _capture_sel(monkeypatch) -> list[dict]:
+    """Collect the SEL rows the supervisor writes."""
+    import kiro_crew.apps.backend_runtime.supervision as supervision
+
+    rows: list[dict] = []
+    sink = SimpleNamespace(log_api_access=lambda **kw: rows.append(kw))
+    monkeypatch.setattr(supervision, "sel", lambda: sink)
+    return rows
+
+
 class TestAdoptedRecoveryRebindsOwnership:
     """An adopted recovery must re-bind its owning PIDs.
 
@@ -550,6 +574,107 @@ class TestAdoptedRecoveryRebindsOwnership:
         assert ap.healthy is False  # refused
         assert ap.adopted_pids == [111]  # untouched, not silently half-updated
         assert bmod.get_app_backend_port("ad") is None
+
+    def test_a_listener_this_run_did_not_start_is_not_rebound_when_required(
+        self, monkeypatch, watched
+    ):
+        # With apps_never_adopt_backend_listener on: the adopted backend exited and a
+        # process this run did not start now answers the same port, so the sweep must
+        # neither bind nor promote it.
+        _require_recorded_spawn(monkeypatch)
+        events = _capture_sel(monkeypatch)
+        bmod, ap, probes = watched
+        monkeypatch.setattr(
+            bmod,
+            "_capture_adopted_owners",
+            lambda name, port, path: ([333], {333: "other"}),
+        )
+        probes.append(True)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is False
+        assert ap.adopted_pids == [111]
+        assert bmod.get_app_backend_port("ad") is None
+        assert [e["outcome"] for e in events] == ["refused_not_spawned_this_run"]
+        assert events[0]["operation"] == "app_backend_adopt"
+
+    def test_the_ceiling_retry_rebinds_a_listener_this_run_did_not_start_so_it_can_be_stopped(
+        self, monkeypatch, watched
+    ):
+        # Attribution is for promotion only: a revoked backend must always be re-bindable.
+        _require_recorded_spawn(monkeypatch)
+        bmod, ap, _probes = watched
+        monkeypatch.setattr(
+            bmod, "_capture_adopted_owners", lambda name, port, path: ([333], {333: "other"})
+        )
+
+        assert bmod._rebind_adopted_owners(ap, "/health") is True
+        assert ap.adopted_pids == [333]
+        ap.adopted_pids = [111]
+        assert bmod._rebind_adopted_owners(ap, "/health", require_attribution=True) is False
+        assert ap.adopted_pids == [111]
+
+    def test_a_config_that_fails_to_load_adopts_as_when_the_setting_is_off(
+        self, monkeypatch, watched, caplog
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        bmod, ap, _probes = watched
+
+        def _load(cls, *a, **k):
+            raise OSError("config unreadable")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_load))
+        with caplog.at_level("WARNING"):
+            assert bmod._adoption_allowed() is True
+        assert any("adopting, as when the setting is off" in r.message for r in caplog.records)
+
+    def test_a_true_setting_in_a_readable_config_survives_an_invalid_overlay(
+        self, tmp_path, watched
+    ):
+        import json
+        from unittest.mock import patch
+
+        bmod, ap, _probes = watched
+        config_dir = tmp_path / ".kirocrew"
+        config_dir.mkdir()
+        (config_dir / "config.json").write_text(
+            json.dumps({"agent": {"apps_never_adopt_backend_listener": True}})
+        )
+        (config_dir / "config.local.json").write_text("not valid json {{{")
+        with patch("kiro_crew.config.loader.config_dir", return_value=config_dir):
+            assert bmod._adoption_allowed() is False
+
+    def test_a_repaired_agent_section_with_the_setting_on_refuses_adoption(self, watched):
+        # A malformed agent section stays in the process-wide degraded set after the file is
+        # repaired; the setting must still be read from the load that parsed it.
+        import unittest.mock
+
+        from config_loader_helpers import _load_from_dict
+
+        bmod, ap, _probes = watched
+        broken = _load_from_dict({"agent": "oops"})
+        assert "agent" in broken.degraded_sections
+        repaired = _load_from_dict({"agent": {"apps_never_adopt_backend_listener": True}})
+        assert "agent" in repaired.degraded_sections
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.KiroCrewConfig.load", return_value=repaired
+        ):
+            assert bmod._adoption_allowed() is False
+
+    @pytest.mark.parametrize("setting", [False, True])
+    def test_the_setting_alone_decides_whether_a_listener_may_be_adopted(
+        self, monkeypatch, watched, setting
+    ):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        bmod, ap, _probes = watched
+        cfg = SimpleNamespace(
+            agent=SimpleNamespace(apps_never_adopt_backend_listener=setting),
+        )
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls, *a, **k: cfg))
+        assert bmod._adoption_allowed() is (not setting)
 
     def test_a_spawned_backend_does_not_pay_the_recapture(self, monkeypatch, watched):
         # Only the adopted shape has external ownership to re-bind; a spawned backend

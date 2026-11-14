@@ -629,6 +629,17 @@ class AgentConfig:
             "apps_trusted, which grants the same admission to ONE named app.",
         ),
     )
+    apps_never_adopt_backend_listener: bool = field(
+        default=False,
+        metadata=_meta(
+            "Never Adopt App Backend Listener",
+            "When true, the gateway never adopts or re-binds a healthy app backend "
+            "listener that it did not start in this run, such as an uninstall survivor "
+            "or a backend an earlier gateway run started. A config that fails to "
+            "load still adopts, as when the setting is off. Defaults to false: any "
+            "healthy listener on the app's port is adopted.",
+        ),
+    )
     apps_trusted: list[str] = field(
         default_factory=list,
         metadata=_meta(

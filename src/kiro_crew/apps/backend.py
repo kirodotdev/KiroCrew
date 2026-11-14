@@ -85,11 +85,15 @@ if "_PART_MODULES" in globals():
         _importlib.reload(_sys.modules[_reloaded])
     del _reloaded
 
-from kiro_crew.apps.backend_runtime.pidfile import _proc_start_time, _record_app_pid  # noqa: E402
+from kiro_crew.apps.backend_runtime.pidfile import (  # noqa: E402
+    _proc_start_time,
+    _record_app_pid,
+)
 from kiro_crew.apps.backend_runtime.ports import (  # noqa: E402
     _MAX_PORT,
     _MIN_PORT,
     PortUnavailableError,
+    _adoption_allowed,
     _allocated_ports,
     _capture_adopted_owners,
     _claim_port,
@@ -601,13 +605,25 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
             healthy = _probe_adoption_health(port, manifest.backend.healthCheck)
 
             if healthy:
+                # With apps_never_adopt_backend_listener on, a listener this run did not
+                # start is never adopted.
+                allowed = _adoption_allowed()
                 try:
                     sel().log_api_access(
                         caller="gateway", operation="app_backend_adopt",
-                        outcome="adopted", resources=f"{app_name} port={port}",
+                        outcome="adopted" if allowed else "refused_not_spawned_this_run",
+                        resources=f"{app_name} port={port}",
                     )
                 except Exception as exc:
                     logger.debug("SEL audit failed for app %s backend adopt: %s", app_name, exc)
+                if not allowed:
+                    logger.warning(
+                        "App %s: not adopting the instance on port %d: "
+                        "apps_never_adopt_backend_listener is on, so a listener this run did "
+                        "not start is not adopted. Stop that process, or free the port.",
+                        app_name, port,
+                    )
+                    return None
                 # Record owning PIDs at adoption time, scoped to the listener
                 # the health probe actually reached. The probe above only ever
                 # talks to 127.0.0.1:<port>; loopback_owner_pids mirrors the
