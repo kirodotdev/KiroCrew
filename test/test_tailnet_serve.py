@@ -493,6 +493,16 @@ class TestSpawnHardening:
         # CLI's own daemon lookup on macOS and Windows.
         assert env
 
+    def test_the_macos_app_executable_is_pinned_to_cli_mode(self) -> None:
+        """The serve spawn shares the read path's environment, so it too never
+        lets the macOS Tailscale executable launch the app."""
+        cli, run = _patch_cli(return_value=_proc())
+        governance = patch.object(tailnet_serve, "is_governance_pinned_off", return_value=False)
+        inherited = patch.dict("os.environ", {"TAILSCALE_BE_CLI": "0"}, clear=False)
+        with cli, run as m, governance, inherited:
+            tailnet_serve.publish(_PORT)
+        assert m.call_args.kwargs["env"]["TAILSCALE_BE_CLI"] == "1"
+
     def test_no_shell_and_no_cwd(self) -> None:
         cli, run = _patch_cli(return_value=_proc())
         with cli, run as m, patch.object(
