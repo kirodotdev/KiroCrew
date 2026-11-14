@@ -18,12 +18,14 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
     tighten_live_slot_memory_mode,
 )
+from kiro_crew.dashboard.compaction_seed import supports_seed
 from kiro_crew.dashboard.slot_queue_repository import UNREADABLE_SOURCE_CHANNEL
 from kiro_crew.dashboard.state import durable_row_count
 from kiro_crew.llm_helpers import _billing_stats
 from kiro_crew.members import DM_SLOT_MODE, is_dispatchable_member_name, member_lifecycle
 from kiro_crew.platform import redact_log_via_context
 from kiro_crew.quick_prompts import QUICK_PROMPTS, user_quick_prompt
+from kiro_crew.session_compaction_methods import COMPACTION_METHOD_NATIVE, COMPACTION_METHODS
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -272,6 +274,54 @@ def _release_dispatch_lock(turn) -> None:
     if turn._dispatch_lock_held:
         turn._dispatch_lock_held = False
         _dispatch_lock.release()
+
+
+def _configured_rotation_method(cfg: KiroCrewConfig | None) -> str:
+    """``session.compaction_method`` when it names a rotation, else ``""`` (``native``).
+
+    The replay reads it (``rotation_configured``): a rotation is judged on a
+    projection that charges the replay budget for the tail, so the carried tail
+    may not exceed it. The mid-turn compaction notice records it too, because a
+    rotation does not summarize. A config whose method cannot be read takes the
+    default: this read never ends a turn.
+    """
+    if cfg is None:
+        return ""
+    try:
+        method = cfg.session.compaction_method
+    except Exception:
+        logger.warning(
+            "session.compaction_method read failed in _run_chat; "
+            "the replay carries the newest row whole",
+            exc_info=True,
+        )
+        return ""
+    if method in COMPACTION_METHODS and method != COMPACTION_METHOD_NATIVE:
+        return method
+    return ""
+
+
+def _rotation_method_for_session(turn: _ChatTurn, method: str) -> str:
+    """*method* when the coordinator would rotate the session this turn holds, else ``""``.
+
+    Read after the session claim, once ``turn.client`` is final. The coordinator
+    compacts a Claude backend in place (its Claude arm, through the same
+    ``kiro_crew.session._is_claude_backend`` predicate) and hands a key the
+    dashboard seed writer does not support (a cron, hook, subagent or other
+    linked session) to ``native``. Such a session always runs ``native``, so its
+    replay and its mid-turn notice stay ``native``'s.
+    """
+    if not method:
+        return ""
+    # Read through the module at call time, as the coordinator's dependency
+    # does, so both answer with the same predicate (and the same patch).
+    from kiro_crew import session as _session_module
+
+    if _session_module._is_claude_backend(turn.client):
+        return ""
+    if not supports_seed(turn.state, turn.session_key):
+        return ""
+    return method
 
 
 async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
@@ -576,6 +626,12 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
             raise
         if slot.memory_store or isinstance(exc, UnknownMemoryStore):
             raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
+
+    # Read once for the turn: the replay and the mid-turn compaction notice both
+    # read it off the turn (``_configured_rotation_method``), narrowed after the
+    # session claim to the sessions the coordinator would rotate
+    # (``_rotation_method_for_session``).
+    turn._rotation_method = _configured_rotation_method(loaded_cfg)
 
     _require_current_binding(turn)
     if (
@@ -1140,6 +1196,8 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
         turn.is_new = is_new
         turn.resumed = resumed
         turn.client = client
+        # Inside the release guard: the claimed lease is let go if this read raises.
+        turn._rotation_method = _rotation_method_for_session(turn, turn._rotation_method)
     except BaseException:
         state.sessions.release(session_key)
         raise

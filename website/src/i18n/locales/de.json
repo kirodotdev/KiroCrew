@@ -12927,6 +12927,7 @@
       },
       "compactionCard": {
         "after_turn": "Kontext bei {{pct}}, über dem Schwellenwert für automatische Verdichtung von {{limit}} – der Chat wird nach diesem Durchlauf zusammengefasst",
+        "after_turn_rotation": "Kontext bei {{pct}}, über dem Schwellenwert für automatische Verdichtung von {{limit}} – der Chat wird nach diesem Durchlauf verdichtet",
         "no_summary": "Fertig – keine Zusammenfassung vorhanden",
         "summary_hint": "Zusammenfassung eingeklappt – zum Lesen aufklappen",
         "title": "Kontext komprimiert"
@@ -19375,6 +19376,11 @@
         "turn_time_limit_description": "Wie lange ein Chat-Durchlauf höchstens laufen darf, bevor er gestoppt wird. 300 bis 86.400 s (24 h). Standard 14.400 s (4 h).",
         "turn_time_limit_hint": "Ein Durchlauf, der dieses Limit erreicht, stoppt; bereits auf die Festplatte geschriebene Arbeit bleibt erhalten. Nimm ihn wieder auf, um weiterzumachen. Erhöhe das Limit für lange unbeaufsichtigte Durchläufe wie vollständige Testläufe. Gilt ab dem nächsten Durchlauf.",
         "failed_to_save_compaction_wait_budget": "Wartezeit für Verdichtung konnte nicht gespeichert werden",
+        "compaction_method": "Verdichtungsmethode",
+        "compaction_method_desc": "Was beim Schwellenwert für automatische Verdichtung läuft. Soft ruft kein Modell auf und läuft nur in Dashboard-Chats; wo es nicht laufen kann, läuft Native.",
+        "compaction_method_native": "Native (Standard) – an Ort und Stelle zusammenfassen",
+        "compaction_method_soft": "Soft – Sitzung rotieren, letzte Durchläufe behalten",
+        "failed_to_save_compaction_method": "Verdichtungsmethode konnte nicht gespeichert werden",
         "failed_to_save_turn_time_limit": "Zeitlimit pro Durchlauf konnte nicht gespeichert werden",
         "kiro_harness_fallback_body": "Bei einem Kiro-Harness laufen die auf app.kiro.dev verwalteten Fallbacks zuerst, innerhalb des Harness. Die Fallbacks unten gehören zu {{productName}} und greifen nur, wenn der Turn danach weiterhin fehlschlägt.",
         "kiro_harness_fallback_link": "Kiro-Fallbacks verwalten",

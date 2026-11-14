@@ -193,6 +193,20 @@ def _effective_window(window_tokens: int | None) -> int:
     return window_tokens
 
 
+def startup_context_chars() -> int:
+    """Ceiling, in characters, on the session context a fresh session receives.
+
+    The three allowances a fresh session's context is admitted up to: the shared
+    discretionary pool (``_CONTEXT_BUDGET_BASE``), the standing-rule tier admitted
+    beside it (``_LESSONS_STARTUP_CAP``) and the ``pref.*`` rows admitted beside it
+    (``_PREFS_STARTUP_CAP``). All three are window-independent. A rotation
+    compaction projects where its successor starts from this figure plus the
+    tail it carries; a thread's own history allowance and provider-side overhead
+    sit outside it.
+    """
+    return _CONTEXT_BUDGET_BASE + _LESSONS_STARTUP_CAP + _PREFS_STARTUP_CAP
+
+
 @functools.lru_cache(maxsize=16)
 def _resolve_caps_cached(window: int) -> _ResolvedCaps:
     # Window metadata never enlarges discretionary Crew context. Keep a single

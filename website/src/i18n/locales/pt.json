@@ -13207,6 +13207,7 @@
       },
       "compactionCard": {
         "after_turn": "Contexto em {{pct}}, acima do limite de compactação automática de {{limit}} — o chat será resumido ao fim deste turno",
+        "after_turn_rotation": "Contexto em {{pct}}, acima do limite de compactação automática de {{limit}} — o chat será compactado ao fim deste turno",
         "no_summary": "Concluído — sem resumo para mostrar",
         "summary_hint": "Resumo recolhido — expanda para ler",
         "title": "Contexto compactado"
@@ -19876,6 +19877,11 @@
         "turn_time_limit_description": "Tempo máximo que um turno de chat pode durar antes de ser interrompido. De 300 a 86.400 s (24 h). Padrão: 14.400 s (4 h).",
         "turn_time_limit_hint": "Um turno que atinge este limite para e mantém o trabalho já gravado em disco; retome-o para continuar. Aumente-o para turnos longos sem supervisão, como suítes de testes completas. Vale a partir do próximo turno.",
         "failed_to_save_compaction_wait_budget": "Não foi possível salvar o tempo de espera da compactação",
+        "compaction_method": "Método de compactação",
+        "compaction_method_desc": "O que roda no limite de compactação automática. Soft não chama o modelo e só roda em chats do Painel; onde não pode rodar, roda Native.",
+        "compaction_method_native": "Native (padrão) — resumir no lugar",
+        "compaction_method_soft": "Soft — rotacionar a sessão, manter turnos recentes",
+        "failed_to_save_compaction_method": "Falha ao salvar o método de compactação",
         "failed_to_save_turn_time_limit": "Não foi possível salvar o tempo máximo por turno",
         "kiro_harness_fallback_body": "Ao usar um harness Kiro, os fallbacks que você gerencia em app.kiro.dev são executados primeiro, dentro do harness. Os fallbacks abaixo são próprios do {{productName}} e só são executados se o turno ainda falhar depois disso.",
         "kiro_harness_fallback_link": "Gerenciar fallbacks do Kiro",

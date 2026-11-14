@@ -626,6 +626,14 @@
       "hint": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row"
     },
     {
+      "id": "chat.compaction-method",
+      "label": "Compaction Method",
+      "tab": "chat",
+      "route": "/settings/chat/advanced?highlight=key%3Asession.compaction_method",
+      "description": "What runs at the Auto-Compact Threshold. Soft calls no model and runs in dashboard chats only; anywhere it cannot run, Native runs.",
+      "configKey": "session.compaction_method"
+    },
+    {
       "id": "chat.compaction-time-limit-seconds",
       "label": "Compaction Time Limit (seconds)",
       "tab": "chat",

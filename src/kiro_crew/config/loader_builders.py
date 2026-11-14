@@ -67,6 +67,7 @@ from kiro_crew.config.sections import (
     _archive_retention_days,
     _coerce_gitlab_hosts,
     _coerce_jira_hosts,
+    _compaction_method,
     _normalize_acp_backend,
     _normalize_jail,
     _normalize_yolo_duration,
@@ -1165,6 +1166,7 @@ def _build_session_config(session_data: dict) -> SessionConfig:
         compact_wait_secs=section.read(
             "compact_wait_secs", _clamp_compact_wait_secs, unclamped=_safe_float
         ),
+        compaction_method=_compaction_method(session_data),
         pool_size=_safe_int(
             session_data.get("pool_size", DEFAULT_POOL_SIZE),
             DEFAULT_POOL_SIZE,

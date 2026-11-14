@@ -305,8 +305,12 @@ from kiro_crew.config.sections_defaults import (  # noqa: F401
     _ABSENT,
     _REPORTED_CLAMPS,
     _T,
+    COMPACTION_METHOD_NATIVE,
+    COMPACTION_METHOD_SOFT,
+    COMPACTION_METHODS,
     CONTEXT_WARN_MARGIN_PCT,
     DEFAULT_AUTOCOMPACT_PCT,
+    DEFAULT_COMPACTION_METHOD,
     DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
     DEFAULT_MAX_PER_CREATOR,
     DEFAULT_MODEL,
@@ -394,6 +398,7 @@ from kiro_crew.config.sections_session import (  # noqa: F401
     SessionEnvironmentsConfig,
     WorkspaceConfig,
     _archive_retention_days,
+    _compaction_method,
     _migrate_workspaces,
 )
 from kiro_crew.config.sections_shared_crew import (  # noqa: F401

@@ -1004,6 +1004,11 @@ COMPACT_AFTER_TURN_NOTICE = (
 #: ``meta["notice"]`` on that row. A notice marker keeps ``is_turn_interrupted``
 #: from reading the row as a ``/compact`` result: nothing has been compacted yet.
 COMPACT_AFTER_TURN_NOTICE_KIND = "compact_after_turn"
+#: ``meta`` key on that row naming the rotation method (``session.compaction_method``)
+#: the turn read. A rotation keeps recent turns instead of summarizing, so the
+#: CompactionCard words the notice for it from this key. The row carries no such
+#: key with ``native``.
+COMPACT_AFTER_TURN_METHOD_KEY = "compaction_method"
 
 
 def _tool_rows_settled(slot: Any) -> bool:
@@ -1025,7 +1030,12 @@ def _tool_rows_settled(slot: Any) -> bool:
 
 
 async def _notice_compaction_after_turn(
-    state: DashboardState, slot: Any, client: Any, session_key: str
+    state: DashboardState,
+    slot: Any,
+    client: Any,
+    session_key: str,
+    *,
+    rotation_method: str = "",
 ) -> bool:
     """Tell the person "will compact after this turn", once, while the turn still runs.
 
@@ -1036,6 +1046,10 @@ async def _notice_compaction_after_turn(
     can make it once per turn. A display row only: the model is not told anything
     and the turn runs on unchanged. Never compacts: compaction stays where it was,
     after the turn. Never raises.
+
+    *rotation_method* is the rotation method the turn read from
+    ``session.compaction_method`` (empty with ``native``). The row records it
+    under :data:`COMPACT_AFTER_TURN_METHOD_KEY`.
     """
     try:
         # `is not True`: only the manager's own verdict counts, never a truthy stand-in.
@@ -1048,6 +1062,9 @@ async def _notice_compaction_after_turn(
         return False
     if not _tool_rows_settled(slot):
         return False
+    meta = {"kind": "compaction", "notice": COMPACT_AFTER_TURN_NOTICE_KIND}
+    if rotation_method:
+        meta[COMPACT_AFTER_TURN_METHOD_KEY] = rotation_method
     try:
         # Finalize the clients' streaming message first. Pre-tool narration was
         # persisted without a broadcast, so an open client still holds it as the
@@ -1059,7 +1076,7 @@ async def _notice_compaction_after_turn(
             "assistant",
             COMPACT_AFTER_TURN_NOTICE.format(pct=pct, limit=limit),
             "msg msg-a",
-            meta={"kind": "compaction", "notice": COMPACT_AFTER_TURN_NOTICE_KIND},
+            meta=meta,
         )
     except Exception:
         logger.debug("compact-after-turn: notice row failed", exc_info=True)

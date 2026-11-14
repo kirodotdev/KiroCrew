@@ -13207,6 +13207,7 @@
       },
       "compactionCard": {
         "after_turn": "Contesto al {{pct}}, oltre la soglia di compattazione automatica del {{limit}}: la chat verrà riassunta al termine di questo turno",
+        "after_turn_rotation": "Contesto al {{pct}}, oltre la soglia di compattazione automatica del {{limit}}: la chat verrà compattata al termine di questo turno",
         "no_summary": "Completato: nessun riepilogo da mostrare",
         "summary_hint": "Riepilogo ripiegato: espandi per leggerlo",
         "title": "Contesto compattato"
@@ -19876,6 +19877,11 @@
         "turn_time_limit_description": "Durata massima di un turno di chat prima che venga fermato. Da 300 a 86.400 s (24 h). Predefinito 14.400 s (4 h).",
         "turn_time_limit_hint": "Un turno che raggiunge questo limite si ferma e conserva il lavoro già scritto su disco; riprendilo per continuare. Aumentalo per turni lunghi non presidiati, come intere suite di test. Vale dal turno successivo.",
         "failed_to_save_compaction_wait_budget": "Impossibile salvare il tempo di attesa della compattazione",
+        "compaction_method": "Metodo di compattazione",
+        "compaction_method_desc": "Cosa viene eseguito alla soglia di compattazione automatica. Soft non chiama il modello e viene eseguito solo nelle chat della Dashboard; dove non può essere eseguito, viene eseguito Native.",
+        "compaction_method_native": "Native (predefinito) — riassumere sul posto",
+        "compaction_method_soft": "Soft — ruotare la sessione, tenere i turni recenti",
+        "failed_to_save_compaction_method": "Impossibile salvare il metodo di compattazione",
         "failed_to_save_turn_time_limit": "Impossibile salvare il limite di tempo per turno",
         "kiro_harness_fallback_body": "Con un harness Kiro, le riserve che gestisci su app.kiro.dev vengono eseguite per prime, all'interno dell'harness. Le riserve qui sotto sono proprie di {{productName}} e si attivano solo se il turno non riesce ancora dopo.",
         "kiro_harness_fallback_link": "Gestisci le riserve Kiro",

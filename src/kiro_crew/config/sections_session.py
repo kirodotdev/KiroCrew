@@ -11,7 +11,9 @@ from typing import Any
 
 from kiro_crew.config.fields import _meta
 from kiro_crew.config.sections_defaults import (
+    COMPACTION_METHODS,
     DEFAULT_AUTOCOMPACT_PCT,
+    DEFAULT_COMPACTION_METHOD,
     DEFAULT_HARNESS_BACKGROUND_HOLD_SECS,
     DEFAULT_MAX_PER_CREATOR,
     DEFAULT_POOL_SIZE,
@@ -44,6 +46,22 @@ def _archive_retention_days(session_data: dict) -> int:
     except (TypeError, ValueError):
         return section.default("archive_retention_days")
     return val if val >= 0 else -1
+
+
+def _compaction_method(session_data: dict) -> str:
+    """Resolve session.compaction_method to a known method name.
+
+    A name outside ``COMPACTION_METHODS`` (or a non-string) takes the field's
+    default, so the coordinator always runs a method it knows. Type handling is
+    owned by the schema validation that runs over the raw dict first; a
+    non-string here only means that validation was unavailable.
+    """
+    section = SectionReader(SessionConfig, session_data)
+    raw = section.get("compaction_method")
+    if not isinstance(raw, str):
+        return str(section.default("compaction_method"))
+    method = raw.strip().lower()
+    return method if method in COMPACTION_METHODS else str(section.default("compaction_method"))
 
 
 @dataclass
@@ -156,6 +174,22 @@ class SessionConfig:
             "it on a host where compaction on a large context window regularly "
             "needs longer than the built-in budget; a stuck compaction also "
             "waits the full budget.",
+        ),
+    )
+    compaction_method: str = field(
+        default=DEFAULT_COMPACTION_METHOD,
+        metadata=_meta(
+            "Compaction Method",
+            "What runs when the Auto-Compact Threshold fires. native (default): "
+            "the agent summarizes the whole context in place; one model call, "
+            "minutes on a large window; everything is kept as a summary. soft: a "
+            "fresh session with only the recent turns; no model call; older "
+            "turns are gone from the agent's memory (the transcript stays on "
+            "screen). soft runs in dashboard tabs only. When soft would not free "
+            "enough context, or cannot run, native runs. A running turn defers "
+            "the attempt to the next check. The chat notice names the method "
+            "that ran.",
+            enum=list(COMPACTION_METHODS),
         ),
     )
     pool_size: int = field(

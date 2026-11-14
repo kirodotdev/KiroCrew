@@ -94,7 +94,7 @@ async def _setup():
     )
     notices: list[tuple[bool, str]] = []
 
-    async def _cb(key, pct, *, success, outcome="compacted"):
+    async def _cb(key, pct, *, success, outcome="compacted", method="native"):
         notices.append((success, outcome))
 
     mgr.set_compact_callback(_cb)

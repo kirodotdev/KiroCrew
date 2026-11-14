@@ -120,7 +120,7 @@ async def _setup(
     )
     notices: list[tuple[bool, str]] = []
 
-    async def _cb(key, pct, *, success, outcome="compacted"):
+    async def _cb(key, pct, *, success, outcome="compacted", **_):
         notices.append((success, outcome))
 
     mgr.set_compact_callback(_cb)
@@ -521,7 +521,7 @@ async def test_an_uncompactable_hold_does_not_say_a_compaction_failed(monkeypatc
     channel: list[str] = []
     posted = asyncio.Event()
 
-    async def _both_surfaces(k, pct, *, success, outcome="compacted"):
+    async def _both_surfaces(k, pct, *, success, outcome="compacted", method="native"):
         await dashboard(k, pct, success=success, outcome=outcome)
         channel.append(notice_text("slack", pct, success=success, outcome=outcome))
         posted.set()

@@ -137,6 +137,7 @@ async def _session_replay_history(
     _provider_has_history: bool,
     _current_replay_message: dict | None,
     reset_out: list[bool] | None = None,
+    rotation_configured: bool = False,
 ) -> str | None:
     """The provider-agnostic history replay a cold-start turn carries, or ``""``.
 
@@ -144,7 +145,8 @@ async def _session_replay_history(
     the provider resumed its own native session or an explicit conversation reset
     asked for a cold start without history. *reset_out*, when given, gets ``True``
     appended when it was the reset, so the caller can keep the rest of the session
-    context from quoting the forgotten turns too.
+    context from quoting the forgotten turns too. *rotation_configured* is
+    ``build_session_replay``'s, passed when a rotation compaction is configured.
     """
     compressed: str | None = ""
     # Provider-agnostic session replay: Kiro Crew's conversation_log
@@ -198,6 +200,7 @@ async def _session_replay_history(
                     exclude_messages=regenerate_replaced_rows(slot),
                     model_window=window_for_provider_client(client),
                     **_budget,
+                    rotation_configured=rotation_configured,
                 )
                 or ""
             )
@@ -717,6 +720,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
             _provider_has_history=_provider_has_history,
             _current_replay_message=_current_replay_message,
             reset_out=_conversation_reset,
+            rotation_configured=bool(turn._rotation_method),
         )
         # After a soft-cancel, kiro-cli drops the cancelled turn from its
         # conversation log — but everything BEFORE the cancel is preserved.
@@ -1151,6 +1155,7 @@ async def _turn_build_prompt(turn: _ChatTurn) -> None:
                     slot,
                     conversation_log=state.conversation_log,
                     current_message=_current_replay_message,
+                    rotation_configured=bool(turn._rotation_method),
                 )
                 full_message = history + full_message
                 turn.full_message = full_message

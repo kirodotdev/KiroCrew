@@ -23,6 +23,7 @@ import {
   asVerbosity, completionKeepLabels, COMPLETION_KEEP_CHARS_MIN, COMPLETION_KEEP_CHARS_MAX,
   COMPLETION_KEEP_CHARS_DEFAULT, type KirocrewConfigShape, COMPACT_CUSTOM, AUTOCOMPACT_PCT_MIN,
   AUTOCOMPACT_PCT_MAX, PREFERRED_LANGUAGE_OPTIONS, preferredLanguageLabels, asPreferredLanguage,
+  COMPACTION_METHOD_OPTIONS, compactionMethodLabels,
 } from './chatPanelOptions'
 import { useChatPanelDashboard } from './useChatPanelDashboard'
 import { useChatPanelTypedFields } from './useChatPanelTypedFields'
@@ -170,6 +171,15 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   // window, and a stepper that only snaps back reads as a broken control.
   const titleRefresh = normalizeTitleRefresh(mcCfg?.dashboard?.title_refresh_every_turns ?? 0)
   const shownTitleRefresh = overlay.shown(TITLE_REFRESH_PATH, titleRefresh)
+  const shownCompactionMethod = overlay.shown(
+    'session.compaction_method',
+    mcCfg?.session?.compaction_method ?? 'native'
+  )
+  const compactionMethodMut = useMutation(
+    optimisticConfigOpts('session.compaction_method', () =>
+      i18nT('pages.settings.chatPanel.failed_to_save_compaction_method')
+    )
+  )
   const titleRefreshMut = useMutation({
     ...overlay.mutationOpts<number>({
       queryKey: ['kirocrewConfig'],
@@ -824,6 +834,16 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
               <FieldHint message={compactClampNotice} />
             </>
           )}
+          <SettingsSelect
+            label={i18nT('pages.settings.chatPanel.compaction_method')}
+            description={i18nT('pages.settings.chatPanel.compaction_method_desc')}
+            value={shownCompactionMethod}
+            options={COMPACTION_METHOD_OPTIONS}
+            optionLabels={compactionMethodLabels()}
+            onChange={v => compactionMethodMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="session.compaction_method"
+          />
           <SettingsInput
             label={i18nT('pages.settings.chatPanel.compaction_wait_budget')}
             description={i18nT('pages.settings.chatPanel.compaction_wait_budget_description')}

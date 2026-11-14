@@ -1193,11 +1193,13 @@ def _replay_rows(
     pending_messages: list[dict] | None = None,
     current_message: dict | None = None,
     exclude_messages: list[dict] | None = None,
+    skip_rotation_notices: bool = False,
 ) -> list[dict]:
     """Tail of the chain under per-role quotas, in chronological order.
 
     Conversation rows get the full quota whatever the inject volume, which a
-    single bounded query cannot guarantee.
+    single bounded query cannot guarantee. *skip_rotation_notices* is
+    ``_quota_tail``'s.
     """
     messages = conversation_log.read_messages_chained(session_key) if conversation_log else []
     if pending_messages is not None or current_message is not None:
@@ -1209,7 +1211,10 @@ def _replay_rows(
     messages = _without_warm_task_brief_messages(messages)
     messages = [row for row in messages if not _replay.is_context_cap_notice(row)]
     return _replay._quota_tail(
-        messages, conv_max=_REPLAY_CONVERSATION_MAX_ROWS, inject_max=_REPLAY_INJECT_MAX_ROWS
+        messages,
+        conv_max=_REPLAY_CONVERSATION_MAX_ROWS,
+        inject_max=_REPLAY_INJECT_MAX_ROWS,
+        skip_rotation_notices=skip_rotation_notices,
     )
 
 
@@ -1257,6 +1262,7 @@ def build_session_replay(
     current_message: dict | None = None,
     budget_chars: int = _REPLAY_BUDGET_CHARS,
     exclude_messages: list[dict] | None = None,
+    rotation_configured: bool = False,
 ) -> str | None:
     """Build session replay from KiroCrew's conversation_log.
 
@@ -1279,6 +1285,13 @@ def build_session_replay(
     smaller model just like the capped sections do, or it would dominate a 200K
     window). ``None`` ⇒ the 1M reference (unchanged default). The budget is
     scaled by the same factor as the section caps and floored to one message.
+
+    *rotation_configured* is passed when ``session.compaction_method`` names a
+    rotation method. A rotation is judged on a projection that charges exactly
+    this budget for the tail, so the replay then clips an oversized newest row
+    to the budget with the truncation mark, and it leaves out the notices a
+    rotation posted, which would otherwise spend that budget. Without it the
+    newest row is carried whole and every row is admitted.
     """
     messages = _replay_rows(
         conversation_log,
@@ -1287,11 +1300,14 @@ def build_session_replay(
         pending_messages=pending_messages,
         current_message=current_message,
         exclude_messages=exclude_messages,
+        skip_rotation_notices=rotation_configured,
     )
     if not messages:
         return None
 
-    replay = _replay.replay_text(messages, model_window, budget_chars=budget_chars)
+    replay = _replay.replay_text(
+        messages, model_window, budget_chars=budget_chars, clip_newest=rotation_configured
+    )
     replay, _ = redact_exfiltration_urls(replay)
     replay, _ = redact_credentials(replay)
     return replay.translate(_MULTIBYTE_TABLE)

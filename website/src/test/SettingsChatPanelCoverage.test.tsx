@@ -1045,6 +1045,65 @@ describe('ChatPanel — Context', () => {
     await pickOption('Auto-Compact Threshold', 0)
     expect(await screen.findByText(/Failed to save auto-compact threshold/)).toBeInTheDocument()
   })
+
+  it('PATCHes the compaction method with the picked value', async () => {
+    wrap('advanced')
+    await pickOption('Compaction Method', 1)
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('session.compaction_method', 'soft')
+    )
+    await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
+  })
+
+  it('shows a picked compaction method immediately, before the PATCH settles', async () => {
+    let release!: () => void
+    patchConfigMock.mockImplementationOnce(
+      () => new Promise(res => { release = () => res({}) }) as never
+    )
+    wrap('advanced')
+    await openSelect('Compaction Method')
+    fireEvent.click(screen.getByRole('option', { name: 'Soft — rotate session, keep recent turns' }))
+    // The PATCH is still in flight — the trigger must already show the choice.
+    const trigger = screen.getByRole('combobox', { name: 'Compaction Method' })
+    await waitFor(() => expect(trigger).toHaveTextContent('Soft'))
+    expect(patchConfigMock).toHaveBeenCalledTimes(1)
+    release()
+  })
+
+  it('offers native and soft, with native as the marked default', async () => {
+    // The backend's PATCH allowlist accepts exactly native/soft; the full list is
+    // asserted so the '(Default)' marker cannot drift onto a second option. Each
+    // label is one catalog value.
+    wrap('advanced')
+    const opts = await openSelect('Compaction Method')
+    expect(opts.map(o => o.textContent)).toEqual([
+      'Native (Default) — summarize in place',
+      'Soft — rotate session, keep recent turns',
+    ])
+  })
+
+  it('shows the whole selected label on the trigger, with no hover-only copy', async () => {
+    // Each label is short enough for the trigger, so nothing is clipped and no
+    // hover title stands in for it (a title is invisible to keyboard and touch).
+    seedMc({ session: { compaction_method: 'soft' } })
+    wrap('advanced')
+    const trigger = await screen.findByRole('combobox', { name: 'Compaction Method' })
+    await waitFor(() =>
+      expect(trigger).toHaveTextContent('Soft — rotate session, keep recent turns')
+    )
+    expect(trigger).not.toHaveAttribute('title')
+  })
+
+  it('shows the stored method, surfaces a failed write and rolls the pick back', async () => {
+    seedMc({ session: { compaction_method: 'soft' } })
+    rejectOnce(patchConfigMock)
+    wrap('advanced')
+    const trigger = await screen.findByRole('combobox', { name: 'Compaction Method' })
+    await waitFor(() => expect(trigger).toHaveTextContent('Soft'))
+    await pickOption('Compaction Method', 0)
+    expect(await screen.findByText(/Failed to save compaction method/)).toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveTextContent('Soft'))
+  })
 })
 
 describe('ChatPanel — Compaction Wait Budget', () => {

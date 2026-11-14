@@ -283,7 +283,8 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_notice_compaction_after_turn",
             "async function",
-            "(state: 'DashboardState', slot: 'Any', client: 'Any', session_key: 'str') -> 'bool'",
+            "(state: 'DashboardState', slot: 'Any', client: 'Any', session_key: 'str', "
+            "*, rotation_method: 'str' = '') -> 'bool'",
         ),
         ("_COMPACTION_FAILED_RETRIES", "value", "int"),
         ("_COMPACT_FAIL_REASON_MAX_CHARS", "value", "int"),

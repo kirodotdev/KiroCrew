@@ -12647,6 +12647,7 @@
       },
       "compactionCard": {
         "after_turn": "컨텍스트 {{pct}}, 자동 압축 임계값 {{limit}} 초과 — 이 턴이 끝나면 채팅이 요약됩니다",
+        "after_turn_rotation": "컨텍스트 {{pct}}, 자동 압축 임계값 {{limit}} 초과 — 이 턴이 끝나면 채팅이 압축됩니다",
         "no_summary": "완료 — 표시할 요약 없음",
         "summary_hint": "요약이 접혀 있습니다 — 펼쳐서 보기",
         "title": "컨텍스트가 압축되었습니다"
@@ -18874,6 +18875,11 @@
         "turn_time_limit_description": "채팅 턴 하나가 중지되기 전까지 실행될 수 있는 최대 시간입니다. 300~86,400초(24시간). 기본값 14,400초(4시간).",
         "turn_time_limit_hint": "이 제한에 도달한 턴은 중지되지만 디스크에 이미 기록된 작업은 남습니다. 재개하면 이어서 진행됩니다. 전체 테스트 스위트처럼 오래 걸리는 무인 턴에는 값을 늘리세요. 다음 턴부터 적용됩니다.",
         "failed_to_save_compaction_wait_budget": "압축 대기 시간을 저장하지 못했습니다",
+        "compaction_method": "압축 방식",
+        "compaction_method_desc": "자동 압축 임계값에서 실행되는 방식. Soft는 모델을 호출하지 않으며 대시보드 채팅에서만 실행됩니다. 실행할 수 없는 곳에서는 Native가 실행됩니다.",
+        "compaction_method_native": "Native (기본값) — 그 자리에서 요약",
+        "compaction_method_soft": "Soft — 세션 교체, 최근 턴 유지",
+        "failed_to_save_compaction_method": "압축 방식을 저장하지 못했습니다",
         "failed_to_save_turn_time_limit": "턴 시간 제한을 저장하지 못했습니다",
         "kiro_harness_fallback_body": "Kiro 하네스를 사용할 때는 app.kiro.dev에서 관리하는 폴백이 먼저 하네스 내부에서 실행됩니다. 아래 폴백은 {{productName}} 자체 폴백이며, 그 후에도 턴이 실패할 때만 실행됩니다.",
         "kiro_harness_fallback_link": "Kiro 폴백 관리",

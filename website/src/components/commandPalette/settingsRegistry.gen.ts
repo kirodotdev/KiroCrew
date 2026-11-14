@@ -1118,6 +1118,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.compaction-method",
+    "label": "Compaction Method",
+    "labelKey": "pages.settings.chatPanel.compaction_method",
+    "description": "What runs at the Auto-Compact Threshold. Soft calls no model and runs in dashboard chats only; anywhere it cannot run, Native runs.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    },
+    "configKey": "session.compaction_method"
+  },
+  {
     "id": "chat.compaction-time-limit-seconds",
     "label": "Compaction Time Limit (seconds)",
     "labelKey": "pages.settings.chatPanel.compaction_wait_budget",

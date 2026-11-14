@@ -707,6 +707,7 @@ class SessionManager:
     set_compacting_callback = _turn_context.set_compacting_callback
     is_compacting = _turn_context.is_compacting
     compaction_waits_for_turn = _turn_context.compaction_waits_for_turn
+    set_compaction_seed_writer = _turn_context.set_compaction_seed_writer
     mark_needs_reinjection = _turn_context.mark_needs_reinjection
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
     remember_agent_spawn_context = _turn_context.remember_agent_spawn_context
