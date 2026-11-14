@@ -438,6 +438,14 @@ _KNOWN_FIELDS = frozenset(
 )
 
 
+def _optional_text(value: Any) -> str:
+    """An optional display string from app.json: JSON ``null`` is no value.
+
+    ``str(None)`` would show the word "None" as the app's author or licence.
+    """
+    return "" if value is None else str(value)
+
+
 @dataclass
 class AppManifest:
     """Static metadata for a KiroCrew app — readable without executing app code.
@@ -1265,8 +1273,8 @@ class AppManifest:
             version=str(data.get("version", "")),
             displayName=str(data.get("displayName", "")),  # noqa: N815
             description=str(data.get("description", "")),
-            author=str(data.get("author", "")),
-            license=str(data.get("license", "")),
+            author=_optional_text(data.get("author")),
+            license=_optional_text(data.get("license")),
             minKiroCrewVersion=str(data.get("minKiroCrewVersion", "")),  # noqa: N815
             signer=str(data.get("signer", "")),
             signature=str(data.get("signature", "")),

@@ -52,7 +52,7 @@ import {
   appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
 } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
-import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
+import { installedArt, installedArtList, installedArtListAligned, installedIcon, installedPageIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric, fmtCompact, fmtNumber, fmtList } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
@@ -63,7 +63,7 @@ import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
 import { selectionActionGrantLabel } from '../selectionActions/selectionActionRegistry'
 import type { AppInfo, NormalizedRegistryEntry, RegistryEntry } from './appDetailPageTypes'
 import { actionGrant } from '../composerActions/composerActionRegistry'
-import { memoryAccessLabel } from '../components/appstore/memoryAccessLabel'
+import { memoryAccessLabel, memoryRequested } from '../components/appstore/memoryAccessLabel'
 import { managerLabel, originLabel } from './appDetailPageLabels'
 import { ChatSlotsBox, UserSessionReachBox, UserSessionReachStaged, WorkerAutoApproveBox, reachVerbs } from './AppDetailGrantBoxes'
 import { trustGrants } from '../components/appstore/trustGrants'
@@ -386,17 +386,6 @@ export default function AppDetailPage() {
           // since the app IS installed those paths resolve against its own
           // install directory through `installedArt` — no repo identifier, no
           // clone, no network.
-          // A page's own icon ships inside the app's UI bundle, not at the repo
-          // root, so a relative value resolves against the app's UI asset route —
-          // the same base the rail and the command palette use. A cross-origin
-          // value is refused here for the same reason it is everywhere else on
-          // this path: the manifest is untrusted, and requesting it would leak the
-          // viewer to whatever host it names.
-          const pageIcon: unknown = m.ui?.pages?.[0]?.iconUrl
-          const pageIconKind = classifyManifestArt(pageIcon)
-          const pageIconUrl = pageIconKind === 'same-origin' ? pageIcon as string
-            : pageIconKind === 'relative' ? `/apps/${installed.name}/ui/${pageIcon as string}`
-              : ''
           setApp({
             name: installed.name,
             displayName: installed.displayName || m.displayName || installed.name,
@@ -424,7 +413,7 @@ export default function AppDetailPage() {
             // through the same resolver rather than straight to `<img>`, so a
             // manifest naming an external host is refused on this surface too.
             iconUrl: registryEntry?.iconUrl
-              || installedIcon(m.iconPath, m.iconUrl, installed.name) || pageIconUrl || '',
+              || installedIcon(m.iconPath, m.iconUrl, installed.name) || installedPageIcon(m.ui?.pages?.[0]?.iconUrl, installed.name) || '',
             iconUrlDark: registryEntry?.iconUrlDark
               || installedIcon(m.iconPathDark, m.iconUrlDark, installed.name) || '',
             // The app IS installed on this branch, so its icon bytes are on
@@ -1818,7 +1807,7 @@ export default function AppDetailPage() {
                   {app.manifest.permissions.storage && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.storage_yes')}</span>}
                   {app.manifest.permissions.cron && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.cron_yes')}</span>}
                   {app.manifest.permissions.network && <span className="flex items-center gap-1">{i18nT('pages.appDetailPage.network_yes')}</span>}
-                  {app.manifest.permissions.memory && <span className="flex items-center gap-1">{memoryAccessLabel(app.manifest.permissions.memory)}</span>}
+                  {memoryRequested(app.manifest.permissions.memory) && <span className="flex items-center gap-1">{memoryAccessLabel(app.manifest.permissions.memory as boolean | string)}</span>}
                 </div>
               </div>
             </Card>
