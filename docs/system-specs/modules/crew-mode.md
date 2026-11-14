@@ -1901,9 +1901,11 @@ count is not read as the whole crew (#21852), the list ends with one muted line
 naming the Bots the rule hides by the label their row shows, the ones the
 user made first (origin Mine, or created on the dashboard) and then in roster
 order: all of them when there are up to three (`hidden_named_hint`), else the
-first three and a count of the rest (`hidden_more_hint`), saying that the count
-above leaves them out (`member-hidden-hint`); the form that names every hidden
-Bot also says the search finds them. The line is drawn only
+first three and a count of the rest as the last item of the same list
+(`hidden_more_count` inside `hidden_more_hint`, so each language places one
+conjunction), saying that the count above leaves them out
+(`member-hidden-hint`); the form that names every hidden Bot also says the
+search finds them. The line is drawn only
 while no search is typed, no filter narrows the list, and at least one row is
 listed (the every-row-hidden case already has its own line).
 Before any of the landing rules, a bare visit opens Bot while no message has been exchanged with it (`resolveMateLanding`:

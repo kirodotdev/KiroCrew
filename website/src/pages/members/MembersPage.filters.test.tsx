@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, onTestFinished } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
+import { i18next } from '../../i18n/all'
 
 /* Same api mock shape as MembersPage.test.tsx, plus the crew update endpoint
  * the star button writes through. */
@@ -514,7 +515,7 @@ describe('MembersPage hides unlisted mates', () => {
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     // The whole line: the counted form names no action.
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
-      "legacy-aim, pkg-three, pkg-tool and 1 more bot you haven't used yet are hidden and aren't counted above.",
+      "legacy-aim, pkg-three, pkg-tool, and 1 more bot you haven't used yet are hidden and aren't counted above.",
     )
   })
 
@@ -530,7 +531,7 @@ describe('MembersPage hides unlisted mates', () => {
     ])
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
-      "Zebra Notes, legacy-aim, pkg-three and 2 more bots you haven't used yet are hidden and aren't counted above.",
+      "Zebra Notes, legacy-aim, pkg-three, and 2 more bots you haven't used yet are hidden and aren't counted above.",
     )
   })
 
@@ -543,8 +544,22 @@ describe('MembersPage hides unlisted mates', () => {
     ])
     await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
-      "legacy-aim, pkg-four, pkg-three and 2 more bots you haven't used yet are hidden and aren't counted above.",
+      "legacy-aim, pkg-four, pkg-three, and 2 more bots you haven't used yet are hidden and aren't counted above.",
     )
+  })
+
+  // The named mates and "N more" are one list, so each language places
+  // one conjunction and its own separator.
+  it.each([
+    ['de', 'legacy-aim, pkg-three, pkg-tool und 1 weiterer Bot, die du noch nicht genutzt hast, sind ausgeblendet und werden oben nicht mitgezählt.'],
+    ['zh-CN', 'legacy-aim、pkg-three、pkg-tool和另外 1 个 Bot 尚未使用，已隐藏，未计入上方的数量。'],
+    ['ja', 'legacy-aim、pkg-three、pkg-tool、ほか 1 個の Bot はまだ使っていないため非表示で、上の数には含まれていません。'],
+  ])('joins the named and the counted hidden mates as one %s list', async (lang, line) => {
+    onTestFinished(() => i18next.changeLanguage('en'))
+    await i18next.changeLanguage(lang)
+    await renderPage([...MIXED, row('pkg-two', { ...NO }), row('pkg-three', { ...NO })])
+    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    expect(screen.getByTestId('member-hidden-hint').textContent).toBe(line)
   })
 
   it('says nothing when the rule hides no mate', async () => {

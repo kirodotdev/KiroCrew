@@ -970,8 +970,12 @@ export function MembersPageRosterColumn({
                         names: fmtList(hiddenNames),
                       })
                     : t('pages.membersPage.hidden_more_hint', {
-                        count: hiddenCount - hiddenNames.length,
-                        names: fmtList(hiddenNames, { type: 'unit', style: 'short' }),
+                        // "N more bots" is the list's last item, so each language
+                        // places its one conjunction and its own separator.
+                        names: fmtList([
+                          ...hiddenNames,
+                          t('pages.membersPage.hidden_more_count', { count: hiddenCount - hiddenNames.length }),
+                        ]),
                       })}
                 </li>
               )}
