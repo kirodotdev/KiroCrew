@@ -407,6 +407,23 @@ class _DrainingBackend:
     digest: str
 
 
+@dataclass(frozen=True)
+class ServerDrain:
+    """What :meth:`BackendPool.drain_server` did to one server's backends.
+
+    ``evicted`` were idle and are already shut down. ``draining`` were in use
+    (or reserved mid-attach) and keep serving their in-flight calls until their
+    refcount reaches zero or the drain deadline passes. ``private`` are
+    connection-private backends of the same server, left alone: each belongs to
+    one session for that session's lifetime and no later acquire can reach it,
+    so it ends with its session rather than on a deadline.
+    """
+
+    evicted: int
+    draining: int
+    private: int
+
+
 class ResidentSlot:
     """One ``max_backends`` slot claimed BEFORE its backend is spawned.
 
@@ -525,6 +542,12 @@ class BackendPool:
         # cutover landed while it was suspended and refuse to pool its
         # (now stale-credential) backend as active. See ``get_or_create``.
         self._drain_epoch = 0
+        # The same guard scoped to ONE server: ``drain_server`` bumps only the
+        # named server's entry, so a spawn of that server that started before
+        # the recycle (reading its old boot-time input) is refused, while a
+        # spawn of any other server is not made to respawn for nothing. Keyed by
+        # server name; an entry exists only for a server an operator recycled.
+        self._server_drain_epochs: dict[str, int] = {}
 
     @property
     def max_backends(self) -> int:
@@ -650,7 +673,7 @@ class BackendPool:
         backend: "Backend",
         *,
         reserve: bool = False,
-        spawn_epoch: Optional[int] = None,
+        spawn_epoch: Optional[tuple[int, int]] = None,
         reusable: Optional[Callable[["Backend"], bool]] = None,
     ) -> None:
         """Register a freshly-spawned backend under ``key``.
@@ -668,9 +691,10 @@ class BackendPool:
         rejection the stub must WAIT on -- never an authorisation to run the
         backend unpooled, which would put the launch outside every budget.
 
-        ``spawn_epoch`` is the :attr:`_drain_epoch` value observed by the
-        caller immediately before it started spawning. If a blue-green
-        cutover advanced the epoch while the spawn was in flight, the backend
+        ``spawn_epoch`` is the :meth:`_spawn_epoch` value (the pool-wide
+        :attr:`_drain_epoch` and this server's own recycle epoch) observed by
+        the caller immediately before it started spawning. If a blue-green
+        cutover advanced either while the spawn was in flight, the backend
         was launched with the pre-rotation credential and MUST NOT be pooled
         as active — :class:`_DrainedDuringSpawn` is raised so
         :meth:`get_or_create` discards it and respawns fresh. ``None`` (the
@@ -681,7 +705,7 @@ class BackendPool:
         """
         digest = key.stable_hash()
         async with self._lock:
-            if spawn_epoch is not None and spawn_epoch != self._drain_epoch:
+            if spawn_epoch is not None and spawn_epoch != self._spawn_epoch(key.server_name):
                 raise _DrainedDuringSpawn(
                     f"blue-green cutover during spawn of {key.human_readable()}"
                 )
@@ -838,7 +862,7 @@ class BackendPool:
                 # the stub retries against, never an unaccounted per-session exec —
                 # rather than pooling a possibly-stale backend.
                 for _attempt in range(_MAX_SPAWN_DRAIN_RETRIES + 1):
-                    spawn_epoch = self._drain_epoch
+                    spawn_epoch = self._spawn_epoch(key.server_name)
                     backend = await spawn()
                     try:
                         await self.add(
@@ -1324,6 +1348,72 @@ class BackendPool:
                     digest=digest,
                 )
             )
+
+    def _spawn_epoch(self, server_name: str) -> tuple[int, int]:
+        """The generation a spawn of ``server_name`` is checked against in :meth:`add`.
+
+        The pool-wide credential-rotation epoch and the server's own recycle
+        epoch: a spawn is stale when EITHER moved while it was in flight.
+        """
+        return (self._drain_epoch, self._server_drain_epochs.get(server_name, 0))
+
+    async def drain_server(
+        self,
+        server_name: str,
+        deadline_secs: float = DRAIN_DEADLINE_SECS,
+    ) -> ServerDrain:
+        """Recycle every pooled backend of one server so the next acquire boots fresh.
+
+        For a server whose pool key did not change but whose boot-time input
+        did -- a token it reads from a file at start-up, or an env key the
+        pool-identity hash leaves out -- nothing else replaces the running
+        process short of restarting the whole daemon. Idle backends (refcount 0,
+        not reserved), prewarmed ones included, are shut down now. In-use or
+        reserved ones move to the blue-green draining list with the same
+        deadline the credential-rotation cutover uses, so their in-flight calls
+        finish and :meth:`reap_draining` takes them down. Either way the
+        backend leaves the acquire index at once, so the next session to attach
+        spawns a new process.
+
+        Only this server's recycle epoch is bumped, so a spawn of it already in
+        flight (started on the old input) is refused by :meth:`add` and
+        respawned, while spawns of other servers are untouched.
+        Connection-private backends are counted and left alone (see
+        :class:`ServerDrain`).
+        """
+        deadline = time.monotonic() + deadline_secs
+        idle: list["Backend"] = []
+        moved = 0
+        async with self._lock:
+            self._server_drain_epochs[server_name] = (
+                self._server_drain_epochs.get(server_name, 0) + 1
+            )
+            for digest in [
+                d for d, b in self._backends.items() if b.pool_key.server_name == server_name
+            ]:
+                backend = self._backends.pop(digest)
+                # Same spawn-lock rule as _drain_locked: only an idle
+                # lock is reaped, a held one belongs to an in-flight spawn.
+                lock = self._spawn_locks.get(digest)
+                if lock is not None and _lock_idle(lock):
+                    self._spawn_locks.pop(digest, None)
+                if backend.refcount == 0 and digest not in self._reserved_digests:
+                    idle.append(backend)
+                else:
+                    self._draining.append(
+                        _DrainingBackend(backend=backend, deadline=deadline, digest=digest)
+                    )
+                    moved += 1
+            private = sum(
+                1 for b in self._exclusive.values() if b.pool_key.server_name == server_name
+            )
+        # Hand every idle backend to spawn_shutdown before the first await:
+        # they already left _backends, so if teardown cancels this handler
+        # mid-drain, shutdown_all still finds and joins their reaps.
+        reaps = [self.spawn_shutdown(backend) for backend in idle]
+        if reaps:
+            await asyncio.shield(asyncio.gather(*reaps))
+        return ServerDrain(evicted=len(idle), draining=moved, private=private)
 
     async def reap_draining(self) -> list["Backend"]:
         """Reap draining backends whose refcount hit 0 or whose deadline

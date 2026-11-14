@@ -989,6 +989,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # kills identity-confirmed backend trees through the pinned kill helpers;
         # it launches nothing an agent chose.
         "mcp_gateway/daemon_control.py::stop_daemon",
+        # NOT a subprocess spawn either: the same ``asyncio.run`` match, driving
+        # the one-shot ``_recycle_async`` coroutine for ``kirocrew mcp reload``.
+        # It sends one recycle-server frame to the already-running daemon over
+        # the same local endpoint; no child process and no argv here.
+        "mcp_gateway/daemon_control.py::recycle_server",
         "mcp_gateway/gatewayd.py::main",
         "mcp_gateway/manager.py::_spawn_once",
         "mcp_gateway/stub.py::main",
