@@ -7860,6 +7860,7 @@
       "agent_wrong_version_detail": "このホストの {{name}} は {{version}} で、{{productName}} が検証していないバージョンです。使用するには検証済みのリリースをインストールします。",
       "agent_install_on_host": "ゲートウェイホストに {{name}} をインストールします。",
       "agent_missing_components": "不足しているコンポーネント：{{components}}",
+      "agent_install_needs_node": "このコマンドには、ゲートウェイホストに Node.js と npm が必要です。<0>Node.js をダウンロード</0>",
       "agent_install_then_check": "インストール後に「再度確認」を押すと、ゲートウェイが {{name}} をもう一度探します。",
       "agent_restart_required_detail": "{{name}} はゲートウェイホストにインストール済みです。「再度確認」を押すと取り込みます。それでもこの表示が残る場合は、そのホスト上で {{productName}} を再起動してください。",
       "agent_unverified_detail": "{{productName}} は {{name}} がインストールされていることを確認できませんでした。このエージェントを使用する前に、「再度確認」を押してインストールを確認します。選んだエージェントの準備ができるまで、セットアップは開いたままになります。エージェントはここで切り替えることも、後から「設定 > エージェントハーネス」で切り替えることもできます。",

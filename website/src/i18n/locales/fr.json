@@ -8278,6 +8278,7 @@
       "agent_wrong_version_detail": "Cet hôte a {{name}} {{version}}, que {{productName}} n’a pas vérifiée. Installe la version vérifiée pour l’utiliser.",
       "agent_install_on_host": "Installe {{name}} sur l’hôte de la passerelle.",
       "agent_missing_components": "Composants manquants : {{components}}",
+      "agent_install_needs_node": "Cette commande nécessite Node.js et npm sur l’hôte de la passerelle. <0>Télécharger Node.js</0>",
       "agent_install_then_check": "Après l’installation, appuie sur Revérifier pour que la passerelle recherche à nouveau {{name}}.",
       "agent_restart_required_detail": "{{name}} est installé sur l’hôte de la passerelle. Appuie sur Revérifier pour qu’il soit pris en compte. Si cette ligne reste, redémarre {{productName}} sur cet hôte.",
       "agent_unverified_detail": "{{productName}} n’a pas pu confirmer que {{name}} est installé. Appuie sur Revérifier pour vérifier l’installation avant d’utiliser cet agent. La configuration reste ouverte jusqu’à ce que l’agent choisi soit prêt. Tu peux changer d’agent ici, ou plus tard dans Paramètres > Harness de l’agent.",
