@@ -31,6 +31,13 @@ SCHEME = "kirocrew"
 #: newline, which the JavaScript regex (no ``m`` flag) does not.
 _SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 
+#: Mirrors ``CREW_SLOT_KEY_RE`` in website/electron/deep-link.js: a crew link's key
+#: is also stored as that crew's last-chat hint, which holds at most 128 characters.
+_CREW_SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+#: Mirrors ``CREW_ID_RE`` in website/electron/deep-link.js, the registry's crew id rule.
+_CREW_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
 #: How long ``open_url`` waits for ``open`` / ``xdg-open`` to report whether an
 #: application took the URL.
 _LAUNCHER_WAIT_SECS = 2.0
@@ -40,26 +47,43 @@ class DeepLinkError(ValueError):
     """A target the desktop app's resolver would refuse."""
 
 
-def build_deep_link(*, session: str | None = None) -> str:
-    """Return the ``kirocrew://`` URL for *session*, or the bare scheme for none.
+def build_deep_link(*, session: str | None = None, crew: str | None = None) -> str:
+    """Return the ``kirocrew://`` URL for *session* on the hub or on *crew*.
 
-    Raises :class:`DeepLinkError` for a key the desktop resolver would refuse,
-    so the CLI fails here with a reason instead of launching the app onto a URL
-    it then drops.
+    With no session the URL is the bare scheme, which brings the app forward.
+    Raises :class:`DeepLinkError` for a key or crew id the desktop resolver would
+    refuse, so the CLI fails here with a reason instead of launching the app onto
+    a URL it then drops.
     """
     if not session:
+        if crew:
+            raise DeepLinkError(
+                "--crew needs a session key: the link opens one session on that crew"
+            )
         return f"{SCHEME}://"
     if "%" in session:
         # The help points at the dashboard URL's ``?sid=`` value, which the dashboard
         # writes percent-encoded. ``%`` is outside the key grammar, so decoding once
         # changes nothing a valid key could mean; decoded junk still fails below.
         session = unquote(session)
-    if not _SLOT_KEY_RE.fullmatch(session):
+    if not crew:
+        if not _SLOT_KEY_RE.fullmatch(session):
+            raise DeepLinkError(
+                "session key may contain letters, digits, '.', '_', ':' and '-', "
+                "must start with a letter or digit, and be at most 200 characters"
+            )
+        return f"{SCHEME}://chat?sid={quote(session, safe='')}"
+    if not _CREW_ID_RE.fullmatch(crew):
         raise DeepLinkError(
-            "session key may contain letters, digits, '.', '_', ':' and '-', "
-            "must start with a letter or digit, and be at most 200 characters"
+            "crew id is the crew's key in instances.json (lowercase letters, digits "
+            "and '-', at most 63 characters), not its display name"
         )
-    return f"{SCHEME}://chat?sid={quote(session, safe='')}"
+    if not _CREW_SLOT_KEY_RE.fullmatch(session):
+        raise DeepLinkError(
+            "session key on a crew may contain letters, digits, '.', '_', ':' and '-', "
+            "must start with a letter or digit, and be at most 128 characters"
+        )
+    return f"{SCHEME}://chat?crew={crew}&sid={quote(session, safe='')}"
 
 
 def open_url(url: str, platform: str = sys.platform) -> tuple[bool, str]:
@@ -91,7 +115,9 @@ def open_url(url: str, platform: str = sys.platform) -> tuple[bool, str]:
 def cmd_open(args) -> int:  # type: ignore[no-untyped-def]  # argparse.Namespace
     """Entry point for ``kirocrew open``."""
     try:
-        url = build_deep_link(session=getattr(args, "session", None))
+        url = build_deep_link(
+            session=getattr(args, "session", None), crew=getattr(args, "crew", None)
+        )
     except DeepLinkError as exc:
         print(f"❌ {exc}", file=sys.stderr)
         return 2

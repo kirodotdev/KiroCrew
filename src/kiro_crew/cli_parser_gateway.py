@@ -382,7 +382,8 @@ def register_open_parser(sub: _Commands) -> None:
         "open",
         description=(
             "Open the Kiro Crew desktop app on a session through its kirocrew:// URL scheme. "
-            "With no session the app is brought forward. "
+            "With no session the app is brought forward; --crew opens the session on a "
+            "connected remote crew. "
             "Requires the desktop app (the scheme is registered by its installer); "
             "--print writes the URL instead of opening it, for scripts and other apps."
         ),
@@ -392,6 +393,15 @@ def register_open_parser(sub: _Commands) -> None:
         nargs="?",
         default=None,
         help="Session key: the ?sid= value in the dashboard's URL when that session is open",
+    )
+    open_parser.add_argument(
+        "--crew",
+        default=None,
+        metavar="CREW_ID",
+        help=(
+            "Open the session on this connected remote crew, named by its id "
+            "(its key in instances.json, not its display name)"
+        ),
     )
     open_parser.add_argument(
         "--print",
