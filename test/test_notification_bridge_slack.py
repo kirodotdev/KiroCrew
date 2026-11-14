@@ -497,3 +497,50 @@ class TestRender:
         assert len(slack.posts) > 1
         assert "".join(text for _, text in slack.posts).count("&amp;") == 20000
         assert sel_log.deliveries[-1]["outcome"] == "completed"
+
+
+class _BlocksSlack(_FakeSlack):
+    """A Slack client that also posts Block Kit, as the action notes need."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocks: list[tuple[list[dict[str, Any]], str]] = []
+
+    async def post_blocks(self, channel: str, blocks: list[dict[str, Any]], text: str) -> str:
+        self.blocks.append((blocks, text))
+        return "2.0"
+
+
+def _shown(slack: _BlocksSlack) -> str:
+    """Every text a person sees in the DM: plain messages and the blocks' sections.
+
+    A message's top-level ``text`` is not here: with blocks present, Slack shows it
+    only as the notification fallback, never in the message.
+    """
+    texts = [text for _, text in slack.posts]
+    for blocks, _fallback in slack.blocks:
+        texts += [b["text"]["text"] for b in blocks if b.get("type") == "section"]
+    return "\n".join(texts)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["question", "approval"])
+async def test_an_action_note_too_long_for_one_section_still_shows_its_text(kind):
+    from kiro_crew.notifications import bridge_approval_note as approval_mod
+    from kiro_crew.notifications import bridge_question_note as question_mod
+
+    body = "q" * 4000  # Longer than one section block, shorter than one message.
+    note = _note(channel="system.approval", body=body)
+    note[approval_mod.ACTION_TOKEN_KEY] = "dashboard:s|7|nonce"
+    if kind == "question":
+        note[approval_mod.PRODUCER_KEY] = question_mod.PRODUCER
+        note[question_mod.OPTIONS_KEY] = ["Yes", "No"]
+    else:
+        note[approval_mod.PRODUCER_KEY] = approval_mod.PRODUCER
+        note[approval_mod.APPROVAL_DETAIL_KEY] = "ls"
+    slack = _BlocksSlack()
+    state = SimpleNamespace(slack_client=slack, owner_id="U-OWNER", bridge_actions=None)
+    await SlackBridgeSink(state).deliver(note)
+    assert body in _shown(slack), "the owner can read what the buttons answer"
+    [(blocks, _fallback)] = slack.blocks
+    assert blocks[-1]["type"] == "actions", "the buttons still sit under the note"

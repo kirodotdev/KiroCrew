@@ -32,8 +32,8 @@ from kiro_crew.slack.retry import open_dm_with_retry
 #: The marker a critical note's first line carries.
 _CRITICAL_MARKER = ":rotating_light:"
 
-#: Slack's limit on a section block's text. A longer last part is posted as the
-#: message text with the buttons alone in its blocks.
+#: Slack's limit on a section block's text. A longer last part is posted as its own
+#: message, ahead of the buttons.
 _SECTION_MAX = 3000
 
 
@@ -219,8 +219,14 @@ class SlackBridgeSink:
             raise BridgeTransportUnavailable("slack returned no DM channel for the owner")
         parts = render_slack_parts(note)
         token, build = _actions_for(note)
-        # The buttons ride on the last part, so they sit under the whole note.
+        # The buttons ride on the last part, so they sit under the whole note. A
+        # last part too long for one section block is posted as its own message
+        # first: with blocks present, Slack shows a message's text only as the
+        # notification fallback, so the buttons would sit under nothing.
         last = parts.pop() if token and parts else ""
+        if len(last) > _SECTION_MAX:
+            parts.append(last)
+            last = ""
         # In order; a failed part raises, so the delivery is audited as an error
         # rather than completed with its tail missing.
         for part in parts:
