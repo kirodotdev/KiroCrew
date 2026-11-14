@@ -9,7 +9,7 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
+Instance fields written: ``_activated_model``, ``_adopted_substitute_model``, ``_agent_accepts_image``,
 ``_agent_env_snapshot``, ``_agent_version``, ``_agent_version_read``, ``_can_load_session``, ``_child_pids``,
 ``_derived_spec_snapshot``, ``_fork_request``, ``_jsonl_pos``, ``_kill_sent``,
 ``_last_activity``, ``_last_substitution_model``, ``_mode_frame_awaited``,
@@ -745,6 +745,10 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
             _sub_log,
         )
         self._model = substitute
+        # Named so the re-seed writes ``model`` even on a cold advertised-model
+        # cache: without it the user's own settings still name the restricted
+        # model and the retry is refused the same way.
+        self._adopted_substitute_model = substitute
         # Re-seed settings.local.json so the fresh SettingsManager the adapter
         # builds for the retry resolves the substitute model (it merges
         # settings sources each session/new).
