@@ -16,8 +16,9 @@ latched value can be arbitrarily stale. That splits the callers in two:
   authority: one has no turn at all, the other has already rewritten durable
   history by the time the turn fails. See
   ``docs/system-specs/modules/acp-client.md`` § "Poll-driven spawn sites are
-  readiness-gated". The reruns block only while their turn runs on a harness
-  that signs in via kiro-cli (:func:`rerun_signs_in_via_kiro_cli`).
+  readiness-gated". The reruns and ``POST /v1/chat/completions`` block only
+  while their turn runs on a harness that signs in via kiro-cli
+  (:func:`rerun_signs_in_via_kiro_cli`).
 """
 
 from __future__ import annotations
@@ -297,7 +298,8 @@ async def reject_if_kiro_unverified(
       collectors take only ``chunk``/``assistant`` roles, so an ``AcpAuthRequired``
       turn's ``error`` card is invisible and the request would answer 200 with
       empty content, which an SDK client cannot tell apart from a model that said
-      nothing.
+      nothing. Like the reruns, it asks only when its turn runs on a harness that
+      signs in via kiro-cli.
 
     Ordinary sends are deliberately NOT gated: they mutate nothing up front, so a
     stale latch must not block them (see the module docstring). That includes
@@ -342,9 +344,9 @@ async def kiro_latched_ready(request: web.Request) -> bool:
 
 
 async def rerun_signs_in_via_kiro_cli(
-    sessions: SessionManager | None, slot: _ChatSlot | None
+    sessions: SessionManager | None, slot: _ChatSlot | None, *, reuses_live: bool = False
 ) -> bool:
-    """Whether a rerun on *slot* starts its turn on a harness that signs in via kiro-cli.
+    """Whether a rerun or completion on *slot* starts its turn on a harness that signs in via kiro-cli.
 
     The latch :func:`reject_if_kiro_unverified` reads is a kiro-cli verdict, so it
     describes only the harnesses in ``backends_retired_by_host_logout()``. On any
@@ -357,20 +359,41 @@ async def rerun_signs_in_via_kiro_cli(
     runs ahead of it until the config watcher applies a write. Edit-resend and
     rewind discard the live conversation, so their turn starts there. Regenerate
     keeps the live session, but rewrites nothing unless its turn replies
-    (``regenerate_swap``). No slot, no session manager, or no readable answer
-    keeps the gate.
+    (``regenerate_swap``). A caller whose turn reuses the live session
+    (*reuses_live*, ``/v1/chat/completions``) also reads the provider already
+    registered for it: a live one runs the turn whatever the config now
+    selects, so its backend decides, and one that names no backend keeps the
+    gate. No slot, no session manager, or no readable answer keeps the gate.
     """
     if slot is None or sessions is None:
         return True
     try:
         # Deferred: importing chat_handlers loads this module.
+        from kiro_crew.agent_sdk.capabilities import SessionCapabilities
         from kiro_crew.dashboard.chat_handlers import _configured_backend_for_slot
+        from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 
         backend = await _configured_backend_for_slot(slot, sessions._cfg)
+        provider = None
+        if reuses_live:
+            key = effective_session_key(slot)
+            provider = sessions.get_provider(key)
+            # A dead provider is replaced from the config, so only a live one
+            # names the harness of this turn.
+            if provider is not None and await sessions.is_provider_alive(key) is not True:
+                provider = None
     except Exception:  # noqa: BLE001 - an unreadable selection keeps the gate
         logger.debug("Rerun backend unreadable; keeping the kiro-cli gate", exc_info=True)
         return True
-    return backend in backends_retired_by_host_logout()
+    kiro_cli = backends_retired_by_host_logout()
+    if provider is not None:
+        # The live provider runs this turn, whatever the config now selects.
+        # One that names no backend keeps the gate.
+        caps = getattr(provider, "capabilities", None)
+        if not isinstance(caps, SessionCapabilities):
+            return True
+        return caps.backend in kiro_cli
+    return backend in kiro_cli
 
 
 def refuse_rerun_after_signed_out_turn(slot: _ChatSlot) -> web.Response | None:
