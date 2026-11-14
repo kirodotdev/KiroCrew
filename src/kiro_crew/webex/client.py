@@ -137,16 +137,14 @@ _SAFE_QUARANTINE = frozenset(("safe", ""))
 # by the same envelope and a room's membership is small either way.
 _PERSON_CACHE_MAX = 256
 
-# How long to keep re-requesting a file Webex is still scanning, in total. A
-# BUDGET rather than an attempt count: the server sets the pacing through
-# Retry-After, so N attempts is an unpredictable amount of wall clock — four
-# attempts at the 1s floor gives a scan 3 seconds, which it routinely outlasts,
-# and the file is then lost for the turn. Webex's own second chance (the `update`
-# activity) cannot recover it either, because the `share` that started this ingest
-# has already dedup-marked the message id.
+# Total time to keep re-requesting a file Webex is still scanning. A time
+# BUDGET, not an attempt count: the server paces retries with Retry-After, so
+# four attempts at the 1s floor give a scan 3 seconds, which it often outlasts,
+# and the file is lost for the turn. The later `update` activity cannot recover
+# it, since the `share` already dedup-marked the message id.
 #
-# Bounded because the user is waiting on a reply, and this runs before the turn
-# starts: past this the honest answer is "still scanning, re-send shortly".
+# Bounded because the user is waiting and the turn has not started; past it the
+# answer is "still scanning, re-send shortly".
 _SCAN_WAIT_BUDGET_S = 60.0
 
 # Host suffixes a Device Manager URL may name. The bearer token rides device
