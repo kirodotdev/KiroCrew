@@ -14,6 +14,7 @@ Instance fields written: ``_client``, ``_cloud_governance_scope``,
 ``startup_notice``.
 
 Instance fields read: ``_accepts_elicitation``, ``_child_fidelity_aware``, ``_crew_agent``,
+``background_qos``,
 ``_harness_pin``, ``_keepalive_routed``, ``_on_gate_acquired``, ``_on_gate_queued``,
 ``_tool_search``, ``focus_resume``, ``member_context``, ``memory_mode``, ``owning_app``,
 ``start_priority``.
@@ -657,6 +658,7 @@ async def _start_kiro_runtime_impl(
         # The session this provider serves and the app it runs under, read for
         # the profiles its KAS projection meets.
         governance_scope=(self._owning_session_key(), getattr(self, "owning_app", "") or ""),
+        background_qos=self.background_qos,
     )
     # One priority for both start queues this path enters, set by the session
     # layer for this start (rule: ``kiro_crew.start_priority``).
@@ -1028,6 +1030,7 @@ async def _start_kiro_runtime_impl(
                         self._owning_session_key(),
                         getattr(self, "owning_app", "") or "",
                     ),
+                    background_qos=self.background_qos,
                 )
                 if remote is not None:
                     await attach_remote_workspace(runtime)

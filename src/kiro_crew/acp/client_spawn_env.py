@@ -748,7 +748,9 @@ def apply_pod_bundle_spawn(
     return [bundle, *argv[1:]], False
 
 
-def finish_suspended_spawn(process: asyncio.subprocess.Process, pid: int, *, label: str) -> None:
+def finish_suspended_spawn(
+    process: asyncio.subprocess.Process, pid: int, *, label: str, background: bool = False
+) -> None:
     """Apply the Windows resource ceiling to a just-spawned child, then resume it.
 
     **Call this from an executor, never inline on the event loop.** On Windows it
@@ -799,10 +801,16 @@ def finish_suspended_spawn(process: asyncio.subprocess.Process, pid: int, *, lab
     That asymmetry is deliberate: an unconfirmed pid loses only its ceiling,
     which already fails soft by contract, while nothing can wedge or die by
     mistake.
+
+    *background* is the runtime's background role, handed to the ceiling so
+    ``agent.windows_background_qos`` can mark the tree as background work while
+    it is still suspended (``kiro_crew.windows_background_qos``).
     """
     owned = not platform_compat.IS_WINDOWS or platform_compat.get_ppid(pid) == os.getpid()
     try:
-        if owned:
+        if owned and background:
+            apply_windows_resource_ceiling(pid, background=True)
+        elif owned:
             apply_windows_resource_ceiling(pid)
         else:
             logger.debug(

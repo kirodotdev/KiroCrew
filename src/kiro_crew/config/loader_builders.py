@@ -939,6 +939,7 @@ def _agent_section_fields(agent_data: dict) -> AgentConfig:
             "subagent_auto_max", _safe_int, 3, SUBAGENT_AUTO_MAX_CEILING
         ),
         subagent_spawn_stagger_secs=section.read("subagent_spawn_stagger_secs", _safe_float),
+        windows_background_qos=section.read("windows_background_qos", _safe_bool),
         spawn_min_memory_gb=section.read("spawn_min_memory_gb", _safe_float),
         resource_pressure_gb=section.read("resource_pressure_gb", _safe_float),
         resource_critical_gb=section.read("resource_critical_gb", _safe_float),

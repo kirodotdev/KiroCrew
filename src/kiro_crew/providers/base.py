@@ -136,6 +136,10 @@ class LLMProvider(ABC):
     #: it all the same (rule: ``acp.mcp_start_wait.person_waits``). A provider
     #: that resumes nothing never reads it.
     focus_resume: bool = False
+    #: True when the session layer starts this provider for background work (a
+    #: task run's own process); its unshared ACP runtime is then built
+    #: ``background_qos`` (``kiro_crew.windows_background_qos``).
+    background_qos: bool = False
 
     #: True only on a provider whose ``supports_effort()`` reports the live
     #: model. The base ``supports_effort()`` returns a placeholder False, so a

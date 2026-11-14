@@ -729,6 +729,33 @@ Two details are load-bearing rather than incidental:
   handle, and ending that runtime ends the job after the exact-handle drain, so a
   member whose parent exited first goes too; a gateway exit just closes it.
 
+### Sub-agent work as background work (opt-in)
+
+With `agent.windows_background_qos` set to `true` (off by default), two
+separate processes are marked as background work while still suspended, through
+the same `apply_windows_resource_ceiling` seam: the process a chat's task runs
+use, and the shared sub-agent runtime a chat's sub-agents use when the chat
+cannot host them in its own process
+(`session_allocation_parts.companions`). The process's Job object gets a
+weight-based CPU share of 3 (Windows' default is 5), it moves to
+`BELOW_NORMAL_PRIORITY_CLASS`, which the git, build and test processes it
+starts inherit, and it gets EcoQoS (`SetProcessInformation(ProcessPowerThrottling)`,
+what Task Manager's Efficiency mode sets). The priority class and the weight
+only matter when the CPU is contended, so the chat you are in gets the CPU
+first; EcoQoS asks Windows to lower clocks and prefer efficiency cores whether
+or not it is, so it can slow that work on an idle machine too. A process a
+person's own task run started (`FOREGROUND` start priority) is not marked, but
+the process is cached per chat, so a person's task run that reuses one that
+background work started runs marked until that process is replaced. Each
+call fails soft: a build without EcoQoS logs once and keeps the other two.
+
+Sub-agents that share the chat's own kiro-cli process, the default while
+`agent.session_sharing` is on, are not marked: the chat runs in that process,
+and a process-level hint cannot tell the two apart. Not covered yet: dedicated
+sub-agent processes (session sharing off, `keep`, a remote workspace), the
+`_bg` helper runtime, MCP gateway backends and cron scripts
+([#35537](https://github.com/kirodotdev/KiroCrew/issues/35537)).
+
 Windows pod teardown does not infer a clean stop from the gateway PID record
 vanishing. Before `/End`, it opens an exact handle to the recorded gateway and
 validates that handle's creation identity against the record, then retains exact
