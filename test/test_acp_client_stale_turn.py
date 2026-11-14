@@ -816,9 +816,11 @@ class TestStaleTurnProbeAccounting:
             ]
         )
 
-        # Cutoff 0 so every silent read is past it: the only thing that can keep
-        # the turn alive on the first read is the priming deferral.
-        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", 0.0):
+        # A negative cutoff so every silent read is past it: the only thing that
+        # can keep the turn alive on the first read is the priming deferral. Zero
+        # is not enough where time.monotonic() ticks every ~15.6 ms (Windows
+        # before Python 3.13): an idle window that reads 0.0 is not past 0.0.
+        with patch("kiro_crew.acp.client._STALE_TURN_TIMEOUT", -1.0):
             with caplog.at_level("WARNING", logger="kiro_crew.acp.client"):
                 async for _action, _msg in client._prompt_loop(req_id=88, timeout=5.0):
                     pass

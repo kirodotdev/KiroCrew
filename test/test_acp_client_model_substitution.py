@@ -9,6 +9,7 @@ from acp_client_helpers import _pin_the_installed_kiro_cli_version  # noqa: F401
 from redaction_structured_cases import github_classic
 
 import kiro_crew.acp.client as acp_client
+from conftest import requires_symlinks
 from kiro_crew.acp.client import (
     AcpClient,
     AcpError,
@@ -368,6 +369,7 @@ class TestSubstitutionFollow:
         return sent[1], server, resolve_calls, report_calls, guard_calls
 
     @pytest.mark.asyncio
+    @requires_symlinks
     async def test_substitution_retry_withholds_mcp_when_surface_lost(self, tmp_path, monkeypatch):
         retried, _server, resolves, reports, guards = await self._run_substitution_retry_case(
             tmp_path, monkeypatch, lose_surface=True
