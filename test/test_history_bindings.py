@@ -194,6 +194,7 @@ _MEMBERS: dict[str, tuple[str, str, str]] = {
     "set_title": ("function", "e8c95d28974e", "history"),
     "sliding_window": ("function", "fa03f21e682f", "history"),
     "snapshot_for_consolidation": ("function", "3943122bc725", "history_marker"),
+    "store_ingested_images": ("function", "d7a028951b7f", "history_append"),
     "thread_transcript_identity": ("function", "4b576121a346", "history_threads"),
     "threads_sidecar_path": ("function", "445450696709", "history_threads"),
     "unconsolidated_count": ("function", "028659ce42ac", "history_marker"),

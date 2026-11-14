@@ -1954,6 +1954,12 @@ opening the dashboard:
   unknown history allows is a truly absent record: nothing on disk claims the
   session is restricted, and denying there would stop recording every
   conversation whose transcript has not been written yet.
+- **A picture is kept before either writer.** A turn that writes copies the
+  pictures downloaded for its message into the session's attachments store first
+  (`ConversationLog.store_ingested_images`), and hands that text to both the live
+  projection and the transcript append. A dashboard window open on the session
+  then shows the copy, and its next flush does not put back the temp path the turn
+  deletes ([history](history.md#inline-image-attachments-chat_attachmentspy)).
 - **Dashboard link claims BEFORE it announces.** `POST .../mirror-link` writes the
   binding first, then sends "Session linked from dashboard" and the catch-up
   transcript. The old order announced first and claimed last, which left a window

@@ -3747,7 +3747,12 @@ Contract:
   `![image](<stored copy>)`, and its `image_location_note` is dropped, since that
   note holds only until the turn's temp cleanup. A picture that cannot be kept
   leaves both lines as written, and nothing the user typed is copied. Feishu passes
-  its pictures; the other channels still persist the temp path.
+  its pictures. Telegram takes the same step on its own first
+  (`ConversationLog.store_ingested_images`, in a lock hold of its own ahead of the
+  append), because a resumed turn also shows the row in a live dashboard window,
+  which re-serializes its rows on every flush: both of its writers get the stored
+  text, and a failed store leaves them the text as it came in. The other channels
+  still persist the temp path.
 - **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
   `![` openers is left as written without scanning: the reference scanner is
   quadratic in the opener count and this runs under the session lock on
