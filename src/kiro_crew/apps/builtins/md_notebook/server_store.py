@@ -32,8 +32,8 @@ logger = logging.getLogger("kiro_crew.apps.builtins.md_notebook.server")
 
 APP_NAME = os.environ.get("KIROCREW_APP_NAME", "md-notebook")
 
-#: The state directory (state files and their staged temps), a TOP-LEVEL leaf in the crew
-#: data home. ``md_notebook_state`` owns the spelling; a test pins it to the sandbox's mask.
+#: The state directory's name beside the ``_HOME`` test hook. The live directory is
+#: ``md_notebook_state.default_app_state_dir()``.
 _STAGING_LEAF = md_notebook_state.STATE_DIR_LEAF
 
 
@@ -65,8 +65,8 @@ def _crew_data_home() -> Path:
     ``MD_NOTEBOOK_HOME``.
 
     The clone tree's default root. The state files are NOT here: they live in
-    :func:`_staging_dir`, a top-level masked directory. An older build kept them at
-    ``<crew-home>/workspace/md-notebook/<name>``; ``md_notebook_state`` moves them out.
+    :func:`_staging_dir`, a masked directory under the app's own data directory. Older
+    builds kept them elsewhere; ``md_notebook_state`` moves them in.
     """
     # config_dir is imported at module scope but CALLED here (lazily) — issue
     # #874 forbids resolving the data home at import time, not importing the
@@ -155,27 +155,17 @@ def _read_vaults_sync() -> list[dict[str, Any]]:
 def _staging_dir() -> Path:
     """The masked state directory: the three state files live, and are staged, HERE.
 
-    ``<crew-home>/md-notebook-staging`` (``sandbox._MD_NOTEBOOK_STAGING_LEAF``). The OS
-    sandbox masks it as one DIRECTORY and hands it back to this backend alone. A writer
-    stages its temp in it and renames onto a name in it, so the publish stays on one mount
-    point. The earlier layout kept the files at ``workspace/md-notebook/<name>`` and staged
-    here, so under the Linux sandbox the rename crossed from one bind mount to another and
-    failed with ``EXDEV``.
-
-    A TOP-LEVEL directory, for the reason ``aws-control-staging`` records: a mask covers
-    the leaf, not its ancestors, so a directory under the agent-writable
-    ``workspace/md-notebook`` could be renamed out from under its own mask. NOTE saves are
+    ``<crew-home>/apps/md-notebook/data/state``, the directory ``app.json`` declares in
+    ``credentialMasks`` (``"state/"``). The OS sandbox masks it as one DIRECTORY for every
+    other sandboxed process and hands it back to this backend alone, and keeps its parents
+    from being renamed. A writer stages its temp in it and renames onto a name in it, so
+    the publish stays on one mount point and the temp is masked too. NOTE saves are
     untouched; they stage beside the note inside the vault and hold no secret.
     """
     # Under the ``_HOME`` test hook it sits beside that hook's directory.
     if _HOME is not None:
         return _HOME.parent / _STAGING_LEAF
-    try:
-        base = config_dir()
-    except Exception:
-        override = os.environ.get("KIROCREW_HOME")
-        base = Path(override) if override else Path.home() / ".kiro" / "crew"
-    return base / _STAGING_LEAF
+    return md_notebook_state.default_app_state_dir()
 
 
 def _write_state_staged_sync(target: Path, content: str, *, fsync_file: bool = False) -> None:

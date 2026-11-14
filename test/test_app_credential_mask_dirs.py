@@ -44,6 +44,8 @@ def home(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("KIROCREW_ASSUME_GATEWAY_RUNNING", "0")
     monkeypatch.setattr(credential_masks, "config_dir", lambda: home)
+    # Only the manifests each case writes, not what the built-ins ship.
+    monkeypatch.setattr(credential_masks, "_builtin_manifests", lambda: [])
     credential_masks.clear_cache()
     sandbox.reset_backend()
     yield home
@@ -106,6 +108,15 @@ class TestThePlanMasksTheDirectory:
         profile = sandbox._build_seatbelt_profile("standard")
         state = home / "apps" / "demo" / "data" / "state"
         assert f'(deny file-read* (subpath "{state}"))' in profile
+
+    def test_macos_denies_both_spellings_while_the_data_dir_is_moved_aside(self, home):
+        """A sandbox started mid-uninstall keeps the deny at ``data/`` for when it returns."""
+        data = _install(home, ["state/"])
+        aside = home / "apps" / ".demo-data-tmp"
+        data.rename(aside)
+        profile = sandbox._build_seatbelt_profile("standard")
+        for state in (data / "state", aside / "state"):
+            assert f'(deny file-read* (subpath "{state}"))' in profile, state
 
 
 @_POSIX_ONLY

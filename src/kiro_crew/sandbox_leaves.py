@@ -248,10 +248,10 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # The Notes state files' old bare spellings: kept masked for a copy not yet moved,
     # and never carved back (the backend reads only the state directory).
     *_MD_NOTEBOOK_RETIRED_STATE_LEAVES,
-    # The Notes state DIRECTORY, masked whole. It is OWNED by the md-notebook backend,
-    # itself a sandboxed spawn (`apps/backend.py`), which gets it back through
-    # :func:`app_backend_visible_targets`; the mask still applies to every OTHER
-    # sandboxed process.
+    # The Notes state DIRECTORY of the previous layout, masked whole and handed back to
+    # no spawn. ``md_notebook_state`` copies its state into the app's own declared
+    # ``data/state/`` and empties the PAT here; the registry and settings copies it keeps
+    # for a rollback, and the marker that closes the copy, stay behind this mask.
     _MD_NOTEBOOK_STAGING_LEAF,
     # Browser session material an earlier version's browser CLI wrote: a storage
     # state (cookies), its extension token and three retired markers. No reader is

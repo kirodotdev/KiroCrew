@@ -30,10 +30,8 @@ from kiro_crew.sandbox_leaves import (
     _CREW_HOME_PREFIXES,
     _CREW_READONLY_LEAVES,
     _CREW_SANDBOX_VISIBLE_LEAVES,
-    _MD_NOTEBOOK_STAGING_LEAF,
     _POLICY_CACHE_LEAF,
     _RELOCATED_CREW_HIDDEN_LEAVES,
-    MD_NOTEBOOK_APP_NAME,
     _crew_home_entries,
 )
 
@@ -223,12 +221,10 @@ _APP_BACKEND_OWNED_LEAVES: dict[str, tuple[str, ...]] = {
     # the SAME namespace — and a worktree's lifecycle script could then pick the code
     # the gateway execs next. The pointer stays masked; Dev Fleet moves the cutover to a
     # gateway-process route instead (``dev_fleet/gateway_routes.py``).
-    MD_NOTEBOOK_APP_NAME: (
-        # The whole state directory, handed back as one unit: the state files, their staged
-        # temps and the migration marker all live inside it, so the publish rename stays on
-        # one mount. The retired bare spellings are NOT here; the backend never reads them.
-        _MD_NOTEBOOK_STAGING_LEAF,
-    ),
+    #
+    # NOT here either: the Notes state. It lives under the app's own data directory, in
+    # the directory its manifest declares in ``credentialMasks`` ("state/"), and its
+    # backend gets it back through :func:`app_declared_mask_targets` like any app's.
 }
 
 
