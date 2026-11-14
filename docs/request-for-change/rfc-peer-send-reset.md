@@ -1,12 +1,12 @@
 ---
 title: Peer-sent reset -- a session sent work by another session may drop its own chat context
-status: in-progress
+status: draft
 author: Pearcekieser, with kirocrew-worker
 created: 2026-10-09
-last-audited: 2026-10-20
-audited-at: bdb1c87ff6
+last-audited: 2026-11-18
+audited-at: cda68bf2b4
 doc-pr: null
-implementation-prs: [17493]
+implementation-prs: []
 tracking-issues: [17471]
 supersedes: []
 superseded-by: []
@@ -14,15 +14,15 @@ superseded-by: []
 
 # RFC: Peer-sent reset
 
-- Status: in-progress. The implementation is [#17493](https://github.com/kirodotdev/KiroCrew/pull/17493). The operator who runs the worker fleet asked for it in [#17471](https://github.com/kirodotdev/KiroCrew/issues/17471). This document lands on its own first, as GOVERNANCE.md asks of an RFC, so the implementation's First Principles lane can read the decision off the base branch.
+- Status: draft. Not yet implemented; [#17493](https://github.com/kirodotdev/KiroCrew/pull/17493) was closed unmerged on 2026-11-01. Acceptance of the scope in section 3 is requested from a maintainer. The operator who runs the worker fleet asked for it in [#17471](https://github.com/kirodotdev/KiroCrew/issues/17471). This document lands on its own first, as GOVERNANCE.md asks of an RFC, so the implementation's First Principles lane can read the decision off the base branch.
 - Adds a second case to the human-only `reset_conversation` gate, beside the conductor round-close case in [rfc-conductor-round-reset.md](rfc-conductor-round-reset.md). That document says the gate opens in "exactly one case"; this one adds another in its own document, so the conductor decision is not edited and does not extend to this one.
-- Measured at `bdb1c87ff6`.
+- Measured at `bdb1c87ff6`; the cited code paths re-checked at `cda68bf2b4`.
 
 ## 1. Problem
 
 A worker session in a fleet never has a person typing into it. A conductor or patrol session creates it, and every turn it runs arrives by `session_send`. Each turn re-sends the whole conversation, so a worker that has carried one PR through many review rounds pays for all of them on every wake.
 
-The worker cannot drop that context today. `apply_session_directive_outcome` in `src/kiro_crew/dashboard/session_directive_apply.py` refuses every directive in `_USER_SURFACE_DIRECTIVES` (`session_directive_apply_outcome.py`, which lists `reset_conversation`) unless a person started the turn. A `session_send` turn is not one, so the call is refused. #17471 counts 36 refused resets a day from one fleet.
+The worker cannot drop that context today. `apply_session_directive_outcome` in `src/kiro_crew/dashboard/session_directive_apply.py` refuses every directive in `USER_SURFACE_DIRECTIVES` (`src/kiro_crew/directive_origin.py`, which lists `reset_conversation`) unless a person started the turn. A `session_send` turn is not one, so the call is refused. #17471 counts 36 refused resets a day from one fleet.
 
 The conductor exception in `rfc-conductor-round-reset.md` does not reach workers. It admits a wake only for a slot whose agent is in `WAKE_RESET_AGENTS` in `autonudge_selfarm.py`, which holds `kirocrew-conductor` and its deprecated alias `kirocrew-ledger-conductor`, and only from that slot's own self-armed loop.
 
