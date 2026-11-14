@@ -182,10 +182,9 @@ def _sandboxed_version(binary: str) -> _Version | None:
         return None
     import asyncio
 
-    from kiro_crew.kiro_cli import _VERSION_PROBE_TIMEOUT_SECS, _probe_ran
+    from kiro_crew.kiro_cli import _VERSION_PROBE_TIMEOUT_SECS, _launcher_exit_line, _probe_ran
     from kiro_crew.kiro_prerequisite import _probe_env, _run_process
     from kiro_crew.mcp_hot_reload import parse_kiro_cli_version
-    from kiro_crew.sandbox import launcher_refusal
 
     # This thread runs no event loop: the probe is started on a thread of its own.
     result = asyncio.run(
@@ -204,10 +203,10 @@ def _sandboxed_version(binary: str) -> _Version | None:
         # than the runner keeps.
         raise _NoAnswer
     if not result.ok:
-        if launcher_refusal(result.output) is not None:
-            # The sandbox launcher's own refusal line with no verdict behind it (a
-            # momentary refusal). The line is untrusted, since the file can print
-            # it, which only ever costs that file another read.
+        if _launcher_exit_line(result.output) is not None:
+            # The sandbox launcher ended the run (a momentary refusal its trusted
+            # re-run did not confirm included). The line is untrusted, since the
+            # file can print it, which only ever costs that file another read.
             raise _NoAnswer
         # shortcut: the Linux launcher reports a file a signal killed as exit 1,
         # so that run is kept as "no version"; upgrade when the launcher passes
