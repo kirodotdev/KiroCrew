@@ -24,6 +24,7 @@ from kiro_crew.config.loader import ConfigReadError, config_path, update_config_
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.slack.events_queue import _configured_approval_mode
 from kiro_crew.slack.format import (  # noqa: F401 -- re-bound for the facade
     _FENCE_MARKER_NEUTRALIZED,
     _FENCE_MARKER_RE,
@@ -39,7 +40,6 @@ from kiro_crew.slack.format import (  # noqa: F401 -- re-bound for the facade
 )
 from kiro_crew.slack.handler import (
     _SLACK_SECTION_TEXT_LIMIT,
-    APPROVAL_INTERACTIVE,
     handle_message,
     is_allowed_user,
     is_owner,
@@ -494,7 +494,7 @@ async def _handle_shortcut_submission(payload: dict) -> None:
             new_ts,
             user_id,
             team_id=team_id,
-            approval_mode=APPROVAL_INTERACTIVE,
+            approval_mode=_configured_approval_mode(_orch),
             context_builder=_orch.ctx_builder,
             cron_service=_orch.cron_svc,
             conversation_log=_orch.conv_log,

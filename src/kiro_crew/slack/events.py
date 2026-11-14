@@ -1849,6 +1849,7 @@ from kiro_crew.slack.events_inbound import _maybe_prompt_owner  # noqa: E402
 from kiro_crew.slack.events_inbound import _thread_follow_admits  # noqa: E402
 from kiro_crew.slack.events_inbound import _trusted_bot_turns  # noqa: E402
 from kiro_crew.slack.events_queue import _CHANNEL  # noqa: E402
+from kiro_crew.slack.events_queue import _configured_approval_mode  # noqa: E402
 from kiro_crew.slack.events_queue import _dispatch_queued  # noqa: E402
 from kiro_crew.slack.events_queue import _drain_slack_queue  # noqa: E402
 from kiro_crew.slack.events_queue import _entry_owner  # noqa: E402
