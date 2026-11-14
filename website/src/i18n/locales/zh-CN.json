@@ -21492,6 +21492,7 @@
       "schedule_in": "{{time}}后运行",
       "schedule_none": "还没有任何日程会自动唤醒这个 Bot。",
       "schedule_none_self_waking": "还没有计划任务。",
+      "schedule_none_check_ins": "还没有计划任务。这个 Bot 的目标定期检查（目标标签页）也会唤醒它。",
       "schedule_state_on": "已开启",
       "schedule_state_paused": "已暂停",
       "schedule_state_running": "运行中",

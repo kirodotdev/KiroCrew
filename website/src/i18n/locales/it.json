@@ -22586,6 +22586,7 @@
       "schedule_in": "Si avvia tra {{time}}",
       "schedule_none": "Nulla sveglia ancora questo Bot da solo.",
       "schedule_none_self_waking": "Nessuna pianificazione ancora.",
+      "schedule_none_check_ins": "Nessuna pianificazione ancora. Anche le verifiche degli obiettivi di questo Bot (scheda Obiettivi) lo svegliano.",
       "schedule_state_on": "Attiva",
       "schedule_state_paused": "In pausa",
       "schedule_state_running": "In corso",
