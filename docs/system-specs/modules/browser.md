@@ -214,6 +214,7 @@ equal by a test):
 | `screenshot` | `path, full=False, max_dim=None` | `capture_screenshot` |
 | `screenshot_clip` | `path, x, y, width, height, max_dim, magnify` | the worker's own `Page.captureScreenshot` of one box (an element, or a region magnified up to `magnify`), fitted to `max_dim` device pixels |
 | `page_info` | -- | `page_info` (`{url,title,w,h,sx,sy,pw,ph}` or `{dialog}`) |
+| `dialog` | `action=None, text=None` | the worker's own read of the dialog `page_info` reports, and with `action` (`accept` or `dismiss`) a `Page.handleJavaScriptDialog` (`text` goes to a prompt on accept only). The `dialog` op reads it first because an open dialog holds the page: any other helper that needs the page's script times out after Harness's 5 s, and `run_op` then answers `dialog_open` instead of the helper's error |
 | `wait_for_load` | `timeout=15.0` | `wait_for_load` |
 | `new_tab`, `switch_tab`, `list_tabs`, `close_tab`, `current_tab` | `url` / `target, activate` / `include_chrome` / `target` / -- | the tab helpers |
 | `js` | `expression, target_id=None` | `js`, ONLY for `snapshot_walker.js` |

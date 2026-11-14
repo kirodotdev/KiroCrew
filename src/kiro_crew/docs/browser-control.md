@@ -68,6 +68,14 @@ option that is not valid, or that conflicts with another, is skipped and named i
 a warning on the result, and the screenshot is still saved. The
 same checks for passwords and filled fields apply to every form.
 
+A page can open a JavaScript dialog (an alert, a confirm, a prompt, or a
+"leave this page?" question). While one is open the page's script is held, so the
+agent's other steps fail with `dialog_open`, which says what the dialog asks. The
+`dialog` step reports the open dialog, and with `action` set to `accept` or
+`dismiss` answers it; `text` is the answer to a prompt. With no `action` the
+dialog is only reported. An `action` or `text` that is not valid is skipped and
+named in a warning on the result.
+
 It **never types a password**. A password field is refused, and the live view
 masks one, so a sign-in is always your step through takeover.
 

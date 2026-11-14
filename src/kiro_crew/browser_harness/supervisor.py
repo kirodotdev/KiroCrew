@@ -91,6 +91,7 @@ HELPERS: Mapping[str, tuple[str, ...]] = {
     "screenshot": ("path", "full", "max_dim"),
     "screenshot_clip": ("path", "x", "y", "width", "height", "max_dim", "magnify"),
     "page_info": (),
+    "dialog": ("action", "text"),
     "wait_for_load": ("timeout",),
     "new_tab": ("url",),
     "switch_tab": ("target", "activate"),
