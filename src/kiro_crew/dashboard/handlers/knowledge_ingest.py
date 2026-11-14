@@ -233,7 +233,7 @@ async def ingest_file(request: web.Request) -> web.Response:
     filename = getattr(field, "filename", None) or "upload"
     suffix = Path(filename).suffix
     ext = suffix.lower()
-    # A format with a reader but kept out of SUPPORTED (.pptx) is not supported:
+    # A format with a reader but kept out of SUPPORTED is not supported:
     # refuse it here instead of answering 'processing' and failing later.
     if ext in FileReader._DISPATCH and ext not in FileReader.SUPPORTED:
         _sel_log("ingest", filename=filename, outcome="rejected", reason="unsupported_type")
