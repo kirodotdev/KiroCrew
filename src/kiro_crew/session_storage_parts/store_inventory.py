@@ -69,15 +69,12 @@ from kiro_crew.session_storage_parts.store_layout import (
 
 # ------------------------------------------------------------------ scan cache
 #
-# Enumerating both stores is the whole cost of every read on this surface. The
-# measured motivating machine holds ~470,000 replay files, which is ~2s of
-# stat() per pass — and one open of the inventory screen needs the same
-# enumeration for the row list, again for the totals printed beside it, and again
-# for every row the user expands. That is seconds of disk per interaction for an
-# answer that cannot meaningfully change between them.
+# Enumerating both stores is the whole cost of every read here. One measured
+# machine holds ~470,000 replay files, ~2s of stat() per pass, and one open of
+# the inventory screen needs the enumeration for the rows, again for the totals,
+# and again per expanded row: seconds of disk for an answer that does not change.
 #
-# So a pass is kept for a few seconds and shared. Two properties make that safe
-# rather than merely faster:
+# So a pass is kept for a few seconds and shared. Two properties make that safe:
 #
 # * Only the filesystem halves are cached — the store scan and, on read paths,
 #   the co-tenant pass beside it (its own cache, further down). The flags derived
