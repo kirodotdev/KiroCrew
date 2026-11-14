@@ -1,15 +1,15 @@
-import { Suspense, lazy, type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
+import { type ComponentProps, type Dispatch, type MutableRefObject, type ReactNode, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 import { Columns2, ExternalLink, EyeOff, MoreHorizontal, Pin, Rows2, VenetianMask } from 'lucide-react'
 
 import { generateSlotTitle } from '../../../hooks/slotTitleGeneration'
 import type { SplitDir } from '../../../hooks/useSessionGrid'
 import { ConcurrencyCutDot, ConcurrencyCutLiveRegion, ConcurrencyCutMenuItem } from '../../../components/ConcurrencyCutChip'
-import ErrorBoundary from '../../../components/ErrorBoundary'
 import { ChannelBrandIcon } from '../../../components/ChannelBrandIcon'
 import { CodeChannelMark, slackLinkTarget } from '../../../components/CodeChannelBadge'
-import ErrorNotice, { ErrorNoticeMenuItem } from '../../../components/ErrorNotice'
 import { PanelRightSolid } from '../../../components/icons/panels'
+import { lazyRetry } from '../../../components/lazyRetry'
+import type UpdatePill from '../../../components/UpdatePill'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../../components/ui/dropdown-menu'
 import type { useChatPopouts } from '../../../hooks/useChatPopouts'
 import { i18nT } from '../../../i18n/t'
@@ -26,7 +26,15 @@ import { useExplorePreview } from '../../../hooks/usePreviewFlag'
 
 // Lazy for the same reason App.tsx lazy-loads the pill: the update chunk is
 // off the app-core budget, and the phone menu needs it only while an update exists.
-const MobileUpdateMenuItem = lazy(() => import('../../../components/UpdatePill'))
+// A chunk that fails to load stays inside the menu: this menu is the update's
+// only phone home, so it says so, with Try Again, Reload page and the hand-off as
+// menu items. Settings › About still checks for updates.
+// Typed by hand: the pill's optional props argument infers as no props at all.
+const MobileUpdateMenuItem = lazyRetry<NonNullable<ComponentProps<typeof UpdatePill>>>(() => import('../../../components/UpdatePill'), {
+  layout: 'menu',
+  title: () => i18nT('pages.chatPage.update_entry_load_failed'),
+  scope: 'mobile-update-menu',
+})
 
 interface MobileTopBarProps {
   /** The shell's `#mobile-topbar-slot` and `#mobile-topbar-trail-slot`, or null off the phone chat route. */
@@ -217,28 +225,7 @@ export default function MobileTopBar({
               phone bar has no cell with room for the pill without making a
               three-control group, so this is its phone home. Renders nothing
               when no update exists. */}
-          {/* Local boundary: this is a lazy chunk, and a chunk that fails to
-              load after the preload heal declined would otherwise reject up
-              to the ROUTE boundary and replace the whole chat page with an
-              error card. The fallback is the shared error surface, not
-              nothing: this menu is the update's only phone home, so a chunk
-              that never loads must SAY so here (`errors-use-error-notice`),
-              and the sibling item carries the agent hand-off through the
-              menu's roving focus. Settings › About still checks for updates. */}
-          <ErrorBoundary
-            scope="mobile-update-menu"
-            fallback={
-              <>
-                <ErrorNotice
-                  id="mobile-update-menu-error"
-                  variant="inline"
-                  className="px-2 py-1.5"
-                  message={i18nT('pages.chatPage.update_entry_load_failed')}
-                />
-                <ErrorNoticeMenuItem Item={DropdownMenuItem} message={i18nT('pages.chatPage.update_entry_load_failed')} describedBy="mobile-update-menu-error" />
-              </>
-            }
-          ><Suspense fallback={null}><MobileUpdateMenuItem variant="menu-item" /></Suspense></ErrorBoundary>
+          <MobileUpdateMenuItem variant="menu-item" />
           {/* The concurrency cut, after an update and ahead of the window
               actions: renders nothing while no cut is in force. */}
           <ConcurrencyCutMenuItem Item={DropdownMenuItem} />

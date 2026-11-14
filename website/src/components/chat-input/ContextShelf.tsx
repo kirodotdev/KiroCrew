@@ -7,6 +7,7 @@ import { crewLogProjectionsKey } from '../../hooks/useWebSocket'
 import { isOwnerOnlyRefusal } from '../sessionEnvironmentHooks'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
+import ErrorBoundary from '../ErrorBoundary'
 import ErrorNotice from '../ErrorNotice'
 import { Btn, Slider } from '../ui'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
@@ -15,6 +16,7 @@ import { acpBackendName } from '../../api/acpBackend'
 // Only a session on another harness than the install's draws it, so its brand
 // assets stay out of the chat bundle.
 const HarnessLogo = lazy(() => import('../HarnessLogo').then(m => ({ default: m.HarnessLogo })))
+const harnessMarkPlaceholder = <span className="inline-block w-[13px] h-[13px]" aria-hidden="true" />
 import { fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
 import type { ComposerControl } from '../composerControl'
@@ -531,9 +533,14 @@ export function ModelChip({ modelName, modelIsJevRouted, modelIsInheritedDefault
         span's title lets a hover on the mark alone say it too. */}
     {markHarness !== undefined && (
       <span className="inline-flex shrink-0" title={harnessLabel} data-testid="composer-model-chip-harness">
-        <Suspense fallback={<span className="inline-block w-[13px] h-[13px]" aria-hidden="true" />}>
-          <HarnessLogo id={markHarness} size={13} />
-        </Suspense>
+        {/* A failed chunk keeps the blank mark instead of blanking the chat page:
+            no notice, as the mark is decorative, sits inside this button, and
+            the chip's label already names the harness. */}
+        <ErrorBoundary scope="composer-harness-mark" fallback={harnessMarkPlaceholder}>
+          <Suspense fallback={harnessMarkPlaceholder}>
+            <HarnessLogo id={markHarness} size={13} />
+          </Suspense>
+        </ErrorBoundary>
       </span>
     )}
     <span className="truncate max-w-[180px]">
