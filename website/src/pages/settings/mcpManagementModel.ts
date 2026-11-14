@@ -142,6 +142,7 @@ export function stubErrorKey(error: unknown): string {
   if (code === 'launch_unresolved') return 'pages.mcpManagement.stub_error_launch_unresolved'
   if (code === 'launch_over_cap') return 'pages.mcpManagement.stub_error_launch_over_cap'
   if (code === 'approval_write_failed') return 'pages.mcpManagement.stub_error_approval_write_failed'
+  if (code === 'cwd_unconfirmed') return 'pages.mcpManagement.stub_error_cwd_unanswered'
   return 'pages.mcpManagement.stub_failed'
 }
 
@@ -409,8 +410,19 @@ export function autoShareCandidates(
       !s.stub &&
       s.declined !== true &&
       s.pooling_blocked_by_env !== true &&
+      !needsCwdAnswer(s) &&
       !refused?.[s.name],
   )
+}
+
+/**
+ * Whether sharing this server first needs the operator to say it does not work
+ * on the project's files. Kiro Crew's own servers are never asked. A row from a
+ * gateway that sends no answer field at all reads as not needing one, since that
+ * gateway does not ask.
+ */
+export function needsCwdAnswer(s: McpManagedServer): boolean {
+  return s.cwd_proven !== true && s.cwd_use !== undefined && s.cwd_use !== 'not_used'
 }
 
 /** Marked servers whose launch waits for the operator's OK, and can get it here. */

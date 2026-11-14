@@ -906,10 +906,12 @@ def _make_stub_request(body: dict) -> MagicMock:
     ``state`` carries no ``_mcp_gateway_apply_stub`` so the handler persists the
     allowlist without attempting an in-process pool re-apply.
     """
+    from handlers_mcp_coverage_helpers import _with_cwd_answer
+
     state = SimpleNamespace(_mcp_gateway_apply_stub=None)
     request = MagicMock(spec=web.Request)
     request.app = {"state": state}
-    attach_body(request, body)
+    attach_body(request, _with_cwd_answer(body))
     # ``POST /api/mcp-gateway/servers/stub`` is owner-gated
     # (``handlers._shared.require_owner_dashboard_request``). ``state`` declares no
     # ``owner_id``, which the predicate reads as the standalone-local shape, so the
