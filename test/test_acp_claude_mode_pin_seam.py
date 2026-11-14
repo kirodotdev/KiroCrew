@@ -74,7 +74,7 @@ class TestUnrequestedModePin:
         _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         seeded = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
-        assert "permissions" not in seeded
+        assert "defaultMode" not in seeded["permissions"]
         if path == "load":
             client._resume_session_id = "s-old"
         sent, killed = self._adapter_transport(client, monkeypatch, started_mode=started_mode)
@@ -354,9 +354,8 @@ class TestUnrequestedModeKeptByDefault:
         work.mkdir()
         client = self._seeded(work, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         assert client._permission_mode is None
-        assert "permissions" not in json.loads(
-            (work / ".claude" / "settings.local.json").read_text()
-        )
+        seed = json.loads((work / ".claude" / "settings.local.json").read_text())
+        assert "defaultMode" not in seed["permissions"]
         if path == "load":
             client._resume_session_id = "s-old"
         sent, killed = self._adapter_transport(client, monkeypatch, started_mode="auto")
