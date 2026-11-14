@@ -349,7 +349,16 @@ async def _consume_pending_reset(
             slot._pending_reset_history_key = current_key
             _arm_pending_reset_retry(state, slot)
             return torn_down
-        if await subagents_attached_async(state, slot, pending_key, "consume_pending_reset"):
+        children_attached = await subagents_attached_async(
+            state, slot, pending_key, "consume_pending_reset"
+        )
+        if effective_session_key(slot) != pending_key:
+            # The slot rebound during the probe: resetting pending_key would tear down the
+            # session it just left, so the reset follows it as in the branch above.
+            slot._pending_reset_history_key = effective_session_key(slot)
+            _arm_pending_reset_retry(state, slot)
+            return torn_down
+        if children_attached:
             # Left armed on purpose, same as the discard branch below: the
             # reset releases the shared runtime attached children run on, so
             # applying it now would discard their work. The retry task owns
@@ -382,7 +391,11 @@ async def _consume_pending_reset(
                     # Again here: a cold start already in flight when the project was
                     # cleared stores the old directory as it registers.
                     state.sessions.retract_cwd(pending_key)
+                settled_project = slot.project
                 reset_ok = await state.sessions.reset(pending_key, skip_if_busy=True)
+                superseded = (
+                    effective_session_key(slot) != pending_key or slot.project != settled_project
+                )
             except Exception:
                 # A teardown that raised leaves the session in a state this
                 # slot cannot vouch for — neither is its withhold verdict, so
@@ -405,7 +418,11 @@ async def _consume_pending_reset(
                     # show a withheld model as available.
                     slot.forget_session_model_state()
                     torn_down = True
-                    if slot._pending_reset_history_key == pending_key:
+                    if superseded:
+                        # A rebind or a second change landed during the teardown's await.
+                        slot._pending_reset_history_key = effective_session_key(slot)
+                        _arm_pending_reset_retry(state, slot)
+                    elif slot._pending_reset_history_key == pending_key:
                         slot._pending_reset_history_key = None
                         slot._pending_reset_clears_cwd = False
                     # Freshness push for open tabs; verdict-driven (see
