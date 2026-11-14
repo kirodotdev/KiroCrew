@@ -559,7 +559,7 @@ def resolve_explicit_subnet(
     subnet_list = data.get("Subnets", []) if isinstance(data, dict) else []
     if not subnet_list:
         raise aws.AWSError(
-            f"subnet {subnet_id} not found in {region} — check the id and --region.",
+            f"subnet {subnet_id} not found in {region}: check the Subnet ID and Region (--region).",
             action="ec2:DescribeSubnets",
         )
     subnet = subnet_list[0]
@@ -1200,9 +1200,9 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
     tags = {t.get("Key"): t.get("Value") for t in stack.get("Tags", [])}
     if tags.get(MANAGED_TAG_KEY) != "true":
         raise aws.AWSError(
-            f"a CloudFormation stack named {stack_name(tag)} already exists but is "
-            f"NOT tagged {MANAGED_TAG_KEY}=true — refusing to touch it (it wasn't "
-            "created by KiroCrew). Use a different --tag, or remove that stack.",
+            f"a CloudFormation stack named {stack_name(tag)} already exists but is NOT tagged "
+            f"{MANAGED_TAG_KEY}=true — refusing to touch it (Kiro Crew didn't create it). Remove "
+            "it, launch again from the dashboard (it picks a new name), or use a different --tag.",
             action="cloudformation:DescribeStacks",
         )
     # Also require the instance tag to match THIS tag. A managed stack that
@@ -1214,9 +1214,9 @@ def find_stack(tag: str, profile: str = "", region: str = "") -> Optional[dict[s
     inst = tags.get(INSTANCE_TAG_KEY)
     if inst is not None and inst != tag:
         raise aws.AWSError(
-            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its "
-            f"{INSTANCE_TAG_KEY} tag is '{inst}', not '{tag}' — refusing to touch "
-            "it (it isn't this launch's stack). Use the correct --tag.",
+            f"stack {stack_name(tag)} is {MANAGED_TAG_KEY}=true but its {INSTANCE_TAG_KEY} tag is "
+            f"'{inst}', not '{tag}' — refusing to touch it (it isn't this launch's stack). Launch "
+            "again from the dashboard (it picks a new name), or pass the correct --tag.",
             action="cloudformation:DescribeStacks",
         )
     return stack
