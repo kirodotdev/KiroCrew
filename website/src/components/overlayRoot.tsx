@@ -46,6 +46,10 @@
 //   dialog and everything opened inside it (`GlobalOverlayScope`), because its
 //   modal hold on the page cannot be lifted without remounting what the user
 //   entered; and the notification banner, which is meant for every Crew.
+//
+// The closed sessions sidebar is the same case at a smaller scale: its list
+// stays mounted off screen, and `OffScreenOverlayScope` hides the layers it
+// opened and closes its menus, context menus and selects.
 import {
   createContext, useContext, useEffect, useInsertionEffect, useLayoutEffect, useMemo, useState,
   type ReactNode,
@@ -106,7 +110,23 @@ export function standDownWhileHidden<E extends { preventDefault(): void }>(
 export function useCloseWhenCrewHidden(open: boolean, close: () => void) {
   const hidden = useLocalCrewHidden()
   useEffect(() => { if (hidden && open) close() }, [hidden, open, close])
+  // The same for an off-screen scope (`OffScreenOverlayScope`). Read through
+  // a subscription, not a context value, so closing the sidebar re-renders
+  // only the layers that are open, not every menu in its list.
+  const offScreen = useContext(OffScreenContext)
+  useEffect(() => {
+    if (!open || !offScreen) return
+    if (offScreen.get()) { close(); return }
+    return offScreen.subscribe(() => { if (offScreen.get()) close() })
+  }, [open, offScreen, close])
 }
+
+interface OffScreenSignal {
+  get: () => boolean
+  subscribe: (listener: () => void) => () => void
+}
+
+const OffScreenContext = createContext<OffScreenSignal | null>(null)
 
 /** Puts a subtree back on `document.body` and visible, for content that stays
  *  on screen across a Crew switch (a Radix dialog's), so what it opens stacks
@@ -114,6 +134,49 @@ export function useCloseWhenCrewHidden(open: boolean, close: () => void) {
 export function GlobalOverlayScope({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ container: document.body, hidden: false, inDialog: true }), [])
   return <OverlayRootContext.Provider value={value}>{children}</OverlayRootContext.Provider>
+}
+
+/** Takes a subtree's layers off screen while `offScreen`, for content its host
+ *  keeps mounted but takes off screen (the closed sessions sidebar,
+ *  SessionsSidebarChrome). Its menus, context menus and selects close
+ *  (`useCloseWhenCrewHidden`), and every other layer it opened is hidden with
+ *  the scope's own container (a plain div inside the parent's) and comes back
+ *  as it was. The context value does not change when `offScreen` flips, so
+ *  closing re-renders only the layers that are open. */
+export function OffScreenOverlayScope({ offScreen, children }: { offScreen: boolean; children: ReactNode }) {
+  const parent = useContext(OverlayRootContext)
+  const parentContainer = parent?.container ?? document.body
+  const [container] = useState(() => document.createElement('div'))
+  useInsertionEffect(() => {
+    parentContainer.appendChild(container)
+    return () => container.remove()
+  }, [parentContainer, container])
+  const [signal] = useState(() => {
+    const listeners = new Set<() => void>()
+    const state = { offScreen, listeners }
+    const api: OffScreenSignal & { set: (v: boolean) => void } = {
+      get: () => state.offScreen,
+      subscribe: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
+      set: (v) => {
+        if (state.offScreen === v) return
+        state.offScreen = v
+        listeners.forEach(l => l())
+      },
+    }
+    return api
+  })
+  useLayoutEffect(() => {
+    container.style.display = offScreen ? 'none' : ''
+    signal.set(offScreen)
+  }, [container, offScreen, signal])
+  const hidden = parent?.hidden ?? false
+  const inDialog = parent?.inDialog
+  const value = useMemo(() => ({ container, hidden, inDialog }), [container, hidden, inDialog])
+  return (
+    <OverlayRootContext.Provider value={value}>
+      <OffScreenContext.Provider value={signal}>{children}</OffScreenContext.Provider>
+    </OverlayRootContext.Provider>
+  )
 }
 
 /** Renders its children from the commit after it mounts.

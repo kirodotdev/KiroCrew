@@ -270,6 +270,41 @@ describe('chat sidebar — reveal a folder row', () => {
     }
   })
 
+  it('keeps the request while the sidebar is out of the document, and reveals once it is back', async () => {
+    const scroll = stubScrollIntoView()
+    const observed: { cb: (entries: unknown[]) => void; el: Element }[] = []
+    vi.stubGlobal('ResizeObserver', class {
+      cb: (entries: unknown[]) => void
+      constructor(cb: (entries: unknown[]) => void) { this.cb = cb }
+      observe(el: Element) { observed.push({ cb: this.cb, el }) }
+      unobserve() {}
+      disconnect() {}
+    })
+    try {
+      const utils = renderSidebar()
+      await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
+      // A closed sidebar keeps the list mounted but takes it out of the document.
+      const parent = utils.container.parentNode!
+      utils.container.remove()
+      act(() => { utils.store.dispatch(requestFolderReveal('f-other')) })
+      await act(async () => {})
+      expect(utils.store.getState().chat.revealRequest).not.toBeNull()
+      expect(scroll.spy).not.toHaveBeenCalled()
+
+      parent.appendChild(utils.container)
+      act(() => {
+        for (const { cb, el } of observed) {
+          cb([{ target: el, contentRect: el.getBoundingClientRect(), borderBoxSize: [], contentBoxSize: [] }])
+        }
+      })
+      await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
+      expect(utils.store.getState().chat.revealRequest).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+      scroll.restore()
+    }
+  })
+
   it('flashes only the revealed folder, not a session row', async () => {
     const scroll = stubScrollIntoView()
     try {
@@ -494,6 +529,40 @@ describe('chat sidebar — reveal a folder row', () => {
       await waitFor(() => expect(scroll.spy).toHaveBeenCalled())
       expect(utils.container.querySelector('[data-folder-row="f-hidden"]')).toBeNull()
     } finally {
+      scroll.restore()
+    }
+  })
+
+  it('keeps a SESSION request while the sidebar is out of the document, and reveals the row once it is back', async () => {
+    const scroll = stubScrollIntoView()
+    const observed: { cb: (entries: unknown[]) => void; el: Element }[] = []
+    vi.stubGlobal('ResizeObserver', class {
+      cb: (entries: unknown[]) => void
+      constructor(cb: (entries: unknown[]) => void) { this.cb = cb }
+      observe(el: Element) { observed.push({ cb: this.cb, el }) }
+      unobserve() {}
+      disconnect() {}
+    })
+    try {
+      const utils = renderSidebar()
+      await waitFor(() => expect(utils.queryByText('Trading Desk')).not.toBeNull())
+      const parent = utils.container.parentNode!
+      utils.container.remove()
+      act(() => { utils.store.dispatch(requestSlotReveal('k-loose')) })
+      await act(async () => {})
+      expect(utils.store.getState().chat.revealRequest).not.toBeNull()
+      expect(scroll.spy).not.toHaveBeenCalled()
+
+      parent.appendChild(utils.container)
+      act(() => {
+        for (const { cb, el } of observed) {
+          cb([{ target: el, contentRect: el.getBoundingClientRect(), borderBoxSize: [], contentBoxSize: [] }])
+        }
+      })
+      await waitFor(() => expect(utils.container.querySelector('.session-reveal-flash')?.getAttribute('data-session-row')).toBe('k-loose'))
+      expect(utils.store.getState().chat.revealRequest).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
       scroll.restore()
     }
   })

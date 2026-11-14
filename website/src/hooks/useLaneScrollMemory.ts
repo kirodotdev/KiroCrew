@@ -3,9 +3,11 @@ import { useCallback, useEffect, useRef } from 'react'
 /**
  * Row-anchored scroll memory for the ChatSidebar session lane.
  *
- * Why this exists: collapsing the sessions sidebar (desktop toggle) or closing
- * the mobile drawer UNMOUNTS ChatSidebar — OverlayDrawer gates its children on
- * `open` — so the lane came back at the top on every reopen.
+ * Why this exists: closing the sessions sidebar (desktop) or the phone
+ * drawer takes the still-mounted list out of the document
+ * (SessionsSidebarChrome), which resets its scroll offset, and a phone/desktop
+ * form switch mounts the list afresh. Either way the lane came back at the
+ * top on every reopen.
  *
  * Why not `useScrollMemory` (pixel offset): session rows are
  * `content-visibility: auto` with `contain-intrinsic-size: auto 60px`. On a
@@ -84,7 +86,8 @@ function applyAnchor(el: HTMLElement, anchor: Anchor): number | null {
  * @param ref  The lane element — the same ref the caller attaches.
  * @returns    `onScroll` for the lane element.
  *
- * Restore is one-shot per mount (re-armed when `key` changes, i.e. a flat/tree
+ * Restore runs once per mount, again whenever the lane comes back on screen
+ * after leaving the document, and is re-armed when `key` changes (a flat/tree
  * switch): it runs after commit, then corrects on the next few animation
  * frames while placeholder rows resolve. Any user input on the lane — wheel,
  * touch, pointer, keyboard — ends the correction immediately so a restore can
@@ -101,11 +104,9 @@ export function useLaneScrollMemory(
   useEffect(() => {
     const el = ref.current
     if (!key || !el) return
-    const saved = anchors.get(key)
-    if (!saved) return
     let frames = 0
     let raf: number | null = null
-    settling.current = true
+    let saved: Anchor | undefined
     const stop = () => {
       settling.current = false
       if (raf != null) cancelAnimationFrame(raf)
@@ -114,6 +115,7 @@ export function useLaneScrollMemory(
     }
     const step = () => {
       raf = null
+      if (!saved) return
       const residual = applyAnchor(el, saved)
       // Anchor row gone (session closed while the sidebar was collapsed):
       // fall back to the pixel offset once and stop correcting.
@@ -121,9 +123,30 @@ export function useLaneScrollMemory(
       if (++frames >= SETTLE_FRAMES) { stop(); return }
       raf = requestAnimationFrame(step)
     }
-    for (const t of USER_INTENT) el.addEventListener(t, stop, { passive: true })
-    step()
-    return stop
+    const restore = () => {
+      stop()
+      saved = anchors.get(key)
+      if (!saved) return
+      frames = 0
+      settling.current = true
+      for (const t of USER_INTENT) el.addEventListener(t, stop, { passive: true })
+      step()
+    }
+    restore()
+    // The sessions list stays mounted while its sidebar or drawer is closed
+    // and is taken out of the document instead (SessionsSidebarChrome), which
+    // drops the lane's scroll offset. Restore again each time the lane comes
+    // back on screen.
+    let shown = el.clientHeight > 0
+    const ro = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => {
+        const now = el.isConnected && el.clientHeight > 0
+        if (now && !shown) restore()
+        shown = now
+      })
+      : null
+    ro?.observe(el)
+    return () => { ro?.disconnect(); stop() }
   }, [key, ref])
 
   const onScroll = useCallback<React.UIEventHandler<HTMLElement>>(e => {
