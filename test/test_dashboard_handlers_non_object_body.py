@@ -222,3 +222,23 @@ async def test_skills_create_refuses_a_non_string_field(drive, field, value) -> 
     )
     assert resp.status == 400, resp.text
     assert _code(resp) == "invalid_field_type"
+
+
+#: Handlers that read a JSON ``name``: a ``null``, number, boolean or list is not
+#: a name, and ``str()`` would have turned it into ``"None"``, ``"123"``, ...
+_NAME_ROUTES = [
+    ("kiro_crew.dashboard.handlers.prompts_authoring", "api_prompts_create", "POST"),
+    ("kiro_crew.dashboard.handlers.prompts_skill_edits", "api_skill_pin", "POST"),
+    ("kiro_crew.dashboard.handlers.prompts_skill_edits", "api_skill_inject_on_trigger", "POST"),
+    ("kiro_crew.dashboard.handlers.steering", "api_steering_create", "POST"),
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", [None, 123, True, ["a"], {"a": 1}], ids=repr)
+@pytest.mark.parametrize("modname,fn,method", _NAME_ROUTES, ids=[r[1] for r in _NAME_ROUTES])
+async def test_a_non_string_name_is_a_coded_400(drive, modname, fn, method, name) -> None:
+    body = {"name": name, "content": "x", "pinned": True, "inject": True}
+    _req, resp = await drive(modname, fn, method, {}, body)
+    assert resp.status == 400, resp.text
+    assert _code(resp) == "invalid_field_type"

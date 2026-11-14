@@ -38,6 +38,7 @@ from ._shared import (
     _read_session_key,
     _resolve_skill_root,
     read_skill_file,
+    string_field_error,
 )
 
 logger = logging.getLogger("kiro_crew.dashboard.handlers.prompts")
@@ -91,6 +92,8 @@ async def api_skill_pin(request: web.Request) -> web.Response:
 
     if (not_object := body_not_object_error(body)) is not None:
         return not_object
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name", "")).strip()
     raw_pinned = body.get("pinned", True)
     if not isinstance(raw_pinned, bool):
@@ -171,6 +174,8 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     # answers with a 400 and a code instead of AttributeError -> 500.
     if not isinstance(body, dict):
         body = {}
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        return bad_name
     name = str(body.get("name", "")).strip()
     raw_inject = body.get("inject")
     if not isinstance(raw_inject, bool):

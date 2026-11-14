@@ -52,7 +52,7 @@ from kiro_crew.hooks import (
 )
 from kiro_crew.platform_compat import is_link_or_junction
 
-from ._shared import _read_session_key
+from ._shared import _read_session_key, string_field_error
 
 MAX_PROMPT_BYTES = 100_000  # 100 KB — public constant, imported across dashboard + gateway + tests
 
@@ -294,6 +294,9 @@ async def api_prompts_create(request: web.Request) -> web.Response:
     if not isinstance(body, dict):
         _refuse(op, "bad_request", "invalid_json")
         return web.json_response({"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    if (bad_name := string_field_error("name", body.get("name", ""))) is not None:
+        _refuse(op, "bad_request", "name_not_string")
+        return bad_name
     raw_name = str(body.get("name", "")).strip()
     content = body.get("content")
     scope = str(body.get("scope", "global"))

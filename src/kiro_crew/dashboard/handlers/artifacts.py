@@ -283,6 +283,7 @@ if TYPE_CHECKING:  # names this module re-exported from other modules
     from kiro_crew.dashboard.handlers._shared import bounded_json_error_code  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import read_bounded_json  # noqa: F401
     from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request  # noqa: F401
+    from kiro_crew.dashboard.handlers._shared import string_field_error  # noqa: F401
     from kiro_crew.dashboard.state import _normalize_slot_key  # noqa: F401
     from kiro_crew.executors import discovery_executor  # noqa: F401
     from kiro_crew.executors import subprocess_executor  # noqa: F401
