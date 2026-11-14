@@ -127,6 +127,9 @@ gracefully rather than failing the turn.
   credential setup
 - [Tool approvals](tool-approvals.md): auto-approve one MCP tool on KAS so it stops
   asking, and the settings that look like they would but do not
+- [Security model](security-model.md): the defense-in-depth layers, what each one
+  protects against, where they deliberately stop, and whether the defaults fit a
+  corporate host or only an isolated one
 - [Apps and the App Store](apps.md): what an app is, what ships, enabling and
   updating one, the agents and skills it brings, and why enabling one is a trust
   decision
@@ -154,6 +157,9 @@ gracefully rather than failing the turn.
 - An enabled app runs in-process with the gateway's own privileges, so enabling one
   is a trust decision. Third-party app execution is deny-by-default, and every app
   load is audited
+
+See [Security model](security-model.md) for how these layers fit together, what
+each protects against, where they stop, and which posture fits your host.
 
 ## Links
 
