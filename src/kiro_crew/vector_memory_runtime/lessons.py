@@ -601,35 +601,36 @@ def find_contradiction_candidates(
     candidates = []
     for existing in store.get_lessons():
         sim = similarity(existing)
-        if threshold_low <= sim < threshold_high:
-            try:
-                decoded = json.loads(existing["value_json"])
-            except (ValueError, TypeError):
-                continue
-            if _lesson_scope_unusable(decoded):
-                continue
-            if _lesson_scope(decoded) != repo_scope:
-                continue
-            # Rendered text, not str(): a mapping-shaped row would otherwise
-            # hand its Python repr to the contradiction prompt as the "rule".
-            existing_val = _lesson_display_text(decoded)
-            if not existing_val:
-                continue
-            # The stored body travels with the candidate. The sweep's delete runs
-            # minutes later, after an LLM verdict, and ``_lesson_key`` keys on rule
-            # text plus scope alone, so a re-tier in between (delete + re-add) puts
-            # a different row under the same key. Passing this body back as
-            # ``expect_value_json`` makes the delete compare-and-delete, so it
-            # cannot tombstone the replacement.
-            candidates.append(
-                {
-                    "key": existing["key"],
-                    "rule": existing_val,
-                    "similarity": sim,
-                    "applies": _lesson_applies(decoded),
-                    "value_json": existing["value_json"],
-                }
-            )
+        if not threshold_low <= sim < threshold_high:
+            continue
+        try:
+            decoded = json.loads(existing["value_json"])
+        except (ValueError, TypeError):
+            continue
+        if _lesson_scope_unusable(decoded):
+            continue
+        if _lesson_scope(decoded) != repo_scope:
+            continue
+        # Rendered text, not str(): a mapping-shaped row would otherwise
+        # hand its Python repr to the contradiction prompt as the "rule".
+        existing_val = _lesson_display_text(decoded)
+        if not existing_val:
+            continue
+        # The stored body travels with the candidate. The sweep's delete runs
+        # minutes later, after an LLM verdict, and ``_lesson_key`` keys on rule
+        # text plus scope alone, so a re-tier in between (delete + re-add) puts
+        # a different row under the same key. Passing this body back as
+        # ``expect_value_json`` makes the delete compare-and-delete, so it
+        # cannot tombstone the replacement.
+        candidates.append(
+            {
+                "key": existing["key"],
+                "rule": existing_val,
+                "similarity": sim,
+                "applies": _lesson_applies(decoded),
+                "value_json": existing["value_json"],
+            }
+        )
     candidates.sort(key=lambda x: x["similarity"], reverse=True)
     return candidates[:5]
 
@@ -831,40 +832,41 @@ def delete_lesson(
             deleted = True
             continue
         matched.append((e, _keep_one_identity(val)))
-    if keep_one:
-        # Only rows the prompt can serve take part. A row outside its validity
-        # window, superseded or otherwise withheld is never the survivor (the
-        # lesson would vanish from prompts with an active copy deleted) and is
-        # never removed here either.
-        servable = {r["key"] for r in store._eligible_rows([m[0] for m in matched], "directive")}
-        matched = [m for m in matched if m[0]["key"] in servable]
-        # A row's record metadata (validity window, subject, scope facets) is
-        # part of the lesson as well: two rows that differ in any of it are not
-        # copies, so a copy valid for longer is never traded for one that expires.
-        facets = {
-            r["key"]: json.dumps(r.get("record_metadata") or {}, sort_keys=True)
-            for r in store.with_record_metadata([m[0] for m in matched])
-        }
-        groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
-        for e, identity in matched:
-            groups.setdefault((identity, facets[e["key"]]), []).append(e)
-        for rows in groups.values():
-            rows.sort(key=lambda r: (str(r.get("created_at") or ""), str(r["key"])))
-            if len(rows) < 2:
-                continue
-            # The rows are a snapshot. A survivor whose body differs from the
-            # snapshot (a clause attached, a re-tier) may not be a copy of the
-            # others, so the group is left alone; each extra is a
-            # COMPARE-AND-DELETE on the body read here, so a copy enriched
-            # since is kept, not tombstoned.
-            survivor = store.get_semantic(rows[0]["key"])
-            if survivor is None or survivor.get("value_json") != rows[0]["value_json"]:
-                continue
-            for extra in rows[1:]:
-                if store.delete_semantic(
-                    extra["key"], "user_explicit", expect_value_json=extra["value_json"]
-                ):
-                    deleted = True
+    if not keep_one:
+        return deleted
+    # Only rows the prompt can serve take part. A row outside its validity
+    # window, superseded or otherwise withheld is never the survivor (the
+    # lesson would vanish from prompts with an active copy deleted) and is
+    # never removed here either.
+    servable = {r["key"] for r in store._eligible_rows([m[0] for m in matched], "directive")}
+    matched = [m for m in matched if m[0]["key"] in servable]
+    # A row's record metadata (validity window, subject, scope facets) is
+    # part of the lesson as well: two rows that differ in any of it are not
+    # copies, so a copy valid for longer is never traded for one that expires.
+    facets = {
+        r["key"]: json.dumps(r.get("record_metadata") or {}, sort_keys=True)
+        for r in store.with_record_metadata([m[0] for m in matched])
+    }
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for e, identity in matched:
+        groups.setdefault((identity, facets[e["key"]]), []).append(e)
+    for rows in groups.values():
+        rows.sort(key=lambda r: (str(r.get("created_at") or ""), str(r["key"])))
+        if len(rows) < 2:
+            continue
+        # The rows are a snapshot. A survivor whose body differs from the
+        # snapshot (a clause attached, a re-tier) may not be a copy of the
+        # others, so the group is left alone; each extra is a
+        # COMPARE-AND-DELETE on the body read here, so a copy enriched
+        # since is kept, not tombstoned.
+        survivor = store.get_semantic(rows[0]["key"])
+        if survivor is None or survivor.get("value_json") != rows[0]["value_json"]:
+            continue
+        for extra in rows[1:]:
+            if store.delete_semantic(
+                extra["key"], "user_explicit", expect_value_json=extra["value_json"]
+            ):
+                deleted = True
     return deleted
 
 

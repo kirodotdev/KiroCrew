@@ -76,10 +76,10 @@ def _kept_episodes(
 def get_context_preview(store: VectorMemoryStore, query_text: str = "") -> dict:
     """Preview what would be injected into context (for debugging).
 
-    Reports the UNSCOPED view. A ``project_dir`` parameter was offered here
-    briefly and removed: the only caller never passed one, so it could not
-    change any observed output, and a knob nobody turns still has to be read
-    and trusted by whoever comes next.
+    Reports the UNSCOPED view and takes no ``project_dir``: its callers, the
+    dashboard's context-preview and observability endpoints, have no project to
+    pass, and a knob nobody turns still has to be read and trusted by whoever
+    comes next.
     """
     if store.algorithm_version == "v2":
         return store.recall(query_text)
@@ -232,15 +232,12 @@ def recall_once(
     # terms so CJK question endings cannot suppress known facts.
     query_text = " ".join(sorted(memory_recall.recall_terms(query_text)))
     with recall_filters.as_of_scope(filters):
-        facts = (
-            []
-            if filters is not None and not filters.wants("fact")
-            else (
-                store._semantic_candidates_v2(query_text, recall_query=query)
-                if store.algorithm_version == "v2"
-                else store._semantic_candidates_v1(query_text, recall_query=query)
-            )
-        )
+        if filters is not None and not filters.wants("fact"):
+            facts = []
+        elif store.algorithm_version == "v2":
+            facts = store._semantic_candidates_v2(query_text, recall_query=query)
+        else:
+            facts = store._semantic_candidates_v1(query_text, recall_query=query)
         # A date filter narrows a ranked list, so look further down it first.
         episodic_limit = store._episodic_limit * (4 if filters is not None and filters.timed else 1)
         episodes = (
