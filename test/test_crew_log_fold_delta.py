@@ -368,7 +368,7 @@ def test_the_lru_bound_drops_the_oldest_base(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# 4. the old path is unchanged
+# 4. folds outside the delta set publish plain values
 # --------------------------------------------------------------------------- #
 
 

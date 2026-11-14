@@ -1032,7 +1032,7 @@ class TestForkPromptRefreshGuard:
         # A MANAGED-shaped pointer at a gone location (moved data home) is the
         # repair case. Identity comes from the location spelling, not from
         # existence: an arbitrary dangling path could be a user's unmounted
-        # drive and must be preserved (GPT rounds 18/26).
+        # drive and must be preserved.
         config = {"prompt": f"file://{tmp_path / 'gone' / '.kirocrew' / 'prompt.md'}"}
         _refresh_dynamic_fields(config, fork=True)
         assert config["prompt"] == _NATIVE_PROMPT_STUB

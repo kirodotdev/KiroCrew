@@ -1154,8 +1154,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/dashboard/agent_admin/fork_publish.py": [
         # Fork/publish create closures re-read the SOURCE inside the lock too —
-        # the pre-lock snapshot can miss a concurrent refresh's writes (GPT
-        # round-10 stale-copy finding).
+        # the pre-lock snapshot can miss a concurrent refresh's writes.
         ("api_agent_fork", "dashboard"),
         ("api_agent_publish", "dashboard"),
     ],

@@ -371,8 +371,8 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
                 # charge has to cover the widest row the fold can really retain.
                 # Exactly AT the clamp once serialized: the fold measures the value's
                 # JSON form, so a bare string of the cap's length is two bytes over
-                # (the quotes) and is dropped -- which is how an earlier version of
-                # this fixture added no counted rows at all.
+                # (the quotes) and is dropped, and the fixture would add no
+                # counted rows at all.
                 "value": {"v": "n" * (crew_log.DASHBOARD_VALUE_BYTES - 2)},
                 "instance_version": index + 1,
                 "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",

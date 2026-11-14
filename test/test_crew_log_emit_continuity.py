@@ -117,7 +117,7 @@ def test_a_resume_closes_a_child_the_registry_no_longer_lists():
 
 
 def test_a_resume_leaves_a_child_the_registry_still_lists_alone():
-    # The same-process case that made an earlier revision corrupt the file: idle
+    # The same-process case that can corrupt the file: idle
     # teardown, reset, resume -- while the child is still running and will file its
     # own terminal. The registry still lists it, so the repair must not invent one.
     emit.set_child_liveness(lambda agent_id: agent_id == "sub-1")
