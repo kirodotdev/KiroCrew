@@ -1182,20 +1182,11 @@ def _crewmate_label(key: str) -> str:
     a title or scope line naming the key would name a crewmate the user has never
     seen. Display-only, so it rides in the context rather than the compared
     snapshot: a rename between propose and apply is not a conflict.
-
-    That default is the key for every member but one: the first crewmate's key is
-    ``mate``, an id nobody chose, so with no display name it reads
-    :data:`~kiro_crew.agent_files.ASSISTANT_DEFAULT_DISPLAY_NAME`, which is what
-    the Bots page and its own thread title show on the same install.
     """
-    from kiro_crew.agent_files import ASSISTANT_DEFAULT_DISPLAY_NAME, is_assistant_member
+    from kiro_crew.agent_files import member_label
     from kiro_crew.config.loader import KiroCrewConfig
 
-    agent = KiroCrewConfig.load().agents.get(key)
-    label = getattr(agent, "display_name", "") if agent is not None else ""
-    if isinstance(label, str) and label.strip():
-        return label.strip()
-    return ASSISTANT_DEFAULT_DISPLAY_NAME if is_assistant_member(key, agent) else key
+    return member_label(key, KiroCrewConfig.load().agents.get(key))
 
 
 async def read_context(
