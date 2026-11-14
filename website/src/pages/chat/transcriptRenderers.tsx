@@ -867,6 +867,11 @@ export function createTranscriptRenderers(
             onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={pickModelFix}
             featureRequestFormUrl={featureRequestFormUrl}
+            // The newest row only, where the gateway's wait lives (it ends once the
+            // chat no longer ends on that row). The card offers a new wait only
+            // where Resume itself could run, so never on a relay archive
+            // (`continuable` is false there), and keeps Cancel while one is held.
+            limitContinueSlot={isUsageLimit(m) && newest ? o.slot : undefined}
             kiroCliMissing={featureRequestFormUrl ? isKiroCliMissing(m) : undefined}
             onOpenCapabilities={openCapabilities}
             onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
