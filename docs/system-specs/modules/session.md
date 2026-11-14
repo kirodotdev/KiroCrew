@@ -1313,7 +1313,8 @@ a sweep. An acquire whose
 recorded result no longer holds after the store read waits for any check another acquire
 started meanwhile. One whose result still holds returns with it.
 `_shared_check_still_covers` refuses an empty reading, so under a sign-out every
-acquire still retries an incomplete sweep. The dashboard chat turn still retries on every turn. A `cron:` key never claims a warm-pool process
+acquire still retries an incomplete sweep. The dashboard chat turn still retries on every turn,
+except under a sign-out a complete sweep already covered (below). A `cron:` key never claims a warm-pool process
 (`bypass_stateless`), so the child that can still hold the previous account is
 the cron's own session: a fire whose sub-agents are still running skips the
 reset in its `finally`, and the next fire of a `persistent_session` job, or of
@@ -1334,6 +1335,13 @@ new sign-out). After that sweep nothing that held the old account is left. A
 session started since holds no account or brings its own `KIRO_API_KEY` (a
 cron job's `env` block), which no sweep spares, so sweeping again would only
 cancel its sub-agents. Otherwise it touches no session.
+The dashboard chat turn skips that repeat sweep as well, after its stamp check:
+under `identity_absence_is_definitive` with `identity_absence_already_swept` it
+touches no session, so a send while signed out does not first drain and
+cold-start every idle chat. It still sweeps on every turn under an absence the
+read did not prove (a social login, an unreadable store), and it runs the first
+sweep of each new sign-out, which is what retires a runtime still holding the
+account just signed out of.
 
 **Identity fingerprint** (`current_identity_fingerprint`): one string over
 every credential source a child may have loaded, each kept as its OWN
