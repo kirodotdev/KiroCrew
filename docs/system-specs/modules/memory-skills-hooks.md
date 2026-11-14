@@ -4802,6 +4802,17 @@ command the skill cites with the `doctor` registrar in `cli_parser_gateway.py`,
 abbreviations off. Wording outside the security route, the other routes' prose,
 the repository link and the plain and prefilled new-issue links are not checked.
 
+For a feature request, both copies dig to the real need before drafting: they
+tell the agent to reason from first principles and ask "why?" one question at a
+time, each question built from the user's last answer, stopping once an answer
+names who hits it, what they are trying to get done and what it costs them
+(five at most), and finishing the chain before the duplicate search and the
+draft. The drafted Why section carries that question-and-answer chain.
+`.github/ISSUE_TEMPLATE/feature_request.yml` asks for the same chain in a
+required "Why does this matter? (5 Whys)" field, whose description names first
+principles so an agent filing through the form questions the request rather than
+restating it (#33078). Bug reports skip the chain.
+
 **`GET /api/skills` coalesces concurrent readers onto one scan, and stores nothing.**
 The catalog assembly is filesystem-heavy (`os.walk` plus per-file frontmatter reads, package
 path globs, per-skill resolve/read, agent annotation), and the defect this addresses is that
