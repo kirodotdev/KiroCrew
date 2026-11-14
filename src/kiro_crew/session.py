@@ -911,6 +911,7 @@ class SessionManager:
         self._lifecycle_state = SessionLifecycleState()
         self._compaction_state = CompactionState()
         self._background_tasks: set[asyncio.Task] = set()  # type: ignore[type-arg]
+        self._deferred_resets: dict[str, tuple[Any, asyncio.Task[Any]]] = {}
         # A caller on the event loop builds the map in a worker thread and hands
         # it in: its startup read retries a Windows sharing violation only off
         # the loop (``read_bytes_with_retry``), and the map holds no asyncio
