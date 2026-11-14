@@ -380,6 +380,11 @@ each replaced field with its old and new value (a WARNING line ending in
 > stays in the store but does not run while the app is disabled: each fire is
 > skipped and the run is marked as an error. It runs again once the app is
 > re-enabled.
+>
+> A job the user deletes (Schedule page, CLI or chat command) stays deleted:
+> later gateway starts, app updates and Syncs do not register it again. A
+> disable → re-enable cycle, or an uninstall and new install, registers it
+> again. A job the app removes itself through `ctx.cron` is not remembered.
 
 ## Frontend UI
 
