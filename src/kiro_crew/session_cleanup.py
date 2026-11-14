@@ -809,6 +809,7 @@ class SessionCleanup:
                     executor = self._deps.get_maintenance_executor()
                     rss = await loop.run_in_executor(executor, measure, pid)
                     rss_by_pid[pid] = rss
+                    _spare.note_rss_measured(pid, rss)
                 limit = _spare.rss_limit_for(self, pid, rss)
                 # ``None`` leaves the session running: it is under the ceiling, its
                 # runtime's own footprint is over it, or recycling it cannot help.

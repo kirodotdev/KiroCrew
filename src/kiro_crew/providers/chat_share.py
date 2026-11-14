@@ -49,6 +49,7 @@ from kiro_crew.acp.chat_runtime_sharing import (
 )
 from kiro_crew.acp.runtime import AcpRuntimeError
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
+from kiro_crew.metrics.chat_runtime_share import record_placed, record_refused
 from kiro_crew.runtime_ownership import CHAT_RUNTIME_CAP, RUNTIME_OWNERSHIP, Acquisition
 
 if TYPE_CHECKING:
@@ -320,6 +321,7 @@ class ChatSharePlacement:
             placed.leases_on_runtime,
             self.session_key,
         )
+        record_placed(joined=placed.joined, tenants=placed.leases_on_runtime)
         return runtime
 
     async def replace_dead(self, spawn: Callable[[], Awaitable[AcpRuntime]]) -> AcpRuntime:
@@ -437,6 +439,7 @@ async def resolve_chat_share(
         refusal = "native_subagents"
     if refusal:
         logger.warning("chat-runtime-sharing ineligible reason=%s session=%s", refusal, session_key)
+        record_refused(refusal)
         return None
     from kiro_crew.acp.agent_env import agent_env_overlay
     from kiro_crew.sandbox import _forward_ssh_auth_sock, effective_sandbox_mode

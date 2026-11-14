@@ -88,6 +88,10 @@ KIND_USER_MESSAGE_ID_ASSIGNED = "user_message_id_assigned"
 # are the only start and end it has (``AcpSessionHandle.observe_turn``).
 KIND_TURN_START = "turn_start"
 KIND_TURN_END = "turn_end"
+# A prompt parked behind another session's turn, waiting for the engine's one
+# active model slot (``AgentExecutionWaitingForActiveSlot``; carries
+# ``activeSessionId``). From 0.66.104 only a spec-generation turn waits there.
+KIND_QUEUED = "queued"
 
 # Summarization maps to Crew's compaction status; steering to mid-turn steer.
 SUMMARIZATION_KINDS = frozenset(

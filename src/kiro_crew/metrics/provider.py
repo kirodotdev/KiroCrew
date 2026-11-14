@@ -1036,16 +1036,15 @@ def _build_recorder() -> _Build:
             register_session_tree_gauge(meter)
         except Exception:
             logger.warning("session-tree gauge unavailable", exc_info=True)
-        # MCP gateway pool gauges: same consent gate and callback contract, in
-        # their OWN try for the same reason as the sets above. They observe only
-        # in the process that bound a pool (gatewayd); everywhere else the
-        # callbacks return before reading anything, so no series is published.
+        # Gauges over processes several sessions share (the MCP gateway pool, chat
+        # runtime sharing): same consent gate and callback contract, each set in
+        # its own try inside ``metrics/shared_process_gauges.py``.
         try:
-            from kiro_crew.metrics.mcp_gateway_gauges import register_mcp_gateway_gauges
+            from kiro_crew.metrics.shared_process_gauges import register_shared_process_gauges
 
-            register_mcp_gateway_gauges(meter)
+            register_shared_process_gauges(meter)
         except Exception:
-            logger.warning("mcp gateway gauges unavailable", exc_info=True)
+            logger.warning("shared process gauges unavailable", exc_info=True)
         # Behavioral metrics get their own scope, so a downstream analytics
         # collector can admit them without taking the inventory gauges above.
         behavioral_meter = provider.get_meter(BEHAVIORAL_SCOPE)
