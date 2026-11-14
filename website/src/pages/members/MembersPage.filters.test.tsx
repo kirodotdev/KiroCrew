@@ -425,6 +425,7 @@ describe('MembersPage star', () => {
  * fields, as an older gateway does, and those rows stay listed. */
 describe('MembersPage hides unlisted mates', () => {
   const NO = { dashboard_created: false, has_dm_message: false }
+  // `oncall` is starred, so it leads the list though its chat is the oldest.
   const MIXED = [
     row('kirocrew', { source: 'builtin', ...NO, has_dm_message: true, last_active_ts: 20 }),
     row('radar', { source: 'kirocrew', ...NO, dashboard_created: true, display_name: 'Issue Radar', has_dm_message: true, last_active_ts: 30 }),
@@ -435,7 +436,7 @@ describe('MembersPage hides unlisted mates', () => {
 
   it('lists rows whose thread holds a message and starred rows; the count says how many are listed', async () => {
     await renderPage(MIXED)
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     expect(screen.getByTestId('member-count')).toHaveTextContent('3 bots')
     // Not "filtered out": hidden rows are unlisted, so no chip and no notice.
     expect(screen.queryByTestId('member-filter-chips')).toBeNull()
@@ -458,17 +459,17 @@ describe('MembersPage hides unlisted mates', () => {
       ...MIXED,
       row('default', { source: 'builtin', ...NO, has_dm_message: true, has_user_dm_message: false }),
     ])
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
   })
 
   it('the search reaches a hidden row, and the count grows to include it', async () => {
     await renderPage(MIXED)
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     fireEvent.change(screen.getByTestId('member-search'), { target: { value: 'pkg' } })
     expect(names()).toEqual(['pkg-tool'])
     expect(screen.getByTestId('member-count')).toHaveTextContent('4 bots')
     fireEvent.click(screen.getByTestId('member-search-clear'))
-    expect(names()).toEqual(['radar', 'kirocrew', 'oncall'])
+    expect(names()).toEqual(['oncall', 'radar', 'kirocrew'])
   })
 
   // #21852: "2 crewmates" over a crew of three read as the whole crew, and the
@@ -477,7 +478,7 @@ describe('MembersPage hides unlisted mates', () => {
   // leaves them out, and how to reach them.
   it('ends the list by naming the mates the rule hides and saying the search finds them', async () => {
     await renderPage(MIXED)
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     expect(screen.getByTestId('member-count')).toHaveTextContent('3 bots')
     expect(screen.getByTestId('member-hidden-hint')).toHaveTextContent(
       "legacy-aim and pkg-tool are hidden because you haven't used them yet, and aren't counted above. Search to find them.",
@@ -499,7 +500,7 @@ describe('MembersPage hides unlisted mates', () => {
       ...MIXED.filter((m) => m.name !== 'pkg-tool' && m.name !== 'legacy-aim'),
       row('nova-sky', { source: 'radar-app', ...NO, display_name: 'Nova Sky' }),
     ])
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     expect(screen.getByTestId('member-hidden-hint')).toHaveTextContent(
       "Nova Sky is hidden because you haven't used it yet, and isn't counted above. Search to find it.",
     )
@@ -511,7 +512,7 @@ describe('MembersPage hides unlisted mates', () => {
       row('pkg-two', { ...NO }),
       row('pkg-three', { ...NO }),
     ])
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     // The whole line: the counted form names no action.
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
       "legacy-aim, pkg-three, pkg-tool and 1 more bot you haven't used yet are hidden and aren't counted above.",
@@ -528,7 +529,7 @@ describe('MembersPage hides unlisted mates', () => {
       row('pkg-three', { ...NO }),
       row('zebra-notes', { source: 'kirocrew', ...NO, display_name: 'Zebra Notes' }),
     ])
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
       "Zebra Notes, legacy-aim, pkg-three and 2 more bots you haven't used yet are hidden and aren't counted above.",
     )
@@ -541,7 +542,7 @@ describe('MembersPage hides unlisted mates', () => {
       row('pkg-three', { ...NO }),
       row('pkg-four', { ...NO }),
     ])
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     expect(screen.getByTestId('member-hidden-hint').textContent).toBe(
       "legacy-aim, pkg-four, pkg-three and 2 more bots you haven't used yet are hidden and aren't counted above.",
     )
@@ -549,13 +550,13 @@ describe('MembersPage hides unlisted mates', () => {
 
   it('says nothing when the rule hides no mate', async () => {
     await renderPage(MIXED.filter((m) => m.name !== 'pkg-tool' && m.name !== 'legacy-aim'))
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     expect(screen.queryByTestId('member-hidden-hint')).toBeNull()
   })
 
   it('says nothing while a filter narrows the list', async () => {
     await renderPage(MIXED)
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     await openFilters()
     fireEvent.click(screen.getByTestId('member-filter-starred'))
     expect(names()).toEqual(['oncall'])
@@ -564,7 +565,7 @@ describe('MembersPage hides unlisted mates', () => {
 
   it('filter tallies count listed rows only, and "N of M" reads M from them', async () => {
     await renderPage(MIXED)
-    await waitFor(() => expect(names()).toEqual(['radar', 'kirocrew', 'oncall']))
+    await waitFor(() => expect(names()).toEqual(['oncall', 'radar', 'kirocrew']))
     await openFilters()
     // Three package-bucket rows exist; only the starred app row is listed, so
     // the tally says 1, and the built-in row with a message is the one builtin.
