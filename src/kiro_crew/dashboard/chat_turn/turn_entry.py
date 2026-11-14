@@ -19,6 +19,7 @@ from kiro_crew.llm_helpers import _NO_PRIOR_STATS
 from kiro_crew.metrics.usage_attrs import set_current_trigger, trigger_for_dashboard_turn
 from kiro_crew.security import StreamRedactor
 from kiro_crew.start_priority import StartPriority, person_priority
+from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
@@ -252,6 +253,10 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
         slot._turn_channel_narrowed = False
         slot._turn_channel_origin = bool(_directive_channel_origin)
         slot._turn_user_sent = bool(_directive_user_origin) and not _directive_channel_origin
+        # A retry or continuation the runner queued, and a script cron's
+        # `ctx.send_to_session`, carry user origin but are not a new message.
+        if slot._turn_user_sent and not _synthetic_recovery_turn and _turn_actor != "cron":
+            Stats().inc_message_admitted()
         # The owner mark comes from THIS turn's own call (`_directive_owner_origin`,
         # passed by a dashboard handler or the queue drain), never from the slot: a
         # dispatch that declares nothing (`openai_compat`, the spec-builder

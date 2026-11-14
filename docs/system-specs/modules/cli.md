@@ -3606,7 +3606,20 @@ git config that names a command git would run, each with the checkout untouched
 
 `kirocrew status` queries the running gateway's `/api/status` endpoint
 and prints uptime, sessions, messages, tool calls, subagents, crons, lessons,
-and a memory line: the gateway's own resident set (`gateway_rss_mb`) and the
+and a memory line. Messages and tool calls are the process-wide `Stats` counts
+since the gateway started (`messages` and `tool_calls` in the status payload). A
+message is a turn a person starts from the dashboard, or an inbound message a
+channel receives: Slack and Telegram count at their transports, every other
+channel once the shared turn pipeline's governance backstop admits a message a
+person sent (before the session claim). The dashboard and the pipeline channels
+count under `messages_admitted`, so `messages` is `messages_received` plus
+`messages_admitted`. Not counted: a card or app-token send, a Continue or retry
+the runner queues, a script cron's send, a Discord or Teams message that reaches
+a resumed dashboard session mid-turn, and, on the dashboard and the pipeline
+channels, a message folded into a turn already running. Queued messages that
+`merge_queued_messages` joins into one turn count once, or not at all when a
+channel message is in the batch. A tool call is counted once, when it finishes.
+The memory line is the gateway's own resident set (`gateway_rss_mb`) and the
 per-session tree ceiling the cleanup watchdog recycles at
 (`watchdog_rss_max_mb`, spelled out as disabled when `0`). Both fields are
 published by `/api/status` for this line; `kirocrew doctor` prints the same two

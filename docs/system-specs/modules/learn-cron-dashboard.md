@@ -2369,7 +2369,8 @@ The owners, lowest layer first:
   channel link changes: the channel-transport registry, the compact, recycle, bind
   and unbind callbacks with the notices they post, and the crew-log class recording.
 - `state_parts/status_payload.py` — the served bundle id, the lesson count and
-  `status_snapshot`.
+  `status_snapshot`, whose `messages` and `tool_calls` are read from `Stats().snapshot()`
+  (a dashboard turn a person sent counts in `chat_turn/turn_entry.py`).
 - `state_parts/slot_directory.py` — slot identity and lookup: keys, the live and
   per-creator caps, `SlotOrigin` and `request_slot_origin`, native-subagent
   snapshots, Slack thread links, getting or creating a slot and the member-row record.
