@@ -78,6 +78,7 @@ import {
 import { useMcpHandoffHint, useMcpHandoffWouldLoseEdits } from '../connections/mcpStagedEditsContext'
 import { isPermanentRefusal } from '../overview/McpShareRefusedNotice'
 import { retryPolicy } from '../../api/queryClient'
+import { reportForError } from '../../utils/errorReport'
 
 /** The query param that asks the Sharing view to open its Review dialog. */
 export const REVIEW_PARAM = 'review'
@@ -1084,6 +1085,7 @@ export function McpManagement({
     <div className="min-w-0 space-y-4">
       <ErrorNotice
         message={statusQ.isError ? i18nT('pages.mcpManagement.status_failed') : null}
+        report={statusQ.isError ? reportForError(statusQ.error) : undefined}
         askAgent={!handoffWouldLoseEdits}
         handoffHint={handoffHint}
       />
@@ -1091,6 +1093,7 @@ export function McpManagement({
           switch, so its reason shows on every view. */}
       <ErrorNotice
         message={serversQ.isError ? i18nT('pages.mcpManagement.servers_failed') : null}
+        report={serversQ.isError ? reportForError(serversQ.error) : undefined}
         askAgent={!handoffWouldLoseEdits}
         handoffHint={handoffHint}
       />

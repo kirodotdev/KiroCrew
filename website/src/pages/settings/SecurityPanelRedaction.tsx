@@ -15,6 +15,7 @@ import { api, ApiError, type CredentialRedactionState } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTime } from '../../i18n/format'
 import ErrorNotice from '../../components/ErrorNotice'
+import { reportForError } from '../../utils/errorReport'
 
 /* ── Credential redaction switch ─────────────────────────────────────────────
  *
@@ -198,11 +199,13 @@ export function RedactionAllowedHostsCard() {
         variant="inline"
         askAgent
         message={error ? i18nT('pages.settings.securityPanel.redaction_load_failed') : null}
+        report={error ? reportForError(error) : undefined}
       />
       <ErrorNotice
         variant="inline"
         askAgent
         message={revoke.isError ? i18nT('pages.settings.securityPanel.redaction_revoke_failed') : null}
+        report={revoke.isError ? reportForError(revoke.error) : undefined}
         onDismiss={() => revoke.reset()}
       />
       {!isLoading && !error && rows.length === 0 && (

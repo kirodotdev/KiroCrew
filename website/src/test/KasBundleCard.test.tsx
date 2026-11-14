@@ -20,11 +20,13 @@
  *   with the switch off, muted again while a save waits for a restart.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { api, type KasBundleStatus } from '../api/client'
 import { KAS_BUNDLE_CONFIG_KEY, KasBundleCard } from '../pages/developer/KasBundleCard'
-import { __resetGatewayConnectedForTests, setGatewayConnected } from '../utils/errorReport'
+import {
+  __resetErrorJournalForTests, __resetGatewayConnectedForTests, attachReport, consumeChatHandoff, recordError, setGatewayConnected,
+} from '../utils/errorReport'
 
 vi.mock('../api/client', async importOriginal => {
   const mod = await importOriginal<typeof import('../api/client')>()
@@ -194,6 +196,25 @@ describe('KasBundleCard', () => {
     expect(toggle()).not.toHaveAttribute('aria-disabled')
     fireEvent.click(toggle())
     await waitFor(() => expect(patchConfig).toHaveBeenCalledWith('agent.kas_bundle', false))
+  })
+
+  it("hands the agent the failed install request's own report", async () => {
+    // The notice words the failure from the catalog, so it cannot find the
+    // report by its text; the request's report must ride with the error.
+    __resetErrorJournalForTests()
+    kasBundleStatus.mockResolvedValue(BASE)
+    const report = recordError({
+      source: 'api', message: 'download failed: 503', status: 503, code: 'kas_download_failed',
+      endpoint: '/api/kas-bundle/install',
+    })
+    kasBundleInstall.mockRejectedValue(attachReport(new Error('download failed: 503'), report))
+    renderWithProviders(<KasBundleCard />)
+    fireEvent.click(await screen.findByTestId('kas-bundle-install'))
+    const alert = await screen.findByRole('alert')
+    fireEvent.click(within(alert).getByRole('button', { name: 'Ask the agent' }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 503')
+    expect(prompt).toContain('kas_download_failed')
   })
 
   it('starts the install and shows the progress the server reports', async () => {

@@ -5,7 +5,7 @@
  * once the edits are applied or discarded.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { McpManagement } from '../pages/settings/McpManagement'
@@ -13,6 +13,7 @@ import { McpStagedEditsProvider, useSetMcpStagedEdits } from '../pages/connectio
 import { answerBatchPreviewsPerName } from './McpManagementTestUtils'
 import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
+import { __resetErrorJournalForTests, attachReport, consumeChatHandoff, recordError } from '../utils/errorReport'
 
 const M = (key: string) => i18nT(`pages.mcpManagement.${key}`)
 const ASK = /ask the agent/i
@@ -69,5 +70,22 @@ describe('McpManagement hand-off hint', () => {
     act(() => { screen.getByText('apply edits').click() })
     expect(within(notice).getByRole('button', { name: ASK })).toBeTruthy()
     expect(notice).not.toHaveTextContent(M('handoff_hint_staged_edits'))
+  })
+
+  it("hands the agent the failed list read's own report", async () => {
+    // The notice is worded from the catalog, so it cannot find the report by
+    // the text it shows: the read's report must ride with its error.
+    __resetErrorJournalForTests()
+    const report = recordError({
+      source: 'api', message: 'gateway list failed', status: 502, code: 'mcp_gateway_down',
+      endpoint: '/api/mcp-gateway/servers',
+    })
+    vi.spyOn(api, 'mcpGatewayServers').mockRejectedValue(attachReport(new Error('gateway list failed'), report))
+    mount()
+    const notice = (await screen.findByText(M('servers_failed'))).closest('[role="alert"]') as HTMLElement
+    fireEvent.click(within(notice).getByRole('button', { name: ASK }))
+    const prompt = consumeChatHandoff() ?? ''
+    expect(prompt).toContain('HTTP 502')
+    expect(prompt).toContain('mcp_gateway_down')
   })
 })

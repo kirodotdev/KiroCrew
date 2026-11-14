@@ -10,6 +10,7 @@ import { Btn } from '../../components/ui'
 import { useOutageFailure } from '../../hooks/useOutageFailure'
 import { fmtBytes, fmtPercent } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { reportForError } from '../../utils/errorReport'
 
 /** The config field this card's switch writes. */
 export const KAS_BUNDLE_CONFIG_KEY = 'agent.kas_bundle'
@@ -87,6 +88,7 @@ export function KasBundleCard() {
         {statusFailed && (
           <ErrorNotice
             message={i18nT('pages.developer.kasBundleCard.status_unavailable')}
+            report={reportForError(statusQ.error)}
             variant="inline"
             askAgent
           />
@@ -223,6 +225,18 @@ export function KasBundleCard() {
                 ? i18nT('pages.developer.kasBundleCard.install_failed')
                 : toggleMut.isError
                   ? i18nT('pages.developer.kasBundleCard.save_failed')
+                  : undefined
+        }
+        // The same order as the message, so the report is the shown failure's own.
+        report={
+          statusFailed
+            ? reportForError(statusQ.error)
+            : status.error
+              ? undefined
+              : installMut.isError
+                ? reportForError(installMut.error)
+                : toggleMut.isError
+                  ? reportForError(toggleMut.error)
                   : undefined
         }
         variant="inline"
