@@ -809,7 +809,11 @@ def _url_payload_command(n: int) -> str:
 #: ``/`` and ``~`` read the full text. Re-measured.
 #: Raised by 3, from 35,997, for the ``chat_steering_off.json`` leaf on the read-gate
 #: floor in ``paths_lists`` (per-chat steering switch-offs). Re-measured.
-_PACKAGE_LINE_BUDGET = 36_000
+#: Raised by 57, from 36,000, for #36961: the mint floor reads a quoted substitution
+#: argument, and the payload walk adds a frame per assignment whose computed
+#: value may be the program or the verb (past 8 such, the line is refused). Only
+#: refusals were added. Re-measured.
+_PACKAGE_LINE_BUDGET = 36_057
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

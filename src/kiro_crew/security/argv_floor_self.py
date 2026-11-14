@@ -416,6 +416,16 @@ def _is_credential_mint(text_lower: str, *, raw_text: "str | None" = None) -> bo
             for later in tokens[i + 1 :]:
                 if _is_mint_verb(later):
                     return True
+                # A QUOTED substitution stays one token (``<name> "$(printf <verb>)"``),
+                # so its body never reaches the word test above.  Read it with the same
+                # substitution reader the assignment resolver uses (#36961).  Its quotes are
+                # gone by now, so a quoted ``)`` in the body (``"$(: ")"; printf <verb>)"``)
+                # closes it early; every word of the token is read as well.
+                if ("$(" in later or "`" in later) and (
+                    _shell_normalizer._mint_verb_in_substitution([later], 0)
+                    or any(_is_mint_verb(word) for word in later.split())
+                ):
+                    return True
                 # The operand of `-c` is a quoted PROGRAM, so its `;` is data, not a command
                 # separator. Letting `_ends_argv` see it ends the scan on the payload of
                 # `python -c "from kiro_crew.cli import main; main()" token` — one token before
