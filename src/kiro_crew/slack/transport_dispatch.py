@@ -318,6 +318,7 @@ async def handle_message_transport(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     spool_text: str | None = None,
     spool_attachments: int = 0,
+    spool_attachment_names: tuple[str, ...] = (),
     had_voice_input: bool = False,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
@@ -325,8 +326,9 @@ async def handle_message_transport(
     ``start_priority``: as for ``handler.handle_message`` (rule:
     ``kiro_crew.start_priority``).
 
-    ``spool_text`` / ``spool_attachments``: as for ``handler.handle_message`` --
-    the pre-ingestion message the shutdown spool records instead of *text*.
+    ``spool_text`` / ``spool_attachments`` / ``spool_attachment_names``: as for
+    ``handler.handle_message`` -- the pre-ingestion message the shutdown spool
+    records instead of *text*, and the names of its files.
 
     ``had_voice_input``: as for ``handler.handle_message`` -- the message carried a
     transcribed voice memo, answered in kind under ``voice_reply.auto_reply_to_voice``.
@@ -471,6 +473,7 @@ async def handle_message_transport(
         thread_id=reply_ts,
         message_id=msg_ts,
         attachments_dropped=spool_attachments,
+        attachment_names=spool_attachment_names,
     )
     if not await admit_inbound_callback(
         sessions,
@@ -1468,6 +1471,7 @@ async def handle_message_transport(
                     thread_id=reply_ts,
                     message_id=msg_ts,
                     attachments_dropped=spool_attachments,
+                    attachment_names=spool_attachment_names,
                 ),
             )
         with contextlib.suppress(Exception):
