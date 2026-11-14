@@ -675,8 +675,12 @@ class TestAnUnrecordedChannelOwnerIsFoundFromTheStore:
         request = self._request(state)
         request.match_info = {"key": history_key}
 
-        await api_session_delete(request)
+        resp = await api_session_delete(request)
 
+        assert (resp.status, json.loads(resp.body.decode("utf-8"))["code"]) == (
+            409,
+            CRON_STORE_BUSY_CODE,
+        )
         state.release_deleted_slot_keys.assert_not_called()
 
     @pytest.mark.asyncio

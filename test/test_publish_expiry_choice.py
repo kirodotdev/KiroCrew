@@ -146,6 +146,8 @@ async def test_a_picked_period_reaches_the_provider(store, expiring):
     await publish_sync.publish("d", provider_name="expiring", expires_in_days=730)
 
     assert provider.called("expiry") == [{"expires_in_days": 730}]
+    pub = store.get("d").publication
+    assert (pub.provider, pub.last_synced_kirocrew_version) == ("expiring", 1)
 
 
 @pytest.mark.asyncio
@@ -177,6 +179,8 @@ async def test_a_provider_without_choices_keeps_its_old_signature(store, fake_cl
     await publish_sync.publish("d")
 
     assert fake_client.called("upload")
+    pub = store.get("d").publication
+    assert (pub.provider, pub.last_synced_kirocrew_version, pub.last_error) == ("default", 1, "")
 
 
 @pytest.mark.asyncio
@@ -215,6 +219,7 @@ async def test_a_republish_without_an_expiry_still_pushes(store, expiring):
 
     assert provider.called("upload_version")
     assert provider.called("expiry") == []
+    assert store.get("d").publication.version_map == {"1": 1, "2": 2}
 
 
 @pytest.mark.asyncio

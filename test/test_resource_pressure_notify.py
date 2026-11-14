@@ -377,6 +377,8 @@ class TestMaybeSample:
             bus, probe_fn=lambda: _status(POSTURE_CRITICAL), clock=lambda: 100.0
         )
         asyncio.run(notifier.maybe_sample())  # must not raise
+        assert notifier._inflight is False  # the next interval can still sample
+        assert notifier._episode_since == 100.0
 
 
 def _ceiling(shmem_gb: float = 89.0):

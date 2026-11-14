@@ -144,8 +144,10 @@ class TestRouteDeregistration:
         mock_app = MagicMock()
         mock_app.router = MagicMock()
         registry = RouteRegistry(mock_app)
+        registry._routes["other-app"] = [MagicMock()]
         # Should not raise
         registry.deregister_app_routes("nonexistent-app")
+        assert registry.get_registered_apps() == ["other-app"]
 
 
 # ---------------------------------------------------------------------------
