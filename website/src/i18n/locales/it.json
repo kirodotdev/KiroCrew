@@ -7105,6 +7105,7 @@
       "following_agent_default": "Segue il valore predefinito dell’agente <agent/> ({{pct}}%)",
       "agent_default_source": "Impostato per agente in config.json (agents.{{agent}}.autocompact_pct). Spostando il cursore lo sostituisci per questa sessione.",
       "harness_managed_note": "Questa chat usa {{backend}}, che compatta da solo. Imposta qui una soglia per compattare prima.",
+      "harness_managed_value": "Lo decide {{backend}}",
       "sketch": "Schizzo",
       "sketch_desc": "Disegna su una lavagna e invialo come immagine",
       "optimize_failed": "Impossibile ottimizzare il prompt. Il testo originale è stato ripristinato.",

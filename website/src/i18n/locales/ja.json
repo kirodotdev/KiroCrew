@@ -6733,6 +6733,7 @@
       "following_agent_default": "エージェント <agent/> の既定値に従う ({{pct}}%)",
       "agent_default_source": "エージェントごとに config.json で設定します (agents.{{agent}}.autocompact_pct)。スライダーを動かすと、このセッションではこの値より優先されます。",
       "harness_managed_note": "このチャットは {{backend}} で動作し、圧縮も自身で行います。より早く圧縮するには、ここでしきい値を設定してください。",
+      "harness_managed_value": "{{backend}} が決定",
       "sketch": "スケッチ",
       "sketch_desc": "ホワイトボードに描いて画像として送信",
       "optimize_failed": "プロンプトを最適化できませんでした。元のテキストを復元しました。",

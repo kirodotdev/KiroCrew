@@ -7105,6 +7105,7 @@
       "following_agent_default": "Seguindo o padrão do agente <agent/> ({{pct}}%)",
       "agent_default_source": "Definido por agente no config.json (agents.{{agent}}.autocompact_pct). Mover o controle deslizante o substitui nesta sessão.",
       "harness_managed_note": "Este chat roda no {{backend}}, que compacta por conta própria. Defina um limite aqui para compactar antes.",
+      "harness_managed_value": "Definido pelo {{backend}}",
       "sketch": "Esboço",
       "sketch_desc": "Desenhe num quadro branco e envie como imagem",
       "optimize_failed": "Não foi possível otimizar o prompt. Seu texto original foi restaurado.",
