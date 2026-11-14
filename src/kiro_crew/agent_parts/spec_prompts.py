@@ -117,7 +117,11 @@ reading of a transcript.**""",
 On any finding (drift, a block, the work already on main, a failed acceptance),
 rewrite Plan and Changed at once with a plain `action=goal`, not `new_goal`
 (each write bumps `goal_version`). Then record a `decide` for each affected
-worker's item and send that worker the change.
+worker's item and send that worker the change. When the item itself is wrong,
+re-plan it now: `close` it `abandoned` with the reason in `decision` and
+`create` its replacement, or `action=accept` a corrected bar never weaker than
+the goal asks; record `decide` on the item still open (a closed one refuses
+it), and name each change in your next report.
 
 """,
     "dispatch_create": """1. `work_ledger_record` `action=create` with the item's `title` and its
