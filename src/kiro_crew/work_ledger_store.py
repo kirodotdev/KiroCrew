@@ -795,11 +795,15 @@ def _read_events_unlocked(path: Path, *, strict: bool = False) -> list[WorkEvent
         if st.st_size > MAX_RECORD_BYTES:
             logger.warning("work ledger event log over the size ceiling: %s", path.name)
             return []
+        # Split on "\n" only: an event is one JSON line written with
+        # ``ensure_ascii=False``, so U+2028, U+2029 and U+0085 sit raw inside its
+        # text, and ``str.splitlines`` would cut the line there, drop both halves
+        # as unparseable and let the next append rewrite the log without it.
         if strict:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
         else:
             data = _memo_read_bytes(path, st, Path.read_bytes)
-            lines = data.decode("utf-8", errors="replace").splitlines()
+            lines = data.decode("utf-8", errors="replace").split("\n")
     except FileNotFoundError:
         return []
     except OSError:
