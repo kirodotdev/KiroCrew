@@ -609,7 +609,8 @@ export interface PrRunsResponse {
   runs: PrWorkflowRun[]
 }
 
-/** One GitHub Actions run on the CI runs dashboard. */
+/** One CI run on the CI runs dashboard: a GitHub Actions run or a GitLab
+ * pipeline, in GitHub's status and conclusion vocabulary. */
 export interface CiRun {
   id: number
   name: string
@@ -617,7 +618,8 @@ export interface CiRun {
   conclusion: string | null
   url: string | null
   branch: string | null
-  /** PR numbers GitHub links to the run; empty for a run from a fork. */
+  /** PR numbers GitHub links to the run (empty for a run from a fork), or the
+   * MR iid of a GitLab merge-request pipeline. */
   pull_requests: number[]
   created_at: string | null
   started_at: string | null
@@ -626,12 +628,13 @@ export interface CiRun {
   duration_sec: number | null
 }
 
-/** One connected GitHub repo's recent runs. `error` is a fixed code when the
- * read failed (`provider_error`, `gh_setup`), never the provider's own text. */
+/** One connected GitHub or GitLab repo's recent runs. `error` is a fixed code
+ * when the read failed (`provider_error`, `gh_setup`, `glab_setup`), never the
+ * provider's own text. */
 export interface CiRepoRuns {
   owner: string
   repo: string
-  provider: string
+  provider: SourceProvider
   host: string
   /** Whether CI-failure alerts are on for this repo. */
   alerts: boolean
@@ -641,7 +644,7 @@ export interface CiRepoRuns {
 
 export interface CiRunsResponse {
   repos: CiRepoRuns[]
-  /** More GitHub repos are connected than one response lists. */
+  /** More GitHub and GitLab repos are connected than one response lists. */
   truncated: boolean
 }
 

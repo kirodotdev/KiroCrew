@@ -572,3 +572,16 @@ def rerun_workflow_run(
         "rerun": True,
         "failed_only": False,
     }
+
+
+def list_recent_workflow_runs(
+    owner: str, repo: str, *, host: str = "", timeout: float = AZ_TIMEOUT_SEC
+) -> list[dict]:
+    """REFUSED on Azure DevOps: the CI runs dashboard lists GitHub and GitLab only.
+
+    Present for the client-parity gate. The ``/ci-runs`` route never lists an Azure
+    repository, so this raises rather than returning an empty list that would read
+    as "no builds yet".
+    """
+    del owner, repo, host, timeout
+    raise ProviderCliError("the CI runs dashboard does not list Azure DevOps builds")
