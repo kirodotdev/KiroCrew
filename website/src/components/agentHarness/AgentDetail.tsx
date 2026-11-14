@@ -1,10 +1,14 @@
 import { ArrowRight, RefreshCw } from 'lucide-react'
+import { Trans } from 'react-i18next'
 
 import type { AcpBackendProbe } from '../../api/client'
 import { Btn, SendBtn } from '../ui'
 import { CopyCommand } from './CopyCommand'
 import { fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+
+/** Where the npm install hint sends a host that has no Node.js (npm ships with it). */
+const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download'
 
 /**
  * The detail of a harness whose components are absent from the gateway host:
@@ -20,6 +24,11 @@ import { i18nT } from '../../i18n/t'
  * A harness on the wrong release (`found_version`) is installed, so the first
  * line says which release this host has instead of "Install it": the command
  * below replaces it with the verified one.
+ *
+ * An `npm ...` command gets one more line naming Node.js and linking its
+ * download page: npm ships with Node.js, so on a host without it the command
+ * fails with "npm: command not found" and nothing else on the card says why.
+ * A curl installer or an empty command needs no Node.js, so they get no line.
  */
 export function AgentInstallDetail({ name, probe }: { name: string; probe: AcpBackendProbe }) {
   return (
@@ -33,9 +42,28 @@ export function AgentInstallDetail({ name, probe }: { name: string; probe: AcpBa
           : i18nT('components.kiroPrerequisiteGate.agent_install_on_host', { name })}
       </p>
       {probe.install_command ? (
-        <CopyCommand>
-          <code>{probe.install_command}</code>
-        </CopyCommand>
+        <>
+          <CopyCommand>
+            <code>{probe.install_command}</code>
+          </CopyCommand>
+          {probe.install_command.startsWith('npm ') && (
+            <p className="text-[12px] leading-relaxed text-muted">
+              <Trans
+                i18nKey="components.kiroPrerequisiteGate.agent_install_needs_node"
+                components={[
+                  // eslint-disable-next-line jsx-a11y/anchor-has-content, jsx-a11y/control-has-associated-label -- `Trans` renders the catalog's <0>Download Node.js</0> text inside it
+                  <a
+                    key="node"
+                    className="text-accent hover:underline focus-ring"
+                    href={NODE_DOWNLOAD_URL}
+                    rel="noopener noreferrer"
+                    target="_blank"
+                  />,
+                ]}
+              />
+            </p>
+          )}
+        </>
       ) : probe.missing_components.length > 0 ? (
         <p className="text-[12px] text-muted">
           {i18nT('components.kiroPrerequisiteGate.agent_missing_components', {
