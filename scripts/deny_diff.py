@@ -163,6 +163,8 @@ _INHERITED_HOME_OVERRIDE_ENV_VARS = (
     "DSH_HOME",
     # GitHub Copilot CLI relocates its whole home, plaintext token file included.
     "COPILOT_HOME",
+    # Google Antigravity relocates its ACP settings and OAuth state together.
+    "GEMINI_HOME",
 )
 
 

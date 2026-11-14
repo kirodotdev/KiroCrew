@@ -64,7 +64,9 @@ from kiro_crew.acp.types import (
     rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_FORBIDDEN_MODES,
+    ACP_BACKEND_MUST_ASK_TOOL_KINDS,
     ACP_BACKENDS_CREW_ENFORCES_SPEC_TOOLS_SETTINGS,
     ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
@@ -151,6 +153,10 @@ async def _apply_session_permission_routing(self: AcpClient) -> None:
     decision, so the scope lives in one place instead of being re-derived here.
     """
     backend = self.backend
+    if backend == ACP_BACKEND_ANTIGRAVITY:
+        # The pin exists for the mode checks below, so it is enforced here, before
+        # the mode write and before any prompt; Kiro never reaches this method.
+        self._refuse_unverified_antigravity_version()
     option_id, _required = acp_tool_gate.permission_config_for(backend)
     value = permission_value_for(backend, self._acp_config_options)
     issue = acp_tool_gate.session_config_issue(backend, self._acp_config_options)
@@ -964,11 +970,15 @@ async def _tripwire_permission_state(self: AcpClient, msg: JsonRpcMessage) -> No
     session-config harness with a ``ACP_BACKEND_FORBIDDEN_MODES`` row its permission
     option and forbidden modes (``_tripwire_session_config``). Both are membership
     tests, so every other backend -- kiro-cli included -- reads the frame and returns.
+    A harness with an ``ACP_BACKEND_MUST_ASK_TOOL_KINDS`` row is also checked for a
+    tool call that ran without asking at all (``_tripwire_unasked_call``).
     """
     if self._is_goose:
         await self._tripwire_goose_mode(msg)
     elif self.backend in ACP_BACKEND_FORBIDDEN_MODES:
         await self._tripwire_session_config(msg)
+    if self.backend in ACP_BACKEND_MUST_ASK_TOOL_KINDS:
+        await self._tripwire_unasked_call(msg)
 
 
 async def _tripwire_session_config(self: AcpClient, msg: JsonRpcMessage) -> None:
@@ -1642,6 +1652,14 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
             self._restore_copilot_edit_seed(restore)
     if event is None:
         return None
+    # Antigravity's tool_call frame presented an MCP identity half over the bound
+    # (its ``_meta.mcp`` row bounds both): the call names a tool Crew cannot
+    # retain, so every gate refuses it on this flag. Set here, not through the
+    # parser's store, which on that store's harness also folds KAS built-in ids.
+    if self.backend == ACP_BACKEND_ANTIGRAVITY and getattr(
+        self, "_tool_call_identity_unreadable", {}
+    ).get(event.tool_call_id):
+        event.mcp_identity_unreadable = True
     if _is_child_permission_frame(msg, getattr(self, "_session_id", "") or ""):
         # A native sub-agent's request: the dashboard keeps the parent's deny
         # overrides away from it (``dashboard.deny_override.slot_may_override``).
@@ -1668,6 +1686,9 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         _gate_events = self._permission_gate_events = {}
     _gate_events[event.request_id] = event
     self._note_pi_gate_asked(msg)
+    if self.backend in ACP_BACKEND_MUST_ASK_TOOL_KINDS:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        self._watch_tool_call(params.get("toolCall"), asked=True)
     logger.info(
         "Permission requested for tool: %s (req=%s)",
         event.title,

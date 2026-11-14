@@ -1628,6 +1628,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "auto-approve identity gate rejected req=%s: %s",
             "approve_tool: mimocode mcp control refused req=%s",
         ],
+        "src/kiro_crew/acp/client_unasked_watch.py": [],
         "src/kiro_crew/acp/client_claude_seed.py": [],
         "src/kiro_crew/acp/client_claude_session.py": [],
         "src/kiro_crew/acp/client_model_selection.py": [],

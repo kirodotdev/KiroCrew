@@ -20,6 +20,7 @@ import os
 from typing import FrozenSet, Mapping
 
 from kiro_crew.agent_sdk.backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -71,6 +72,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -175,6 +177,7 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_KAS,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
 
@@ -226,6 +229,7 @@ EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_GOOSE: "thinking_effort",
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
+    ACP_BACKEND_ANTIGRAVITY: "thinking_level",
 }
 
 #: The spelling used by every backend without a row in
@@ -293,7 +297,13 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # mimocode is NOT a member: membership presumes the effort channel above, which it is
 # outside. Its levels are model ids, so no advertised effort option exists to read.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
-    {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+    {
+        ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_GOOSE,
+        ACP_BACKEND_OPENCODE,
+        ACP_BACKEND_PI,
+    }
 )
 
 # Backends whose unpinned session serves a pseudo-model rather than a concrete
@@ -489,8 +499,22 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
+        ACP_BACKEND_ANTIGRAVITY,
     }
 )
+
+# Backends whose ``configOptions`` ``model`` select is the canonical model
+# vocabulary even when the same session response also carries a ``models``
+# object. Most advertised-selection hosts advertise one list or the other; this
+# set exists for a host that advertises both with different values.
+#
+# Antigravity ACP 1.4.4 advertises ``models.availableModels`` as model+thinking
+# pairs (``gemini-3.8-flash-high``) while its ``model`` select accepts the bare
+# model id and its ``thinking_level`` select carries the effort. A write of the
+# pair returns success but leaves ``currentValue`` unchanged, so treating the
+# pair list as the picker vocabulary makes a model switch silently do nothing.
+# The select is therefore the authority for this host.
+ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL = frozenset({ACP_BACKEND_ANTIGRAVITY})
 
 # Backends that seed a per-session settings file — claude-agent-acp's
 # ``settings.local.json`` — to lock the model + permission surface. The file is
@@ -653,6 +677,7 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # strands gets its own key: its ids are ``provider/model`` strings (or bare
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
+    ACP_BACKEND_ANTIGRAVITY: "antigravity",
 }
 
 
@@ -673,6 +698,13 @@ ACP_BACKENDS_MODEL_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 #: applied at spawn and a change relaunches the process and reloads the session. A
 #: separate set from the model one because the two flags are separate facts of the
 #: CLI, and a harness can take one at launch and the other on the wire.
+#:
+#: antigravity is NOT a member of either launch set: Antigravity ACP 1.4.4
+#: advertises ``model`` and ``thinking_level`` select options on ``session/new``
+#: and ``session/load`` (``test/fixtures/acp_frames/antigravity/handshake-live.jsonl``)
+#: and is launched with no model or effort argument, so both change on the live
+#: session (:data:`ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION`,
+#: :data:`ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION`).
 ACP_BACKENDS_EFFORT_AT_LAUNCH: FrozenSet[str] = frozenset({ACP_BACKEND_STRANDS})
 
 #: The levels each member of :data:`ACP_BACKENDS_EFFORT_AT_LAUNCH` takes on its argv.

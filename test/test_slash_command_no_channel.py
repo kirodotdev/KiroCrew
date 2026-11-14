@@ -24,6 +24,7 @@ from chat_test_helpers import _make_state
 from test_workflows_library_remove import _Sel, _service_on_claimed_slug
 
 from kiro_crew.acp_backends import (
+    ACP_BACKEND_ANTIGRAVITY,
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
     ACP_BACKEND_COPILOT,
@@ -199,6 +200,7 @@ _NO_NATIVE_CLEAR = (
     ACP_BACKEND_PI,
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_COPILOT,
+    ACP_BACKEND_ANTIGRAVITY,
 )
 
 # claude-agent-acp reports nothing back for a ``/clear`` handed to it as prompt
