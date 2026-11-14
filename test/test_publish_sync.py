@@ -495,6 +495,8 @@ async def test_push_version_noop_when_not_published(store, fake_client):
     store.create(name="Doc", content="v1", kind="text", slug="d")
     await publish_sync.push_version(store.get("d"))
     assert fake_client.called("upload_version") == []
+    art = store.get("d")
+    assert (art.publication, art.version) == (None, 1)
 
 
 # ── sharing ────────────────────────────────────────────────────────────────────
