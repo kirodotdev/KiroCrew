@@ -236,8 +236,6 @@ All four are redacted before any delivery path. When the parent has no open
 dashboard surface, undelivered notices are batched into a single digest DM rather
 than N pings.
 
-## Automatic recovery continuations
-
 ## How an `inject` row is rendered
 
 Role `inject` covers several unrelated things, so the render side does not guess
@@ -599,7 +597,8 @@ other transport refusals steer nothing: the security floor inside
 `approve_tool` backstops a surface that approved, and a stranded request drained
 before a new turn has no turn in flight to steer into.
 
-The recovery classification for the last two rows of the marker table above
+The recovery classification for the queued rows of the marker table above
+(every row except the display-only `[Tool blocked — reason sent to the agent]`)
 is **structural**: the queue entry
 carries `kind == "synthetic_recovery"` (`SYNTHETIC_RECOVERY_KIND`), set at insert
 time. Metadata survives every queue transformation (merge, prefixing, truncation)

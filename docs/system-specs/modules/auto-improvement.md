@@ -764,7 +764,7 @@ rather than starting two threads and hoping, so it is deterministic.
 - `POST /setup-clone` re-checks `_run_is_active()` inside `clone_lock` and answers 409 `run_in_progress`. (D-95)
 - `PUT /config` takes `clone_lock` and re-checks `_run_is_active()` inside it; a structural test asserts both workspace-mutating handlers do. (D-96)
 - The draft and commit routes re-check the run status inside `clone_lock`; a structural guard asserts all four clone-mutating handlers do. (D-115)
-- `POST /run` admits under `app_lifecycle_lock` and answers 403 `app_disabled` when `is_app_enabled` is false at admission; otherwise it records `RunSupervisor.stop_seq()` and passes it to `start` as `admitted_at`, which `start` re-checks after `_build_driver` and raises `RuntimeError` ("the run was stopped before it started", mapped to 409 `session_conflict`) when a `stop` or the disable hook landed meanwhile, so a run cannot launch into an app disabled or stopped while its driver was being built (`test_run_start_honors_stop`, `test_start_is_refused_once_the_app_is_disabled`).
+- `POST /run` admits under `app_lifecycle_lock` and answers 403 `app_disabled` when `is_app_enabled` is false at admission; otherwise it records `RunSupervisor.stop_seq()` and passes it to `start` as `admitted_at`, which `start` re-checks after `_build_driver` and raises `RuntimeError` ("the run was stopped before it started", mapped to 409 `session_conflict`) when a `stop` or the disable hook landed meanwhile, so a run cannot launch into an app disabled or stopped while its driver was being built (`test_start_is_refused_once_the_app_is_disabled`).
 
 ### Why the manual draft path materializes its own diff
 

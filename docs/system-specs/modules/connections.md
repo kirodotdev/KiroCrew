@@ -252,7 +252,7 @@ card simply omits the row.
 is the credential-store observation this module acts on — it becomes a persisted
 record and a Connected badge — so it emits one
 `connections_status.oauth_grant_presence` audit event (registered in
-`hooks._AUDIT_ONLY_READ_IDS`), mirroring the mint engine's `_grant_observed`
+`hooks._AUDIT_ONLY_READ_IDS`), mirroring the mint engine's `mcp_grant.grant_observed`
 convention: audited on the acted-on transition only (never once per poll
 sweep), best-effort rather than fail-closed because the artifacts are stat-ed,
 never opened; an SEL outage leaves a warning, not a failed status read. A stamp

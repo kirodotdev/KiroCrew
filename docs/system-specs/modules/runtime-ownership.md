@@ -166,7 +166,7 @@ and a sub-agent mid-turn on that process adds a tenancy on top. Both are holders
 the gate refuses a kill for, which is why the reset path's "is this process still
 in use" question (`session_lifecycle_parts.teardown._pid_is_still_held`, asked only
 for a shared chat session) reads both tables, and why the RSS watchdog scales its
-ceiling by the leases on a pid (`SessionCleanup._rss_limit_for`).
+ceiling by the leases on a pid (`session_cleanup_spare.rss_limit_for`).
 
 ### Chat turns are serialized on a shared kiro-cli process
 
