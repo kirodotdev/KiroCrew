@@ -779,11 +779,20 @@ class TestRealEngineRegistration:
     def test_a_successful_registration_returns_quietly(self, monkeypatch):
         from kiro_crew.cloud import launch_engine as le
 
-        monkeypatch.setattr(le.connect_mod, "register_instance", lambda *a, **k: "inst-7")
+        registry: dict = {}
+
+        def _register(instance_id, **kwargs):
+            registry[instance_id] = kwargs
+            return "inst-7"
+
+        monkeypatch.setattr(le.connect_mod, "register_instance", _register)
 
         le.RealLaunchEngine().register(
             instance_id="i-0abc", tag="kc-3f9a", profile="", region="us-east-1"
         )
+        assert registry == {
+            "i-0abc": {"name": "Kiro Crew Cloud (kc-3f9a)", "profile": "", "region": "us-east-1"}
+        }
 
 
 class TestCancelRollsBackTheStack:
