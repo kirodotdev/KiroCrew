@@ -35,6 +35,7 @@ from kiro_crew.notifications.bridge_approval_note import (
     APPROVAL_DETAIL_KEY,
     is_pending_approval_note,
 )
+from kiro_crew.notifications.bridge_question_note import OPTIONS_KEY, is_pending_question_note
 
 #: The bridge transports this sink serves; ``DashboardState`` registers one each.
 TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex", "feishu")
@@ -69,6 +70,18 @@ def reply_owner(state: Any, transport: str) -> str:
         return target.removeprefix(_DM_PREFIX) if target.startswith(_DM_PREFIX) else ""
     except Exception:
         return ""
+
+
+def bound_owner(state: Any) -> str:
+    """The owner a bridged decision is bound for, or ``""``. Never raises.
+
+    Slack's configured ``owner_id``, else the owner DM of the first reply transport
+    that names one. Only the audit records it: each reader still checks its own owner.
+    """
+    owner = getattr(state, "owner_id", "")
+    if isinstance(owner, str) and owner:
+        return owner
+    return next((found for name in REPLY_TRANSPORTS if (found := reply_owner(state, name))), "")
 
 
 #: The most a reply note may render to, in characters, per reply transport: below
@@ -110,8 +123,22 @@ def _fits_one_message(transport: str, text: str) -> bool:
     return len(text) <= _ONE_MESSAGE and len(md_to_telegram_html_safe(text)) <= _ONE_MESSAGE
 
 
-def render_reply_text(head: str, detail: str, transport: str) -> str:
-    """*head* (the note) plus what will run and how to answer, as one message, or ``""``.
+#: How the owner answers a bound note by reply, by what the note asks.
+APPROVAL_PROMPT = "Reply **approve** or **deny** to this message."
+QUESTION_PROMPT = "Reply with the number of your answer to this message."
+
+#: What separates a question's numbered options on their one line.
+_OPTION_SEPARATOR = " · "
+
+
+def render_reply_text(
+    head: str, detail: str, transport: str, prompt: str = APPROVAL_PROMPT, *, whole: bool = False
+) -> str:
+    """*head* (the note) plus what it asks and how to answer, as one message, or ``""``.
+
+    *detail* is what an approval will run, or a question's numbered options;
+    *prompt* says how to answer it. *whole* refuses any cut: a question's options
+    must all be readable in full before a number can pick one.
 
     *detail* is scrubbed for display FIRST, so the cut can never sever a credential
     the scan would have caught, then collapsed to one line and cut the way
@@ -128,9 +155,11 @@ def render_reply_text(head: str, detail: str, transport: str) -> str:
     shown = " ".join(_display_safe(" ".join(detail.split())).split())
     cut = _APPROVAL_INPUT_CHARS
     while cut >= _MIN_SHOWN:
+        if whole and len(shown) > cut:
+            return ""
         part = shown if len(shown) <= cut else shown[: cut - 1].rstrip() + "…"
         part = part.replace("`", "`\u200b")
-        text = f"{head}\n\n```\n{part}\n```\nReply **approve** or **deny** to this message."
+        text = f"{head}\n\n```\n{part}\n```\n{prompt}"
         if _fits_one_message(transport, text):
             return text
         cut //= 2
@@ -178,12 +207,17 @@ class TransportBridgeSink:
         # import the bridge.
         from kiro_crew.dashboard.handlers import messaging
 
-        token, action_detail = self._reply_action(note)
+        token, action_detail, prompt = self._reply_action(note)
         text = render_transport_text(note)
         if token:
             # Off the loop: the display scan reads the whole, model-authored detail.
             reply_text = await asyncio.to_thread(
-                render_reply_text, text, action_detail, self.transport
+                render_reply_text,
+                text,
+                action_detail,
+                self.transport,
+                prompt,
+                whole=prompt == QUESTION_PROMPT,
             )
             text, token = (reply_text, token) if reply_text else (text, "")
         posted: list[tuple[str, str]] = []
@@ -210,16 +244,35 @@ class TransportBridgeSink:
             raise BridgeTransportUnavailable(f"{self.transport} names no owner DM")
         raise RuntimeError(f"{self.transport} delivery refused: {code}")
 
-    def _reply_action(self, note: Mapping[str, Any]) -> tuple[str, str]:
-        """The note's action token and detail when its owner may answer by reply here.
+    def _reply_action(self, note: Mapping[str, Any]) -> tuple[str, str, str]:
+        """The note's action token, detail and prompt when its owner may answer here.
 
-        ``("", "")`` unless this is a reply transport whose owner DM is known, and
-        the note is a pending approval carrying both a token and something to show:
-        a reply the owner cannot read the call for is not consent.
+        ``("", "", "")`` unless this is a reply transport whose owner DM is known, and
+        the note is a bound pending approval carrying something to show (a reply the
+        owner cannot read the call for is not consent), or a bound pending question
+        carrying its options, shown numbered from 1 as the reply names them.
         """
-        if not reply_owner(self._state, self.transport) or not is_pending_approval_note(note):
-            return "", ""
-        token, detail = note.get(ACTION_TOKEN_KEY), note.get(APPROVAL_DETAIL_KEY)
-        if not isinstance(token, str) or not isinstance(detail, str) or not detail.strip():
-            return "", ""
-        return token, detail
+        none = ("", "", "")
+        if not reply_owner(self._state, self.transport):
+            return none
+        token = note.get(ACTION_TOKEN_KEY)
+        if not isinstance(token, str) or not token:
+            return none
+        if is_pending_approval_note(note):
+            detail = note.get(APPROVAL_DETAIL_KEY)
+            if not isinstance(detail, str) or not detail.strip():
+                return none
+            return token, detail, APPROVAL_PROMPT
+        if is_pending_question_note(note):
+            labels = note.get(OPTIONS_KEY)
+            if not isinstance(labels, list) or not labels:
+                return none
+            if not all(isinstance(label, str) and label.strip() for label in labels):
+                return none
+            # A label carrying the separator could read as another numbered option,
+            # so such a card is answered in the dashboard or on Slack instead.
+            if any(_OPTION_SEPARATOR.strip() in label for label in labels):
+                return none
+            options = _OPTION_SEPARATOR.join(f"{n}. {label}" for n, label in enumerate(labels, 1))
+            return token, options, QUESTION_PROMPT
+        return none
