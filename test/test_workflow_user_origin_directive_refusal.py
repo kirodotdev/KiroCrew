@@ -156,7 +156,7 @@ async def test_named_session_step_set_project_is_refused(
     finally:
         await pool.shutdown()
 
-    _assert_refused(text, "chain-A", audits)
+    _assert_refused(text, agent_exec.named_session_key("wf_n", "chain-A"), audits)
 
 
 async def test_a_step_without_a_person_only_directive_is_unchanged(
