@@ -18,6 +18,7 @@ in ``argv_floor_self`` and the host verdicts in ``argv_floor_hosts``, both below
 
 from __future__ import annotations
 
+import bisect
 import fnmatch
 import re
 
@@ -29,6 +30,7 @@ from . import shell_normalizer as _shell_normalizer
 from .argv_floor_hosts import _GLOB_CHARS, _host_is_self
 from .argv_floor_self import (
     _quoted_assignment_scripts,
+    _self_frames,
     _self_token_frames,
     _static_substitution_output,
 )
@@ -933,8 +935,176 @@ def _function_call_binds_self(text: str) -> bool:
 
 def _reaches_self_over_ssh(text_lower: str) -> bool:
     """:func:`_is_ssh_to_self` on *text_lower* and on each quoted assignment script in it,
-    read whole: the separator mask would turn a script's own separators into data."""
-    return any(map(_is_ssh_to_self, [text_lower, *_quoted_assignment_scripts(text_lower)]))
+    read whole: the separator mask would turn a script's own separators into data.
+
+    Each multi-line script a shell or ``eval`` runs is also read whole: the mask reads the
+    whole line, so a newline that ends a command in a ``bash -c`` script, or in the heredoc
+    of ``bash -c "$(cat <<eof …)"`` (bash opens a fresh quoting context inside ``$( … )``)
+    is read as data. A heredoc that feeds ``gh --body`` is no shell's script, and neither
+    is one whose carrier word is only a printer's argument (``echo bash -c '…'``): such a
+    script is data and is not descended into either. Deny-only."""
+    roots = [text_lower, *_quoted_assignment_scripts(text_lower)]
+    if any(map(_is_ssh_to_self, roots)):
+        return True
+    if "\n" not in text_lower:
+        return False
+    return any(map(_is_ssh_to_self, _executed_multi_line_scripts(text_lower, roots)))
+
+
+#: Words that end one shell list item; a pipe does not, since its stages run together.
+_LIST_SEPARATORS = frozenset((";", "&&", "||", "&"))
+
+
+def _executed_multi_line_scripts(
+    text_lower: str, roots: "list[str] | None" = None
+) -> "dict[str, None]":
+    """Each multi-line script a shell, ``env -S`` or ``eval`` RUNS in *text_lower*, at any depth.
+
+    The shared payload walk keeps no provenance, so a script printed by ``echo`` turns
+    into a frame of its own where its shell sits in program position. This walk descends
+    only through scripts whose carrier word (reported by ``_nested_shell_payloads``)
+    executes, so printed text stays data at every depth. A payload with no single carrier
+    word (a pipe into a shell, an array, an alias) is read: fail closed. The exemption is
+    judged on the carrier's own list item, so an unrelated later ``… | sh`` does not
+    withdraw it. ``source``/``.`` take a file name, which is not read as a script. Linear
+    in the walked text: each frame's payloads come from one pass, and each item's guard
+    is computed once.
+    """
+    n = _shell_normalizer
+    # The shared walk (memoized per decision) has already tokenized every frame this
+    # walk can reach, so its argv is reused rather than tokenizing a text twice.
+    # Seeded like main's reading: the text and each quoted script that opens with an
+    # assignment, whose inner operator the resolver otherwise splits away.
+    walked = dict(_self_frames(text_lower))
+    roots = roots if roots is not None else [text_lower, *_quoted_assignment_scripts(text_lower)]
+    scripts: "dict[str, None]" = {}
+    seen: "set[str]" = set(roots)
+    pending = list(roots)
+    while pending:
+        source = pending.pop()
+        tokens = walked[source] if source in walked else n._self_tokens(source)
+        if not tokens:
+            continue
+        carriers: "list[int | None]" = []
+        payloads = n._nested_shell_payloads(tokens, allow_join=False, carriers_out=carriers)
+        # List items are read from the quote-masked spelling, where a quoted ``;`` or a
+        # glued unquoted one is told apart. If the two spellings tokenize differently,
+        # no payload gets the printer exemption (fail closed).
+        masked = n._self_tokens(_mask_quoted_separators(source))
+        aligned = len(masked) == len(tokens)
+        sep = (
+            [aligned and (t in _LIST_SEPARATORS or t.endswith((";", "&"))) for t in masked]
+            if aligned
+            else [False] * len(tokens)
+        )
+        item_start: "list[int]" = []
+        item_end: "dict[int, int]" = {}
+        start = 0
+        for i in range(len(tokens)):
+            item_start.append(start)
+            if sep[i]:
+                item_end[start] = i + (masked[i] not in _LIST_SEPARATORS)
+                start = i + 1
+        item_end.setdefault(start, len(tokens))
+        at_index: "dict[str, list[int]]" = {}
+        for i, token in enumerate(tokens):
+            at_index.setdefault(token, []).append(i)
+            if token.startswith("<<<") and len(token) > 3:  # a glued here-string's text
+                at_index.setdefault(token[3:], []).append(i)
+        guards: "dict[int, tuple[list[str], list[str], bool]]" = {}
+
+        def _guard(first: int) -> "tuple[list[str], list[str], bool]":
+            if first not in guards:
+                # the masked words, so a quoted ``;`` starts no program
+                item = masked[first : item_end[first]]
+                guards[first] = (
+                    item,
+                    n._argv_programs(item),
+                    n._data_consumer_command_disqualified(item),
+                )
+            return guards[first]
+
+        executed: "list[str]" = []
+        for payload, carrier in zip(payloads, carriers):
+            if carrier is not None and aligned:
+                if tokens[carrier] in ("source", "."):
+                    continue
+                own = payload in tokens[carrier]  # ``bash<<<'…'``, a sed ``s///e``
+                spot = carrier if own else None
+                if spot is None:
+                    spots = at_index.get(payload, ())
+                    k = bisect.bisect_left(spots, carrier)
+                    spot = spots[k] if k < len(spots) else None
+                if spot is None:
+                    # a payload glued inside a later word (``-c'…'``,
+                    # ``--split-string='…'``) is judged at its carrier word
+                    spot, own = carrier, True
+                first = item_start[spot]
+                item, programs, disqualified = _guard(first)
+                if spot == carrier and tokens[carrier] == payload:
+                    # Text printed into a pipe (the word is its own carrier): a script
+                    # only if its own list item pipes into a shell, not a later ``| sh``,
+                    # and not when every later stage's program only reads text.
+                    if not n._pipes_into_evaluator(item) or _pipe_sinks_read_text(item, programs):
+                        continue
+                elif item_start[carrier] != first:
+                    # The carrier sits in another command: the payload's own command
+                    # decides, judged at the payload's position.
+                    if n._data_consumer_exempt(
+                        spot - first, "x", programs, item, command_disqualified=disqualified
+                    ):
+                        continue
+                elif n._data_consumer_exempt(
+                    carrier - first,
+                    # a word that holds its own script is judged by its position only:
+                    # its newlines are the script's
+                    "x" if own else item[carrier - first],
+                    programs,
+                    item,
+                    command_disqualified=disqualified,
+                ):
+                    continue
+            executed.append(payload)
+        bodies = n._substitution_bodies(_single_quotes_blanked(n._fold_line_continuations(source)))
+        for is_script, raw in [(True, p) for p in executed] + [(False, b) for b in bodies]:
+            payload = n._decode_printf_escapes(raw)
+            if is_script and "\n" in payload:
+                scripts[payload] = None
+            if len(payload) < len(source) and payload not in seen:
+                seen.add(payload)
+                pending.append(payload)
+    return scripts
+
+
+#: Data readers that can run their input (``sed …/e``, ``awk 'system(…)'``): a pipe into
+#: one of these may run printed text, so it never clears the pipe check.
+_PIPE_SINKS_THAT_CAN_RUN = frozenset(("sed", "awk"))
+
+
+def _pipe_sinks_read_text(item: "list[str]", programs: "list[str]") -> bool:
+    """True when every stage after a ``|`` in *item* runs a program that only reads text
+    (``grep bash`` takes ``bash`` as a pattern). Fail closed: a glued pipe or a reader that
+    can run its input keeps the text a script."""
+    sinks = []
+    for i, token in enumerate(item):
+        if "|" in token and token != "|":
+            return False
+        if token == "|" and i + 1 < len(item):
+            sinks.append(programs[i + 1])
+    readers = _shell_normalizer._DATA_CONSUMER_PROGRAMS - _PIPE_SINKS_THAT_CAN_RUN
+    return bool(sinks) and all(sink in readers for sink in sinks)
+
+
+def _single_quotes_blanked(text: str) -> str:
+    """*text* with each single-quoted span blanked, so a quoted ``$(``/backtick opens no
+    substitution: bash runs none inside ``'…'``. Read by main's one quote state machine."""
+    out: "list[str]" = []
+    for step in _shell_normalizer._iter_shell_chars(text):
+        quoted = step.state == 1 and not step.active
+        out.append(" " * len(step.text) if quoted else step.text)
+        if step.trailing_escape:
+            break
+    return "".join(out)
 
 
 def _is_ssh_to_self(text_lower: str) -> bool:
