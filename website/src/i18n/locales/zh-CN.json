@@ -6757,6 +6757,7 @@
       "compacting_context_stop_unavailable": "正在压缩上下文，完成前无法停止",
       "click_again_to_force_stop_resets_session": "再次点击强制停止（会重启会话；你的消息会保留，助手保留最近的一段摘录）",
       "esc_again_to_stop": "再按一次 Esc 即可停止",
+      "stop_generation_esc": "停止生成（Esc）",
       "model_inherited_default": "此会话运行在默认模型（{{name}}）上。它没有自己的模型，因此默认模型变化时它也会变化。点击可固定一个。",
       "harness_mark": "运行于 {{harness}}",
       "model_switch_applies_next_turn": "你下一条消息会用你选的模型。这条回复会用开始时的模型完成。",

@@ -10,6 +10,7 @@ import { offlineProps } from '../../utils/offline'
 import type { SendMode } from '../../pages/chat/ChatSettings'
 import { i18nT } from '../../i18n/t'
 import { StopControls } from './StopControls'
+import { useComposerDoubleEscapeToStop } from '../../hooks/useComposerDoubleEscapeToStop'
 import type { ComposerBusyMode } from './props'
 import { slotRowByKey } from '../../store/slotIndex'
 
@@ -217,6 +218,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
   onStop?: () => void
   terminalActive?: boolean
 }) {
+  const doubleEscapeToStop = useComposerDoubleEscapeToStop()
   const heldBusyAction = effectiveBusyMode === 'queue'
     ? i18nT('components.chatInput.queue_message')
     : effectiveBusyMode === 'auto'
@@ -285,7 +287,7 @@ export function BusySendControls({ stopState, killingEscaped, stopWithTap, isQue
         <span className="text-[13px] leading-4 text-muted min-w-0 break-words" data-testid="stop-declined-hint">{i18nT('components.chatInput.click_again_to_force_stop_resets_session')}</span>
       </div>
     ) : onStop ? (
-      <StopControls stopState="idle" killingEscaped={false} stopWithTap={stopWithTap} />
+      <StopControls stopState="idle" killingEscaped={false} stopWithTap={stopWithTap} escapeStops={!doubleEscapeToStop} />
     ) : steerOnly ? (
       // Same shape-stability rule as the split case below, with the
       // surface's own (plain) send button.
