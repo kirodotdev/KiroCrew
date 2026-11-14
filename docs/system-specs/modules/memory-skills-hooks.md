@@ -1965,7 +1965,11 @@ still required against one root. On Windows the essential reader takes the
 `file:///C:/...` drive form `Path.as_uri()` writes as the absolute `C:/...`, for
 a prompt and a resource alike: only the `/` before the drive is dropped, nothing
 is percent-decoded (an escape such as `%20` is read as written), and the
-out-of-root refusal is unchanged. Neither relative reader depends on the
+out-of-root refusal is unchanged. The Kiro CLI launch record
+(`kiro_launch_documents`) does not count a resource declared in that drive
+form: kiro-cli cuts only the scheme off, so on Windows it is left with the
+drive-less `/C:/...` and loads nothing, and Crew sends the guide itself
+(`file_uri.is_windows_drive_uri`). Neither relative reader depends on the
 gateway process's working directory. When the
 execution template is the owner's template, its custom persona appears only in
 the per-turn essential envelope, not again in the session-start prompt. A

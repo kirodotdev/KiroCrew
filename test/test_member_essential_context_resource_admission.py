@@ -318,6 +318,51 @@ def test_a_file_uri_spelled_prompt_and_resource_read_the_files_they_name(env, tm
         )
 
 
+@pytest.mark.parametrize(
+    "is_windows, uri, expected",
+    [
+        (True, "file:///C:/notes/guide.md", True),
+        (True, "file:///c:\\notes\\guide.md", True),
+        (True, "file://C:/notes/guide.md", False),
+        (True, "file:///home/u/guide.md", False),
+        (False, "file:///C:/notes/guide.md", False),
+    ],
+)
+def test_only_windows_reads_a_slash_before_a_drive_as_the_drive_uri_spelling(
+    monkeypatch, is_windows, uri, expected
+):
+    from kiro_crew import file_uri
+
+    monkeypatch.setattr(file_uri, "IS_WINDOWS", is_windows)
+    assert file_uri.is_windows_drive_uri(uri) is expected
+
+
+def test_the_kiro_launch_record_leaves_out_a_drive_uri_resource(env, monkeypatch):
+    """kiro-cli cuts only the scheme off, so on Windows ``file:///C:/...`` names no file.
+
+    Crew still reads the resource, so leaving it out of the launch record makes
+    Crew send it instead of assuming kiro-cli did. On this POSIX host the Windows
+    reading leaves ``C:/notes/guide.md`` relative, so the file sits under the project.
+    """
+    from kiro_crew import file_uri
+    from kiro_crew import member_essential_context as mec
+
+    monkeypatch.setattr(file_uri, "IS_WINDOWS", True)
+    (env.project / "C:" / "notes").mkdir(parents=True)
+    (env.project / "C:" / "notes" / "guide.md").write_text("DRIVE_GUIDE", encoding="utf-8")
+    (env.project / "notes").mkdir()
+    (env.project / "notes" / "other.md").write_text("PLAIN_GUIDE", encoding="utf-8")
+    spec = env.project / ".kiro" / "agents" / "writer-template.json"
+    resources = ["file:///C:/notes/guide.md", "file://notes/other.md"]
+    spec.write_text(json.dumps({"name": "writer-template", "resources": resources}), "utf-8")
+
+    read = [body for _, body in mec.documents_for_member("writer-template", str(env.project))]
+    launch = [body for _, body in mec.kiro_launch_documents("writer-template", str(env.project))]
+
+    assert "DRIVE_GUIDE" in read and "PLAIN_GUIDE" in read
+    assert "DRIVE_GUIDE" not in launch and "PLAIN_GUIDE" in launch
+
+
 def test_managed_source_resolves_each_declared_root_once_per_call(tmp_path, monkeypatch):
     from collections import Counter
 

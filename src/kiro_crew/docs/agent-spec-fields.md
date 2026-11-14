@@ -553,7 +553,9 @@ session-start prompt readers, the skill projection, the steering globs, the
 member essentials, an app's prompt policy and a local file link in a reply. Only
 the `/` before the drive is dropped and nothing is percent-decoded
 (`file_uri.file_uri_path_text`); each reader's own containment and
-sensitive-path checks are unchanged.
+sensitive-path checks are unchanged. kiro-cli itself does not load a resource in
+that spelling, so Crew's Kiro CLI launch record does not count one and Crew sends
+it instead; write `file://C:/...` to have kiro-cli load it.
 
 The managed default (`kirocrew`) spec does NOT point `prompt` at the
 operating-contract template. `build_agent_config` and `_refresh_dynamic_fields`
