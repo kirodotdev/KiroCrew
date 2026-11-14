@@ -1,19 +1,12 @@
 /**
- * Reload when this document's CSP predates an app's `ui.frameSources`.
+ * Spot a declared frame this document's CSP refuses because the policy predates it.
  *
  * The gateway admits an app's declared origins in the dashboard `frame-src` while
  * the app is enabled and trusted, but a document keeps the policy it was served
- * with. An app enabled (or trusted) after this document loaded would have its
- * declared iframe refused until a reload. AppHost watches for that refusal, asks
- * the gateway for its current policy, and reloads only when that policy now admits
- * the refused origin. A refusal a reload cannot cure (the app is not trusted)
- * reloads nothing.
+ * with. An app enabled (or trusted, or approved) after this document loaded has its
+ * declared iframe refused until the page is reloaded. AppHost watches for that
+ * refusal and asks the owner to refresh the page; it never reloads by itself.
  */
-
-/** Backstop against a reload loop should the browser keep refusing an origin the
- *  served policy admits: at most one reload per app in this window. */
-const RELOAD_GAP_MS = 30_000
-const KEY_PREFIX = 'kc:frame-sources-reload:'
 
 type Violation = Pick<SecurityPolicyViolationEvent, 'effectiveDirective' | 'blockedURI' | 'originalPolicy'>
 
@@ -37,35 +30,4 @@ export function policyAdmitsFrame(csp: string | null, origin: string): boolean {
   const spaced = ['\t', '\n', '\r', '\f'].reduce((s, ws) => s.split(ws).join(' '), csp || '')
   const directive = spaced.split(';').map(d => d.trim()).find(d => d.startsWith('frame-src '))
   return !!directive && directive.split(' ').filter(Boolean).slice(1).includes(origin)
-}
-
-/** The policy the gateway serves a document at this URL now. */
-async function currentPolicy(): Promise<string | null> {
-  const resp = await fetch(window.location.href, { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' })
-  return resp.headers.get('Content-Security-Policy')
-}
-
-/** Reload the document for `app` when the gateway's policy now admits `origin`. */
-export async function reloadIfFrameAdmitted(
-  app: string,
-  origin: string,
-  deps: { policy?: () => Promise<string | null>; reload?: () => void; now?: number } = {},
-): Promise<boolean> {
-  const { policy = currentPolicy, reload = () => window.location.reload(), now = Date.now() } = deps
-  let csp: string | null
-  try {
-    csp = await policy()
-  } catch {
-    return false
-  }
-  if (!policyAdmitsFrame(csp, origin)) return false
-  const key = KEY_PREFIX + app
-  try {
-    if (now - Number(sessionStorage.getItem(key) || 0) < RELOAD_GAP_MS) return false
-    sessionStorage.setItem(key, String(now))
-  } catch {
-    return false
-  }
-  reload()
-  return true
 }

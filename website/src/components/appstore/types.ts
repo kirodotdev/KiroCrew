@@ -173,6 +173,8 @@ export type InstalledApp = {
   userSessionReachGrant?: { approved: string[]; staged: string[] }
   /** `permissions.desktopCapabilities` the owner approved, and the ones an update holds back; absent when undeclared. */
   desktopCapabilitiesGrant?: { approved: string[]; staged: string[] }
+  /** `ui.frameSources` origins the owner approved, and the ones an update or edit holds back; absent when undeclared. */
+  frameSourcesGrant?: { approved: string[]; staged: string[] }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"

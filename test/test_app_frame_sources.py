@@ -2,11 +2,12 @@
 
 The validator refuses anything but ``https://<hostname>``, and the dashboard
 ``frame-src`` carries a declared origin only while its app is installed, enabled and
-trusted (``apps/frame_sources.py``).
+trusted, and only once the owner approved it (``apps/frame_sources.py``).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -17,19 +18,29 @@ import pytest
 from aiohttp import web
 
 from kiro_crew.apps import frame_sources
+from kiro_crew.apps import hook_reconcile as hr
+from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     _read_installed,
     _write_installed,
     app_dir,
     disable_app,
+    enable_app,
+    get_app,
     install_app,
     uninstall_app,
     update_app,
 )
 from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.apps.manifest_sections import UIConfig
+from kiro_crew.apps.point_grants import (
+    explicit_only_grant_families,
+    grant_source,
+    point_grant_families,
+)
 from kiro_crew.dashboard.server import _apply_security_headers
+from kiro_crew.testing.wait import DEFAULT_INTERVAL_SECS, async_wait_until
 
 
 def _errors(frame_sources_value: Any) -> list[str]:
@@ -109,6 +120,10 @@ def trusted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[set[str
     home = tmp_path / "kirocrew-home"
     home.mkdir()
     monkeypatch.setenv("KIROCREW_HOME", str(home))
+    # enable_app's own execution gate, so the owner's approval path can run.
+    (home / "config.json").write_text(
+        json.dumps({"agent": {"apps_allow_third_party": True}}), encoding="utf-8"
+    )
     # Trust is the execution gate's own decision, covered by test_app_execution;
     # here it is a set the test controls.
     names: set[str] = set()
@@ -204,7 +219,37 @@ def test_hand_edited_invalid_manifest_adds_nothing(trusted: set[str], tmp_path: 
     assert "script-src *" not in _csp()
 
 
-def test_update_of_an_enabled_app_republishes_its_origins(
+def _write_v2(tmp_path: Path, name: str, origins: list[str]) -> Path:
+    source = tmp_path / "source-v2" / name
+    source.mkdir(parents=True)
+    manifest = {
+        "name": name,
+        "version": "1.1.0",
+        "displayName": name,
+        "description": "frames a site",
+        "ui": {"frameSources": origins},
+    }
+    (source / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    return source
+
+
+def test_frame_sources_is_an_explicit_only_staged_grant_family() -> None:
+    assert frame_sources.GRANT_FAMILY in point_grant_families()
+    assert frame_sources.GRANT_FAMILY in explicit_only_grant_families()
+    manifest = {"ui": {"frameSources": ["https://a.example.com", 3, "https://a.example.com"]}}
+    assert grant_source(manifest)[frame_sources.GRANT_FAMILY] == ["https://a.example.com"]
+
+
+def test_install_approves_what_it_declares(trusted: set[str], tmp_path: Path) -> None:
+    trusted.add("player")
+    _install(tmp_path, "player", ["https://video.example.com"])
+    assert get_app("player")["frameSourcesGrant"] == {
+        "approved": ["https://video.example.com"],
+        "staged": [],
+    }
+
+
+def test_update_that_adds_an_origin_holds_it_until_the_owner_approves(
     trusted: set[str], tmp_path: Path
 ) -> None:
     trusted.add("player")
@@ -212,17 +257,95 @@ def test_update_of_an_enabled_app_republishes_its_origins(
     frame_sources.refresh_frame_sources()
     assert _frame_src().count("https://old.example.com") == 1
 
-    source = tmp_path / "source-v2" / "player"
-    source.mkdir(parents=True)
-    manifest = {
-        "name": "player",
-        "version": "1.1.0",
-        "displayName": "player",
-        "description": "frames a site",
-        "ui": {"frameSources": ["https://new.example.com"]},
-    }
-    (source / APP_MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
+    source = _write_v2(tmp_path, "player", ["https://old.example.com", "https://new.example.com"])
     assert update_app(source).ok
     src = _frame_src()
-    assert src.count("https://new.example.com") == 1
-    assert src.count("https://old.example.com") == 0
+    assert src.count("https://old.example.com") == 1
+    assert src.count("https://new.example.com") == 0, "an added origin waits for the owner"
+    assert get_app("player")["frameSourcesGrant"] == {
+        "approved": ["https://old.example.com"],
+        "staged": ["https://new.example.com"],
+    }
+
+    approved = enable_app("player", grants_consent={"frameSources": ["https://new.example.com"]})
+    assert approved.ok, approved.error
+    assert _frame_src().count("https://new.example.com") == 1
+
+
+def test_update_that_drops_an_origin_stops_publishing_it(trusted: set[str], tmp_path: Path) -> None:
+    trusted.add("player")
+    _install(tmp_path, "player", ["https://old.example.com"])
+    frame_sources.refresh_frame_sources()
+    assert update_app(_write_v2(tmp_path, "player", [])).ok
+    assert _frame_src().count("https://old.example.com") == 0
+
+
+def test_live_edit_that_adds_an_origin_is_not_published(trusted: set[str], tmp_path: Path) -> None:
+    trusted.add("edited")
+    _install(tmp_path, "edited", ["https://ok.example.com"])
+    manifest_path = app_dir("edited") / APP_MANIFEST_FILENAME
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    data["ui"]["frameSources"] = ["https://ok.example.com", "https://lookalike.example.net"]
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+    frame_sources.refresh_frame_sources()
+    src = _frame_src()
+    assert src.count("https://ok.example.com") == 1
+    assert src.count("https://lookalike.example.net") == 0
+    assert get_app("edited")["frameSourcesGrant"]["staged"] == ["https://lookalike.example.net"]
+
+
+def test_a_set_stored_before_the_key_existed_approves_no_origin(
+    trusted: set[str], tmp_path: Path
+) -> None:
+    trusted.add("player")
+    _install(tmp_path, "player", ["https://video.example.com"])
+    stored = json.loads(protected_app_state.read_grants_text("player") or "{}")
+    stored.pop(frame_sources.GRANT_FAMILY)
+    protected_app_state.write_grants_text("player", json.dumps(stored))
+    frame_sources.refresh_frame_sources()
+    assert _frame_src().count("https://video.example.com") == 0
+
+
+def test_an_entry_that_can_never_publish_is_not_offered(trusted: set[str], tmp_path: Path) -> None:
+    trusted.add("edited")
+    _install(tmp_path, "edited", ["https://ok.example.com"])
+    manifest_path = app_dir("edited") / APP_MANIFEST_FILENAME
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for edited in (
+        ["https://ok.example.com", "https://x.example.com/path"],
+        ["https://ok.example.com", "https://new.example.com", "https://new.example.com"],
+        [f"https://s{i}.example.com" for i in range(9)],
+    ):
+        data["ui"]["frameSources"] = edited
+        manifest_path.write_text(json.dumps(data), encoding="utf-8")
+        assert get_app("edited")["frameSourcesGrant"]["staged"] == [], edited
+
+
+@pytest.mark.asyncio
+async def test_reconciler_tick_publishes_and_drops_a_trust_change(
+    trusted: set[str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trusted.add("player")
+    _install(tmp_path, "player", ["https://video.example.com"])
+    # Nothing published yet: only the loop's own tick may put the origin there.
+    monkeypatch.setattr(frame_sources, "_published", "")
+    monkeypatch.setattr(hr, "POLL_INTERVAL_SECS", DEFAULT_INTERVAL_SECS)
+    monkeypatch.setattr(hr, "list_apps", lambda: [])
+
+    async def no_pass(installed: Any) -> None:
+        return None
+
+    monkeypatch.setattr(hr, "reconcile_once", no_pass)
+
+    def published() -> bool:
+        return _frame_src().count("https://video.example.com") > 0
+
+    task = asyncio.ensure_future(hr._reconcile_loop())
+    try:
+        await async_wait_until(published)
+        # A trust grant withdrawn in config.json reaches frame-src only on a tick.
+        trusted.discard("player")
+        await async_wait_until(lambda: not published())
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

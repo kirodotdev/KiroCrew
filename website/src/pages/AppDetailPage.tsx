@@ -115,7 +115,7 @@ export default function AppDetailPage() {
     stagedApi, stagedEvents, stagedLinkHosts, stagedLinkPatterns, stagedFullUrl,
     stagedMessageActions, declaredMessageActions, stagedOpenHosts, stagedOpenFullUrl,
     stagedComposerActions, stagedSelection, declaredSelectionActions, stagedWorkerAutoApprove,
-    stagedUserSessionReach, stagedDesktopCapabilities, hasStagedGrants: hasOtherStagedGrants,
+    stagedUserSessionReach, stagedDesktopCapabilities, stagedFrameSources, hasStagedGrants: hasOtherStagedGrants,
   } = stagedGrantsOf(app)
   // Bot scopes the owner has not approved wait the same way (`AppDetailBotGrants.tsx`).
   const stagedBots = stagedBotScopes(app)
@@ -350,6 +350,7 @@ export default function AppDetailPage() {
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
             userSessionReachGrant: installed.userSessionReachGrant,
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
+            frameSourcesGrant: installed.frameSourcesGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -476,6 +477,7 @@ export default function AppDetailPage() {
             workerAutoApproveGrant: installed.workerAutoApproveGrant,
             userSessionReachGrant: installed.userSessionReachGrant,
             desktopCapabilitiesGrant: installed.desktopCapabilitiesGrant,
+            frameSourcesGrant: installed.frameSourcesGrant,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -1192,6 +1194,16 @@ export default function AppDetailPage() {
                   </div>
                 </div>
               )}
+              {stagedFrameSources.length > 0 && (
+                <div>
+                  <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_frame_sources')}</div>
+                  <div className="flex flex-wrap gap-1 mt-1" data-testid="staged-frame-sources">
+                    {stagedFrameSources.map(o => (
+                      <code key={o} className="bg-bg-elevated border border-border px-1.5 py-0.5 rounded text-[11px] text-text">{o}</code>
+                    ))}
+                  </div>
+                </div>
+              )}
               {stagedComposerActions.length > 0 && (
                 <div>
                   <div className="text-[13px]">{i18nT('pages.appDetailPage.grants_reconsent_composer_actions')}</div>
@@ -1228,7 +1240,7 @@ export default function AppDetailPage() {
               primary
               onClick={async () => {
                 startAction('approve_grants')
-                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities], { style: 'narrow' })
+                const approved = fmtList([...stagedApi, ...stagedEvents, ...stagedBots, ...stagedLinkHosts, ...stagedLinkPatterns, ...(stagedFullUrl ? ['fullUrl'] : []), ...stagedMessageActions.map(e => messageActionGrantLabel(e, declaredMessageActions)), ...stagedOpenHosts, ...(stagedOpenFullUrl ? ['fullUrl'] : []), ...stagedComposerActions, ...stagedSelection.map(e => selectionActionGrantLabel(e, declaredSelectionActions)), ...(stagedWorkerAutoApprove ? ['workerAutoApprove'] : []), ...stagedUserSessionReach, ...stagedDesktopCapabilities, ...stagedFrameSources], { style: 'narrow' })
                 try {
                   const result = await api.enableApp(app.name, false, {
                     api: stagedApi,
@@ -1245,6 +1257,7 @@ export default function AppDetailPage() {
                     workerAutoApprove: stagedWorkerAutoApprove ? ['ownSlots'] : [],
                     reachableByUserSessions: stagedUserSessionReach,
                     desktopCapabilities: stagedDesktopCapabilities,
+                    frameSources: stagedFrameSources,
                   })
                   setBackendRefusedMsg(appActionNotice(appDisplayName(app), result, 'enable'))
                   setGrantsApprovedMsg(i18nT('pages.appDetailPage.grants_approved', { entries: approved }))

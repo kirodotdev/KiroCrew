@@ -16,7 +16,6 @@ import logging
 from kiro_crew.apps import protected_app_state
 from kiro_crew.apps.admission import app_admission_denied
 from kiro_crew.apps.execution import app_execution_denied, shipped_builtin_app_root
-from kiro_crew.apps.frame_sources import refresh_frame_sources
 from kiro_crew.apps.host_exec_grants import grant_host_exec, host_exec_granted, revoke_host_exec
 from kiro_crew.apps.manager_records import (
     INSTALLED_META_FILENAME,
@@ -293,6 +292,9 @@ def enable_app(
     # The owner's enable is the one write that ends their disable.
     protected_app_state.set_owner_disabled(name, False)
     _write_installed(name, meta, session_approval_consent=session_approval_consent)
+    # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
     refresh_frame_sources()
 
     # Mint the owner-enable grant. This path runs only after the owner, governance
@@ -408,6 +410,9 @@ def mark_session_approval_consent_pending(name: str) -> bool:
 @holds_app_record_locks
 def disable_app(name: str) -> AppResult:
     """Disable an installed app without removing it."""
+    # Deferred: frame_sources stays off an MCP server's pre-list import budget.
+    from kiro_crew.apps.frame_sources import refresh_frame_sources  # noqa: PLC0415
+
     if not _check_path_safety(name):
         return AppResult(ok=False, name=name, error=f"unsafe app name: {name!r}")
     hold_app_record_lock(name)

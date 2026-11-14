@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { policyAdmitsFrame, refusedDeclaredOrigin, reloadIfFrameAdmitted } from './appFrameSources'
+import { describe, expect, it } from 'vitest'
+import { policyAdmitsFrame, refusedDeclaredOrigin } from './appFrameSources'
 
 const declared = ['https://video.example.com']
 const ORIGIN = 'https://video.example.com'
@@ -44,33 +44,5 @@ describe('policyAdmitsFrame', () => {
     expect(policyAdmitsFrame(`frame-src  'self'\t ${ORIGIN}  `, ORIGIN)).toBe(true)
     expect(policyAdmitsFrame(`frame-src\t${ORIGIN}`, ORIGIN)).toBe(true)
     expect(policyAdmitsFrame(`frame-src  'self'\tblob:`, ORIGIN)).toBe(false)
-  })
-})
-
-describe('reloadIfFrameAdmitted', () => {
-  beforeEach(() => sessionStorage.clear())
-
-  it('does not reload when the served policy still refuses the origin (untrusted app)', async () => {
-    const reload = vi.fn()
-    for (const now of [1_000_000, 1_100_000, 1_200_000]) {
-      expect(await reloadIfFrameAdmitted('player', ORIGIN, { policy: async () => refusing, reload, now })).toBe(false)
-    }
-    expect(reload).not.toHaveBeenCalled()
-  })
-
-  it('reloads when the served policy now admits it, at most once per 30 s', async () => {
-    const reload = vi.fn()
-    const policy = async () => admitting
-    expect(await reloadIfFrameAdmitted('player', ORIGIN, { policy, reload, now: 1_000_000 })).toBe(true)
-    expect(await reloadIfFrameAdmitted('player', ORIGIN, { policy, reload, now: 1_010_000 })).toBe(false)
-    expect(await reloadIfFrameAdmitted('player', ORIGIN, { policy, reload, now: 1_031_000 })).toBe(true)
-    expect(reload).toHaveBeenCalledTimes(2)
-  })
-
-  it('does not reload when the policy cannot be read', async () => {
-    const reload = vi.fn()
-    const policy = async (): Promise<string | null> => { throw new Error('offline') }
-    expect(await reloadIfFrameAdmitted('player', ORIGIN, { policy, reload, now: 1 })).toBe(false)
-    expect(reload).not.toHaveBeenCalled()
   })
 })
