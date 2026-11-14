@@ -1391,7 +1391,7 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   (structured entries — the manager parses its own output; the core keeps no
   text grammar; **`list_skills()` containment invariant:** every skill row MUST
   live under an `McpToolingProvider.extra_skills()` root, because the skill
-  browser (`/api/skills/package/<name>/tree` + detail) resolves paths by
+  browser (`/api/skills/<name>/-/tree` + detail) resolves paths by
   searching those roots — a row outside them lists but 404s on tree/detail, so an
   edition satisfying both Protocols MUST keep them consistent; the core enforces
   this at runtime — `collect_skills_blocking` logs a loud warning for any listed

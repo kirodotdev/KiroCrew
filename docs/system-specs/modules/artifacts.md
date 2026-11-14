@@ -357,7 +357,7 @@ The class attribute IS the owner's function, so a patch of a member on the class
 an instance reaches every caller, and members still call each other through `self`. A
 bound function reports its owner as `__module__` and its bare name as `__qualname__`;
 nothing reads either. Three members stay in the class body whatever else moves:
-`clear_publication`, because `test_publish_delete_race` treats every line naming it
+`clear_publication`, because `test/test_publish_delete_race.py` treats every line naming it
 as a caller that must pin both generations; `list`, whose module-level `def list`
 would shadow the builtin `list` for its whole owner; and `__init__`, which reads the
 facade-only seams. New store code goes to the owner whose responsibility it shares.

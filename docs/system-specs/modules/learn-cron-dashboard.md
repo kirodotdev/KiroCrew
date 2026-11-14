@@ -4439,7 +4439,7 @@ Pinned by `test_api_tasks.py::test_task_routes_redact_store_prose`
   on a worker with no running loop. `Event.set` is a loop operation (it resolves
   the waiter's future, which schedules that future's callbacks), so the set is
   posted to the loop the waiter parked on with `call_soon_threadsafe`, the shape
-  `config.live.LiveConfig.notify_written` uses for the same reason. Making it in
+  `config.live.ConfigWatch.notify_written` uses for the same reason. Making it in
   place would be the cross-thread call asyncio refuses under `loop.set_debug`,
   and the operator's stop would leave the run waiting for a wake already spent;
   pinned by

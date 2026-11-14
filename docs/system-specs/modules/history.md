@@ -1800,7 +1800,7 @@ no longer destroy older turns.
   against the observation from file A would read "different file" as "deleted and
   recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they
-  stat the OBSERVED file A instead (`_observed_file_deleted`, shared by
+  stat the OBSERVED file A instead (`_observed_file_evidence`, shared by
   `delete_won` and `session_was_deleted`). A still present with the same identity
   means the drift is legitimate and the save proceeds; it first drops the slot's
   `_frozen_prefix_cache`, which was filled from A and is keyed on mtime and size

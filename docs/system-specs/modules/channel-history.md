@@ -63,13 +63,13 @@ cross-thread contamination on follow-up messages.
 
 ## Wiring
 
-### Gateway and event routing (`slack/gateway.py`, `slack/events.py`)
+### Gateway and event routing (`slack/gateway_runtime/service_boot.py`, `slack/events.py`)
 
 1. `ChannelHistory()` is created at startup with `history_dir=<data-home>/history` and the configured observe-mode limits.
 2. `ctx_builder.channel_history = channel_history` attaches it to the context builder; configured `observe` channels call `set_observe()` and load persisted entries.
 3. `slack/events.py` applies sender authorization, interception, activation, and channel-governance gates before recording content. Observe mode records admitted messages before mention routing; other activation modes push after deduplication and attachment/transcription processing.
 
-### Context Builder (`context.py`)
+### Context Builder (`context_assembly/turn_message.py`)
 
 `build_message(text, is_new_session, session_key, channel_id=channel, thread_ts=thread_ts)` —
 calls `context_for(channel_id, thread_ts=thread_ts)` and injects the result. In a

@@ -1248,9 +1248,9 @@ the finding: an unnamed site records `user`.
 
 | dispatch site | what produces the message | actor |
 |---|---|---|
-| `chat_handlers._api_chat` | dashboard composer, or an app backend under its own token | `user`, or `app` when the request carries one |
+| `chat_handlers.api_chat` | dashboard composer, or an app backend under its own token | `user`, or `app` when the request carries one |
 | `slack/handler` linked-thread router | a channel message | `user` |
-| `openai_compat.chat_completions` | API request body | `user` |
+| `openai_compat.api_completions` | API request body | `user`, or `app` when the request carries one |
 | `chat_regenerate` (regenerate, edit-resend) | the user's own message, re-run; for Regenerate, the gateway prompt row its reply answers (a workflow follow-up, a heartbeat prompt) when there is one | `user` |
 | `chat_rewind` | the user's own message, rewound | `user` |
 | queue drain (`_finish_queue_cycle`) | the consumed entry's enqueue-time `kind` | `cron`, `subagent`, else `user` |
@@ -1262,11 +1262,14 @@ the finding: an unnamed site records `user`.
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
 | `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew` |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |
+| `mate_welcome.dispatch_hidden_turn` | a hidden gateway-composed prompt | `gateway` |
+| `chat_turn/agent_started._on_agent_turn` | a turn the backend agent started on its own | `agent` |
+| `chat_turn/slash_commands` prompt expansion | the expanded `@prompt` re-entry | the carrying turn's actor |
 
 One shared helper passes no actor on purpose: `spec_builder.runtime.enqueue_or_run_prompt`
 takes both the message and its origin as parameters, so its actor is its CALLER's fact and
 hardcoding one here would record a guess; it inherits `user` until the caller supplies one,
-which is the same default every unaudited path has. `_api_chat` serves an app backend as
+which is the same default every unaudited path has. `api_chat` serves an app backend as
 well as a person and can tell them apart without asking its caller, because the auth
 middleware has already stamped the token's app on the request -- so it names the actor
 itself. A site that holds the fact and stays silent does not record a missing detail; the

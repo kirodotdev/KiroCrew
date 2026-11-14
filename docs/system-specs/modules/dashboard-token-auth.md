@@ -108,7 +108,7 @@ the last two gates are appended by their lifecycle registrations):
 
 ```mermaid
 graph LR
-    L[route_latency] --> R[relay_ingress] --> H[relay_header_strip] --> Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate]
+    L[route_latency] --> K[card_turn_arrival] --> R[relay_ingress] --> H[relay_header_strip] --> Z[deny_audit] --> A[host_canonical_redirect] --> B[host_validation] --> X[reject_compressed_body] --> C[no_cache] --> D[csrf] --> E[token_auth] --> F[sel_audit] --> T[card_turn_delegation] --> S[slot_ownership] --> G[spa_fallback] --> W[_workflow_ready] --> P[_crewmate_prune_gate]
 ```
 
 1. Route latency is outermost, so it times the full in-gateway handling, and the
@@ -130,7 +130,12 @@ graph LR
    claim token auth published, and a refusal it answers is inside the SEL audit
    record. It is not an auth layer: a request with no app claim passes it
    untouched. Contract: [App Kit platform §13](app-kit-platform.md).
-6. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
+   Just outer to it, `card_turn_delegation_middleware` (`dashboard/card_send.py`,
+   dashboard only) answers 403 `card_turn_delegation_refused` on a delegation route
+   called from a session running a Dashboard card's turn; the matching
+   `card_turn_arrival_middleware`, just inside route latency, records whether that
+   session ran a card turn as the request arrived.
+7. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
    until the workflow service is ready, and `_crewmate_prune_gate`
    (`_register_crewmate_prune_gate`, dashboard only) holds every mutating request,
    and any request under `/api/members`, until the Bot prune settles, 503
@@ -148,8 +153,9 @@ for the mutating `/api/` requests it actually logs, and the two WebSocket-origin
 handlers that log their own denial. `token_auth` RETURNS its 401/403 rather than
 raising and audits each itself, so returned responses are not inspected. Not
 claiming is the safe direction — the boundary then records the refusal under a
-generic reason. Three refusing layers sit inner to `sel_audit`, and each RETURNS
-rather than raises, so the boundary never sees them: the per-slot checkpoint (a
+generic reason. Four refusing layers sit inner to `sel_audit`, and each RETURNS
+rather than raises, so the boundary never sees them: the card-turn delegation
+check (a 403 it audits itself), the per-slot checkpoint (a
 404, plus its own `app_isolation` row for a slot that exists) and the two appended
 gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503).
 
@@ -378,7 +384,7 @@ The `local_only` parameter is accepted for backward compatibility but does not c
 
 Request flow:
 1. Internal-path handling is separate: a loopback caller with a valid `X-Internal-Secret` is admitted, a mixed internal path can validate a cookie, and a strict internal path denies non-loopback callers; ordinary loopback requests continue to the token gate (`token_auth_middleware`; `test_loopback_requires_token`). A mixed internal path's cookie branch, on loopback and off it, sets `auth_from_query_token` from the credential `_extract_and_validate_token` validated, as the main path does: true for a `?token=` link, false for the session cookie, including a cookie adopted after a failed link.
-2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, and `/sandbox-doc/`; exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `GET /api/hooks/agent/status` (`AGENT_HOOK_STATUS_PATH`: the same webhook token, re-checked in `api_hooks_agent_status`), `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`), `GET /api/connections/oauth/callback` (`CREW_OAUTH_CALLBACK_PATH`: a vendor's redirect back to a DCR Connection sign-in, admitted in `crew_oauth_dcr.gateway_callback` only by a pending sign-in's `state`, single use, 600 s), and `POST /api/relay-viewer/token` (`RELAY_VIEWER_TOKEN_PATH`: the desktop app's relay access token mint, admitted in `api_relay_viewer_token` by loopback or the same-user unix socket, `X-Local-Secret` and a verified host process, like `/api/token/local`) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
+2. Bypass named non-secret routes: prefix routes `/assets/`, `/static/`, `/fonts/`, `/vendor/`, `/artifact-app/`, `/sandbox-doc/`, `/app-frame/`, and `/app-frame-fetch/` (an app frame and its fetch carry their own HMAC path token or capability header, see `apps/app_frame.py`); exact routes `/logo.png`, `/favicon.ico`, `/manifest.json`, `/sw.js`, `/pcm-worklet.js`, `/api/token/local`, `/api/shutdown`, `/api/logout`, `/api/theme/boot`, `/api/health`, `/api/live`, and `/api/ready`; anchored icon files; and method-scoped routes `GET`/`HEAD /apps/<name>/ui/*`, `POST /api/hooks/agent`, `GET /api/hooks/agent/status` (`AGENT_HOOK_STATUS_PATH`: the same webhook token, re-checked in `api_hooks_agent_status`), `POST /api/messaging/teams`, `POST /api/apps/<name>/token`, `POST /api/auth/refresh`, `POST /api/auth/logout`, and `POST /api/update/revalidate` (`UPDATE_REVALIDATE_PATH`: the CLI's post-update badge revalidate, which self-authenticates over loopback with `X-Local-Secret`, re-checked in `api_update_revalidate`), `GET /api/connections/oauth/callback` (`CREW_OAUTH_CALLBACK_PATH`: a vendor's redirect back to a DCR Connection sign-in, admitted in `crew_oauth_dcr.gateway_callback` only by a pending sign-in's `state`, single use, 600 s), and `POST /api/relay-viewer/token` (`RELAY_VIEWER_TOKEN_PATH`: the desktop app's relay access token mint, admitted in `api_relay_viewer_token` by loopback or the same-user unix socket, `X-Local-Secret` and a verified host process, like `/api/token/local`) (`_BYPASS_PREFIXES`, `_BYPASS_EXACT`, `_BYPASS_EXACT_METHODS`, and `token_auth_middleware()`). Every bypass on this list serves gateway-owned assets or a self-authenticating control route; none proxies foreign content. The `/browser-view` relay that once did (the retired CLI browser view, with its own path-token auth) was deleted with that view, and `test_browser_view_relay_paths_no_longer_bypass_auth` pins that its paths are gated like any other now ([browser module spec](browser.md)).
 
    `/api/token/local` carries its own gate: loopback (or a same-principal unix
    peer), then `X-Local-Secret`, then the local-owner process check. Each
@@ -761,7 +767,9 @@ barriers from the shared factories, and installs the chain
 ```python
 app.middlewares[:] = [
     make_route_latency_middleware(),
+    card_turn_arrival_middleware,
     relay_ingress_middleware(strict_internal_paths=_STRICT_INTERNAL_API_PATHS),
+    relay_header_strip_middleware,
     deny_audit_middleware,
     host_canonical_redirect,
     host_validation_middleware,
@@ -776,9 +784,11 @@ app.middlewares[:] = [
         ...,
     ),
     sel_audit_middleware,
+    card_turn_delegation_middleware,
     slot_ownership_middleware,
     spa_fallback,
 ]
+_insert_lts_gate(app, spa_shell_handler=handlers.index)  # nothing in an oss build
 # appended before runner.setup(): _workflow_ready, then _crewmate_prune_gate
 site = web.SockSite(runner, _dashboard_sock)
 # _dashboard_sock: _reserve_dashboard_port(bind_address_for(local_only), port)

@@ -25,8 +25,9 @@ the spelling while any legacy home could persist would un-gate real credentials
 **What to delete then:** the `.kirocrew` spelling in `src/kiro_crew/security/paths_lists.py`
 (`_CREW_HOME_PREFIXES`; re-exported by `src/kiro_crew/security/__init__.py`). Keep
 `.kiro/crew`. The
-`kirocrew ... token` credential-exfil rule (`.*kirocrew.*token`) matches the CLI
-*name*, not the path — leave it.
+`kirocrew ... token` credential-exfil rules (`credential-exfil-kirocrew-token` and
+`credential-exfil-kirocrew-token-argv` in `security/denied_rules_catalog.py`) match
+the CLI *name*, not the path — leave them.
 
 **Do NOT confuse with (these stay — permanent, not migration scaffolding):**
 - the `~/.kiro/crew` resolution itself, the `KIROCREW_HOME` override, and the

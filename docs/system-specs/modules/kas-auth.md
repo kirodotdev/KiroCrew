@@ -529,12 +529,12 @@ engine instead ([aws-control.md](aws-control.md)).
   renders the login page; full loopback token exchange not yet run end-to-end.
 - Builder ID / IdC / External IdP: contract implemented from source and covered by unit
   tests with a mocked HTTP session; **not yet exercised against the live endpoints**.
-- Unit tests: `test/test_kas_auth_{store,device,flows,helpers,shape_idp}.py` cover the
+- Unit tests: `test/test_kas_auth_{store,device,flows,helpers,shape_idp,whoami}.py` cover the
   store (perms, priority, expiry, invalid-token drops), the device state machine, SSO-OIDC
   polling, all three refresh paths + the single-flight lock + peer recovery, the
   KasAuthProvider contract (incl. the refresh-token-never-leaks assertion), PKCE/URL
-  construction, shape→transport selection, external-IdP authorization/exchange, and the
-  bridge seam. black / isort / flake8 / mypy clean.
+  construction, shape→transport selection, external-IdP authorization/exchange, the
+  vault's `whoami` document, and the bridge seam. black / isort / flake8 / mypy clean.
 
 ## Not yet done
 
