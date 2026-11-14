@@ -10949,6 +10949,10 @@
       "config_unavailable_detail": "请重新加载页面后重试，或请代理排查。",
       "load_failed": "仪表板的一部分未能加载。请重新加载页面后重试。"
     },
+    "kiroSignInPrompt": {
+      "title": "登录 Kiro 后即可开始聊天",
+      "intro": "你的聊天使用你的 Kiro 账户运行。请选择登录方式。"
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>负载较高：</0><1>同时运行 {{cap}}/{{configured}} 个代理</1>",
       "exec_reduced_queued": "<0>负载较高：</0><1>同时运行 {{cap}}/{{configured}} 个代理 · {{queued}} 个已排队</1>",

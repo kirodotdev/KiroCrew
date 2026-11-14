@@ -11204,6 +11204,10 @@
       "config_unavailable_detail": "Lade die Seite neu, um es erneut zu versuchen, oder bitte den Agenten, sich das anzusehen.",
       "load_failed": "Ein Teil des Dashboards konnte nicht geladen werden. Lade die Seite neu, um es erneut zu versuchen."
     },
+    "kiroSignInPrompt": {
+      "title": "Melde dich bei Kiro an, um zu chatten",
+      "intro": "Deine Chats laufen über dein Kiro-Konto. Wähle, wie du dich anmeldest."
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Unter Last:</0> <1>{{cap}} von {{configured}} Agenten gleichzeitig</1>",
       "exec_reduced_queued": "<0>Unter Last:</0> <1>{{cap}} von {{configured}} Agenten gleichzeitig · {{queued}} in der Warteschlange</1>",

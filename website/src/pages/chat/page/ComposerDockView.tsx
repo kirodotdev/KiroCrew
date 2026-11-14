@@ -57,6 +57,7 @@ import { useStableCallbackProps } from '../useStableCallbackProps'
 import type { ComposerTypingLock } from '../shared-crew/useComposerTypingLock'
 import SessionControlHost from '../../../components/SessionControlHost'
 import ErrorNotice from '../../../components/ErrorNotice'
+import KiroSignInPrompt from '../../../components/KiroSignInPrompt'
 import { pinIsWithheld } from '../../../lib/model'
 import FollowUpCard, { type FollowupStartMode } from '../../../components/FollowUpCard'
 import PendingQuestionCard from '../../../components/PendingQuestionCard'
@@ -427,6 +428,11 @@ export default function ComposerDockView({
                   still fuses. Layout-neutral when the queue is empty: the pair
                   cancels. */}
               <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert" data-testid="composer-status-stack">
+              {/* The Kiro sign-in, before a send fails for the lack of one: the
+                  gateway decides when a new chat needs it, and the flow inside
+                  is the same one Settings renders. In this capped stack so the
+                  Company SSO form stays scrollable on a short phone pane. */}
+              <KiroSignInPrompt />
               {/* Topmost, furthest from the composer: it is about the session's
                   setup, not about the work in hand, and is gone once every MCP
                   server has connected. */}

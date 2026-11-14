@@ -11459,6 +11459,10 @@
       "config_unavailable_detail": "Recarga la página para volver a intentarlo o pide al agente que lo revise.",
       "load_failed": "No se pudo cargar una parte del panel. Recarga la página para volver a intentarlo."
     },
+    "kiroSignInPrompt": {
+      "title": "Inicia sesión en Kiro para empezar a chatear",
+      "intro": "Tus chats se ejecutan con tu cuenta de Kiro. Elige cómo iniciar sesión."
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Con carga:</0> <1>{{cap}} de {{configured}} agentes a la vez</1>",
       "exec_reduced_queued": "<0>Con carga:</0> <1>{{cap}} de {{configured}} agentes a la vez · {{queued}} en cola</1>",

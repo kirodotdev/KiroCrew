@@ -11459,6 +11459,10 @@
       "config_unavailable_detail": "Ricarica la pagina per riprovare, oppure chiedi all’agente di verificare.",
       "load_failed": "Non è stato possibile caricare una parte della dashboard. Ricarica la pagina per riprovare."
     },
+    "kiroSignInPrompt": {
+      "title": "Accedi a Kiro per iniziare a chattare",
+      "intro": "Le tue chat usano il tuo account Kiro. Scegli come accedere."
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>Sotto carico:</0> <1>{{cap}} agenti su {{configured}} alla volta</1>",
       "exec_reduced_queued": "<0>Sotto carico:</0> <1>{{cap}} agenti su {{configured}} alla volta · {{queued}} in coda</1>",

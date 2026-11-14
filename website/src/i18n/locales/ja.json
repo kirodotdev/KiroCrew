@@ -10949,6 +10949,10 @@
       "config_unavailable_detail": "ページを再読み込みしてもう一度お試しいただくか、エージェントに調査を依頼してください。",
       "load_failed": "ダッシュボードの一部を読み込めませんでした。ページを再読み込みしてもう一度お試しください。"
     },
+    "kiroSignInPrompt": {
+      "title": "チャットを始めるには Kiro にサインインしてください",
+      "intro": "チャットはあなたの Kiro アカウントで実行されます。サインイン方法を選んでください。"
+    },
     "concurrencyCutChip": {
       "exec_reduced": "<0>高負荷:</0> <1>同時実行 {{configured}} 中 {{cap}} エージェント</1>",
       "exec_reduced_queued": "<0>高負荷:</0> <1>同時実行 {{configured}} 中 {{cap}} エージェント · {{queued}} 件待機中</1>",
