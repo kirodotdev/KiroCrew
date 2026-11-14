@@ -814,10 +814,9 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
             # nothing. It costs plenty: the trim point is wherever the quoted
             # token sits, everything after it to buffer end goes with it, and
             # when no ``]`` ever arrives the sealed frame re-trims too, so the
-            # transient-frame consolation above does not apply. Locating a
-            # marker by substring without asking whether it READS as one is
-            # the bug fixed at the directive seam; this is the same
-            # rule at the trailer seam. Only the tail-most occurrence can be
+            # transient-frame consolation above does not apply. The directive
+            # seam follows the same rule: a marker counts only if it READS as
+            # one, not by substring. Only the tail-most occurrence can be
             # mid-flight -- a stream appends, so text after an opener means
             # that opener was never in flight -- which is why one viability
             # check here beats walking earlier occurrences.

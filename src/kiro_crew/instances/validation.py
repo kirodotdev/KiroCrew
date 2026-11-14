@@ -68,13 +68,8 @@ _ECS_TARGET_RE = re.compile(
     r"_(?P<runtime>[0-9a-f]{32}-[0-9]{1,20})\Z"
 )
 # Longest value either pattern can accept, DERIVED from the parts rather than
-# stated as a number. It was stated, as 336, and that was wrong: the arithmetic in
-# the comment beside it described a 20-digit runtime suffix, which comes to 346, so
-# the constant silently overrode the pattern and FALSE-REJECTED every legal target
-# whose suffix ran past 10 digits -- the check runs before the match, so the
-# pattern never got to accept them. Failing closed made it a usability bug rather
-# than a hole, but a bound that disagrees with the thing it bounds is the
-# comment-contradicts-code defect in its most compact form.
+# stated as a number. The length check runs before the match, so a bound shorter
+# than the pattern silently rejects legal targets.
 #
 # Built by constructing the longest legal ECS target: the ``ecs:`` scheme, a
 # 255-character cluster (AWS's own limit), two 32-hex ids, their separators, and a

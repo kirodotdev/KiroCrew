@@ -391,13 +391,11 @@ async def connect(
         # rather than on there being a freed port to add back.
         #
         # Everything here runs off the event loop: ``_reserved_ports`` reads
-        # the registry from disk under its own lock, and the port probe binds
-        # a socket. Under the mirror neither happened on this path -- the port
-        # was a fixed field read and one probe -- whereas this reads a file
-        # and can walk upward past every occupied candidate, all inside the
-        # manager lock on the gateway's loop, where a synchronous scan would
-        # stall unrelated requests and heartbeats. This matches how the rest
-        # of the module already reaches the registry (``asyncio.to_thread``).
+        # the registry from disk under its own lock, the port probe binds a
+        # socket, and the scan can walk past every occupied candidate, all
+        # inside the manager lock. On the gateway's loop that would stall
+        # unrelated requests and heartbeats. The rest of the module reaches
+        # the registry the same way (``asyncio.to_thread``).
         reserved = await asyncio.to_thread(self._reserved_ports)
         # Prefer this crew's own recorded port for origin stability (above),
         # but not on a rebuild, which wants a fresh port. ``_reserved_ports``
