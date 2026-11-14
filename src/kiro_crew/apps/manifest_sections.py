@@ -1281,8 +1281,9 @@ class NotificationsConfig:
 
 
 #: A locale key: a 2-3 letter language, optionally one region or script subtag
-#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by exactly this key
-#: and then by its base language, so a key outside the grammar could never be read.
+#: (``de``, ``pt-BR``, ``zh-CN``). The dashboard looks a locale up by this key and then
+#: by its base language, both without case, so a key outside the grammar could never
+#: be read.
 L10N_LOCALE_RE = re.compile(r"^[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})?$")
 MAX_L10N_LOCALES = 32
 MAX_L10N_HIGHLIGHTS = 12

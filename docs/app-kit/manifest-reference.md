@@ -499,8 +499,11 @@ does not depend on which app was enabled or installed more recently.
 
 Optional. Your app's display name, description, page label and highlights in other
 languages. The dashboard shows them in place of the English fields for a reader whose
-language matches: first the exact locale, then its base language, then the English
-field.
+language matches: first the exact locale, then its base language (both matched without
+case, so `zh-cn` serves a `zh-CN` reader), then, when neither exists, the first listed
+regional entry for the same language (`pt-BR` for a `pt` reader), then the English
+field. A regional entry that can switch the script is never borrowed: a Chinese region
+(`zh-TW` for a `zh-CN` reader) or a key with a script subtag (`sr-Latn`).
 
 ```json
 {

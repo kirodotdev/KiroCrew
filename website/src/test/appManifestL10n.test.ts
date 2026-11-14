@@ -56,4 +56,34 @@ describe('manifest l10n fallback chain', () => {
     const builtin = { name: 'pptx-maker', origin: 'builtin', displayName: 'X', manifest: { l10n: { pt: { displayName: 'Hijack' } } } }
     expect(appDisplayName(builtin)).not.toBe('Hijack')
   })
+
+  it('matches a locale key without case, as the manifest accepts `zh-cn`', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const app = { name: 'lower', origin: 'registry', displayName: 'Probe', manifest: { l10n: { 'zh-cn': { displayName: '小写' } } } }
+    expect(appDisplayName(app)).toBe('小写')
+  })
+
+  it('prefers an exact locale key over a case variant listed before it', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const app = { name: 'both', origin: 'registry', displayName: 'Probe', manifest: { l10n: { 'zh-cn': { description: '描述' }, 'zh-CN': { displayName: '探针' } } } }
+    expect(appDisplayName(app)).toBe('探针')
+  })
+
+  it("takes a regional entry for the reader's language when there is no exact one", async () => {
+    await i18next.changeLanguage('pt')
+    const app = { name: 'regional', origin: 'registry', displayName: 'Probe', manifest: { l10n: { 'pt-BR': { displayName: 'Sonda' } } } }
+    expect(appDisplayName(app)).toBe('Sonda')
+    // A different language's region is never borrowed.
+    await i18next.changeLanguage('ja')
+    expect(appDisplayName(app)).toBe('Probe')
+  })
+
+  it('never borrows a regional entry that switches the script', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const traditional = { name: 'tw', origin: 'registry', displayName: 'Probe', manifest: { l10n: { 'zh-TW': { displayName: '探針' } } } }
+    expect(appDisplayName(traditional)).toBe('Probe')
+    await i18next.changeLanguage('pt')
+    const scripted = { name: 'latn', origin: 'registry', displayName: 'Probe', manifest: { l10n: { 'pt-Latn': { displayName: 'Sonda' } } } }
+    expect(appDisplayName(scripted)).toBe('Probe')
+  })
 })

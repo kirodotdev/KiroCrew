@@ -434,11 +434,35 @@ function l10nEntries(app: AppL10nCarrier | undefined): Record<string, unknown>[]
   if (!block || typeof block !== 'object' || Array.isArray(block)) return []
   const locale = activeLocale()
   const base = locale.split('-')[0]
+  // Own keys only, as in `keysFor`: the block is app data, and a locale named
+  // like an Object.prototype member must not resolve to an inherited value.
+  const keys = Object.keys(block)
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+  // Locale tags are case-insensitive, and the manifest accepts `zh-cn` as well
+  // as `zh-CN`, so match without case; the reader's locale comes first. An
+  // exact key wins over a case variant listed before it.
+  const picked: string[] = []
+  for (const want of locale === base ? [locale] : [locale, base]) {
+    const key = keys.includes(want) ? want : keys.find(k => same(k, want))
+    if (key !== undefined && !picked.includes(key)) picked.push(key)
+  }
+  // No entry for the reader's exact locale or bare language: take a regional
+  // one for the same language (`pt-BR` for a `pt` reader) rather than English.
+  // Never across scripts: a Chinese region (`zh-TW` for a `zh-CN` reader) or an
+  // explicit script subtag (`sr-Latn`) can switch the writing system, which is
+  // the substitution `i18n/detect.ts` refuses to make with confidence.
+  // shortcut: with several regions (`pt-BR`, `pt-PT`) the first listed wins.
+  if (picked.length === 0 && base.toLowerCase() !== 'zh') {
+    const scripted = (k: string) => {
+      const parts = k.split('-')
+      return parts.length === 2 && parts[1].length === 4
+        && [...parts[1]].every(c => c.toLowerCase() !== c.toUpperCase())
+    }
+    const key = keys.find(k => same(k.split('-')[0], base) && !scripted(k))
+    if (key !== undefined) picked.push(key)
+  }
   const out: Record<string, unknown>[] = []
-  for (const key of locale === base ? [locale] : [locale, base]) {
-    // hasOwnProperty, as in `keysFor`: the block is app data, and a locale named
-    // like an Object.prototype member must not resolve to an inherited value.
-    if (!Object.prototype.hasOwnProperty.call(block, key)) continue
+  for (const key of picked) {
     const entry = (block as Record<string, unknown>)[key]
     if (entry && typeof entry === 'object' && !Array.isArray(entry)) out.push(entry as Record<string, unknown>)
   }
