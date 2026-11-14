@@ -13,8 +13,8 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp import streams, web
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
@@ -1085,6 +1085,74 @@ class TestSiblingFlushCannotStaleTheCommit:
         assert a.autocompact_pct == 40.0
         assert b.autocompact_pct == 40.0, "refused transaction leaked the value to a sibling"
         state.sessions.set_autocompact_pct.assert_not_called()
+
+
+class TestACancelledRequestLeavesNoCommit:
+    """A request cancelled during its save leaves no commit for later saves to write.
+
+    The real save shields its executor future, so the worker runs on after the
+    request unwinds and may run the commit hook before or after the cancellation.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("hook", ["before-cancel", "after-cancel"])
+    async def test_a_cancelled_request_drops_its_commit(self, hook: str) -> None:
+        from kiro_crew.dashboard.chat_handlers import autocompact_commits
+
+        slot = _ChatSlot("cancelled-threshold")
+        slot.autocompact_pct = 40.0
+        state = _mock_state(slot)
+        history_key = slot_history_key(slot)
+        entered, release, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        hook_ran = asyncio.Event()
+        workers: list[asyncio.Task[bool]] = []
+
+        async def _shielded_save(*args, **kwargs):  # type: ignore[no-untyped-def]
+            async def _worker() -> bool:
+                await release.wait()
+                kwargs["after_commit_on_transcript"]()
+                hook_ran.set()
+                await finish.wait()
+                return True
+
+            workers.append(asyncio.ensure_future(_worker()))
+            entered.set()
+            return await asyncio.shield(workers[0])
+
+        raw = b'{"pct": 60}'
+        body = streams.StreamReader(MagicMock(), 2**16, loop=asyncio.get_running_loop())
+        body.feed_data(raw)
+        body.feed_eof()
+        request = make_mocked_request(
+            "POST",
+            f"/api/chat/slots/{slot.key}/autocompact",
+            headers={"Content-Type": "application/json", "Content-Length": str(len(raw))},
+            match_info={"slot": slot.key},
+            app=_make_app(state),
+            payload=body,
+        )
+        try:
+            with patch(
+                "kiro_crew.dashboard.chat_handlers.save_slot_off_loop",
+                new=AsyncMock(side_effect=_shielded_save),
+            ):
+                handler = asyncio.ensure_future(api_chat_slot_autocompact(request))
+                await asyncio.wait_for(entered.wait(), 30)
+                if hook == "before-cancel":
+                    release.set()
+                    await asyncio.wait_for(hook_ran.wait(), 30)
+                handler.cancel()
+                release.set()
+                finish.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(handler, 30)
+                assert await asyncio.wait_for(workers[0], 30) is True
+            assert hook_ran.is_set()
+            assert history_key not in autocompact_commits
+            assert slot.autocompact_pct == 40.0
+            state.sessions.set_autocompact_pct.assert_not_called()
+        finally:
+            autocompact_commits.pop(history_key, None)
 
 
 class TestSlotlessDeletionPreservesOverride:
