@@ -234,7 +234,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # stub before linking it into place. Classified as the whole DIRECTORY so the
     # in-flight temp is never a visible, linkable name: a second hard link to that
     # inode would be an unmasked path to the bytes the gateway executes. Only the
-    # gateway process writes here.
+    # gateway process writes here; Dev Fleet also keeps its launchd launcher record here.
     "live-target-staging",
     # The AWS Control builtin's app data directory. ``backup.json`` in here holds
     # ``nightly``, the bit that AUTHORIZES the app's startup loop to upload the

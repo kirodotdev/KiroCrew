@@ -118,7 +118,11 @@ async def test_log_fleet_rebuild_failure_warns_on_exception(caplog):
 async def test_fleet_handler_reports_discovery_error(monkeypatch):
     monkeypatch.setattr(fleet_state, "_fleet_cached", AsyncMock(side_effect=RuntimeError("no git")))
     resp = await http_api.api_dev_fleet_fleet(make_mocked_request("GET", "/api/fleet"))
-    assert json.loads(resp.text) == {"worktrees": [], "error": "no git"}
+    assert json.loads(resp.text) == {
+        "worktrees": [],
+        "error": "no git",
+        "live_target_pinned": False,
+    }
 
 
 @pytest.mark.asyncio

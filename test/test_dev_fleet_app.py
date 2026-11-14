@@ -25,6 +25,7 @@ from git_maintenance_helpers import git_maintenance_off_entries
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import fleet_state as fleet_state_mod
 from kiro_crew.apps.builtins.dev_fleet import http_api as http_api_mod
+from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
@@ -476,6 +477,37 @@ async def test_fleet_handler_sandbox_error_returns_error_payload():
 
 
 @pytest.mark.asyncio
+async def test_fleet_error_payload_still_reports_a_pinned_live_target():
+    """Restore installed build needs no worktree discovery, so a failed discovery
+    keeps `live_target_pinned` in the error payload (and leaves it out when the broker
+    cannot answer)."""
+
+    async def boom():
+        raise RuntimeError("sandbox unavailable: no backend")
+
+    async def pinned(_fresh=False):
+        return live_mod.PointerState(
+            live=None, staged=None, staged_cancel_available=False, pinned=True
+        )
+
+    async def down(_fresh=False):
+        raise live_mod.PointerUnavailable("gateway unreachable")
+
+    for provider, expected in ((pinned, True), (down, None)):
+        with (
+            patch.object(fleet_state_mod, "_fleet_refresh", new=boom),
+            patch.object(fleet_state_mod, "_fleet_cached", new=boom),
+            patch.object(live_mod, "_POINTER_PROVIDER", new=provider),
+        ):
+            app = web.Application()
+            app.router.add_get("/api/fleet", mod.api_dev_fleet_fleet)
+            async with TestClient(TestServer(app)) as client:
+                body = await (await client.get("/api/fleet")).json()
+            assert "sandbox unavailable" in body["error"]
+            assert body.get("live_target_pinned") is expected
+
+
+@pytest.mark.asyncio
 async def test_fleet_handler_missing_repo_returns_error_payload():
     """The missing-repo RuntimeError reaches the client as the error payload
     (the frontend renders it as the Discovery Error banner), not a silent
@@ -666,7 +698,7 @@ async def test_fleet_handler_reports_needs_setup_without_an_error():
             resp = await client.get("/api/fleet")
             assert resp.status == 200
             body = await resp.json()
-            assert body == {"worktrees": [], "needs_setup": True}
+            assert body == {"worktrees": [], "needs_setup": True, "live_target_pinned": False}
 
 
 @pytest.mark.asyncio

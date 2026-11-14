@@ -61,6 +61,20 @@ async def _with_live_run_pointers(data: dict) -> dict:
     return {**data, "worktrees": rows, "sync_run_id": worktree_ops._SYNC_RID}
 
 
+async def _unavailable_fleet(body: dict) -> web.Response:
+    """An unavailable-fleet answer that still says whether the pointer names a checkout.
+
+    "Restore installed build" does not need worktree discovery, so a failed
+    discovery must not hide the way back to the installed build. A broker outage
+    leaves the field out (unknown, not false).
+    """
+    try:
+        body = {**body, "live_target_pinned": (await live.pointer_state()).pinned}
+    except live.PointerUnavailable:
+        pass
+    return web.json_response(body)
+
+
 async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
     fresh = request.query.get("fresh") == "1"
     # The one route whose answer a late resolution changes, and the one the page
@@ -74,7 +88,7 @@ async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
         # Not an error: no checkout has been found yet. Reported as its own state
         # (and WITHOUT an `error` field) so the page can ask where the checkout is
         # instead of rendering a failure against a path the user never chose.
-        return web.json_response({"worktrees": [], "needs_setup": True})
+        return await _unavailable_fleet({"worktrees": [], "needs_setup": True})
     except repository.RepoUnreadable as exc:
         # A checkout WAS named and git cannot read it, OR a present config file
         # would not parse: either way the page renders this as the Discovery Error
@@ -82,9 +96,9 @@ async def api_dev_fleet_fleet(request: web.Request) -> web.Response:
         # Redacted like every other display string this module emits (and like the
         # middleware's copy of the same exception) — git stderr can carry a remote
         # URL with credentials in it.
-        return web.json_response({"worktrees": [], "error": runtime._redact(str(exc))})
+        return await _unavailable_fleet({"worktrees": [], "error": runtime._redact(str(exc))})
     except RuntimeError as exc:
-        return web.json_response(
+        return await _unavailable_fleet(
             {"worktrees": [], "error": str(exc)},  # _run_cmd already prefixes
         )
     return web.json_response(await _with_live_run_pointers(data))

@@ -399,6 +399,10 @@ def _doctor_service_launch() -> None:
         return
     if live_target.read_target() is not None:
         print(f"  service runs: ℹ️  {shown} (source checkout, Dev Fleet live target is set)")
+        render._print_wrapped(
+            "To run the installed build again, use Restore installed build on the "
+            "Dev Fleet page."
+        )
         return
     wheel = _managed_wheel_launcher()
     if wheel is None:

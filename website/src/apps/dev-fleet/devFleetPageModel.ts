@@ -301,7 +301,7 @@ export interface Worktree {
   pod_resources?: PodResources | null
 }
 export interface UndoTarget { name: string; path: string }
-export interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; live_verified?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
+export interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; live_verified?: boolean; live_target_pinned?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.

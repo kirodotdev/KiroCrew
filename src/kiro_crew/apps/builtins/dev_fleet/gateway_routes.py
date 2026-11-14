@@ -25,6 +25,11 @@ sandboxed backend is reverse-proxied at ``/apps/dev-fleet/api/``):
     backend (``live._make_live``). OWNER-ONLY, and REFUSED for any app principal —
     including Dev Fleet's own app token, which is exactly the credential a build
     child could steal.
+``POST restore-installed``
+    Unpin the live target (pointer + systemd drop-in) and restart into the build
+    the installer put on the host (``restore_installed._restore_installed``). Same owner-only
+    gate, audit and ``_MAKE_LIVE_LOCK`` as the cutover: it is a cutover to "no
+    live target".
 ``POST restart-gateway``
     Same gate. It shares the ``_MAKE_LIVE_LOCK`` / ``_MAKE_LIVE_COMMITTED`` latch
     with the cutover, so the two must live in one process.
@@ -71,7 +76,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
-from kiro_crew.apps.builtins.dev_fleet import live, repository, runtime
+from kiro_crew.apps.builtins.dev_fleet import live, repository, restore_installed, runtime
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.dashboard.handlers._shared import (
     read_bounded_json,
@@ -220,6 +225,7 @@ async def handle_live_target(request: web.Request) -> web.Response:
             "staged_cancel_available": state.staged_cancel_available,
             "previous": state.previous,
             "live_verified": state.live_verified,
+            "pinned": state.pinned,
         }
     )
 
@@ -397,6 +403,29 @@ async def handle_make_live(request: web.Request) -> web.Response:
             status=409,
         )
     _audit(request, "dev_fleet_make_live", result, target=path)
+    return web.json_response(result)
+
+
+@_require_enabled
+@_require_owner_human("dev_fleet_restore_installed")
+async def handle_restore_installed(request: web.Request) -> web.Response:
+    """POST /api/apps/dev-fleet/restore-installed — body ``{dry_run?}``.
+
+    The way back from Make Live to the installed build. Behind exactly the gate
+    the cutover itself uses: an app token (Dev Fleet's own included) is refused,
+    and only the dashboard owner may call it; every outcome leaves one SEL record.
+    """
+    body, err = await read_bounded_json(request)
+    if err is not None:
+        return err
+    assert body is not None
+    dry_run = body.get("dry_run")
+    if dry_run is not None and not isinstance(dry_run, bool):
+        return web.json_response(
+            {"code": "invalid_dry_run", "error": "dry_run must be a boolean"}, status=400
+        )
+    result = await restore_installed._restore_installed(dry_run is True)
+    _audit(request, "dev_fleet_restore_installed", result, target="")
     return web.json_response(result)
 
 
@@ -581,6 +610,7 @@ def register_routes(app: web.Application) -> None:
     app.router.add_delete(f"{API_PREFIX}/live-target/removal-lease", handle_removal_lease_release)
     app.router.add_post(f"{API_PREFIX}/restart-gateway", handle_restart_gateway)
     app.router.add_post(f"{API_PREFIX}/make-live", handle_make_live)
+    app.router.add_post(f"{API_PREFIX}/restore-installed", handle_restore_installed)
     app.router.add_post(f"{API_PREFIX}/pod-token", handle_pod_token)
     app.router.add_post(f"{API_PREFIX}/create-release-worktree", handle_create_release_worktree)
 
@@ -596,5 +626,6 @@ __all__ = (
     "handle_removal_lease_release",
     "handle_removal_lease_renew",
     "handle_restart_gateway",
+    "handle_restore_installed",
     "register_routes",
 )

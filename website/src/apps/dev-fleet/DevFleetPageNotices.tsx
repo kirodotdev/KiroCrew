@@ -1,6 +1,7 @@
 /**
  * What the Dev Fleet page shows between its header and the worktree table: the
- * how-to line, fleet totals, the inferred main checkout, the Switch back banner,
+ * how-to line, fleet totals, the inferred main checkout, the Restore installed
+ * build control, the Switch back banner,
  * the restart and row-action failures, the host capability notes, the stat
  * cards and the disk-usage failure.
  */
@@ -8,7 +9,7 @@ import { type CSSProperties, type RefObject, type Dispatch, type SetStateAction 
 import { Btn, StatCard } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
-import { Server, X, Undo2, Info, AlertTriangle } from 'lucide-react'
+import { Server, X, Undo2, Info, AlertTriangle, RotateCcw } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import { fmtBytes } from '../../i18n/format'
@@ -18,7 +19,7 @@ import { iconLabel } from './DevFleetPageRow'
 /** The notices between the page header and the worktree table. */
 export function DevFleetPageNotices({
   fleet, diskFailed, diskError, actionError, actionErrorRef, dismissActionError, gatewayError,
-  setGatewayError, setDismissedUndoKey, gatewayMutating, makeLive, wts, running, needsProv, undoTarget,
+  setGatewayError, setDismissedUndoKey, gatewayMutating, makeLive, restoreInstalled, restoreNotice, setRestoreNotice, wts, running, needsProv, undoTarget,
   undoCurrent, undoKey, showUndoBanner, podsAvailable, podsReason, gatewayReason, servingReason, noFleet,
   diskGb,
 }: {
@@ -33,6 +34,9 @@ export function DevFleetPageNotices({
   setDismissedUndoKey: Dispatch<SetStateAction<string | null>>
   gatewayMutating: boolean
   makeLive: (w: Worktree | UndoTarget, opts?: { undo?: boolean }) => Promise<void>
+  restoreInstalled: () => Promise<void>
+  restoreNotice: string | null
+  setRestoreNotice: Dispatch<SetStateAction<string | null>>
   wts: Worktree[]
   running: number
   needsProv: number
@@ -102,6 +106,47 @@ export function DevFleetPageNotices({
           <Info size={13} className="lucide-inline shrink-0" />
           <span>{i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr')}:</span>
           <code className="min-w-0 break-all rounded bg-bg-elevated px-1.5 py-0.5 text-text-strong select-text">{fleet.main_repo}</code>
+        </div>
+      )}
+      {/* Persistent, unlike the Switch back banner below: while the pointer names
+          a checkout this is the only way back to the build the installer put on
+          the host, so it cannot be dismissible. */}
+      {fleet?.live_target_pinned && (
+        <div
+          role="note"
+          data-testid="restore-installed-build"
+          className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-text-strong"
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <Info className="lucide-inline h-4 w-4 shrink-0 text-muted" aria-hidden />
+            <span className="min-w-0 break-words">{i18nT('pages.devFleetPage.live_target_pinned_notice')}</span>
+          </div>
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <Btn onClick={() => { void restoreInstalled() }} disabled={gatewayMutating}>
+              {iconLabel(<RotateCcw className="lucide-inline h-3.5 w-3.5" aria-hidden />, i18nT('pages.devFleetPage.restore_installed_build'))}
+            </Btn>
+          </div>
+        </div>
+      )}
+      {/* After a staged-only restore the pointer is already clear, so the row above is
+          gone while this dashboard still runs the worktree until the owner restarts.
+          Keep the server's instruction on screen (a toast fades) until dismissed. */}
+      {restoreNotice && (
+        <div
+          role="status"
+          aria-live="polite"
+          data-testid="restore-installed-pending"
+          className="flex items-center gap-2 sm:gap-3 rounded-md border border-border bg-bg-elevated px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-text-strong"
+        >
+          <Info className="lucide-inline h-4 w-4 shrink-0 text-muted" aria-hidden />
+          <span className="min-w-0 flex-1 break-words">{restoreNotice}</span>
+          <Clickable
+            aria-label={i18nT('pages.devFleetPage.dismiss')}
+            onClick={() => setRestoreNotice(null)}
+            className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-bg-hover hover:text-text"
+          >
+            <X className="lucide-inline h-4 w-4" aria-hidden />
+          </Clickable>
         </div>
       )}
       {showUndoBanner && undoTarget && undoCurrent && (

@@ -58,6 +58,8 @@ behind that facade is split by state and lifecycle ownership:
     systemd/launchd/foreground restart backend, service probes, the drop-in);
   - `live_plan.py`: a cutover's dry-run plan, operator-facing text, and the Switch-back
     undo-binding check (`_undo_binding_holds`).
+  - `installer_launcher.py`: the launchd installer-launcher record that Restore installed
+    build writes back (see *Installer launcher record*).
 - `fleet_state.py` owns PR/context/resource caches, fleet projections and tombstones, and
   provision reattachment state. PR status is cached for `_PR_TTL` (300 s); the context
   `git log` is reused while the row's git facts key holds (`_CTX_LOG_CACHE`), and a log
@@ -320,7 +322,7 @@ verification. Route names below are relative to that prefix.
 
 Eight routes are served by the **gateway process** rather than the backend, under the
 in-gateway namespace `/api/apps/dev-fleet/` (`gateway_routes.py`, mounted by the
-`BUILTIN_NAMES` loop). `restart-gateway`, `make-live`, `pod-token` and
+`BUILTIN_NAMES` loop). `restart-gateway`, `make-live`, `restore-installed`, `pod-token` and
 `create-release-worktree` are **dashboard-owner only** and refuse any app token. `live-target` and the three `live-target/removal-lease`
 verbs admit ONLY Dev Fleet's own app token (`_principal_is_backend`); a dashboard
 human and any other app's token are refused:
@@ -329,9 +331,10 @@ human and any other app's token are refused:
 |---|---|---|
 | `POST /api/apps/dev-fleet/restart-gateway` | — | Restart the live gateway through its service-manager backend; returns the pre-restart `start_id` for the restart handshake |
 | `POST /api/apps/dev-fleet/make-live` | `{path, dry_run?, undo?, expected_staged?}` | Repoint the live gateway at another worktree (see Make Live); a real cutover returns `start_id` for the restart handshake |
+| `POST /api/apps/dev-fleet/restore-installed` | `{dry_run?}` | Unpin the live target (pointer reset to the absent-equivalent document; systemd `make-live.conf` drop-in removed, or on launchd the `live-gateway` launcher written back from the installer record, see below) and restart into the installed build (`restore_installed._restore_installed`); same lock, latch, unwind, removal-lease and pod checks as a cutover, and a failure unwinds both surfaces and keeps the record. Refuses `no_live_target` when nothing is pinned, and, only when the launchd launcher is a worktree's (not the installer's rendering), `restore_no_installer_record` (no record) or `restore_installer_record_invalid` (a record failing validation). A launcher that is already the installer's (a foreground or staged-only cutover never rewrote it) needs no record: only the pointer is cleared. A foreground gateway is never restarted by Restore (it would respawn the worktree's console script): the pointer is cleared and the owner restarts by hand. A refused `daemon-reload` on systemd unwinds the restore when Restore will restart or has just removed a drop-in (the manager would otherwise keep the worktree definition); with neither, it changes nothing and is ignored. Backs the persistent **Restore installed build** control, shown while the fleet payload's `live_target_pinned` is true, including in the needs-setup and discovery-error payloads (Restore needs no worktree discovery); a broker outage leaves the field out |
 | `POST /api/apps/dev-fleet/pod-token` | `{name}` | Mint the pod's 2h dashboard token for the row's Open button; answers `{ok, token, url}`. Here because the pod's `/api/token/local` certifies only a caller in the gateway's own namespaces (see *Token mint runs in the gateway*), so a mint from the sandboxed backend is always refused. App tokens are refused because Dev Fleet's is readable by every build child in the backend's namespace, and a pod runs outside the sandbox |
 | `POST /api/apps/dev-fleet/create-release-worktree` | — | Create `release-channel-stable` detached at the newest stable release the remote advertises (see *Create release worktree*); answers `{ok, path, name, version, ref, oid}` or a refusal `{ok: false, code, error}`. Here, not in the backend, because the checkout reads the repo's own `.git/config` and follows `include.path`, so it must run at a strict tier with credentials bind-masked — which only a gateway-driven spawn gets. Owner-only; every app token refused |
-| `GET /api/apps/dev-fleet/live-target` | `?fresh=1` | The pointer-state read broker `{live, staged, staged_cancel_available, previous, live_verified}` (`previous` is the pointer's validated one-level undo target, so the fleet's Undo banner needs no pointer read of its own; `live_verified` is false when `live` is the pointer's target taken on trust because a packaged gateway has no running checkout to compare it with) — admits ONLY Dev Fleet's own app token (how the sandboxed backend learns which row is live); a dashboard human and any other app's token are refused |
+| `GET /api/apps/dev-fleet/live-target` | `?fresh=1` | The pointer-state read broker `{live, staged, staged_cancel_available, previous, live_verified, pinned}` (`pinned`: the pointer names any checkout) (`previous` is the pointer's validated one-level undo target, so the fleet's Undo banner needs no pointer read of its own; `live_verified` is false when `live` is the pointer's target taken on trust because a packaged gateway has no running checkout to compare it with) — admits ONLY Dev Fleet's own app token (how the sandboxed backend learns which row is live); a dashboard human and any other app's token are refused |
 | `POST /api/apps/dev-fleet/live-target/removal-lease` | `{path}` | Lease a worktree before `git worktree remove`, so a cutover or a gateway restart cannot land mid-deletion; answers `{ok, granted, token}`, refused while a cutover is in flight. The token is the capability to renew or release |
 | `PUT /api/apps/dev-fleet/live-target/removal-lease` | `{token}` | Renew the lease; `{ok, renewed}`, where `false` means it is gone and the holder must not start a mutation it has not started |
 | `DELETE /api/apps/dev-fleet/live-target/removal-lease` | `{token}` | Release the lease; idempotent, and a token that names no lease is a no-op |
@@ -1953,6 +1956,23 @@ choose the gateway's next image. Instead:
   the write fails, leaving the safe default (no pointer: the gateway boots its own
   image). A plain `atomic_write` would stage beside the target, in the data-home
   root every sandbox can see and, being same-uid, `link(2)` before the rename.
+- **Installer launcher record (launchd).** A launchd cutover rewrites the
+  `live-gateway` launcher (the plist never changes), and the installer's
+  pass-through launcher cannot be re-derived from a gateway that runs a worktree.
+  So a Make Live on a launchd host whose launcher is exactly
+  `render_live_program(<installed kirocrew>)` (a binary outside the
+  pinned checkout, even when a foreground cutover already pinned the pointer) — records that script
+  (`installer_launcher.record_first_cutover`) as
+  `~/.kiro/crew/live-target-staging/installer-launcher.json`
+  (`{version, live_program, content}`), owner-only `0600` with one link, before
+  anything is staged; a write failure refuses the cutover. A newer installer launcher
+  (a later `service install` from another installation) replaces an older record; a
+  cutover's own launcher is not the installer's and never does. The masked staging directory makes it as unreachable from
+  an agent sandbox as the pointer. Restore reads it with `O_NOFOLLOW` and refuses a
+  record that is not a regular single-link file owned by this user and owner-only,
+  has any other shape, names another launcher path, does not hold the exact
+  installer rendering of an absolute path, or names a binary that is no longer
+  executable. The record is deleted only after a successful restore. A restore whose launcher is already the installer's rendering reads no record and writes no launcher, but still deletes the record, so a stale one cannot overwrite a newer `service install` later.
 - **Absent-equivalent document.** `mount(2)` cannot target a path that does not
   exist, so an absent pointer would be an unmasked pointer, and an agent namespace
   spawned while it was absent could *create* one the next boot execs. Before every
