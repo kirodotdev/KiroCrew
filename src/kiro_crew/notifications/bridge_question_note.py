@@ -7,7 +7,8 @@ decision is waiting. Like that note it is bridge-only: the dashboard bell never
 sees it.
 
 A card with ONE single-select question is bound to a single-use token, and the
-Slack sink posts one button per option; a press answers the card exactly as the
+Slack sink posts one button per option, and a reply transport (B4g) asks for the
+option's number in reply; either answers the card exactly as the
 dashboard would for that option (``DashboardState.resolve_question`` with
 ``{question: option label}``), so whichever surface answers first wins. Any other
 card (several questions, multi-select, or a free-form answer the owner wants to
@@ -73,20 +74,24 @@ def answerable_options(questions: Any) -> tuple[str, list[str]] | None:
 def bind_pending_question(
     state: Any, ask_id: str, session_key: str, questions: Any, ttl_s: float
 ) -> tuple[str, list[str]]:
-    """Bind the open card *ask_id* so Slack buttons can answer it. Never raises.
+    """Bind the open card *ask_id* so a Slack button or a reply can answer it.
 
-    Returns ``(token, option labels)``, or ``("", [])`` when the card is not
-    answerable by one press, there is no registry, no Slack owner or no live
-    card, or the bind is refused: then the note carries no buttons.
+    The bound owner is the one an approval binds for (``bridge_transport.bound_owner``:
+    Slack's, else a reply transport's owner DM). Returns ``(token, option labels)``,
+    or ``("", [])`` when the card is not answerable by one choice, there is no
+    registry, no owner or no live card, or the bind is refused: then the note carries
+    no affordance. Never raises.
     """
     try:
+        from kiro_crew.notifications.bridge_transport import bound_owner
+
         shape = answerable_options(questions)
         registry = getattr(state, "bridge_actions", None)
-        owner = getattr(state, "owner_id", "")
+        owner = bound_owner(state)
         future = getattr(state, "_question_futures", {}).get(ask_id)
         if shape is None or registry is None or future is None or future.done():
             return "", []
-        if not isinstance(owner, str) or not owner:
+        if not owner:
             return "", []
         text, labels = shape
 

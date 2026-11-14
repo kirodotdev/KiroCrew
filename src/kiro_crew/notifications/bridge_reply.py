@@ -32,9 +32,29 @@ logger = logging.getLogger(__name__)
 _STALE_NOTICE = "This request was already answered or has expired."
 _WORD_NOTICE = "Reply approve or deny to answer this request."
 _ADMITTED_NOTICE = {"approve": "Approved.", "deny": "Denied."}
+_NUMBER_NOTICE = "Reply with the number of an answer to answer this question."
+_ANSWERED_NOTICE = "Answered."
 
 #: The longest reply recorded as the audited answer; anything else is "other".
 _MAX_RECORDED = 16
+
+
+def _approval_choice(text: str) -> str:
+    """The reply word, as the registry reads it, or ``"other"``."""
+    word = text.strip().lower()
+    return word if len(word) <= _MAX_RECORDED and word.isalnum() else "other"
+
+
+def _question_choice(text: str) -> str:
+    """``option_<n-1>`` for a reply that is exactly the number *n*, else ``"other"``.
+
+    ASCII digits only: ``str.isdigit`` also takes superscripts and other scripts'
+    digits, which ``int`` then refuses or reads as a different number.
+    """
+    word = text.strip()
+    if not (0 < len(word) <= 2 and word.isascii() and word.isdigit()) or word.startswith("0"):
+        return "other"
+    return f"option_{int(word) - 1}"
 
 
 async def answer_bridged_reply(
@@ -72,8 +92,9 @@ async def answer_bridged_reply(
         return True
     owner = reply_owner(state, transport)
     from_owner = bool(owner) and sender == owner and in_owner_dm(owner)
-    word = text.strip().lower()
-    choice = word if len(word) <= _MAX_RECORDED and word.isalnum() else "other"
+    context = registry.context_for(token)
+    question = context is not None and context.kind == "question"
+    choice = _question_choice(text) if question else _approval_choice(text)
     outcome = registry.resolve(token, choice, from_owner=from_owner)
     audit_action(
         registry,
@@ -87,9 +108,9 @@ async def answer_bridged_reply(
     if not from_owner:
         return True  # A stranger is told nothing about the owner's prompt.
     if outcome is ActionOutcome.ADMITTED:
-        notice = _ADMITTED_NOTICE.get(choice, "")
+        notice = _ANSWERED_NOTICE if question else _ADMITTED_NOTICE.get(choice, "")
     elif outcome is ActionOutcome.INVALID_CHOICE:
-        notice = _WORD_NOTICE
+        notice = _NUMBER_NOTICE if question else _WORD_NOTICE
     else:
         notice = _STALE_NOTICE
     if notice:
