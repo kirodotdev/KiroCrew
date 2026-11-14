@@ -653,6 +653,12 @@ no-tools chat notice checks the same copy. An editable agent whose file has
 `tools: [""]` can gain the default Crew server grants. Either suppresses the
 notice without changing the file. Without an approved addition, an empty list
 still gets the notice because the default-server projection leaves it empty.
+The Custom agents editor reads the detail API's response-only
+`session_lists_tools` boolean, computed from this same copy. When the saved file
+and the draft list no tools but the projection lists some, its hint explains
+that sessions still get tools from added MCP servers. **Allow every tool** stays
+available. The boolean describes the saved spec's projection, not server health;
+saving a tool edit refreshes it.
 
 | Field | Type | Effect |
 |---|---|---|

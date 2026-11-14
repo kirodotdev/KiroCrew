@@ -18364,6 +18364,7 @@
         "add_tool_placeholder": "ex.: fs_write ou @github/…",
         "spawn_tool_hint": "Deixe este agente executar outros agentes em segundo plano, cada um com uma caixa de tarefa e Parar no chat.",
         "spawn_tool_add": "Permitir agentes em segundo plano",
+        "no_tools_added_servers_hint": "O arquivo deste agente não lista ferramentas próprias. Suas sessões ainda recebem ferramentas dos servidores MCP adicionados.",
         "no_tools_hint": "Este agente não lista nenhuma ferramenta, então não pode executar comandos nem trabalhar com arquivos.",
         "all_tools_add": "Permitir todas as ferramentas",
         "tool_state_wildcard": "sem aprovação automática",

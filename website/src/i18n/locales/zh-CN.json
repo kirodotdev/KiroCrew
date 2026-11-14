@@ -17428,6 +17428,7 @@
         "add_tool_placeholder": "例如 fs_write 或 @github/…",
         "spawn_tool_hint": "让此智能体在后台运行其他智能体，每个都会在聊天中显示任务框和停止按钮。",
         "spawn_tool_add": "允许后台智能体",
+        "no_tools_added_servers_hint": "此代理文件本身没有列出工具。会话仍可使用已添加的 MCP 服务器提供的工具。",
         "no_tools_hint": "此智能体没有列出任何工具，所以无法运行命令或处理文件。",
         "all_tools_add": "允许所有工具",
         "tool_state_wildcard": "未设为自动批准",

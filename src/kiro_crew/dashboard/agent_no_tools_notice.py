@@ -63,6 +63,20 @@ def spec_lists_tools(spec: dict[str, Any]) -> bool:
     return isinstance(raw, list) and any(isinstance(t, str) and t for t in raw)
 
 
+def session_spec_lists_tools(agent: str, spec: dict[str, Any]) -> bool:
+    """Whether the KAS session's copy lists tools after additions and defaults.
+
+    Shared by the chat notice and the editor's detail read. Blocking file I/O;
+    the projection never writes the added servers or grants into the agent file.
+    """
+    from kiro_crew.agent_sdk import spec_with_default_crew_servers
+    from kiro_crew.template_mcp_additions import merge_at_spawn
+
+    # The tools projection order used by acp.harness.kas.resolve_projected_spec.
+    projected = spec_with_default_crew_servers(agent, merge_at_spawn(agent, spec))
+    return spec_lists_tools(projected)
+
+
 def editable_agent_without_tools(agent: str) -> bool:
     """Whether *agent* is one file the Custom agents tab can edit, and it lists no tools.
 
@@ -71,9 +85,7 @@ def editable_agent_without_tools(agent: str) -> bool:
     linked page can change. Blocking file I/O.
     """
     # circular import: the handlers facade imports the chat runner at load time.
-    from kiro_crew.agent_sdk import spec_with_default_crew_servers
     from kiro_crew.dashboard.handlers import agents as agent_handlers
-    from kiro_crew.template_mcp_additions import merge_at_spawn
 
     candidates = agent_handlers._agent_detail_candidates(agent)
     if len(candidates) != 1:
@@ -84,9 +96,7 @@ def editable_agent_without_tools(agent: str) -> bool:
         return False
     if agent_handlers.read_only_reason_for_path(path) is not None:
         return False
-    # The tools projection order used by acp.harness.kas.resolve_projected_spec.
-    projected = spec_with_default_crew_servers(agent, merge_at_spawn(agent, spec))
-    return not spec_lists_tools(projected)
+    return not session_spec_lists_tools(agent, spec)
 
 
 def claim_agent_no_tools_notice(conversation_log: Any, session_key: str, agent: str) -> bool:
