@@ -183,9 +183,14 @@ export function useMembersPageRosterView({
   const crewmateName = activeView?.name
   const crewmateAvatar = activeView?.avatar
   const crewmateLabel = activeView ? crewDisplayName(activeView) : undefined
+  // The starters ride in the identity too, keyed by their text (a refetched roster
+  // hands a new array each time) so the pane's renderer memo only rebuilds on a real
+  // change. A starter is one line, so a line break is a safe separator.
+  const startersKey = (activeView?.starters ?? []).join('\n')
+  const crewmateStarters = useMemo(() => (startersKey ? startersKey.split('\n') : undefined), [startersKey])
   const crewmateIdentity = useMemo<CrewmateIdentity | undefined>(
-    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar, label: crewmateLabel } : undefined),
-    [crewmateName, crewmateAvatar, crewmateLabel],
+    () => (crewmateName ? { name: crewmateName, avatar: crewmateAvatar, label: crewmateLabel, starters: crewmateStarters } : undefined),
+    [crewmateName, crewmateAvatar, crewmateLabel, crewmateStarters],
   )
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,

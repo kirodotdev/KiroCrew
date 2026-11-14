@@ -21,6 +21,7 @@ import { cn } from '../../lib/utils'
 import { ProfilePagePushContext } from './CrewProfilePanel'
 import { harnessManagedNoteBackend } from '../../components/chat-input/autoCompact'
 import { Row, RowGroup, RowStatic, type TONE } from './profileRow'
+import CrewStartersGroup from './CrewStartersGroup'
 
 /** The approval modes a crewmate's record may pin, in label order; YOLO is process-global. */
 const MODES = ['normal', 'trust_reads', 'trust'] as const
@@ -117,9 +118,11 @@ function withCurrent(options: string[], value: string): string[] {
  * notice shown, until the person goes back: a save can be refused (a stale
  * permission) and a page that popped would have carried that away.
  */
-export default function CrewProfileSettings({ member, slotKey, waiting = false }: {
+export default function CrewProfileSettings({ member, slotKey, waiting = false, onStartersDraftChange }: {
   member: MemberRosterRow
   slotKey?: string | null
+  /** The starters box's unsaved draft and in-flight save, for the host's leave guards. */
+  onStartersDraftChange?: (dirty: boolean, busy: boolean) => void
   /** The crewmate has a thread the page has not confirmed yet (opening, or
    *  refused). A pick now would save the record but could not reach that
    *  thread, so the pickers wait. */
@@ -814,6 +817,7 @@ export default function CrewProfileSettings({ member, slotKey, waiting = false }
           : null}
         testId="crew-profile-dashboard-card-send-error"
       />
+      <CrewStartersGroup member={member} name={name} onDraftChange={onStartersDraftChange} />
       {/* Its own group, so its caption (what the preview lets the crewmate do)
           sits under it. */}
       <RowGroup caption={t('pages.membersPage.profile_dynamic_capabilities_hint', { name })}>

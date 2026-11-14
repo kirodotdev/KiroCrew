@@ -23,6 +23,8 @@ export interface CrewmateIdentity {
   /** Presentation label shown in place of `name` when set. `name` stays the
    *  immutable identity — routes, API calls and avatar seeds key on it. */
   label?: string
+  /** The prompts its empty chat offers as buttons (up to four, one line each). */
+  starters?: string[]
 }
 
 export default function CrewmateMessage({ pos, author, children }: { pos: CrewmateRunPosition; author?: string; children: ReactNode }) {

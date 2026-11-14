@@ -154,6 +154,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # emitted here; the chat routes that act on the answer are the sinks.
         "members_parts/member_space.py",
         "members_parts/self_edit.py",
+        # Gate-side: `clean_starters` asks whether a Bot's conversation starter
+        # WOULD need redaction and leaves the starter out when it would, naming it
+        # only by its place in the list. Nothing it returns is redacted text.
+        "member_starters.py",
         # Gate-side, like `link_meta.py` above: the UI-guide catalog asks whether
         # the redactor WOULD change a proposed crewmate name/goal or MCP command,
         # args or url, and REFUSES the guide when it would. Nothing it returns is

@@ -504,6 +504,17 @@ class KiroCrewAgentConfig:
             "open approval or question.",
         ),
     )
+    starters: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Conversation starters",
+            "Up to four short prompts shown as buttons on this Bot's empty chat; a "
+            "press sends the prompt as the person's first message. Each is one line of "
+            "at most 120 characters. A value that is too long, repeated or not text is "
+            "left out with a warning, and the rest are kept; a credential-shaped one is "
+            "left out of a save and never shown. Empty by default, which shows nothing.",
+        ),
+    )
     # Per-agent watchdog window overrides. The global ``watchdog.tool_stall_*``
     # defaults are build-scale forbearance; an agent that never runs a long
     # build (a pure-LLM reviewer, read-only git) can declare much lower windows

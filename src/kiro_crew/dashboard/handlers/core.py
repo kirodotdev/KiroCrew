@@ -815,6 +815,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.dashboard.handlers.core_config_view import (
         _AGENT_UNTRUSTED_TEXT_FIELDS,
+        _AGENT_UNTRUSTED_TEXT_LIST_FIELDS,
         _DASHBOARD_LOCKS,
         _SENSITIVE_MASK,
         _changed_paths_need_restart,
@@ -822,6 +823,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _hot_apply_after_write,
         _kas_in_use,
         _mask_agent_free_text,
+        _mask_agent_free_text_list,
         _mask_strings,
         _masked_config_dict,
         api_kirocrew_config,

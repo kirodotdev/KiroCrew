@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, waitFor, fireEvent } from '@testing-library/react'
+import { render, waitFor, fireEvent, within } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -79,14 +79,14 @@ function makeStore(running = false) {
   })
 }
 
-function renderPane(opts: { onOpenCrewWorkLog?: () => void; crewmate?: boolean; running?: boolean } = { crewmate: true }) {
+function renderPane(opts: { onOpenCrewWorkLog?: () => void; crewmate?: boolean; running?: boolean; starters?: string[] } = { crewmate: true }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <Provider store={makeStore(opts.running)}>
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={SLOT} crewmate={opts.crewmate === false ? undefined : radar} onOpenCrewWorkLog={opts.onOpenCrewWorkLog} />
+            <ChatPane slotKey={SLOT} crewmate={opts.crewmate === false ? undefined : { ...radar, starters: opts.starters }} onOpenCrewWorkLog={opts.onOpenCrewWorkLog} />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
@@ -337,4 +337,55 @@ describe("a mate's chat", () => {
     const view = renderPane({ crewmate: false })
     await waitFor(() => expect(view.getByPlaceholderText(/Message Kiro Crew/)).toBeInTheDocument())
   })
+})
+
+/* Its conversation starters: buttons in the empty chat, one per prompt, and a press
+ * sends that prompt. A chat that has anything in it, a Bot with none, and a chat that
+ * is not a Bot's draw none. */
+describe("a Bot's conversation starters", () => {
+  const STARTERS = ['Summarize my inbox', 'Plan my week']
+  beforeEach(() => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 })
+  })
+
+  it('stand in its empty chat as one button per prompt', async () => {
+    const view = renderPane({ starters: STARTERS })
+    const group = await view.findByRole('group', { name: 'Conversation starters' })
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(STARTERS)
+  })
+
+  it('stand one per row, a stack rather than a row of peers, even when every prompt is short', async () => {
+    const view = renderPane({ starters: ['Help', 'Status', 'Plan', 'Summarize'] })
+    const group = await view.findByRole('group', { name: 'Conversation starters' })
+    expect(within(group).getAllByRole('button')).toHaveLength(4)
+    expect(group.className).toMatch(/\bflex-col\b/)
+    expect(group.className).not.toMatch(/\bflex-wrap\b/)
+  })
+
+  it('send the pressed prompt as the first message and leave the chat once it is said', async () => {
+    const view = renderPane({ starters: STARTERS })
+    fireEvent.click(await view.findByRole('button', { name: 'Plan my week' }))
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect((api.sendChat as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBe('Plan my week')
+    await waitFor(() => expect(view.queryByTestId('crewmate-starters')).toBeNull())
+  })
+
+  it('stay out of a chat that has something in it', async () => {
+    ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [{ role: 'assistant', content: 'Hello, I am Radar.', cls: '', ts: '2026-09-22T06:00:09Z' }],
+      running: false, has_more: false, total: 1,
+    })
+    const view = renderPane({ starters: STARTERS })
+    await view.findByText('Hello, I am Radar.')
+    expect(view.queryByTestId('crewmate-starters')).toBeNull()
+  })
+
+  it.each([{ starters: undefined }, { starters: [] }, { crewmate: false, starters: STARTERS }])(
+    'draw nothing for a Bot with none or a chat that is not a Bot\'s (%o)',
+    async (opts) => {
+      const view = renderPane(opts)
+      await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalled())
+      expect(view.queryByTestId('crewmate-starters')).toBeNull()
+    },
+  )
 })

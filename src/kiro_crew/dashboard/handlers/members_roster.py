@@ -480,6 +480,12 @@ async def _build_roster(state: DashboardState | None) -> BoardAnswer:
                 # Whether a Dashboard-tab button may send its reply in one click
                 # (card_send); the Profile tab's switch reads and writes it.
                 "dashboard_card_send": bool(agent_cfg.dashboard_card_send),
+                # The prompts the Bot's empty chat offers as buttons. Masked like the
+                # other free text, but a masked value is left out rather than shown as
+                # the sentinel, because a press sends the text.
+                "starters": [
+                    s for s in getattr(agent_cfg, "starters", None) or [] if _roster_mask(s) == s
+                ],
                 # Whether the PERSON created this crewmate: the crew manager's
                 # own origin (`source == "kirocrew"`) AND a member id, which is
                 # assigned when its member memory is allocated. Both create

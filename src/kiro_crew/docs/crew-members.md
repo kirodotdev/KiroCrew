@@ -214,6 +214,23 @@ may ask you for tools its worker needs. Turning it on only lets it ask: each too
 still needs your approval on its own card. If you decline, it does not ask again,
 and you add what its worker needs in its advanced settings.
 
+### Conversation starters
+
+A Bot's empty chat can offer up to four prompts as buttons, so a new person sees
+what the Bot is for. Open the Bot's **Profile**, then **Settings**, and type
+one prompt per line under **Conversation starters**. Pressing a button sends
+that prompt as the first message. They show only while the chat has nothing in
+it, and a Bot with none shows the empty chat as before.
+
+Each starter is one line of at most 120 characters. A line that is blank, too
+long, repeated, past the fourth, or shaped like a credential is left out, and
+the rest are saved. After the save the box shows only the saved starters, and a
+note under **Save** says how many were saved and lists each line that was left
+out with its reason.
+In `config.json` the same list is `agents.<name>.starters`, and a value there
+that is not a list of text is ignored with a warning in the log. A Bot cannot
+change its own starters, and a `.kirobot` file does not carry them.
+
 ### Its worker
 
 A Bot hands longer work to a **worker** from its own thread: a session it

@@ -79,6 +79,19 @@ _AGENT_UNTRUSTED_TEXT_FIELDS = (
     "telegram_account",
 )
 
+# Agent-record fields that hold a LIST of free text, masked element by element: a
+# value the field mask would change is left out of the list rather than shown as the
+# sentinel, because a press on a conversation starter sends its text. Same ratchet as
+# the tuple above, over the ``list[str]`` fields.
+_AGENT_UNTRUSTED_TEXT_LIST_FIELDS = ("starters",)
+
+
+def _mask_agent_free_text_list(value: object) -> object:
+    """*value* with each item :func:`_mask_agent_free_text` would change left out."""
+    if not isinstance(value, list):
+        return _mask_agent_free_text(value)
+    return [item for item in value if _mask_agent_free_text(item) == item]
+
 
 def _mask_agent_free_text(value: object) -> object:
     """Render ONE agent-record free-text value for the config response.
@@ -253,6 +266,9 @@ def _masked_config_dict(cfg: KiroCrewConfig) -> dict:
             for field_name in _AGENT_UNTRUSTED_TEXT_FIELDS:
                 if field_name in record:
                     record[field_name] = _mask_agent_free_text(record[field_name])
+            for field_name in _AGENT_UNTRUSTED_TEXT_LIST_FIELDS:
+                if field_name in record:
+                    record[field_name] = _mask_agent_free_text_list(record[field_name])
         if removed:
             if masked.get("default_agent") in removed:
                 masked["default_agent"] = _SENSITIVE_MASK

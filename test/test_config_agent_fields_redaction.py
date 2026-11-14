@@ -141,6 +141,23 @@ def test_every_unguarded_str_field_is_in_the_masked_set():
     )
 
 
+def test_every_list_of_text_field_is_masked_item_by_item():
+    """INVARIANT: every ``list[str]`` field of ``KiroCrewAgentConfig`` is in the
+    element-wise masked set, so a new list of free text cannot reach the browser
+    unmasked: the string ratchet above never sees a list."""
+    import dataclasses
+
+    from kiro_crew.dashboard.handlers.core_config_view import _AGENT_UNTRUSTED_TEXT_LIST_FIELDS
+
+    hints = typing.get_type_hints(KiroCrewAgentConfig)
+    list_fields = {
+        f.name
+        for f in dataclasses.fields(KiroCrewAgentConfig)
+        if typing.get_origin(hints[f.name]) is list and str in typing.get_args(hints[f.name])
+    }
+    assert list_fields == set(_AGENT_UNTRUSTED_TEXT_LIST_FIELDS)
+
+
 class TestMaskAgentFreeText:
     def test_credential_shaped_value_is_masked_wholesale(self):
         assert _mask_agent_free_text(_CRED_DESCRIPTION) == _SENSITIVE_MASK
@@ -302,6 +319,30 @@ class TestConfigEndpointWire:
         assert body["agents"]["kirocrew"]["description"] == _SENSITIVE_MASK
         assert body["agents"]["kirocrew"]["triggers"] == _SENSITIVE_MASK
         assert _CRED not in json.dumps(body)
+
+    @pytest.mark.asyncio
+    async def test_get_response_leaves_out_a_credential_shaped_starter(self, tmp_path, monkeypatch):
+        """A hand-edited starter skips the credential check at load, so the view drops it.
+
+        Element by element: the benign starters keep their order and text, and the
+        credential-shaped one is left out rather than shown as the sentinel.
+        """
+        from kiro_crew.dashboard.handlers import core as core_mod
+
+        seed = _seed_config()
+        seed["agents"]["kirocrew"]["starters"] = ["Plan my week", _CRED_DESCRIPTION, "Summarize"]
+        _point_loader_at(tmp_path, monkeypatch, seed)
+        app = web.Application()
+        app.router.add_route("*", "/api/config/kirocrew", core_mod.api_kirocrew_config)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.get("/api/config/kirocrew")
+            assert resp.status == 200
+            text = await resp.text()
+        assert json.loads(text)["agents"]["kirocrew"]["starters"] == ["Plan my week", "Summarize"]
+        assert _CRED not in text
+        # The stored list is untouched; only the browser view leaves the value out.
+        stored = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert stored["agents"]["kirocrew"]["starters"][1] == _CRED_DESCRIPTION
 
     @pytest.mark.asyncio
     async def test_patch_echo_masks_agent_free_text(self, tmp_path, monkeypatch):
