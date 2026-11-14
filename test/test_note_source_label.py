@@ -171,7 +171,7 @@ class TestImmediatePath:
             == held
         )
         slot.task = None
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
         row = _note_row(slot)
         assert "appLabel" not in row["meta"]
 
@@ -269,7 +269,7 @@ class TestDeferredPath:
         # The hold carries the AUTHENTICATED identity, not the body source.
         assert slot._deferred_notes[-1]["source"] == "cron"
         slot.task = None
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
         row = _note_row(slot)
         assert row["meta"]["appLabel"] == "cron"
 
@@ -294,7 +294,7 @@ class TestDeferredPath:
                 slot.task.cancel()
         assert slot._deferred_notes[-1]["source"] == ""
         slot.task = None
-        slot.flush_deferred_notes()
+        slot.flush_deferred_notes(markers_only=False)
         row = _note_row(slot)
         assert "appLabel" not in row["meta"]
 

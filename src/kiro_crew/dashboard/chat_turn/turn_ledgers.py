@@ -192,6 +192,7 @@ def _queue_recovery(
     # names it the way the first queueing did (tracing/workflows.py).
     from kiro_crew.tracing import workflows as trace_workflows
 
+    turn._queued_own_recovery = True
     _recovery_qid = slot.queue_insert(
         index,
         content,
