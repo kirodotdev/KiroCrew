@@ -20812,6 +20812,7 @@
         "starting": "正在启动…",
         "step_progress": "Step {{current}} of {{total}}",
         "stop": "Stop",
+        "cloud_stopped_note": "你已停止这个 Crew 的云端机器。选择 Start 即可恢复。",
         "stop_crew": "Stop {{name}}",
         "stop_waiting": "停止等待",
         "stopping": "正在停止…",

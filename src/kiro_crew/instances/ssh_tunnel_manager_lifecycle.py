@@ -35,6 +35,7 @@ from kiro_crew.instances.registry import (
     _UNALLOCATED_PORT,
     Instance,
     InstanceDisabledError,
+    InstanceStoppedError,
     ancestor_ids,
     descendant_ids,
     is_headless_provisioner,
@@ -169,7 +170,9 @@ async def connect(
     the browser could.
 
     A disabled crew raises :class:`InstanceDisabledError` and spawns nothing,
-    and so does a chained crew with a disabled crew anywhere up its chain.
+    and so does a chained crew with a disabled crew anywhere up its chain. A
+    crew whose cloud machine was stopped raises its subclass,
+    :class:`InstanceStoppedError`.
     The check reads the record under the same lock the disabling write is
     made under (see :meth:`reconfigure`), so a connect racing a disable either
     finishes first and is torn down by it, or starts after and is refused.
@@ -206,6 +209,8 @@ async def connect(
             )
         if inst.disabled:
             raise InstanceDisabledError(f"crew {instance_id!r} is disabled")
+        if inst.cloud_stopped:
+            raise InstanceStoppedError(f"crew {instance_id!r} is stopped")
         if inst.via_instance_id:
             # A chained crew's forward dials its parent's host, so a disabled
             # crew anywhere up the chain keeps this one closed as well.

@@ -21860,6 +21860,7 @@
         "starting": "Iniciando…",
         "step_progress": "Paso {{current}} de {{total}}",
         "stop": "Detener",
+        "cloud_stopped_note": "Detuviste la máquina en la nube de este crew. Elige Iniciar para recuperarlo.",
         "stop_crew": "Detener {{name}}",
         "stop_waiting": "Dejar de esperar",
         "stopping": "Deteniendo…",

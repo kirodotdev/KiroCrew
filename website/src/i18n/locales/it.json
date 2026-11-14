@@ -21860,6 +21860,7 @@
         "starting": "Avvio in corso…",
         "step_progress": "Passaggio {{current}} di {{total}}",
         "stop": "Ferma",
+        "cloud_stopped_note": "Hai fermato la macchina cloud di questa crew. Scegli Accendi per riattivarla.",
         "stop_crew": "Ferma {{name}}",
         "stop_waiting": "Smetti di aspettare",
         "stopping": "Arresto in corso…",

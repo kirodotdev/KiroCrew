@@ -21860,6 +21860,7 @@
         "starting": "Démarrage…",
         "step_progress": "Étape {{current}} sur {{total}}",
         "stop": "Arrêter",
+        "cloud_stopped_note": "Tu as arrêté la machine cloud de cette crew. Choisis Démarrer pour la relancer.",
         "stop_crew": "Arrêter {{name}}",
         "stop_waiting": "Arrêter d’attendre",
         "stopping": "Arrêt…",

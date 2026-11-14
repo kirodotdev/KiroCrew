@@ -20812,6 +20812,7 @@
         "starting": "起動中…",
         "step_progress": "ステップ {{current}}/{{total}}",
         "stop": "停止",
+        "cloud_stopped_note": "このクルーのクラウドマシンを停止しました。再開するには「開始」を選んでください。",
         "stop_crew": "{{name}} を停止",
         "stop_waiting": "待機をやめる",
         "stopping": "停止中…",

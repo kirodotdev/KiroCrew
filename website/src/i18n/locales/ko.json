@@ -20812,6 +20812,7 @@
         "starting": "시작 중…",
         "step_progress": "{{total}}단계 중 {{current}}단계",
         "stop": "중지",
+        "cloud_stopped_note": "이 크루의 클라우드 머신을 중지했습니다. 다시 사용하려면 '켜기'를 선택하세요.",
         "stop_crew": "{{name}} 중지",
         "stop_waiting": "대기 중지",
         "stopping": "중지 중…",

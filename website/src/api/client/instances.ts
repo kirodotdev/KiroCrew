@@ -84,6 +84,9 @@ export interface InstanceView {
   was_connected: boolean
   /** The owner turned this crew off: no tunnel is opened for it until enabled. */
   disabled?: boolean
+  /** The owner stopped this crew's EC2 instance from the panel: no tunnel is
+   *  opened for it until the panel's Start clears this. */
+  cloud_stopped?: boolean
   status: InstanceTunnelStatus
 }
 
