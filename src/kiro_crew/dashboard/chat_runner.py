@@ -965,6 +965,13 @@ async def _run_chat(
     # turn sends no prompt and reads the session's pending turn instead. Set only
     # by ``agent_started._on_agent_turn``, with an empty *message*.
     _agent_started: bool = False,
+    # The actor that the person-scoped paths read: the refusal-fallback retry,
+    # the per-turn ``model.route`` decision, the WakaTime heartbeat and the
+    # budget choice of fair admission (``shared_crew.turn_gate.turn_budget``). Empty
+    # means the turn's actor. A machine producer that queues into the person's
+    # session names itself in ``_turn_actor`` and passes ``"user"`` here, so
+    # its turn takes these paths as a person's turn does.
+    _person_paths_actor: str = "",
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -1003,6 +1010,7 @@ async def _run_chat(
         _card_origin=_card_origin,
         _prompt_on_channel=_prompt_on_channel,
         _turn_actor=_turn_actor,
+        _person_paths_actor=_person_paths_actor,
         regenerate_hint=regenerate_hint,
         _on_consumed=_on_consumed,
         _on_irreversibly_consumed=_on_irreversibly_consumed,

@@ -434,7 +434,11 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
         return []
     # Local import: session_control reaches this module through state, so taking
     # the key at module level would close an import cycle.
-    from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
+    from kiro_crew.dashboard.chat_delivery import (
+        PERSON_PATHS_ACTOR_META_KEY,
+        QUEUE_PRODUCER_META_KEY,
+        TURN_ACTOR_META_KEY,
+    )
     from kiro_crew.dashboard.chat_utils_injected_rows import COMPOSER_SEND_META
     from kiro_crew.dashboard.session_control import (
         CHANNEL_RECIPIENT_META_KEY,
@@ -535,6 +539,13 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
             # sub-agent hold (``releases_past_subagent_hold``), a path that never
             # runs the drain's containment sweep. Restored, a composer send is
             # an ordinary card that waits for the user like every other one.
+            #
+            # The QUEUE PRODUCER mark goes too: it exempts the entry from
+            # counting as the person's intervention in a pending recovery, so
+            # an edited mark would let an announced action dispatch past a
+            # restored message. Without it the entry counts as an intervention.
+            # The PERSON PATHS actor goes with it, since a restored entry
+            # carries no actor for it to differ from.
             entry["meta"] = {
                 k: v
                 for k, v in meta.items()
@@ -545,6 +556,8 @@ def sanitize_restored_queue(raw: object) -> list[dict[str, Any]]:
                     SEND_ORIGIN_META_KEY,
                     CHANNEL_RECIPIENT_META_KEY,
                     COMPOSER_SEND_META,
+                    QUEUE_PRODUCER_META_KEY,
+                    PERSON_PATHS_ACTOR_META_KEY,
                 )
             }
         try:
