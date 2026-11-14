@@ -24,6 +24,7 @@ import urllib.parse
 import urllib.request
 
 from kiro_crew.app_lifecycle_client import _socket_unavailable
+from kiro_crew.asset_downloader import network_failure_cause
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.urls import dashboard_socket_path
 from kiro_crew.loopback_http import unix_socket_urlopen
@@ -155,7 +156,8 @@ def forget_via_gateway(key: str, *, expect_value_json: str, superseded_by: str |
                 "the gateway's dashboard socket is not reachable from here; delete the "
                 "key from the dashboard Memory page instead. Nothing was forgotten."
             ) from exc
-        raise ForgetRefused(f"could not reach the gateway: {exc}") from exc
+        why = network_failure_cause(exc) or exc
+        raise ForgetRefused(f"could not reach the gateway: {why}") from exc
     credential = minted.get("token") if isinstance(minted, dict) else None
     if not isinstance(credential, str) or not credential:
         raise ForgetRefused("the gateway returned an empty local credential")
@@ -191,8 +193,9 @@ def forget_via_gateway(key: str, *, expect_value_json: str, superseded_by: str |
             "the gateway returned a malformed response; check `kirocrew memory list`"
         ) from exc
     except OSError as exc:
+        why = network_failure_cause(exc) or exc
         raise ForgetRefused(
-            f"the gateway stopped answering ({exc}); check `kirocrew memory list`"
+            f"the gateway stopped answering ({why}); check `kirocrew memory list`"
         ) from exc
     if not (isinstance(result, dict) and result.get("ok") is True):
         raise ForgetRefused("the gateway did not confirm the delete; check `kirocrew memory list`")
