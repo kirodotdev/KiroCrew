@@ -56,6 +56,7 @@ import {
   fmtList,
   fmtNumber,
   fmtPercent,
+  fmtPercentFloor,
   fmtRelative,
   fmtTime,
   fmtUnit,
@@ -141,6 +142,21 @@ describe('fmtPercent', () => {
         new Intl.NumberFormat('de', { style: 'percent', maximumFractionDigits: 0 }).format(0.4567),
       )
     })
+  })
+})
+
+describe('fmtPercentFloor', () => {
+  it('cuts down to a tenth without float noise pulling an exact tenth under', () => {
+    expect(fmtPercentFloor(0.9996)).toBe('99.9%')
+    expect(fmtPercentFloor(0.8996)).toBe('89.9%')
+    // 167 / 1000 is 0.16699999… as a double; a bare trunc prints 16.6%.
+    expect(fmtPercentFloor(167 / 1000 * 100 / 100)).toBe('16.7%')
+    for (let used = 0; used <= 10_000; used++) {
+      const exact = new Intl.NumberFormat('en', { style: 'percent', maximumFractionDigits: 1 })
+        .format(Math.floor(used * 1000 / 10_000) / 1000)
+      expect(fmtPercentFloor(used / 10_000 * 100 / 100)).toBe(exact)
+    }
+    expect(fmtPercentFloor(NaN)).toBe('—')
   })
 })
 

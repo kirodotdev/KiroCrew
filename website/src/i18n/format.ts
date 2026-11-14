@@ -180,6 +180,21 @@ export function fmtPercent(ratio: number, options?: NumberOptions): string {
   return fmtNumber(ratio, { style: 'percent', maximumFractionDigits: 0, ...options })
 }
 
+/**
+ * A ratio as a percentage cut DOWN to `digits` decimals, so it never shows a
+ * line (90%, 100%) the share has not reached: 9,996 of 10,000 reads `99.9%`.
+ *
+ * Snaps float noise first. `167 / 1000` arrives as 0.16699999…, and a bare
+ * `roundingMode: 'trunc'` would print `16.6%`; rounding to a millionth of the
+ * last printed step before flooring keeps it `16.7%`.
+ */
+export function fmtPercentFloor(ratio: number, digits = 1): string {
+  if (!Number.isFinite(ratio)) return '—'
+  const step = 10 ** (digits + 2)
+  const floored = Math.floor(Math.round(ratio * step * 1e6) / 1e6) / step
+  return fmtPercent(floored, { maximumFractionDigits: digits })
+}
+
 /** Money. `currency` is an ISO 4217 code; placement and symbol are the locale's. */
 export function fmtCurrency(value: number, currency = 'USD', options?: NumberOptions): string {
   if (!Number.isFinite(value)) return '—'
