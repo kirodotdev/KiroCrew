@@ -9,15 +9,16 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_claude_inline_settings``,
+Instance fields written: ``_claude_held_asks``, ``_claude_inline_settings``,
 ``_claude_local_settings_excluded``, ``_claude_shipped_restrictions``,
 ``_claude_side_read_denies``, ``claude_mode_pinned_notice``.
 
 Instance fields read: ``_agent_version``, ``_agent_version_read``,
 ``_claude_worker_builtin_tools``, ``_include_memory``,
 ``_mcp_mount_servers``, ``_permission_mode``, ``_session_id``, ``_session_key``,
-``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``, ``_side_read_only``,
-``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_zero_tools``, ``memory_mode``.
+``_session_mcp_cache``, ``_session_mcp_excludes_local``, ``_session_mcp_inline_settings``,
+``_side_read_only``, ``_spec_shell_allowlist``, ``_spec_write_allowlist``, ``_spec_zero_tools``,
+``memory_mode``.
 """
 
 from __future__ import annotations
@@ -446,6 +447,28 @@ async def _prepare_claude_side_read_denies(self: AcpClient) -> None:
     self._claude_side_read_denies = rules
 
 
+async def _prepare_claude_held_asks(self: AcpClient) -> None:
+    """Read a Bot worker session's held-limit asks off the loop, before its envelope.
+
+    ``mate_held_rules.claude_ask_rules`` reads the migration ledger and the
+    session's execution record from disk. Empty on any other session.
+    """
+    from kiro_crew import mate_held_rules
+    from kiro_crew.members import is_crewmate_worker_session
+
+    key = getattr(self, "_session_key", None) or ""
+    if not is_crewmate_worker_session(key):
+        self._claude_held_asks = ()
+        return
+    servers: list[str] = [
+        str(e["name"])
+        for e in getattr(self, "_session_mcp_cache", None) or []
+        if isinstance(e, dict) and isinstance(e.get("name"), str)
+    ]
+    asks = await asyncio.to_thread(mate_held_rules.claude_ask_rules, key, servers)
+    self._claude_held_asks = tuple(asks)
+
+
 def _bridged_server_asks(client: AcpClient) -> list[str]:
     """One ``permissions.ask`` rule per Crew-owned Connection this session's array bridges."""
     session_key = getattr(client, "_session_key", None) or ""
@@ -564,6 +587,19 @@ def _claude_session_meta(self: AcpClient) -> dict[str, Any]:
         # server in the user's own config, the project's ``.mcp.json`` and
         # plugins, once per worker.
         options["strictMcpConfig"] = True
+        # Read off the loop before the envelope is built (_prepare_claude_held_asks).
+        held_asks = getattr(self, "_claude_held_asks", ())
+        if held_asks:
+            # The Bot's limits that its file could not carry: each call they cover
+            # must reach the gate, which asks a person, instead of running unasked.
+            carried_settings = dict(options.get("settings") or {})
+            carried_permissions = dict(carried_settings.get("permissions") or {})
+            ask = list(carried_permissions.get("ask") or [])
+            ask.extend(rule for rule in held_asks if rule not in ask)
+            carried_permissions["ask"] = ask
+            carried_settings["permissions"] = carried_permissions
+            options["settings"] = carried_settings
+            options["allowDangerouslySkipPermissions"] = False
     worker_tools = getattr(self, "_claude_worker_builtin_tools", None)
     if worker_tools is not None:
         # A worker whose crewmate file excludes a native tool keeps only the

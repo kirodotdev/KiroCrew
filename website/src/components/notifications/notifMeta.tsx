@@ -108,6 +108,7 @@ export function notePriority(n: { priority?: string }): Priority {
  *  its English `title`/`body` for every reader with no catalog, and an id these
  *  maps do not hold falls back to them. */
 const SYSTEM_NOTE_TITLE_KEY = {
+  bot_limits_held: 'components.notifications.systemNote.bot_limits_held_title',
   turn_limit: 'components.notifications.systemNote.turn_limit_title',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_title',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_title',
@@ -125,6 +126,7 @@ const SYSTEM_NOTE_TITLE_KEY = {
 } as const
 type SystemNoteId = keyof typeof SYSTEM_NOTE_TITLE_KEY
 const SYSTEM_NOTE_BODY_KEY: Record<SystemNoteId, string> = {
+  bot_limits_held: 'components.notifications.systemNote.bot_limits_held_body',
   turn_limit: 'components.notifications.systemNote.turn_limit_body',
   default_model_applied: 'components.notifications.systemNote.default_model_applied_body',
   default_model_failed: 'components.notifications.systemNote.default_model_failed_body',

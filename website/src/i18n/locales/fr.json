@@ -8699,6 +8699,8 @@
         "yesterday": "Hier"
       },
       "systemNote": {
+        "bot_limits_held_title": "Un Bot demande maintenant avant certaines actions",
+        "bot_limits_held_body": "Certaines limites définies pour {{name}} n’ont pas pu être appliquées telles quelles, alors il te demande avant les actions qu’elles couvrent. Ouvre le Bot pour vérifier ses autorisations.",
         "turn_limit_title": "Conversation en pause : limite de tours",
         "turn_limit_body": "Une conversation {{surface}} a atteint sa limite de tours et est en pause. Réinitialise-la depuis le tableau de bord pour continuer.",
         "default_model_applied_title": "Modèle par défaut appliqué",

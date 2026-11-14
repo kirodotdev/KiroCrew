@@ -1501,7 +1501,20 @@ async def _stream_task(
                 # YOLO mode (global) or channel trust — auto-approve. A
                 # ``gateway --approval yolo`` grant is for dashboard chats only.
                 _yolo = bool(is_yolo and is_yolo()) and safety_override().is_cli_launch is not True
-                if _yolo or (channel.trusted and session_mode_permitted("trust")):
+                from kiro_crew import mate_held_rules
+
+                # A moved Bot's limit its worker could not carry exactly
+                # (``mate_held_rules``): neither YOLO, channel trust nor a trusted
+                # command answers a call it covers; it reaches the card.
+                _held = bool(
+                    await asyncio.to_thread(
+                        mate_held_rules.held_for,
+                        event,
+                        session_key=agent.session_key,
+                        agent=agent.agent_name,
+                    )
+                )
+                if not _held and (_yolo or (channel.trusted and session_mode_permitted("trust"))):
                     approval_outcome = (
                         "auto_approved_yolo" if _yolo else "auto_approved_channel_trust"
                     )
@@ -1548,7 +1561,7 @@ async def _stream_task(
                 )
                 # Non-None past this block only for a matched grant that was declined.
                 _ng_refusal: name_grant.Refusal | None = None
-                if (agent._trusted_commands or agent._trusted_bases) and _cmd:
+                if (agent._trusted_commands or agent._trusted_bases) and _cmd and not _held:
                     matched = _match_trusted_channel_command(_cmd, agent)
                     if matched:
                         # The grant names a PROGRAM; the shell resolves that

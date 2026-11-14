@@ -8281,6 +8281,8 @@
         "yesterday": "어제"
       },
       "systemNote": {
+        "bot_limits_held_title": "Bot이 이제 일부 작업 전에 먼저 묻습니다",
+        "bot_limits_held_body": "{{name}}에 설정한 제한 일부를 그대로 적용할 수 없어서, 그 제한에 해당하는 작업 전에 먼저 물어봅니다. Bot을 열어 권한을 확인하세요.",
         "turn_limit_title": "대화 일시중지됨: 턴 한도",
         "turn_limit_body": "{{surface}} 대화가 턴 한도에 도달해 일시중지되었습니다. 계속하려면 대시보드에서 재설정하세요.",
         "default_model_applied_title": "기본 모델 적용됨",

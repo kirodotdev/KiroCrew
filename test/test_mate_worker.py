@@ -278,6 +278,60 @@ class TestMateFileForMember:
         revocations.record("pixel", [], [granted])
         assert granted in mate_worker.resolve_worker_spec(dict(BASE), "pixel")["allowedTools"]
 
+    def test_a_held_limit_takes_away_the_pre_approvals_of_the_capability_it_covers(
+        self, monkeypatch, tmp_path
+    ):
+        """A pre-approved call never asks, so Crew's gate could not hold it for a person."""
+        from kiro_crew.config import paths
+
+        self._home(monkeypatch, tmp_path)
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+        base = dict(
+            BASE,
+            allowedTools=[
+                *BASE["allowedTools"],
+                "web_fetch",
+                "@builtin/web_fetch",
+                "@builtin",
+                "*",
+            ],
+        )
+        rules = [{"text": "deny web_fetch", "capability": "web_fetch"}]
+        (paths.mate_agents_dir().parent / "migrated.json").write_text(
+            json.dumps({"held_rules": {"pixel": {"member_id": "pixel", "rules": rules}}}),
+            encoding="utf-8",
+        )
+
+        allowed = mate_worker.resolve_worker_spec(dict(base), "pixel")["allowedTools"]
+        assert "web_fetch" not in allowed and "@builtin/web_fetch" not in allowed
+        # A blanket approval would pre-approve the held capability too.
+        assert "@builtin" not in allowed and "*" not in allowed
+        assert "@kirocrew-core" in allowed and "@jira/search" in allowed
+        other = mate_worker.resolve_worker_spec(dict(base), "")["allowedTools"]
+        assert "web_fetch" in other
+
+    def test_a_held_limit_takes_away_the_template_allow_rules_for_its_capability(
+        self, monkeypatch, tmp_path
+    ):
+        """An authored ``allow`` rule runs the call inside KAS with no permission request."""
+        from kiro_crew.config import paths
+
+        self._home(monkeypatch, tmp_path)
+        monkeypatch.setattr(mate_worker, "mate_file_for_member", lambda member_id: "pixel")
+        fetch = {"capability": "web_fetch", "match": ["https://a.example/*"], "effect": "allow"}
+        search = {"capability": "web_search", "effect": "allow"}
+        base = dict(BASE, permissions={"rules": [fetch, search]})
+        rules = [{"text": "deny web_fetch", "capability": "web_fetch"}]
+        (paths.mate_agents_dir().parent / "migrated.json").write_text(
+            json.dumps({"held_rules": {"pixel": {"member_id": "pixel", "rules": rules}}}),
+            encoding="utf-8",
+        )
+
+        held = mate_worker.resolve_worker_spec(dict(base), "pixel")["permissions"]["rules"]
+        assert fetch not in held and search in held
+        other = mate_worker.resolve_worker_spec(dict(base), "")["permissions"]["rules"]
+        assert fetch in other
+
     def test_an_unreadable_crewmate_file_refuses_the_worker(self, monkeypatch, tmp_path):
         self._home(monkeypatch, tmp_path)
         from kiro_crew.config import paths

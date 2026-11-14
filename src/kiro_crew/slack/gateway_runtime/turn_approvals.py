@@ -176,6 +176,17 @@ def _interactive_approval(
         _child_grant_eligible = (not _child_lf) or (
             getattr(event, "child_unconditional_grant_eligible", False) is True
         )
+        # A call under a moved Bot's limit its worker could not carry exactly
+        # (``mate_held_rules``): marked by the unattended gate, or found here for
+        # the parent session (a sub-agent of the Bot's worker). No shortcut below
+        # approves it; only the person's prompt at the end can.
+        from kiro_crew import mate_held_rules
+
+        _held_call = mate_held_rules.call_is_held() or bool(
+            await asyncio.to_thread(mate_held_rules.held_for, event, session_key=parent_session_key)
+        )
+        if _held_call:
+            _child_grant_eligible = False
         # A tool request's id is the backend's JSON-RPC id, counted per connection,
         # so two runtimes ask with the same one (each sub-agent's first is ``1``).
         # Every background source shares the dashboard's approval registry, so the
@@ -224,7 +235,7 @@ def _interactive_approval(
             approval_slot = ""
 
         # Per-source auto-approve (e.g. cron, taskrunner, subagent)
-        if source in self._cfg.hooks.get("auto_approve_sources", []):
+        if source in self._cfg.hooks.get("auto_approve_sources", []) and not _held_call:
             if not _child_grant_eligible:
                 # The operator explicitly configured this source to run
                 # UNATTENDED — nobody is watching the interactive window,
@@ -613,10 +624,10 @@ def _interactive_approval(
                     else lambda cause: on_host_decision(request_id, cause)
                 ),
             )
-        if _child_lf:
+        if _child_lf or _held_call:
             # No human surface answered and none of the (skipped)
-            # shortcuts may speak for an agent-authored request:
-            # fail closed.
+            # shortcuts may speak for an agent-authored request, or for a
+            # call a held Bot limit covers: fail closed.
             return _by_host(False)
         return _by_host(True)  # no UI → auto-approve
 

@@ -4879,12 +4879,70 @@ prompt, servers the base lacks with their approvals and selectors, skills, and
 its restrictions. Before any write, `plan_move` merges the planned file as a
 worker session would (`differences`; `dry_run` is the same as one sentence)
 and sorts what differs (`docs/decisions/2026-10-27-every-used-crewmate-moves-to-the-conductor.md`).
-A **loosening** keeps the Bot where it is: a grant the worker would gain
-or a switched-off server it would start. A `hooks` entry it would not run or a
-`permissions` / `toolsSettings` restriction it would not keep does not: the Bot
-moves as it is, no tool is withheld for it, and its one notice names each restriction
-that no longer applies (`dropped_restrictions`, `restrictions_notice`); the governance
-ceiling still governs the merged worker spec. The two loosenings are cured
+A **loosening** keeps the Bot where it is: a grant the worker would gain or a
+switched-off server it would start. A `hooks` entry, `permissions` rule (not
+allow-only) or `toolsSettings` entry the source adds to the base is never a reason
+to stay and is never dropped (`mate_restriction_carry.carry_restrictions`, `mate_held_rules.split_policy`):
+each one the worker keeps exactly is written into the Bot's file and runs on KAS
+(`mate_spec_policy.layer_policy`); each other one, and every one of a Bot whose
+worker backend applies none of them (`applies_restrictions`), is **held** instead,
+never written in a form that would stop the worker from starting. A held
+restriction is recorded with the capability it speaks about (`migrated.json`
+`held_rules.<name>`, keyed by the Bot's `member_id`, written before the Bot moves;
+an unrecordable one keeps it where it is), and on KAS an `ask` rule for that
+capability is carried in its place so KAS sends such calls to Crew. On claude, a
+Bot's worker session carries a `permissions.ask` rule for each built-in a held
+capability covers, and `mcp__<server>` for each of its servers under a held `mcp`
+limit (`mate_held_rules.claude_ask_rules`, read off the event loop by
+`acp/client_claude_session._prepare_claude_held_asks` before each envelope and sent by
+`acp/client_claude_session._claude_session_meta`), since claude's `default` mode
+runs in-project Read, Grep and Glob without a permission request. A held hook on an
+event that sees no call before it runs (anything but `preToolUse`, read from an
+array-form entry's `trigger`) is recorded and
+named in the notice, but no call falls under it (`mate_held_rules.NO_CALL`). The
+`ask` rules the held restrictions need are written before any carried restriction,
+so a full policy holds a carried rule rather than drop a needed ask. A held
+capability also loses the Bot file's allow rules for it, which makes room; an ask
+that still cannot land leaves it with no ask and no allow, so KAS sends the call to
+Crew's gate. A held
+restriction applies to every identity the session is known by (its transcript
+record, the identity this process vouched for, the Bot its agent name resolves to),
+so a rewritten transcript cannot hide one. The worker spec a moved Bot's session
+runs on keeps no pre-approval (`allowedTools`, a server's `autoApprove`) of a
+capability its held limits cover, nor any blanket one (`*`, a glob, `@builtin`)
+that would cover it, nor a `permissions` allow rule for it from the Bot's file or the
+template (`mate_held_rules.strip_held_approvals`, applied
+in `mate_worker.resolve_worker_spec` beside the owner's revocations), so on
+kiro-cli and KAS such a call sends a permission request that Crew's gate holds. A row
+this move gives a `member_id` has its held restrictions recorded again under that
+id before its repoint publishes. Crew's
+approval gates then never approve a call it covers without a person
+(`mate_held_rules.held_for`): the dashboard decision treats it like a card's turn
+(no hook auto-approve, trusted pattern, trust-reads, session trust, scoped grant or
+YOLO; the card shows), and the unattended path (`llm_helpers_parts.tool_approval`)
+skips the hook auto-approve rung, asks the caller's approver inside `held_call` (an
+`auto` cron's `auto_job_approver` then falls back to its card) and refuses when the
+surface has no approver, a READ_ONLY turn (a Side Chat) included. The other approval ladders do the same: the native Slack
+ladder (`slack/handler_runtime/permission_ladder.py`), the channel transports'
+`messaging.driver.TurnDriver` (which asks its decider inside `held_call`), agent channels (`channel.py`), the shared ladder
+`tool_permission.settle` (sub-agents, the task runner) and the background approver
+(`slack/gateway_runtime/turn_approvals._interactive_approval`) skip every
+auto-approve rung for a held call and ask a person, or refuse with no one to ask. A
+call is placed under a capability by the tool the harness stamped on it
+(`toolName`, KAS's `toolId`, claude's built-in; a qualified id such as
+`claude#WebFetch` is read under the kiro-cli names `agent_sdk.spec_hooks.spec_hook_tool_names`
+gives it) and its ACP kind; a `fetch` call
+whose tool was not told falls under `web_search` as well as `web_fetch`. A
+call whose capability cannot be told falls under every
+held restriction; every other call behaves as before. The governance ceiling still
+governs the merged worker spec. A Bot an earlier release moved without its old
+agent's restrictions gets the same carry at startup
+(`mate_policy_repair.restore_dropped_policy`, run from `migrate_existing_crewmates`
+before the moves). A Bot with a held restriction owes one notice in its own chat
+(`mate_upgrade_notice.mark_policy_owed`, `upgrade_notice_policy`, delivered after a
+moved notice still owed) and one bell note linking to its page
+(`mate_thread_wakes._notify_held`, `i18n` id `bot_limits_held`); a repaired Bot is
+checked once (`migrated.json` `policy_checked`). The two loosenings are cured
 first: a server the source switched off is written `{"disabled": true}`, and a
 grant the worker would gain is taken out of the file (`_strip_grants`), so
 nothing the old agent lacked is ever granted; the user gets it only through
@@ -4925,9 +4983,8 @@ governed (its `file://` prompt does not resolve) still has its stated limits
 read raw, and the default template's file never loosens them
 (`_fallback_keeping_limits`): a server it switched off is written
 `{"disabled": true}`, a tool it excludes or disables goes into
-`excludedTools`, and a grant it never had is taken out. A hook or a
-`permissions` / `toolsSettings` restriction the file cannot carry moves with it
-and is named in its notice. Governance applies as before: the source is read
+`excludedTools`, and a grant it never had is taken out. Its hooks and
+`permissions` / `toolsSettings` restrictions are carried or held as above. Governance applies as before: the source is read
 governed, and the worker session still passes POLICY ∩ PROFILE. A Bot
 whose id is also a user-level agent's name is moved only when that agent is its
 own private copy (a fork whose lineage is private to it and that its binding runs,

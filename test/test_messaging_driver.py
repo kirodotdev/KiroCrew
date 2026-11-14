@@ -634,6 +634,32 @@ class TestApprovalLadder:
         _run(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=decider)
         assert p.approved == ["rq1"]
 
+    @pytest.mark.parametrize("held", [True, False])
+    def test_a_held_bot_limit_asks_the_decider_under_auto(self, monkeypatch, held):
+        """A call under a moved Bot's held limit is never auto-approved (``mate_held_rules``)."""
+        from kiro_crew import mate_held_rules
+
+        monkeypatch.setattr(
+            mate_held_rules, "held_for", lambda *a, **k: ["deny shell"] if held else []
+        )
+        asked: list = []
+        seen: list = []
+
+        async def decider(event):
+            asked.append(event.request_id)
+            seen.append(mate_held_rules.call_is_held())
+            return False
+
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script())
+        _run(p, r, approval_mode=APPROVAL_AUTO, decider=decider)
+        if held:
+            # Marked held, so YOLO or an auto source in the decider cannot answer it.
+            assert asked == ["rq1"] and p.approved == [] and p.rejected == ["rq1"]
+            assert seen == [True]
+        else:
+            assert asked == [] and p.approved == ["rq1"]
+
 
 class _SteerRecordingProvider(_ScriptedProvider):
     """A provider that can be steered; records every wire call in order."""
