@@ -1172,7 +1172,9 @@ decides what an operator may do about it. A superseded default still wins, so it
 may be a deliberate choice and must not be rewritten. A coerced value cannot win,
 so there is nothing to preserve — which makes removing it unambiguously safe and
 makes affirming it meaningless, and `--keep` refuses it by name rather than
-promising a setting that never takes effect. Left in place it is inert bytes that
+promising a setting that never takes effect. When the operator named the key, that
+refusal is printed on stderr (the exit code stays 0, so a script that passes keys
+keeps working); a bare `--keep` still lists it on stdout. Left in place it is inert bytes that
 cost a warning on every load, forever, because a load never writes.
 
 One entry today: `stt.provider`. Its retired values (`whisper`, `mlx`, `parakeet`,

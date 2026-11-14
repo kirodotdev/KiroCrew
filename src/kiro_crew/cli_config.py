@@ -755,7 +755,8 @@ def _defaults_cmd(args: argparse.Namespace) -> None:
         for centry, stored in coerced:
             print(
                 f"⚠️  {centry.dotted_key} ({stored!r}) cannot be kept — "
-                f"the loader replaces it. Use --adopt to drop it."
+                f"the loader replaces it. Use --adopt to drop it.",
+                file=sys.stderr if wanted else sys.stdout,
             )
         coerced = []
         if not drifted:
