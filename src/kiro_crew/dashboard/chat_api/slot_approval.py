@@ -1227,6 +1227,12 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     # and the resolved outcome MUST land on the OWNER slot — the one whose
     # session loop consumes the future and gates subsequent tools — or the trust
     # opt-in silently fails on the running session while the UI reports success.
+    if request_id and isinstance(request_id, (list, dict)):
+        # A non-empty one is unhashable and would raise in the lookups below; an
+        # empty one stays the implicit single-pending pick it has always been.
+        return web.json_response(
+            {"error": "invalid approval target", "code": "invalid_approval_target"}, status=400
+        )
     owner = slot
     if strict_owner is not None:
         # The strict check above already chose the owner by the card's mid:
