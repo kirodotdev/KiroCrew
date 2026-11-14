@@ -492,3 +492,23 @@ class TestSpendUnit:
         out = usage_mod.cost_breakdown(7)
         assert out.get("unit") == "usd"
         assert out.get("credits") == pytest.approx(0.25)
+
+
+def test_one_claude_code_model_is_one_row_across_its_id_migration(store):
+    """Rows written before and after a model-id migration name one model.
+
+    The Daily History and the stacked chart canonicalise the stored id per
+    provider; the Spend tab split the same model into two rows of half the cost.
+    """
+    from kiro_crew import model_registry
+
+    canon = model_registry.canonicalize_for_provider("opus", "claude_code")
+    assert canon != "opus"
+    rows = []
+    for mdl in ("opus", canon):
+        row = _dollar_row(slot="chat-1-1700000000", cost=1.0, model=mdl)
+        row["provider"] = "claude_code"
+        rows.append(row)
+    store(rows)
+    out = usage_mod.cost_breakdown(7)
+    assert [(r.get("name"), r.get("credits")) for r in out.get("by_model", [])] == [(canon, 2.0)]
