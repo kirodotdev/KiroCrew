@@ -5,6 +5,8 @@
  */
 
 import { withDeadline } from '../../lib/withDeadline'
+import { isLookPreviewFrame } from '../../utils/lookPreview'
+import { lookPreviewSlotEnvironment } from '../../utils/lookPreviewFixtures'
 import type { ClientTransport } from './transport'
 import type {
   RemoteDirListing,
@@ -163,7 +165,7 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** Which Session Environment this slot's session runs on (`profile: null` =
      *  this machine) plus the configured profiles to choose from. Owner-only. */
     chatSlotEnvironment: (slot: string) =>
-      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(jSlotEnvironment) as Promise<SlotEnvironment>,
+      isLookPreviewFrame() ? Promise.resolve(lookPreviewSlotEnvironment()) : get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment').then(jSlotEnvironment) as Promise<SlotEnvironment>,
     /** Read-only view of a REMOTE session's workspace: list a directory or read a
      *  file, relative to the profile's working directory. Owner-only. */
     chatSlotEnvironmentList: (slot: string, path: string) =>
