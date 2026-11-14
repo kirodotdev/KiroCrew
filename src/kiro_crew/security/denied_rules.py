@@ -94,6 +94,11 @@ _LEGACY_RULE_ID_BY_PATTERN: dict[str, str] = {
     # against an older catalog pins; the row itself is anchored to the command
     # token (``_NETCAT_EXEC_PATTERN``) and stays force-pinnable under that pin.
     "nc -e.*": "reverse-shell-nc",
+    # The three ``pipe-to-shell`` rows before the shell's name ended on a word
+    # boundary; a policy written against that catalog pins these spellings.
+    "curl .* \\| bash": "pipe-to-shell-curl-bash",
+    "curl .* \\| sh": "pipe-to-shell-curl-sh",
+    "wget .* \\| bash": "pipe-to-shell-wget-bash",
     # Prior spellings of the two interpreter-payload rows, with ``(?:\w+\.)?`` before
     # their call names; a policy written against an older catalog pins them.
     (
