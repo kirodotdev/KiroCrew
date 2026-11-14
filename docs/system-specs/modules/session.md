@@ -176,11 +176,11 @@ repeated focus frames stay cheap. A return while the thread runs a turn
 waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
-An Ultra Mode root (a root chat running a conductor) is eligible on the same
+A conductor mode root (a root chat running a conductor) is eligible on the same
 rules as a Bot thread, trigger included: a switch to another chat, from the
 sidebar or to another split-view pane, leaves it as a page hide does, because
 the owner's attention left it. Off the chat routes (Settings and every other
-page) the dashboard reports an Ultra Mode root as no chat, though `activeSlot`
+page) the dashboard reports a conductor mode root as no chat, though `activeSlot`
 keeps it, and re-announces it when a route change enters or leaves the chat
 routes, so a reveal on Settings is not a return. Its workers and other chats
 are not eligible; a plain chat never gets a brief. Any thread that owns a work ledger (a conductor
@@ -212,7 +212,7 @@ Otherwise the gateway writes the welcome itself (`warm_task_brief_welcome.py`,
 RFC section 3.11); no model writes any of it and no background model call is
 made. Before the first GitHub read the slot's `preparing` flag goes up, so a
 pending reply bubble shows the caption in the place the welcome lands, in both
-the Ultra Mode chat and the Bot pane (`PreparingReplyBubble`); the finished
+the conductor mode chat and the Bot pane (`PreparingReplyBubble`); the finished
 message posts while the flag is still up and replaces it in place. The caption
 is built (`warm_task_brief_checking.py`) from what the welcome is about to read:
 the non-zero counts of pull requests it will read on GitHub, its work items
@@ -237,7 +237,7 @@ in process for 15 minutes, and one welcome spends at most 10 seconds on live
 reads (`LIVE_READ_TOTAL_SECS`); a PR still being read at the limit is
 `checked: false` with `not_checked_since`. Each good read is also recorded once
 as `object/observed` (producer `warm_brief`) in the thread's own crew log unit,
-which the `objects` slot fold keeps for the Ultra Mode Board (`pr_facts`).
+which the `objects` slot fold keeps for the conductor mode Board (`pr_facts`).
 
 **The four parts.** The welcome is short, plain markdown in the owner's
 language (the script of their last three genuine messages):
@@ -541,17 +541,17 @@ cleanup does not read durable session metadata. Tab close retires its nudge loop
 before other asynchronous work. After the last consumer and provider stop, cleanup
 releases only the captured identity, preserving any replacement session carrier.
 
-**Ultra Mode** has no field of its own. It is a chat on a conductor template
-(`kiro_crew/crew_mode.py`): a chat is in Ultra Mode exactly when it is a root
+**Conductor mode** has no field of its own. It is a chat on a conductor template
+(`kiro_crew/crew_mode.py`): a chat is in conductor mode exactly when it is a root
 session on a conductor template, in the `template` namespace. Every conductor is Crew
 Mode: `crew_mode.conductor_agents` is the one set, every
-shipped conductor (the Ultra Mode conductor, team lead, pipeline, security and ledger
+shipped conductor (the conductor of conductor mode, team lead, pipeline, security and ledger
 conductors) plus the configured `agent.crew_mode_agent` and `CONDUCTOR_ALIASES`. A
-chat on the agent its own stamp names is Ultra Mode too (`crew_mode.runs_crew_mode`):
+chat on the agent its own stamp names is conductor mode too (`crew_mode.runs_crew_mode`):
 the stamp (`crew_mode_agent`, on the metadata line and the slot row) only marks the
-chat as Ultra Mode until the migration moves it. `agent.crew_mode_agent` is the one
+chat as conductor mode until the migration moves it. `agent.crew_mode_agent` is the one
 place that names the conductor; when it changes, or an update ships a new default,
-`dashboard/crew_mode_migration.py` moves every Ultra Mode root onto it through
+`dashboard/crew_mode_migration.py` moves every conductor mode root onto it through
 `switch_slot_agent` (busy roots at their next idle point), keeps the work ledger keyed
 on the session, and writes one `crew_mode.migrate` audit line per move. The config
 watcher starts the migration as a background task (`schedule_on_config_change`), off
@@ -580,18 +580,18 @@ advances only when every live root is on the target. A configured name that is n
 `template` namespace (a typo, or a name that is only a Bot's; a Bot sharing an
 installed template's name does not make the template unusable) moves nothing: it is logged as an error, named in one notice, and
 `crew_mode.crew_mode_agent()` keeps answering the conductor last applied, so new
-Ultra Mode chats still turn on. A migration move counts no `turned_on`. The start pass
+conductor mode chats still turn on. A migration move counts no `turned_on`. The start pass
 learns closed roots from saved metadata (`crew_mode_migration.learn_closed_roots`,
 `crew_mode.note_roots`), off the boot path, and pushes a slot frame when a newly
 learned root holds a live slot, so a worker whose root's tab was closed before this
 process ran stays out of the session list by the persisted lineage. The start pass
-writes no stamp: a conductor root from before Ultra Mode had a switch is Ultra Mode by
-its template alone, and the stamp means the chat TURNED Ultra Mode on, which is what
+writes no stamp: a conductor root from before conductor mode had a switch is a conductor mode chat by
+its template alone, and the stamp means the chat TURNED conductor mode on, which is what
 gates the folder rule, so backfilling it would take an old chat's folders away on a
 restart; the migration's own move keeps an empty stamp empty for the same reason, so a
 root it moved onto a conductor the config later stops naming is an ordinary chat again
 (nothing hidden, nothing lost: the person can switch it). History and the session
-search still list an Ultra Mode root's dispatched sessions. A remote peer's `crew_root` and `crew_mode_root` stamps survive the peer
+search still list a conductor mode root's dispatched sessions. A remote peer's `crew_root` and `crew_mode_root` stamps survive the peer
 row allowlist (`crew_mode_root` only as a real `true`). Once the root has a user message (in its window, or rows trimmed to disk), switching it to any other agent is refused `409
 crew_mode_locked` (`agent_switch._crew_mode_lock_refusal`, read before agent resolution
 and again in the no-await window that commits the switch, so a first message that lands
@@ -600,10 +600,10 @@ mid-turn is vetoed in `chat_runner`; a switch onto the configured conductor in t
 `template` namespace is the one exception, whoever asks (the migration, or a person
 moving a root the migration never visited). Before the
 first user message a switch onto a template that is not a conductor passes: that is
-Ultra Mode turned off. The agent
+conductor mode turned off. The agent
 catalog (`GET /api/agents/catalog`) carries `crew_mode_agent` and `conductor_agents`, so a
 client reads them instead of naming a conductor itself.
-Turning Ultra Mode on is an ordinary
+Turning conductor mode on is an ordinary
 `POST /api/chat/slots/{slot}/agent` naming the configured conductor in the `template`
 namespace; the agent picker is the way in.
 Which agent conducts is read where it is used: `crew_mode.crew_mode_agent()` asks
@@ -617,7 +617,7 @@ conductor's: a `work_report` `question`/`blocked` lands on its ledger item and w
 the conductor, which answers or asks the person in its own chat and relays the
 answer. The two rules below are defined and tested but off
 (`crew_mode.APPROVAL_ROUTING_LIVE` is `False`) until the Crew panel that shows the
-person a crew member's question lands and turns them on, as the Ultra Mode decision
+person a crew member's question lands and turns them on, as the conductor mode decision
 records (each part inert until the UI that uses it arrives); until then every
 conductor and crew member asks as today. A crew member's `ask_question` is refused on both ask routes
 (`409 crew_worker_asks_conductor`, `ask_question._crew_worker_refusal`) with the
@@ -646,7 +646,7 @@ the target's own grants and approval mode. `session_stop`, a send or close to an
 other session, and any other call, a subagent's (a `sub_session_id` or a native KAS
 child's `native_child_call`) or one on the claude backend (whose requests do not say
 which session sent them) included, keeps asking. A `blocked`
-or `question` report on an Ultra Mode board counts
+or `question` report on a conductor mode board counts
 once in `kirocrew.crew_mode.worker_waits`, and a close counts the run in
 `kirocrew.crew_mode.runs_finished` and `steers_per_run`
 (`metrics.crew_mode.board_is_crew_mode`).
@@ -702,7 +702,7 @@ with one **Turn Trust back on** (or **Turn Reads back on**) button, gone once th
 the mode again. The button is the person's pick: it dispatches the composer picker's
 own `changeApprovalMode`, so `POST /api/chat/mode` and `apply_approval_mode` run with
 every caller check, and the inherited-posture walk re-raises the chat's workers whose
-creation edge the crew log records, exactly as a picker pick does. An Ultra Mode lead
+creation edge the crew log records, exactly as a picker pick does. A conductor mode lead
 is an ordinary owner chat here, so it gets the card. A crew window's peer rows leave
 it out (`PEER_SAFE_ROWS`), because the pick would go to this gateway.
 `test_chat_trust_restart_notice.py` and `TrustResetNoticeCard.test.tsx` pin it.

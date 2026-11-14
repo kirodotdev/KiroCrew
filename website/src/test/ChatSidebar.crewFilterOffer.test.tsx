@@ -127,7 +127,7 @@ async function openFilterMenu() {
   await screen.findByRole('menu')
 }
 
-const crewRow = () => screen.getAllByRole('menuitem').find(el => el.textContent?.startsWith('Ultra Mode'))
+const crewRow = () => screen.getAllByRole('menuitem').find(el => el.textContent?.startsWith('Conductor mode'))
 
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.clearAllMocks())
@@ -137,7 +137,7 @@ const WITH_CREW_MEMBER = [
   { key: 'k-worker', title: 'the crew member', running: true, messages: 3, crew_root: 'k-root' },
 ]
 
-describe('a Ultra Mode root\'s crew members', () => {
+describe('a conductor mode root\'s crew members', () => {
   it('stay out of the list and out of the Broadcast dialog', async () => {
     renderSidebar(WITH_CREW_MEMBER)
     await waitFor(() => expect(screen.queryByText('the crew chat')).not.toBeNull())
@@ -155,7 +155,7 @@ describe('a Ultra Mode root\'s crew members', () => {
   })
 })
 
-describe('the Ultra Mode filter offer', () => {
+describe('the conductor mode filter offer', () => {
   it('is absent, hint included, while no chat runs on the conductor', async () => {
     renderSidebar(PLAIN_SLOTS)
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
@@ -167,7 +167,7 @@ describe('the Ultra Mode filter offer', () => {
     expect(screen.queryByTestId('filter-chip-crew')).toBeNull()
   })
 
-  it('appears with its hint once a Ultra Mode chat is in the list', async () => {
+  it('appears with its hint once a conductor mode chat is in the list', async () => {
     renderSidebar(WITH_ROOT)
     await waitFor(() => expect(screen.queryByText('the crew chat')).not.toBeNull())
     await openFilterMenu()
@@ -198,7 +198,7 @@ describe('the Ultra Mode filter offer', () => {
     expect(crewChip.className).toContain('crew-grad')
   })
 
-  it('keeps the row while the filter is stored on, so it can be turned off with no Ultra Mode chat left', async () => {
+  it('keeps the row while the filter is stored on, so it can be turned off with no conductor mode chat left', async () => {
     localStorage.setItem(CREW_ONLY, '1')
     renderSidebar(PLAIN_SLOTS)
     // The filter chip is drawn for the active filter, as for any other.
@@ -212,7 +212,7 @@ describe('the Ultra Mode filter offer', () => {
   })
 })
 
-describe('with the Ultra Mode preview off', () => {
+describe('with the conductor mode preview off', () => {
   // The file turns the preview on for every test; these turn it off again.
   beforeEach(() => localStorage.removeItem(PREVIEW_CREW_MODE))
 
@@ -224,7 +224,7 @@ describe('with the Ultra Mode preview off', () => {
     expect(screen.queryByTestId('crew-ghost-badge')).toBeNull()
   })
 
-  it.each(['1', '2'])('turns a stored Ultra Mode filter (%s) off: nothing narrowed, no chip, stored 0', async (stored) => {
+  it.each(['1', '2'])('turns a stored conductor mode filter (%s) off: nothing narrowed, no chip, stored 0', async (stored) => {
     localStorage.setItem(CREW_ONLY, stored)
     renderSidebar(WITH_ROOT)
     await waitFor(() => expect(screen.queryByText('plain a')).not.toBeNull())
@@ -255,7 +255,7 @@ describe('with the Ultra Mode preview off', () => {
     expect(localStorage.getItem(CREW_ONLY)).toBe('0')
   })
 
-  it('does not count a stored paused Ultra Mode filter in a mix: another filter stored on narrows', async () => {
+  it('does not count a stored paused conductor mode filter in a mix: another filter stored on narrows', async () => {
     localStorage.setItem(CREW_ONLY, '2')
     localStorage.setItem(RUNNING_ONLY, '1')
     renderSidebar(WITH_ROOT)

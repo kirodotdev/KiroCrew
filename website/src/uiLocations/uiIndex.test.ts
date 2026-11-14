@@ -1451,10 +1451,10 @@ describe('the committed index', () => {
     expect(byId.get('setting:developer.explore')!.placements[0].requires).toEqual([])
   })
 
-  it('keeps Start New Chats in Ultra Mode behind the Ultra Mode preview, and not its own switch', () => {
-    const want = [{ kind: 'preview_flag', flag: 'mc-preview-crew-mode', location: 'setting:developer.ultra-mode' }]
-    expect(byId.get('setting:chat.start-new-chats-in-ultra-mode')!.placements[0].requires).toEqual(want)
-    expect(byId.get('setting:developer.ultra-mode')!.placements[0].requires).toEqual([])
+  it('keeps Start New Chats in Conductor Mode behind the conductor mode preview, and not its own switch', () => {
+    const want = [{ kind: 'preview_flag', flag: 'mc-preview-crew-mode', location: 'setting:developer.conductor-mode' }]
+    expect(byId.get('setting:chat.start-new-chats-in-conductor-mode')!.placements[0].requires).toEqual(want)
+    expect(byId.get('setting:developer.conductor-mode')!.placements[0].requires).toEqual([])
   })
 
   it('shows Mates with no prerequisite', () => {

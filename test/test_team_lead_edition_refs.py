@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The team lead exposes the tools of every edition server it mounts.
 
-Ultra Mode switches a chat to ``kirocrew-team-lead``. Its spec is written from
+Conductor mode switches a chat to ``kirocrew-team-lead``. Its spec is written from
 ``build_agent_config``, which adds each ``McpToolingProvider.extra_mcp_servers()``
 entry to ``mcpServers`` only, and kiro-cli exposes only servers named in
 ``tools``. So the lead mounted the edition's servers and could call none of them.

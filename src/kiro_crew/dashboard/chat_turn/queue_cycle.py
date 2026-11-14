@@ -358,7 +358,7 @@ async def _finish_queue_cycle(
             verdict == SYNTHESIS_CLEAR
             and not _drop_single_turn_synthesis(slot)
             and not teardown_hold_active(state, slot)
-            # Ultra Mode "Pause all" holds this session: the synthesis stays
+            # Conductor mode "Pause all" holds this session: the synthesis stays
             # armed, and the turn end after Resume all (or its Continue) fires it.
             and not crew_pause.holds_slot(slot)
         )

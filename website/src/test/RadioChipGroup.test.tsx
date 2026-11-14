@@ -187,7 +187,7 @@ const CONVERTED = [
   'pages/chat-sidebar/SearchDock.tsx',
   'pages/chat-sidebar/sessionCleanup.tsx',
   'pages/chat/SessionColorPicker.tsx',
-  'pages/chat/command-center/UltraCrewPanel.tsx',
+  'pages/chat/command-center/ConductorModeCrewPanel.tsx',
   'pages/knowledge/SourcesList.tsx',
   'pages/overview/VectorMemoryCard.tsx',
   'pages/overview/WakaTimeTab.tsx',

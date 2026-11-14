@@ -79,7 +79,7 @@ describe('ChatPanel — registry entries resolve on their tagged rail page', () 
   })
 
   it.each(RAIL_KEYS)('every entry tagged %s is on that page', async key => {
-    // Ultra Mode preview on: Start New Chats in Ultra Mode renders only under it.
+    // Conductor mode preview on: Start New Chats in Conductor Mode renders only under it.
     setPreviewFlag(PREVIEW_CREW_MODE, true)
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(

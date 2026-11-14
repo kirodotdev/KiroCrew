@@ -37,7 +37,7 @@ export function makeKindOf(liveSlots: readonly Slot[], agents: Roster = []): (s:
     const hit = cache.get(s)
     if (hit) return hit
     let kind: SessionKind = 'normal'
-    // Through the preview-gated reads: with Ultra Mode off a crew row is a normal one.
+    // Through the preview-gated reads: with conductor mode off a crew row is a normal one.
     if (crewModeRoot(s) || crewRootOf(s)) kind = 'crew'
     else if (isCrewmateRow(s, agents)) kind = 'mate'
     else if (!s.peer_id) {

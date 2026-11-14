@@ -118,7 +118,7 @@ _register_spawn_pending_edge: "Callable[[str, str, asyncio.Future[bool]], None] 
 
 
 def _refuse_if_crew_paused(caller_key: str, caller_slot: Any) -> None:
-    """Raise 409 ``crew_paused`` when an Ultra Mode "Pause all" holds the caller's crew.
+    """Raise 409 ``crew_paused`` when a conductor mode "Pause all" holds the caller's crew.
 
     Every verb that opens a session (create, fork) asks it: a paused crew starts
     no new member until Resume all, from its root or from any member of its crew.
@@ -331,7 +331,7 @@ async def create_session(
         caller_slot.memory_store,
     )
 
-    # The stored Ultra Mode pause is read (off the loop) before the pause gate
+    # The stored conductor mode pause is read (off the loop) before the pause gate
     # below asks it, so a create right after a restart still sees a paused crew.
     from kiro_crew import crew_pause
 
@@ -1148,7 +1148,7 @@ async def create_session(
     # A dry run asks the same question without spending the token: a preview
     # must not use up the create it previews.
     #
-    # Ahead of the rate guard: an Ultra Mode crew the person paused starts no new
+    # Ahead of the rate guard: a conductor mode crew the person paused starts no new
     # member until Resume all, from its root or from any member of its crew.
     _refuse_if_crew_paused(caller_key, live_caller)
     admitted = (

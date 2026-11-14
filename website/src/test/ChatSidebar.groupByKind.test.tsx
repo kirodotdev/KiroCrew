@@ -163,13 +163,13 @@ describe('Group by kind', () => {
     const { container } = renderSidebar(MIXED)
     await waitFor(() => expect(screen.queryByText('normal one')).not.toBeNull())
     expect(drawn(container)).toEqual([
-      '# Ultra Mode', 'crew chat',
+      '# Conductor mode', 'crew chat',
       '# Normal', 'normal one', 'normal two',
       '# From bots', 'mate chat', 'mate child',
     ])
     expect(screen.queryByText('crew worker')).toBeNull()
     // Headers are headings, so assistive tech can jump between sections.
-    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['Ultra Mode', 'Normal', 'From bots'])
+    expect(screen.getAllByRole('heading', { level: 3 }).map(h => h.textContent)).toEqual(['Conductor mode', 'Normal', 'From bots'])
   })
 
   it('the menu row toggles it, reports its state, and the choice persists across a remount', async () => {
@@ -203,7 +203,7 @@ describe('Group by kind', () => {
     const order = drawn(container)
     expect(order[0]).toBe('pinned mate')
     expect(order.slice(1)).toEqual([
-      '# Ultra Mode', 'crew chat',
+      '# Conductor mode', 'crew chat',
       '# Normal', 'normal one', 'normal two',
       '# From bots', 'mate chat', 'mate child',
     ])
@@ -230,7 +230,7 @@ describe('Group by kind', () => {
     await waitFor(() => expect(screen.queryByText('filed crew')).not.toBeNull())
     // The folder keeps both its rows, now in sections; the unfiled list holds one
     // kind, so it is drawn without a header.
-    expect(drawn(container)).toEqual(['# Ultra Mode', 'filed crew', '# Normal', 'filed normal', 'normal one'])
+    expect(drawn(container)).toEqual(['# Conductor mode', 'filed crew', '# Normal', 'filed normal', 'normal one'])
   })
 
   it('splits the flat lane too, folders exploded as usual', async () => {
@@ -245,7 +245,7 @@ describe('Group by kind', () => {
     const { container } = renderSidebar(slots, folders)
     const lane = await screen.findByTestId('flat-view-lane')
     await waitFor(() => expect(screen.queryByText('filed crew')).not.toBeNull())
-    expect(drawn(container, lane)).toEqual(['# Ultra Mode', 'filed crew', '# Normal', 'filed normal', '# From bots', 'mate chat'])
+    expect(drawn(container, lane)).toEqual(['# Conductor mode', 'filed crew', '# Normal', 'filed normal', '# From bots', 'mate chat'])
   })
 })
 
@@ -272,7 +272,7 @@ describe('Group by kind and sleeping sessions', () => {
     await waitFor(() => expect(screen.queryByText('crew chat')).not.toBeNull())
     const region = container.querySelector('[data-stale-region="root"]')
     expect(drawn(container, region)).toEqual([
-      '# Ultra Mode', 'crew chat',
+      '# Conductor mode', 'crew chat',
       '# Normal', 'normal one', 'normal two',
       '# From bots', 'mate chat',
     ])
@@ -311,7 +311,7 @@ describe('Group by kind in the conductor lane', () => {
     await waitFor(() => expect(screen.queryByText('pinned mate')).not.toBeNull())
     expect(drawn(container, lane)).toEqual([
       'pinned mate',
-      '# Ultra Mode', 'crew chat',
+      '# Conductor mode', 'crew chat',
       '# Normal', 'normal one',
       '# From bots', 'mate chat',
     ])
@@ -324,7 +324,7 @@ describe('makeKindOf', () => {
     const live = [s({ key: 'mate', agent_kind: 'member' }), s({ key: 'kid', parent: { key: 'mate' } })]
     const kindOf = makeKindOf(live)
     expect(kindOf(s({ key: 'w', crew_root: 'gone' }))).toBe('crew')
-    // With the Ultra Mode preview off a crew row is an ordinary one.
+    // With the conductor mode preview off a crew row is an ordinary one.
     localStorage.removeItem('mc-preview-crew-mode')
     expect(makeKindOf([])(s({ key: 'w2', crew_root: 'gone' }))).toBe('normal')
     expect(makeKindOf([])(s({ key: 'r2', crew_mode_root: true }))).toBe('normal')

@@ -76,7 +76,7 @@ export function crewApprovalRequests(
  * runs the existing per-slot approve route on the WORKER's own slot, through the
  * root's owner-only crew route (`POST .../crew-workers/{worker}/approve`).
  */
-/** `compact` (Ultra Mode Needs your input): each request is one short row --
+/** `compact` (conductor mode Needs your input): each request is one short row --
  *  who and the call in plain words, Approve / Reject, a small Trust link -- with the
  *  full tool input behind a collapsed Details disclosure. Same data, same route. */
 /** `tree="mate"` (a crewmate's chat on the Mates page): the same stack for the
@@ -174,7 +174,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
         <div className="flex items-start gap-3 pl-[22px] text-[11px] text-muted">
           <details className="group min-w-0 flex-1" data-testid="crew-approval-details">
             <summary className="inline-flex items-center gap-0.5 cursor-pointer list-none hover:text-text">
-              <ChevronRight size={12} aria-hidden="true" className="transition-transform group-open:rotate-90" />{i18nT('components.crewMode.ultra_details')}
+              <ChevronRight size={12} aria-hidden="true" className="transition-transform group-open:rotate-90" />{i18nT('components.crewMode.conductor_mode_details')}
             </summary>
             {task && <p className="mt-1 text-text/80 break-words">{task}</p>}
             <p className="mt-1 text-text/80"><span className="font-semibold">{approval.tool || i18nT('components.crewMode.approval_tool_unknown')}</span>{approval.tool_purpose ? ` · ${approval.tool_purpose}` : ''}</p>
@@ -185,7 +185,7 @@ function CrewApprovalCard({ root, request, compact = false, tree = 'crew' }: { r
           </details>
           {approval.trust_grantable === '1' && (
             <button type="button" className="shrink-0 hover:underline underline-offset-2 hover:text-text disabled:opacity-40" disabled={busy}
-              title={trustHint} onClick={() => decide('trust')}>{i18nT('components.crewMode.ultra_trust')}</button>
+              title={trustHint} onClick={() => decide('trust')}>{i18nT('components.crewMode.conductor_mode_trust')}</button>
           )}
         </div>
         {/* The same notices and wording as the full card below. */}

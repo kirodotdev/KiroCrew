@@ -194,8 +194,8 @@ class TelemetryConfig:
     traces_ultra_mode: str = field(
         default="run",
         metadata=_meta(
-            "Traces: Ultra Mode Shape",
-            "How an Ultra Mode or Bot conductor's work is traced while Traces "
+            "Traces: Conductor Mode Shape",
+            "How a conductor's work in conductor mode or a Bot is traced while Traces "
             "Enabled is on. 'run' (default): one trace per round, an 'ultra round "
             "N' root with the conductor's turns and one 'work_item' span per item "
             "holding its worker's turns, so a round reads as one waterfall. "

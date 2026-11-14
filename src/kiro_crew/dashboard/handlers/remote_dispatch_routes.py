@@ -212,8 +212,8 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     3. The slot was not opened on another caller's behalf (``_created_by`` or
        ``_lineage_minted``): a worker cannot reach a crew, so dispatch stays one
        level deep, and is not a crew member's own thread (``owner_only``).
-    4. The session is persistent (``ephemeral_caller``) and is an Ultra Mode chat
-       (``crew_mode.slot_is_crew_mode_root``, the Ultra Mode agent lock's own
+    4. The session is persistent (``ephemeral_caller``) and is a conductor mode chat
+       (``crew_mode.slot_is_crew_mode_root``, the conductor mode agent lock's own
        predicate; ``ultra_mode_only``).
     5. The session is not bound to a private member memory store
        (``private_memory``).
@@ -270,10 +270,10 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     from kiro_crew import crew_mode
 
     if not crew_mode.slot_is_crew_mode_root(slot):
-        # The predicate the Ultra Mode agent lock uses (``crew_mode_locked``).
-        _audit(caller_key, verb, "denied", error=ULTRA_MODE_ONLY)
+        # The predicate the conductor mode agent lock uses (``crew_mode_locked``).
+        _audit(caller_key, verb, "denied", error=CONDUCTOR_MODE_ONLY)
         raise CrewCallError(
-            403, ULTRA_MODE_ONLY, "remote dispatch runs only from an Ultra Mode chat"
+            403, CONDUCTOR_MODE_ONLY, "remote dispatch runs only from a conductor mode chat"
         )
     try:
         fenced = await asyncio.to_thread(private_memory_store_for_session, caller_key)
@@ -311,8 +311,9 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     return slot_key
 
 
-#: The refusal for a caller tab that is not an Ultra Mode chat.
-ULTRA_MODE_ONLY = "ultra_mode_only"
+#: The refusal for a caller tab that is not a conductor mode chat. The code
+#: stays ``ultra_mode_only``: a conductor on another machine matches on it.
+CONDUCTOR_MODE_ONLY = "ultra_mode_only"
 
 #: The refusal while a non-owner dashboard user is possible on this gateway.
 OWNER_UNVERIFIABLE = "crew_owner_unverifiable"

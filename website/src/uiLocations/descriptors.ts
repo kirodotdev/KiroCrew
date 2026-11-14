@@ -159,7 +159,7 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
   [PREVIEW_SESSION_ENVIRONMENTS]: 'developer.session-environments',
   [PREVIEW_EXPLORE]: 'developer.explore',
-  [PREVIEW_CREW_MODE]: 'developer.ultra-mode',
+  [PREVIEW_CREW_MODE]: 'developer.conductor-mode',
   [PREVIEW_DASHBOARD_STALE_FIELDS]: 'developer.mark-out-of-date-dashboard-fields',
 }
 
@@ -167,8 +167,8 @@ export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
  *  is not itself gated (e.g. Display > Explore). Keyed by setting id. */
 export const SETTING_PREVIEW: Record<string, string> = {
   'display.explore': PREVIEW_EXPLORE,
-  // Chat > Sessions draws Start New Chats in Ultra Mode only while the Ultra Mode preview is on.
-  'chat.start-new-chats-in-ultra-mode': PREVIEW_CREW_MODE,
+  // Chat > Sessions draws Start New Chats in Conductor Mode only while the conductor mode preview is on.
+  'chat.start-new-chats-in-conductor-mode': PREVIEW_CREW_MODE,
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
   'developer.wake-bots-to-update-out-of-date-fields': PREVIEW_DASHBOARD_STALE_FIELDS,
 }

@@ -1911,10 +1911,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
-    "id": "chat.start-new-chats-in-ultra-mode",
-    "label": "Start New Chats in Ultra Mode",
+    "id": "chat.start-new-chats-in-conductor-mode",
+    "label": "Start New Chats in Conductor Mode",
     "labelKey": "pages.settings.chatPanel.new_chat_crew_mode",
-    "description": "Ultra Mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
+    "description": "Conductor mode runs each task in its own chat and reports back on the new chat's Board. You can turn it off on any new chat before the first message.",
     "hint": "Not for Incognito or Temporary chats, or chats on another agent.",
     "tab": "chat",
     "type": "toggle",
@@ -2301,6 +2301,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.conductor-mode",
+    "label": "Conductor mode",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
+    "description": "Hands a chat's tasks to a crew.",
+    "hint": "Lets a chat hand tasks to a crew and track them on a Board.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.decisions-jev",
     "label": "Decisions (Jev)",
     "labelKey": "pages.developer.featurePreviewsTab.decisions",
@@ -2406,8 +2419,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.remote-dispatch",
     "label": "Remote dispatch",
     "labelKey": "pages.developer.featurePreviewsTab.remote_dispatch",
-    "description": "Runs Ultra Mode tasks on connected machines.",
-    "hint": "Lets Ultra Mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
+    "description": "Runs conductor mode tasks on connected machines.",
+    "hint": "Lets conductor mode chats run tasks on machines you've connected under Remote Crew. Nothing is sent until a machine is connected.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2509,19 +2522,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "label": "Shared Crew",
     "labelKey": "sharedCrew.preview_title",
     "description": "People tab, invites and shared sessions",
-    "tab": "developer",
-    "type": "toggle",
-    "occurrence": 1,
-    "params": {
-      "sub": "feature-previews"
-    }
-  },
-  {
-    "id": "developer.ultra-mode",
-    "label": "Ultra Mode",
-    "labelKey": "pages.developer.featurePreviewsTab.crew_mode",
-    "description": "Hands a chat's tasks to a crew.",
-    "hint": "Lets a chat hand tasks to a crew and track them on a Board.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,

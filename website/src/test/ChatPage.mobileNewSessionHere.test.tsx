@@ -22,7 +22,7 @@ import { api } from '../api/client'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 
-// Every argument the page hands `createSlot`, read by the Ultra Mode default
+// Every argument the page hands `createSlot`, read by the conductor mode default
 // case; the real thunk still runs.
 const createSlotArgs = vi.hoisted(() => [] as unknown[])
 vi.mock('../store/chatSlice', async importOriginal => {
@@ -219,7 +219,7 @@ describe('ChatPage mobile header: new session in the same folder', () => {
     await waitFor(() => expect(store.getState().chat.revealRequest).toMatchObject({ target: 'slot-new', openFoldersOnly: true, folderId: 'f-child' }))
   })
 
-  it("asks for the person's Ultra Mode default (crewModeDefault), keeping the folder's agent and project", async () => {
+  it("asks for the person's conductor mode default (crewModeDefault), keeping the folder's agent and project", async () => {
     renderChat({ key: 'slot-0', title: 'Session 0', folder_id: 'f-child' })
     await waitFor(() => expect(api.chatFolders).toHaveBeenCalled())
     await act(async () => {})

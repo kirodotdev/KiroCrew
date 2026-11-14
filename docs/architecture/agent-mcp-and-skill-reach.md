@@ -2,24 +2,24 @@
 
 Which MCP servers and skills each of the four Crew-written agents mounts, and
 whether an MCP server or skill the user installs later reaches it. The four are
-the Ultra Mode conductor and worker, and a crewmate's (mate's) conductor and
+the conductor and worker in conductor mode, and a crewmate's (mate's) conductor and
 worker. Mechanism detail lives in [crew-mode](../system-specs/modules/crew-mode.md)
 and [mcp.md](mcp.md); this page is the summary table and where each answer is
 decided.
 
 The rule behind this table is a recorded decision that future changes must
 follow: [conductors stay simple, new MCP servers and skills go to workers](../decisions/2026-11-04-conductors-stay-simple-and-new-abilities-go-to-workers.md).
-A change that adds capability to a conductor, or binds Ultra Mode or mates back
+A change that adds capability to a conductor, or binds conductor mode or mates back
 to custom agents, needs an explicit owner decision.
 
 | Agent | MCP servers | New server from the MCP page? | Skills | New skill? |
 |---|---|---|---|---|
-| Ultra Mode conductor (`kirocrew-conductor`) | Crew's own: `kirocrew-core`, `kirocrew-dashboard`, `kirocrew-work` | No | Its fixed mapped list | No |
-| Ultra Mode worker (`kirocrew-worker`) | Same as the default `kirocrew` agent | Yes | Whole catalog (or the default agent's mapped set) | Yes |
+| The conductor in conductor mode (`kirocrew-conductor`) | Crew's own: `kirocrew-core`, `kirocrew-dashboard`, `kirocrew-work` | No | Its fixed mapped list | No |
+| Conductor mode worker (`kirocrew-worker`) | Same as the default `kirocrew` agent | Yes | Whole catalog (or the default agent's mapped set) | Yes |
 | Mate conductor (`kirocrew-mate-conductor`) | In its spec: `kirocrew-core`, `kirocrew-cron`, `kirocrew-guide`, `kirocrew-mate`, `kirocrew-work`. Per session: `kirocrew-dashboard`, `kirocrew-panel` | No | Its mapped skills; this release also the user's (deprecated) | This release: yes, with a notice. Next: no |
 | Mate worker (`kirocrew-mate-worker`) | Platform servers + that mate's own additions | Only when added to that mate | Worker base + that mate's own additions | Only when added to that mate |
 
-## Ultra Mode conductor
+## The conductor in conductor mode
 
 - **MCP servers.** Every conductor spec's `mcpServers` is rebuilt to exactly
   the Crew servers on every install pass
@@ -35,7 +35,7 @@ to custom agents, needs an explicit owner decision.
   `src/kiro_crew/agent_discovery_parts/skill_scope.py`), so a new skill does
   not reach it.
 
-## Ultra Mode worker
+## Conductor mode worker
 
 - **MCP servers.** The worker mirrors the default agent's `tools`,
   `allowedTools`, `excludedTools`, `mcpServers` and `model`
@@ -76,9 +76,9 @@ to custom agents, needs an explicit owner decision.
     `dashboard_apply` (`src/kiro_crew/mcp_panel.py`), which run the mate's
     Dashboard tab.
 - **The two conductors differ today.** The mate conductor's spec has
-  `kirocrew-cron`, `kirocrew-guide` and `kirocrew-mate`, which the Ultra Mode
-  conductor's lacks. The Ultra Mode conductor's spec has `kirocrew-dashboard`,
-  which the mate conductor gets only per session. Ultra Mode's list is built
+  `kirocrew-cron`, `kirocrew-guide` and `kirocrew-mate`, which the conductor mode
+  conductor's lacks. In conductor mode the conductor's spec has `kirocrew-dashboard`,
+  which the mate conductor gets only per session. Conductor mode's list is built
   by `_conductor_mcp_servers`
   (`src/kiro_crew/agent_materialization/conductor_agents.py`); the mate's by
   `_install_mate_conductor_agent`
@@ -86,7 +86,7 @@ to custom agents, needs an explicit owner decision.
 - **Skills.** Where its spec mounts the work ledger, the same installer maps
   `goal-conductor`, `dashboard` and the skills the widget pointer in its
   `prompt.md` contract leads to (`skill_resources.WIDGET_POINTER_SKILLS`). The
-  intended scope is that mapping alone, as on the Ultra Mode conductor. This
+  intended scope is that mapping alone, as on the conductor in conductor mode. This
   release is a one-release deprecation:
   `skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS` is on, so
   `skill_scope.mate_conductor_scope` still adds the user's `~/.kiro/skills` and a

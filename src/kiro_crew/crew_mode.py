@@ -52,7 +52,7 @@ from kiro_crew.agent_files import (
     TEAM_LEAD_AGENT_FILENAME,
 )
 
-#: The agent Crew Mode (Ultra Mode) runs while ``agent.crew_mode_agent`` is unset:
+#: The agent Crew Mode (conductor mode) runs while ``agent.crew_mode_agent`` is unset:
 #: the team lead. A person who set the key keeps their value.
 DEFAULT_CREW_MODE_AGENT: Final[str] = TEAM_LEAD_AGENT_FILENAME.removesuffix(".json")
 

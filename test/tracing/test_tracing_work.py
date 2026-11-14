@@ -1,4 +1,4 @@
-"""Phase 5a: an Ultra Mode round as one trace, through the real work-ledger routes.
+"""Phase 5a: a conductor mode round as one trace, through the real work-ledger routes.
 
 Every write goes through ``api_work_ledger_record`` / ``api_work_report`` on an isolated
 data home, and every turn binds through ``trace_binding.bind_turn``, so the tree is the
@@ -296,7 +296,7 @@ async def test_a_new_goal_mints_a_new_goal_id(spans, recorded):
 
 @pytest.mark.asyncio
 async def test_turn_mode_roots_every_turn_and_keeps_the_write_in_it(spans, recorded, monkeypatch):
-    monkeypatch.setattr(provider, "_ultra_mode", provider.ULTRA_TURN)
+    monkeypatch.setattr(provider, "_conductor_mode_shape", provider.CONDUCTOR_MODE_TURN)
     await _goal(1)
     item_id = await _item(WORKER_A, spans)
     worker_turn = await _work(WORKER_A, credits=1.0)

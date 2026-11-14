@@ -1,4 +1,4 @@
-/** An Ultra Mode root row's status: only what needs attention, in a fixed
+/** A conductor mode root row's status: only what needs attention, in a fixed
  *  order, each part shown only when its count is above zero: "N needs you"
  *  (approvals and questions), "N stalled" (with the longest-stalled crew member
  *  on a second line), "N running". With none of them a finished crew reads
@@ -18,9 +18,9 @@ const ICON_PX = 11
 
 /** Each count's words in the tooltip: "2 working", "1 waiting", "1 needs you". */
 const COUNT_KEY: Record<CrewRowCount['bucket'], string> = {
-  working: 'components.crewMode.ultra_row_count_working',
-  waiting: 'components.crewMode.ultra_row_count_waiting',
-  needs_you: 'components.crewMode.ultra_row_count_needs_you',
+  working: 'components.crewMode.conductor_mode_row_count_working',
+  waiting: 'components.crewMode.conductor_mode_row_count_waiting',
+  needs_you: 'components.crewMode.conductor_mode_row_count_needs_you',
 }
 
 /** The tooltip: every count the row no longer draws, the session total first. */
@@ -30,7 +30,7 @@ export function crewRowTooltip(total: number, counts: readonly CrewRowCount[], s
   const parts = [i18nT('pages.chatSidebar.session', { count: total })]
   if (needsYou > 0) parts.push(i18nT(COUNT_KEY.needs_you, { count: needsYou }))
   parts.push(...counts.filter(c => c.bucket !== 'needs_you').map(c => i18nT(COUNT_KEY[c.bucket], { count: c.count })))
-  if (stalled > 0) parts.push(i18nT('components.crewMode.ultra_row_count_stalled', { count: stalled }))
+  if (stalled > 0) parts.push(i18nT('components.crewMode.conductor_mode_row_count_stalled', { count: stalled }))
   return fmtList(parts)
 }
 
@@ -83,11 +83,11 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
       <span className="min-w-0 flex items-center gap-x-2" title={title}>
         {needsYou > 0 && (
           <span className={`${PART_CLS} crew-tone-warn font-medium`} data-testid="crew-root-count" data-bucket="needs_you">
-            <Hand size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_needs_you', { count: needsYou })}
+            <Hand size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_needs_you', { count: needsYou })}
           </span>
         )}
         <span className={`${PART_CLS} crew-tone-paused font-medium`} data-testid="crew-root-paused">
-          <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_paused')}
+          <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_paused')}
         </span>
       </span>
     )
@@ -111,17 +111,17 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
         <span aria-hidden="true" className="w-0 h-4 -mr-2" />
         {needsYou > 0 && (
           <span className={`${PART_CLS} crew-tone-warn font-medium`} data-testid="crew-root-count" data-bucket="needs_you">
-            <Hand size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_needs_you', { count: needsYou })}
+            <Hand size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_needs_you', { count: needsYou })}
           </span>
         )}
         {stalled > 0 && (
           <span className={`${PART_CLS} text-muted`} data-testid="crew-root-count" data-bucket="stalled">
-            <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_stalled', { count: stalled })}
+            <Pause size={ICON_PX} aria-hidden="true" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_stalled', { count: stalled })}
           </span>
         )}
         {running > 0 && (
           <span className={`${PART_CLS} text-[var(--ok)]`} data-testid="crew-root-count" data-bucket="running">
-            <Circle size={ICON_PX} aria-hidden="true" fill="currentColor" className="inline-block shrink-0" />{i18nT('components.crewMode.ultra_row_count_running', { count: running })}
+            <Circle size={ICON_PX} aria-hidden="true" fill="currentColor" className="inline-block shrink-0" />{i18nT('components.crewMode.conductor_mode_row_count_running', { count: running })}
           </span>
         )}
       </span>
@@ -129,7 +129,7 @@ export function CrewRowAttention({ needsYou, stalled, running, done, paused, sta
       </span>
       {stalled > 0 && stalledName && stalledForMs !== undefined && (
         <span className="text-[12px] text-muted truncate" data-testid="crew-root-stalled-detail">
-          {i18nT('components.crewMode.ultra_row_stalled_detail', { name: stalledName, duration: fmtMinutes(Math.round(stalledForMs / 60000)) })}
+          {i18nT('components.crewMode.conductor_mode_row_stalled_detail', { name: stalledName, duration: fmtMinutes(Math.round(stalledForMs / 60000)) })}
         </span>
       )}
     </span>

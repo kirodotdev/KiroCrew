@@ -1,4 +1,4 @@
-"""Ultra Mode "Pause all" / "Resume all" for one root and its whole crew.
+"""Conductor mode "Pause all" / "Resume all" for one root and its whole crew.
 
 ``POST /api/chat/slots/{slot}/crew-workers/pause`` stops the root's turn and every
 running crew member's turn at every depth with the Stop button's own mechanism

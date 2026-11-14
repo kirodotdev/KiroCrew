@@ -814,7 +814,7 @@ describe('with "Group by kind" on', () => {
     slot('b', '2026-02-01T00:00:00Z', { crew_mode_root: true } as Partial<ChatSlot>),
     slot('c', '2026-01-01T00:00:00Z'),
   ]
-  // b is a Crew Mode chat only with the Ultra Mode preview on.
+  // b is a Crew Mode chat only with the conductor mode preview on.
   beforeEach(() => { localStorage.setItem('mc-session-group-by-kind', '1'); turnOnCrewModePreview() })
 
   it('takes no manual move on an unpinned row: no Alt+Arrow, no drop target, nothing written', async () => {

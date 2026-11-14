@@ -254,7 +254,7 @@ async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
 
 async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     """Pass the dispatch gates from the session's first turn up to the stream's start."""
-    # Every gate below reads synchronously; the stored Ultra Mode pause is read
+    # Every gate below reads synchronously; the stored conductor mode pause is read
     # (off the loop, once per data home) before any of them, so a turn right
     # after a restart is still held by a crew paused before it.
     from kiro_crew import crew_pause as _crew_pause
@@ -809,7 +809,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
             depth=_prompt_depth,
         )
         return _Flow.END
-    # Ultra Mode "Pause all" holds this session: whichever path reached here (a
+    # Conductor mode "Pause all" holds this session: whichever path reached here (a
     # linked thread, Regenerate, Rewind, Edit & Resend, an API send), no turn
     # starts until Resume all or the session's own Continue lifts the hold, both
     # of which lift it before they dispatch. Read synchronously, beside the stop
@@ -817,7 +817,7 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
     from kiro_crew import crew_pause
 
     if crew_pause.holds_slot(slot):
-        logger.info("Aborting dispatch for %s: its Ultra Mode crew is paused", session_key)
+        logger.info("Aborting dispatch for %s: its conductor mode crew is paused", session_key)
         # Its prompt is already in the transcript: Resume all must continue it,
         # whatever the pause's own Stop of this session answered.
         try:

@@ -122,7 +122,7 @@ export const DECISIONS_SETTING_IDS: ReadonlySet<string> = new Set([
 export const PREVIEW_FLAG_SETTING_IDS: ReadonlySet<string> = new Set([
   'developer.artifact-deploy',
   'developer.webhooks',
-  'developer.ultra-mode',
+  'developer.conductor-mode',
   'developer.explore',
   'developer.mcp-sign-in-by-kiro-crew',
   'developer.chat-on-a-crew',
@@ -208,7 +208,7 @@ export function settingEntryOffered(
   }
   // Display > Explore is drawn only while the Explore preview is on.
   if (entry.configKey === 'dashboard.milestones_enabled') return readPreviewFlag(PREVIEW_EXPLORE)
-  // Chat > Sessions draws Start New Chats in Ultra Mode only while the Ultra Mode preview is on.
+  // Chat > Sessions draws Start New Chats in Conductor Mode only while the conductor mode preview is on.
   if (entry.configKey === 'dashboard.new_chat_crew_mode') return readPreviewFlag(PREVIEW_CREW_MODE)
   // Feature Previews draws the stale-wake switch only while the stale-fields mark is on.
   if (entry.labelKey === 'pages.developer.featurePreviewsTab.dashboard_stale_wake') {

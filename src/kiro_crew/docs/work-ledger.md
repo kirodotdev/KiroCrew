@@ -29,7 +29,7 @@ a conductor would only add overhead.
 
 To start one, open a session on the **`kirocrew-conductor`** agent (see
 [Agents](agents.md) for the per-session, per-thread and per-cron selectors), which
-is what an Ultra Mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
+is what a conductor mode chat runs on, and give it the goal. Its operating procedure ships as the `goal-conductor` skill.
 `kirocrew-ledger-conductor` is a deprecated alias of the same spec, kept for one
 release so an existing session or cron that names the old string keeps resolving.
 
@@ -199,7 +199,7 @@ the goal popover says it is waiting on you. A worker's new report releases it;
 the conductor's own writes do not.
 
 **`wake_at` says a `progress` report is a wait until a known time.** The item is
-not flagged `stale` before that time, so the Ultra Mode sidebar does not call the
+not flagged `stale` before that time, so the conductor mode sidebar does not call the
 worker stalled; once it passes, the staleness window runs from it. The exception is
 a worker whose own loop is active but cannot fire (held on an unanswered approval,
 or past its budget or cycle cap): its `wake_at` is ignored and the normal window
@@ -253,7 +253,7 @@ at the cap still reads.
 
 An item can carry a `steer` event: the time, actor `person`, and the person's own
 text, redacted and cut to 500 characters. It records that the person typed into
-the crew member (the worker session) that holds the item, from an Ultra Mode chat.
+the crew member (the worker session) that holds the item, from a conductor mode chat.
 It is also written, with fixed text and nothing from the tool call, when the
 person answers a tool approval in that crew member's chat while the item's last
 report is `blocked` or `question` with reason `approval` and nobody has answered

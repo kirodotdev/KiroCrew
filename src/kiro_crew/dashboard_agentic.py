@@ -1684,7 +1684,7 @@ def session_turn_block(slot_key: str) -> str:
     if block and _shows_board(key):
         # Said beside the page name, every turn: the prompt's rule alone was not
         # kept (a conductor still wrote its "Task board" into the reply). The goal
-        # line rides with it from the turn Ultra Mode turns on (a new chat or a
+        # line rides with it from the turn conductor mode turns on (a new chat or a
         # mid-chat switch), so the Overview it feeds is never empty or stale.
         block += "\n" + BOARD_IN_PANEL_LINE + "\n" + BOARD_GOAL_LINE
     return block

@@ -1204,7 +1204,7 @@ class _ChatSlot:
         so two concurrent callers targeting the same slot cannot both observe
         ``running == False`` within a single loop iteration.
         """
-        # An Ultra Mode "Pause all" holds this session: queue, never start.
+        # A conductor mode "Pause all" holds this session: queue, never start.
         from kiro_crew import crew_pause
 
         # circular import: chat_utils_injected_rows imports through state.

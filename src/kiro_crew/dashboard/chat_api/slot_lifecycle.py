@@ -1243,7 +1243,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
     DELETE-endpoint's App Kit ownership check and maps the outcome to a
     response.
 
-    When the person closes a conductor (an Ultra Mode root or a Bot thread, no
+    When the person closes a conductor (a conductor mode root or a Bot thread, no
     app token), the open sessions it manages close with it, down the whole line.
     Any other session keeps the sessions it opened. A worker left behind a closed
     conductor can neither be steered nor report to anyone. A worker that fails

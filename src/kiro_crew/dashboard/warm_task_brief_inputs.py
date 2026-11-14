@@ -290,7 +290,7 @@ class PrRef:
 def ledger_ref(item: Mapping[str, Any]) -> PrRef | None:
     """The pull request a work item holds in ledger data: its ``pr`` (or its
     acceptance's ``pr``) in its acceptance's ``repo``. ``None`` without both. The
-    welcome and the Ultra Mode Board (``pr_facts``) both call this."""
+    welcome and the conductor mode Board (``pr_facts``) both call this."""
     acceptance = item.get("acceptance")
     if not isinstance(acceptance, Mapping):
         return None

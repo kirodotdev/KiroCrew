@@ -26,7 +26,7 @@ import { useActiveSlotState } from './chat/page/activeSlotState'
 import { useComposerDraftState, ComposerDraftSync, useComposerIntakeRefs, useMainComposerHandoff, useComposerVoiceHost } from './chat/page/composerHost'
 import { useModelPickerModels, useNewSessionPicks, useSessionChoices, useSlotSelectionCapabilitiesQuery } from './chat/page/sessionPicks'
 import { useCrewModeSwitch } from './chat/page/crewModeSwitch'
-import UltraModeEffect from '../components/crew/UltraModeEffect'
+import ConductorModeEffect from '../components/crew/ConductorModeEffect'
 import { crewModeRoot, crewRootOf, mateRootOf, runsCrewMode } from '../lib/crewMode'
 import { useCrewMode, useMateSessionsHidden } from '../hooks/usePreviewFlag'
 import { useCrewRoot } from '../components/crew/useCrewRoot'
@@ -408,7 +408,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   })
 
   const memorySwitchingRef = useRef(false) // Held true while a memory-mode switch runs (see usePanelLayout).
-  // An Ultra Mode chat (a crew root or one of its workers, the same test the
+  // A conductor mode chat (a crew root or one of its workers, the same test the
   // side panel uses to put the Board first): only a person moves its focus.
   const crewModePreview = useCrewMode()
   const boardFirst = useAppSelector(st => {
@@ -739,7 +739,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // entrance twice. Sending, a running reply or a question card still end it.
   const crewWelcomeHeld = crewModeChosen && messages.length === 0 && !slotRunning && !sendingRef.current && !pendingQuestion
   const transcriptWelcome = isWelcomeState || crewWelcomeHeld
-  // on a brand-new chat the Ultra Mode chip is a toggle until the first
+  // on a brand-new chat the conductor mode chip is a toggle until the first
   // message: on, it stays in place pressed. A chat with messages never shows it.
   const crewChipPressed = crewModeEligible && crewModeChosen && !hasUserMessage && transcriptWelcome
   // App-contributed session controls and the folder context they are handed.
@@ -1199,7 +1199,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               spinnerNearTop={spinnerNearTop} virt={virt} visibleDisplayItems={visibleDisplayItems} chatNav={chatNav} navigateToTurn={navigateToTurn} turnStepAnnouncement={turnStepAnnouncement}
               renderFarmItem={renderFarmItem} renderMessage={renderMessage} renderTurnItem={renderTurnItem}
             />
-            <UltraModeEffect />
+            <ConductorModeEffect />
             <ComposerDockView
               embedded={embedded} forkUnavailable={forkUnavailable} mode={mode} activeSlot={activeSlot} connected={connected} dispatch={dispatch} isMobile={isMobile} isTouch={isTouch} navigate={navigate} provider={provider}
               activityOpen={activityOpen} composerBusy={composerBusy} contextPct={contextPct} contextTokens={contextTokens} knowledgeFetch={knowledgeFetch} messages={messages}

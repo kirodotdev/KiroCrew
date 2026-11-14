@@ -357,7 +357,7 @@ def test_the_patrol_piece_names_the_gated_ledger_watch_band_and_renewal() -> Non
 
 
 def test_both_conductors_send_one_final_report_before_they_stop_the_patrol() -> None:
-    """Bot and Ultra Mode end a patrol the same way: the final report first, the stop
+    """Bot and conductor mode end a patrol the same way: the final report first, the stop
     in a later step, and no bound for the model to pick (rfc-permanent-patrol.md)."""
     from kiro_crew import agent
     from kiro_crew.context_assembly import member
