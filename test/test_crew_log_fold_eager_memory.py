@@ -379,6 +379,24 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
             },
             src=GATEWAY,
         )
+        # A person's correction over it, then a second one over that, so the row keeps
+        # the replaced PERSON write as ``prior`` (a second value at the ceiling, with its
+        # own actor, seq and reason) beside its own reason. Both reasons at the clamp in
+        # 4-byte characters: the clamp counts characters, so that is the widest it keeps.
+        for value in ("p", "q"):
+            handle.append(
+                "dashboard/agentic_value",
+                {
+                    "field": f"f{index:06d}",
+                    "type": "string",
+                    "value": {"v": value * (crew_log.DASHBOARD_VALUE_BYTES - 2)},
+                    "instance_version": index + 1,
+                    "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",
+                    "actor": "person",
+                    "reason": _WIDE[: crew_log.DASHBOARD_REASON_LIMIT],
+                },
+                src=GATEWAY,
+            )
     elif name == "goal":
         # A SNAPSHOT fold: each entry replaces the whole record, so the Nth entry carries
         # N milestones (the record grew) for each to add a counted row, every text cell
@@ -427,6 +445,19 @@ def _append_row(handle: CrewLog, name: str, slot: str, index: int) -> None:
                 "writer": _WIDE_ASCII[: crew_log.CUSTOM_WRITER_LIMIT],
                 "member": _WIDE_ASCII[: crew_log.CUSTOM_WRITER_LIMIT],
                 "crew_key": f"{_WIDE_ASCII[: crew_log.PANEL_CREW_KEY_LIMIT - 4]}{index:04d}",
+                # What Dashboard edit mode adds to a row, each at its cap: the declared
+                # source (``{"kind": "other", "label": ""}`` is 30 bytes), the readings
+                # with the widest float, and the gateway's provenance stamp.
+                "source": {
+                    "kind": "other",
+                    "label": "s" * (crew_log.CUSTOM_SOURCE_BYTES - 30),
+                },
+                "points": [[-1.7976931348623157e308, -1.7976931348623157e308]]
+                * crew_log.CUSTOM_POINTS_LIMIT,
+                "provenance": {
+                    key: _WIDE_ASCII[: crew_log.CUSTOM_PROVENANCE_LIMIT]
+                    for key in ("job", "run_at", "script")
+                },
             },
             src=GATEWAY,
         )

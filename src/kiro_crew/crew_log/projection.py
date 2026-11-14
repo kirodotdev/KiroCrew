@@ -180,6 +180,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _waiting_step,
     )
     from kiro_crew.crew_log.projection_dashboard import (  # noqa: F401
+        _READING_INT_LIMIT,
         _RECORD_TYPE_RE,
         PANEL_SCHEMA_VERSION,
         _agentic_render,
@@ -193,6 +194,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _custom_step,
         _dashboard_type_holds,
         _dashboard_value_fits,
+        _finite,
+        _keep_provenance,
         _mistake_key,
         _mistakes_render,
         _mistakes_rows,
@@ -206,8 +209,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _panel_step,
         _panel_text,
         custom_max_age_ok,
+        custom_points_ok,
         custom_record_depth,
         custom_record_fits,
+        custom_source_refusal,
         custom_type_name_ok,
     )
     from kiro_crew.crew_log.projection_internal import (  # noqa: F401
@@ -787,8 +792,12 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
         CUSTOM_FOLD_NAME,
         CUSTOM_MAX_AGE_MAX_S,
         CUSTOM_MAX_AGE_MIN_S,
+        CUSTOM_POINTS_LIMIT,
+        CUSTOM_PROVENANCE_LIMIT,
         CUSTOM_RECORD_BYTES,
         CUSTOM_RECORD_DEPTH,
+        CUSTOM_SOURCE_BYTES,
+        CUSTOM_SOURCE_KINDS,
         CUSTOM_TYPE_LIMIT,
         CUSTOM_TYPE_NAME_LIMIT,
         CUSTOM_WRITER_LIMIT,

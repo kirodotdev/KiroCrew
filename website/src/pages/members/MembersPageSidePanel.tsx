@@ -34,6 +34,8 @@ import { isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
 import { claimDashboardOnLoad } from './dashboardOnLoad'
 import { appendPaneDraftReply, suggestPaneDraft } from '../../utils/chatPaneDrafts'
 import { sendCardReply } from './sendCardReply'
+import { sendChangeRequest } from './sendChangeRequest'
+import { useAppDispatch } from '../../store'
 import { revealComposer } from '../chat/composerFocus'
 import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
@@ -526,6 +528,7 @@ export function MembersPageSidePanel({
   activeSlug, activeMemberName,
 }: MembersPageSidePanelProps) {
   const { t } = useTranslation()
+  const dispatch = useAppDispatch()
   // Files is the mate's own directory here, which its profile card already
   // calls Workspace; the strip uses the same word.
   const workspaceLabel = t('pages.membersPage.profile_workspace')
@@ -588,6 +591,13 @@ export function MembersPageSidePanel({
           onSend={confirmedSlot && active.dashboard_card_send === true
             ? (text: string) => sendCardReply(confirmedSlot, text)
             : undefined}
+          // Dashboard edit mode's change request: the person typed it in host UI and
+          // pressed Send, so it goes as their own message to this crewmate's thread.
+          // Its own prop, apart from `onSend` (a page's one-click card reply, gated on
+          // that switch): a change request is never a page's send.
+          // Drawn in the open chat at once, and settled by its receipt (see
+          // `sendChangeRequest`).
+          onChangeRequest={confirmedSlot ? (text: string) => sendChangeRequest(dispatch, confirmedSlot, text) : undefined}
           // Badge click opens the Profile tab, where the one-click-send switch is.
           // Guard against an unsaved schedule form in the already-open card:
           // openProfile() increments the nonce which re-mounts the panel.

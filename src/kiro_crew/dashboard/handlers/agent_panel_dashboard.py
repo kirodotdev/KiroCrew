@@ -912,7 +912,9 @@ def _apply_own_package(slug: str, crew_name: str, slot: str) -> Any:
             "page you composed with dashboard_save first"
         )
     loaded = store.get(existing)
-    content = _dashboard.canonical_package_content(loaded.content or "")
+    # Stored bytes being re-pinned, not a new write: the component-id check is
+    # for writes only, so a page saved before the preview still applies.
+    content = _dashboard.canonical_package_content(loaded.content or "", check_block_ids=False)
     # The bytes applied are the ones checked: they must still name the caller.
     if _dashboard.parse_package(content).get("bound_to") != f"crewmate:{slug}":
         raise ArtifactValidationError(

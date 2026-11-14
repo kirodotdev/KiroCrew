@@ -76,6 +76,8 @@ import math
 import re
 from typing import Any, Callable, Final, Mapping, cast
 
+from kiro_crew import dashboard_edit_mode
+
 logger = logging.getLogger(__name__)
 
 #: The size ceiling for one template page, in bytes of UTF-8.
@@ -1094,6 +1096,226 @@ _BOOTSTRAP_JS: Final[str] = f"""
 }})();
 """
 
+_BLOCK_ATTRIBUTE: Final[str] = dashboard_edit_mode.BLOCK_ATTRIBUTE
+
+#: The global the edit bridge publishes ``kirocrew.pick`` under, before the bootstrap.
+_PICK_GLOBAL: Final[str] = "__kirocrewPick"
+
+#: The bootstrap line the edit bridge's ``pick`` is attached after, so a refill's
+#: republished ``window.kirocrew`` carries it too. A test pins it present exactly once.
+_PICK_ANCHOR: Final[str] = "value.subscribe = subscribe;"
+
+#: Edit mode's frame half (feature preview ``dashboard_edit_mode``), composed only while
+#: the preview is on. Installed BEFORE the bootstrap and the page, and its message
+#: listener is a capture listener on ``window``, so it runs before any listener the page
+#: registers: ``edit`` / ``point`` / ``wheel`` stop there, and a page that redraws on
+#: every message is not redrawn on every pointer move.
+#:
+#: The host cannot see the pointer over this cross-origin frame, so in Edit mode it lays
+#: a capture layer over it and posts each point here. The answer is a field PATH and a
+#: rect, nothing else: a bound element (``data-dashboard-field``) answers for itself,
+#: and a page that draws its values in script (canvas, WebGL, script-written text)
+#: answers through ``kirocrew.pick(handler)``, where ``handler(x, y)`` returns
+#: ``{path, rect, glow?}`` or ``null``. The host checks the path against the manifest and
+#: draws the lineage itself, so a page can point at a field but never say where it came
+#: from. Keyboard focus on a bound element is reported the same way with ``seq: -1``.
+_EDIT_BRIDGE_JS: Final[str] = f"""
+(function () {{
+  var pickers = [];
+  var on = false;
+  var lit = null;
+  var added = [];
+  function blockId(id) {{
+    if (typeof id !== 'string' || id.length < 1 || id.length > 48) return false;
+    for (var i = 0; i < id.length; i++) {{
+      var c = id.charCodeAt(i);
+      var ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || (i > 0 && (c === 95 || c === 45));
+      if (!ok) return false;
+    }}
+    return true;
+  }}
+  function pick(handler) {{
+    if (typeof handler !== 'function') return function () {{}};
+    var entry = {{ fn: handler, live: true }};
+    pickers.push(entry);
+    return function () {{ entry.live = false; }};
+  }}
+  Object.defineProperty(window, {_PICK_GLOBAL!r}, {{ value: pick, writable: false, configurable: false }});
+  function num(a, b) {{ var v = Number(a !== undefined ? a : b); return isFinite(v) ? v : NaN; }}
+  function box(r) {{
+    if (!r || typeof r !== 'object') return null;
+    var out = {{ x: num(r.x, r.left), y: num(r.y, r.top), w: num(r.width, r.w), h: num(r.height, r.h) }};
+    return isNaN(out.x + out.y + out.w + out.h) ? null : out;
+  }}
+  function blockOf(node) {{
+    var b = node && node.closest ? node.closest('[{_BLOCK_ATTRIBUTE}]') : null;
+    var id = b ? b.getAttribute({_BLOCK_ATTRIBUTE!r}) : '';
+    return blockId(id) ? id : '';
+  }}
+  function clean(path) {{
+    return typeof path === 'string' && path.length > 0 && path.length <= 200 ? path : null;
+  }}
+  function glow(fn) {{
+    if (lit === fn) return;
+    if (lit) {{ try {{ lit(false); }} catch (err) {{}} }}
+    lit = fn || null;
+    if (lit) {{ try {{ lit(true); }} catch (err) {{}} }}
+  }}
+  // The component under a point: its id, its rect, and the fields bound inside it, so
+  // the host can flip it and list its provider. Names only; the host checks each one.
+  function blockAt(node) {{
+    var id = blockOf(node);
+    if (!id) return {{ block: '', blockRect: null, blockFields: [] }};
+    var el = node.closest('[{_BLOCK_ATTRIBUTE}]');
+    var names = [];
+    var cells = el.querySelectorAll('[{BINDING_ATTRIBUTE}]');
+    for (var c = 0; c < cells.length && names.length < 32; c++) {{
+      var name = clean(cells[c].getAttribute({BINDING_ATTRIBUTE!r}));
+      if (name && names.indexOf(name) === -1) names.push(name);
+    }}
+    return {{ block: id, blockRect: box(el.getBoundingClientRect()), blockFields: names }};
+  }}
+  function post(seq, path, rect, node) {{
+    var info = blockAt(node);
+    parent.postMessage({{
+      type: 'kirocrew-dashboard:picked', seq: seq, path: path, rect: rect,
+      block: info.block, blockRect: info.blockRect, blockFields: info.blockFields
+    }}, '*');
+  }}
+  function bound(node) {{
+    return node && node.closest ? node.closest('[{BINDING_ATTRIBUTE}]') : null;
+  }}
+  function at(seq, x, y) {{
+    var node = document.elementFromPoint(x, y);
+    var cell = bound(node);
+    if (cell) {{
+      glow(null);
+      post(seq, clean(cell.getAttribute({BINDING_ATTRIBUTE!r})), box(cell.getBoundingClientRect()), cell);
+      return;
+    }}
+    for (var i = 0; i < pickers.length; i++) {{
+      if (!pickers[i].live) continue;
+      var hit = null;
+      try {{ hit = pickers[i].fn(x, y); }} catch (err) {{ hit = null; }}
+      if (!hit || typeof hit !== 'object') continue;
+      var path = clean(hit.path);
+      if (!path) continue;
+      glow(typeof hit.glow === 'function' ? hit.glow : null);
+      post(seq, path, box(hit.rect) || {{ x: x - 4, y: y - 4, w: 8, h: 8 }}, node);
+      return;
+    }}
+    glow(null);
+    post(seq, null, null, node);
+  }}
+  function setEdit(next) {{
+    on = next;
+    if (on) document.documentElement.setAttribute('data-dashboard-edit', 'true');
+    else document.documentElement.removeAttribute('data-dashboard-edit');
+    if (on) {{
+      var nodes = document.querySelectorAll('[{BINDING_ATTRIBUTE}]');
+      for (var n = 0; n < nodes.length; n++) {{
+        if (nodes[n].hasAttribute('tabindex')) continue;
+        nodes[n].setAttribute('tabindex', '0');
+        added.push(nodes[n]);
+      }}
+    }} else {{
+      for (var a = 0; a < added.length; a++) added[a].removeAttribute('tabindex');
+      added = [];
+      glow(null);
+    }}
+  }}
+  addEventListener('message', function (event) {{
+    if (event.source !== parent) return;
+    var data = event.data;
+    if (!data || typeof data.type !== 'string') return;
+    if (data.type === 'kirocrew-dashboard:edit') {{
+      event.stopImmediatePropagation();
+      setEdit(data.on === true);
+    }} else if (data.type === 'kirocrew-dashboard:point') {{
+      event.stopImmediatePropagation();
+      if (!on) return;
+      var seq = typeof data.seq === 'number' ? data.seq : 0;
+      if (typeof data.x !== 'number' || typeof data.y !== 'number') {{
+        glow(null);
+        post(seq, null, null, null);
+        return;
+      }}
+      at(seq, data.x, data.y);
+    }} else if (data.type === 'kirocrew-dashboard:wheel') {{
+      event.stopImmediatePropagation();
+      if (!on) return;
+      var dy = Number(data.dy) || 0;
+      if (data.ctrl === true && typeof data.x === 'number' && typeof data.y === 'number') {{
+        var target = document.elementFromPoint(data.x, data.y);
+        if (target) target.dispatchEvent(new WheelEvent('wheel', {{
+          deltaY: dy, ctrlKey: true, clientX: data.x, clientY: data.y, bubbles: true, cancelable: true
+        }}));
+      }} else {{
+        scrollUnder(data.x, data.y, dy);
+      }}
+    }}
+  }}, true);
+  // The box under the pointer scrolls first (a drawer, a long list), the way the
+  // wheel would scroll it with no layer over the page; the document is the fallback
+  // once nothing under the point can move further that way.
+  function scrollUnder(x, y, dy) {{
+    var el = typeof x === 'number' && typeof y === 'number' ? document.elementFromPoint(x, y) : null;
+    for (; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {{
+      var oy = getComputedStyle(el).overflowY;
+      if (oy !== 'auto' && oy !== 'scroll' && oy !== 'overlay') continue;
+      var room = dy > 0 ? el.scrollHeight - el.clientHeight - el.scrollTop : el.scrollTop;
+      if (room > 0) {{
+        el.scrollBy(0, dy);
+        return;
+      }}
+    }}
+    window.scrollBy(0, dy);
+  }}
+  addEventListener('focusin', function (event) {{
+    if (!on) return;
+    var cell = bound(event.target);
+    if (cell) post(-1, clean(cell.getAttribute({BINDING_ATTRIBUTE!r})), box(cell.getBoundingClientRect()), cell);
+  }});
+  addEventListener('focusout', function (event) {{
+    if (on && bound(event.target)) post(-1, null, null, null);
+  }});
+  addEventListener('keydown', function (event) {{
+    // Only a key the person pressed: a page script's dispatched KeyboardEvent is not
+    // trusted, so it is never forwarded. (A page can still post the message itself;
+    // the host is what refuses to let any frame message discard a draft.)
+    if (!on || !event.isTrusted) return;
+    if (event.key === 'Escape') {{
+      parent.postMessage({{ type: 'kirocrew-dashboard:escape' }}, '*');
+    }} else if ((event.key === 'Enter' || event.key === ' ') && bound(event.target)) {{
+      // The keyboard's click: the host opens the focused value's component, as a
+      // click on it does. The pick it acts on is the one focusin just posted.
+      event.preventDefault();
+      parent.postMessage({{ type: 'kirocrew-dashboard:activate' }}, '*');
+    }} else if ((event.key === 'e' || event.key === 'E') && bound(event.target)
+        && !event.ctrlKey && !event.metaKey && !event.altKey) {{
+      // The Edit shortcut on a focused value: a key typed in the frame never reaches
+      // the host's window, so it is forwarded. Only on a bound value, which is not an
+      // editable field, so no letter typed into a page's own input is taken.
+      event.preventDefault();
+      parent.postMessage({{ type: 'kirocrew-dashboard:edit-key' }}, '*');
+    }}
+  }});
+}})();
+"""
+
+
+def _bootstrap(edit: bool) -> str:
+    """The bootstrap, with ``kirocrew.pick`` attached when edit mode is composed in."""
+    if not edit:
+        return _BOOTSTRAP_JS
+    return _BOOTSTRAP_JS.replace(
+        _PICK_ANCHOR,
+        f"{_PICK_ANCHOR} if (typeof window.{_PICK_GLOBAL} === 'function') "
+        f"value.pick = window.{_PICK_GLOBAL};",
+        1,
+    )
+
+
 #: Whether the page's own script will redraw on a refill, recorded as it registers.
 #:
 #: The bootstrap's refill fills the bound cells of ANY page, but a page that draws
@@ -1277,7 +1499,9 @@ def read_payload(
     return payload
 
 
-def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
+def compose(
+    html: str, read: Mapping[str, Any], title: str = "", *, edit: bool | None = None
+) -> str:
     """Frame one template page as a complete, contained document.
 
     The assembly order IS the contract and each position is load-bearing:
@@ -1301,7 +1525,13 @@ def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
     page is the template's work and the data is the host's half of the bargain -- a
     value this module could not encode must not blank somebody's dashboard, so the
     template draws its own empty state.
+
+    *edit* composes in edit mode's bridge (:data:`_EDIT_BRIDGE_JS`); ``None`` asks the
+    ``dashboard_edit_mode`` preview. Off, the document is the one composed without it.
     """
+    if edit is None:
+        edit = dashboard_edit_mode.edit_mode_on()
+    bridge = f"<script>{_EDIT_BRIDGE_JS}</script>\n" if edit else ""
     try:
         blob = json.dumps(read, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError):
@@ -1329,7 +1559,8 @@ def compose(html: str, read: Mapping[str, Any], title: str = "") -> str:
         f"{island}\n"
         # BEFORE the page, so an error in the page's first script is counted.
         f"<script>{_INIT_GUARD_JS}</script>\n"
-        f"<script>{_BOOTSTRAP_JS}</script>\n"
+        f"{bridge}"
+        f"<script>{_bootstrap(edit)}</script>\n"
         f"<script>{_REFILL_PROBE_JS}</script>\n"
         f"{html}\n"
         f"<script>{_BEACON_JS}</script>\n"

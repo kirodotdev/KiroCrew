@@ -47,14 +47,18 @@ from kiro_crew.crew_log.entry_types import (
     CUSTOM_FAILED_ENTRY_TYPE,
     CUSTOM_MAX_AGE_MAX_S,
     CUSTOM_MAX_AGE_MIN_S,
+    CUSTOM_POINTS_LIMIT,
+    CUSTOM_PROVENANCE_LIMIT,
     CUSTOM_RECORD_BYTES,
     CUSTOM_RECORD_DEPTH,
     CUSTOM_TYPE_NAME_LIMIT,
 )
 from kiro_crew.crew_log.projection_dashboard import (
     custom_max_age_ok,
+    custom_points_ok,
     custom_record_depth,
     custom_record_fits,
+    custom_source_refusal,
     custom_type_name_ok,
 )
 from kiro_crew.dashboard.handlers._shared import member_request_scope
@@ -474,9 +478,122 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     if bad is not None:
         code, error = bad
         return web.json_response({"error": error, "code": code}, status=400)
+    lineage: dict[str, Any] = {}
+    from kiro_crew import dashboard_edit_mode
+
+    if await asyncio.to_thread(dashboard_edit_mode.edit_mode_on):
+        bad = _lineage_body_refusal(body)
+        if bad is not None:
+            code, error = bad
+            return web.json_response({"error": error, "code": code}, status=400)
+        if body.get("source") is not None:
+            # Scrubbed like the record itself: a page renders it. Judged AGAIN in its
+            # scrubbed form, which is what the fold keeps: redaction can lengthen it
+            # past the bound, and the fold would then drop it without a word.
+            scrubbed, refused = await asyncio.to_thread(_stored_source, body["source"])
+            if refused:
+                return web.json_response({"error": refused, "code": "bad_source"}, status=400)
+            lineage["source"] = scrubbed
+        if body.get("points") is not None:
+            lineage["points"] = [list(p) for p in body["points"]]
+        lineage["provenance"] = await asyncio.to_thread(
+            cron_provenance, request.app.get("state"), resolved.writer
+        )
     return await record_through_door(
-        request, resolved, body["type"], body["data"], max_age_s=body.get("max_age_s")
+        request,
+        resolved,
+        body["type"],
+        body["data"],
+        max_age_s=body.get("max_age_s"),
+        lineage=lineage,
     )
+
+
+def _stored_source(source: Any) -> tuple[Any, str]:
+    """``(the source as stored, "")``, or ``(None, why)`` when its STORED form is refused.
+
+    Stored scrubbed, and judged in that form, because that is what the custom fold
+    re-checks: a header the redactor rewrites can push a descriptor that fit past
+    ``CUSTOM_SOURCE_BYTES``, and the fold would then drop the whole source silently.
+    """
+    scrubbed = _redacted_record(source)
+    # A console link the redactor rewrote (a signed URL turns into a placeholder) is
+    # not an https address. The host never fetches it, so the LINK is dropped, not
+    # the record: losing the record's data over a display hint is the worse loss.
+    url = scrubbed.get("console_url") if isinstance(scrubbed, dict) else None
+    if url is not None and not (isinstance(url, str) and url.startswith("https://")):
+        scrubbed = {key: value for key, value in scrubbed.items() if key != "console_url"}
+    refused = custom_source_refusal(scrubbed)
+    return (None, f"after redaction, {refused}") if refused else (scrubbed, "")
+
+
+def _lineage_body_refusal(body: Mapping[str, Any]) -> tuple[str, str] | None:
+    """``(code, error)`` for a bad declared ``source`` / ``points``, or ``None``."""
+    source = body.get("source")
+    if source is not None:
+        refused = custom_source_refusal(source)
+        if refused:
+            return "bad_source", refused
+    points = body.get("points")
+    if points is not None and not custom_points_ok(points):
+        return (
+            "bad_points",
+            f"points must be 1 to {CUSTOM_POINTS_LIMIT} [t, v] pairs of finite numbers",
+        )
+    return None
+
+
+def cron_provenance(state: Any, writer: str) -> dict[str, str]:
+    """The gateway's own stamp for a record cron *writer* (``cron:<id>``) sends.
+
+    Read from the scheduler's record of the job, never from the request: the job id,
+    when the record arrived and the job's ``path:function``. A cell it cannot read is
+    ``""``. Neither a run id nor a digest of the code that ran is stamped: the
+    scheduler names no run, and the file on disk when the record arrives may not be
+    the code that produced it (an edit mid-run), so hashing it would vouch for the
+    wrong code. The lineage shows that gap as a ``needs`` hop.
+    """
+    from datetime import datetime, timezone
+
+    job_id = writer.removeprefix("cron:")
+    out = {
+        "job": job_id,
+        "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "script": "",
+    }
+    jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    try:
+        candidates = jobs.values() if isinstance(jobs, Mapping) else (jobs or ())
+        job = next((j for j in candidates if getattr(j, "id", "") == job_id), None)
+    except Exception:
+        job = None
+    spec = str(getattr(job, "script", "") or "")
+    if not spec:
+        return out
+    out["script"] = _script_label(spec)[:CUSTOM_PROVENANCE_LIMIT]
+    return out
+
+
+def _script_label(spec: str) -> str:
+    """A job's ``<path>.py:function`` as the page may show it: never the host layout.
+
+    The lineage draws this stamp in the page's popover and job panel. An absolute
+    path under the home directory becomes home-relative (``~/...``); any other
+    absolute path becomes its file name; a relative spec is kept as written.
+    """
+    from pathlib import Path, PureWindowsPath
+
+    path, sep, func = spec.rpartition(":")
+    if not sep or not func.isidentifier():
+        path, func = spec, ""
+    p = Path(path).expanduser()
+    # A Windows anchor covers a POSIX root, a drive and a Windows root on any host.
+    if p.is_absolute() or PureWindowsPath(path).anchor:
+        try:
+            path = "~/" + p.relative_to(Path.home()).as_posix()
+        except ValueError:
+            path = PureWindowsPath(path).name
+    return path + (f":{func}" if func else "")
 
 
 async def record_through_door(
@@ -488,6 +605,7 @@ async def record_through_door(
     caller: str = "",
     operation: str = _OPERATION,
     max_age_s: int | None = None,
+    lineage: Mapping[str, Any] | None = None,
 ) -> web.Response:
     """Steps 3b and 4 of the door, for a caller the route has ALREADY resolved,
     counted against its quota, and whose record has passed :func:`_record_body_refusal`:
@@ -538,6 +656,9 @@ async def record_through_door(
     }
     if max_age_s is not None:
         entry["max_age_s"] = int(max_age_s)
+    # Edit mode's lineage cells (`source`, `points`, `provenance`), already checked and
+    # stamped by the cron route; empty for every other caller and with the preview off.
+    entry.update(lineage or {})
 
     def _append() -> str:
         # The crewmate's LIVE DM unit, the one its page reads. Imported here, not at

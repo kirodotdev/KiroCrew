@@ -283,7 +283,15 @@ class ScriptContext:
     # ``dashboard/custom_value`` entry, and the ``custom`` fold keeps the latest record
     # per type, so a page bound to ``custom.latest.<type>.data`` redraws when it lands.
 
-    def crew_log_append(self, type: str, data: dict, *, max_age_s: int | None = None) -> dict:
+    def crew_log_append(
+        self,
+        type: str,
+        data: dict,
+        *,
+        max_age_s: int | None = None,
+        source: dict | None = None,
+        points: list | None = None,
+    ) -> dict:
         """Append one record to the bound crewmate's crew log (``POST .../dashboard/record``).
 
         *type* names the record: letters, digits and underscores only (never two
@@ -307,6 +315,18 @@ class ScriptContext:
         minute answers ``quota_exceeded``. Returns the gateway's receipt, ``{"ok":
         True, "recorded": {"type", "writer", "member"}}``. Raises RuntimeError
         carrying the gateway's reason if it refuses or cannot be reached.
+
+        With the Dashboard edit mode preview on, *source* says what the script read: an
+        object whose ``kind`` is ``cloudwatch``, ``http``, ``sql``, ``prometheus``,
+        ``file`` or ``other`` (which needs a ``label``), at most 2 KiB, for example
+        ``{"kind": "cloudwatch", "namespace": "AWS/ApiGateway", "metric": "Latency",
+        "stat": "p99", "period_s": 60, "region": "us-west-2"}``; a ``console_url`` must
+        be ``https://``. *points* is 1 to 120 ``[t, v]`` pairs, the raw readings behind
+        the record. Both show in the value's lineage as declared by the script, beside
+        what the gateway stamps itself: this job, the run time and the script. No
+        digest of the script is recorded: the file when the record lands may not be
+        the code that ran.
+        With the preview off the gateway ignores them.
         """
         # Each string on its own, never the serialized blob: a credential pattern that
         # spans a key and its value (``"authorization": "Bearer ..."``) would otherwise
@@ -314,6 +334,17 @@ class ScriptContext:
         safe: dict[str, Any] = {"type": redact(type), "data": _redact_deep(data)}
         if max_age_s is not None:
             safe["max_age_s"] = max_age_s
+        if source is not None:
+            safe["source"] = _redact_deep(source)
+            # A valid https link the scrub turned into a placeholder is left out, so
+            # the record lands without it; a link that was never https is sent as given
+            # and the gateway refuses it.
+            url = source.get("console_url") if isinstance(source, dict) else None
+            kept = safe["source"].get("console_url") if isinstance(safe["source"], dict) else None
+            if isinstance(url, str) and url.startswith("https://") and kept != url:
+                safe["source"].pop("console_url", None)
+        if points is not None:
+            safe["points"] = points
         result = self._post("/api/agent-panel/dashboard/record", safe)
         if not isinstance(result, dict) or "error" in result:
             raise RuntimeError(f"crew_log_append() failed: {self._reason(result)}")

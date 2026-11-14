@@ -5,6 +5,7 @@ dashboard's ``agentic`` values and ``mistakes`` book.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -17,8 +18,12 @@ from kiro_crew.crew_log.entry_types import (
     CUSTOM_FAILURE_LIMIT,
     CUSTOM_MAX_AGE_MAX_S,
     CUSTOM_MAX_AGE_MIN_S,
+    CUSTOM_POINTS_LIMIT,
+    CUSTOM_PROVENANCE_LIMIT,
     CUSTOM_RECORD_BYTES,
     CUSTOM_RECORD_DEPTH,
+    CUSTOM_SOURCE_BYTES,
+    CUSTOM_SOURCE_KINDS,
     CUSTOM_TYPE_LIMIT,
     CUSTOM_TYPE_NAME_LIMIT,
     CUSTOM_WRITER_LIMIT,
@@ -347,7 +352,8 @@ def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
         del fields[oldest]
         state["fields_omitted"] = _as_int(state.get("fields_omitted")) + 1
     state["wrote"] = _as_int(state.get("wrote")) + 1
-    fields[name] = {
+    previous = fields.get(name)
+    row: dict[str, Any] = {
         # UNWRAPPED for the reader. The wrapper is an artefact of what the entry
         # registry can declare, and a reader of this fold should not have to know
         # about it: a template's field is a value, not a value in a box.
@@ -358,6 +364,25 @@ def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
         "crew_key": _panel_text(data.get("crew_key"), PANEL_CREW_KEY_LIMIT),
         "order": state["wrote"],
     }
+    person = data.get("actor") == "person"
+    if person:
+        # A PERSON'S CORRECTION from Dashboard edit mode. Kept on the row with its
+        # reason, so the lineage shows who wrote the value and the Bot's turn is told.
+        row["actor"] = "person"
+        row["seq"] = int(entry.seq)
+        reason = _panel_text(data.get("reason"), DASHBOARD_REASON_LIMIT)
+        if reason:
+            row["reason"] = reason
+    if previous is not None and (person or previous.get("actor") == "person"):
+        # The write this one replaced, one level deep, whenever a person's write is on
+        # either side: the lineage keeps both, and a Bot overwriting a correction can
+        # be seen doing so.
+        row["prior"] = {
+            key: previous[key]
+            for key in ("value", "at", "actor", "reason", "seq", "instance_version")
+            if key in previous
+        }
+    fields[name] = row
 
 
 def _agentic_render(state: dict[str, Any]) -> dict[str, Any]:
@@ -680,10 +705,93 @@ def _custom_step(state: dict[str, Any], entry: Entry) -> None:
         # line off disk is dropped and the record kept, since the record itself passed.
         row["max_age_s"] = max_age
         row["stale_after"] = _panel_iso(int(entry.time) + max_age * 1000)
+    _keep_provenance(row, data)
     latest[name] = row
     # The writer landed a record, so it is not failing any more: its failure leaves
     # ``failures`` by the same rule that drops ``failed_at`` from its row.
     state.get("failures", {}).pop(writer, None)
+
+
+#: The widest integer a reading may be: one a float holds exactly (2**53). The custom
+#: fold's row charge is measured at the widest float, and an integer past this serializes
+#: wider (``10**200`` is 201 digits), so the charge would stop being an upper bound.
+_READING_INT_LIMIT: Final[int] = 2**53
+
+
+def _finite(value: Any) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return -_READING_INT_LIMIT <= value <= _READING_INT_LIMIT
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # A JSON integer past a float's range (``10**400``) is no reading: refused as
+        # bad points, never a 500.
+        return False
+
+
+def custom_points_ok(points: Any) -> bool:
+    """Whether *points* is a record's declared readings: 1 to ``CUSTOM_POINTS_LIMIT``
+    ``[t, v]`` pairs of finite numbers. Shared with the record route."""
+    return (
+        isinstance(points, list)
+        and 0 < len(points) <= CUSTOM_POINTS_LIMIT
+        and all(
+            isinstance(p, list) and len(p) == 2 and _finite(p[0]) and _finite(p[1]) for p in points
+        )
+    )
+
+
+def custom_source_refusal(source: Any) -> str:
+    """Why *source* is not a record's declared source, or ``""``. Shared with the route.
+
+    An object naming a ``kind`` from ``CUSTOM_SOURCE_KINDS`` (``other`` needs a
+    ``label``), at most ``CUSTOM_SOURCE_BYTES`` serialized and three levels deep, whose
+    optional ``console_url`` is an ``https://`` address. It is the script's claim and is
+    shown as one; the host never fetches the URL.
+    """
+    if not isinstance(source, Mapping):
+        return "source must be an object"
+    if source.get("kind") not in CUSTOM_SOURCE_KINDS:
+        return f"source.kind must be one of {', '.join(CUSTOM_SOURCE_KINDS)}"
+    if source.get("kind") == "other" and not (
+        isinstance(source.get("label"), str) and source["label"].strip()
+    ):
+        return "source.label is required when source.kind is other"
+    url = source.get("console_url")
+    if url is not None and not (isinstance(url, str) and url.startswith("https://")):
+        return "source.console_url must be an https:// address"
+    if custom_record_depth(source) > 3:
+        return "source nests deeper than 3 levels"
+    try:
+        size = len(json.dumps(source, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return "source must be plain JSON"
+    if size > CUSTOM_SOURCE_BYTES:
+        return f"source must serialize to at most {CUSTOM_SOURCE_BYTES} bytes"
+    return ""
+
+
+def _keep_provenance(row: dict[str, Any], data: Mapping[str, Any]) -> None:
+    """Copy a record's declared ``source`` / ``points`` and the gateway's ``provenance``.
+
+    Present only on records written with the ``dashboard_edit_mode`` preview on. Each
+    is re-checked here, as every cell of this fold is, because the line is off disk.
+    """
+    source = data.get("source")
+    if isinstance(source, Mapping) and not custom_source_refusal(source):
+        row["source"] = dict(source)
+    if custom_points_ok(data.get("points")):
+        row["points"] = [list(p) for p in data["points"]]
+    stamp = data.get("provenance")
+    if isinstance(stamp, Mapping):
+        kept = {
+            key: _panel_text(stamp.get(key), CUSTOM_PROVENANCE_LIMIT)
+            for key in ("job", "run_at", "script")
+        }
+        if any(kept.values()):
+            row["provenance"] = kept
 
 
 def _custom_render(state: dict[str, Any]) -> dict[str, Any]:

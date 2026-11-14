@@ -228,6 +228,21 @@ export function reconcilePreviewFlags(body: PreviewFlagsConfigBody | undefined):
  * already invalidates, so a switch flipped on another surface reaches this one
  * without a reload. Installs the persister `setPreviewFlag` hands each toggle to.
  */
+/**
+ * *flag* as the GATEWAY holds it: `true` only once a toggle is accepted, unlike the
+ * browser copy {@link usePreviewFlag} reads, which moves on the click. For a surface
+ * whose server half reads the flag per request, so its next read is made after the
+ * gateway agrees. Reads the shared config query without fetching it again.
+ */
+export function useServerPreviewFlag(flag: string): boolean {
+  const { data } = useQuery<PreviewFlagsConfigBody>({
+    queryKey: CONFIG_KEY,
+    queryFn: () => api.kirocrewConfig(),
+    staleTime: Infinity,
+  })
+  return serverFlags(data)?.[previewFlagName(flag)] === true
+}
+
 export function usePreviewFlagServerSync(): void {
   const qc = useQueryClient()
   const { data } = useQuery<PreviewFlagsConfigBody>({

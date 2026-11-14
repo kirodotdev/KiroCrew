@@ -108,6 +108,9 @@ class PackageRead:
     #:
     #: PROVENANCE, and nothing more.
     from_package: bool = False
+    #: The slug of the package read, ``""`` for a template page. Every package's manifest
+    #: has the same id, so this is what tells one package page from another.
+    slug: str = ""
 
 
 #: The ``bound_to`` scope a MEMBER's package is spelled under. The other scope the
@@ -224,6 +227,7 @@ def _package_model(
         STATE_LIVE,
         f"package {slug!r} version {version}, bound to {bound_to}",
         from_package=True,
+        slug=slug,
     )
 
 

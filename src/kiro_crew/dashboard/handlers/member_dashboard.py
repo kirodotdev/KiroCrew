@@ -338,8 +338,29 @@ def _package_in_force(slug: str) -> tuple[instance.PinnedPackage | None, bool]:
     The write path asks the same two questions (``dashboard_package.read_package_model``),
     so the page and the write check name one Model. Blocking file IO.
     """
+    pinned, older, _counter = _package_read(slug)
+    return pinned, older
+
+
+def _package_read(slug: str) -> tuple[instance.PinnedPackage | None, bool, int]:
+    """:func:`_package_in_force` plus the record's apply counter, from ONE record read.
+
+    The counter names the page a correction (Dashboard edit mode) was typed on. Read
+    with the page, so an apply landing while the page renders cannot pair the page
+    on screen with its replacement's counter. Blocking file IO.
+    """
     record = instance.read(slug)
-    return instance.pinned_package(record), instance.keeps_older_package_rule(record)
+    counter = int(getattr(record, "instance_version", 0) or 0)
+    return instance.pinned_package(record), instance.keeps_older_package_rule(record), counter
+
+
+def _page_revision(counter: int, version: int) -> int:
+    """The apply counter a package page is named by: the record's, else *version*.
+
+    The number ``dashboard_package._package_model`` stamps the Model with. It only goes
+    up, unlike a package version: a slug deleted and saved again starts at 1 again.
+    """
+    return counter or version
 
 
 async def _run(fn: Callable[[], Any]) -> Any:
@@ -482,9 +503,10 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
     # keeps the rule of looking a package up by the crewmate's binding.
     pinned: instance.PinnedPackage | None = None
     older_rule = False
+    counter = 0
     if not staged_only:
         try:
-            pinned, older_rule = await _run(lambda: _package_in_force(slug))
+            pinned, older_rule, counter = await _run(lambda: _package_read(slug))
         except Exception as exc:
             return _refusal(exc)
         if pinned is not None:
@@ -555,6 +577,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
             # split this route already makes for a slug it refuses above.
             asked_for=bool(request.query.get("dashboard", "")),
             pinned=pinned,
+            counter=counter,
         )
     if request.query.get("preview") == "1":
         # The STAGED page, which no version records. Served from the same route and
@@ -994,6 +1017,7 @@ def read_fields(
     *,
     slot: str | None = None,
     prime_wait: float | None = None,
+    session: str | None = None,
 ) -> Any:
     """One read of *manifest*'s field values for this crewmate, as the page gets them.
 
@@ -1013,11 +1037,9 @@ def read_fields(
     # A root session's page is read by its own slot and has no publish of its own,
     # whatever crew name the caller carries.
     own_slot = slot is None
-    if slot is None:
-        slot = _dashboard_slot(member, slug)
-        session = _write_session(slug, member)
-    else:
-        session = _newest_unit(slot)
+    # *session*: the unit a caller tracing the page's own read names (the page's unit).
+    slot = _dashboard_slot(member, slug) if slot is None else slot
+    session = session or (_write_session(slug, member) if own_slot else _newest_unit(slot))
     # The reader's OWN panel record, picked by the panel read route's own rule, so the
     # page shows what that route shows and a crew sharing this slot never fills it. A
     # root session publishes no panel, so it has no owner and reads an empty one.
@@ -1631,8 +1653,11 @@ async def _serve_package(
     *,
     asked_for: bool = True,
     pinned: instance.PinnedPackage | None = None,
+    counter: int = 0,
 ) -> web.Response:
     """Serve the ``kind="dashboard"`` artifact *package_slug* as this crewmate's page.
+
+    *counter* is the record's apply counter, read with *pinned* (:func:`_package_read`).
 
     *pinned* is the page the crewmate's instance record put in force, read from the
     gateway's snapshot (``instance.pinned_package``); ``None`` keeps the older rule for
@@ -1878,6 +1903,15 @@ async def _serve_package(
             f"the page cannot be framed: {redact_via_context(str(exc))}",
             status=409,
         )
+    from kiro_crew import dashboard_edit_mode
+
+    # Dashboard edit mode only: the apply counter a correction names its page by. Off,
+    # the body is what it was without the preview.
+    # Taken from the record read that chose the page, never read again here: an apply
+    # landing while this page rendered would otherwise pair it with its replacement's.
+    revision: dict[str, int] = {}
+    if dashboard_edit_mode.edit_mode_on():
+        revision = {"page_revision": _page_revision(counter, version)}
     return web.json_response(
         {
             "instance_version": version,
@@ -1901,6 +1935,7 @@ async def _serve_package(
             # amendment's fourth reason, and why the profile has to be read too.
             "scripts": scripts,
             "locale": read.get("locale", locale) if isinstance(read, dict) else locale,
+            **revision,
         }
     )
 

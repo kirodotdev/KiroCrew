@@ -12,7 +12,7 @@ import { Badge, Btn } from '../../components/ui'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import { useSharedCrewPreviewSetting } from './sharedCrewPreviewSetting'
-import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
+import { PREVIEW_ARTIFACT_DEPLOY, PREVIEW_BRIDGE_APPROVALS, PREVIEW_CHAT_RUNTIME_SHARING, PREVIEW_CREW_MODE, PREVIEW_CREW_OAUTH, PREVIEW_DASHBOARD_EDIT_MODE, PREVIEW_DASHBOARD_STALE_FIELDS, PREVIEW_DASHBOARD_STALE_WAKE, PREVIEW_EXPLORE, PREVIEW_FOLDER_CONDUCTOR, PREVIEW_LAYOUT_HARNESS, PREVIEW_MATE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_SECRETS_VAULT, PREVIEW_SESSION_ENVIRONMENTS, PREVIEW_SESSION_HARNESS, PREVIEW_WEBHOOKS, setPreviewFlag, setRemoteCrewChat } from '../../utils/previewFlags'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import { KasBundleCard } from '../developer/KasBundleCard'
 import { KIRO_SIGN_IN_BACKEND } from '../developer/kiroSignInLink'
@@ -130,6 +130,7 @@ function previewFlagLabel(flag: string): string {
     case PREVIEW_CREW_MODE: return i18nT('pages.developer.featurePreviewsTab.crew_mode')
     case PREVIEW_EXPLORE: return i18nT('pages.developer.featurePreviewsTab.explore')
     case PREVIEW_CREW_OAUTH: return i18nT('pages.developer.featurePreviewsTab.crew_oauth')
+    case PREVIEW_DASHBOARD_EDIT_MODE: return i18nT('pages.developer.featurePreviewsTab.dashboard_edit_mode')
     case PREVIEW_REMOTE_CREW_CHAT: return i18nT('pages.developer.featurePreviewsTab.chat_on_a_crew')
     case PREVIEW_LAYOUT_HARNESS: return i18nT('pages.developer.featurePreviewsTab.layout_harness')
     case PREVIEW_FOLDER_CONDUCTOR: return i18nT('pages.developer.featurePreviewsTab.folder_conductor')
@@ -203,6 +204,7 @@ export function FeaturePreviewsSection() {
   const crewMode = usePreviewFlag(PREVIEW_CREW_MODE)
   const explore = usePreviewFlag(PREVIEW_EXPLORE)
   const crewOauth = usePreviewFlag(PREVIEW_CREW_OAUTH)
+  const dashboardEditMode = usePreviewFlag(PREVIEW_DASHBOARD_EDIT_MODE)
   const writeError = usePreviewFlagWriteError()
   // An LTS build ships no Feature Preview (RFC D12): the flag rows, their "See what
   // it looks like" intros and the edition rows go; every other row here stays.
@@ -451,6 +453,19 @@ export function FeaturePreviewsSection() {
               />
             )}
           </div>
+        )}
+        {/* Dashboard edit mode (`dashboard.feature_previews.dashboard_edit_mode`): the
+            Inspect button on a Bot's Dashboard tab. Also read by the gateway, which
+            composes the frame's edit bridge and answers the lineage and correct routes
+            only with it on. A plain switch: the button appears on the Dashboard tab. */}
+        {!previewsOff && (
+          <SettingsToggle
+            label={i18nT('pages.developer.featurePreviewsTab.dashboard_edit_mode')}
+            description={i18nT('pages.developer.featurePreviewsTab.dashboard_edit_mode_desc_summary')}
+            hint={i18nT('pages.developer.featurePreviewsTab.dashboard_edit_mode_desc')}
+            checked={dashboardEditMode}
+            onChange={v => setPreviewFlag(PREVIEW_DASHBOARD_EDIT_MODE, v)}
+          />
         )}
         {/* Pending tool approvals to the notification bridge (`bridge_approvals`):
             a gateway switch read per approval (`notifications/bridge_approval_note.py`). */}

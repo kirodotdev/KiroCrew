@@ -722,6 +722,12 @@ def _blocks_as_html(raw_blocks: Any, declared_fields: Mapping[str, Any]) -> str:
     """
     if not isinstance(raw_blocks, list):
         raise _refuse("view.blocks", f"must be a list, got {type(raw_blocks).__name__}")
+    from kiro_crew import dashboard_edit_mode
+
+    # A block's `id` becomes its component id (`data-dashboard-block`) only with the
+    # edit mode preview on; off, the page is the one this function always wrote. The
+    # write gate checks the ids (`canonical_package_content`).
+    keep_ids = dashboard_edit_mode.edit_mode_on()
     sections: list[str] = []
     size = 0
     for index, raw_block in enumerate(raw_blocks):
@@ -744,8 +750,38 @@ def _blocks_as_html(raw_blocks: Any, declared_fields: Mapping[str, Any]) -> str:
             if size > MAX_VIEW_HTML_BYTES:
                 raise _refuse("view.html", _page_too_large(size, at_least=True))
             rows.append(row)
-        sections.append(f"<section>{head}<dl>{''.join(rows)}</dl></section>")
+        block_id = block.get("id")
+        opener = "<section>"
+        # READ-TOLERANT: an id this check refuses is left out and the block is a
+        # plain section. The base never read a block's id, so a stored page may carry
+        # any string, and a read must not stop drawing it. The write gate refuses one
+        # (`_block_ids_refusal`, from `canonical_package_content`).
+        if keep_ids and _block_id_ok(block_id):
+            opener = f'<section {dashboard_edit_mode.BLOCK_ATTRIBUTE}="{block_id}">'
+        sections.append(f"{opener}{head}<dl>{''.join(rows)}</dl></section>")
     return "".join(sections)
+
+
+def _block_id_ok(block_id: Any) -> bool:
+    """Whether *block_id* can be a component id (``dashboard_edit_mode.is_block_id``)."""
+    from kiro_crew import dashboard_edit_mode
+
+    return dashboard_edit_mode.is_block_id(block_id)
+
+
+def _block_ids_refusal(raw: Any) -> ArtifactValidationError | None:
+    """The write gate's refusal for a ``view.blocks`` id that cannot be a component id."""
+    view = raw.get("view") if isinstance(raw, Mapping) else None
+    blocks = view.get("blocks") if isinstance(view, Mapping) else None
+    for index, block in enumerate(blocks if isinstance(blocks, list) else ()):
+        block_id = block.get("id") if isinstance(block, Mapping) else None
+        if block_id is not None and not _block_id_ok(block_id):
+            return _refuse(
+                f"view.blocks[{index}].id",
+                "must be a component id: 1-48 lowercase letters, digits, '-' or '_', "
+                "starting with a letter or digit",
+            )
+    return None
 
 
 def _validate_view(raw: Any, declared_fields: Mapping[str, Any]) -> dict[str, Any]:
@@ -1044,7 +1080,7 @@ def dump_package(package: Mapping[str, Any]) -> str:
     return text
 
 
-def canonical_package_content(content: str) -> str:
+def canonical_package_content(content: str, *, check_block_ids: bool = True) -> str:
     """THE write gate: validated, canonical bytes for a ``kind="dashboard"`` artifact.
 
     Every dashboard write goes through here -- the store calls it from
@@ -1053,8 +1089,23 @@ def canonical_package_content(content: str) -> str:
     than the caller's keeps the stored form one thing: the layout comparison
     and the version history then read a package the author's whitespace cannot
     perturb.
+
+    With the ``dashboard_edit_mode`` preview on, the page's component ids
+    (``data-dashboard-block``) are checked here too: on the write only, so a stored
+    page is never refused on read for an id the host simply ignores. A reader that
+    canonicalises stored bytes passes ``check_block_ids=False``.
     """
-    return dump_package(parse_package(content))
+    package = parse_package(content)
+    from kiro_crew import dashboard_edit_mode
+
+    if check_block_ids and dashboard_edit_mode.edit_mode_on():
+        bad_block = _block_ids_refusal(json.loads(content))
+        if bad_block is not None:
+            raise bad_block
+        refused = dashboard_edit_mode.block_id_refusal(str(package["view"]["html"]))
+        if refused:
+            raise _refuse("view.html", refused)
+    return dump_package(package)
 
 
 # --------------------------------------------------------------------------- #

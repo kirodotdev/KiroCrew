@@ -54,6 +54,7 @@ from kiro_crew.crew_log.entry_types import (
     MISTAKE_CORRECTED_CODE,
     MISTAKES_FOLD_NAME,
 )
+from kiro_crew.dashboard_agentic_corrections import person_corrections_line  # noqa: F401
 from kiro_crew.dashboard_templates.manifest import FIELD_TYPES, FieldSpec, Shape, TemplateManifest
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -1615,6 +1616,7 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
         stale = stale_notice(manifest, page_slot) if page_slot else ""
         if stale:
             block += "\n" + stale
+    block += "\n" + c if (c := person_corrections_line(slug, member, names)) else ""
     dashboard_upkeep.sync(slug, page=(record, manifest))
     return block + ("\n" + dashboard_upkeep.pointer() if names else "")
 
@@ -1629,7 +1631,7 @@ def unresolved_notice(slug: str, member: str) -> str:
     in force, the crew panel on -- without the rest of the block, which
     the section already carried. No upkeep sync: that is the section's job. With the
     ``dashboard_stale_fields`` preview on it also carries :func:`stale_line`, which a
-    field crosses between warm turns just as a binding breaks. TOTAL.
+    field crosses between warm turns just as a binding breaks, and the person's corrections. TOTAL.
     """
     if not member:
         return ""
@@ -1648,6 +1650,7 @@ def unresolved_notice(slug: str, member: str) -> str:
         # in `turn_block`.
         if agentic_fields(manifest) and stale_fields_enabled():
             lines.append(stale_notice(manifest, _member_slot(member, slug)))
+        lines.append(person_corrections_line(slug, member, sorted(agentic_fields(manifest))))
         text = "\n".join(line for line in lines if line)
     except Exception:
         logger.debug("dashboard: %r's warm-turn notice is unreadable", slug, exc_info=True)
