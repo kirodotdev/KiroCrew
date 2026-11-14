@@ -63,6 +63,7 @@ from kiro_crew.apps.manifest_containment import (  # noqa: F401
     _declared_agent_names,
     _has_dotdot_segment,
     _is_rooted_path,
+    _is_shipped_builtin_root,
     app_root_containment,
     contain_command_agents,
     contained_in_screened_root,

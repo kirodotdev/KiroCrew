@@ -26,7 +26,7 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path, PurePosixPath
-from typing import Iterator
+from typing import Callable, Iterable, Iterator
 
 from kiro_crew import skill_trust
 from kiro_crew.config import live
@@ -118,14 +118,30 @@ _PROJECT_SKILL_MAX_DEPTH = 64
 _BUILTIN_SKILLS_DIR = Path(__file__).parent / "builtin_skills"
 
 #: The installed ``kiro_crew`` package tree: a trusted provider root for skill
-#: symlinks, and the only tree whose hardlinked ``SKILL.md`` can be admitted (see
-#: :func:`_installed_package_bytes_match`). A module binding so a test can stand
+#: symlinks, and the only tree whose hardlinked ``SKILL.md`` and built-in app
+#: ``.json`` files can be admitted (see :func:`_installed_package_bytes_match` and
+#: :func:`_installed_builtin_app_file_match`). A module binding so a test can stand
 #: up a fake site dir.
 _INSTALLED_PACKAGE_DIR = Path(__file__).parent
 
 #: RECORD hash names accepted as an admission witness: the wheel spec requires
 #: sha256 or stronger, and a weaker one could be matched on purpose.
 _RECORD_HASHES = frozenset({"sha256", "sha384", "sha512"})
+
+#: Where, below the installed package, the shipped built-in apps live
+#: (``apps.execution._BUILTINS_DIR``). An app's ``app.json`` and the agent specs its
+#: manifest declares are the other kind of hardlinked file a RECORD digest can admit
+#: (:func:`_builtin_app_file_admission`).
+_BUILTIN_APPS_PARTS = ("apps", "builtins")
+
+
+def _is_builtin_app_json(parts: tuple[str, ...]) -> bool:
+    """Whether package-relative *parts* name a ``.json`` file inside one built-in app."""
+    return (
+        len(parts) >= 4
+        and parts[: len(_BUILTIN_APPS_PARTS)] == _BUILTIN_APPS_PARTS
+        and parts[-1].endswith(".json")
+    )
 
 
 def _project_skills_dir() -> Path | None:
@@ -162,7 +178,7 @@ def _trusted_skill_roots() -> tuple[str, ...]:
 
 
 _package_record_lock = threading.Lock()
-#: package dir -> (cache key, recorded ``SKILL.md`` digests). The key is the site
+#: package dir -> (cache key, recorded admission digests). The key is the site
 #: dir's own stamp plus each candidate RECORD's, so a dist-info added or removed
 #: (the site dir changes) or a RECORD rewritten (its stamp changes) re-reads.
 _package_record_cache: dict[str, tuple[tuple, dict[str, frozenset[tuple[str, str]]]]] = {}
@@ -207,10 +223,14 @@ def _package_record_paths(package_dir: str) -> list[str]:
 def _read_package_record(
     record: str, package_dir: str
 ) -> tuple[tuple[int, int, int], dict[str, tuple[str, str]]] | None:
-    """*record*'s identity and its ``SKILL.md`` digests, or ``None``.
+    """*record*'s identity and the digests it lists that can admit a hardlink, or ``None``.
 
-    A RECORD that does not list the package's own ``__init__.py`` vouches for
-    nothing, so it answers no digests. ``None`` means it could not be read or
+    Two kinds of row are kept: every ``SKILL.md`` in the package, and every
+    ``.json`` file inside a built-in app's own directory
+    (``<package>/apps/builtins/<app>/...``), which is where a shipped app keeps its
+    ``app.json`` and agent specs. A RECORD that does not list the package's own
+    ``__init__.py`` vouches for nothing, so it answers no digests. ``None`` means
+    it could not be read or
     changed while it was read: the identity is taken before and after the parse,
     so digests are never filed under a stamp that belongs to a different RECORD.
     """
@@ -221,14 +241,21 @@ def _read_package_record(
     package = os.path.basename(package_dir)
     owned = f"{package}/__init__.py"
     skill_row = f"/{_SKILL_FILE}"
+    builtin_prefix = "/".join((package, *_BUILTIN_APPS_PARTS)) + "/"
     owns = False
     digests: dict[str, tuple[str, str]] = {}
     try:
         with open(record, encoding="utf-8", newline="") as fh:
-            # A substring test first: only two kinds of row matter, and running
+            # A substring test first: only three kinds of row matter, and running
             # every one of a few thousand rows through the CSV parser is what
             # made this the slow part.
-            wanted = (line for line in fh if line.startswith(owned) or skill_row in line)
+            wanted = (
+                line
+                for line in fh
+                if line.startswith(owned)
+                or skill_row in line
+                or (line.startswith(builtin_prefix) and ".json," in line)
+            )
             for row in csv.reader(wanted):
                 if not row:
                     continue
@@ -238,7 +265,7 @@ def _read_package_record(
                 parts = PurePosixPath(row[0]).parts
                 if (
                     len(row) < 2
-                    or parts[-1:] != (_SKILL_FILE,)
+                    or not (parts[-1:] == (_SKILL_FILE,) or _is_builtin_app_json(parts[1:]))
                     or parts[:1] != (package,)
                     or ".." in parts
                 ):
@@ -255,9 +282,11 @@ def _read_package_record(
 
 
 def _recorded_skill_digests() -> dict[str, frozenset[tuple[str, str]]]:
-    """The installed package's recorded ``SKILL.md`` digests, re-read on reinstall.
+    """The installed package's recorded admission digests, re-read on reinstall.
 
-    Cached per process under the site dir's stamp and every candidate RECORD's,
+    Keyed by absolute path: every ``SKILL.md`` and every built-in app ``.json``
+    the RECORD lists (:func:`_read_package_record`). Cached per process under
+    the site dir's stamp and every candidate RECORD's,
     so the steady state costs a few ``stat`` calls and a reinstall, a dist-info
     appearing mid-upgrade, or a RECORD replaced mid-read is re-read on the next
     call rather than judged against a previous answer. A RECORD that changed
@@ -303,6 +332,62 @@ def _installed_package_bytes_match(path: str, data: bytes) -> bool:
     RECORD entry and stays refused. Rewriting RECORD needs write access to the
     same tree as the package code, which already decides what the gateway runs.
     """
+    return os.path.normcase(os.path.basename(path)) == os.path.normcase(
+        _SKILL_FILE
+    ) and _recorded_bytes_match(path, data)
+
+
+def _installed_builtin_app_file_match(path: str, data: bytes) -> bool:
+    """Admit a hardlinked built-in app ``.json`` only when it IS the installed package's file.
+
+    The same content test as :func:`_installed_package_bytes_match`, for the
+    ``app.json`` and agent specs a shipped built-in app keeps in its package
+    directory: *path* must be a ``.json`` file the RECORD lists under
+    ``<package>/apps/builtins/<app>/``, and *data* must hash to its recorded
+    digest. A hardlinked spec in the agents dir, an installed third-party app or
+    a project has no such entry and stays refused. Readers reach it only through
+    :func:`_builtin_app_file_admission`, which also requires the path to be one the
+    app's manifest names.
+    """
+    try:
+        package_dir = os.path.realpath(_INSTALLED_PACKAGE_DIR)
+        rel = os.path.relpath(os.path.normpath(path), package_dir)
+    except (OSError, ValueError):
+        return False
+    parts = PurePosixPath(rel.replace(os.sep, "/")).parts
+    return ".." not in parts and _is_builtin_app_json(parts) and _recorded_bytes_match(path, data)
+
+
+def _builtin_app_file_admission(
+    app_root: Path, rel_paths: Iterable[str]
+) -> Callable[[str, bytes], bool]:
+    """The hardlink admission for one shipped built-in app's own files.
+
+    *rel_paths* are the files the reader needs from *app_root*: its ``app.json``
+    and the agent specs its manifest declares, each already accepted by the
+    manifest path screen. Each is resolved as :func:`kiro_crew.agent_discovery._read_agent_spec`
+    resolves the path it reads. The callback admits a path only when it is one of
+    those AND :func:`_installed_builtin_app_file_match` accepts it, so a
+    RECORD-listed ``.json`` the manifest does not declare stays refused.
+    """
+    allowed: set[str] = set()
+    for rel in rel_paths:
+        try:
+            allowed.add(os.path.normcase(str((app_root / rel).resolve(strict=True))))
+        except (OSError, RuntimeError):
+            continue
+    frozen = frozenset(allowed)
+
+    def admit(path: str, data: bytes) -> bool:
+        return os.path.normcase(os.path.normpath(path)) in frozen and (
+            _installed_builtin_app_file_match(path, data)
+        )
+
+    return admit
+
+
+def _recorded_bytes_match(path: str, data: bytes) -> bool:
+    """Whether *data* hashes to a strong digest the installed RECORD lists for *path*."""
     try:
         recorded = _recorded_skill_digests().get(os.path.normcase(os.path.normpath(path)), ())
         for algorithm, value in recorded:
